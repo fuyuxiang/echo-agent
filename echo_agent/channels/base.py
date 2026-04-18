@@ -1,0 +1,113 @@
+"""Base channel interface — all platform adapters implement this."""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from pathlib import Path
+from typing import Any
+
+import aiohttp
+from loguru import logger
+
+from echo_agent.bus.events import InboundEvent, OutboundEvent, ContentBlock, ContentType
+from echo_agent.bus.queue import MessageBus
+
+
+class BaseChannel(ABC):
+    """Abstract base for chat channel implementations.
+
+    Each channel (Telegram, Discord, Webhook, CLI, Cron, etc.) implements this
+    to integrate with the message bus.
+    """
+
+    name: str = "base"
+    transcription_api_key: str = ""
+    supports_edit: bool = False
+
+    def __init__(self, config: Any, bus: MessageBus):
+        self.config = config
+        self.bus = bus
+        self._running = False
+        self.transcription_api_key = getattr(config, "transcription_api_key", "") or ""
+
+    @abstractmethod
+    async def start(self) -> None:
+        """Start listening for messages."""
+
+    @abstractmethod
+    async def stop(self) -> None:
+        """Stop and clean up resources."""
+
+    @abstractmethod
+    async def send(self, event: OutboundEvent) -> None:
+        """Send a message through this channel."""
+
+    def is_allowed(self, sender_id: str) -> bool:
+        allow_list = getattr(self.config, "allow_from", [])
+        if not allow_list:
+            return True
+        if "*" in allow_list:
+            return True
+        return str(sender_id) in allow_list
+
+    async def _handle_message(
+        self,
+        sender_id: str,
+        chat_id: str,
+        text: str,
+        media: list[dict[str, str]] | None = None,
+        metadata: dict[str, Any] | None = None,
+        session_key: str | None = None,
+        reply_to_id: str | None = None,
+        thread_id: str | None = None,
+    ) -> None:
+        if not self.is_allowed(sender_id):
+            logger.warning("Access denied for sender {} on channel {}", sender_id, self.name)
+            return
+
+        content_blocks = [ContentBlock(type=ContentType.TEXT, text=text)]
+        for item in (media or []):
+            content_blocks.append(ContentBlock(
+                type=ContentType(item.get("type", "file")),
+                url=item.get("url", ""),
+                mime_type=item.get("mime_type", ""),
+            ))
+
+        event = InboundEvent(
+            channel=self.name,
+            sender_id=str(sender_id),
+            chat_id=str(chat_id),
+            content=content_blocks,
+            reply_to_id=reply_to_id,
+            thread_id=thread_id,
+            session_key_override=session_key,
+            metadata=metadata or {},
+        )
+        await self.bus.publish_inbound(event)
+
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
+    async def transcribe_audio(self, file_path: str | Path) -> str:
+        """Transcribe audio file via Groq Whisper API."""
+        api_key = self.transcription_api_key
+        if not api_key:
+            return ""
+        path = Path(file_path)
+        if not path.exists():
+            return ""
+        try:
+            url = "https://api.groq.com/openai/v1/audio/transcriptions"
+            data = aiohttp.FormData()
+            data.add_field("file", path.open("rb"), filename=path.name)
+            data.add_field("model", "whisper-large-v3")
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, data=data, headers={"Authorization": f"Bearer {api_key}"}) as resp:
+                    if resp.status == 200:
+                        result = await resp.json()
+                        return result.get("text", "")
+                    logger.warning("Transcription failed ({}): {}", resp.status, await resp.text())
+        except Exception as e:
+            logger.error("Audio transcription error: {}", e)
+        return ""

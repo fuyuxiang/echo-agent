@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "echo-agent"
+version = "0.1.0"
+description = "A modular AI agent framework with multi-channel support"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "pyyaml>=6.0",
+    "loguru>=0.7",
+    "aiohttp>=3.9",
+    "croniter>=1.4",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+openai = ["openai>=1.30"]
+anthropic = ["anthropic>=0.40"]
+bedrock = ["anthropic>=0.40", "boto3>=1.34"]
+gemini = ["google-generativeai>=0.8"]
+allproviders = ["openai>=1.30", "anthropic>=0.40", "boto3>=1.34", "google-generativeai>=0.8"]
+vector = ["faiss-cpu>=1.7"]
+container = ["docker>=7.0"]
+vision = ["pillow>=10.0"]
+process = ["psutil>=5.9"]
+all = ["openai>=1.30", "anthropic>=0.40", "boto3>=1.34", "google-generativeai>=0.8", "pillow>=10.0", "psutil>=5.9", "faiss-cpu>=1.7"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.4"]
+
+[project.scripts]
+echo-agent = "echo_agent.__main__:main"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
