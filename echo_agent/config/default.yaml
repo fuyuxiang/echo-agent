@@ -1,0 +1,98 @@
+# Echo Agent default configuration
+# Override via echo-agent.yaml or ECHO_AGENT_ env vars
+
+workspace: "."
+
+channels:
+  cli:
+    enabled: true
+  webhook:
+    enabled: false
+    host: "0.0.0.0"
+    port: 8080
+    path: "/webhook"
+  telegram:
+    enabled: false
+  discord:
+    enabled: false
+  cron:
+    enabled: false
+
+models:
+  defaultModel: "gpt-4o"
+  providers: []
+  routes: []
+
+tools:
+  restrictToWorkspace: false
+  exec:
+    enabled: true
+    timeoutSeconds: 30
+  web:
+    enabled: true
+
+execution:
+  defaultExecutor: "local"
+  networkPolicy: "allow"
+
+permissions:
+  adminUsers: []
+  approval:
+    defaultPolicy: "ask"
+
+session:
+  maxHistoryMessages: 500
+  expiryHours: 72
+  contextWindowTokens: 65536
+
+memory:
+  enabled: true
+  consolidationThreshold: 50
+  vectorEnabled: false
+
+compression:
+  enabled: true
+  triggerRatio: 0.7
+  tailBudgetRatio: 0.4
+  headProtectCount: 3
+  summaryTargetRatio: 0.20
+  summaryMinTokens: 2000
+  summaryMaxTokens: 12000
+  summaryModel: ""
+  summaryCooldownSeconds: 600
+  toolPruningEnabled: true
+  toolPruningTailBudgetRatio: 0.3
+  maxCompressionCount: 10
+
+gateway:
+  enabled: false
+  host: "0.0.0.0"
+  port: 9000
+  apiPrefix: "/api/v1"
+  wsPath: "/ws"
+  sessionPolicy:
+    mode: "idle"
+    dailyResetHour: 4
+    idleTimeoutMinutes: 1440
+  auth:
+    mode: "allowlist"
+    allowedUsers: []
+    pairingTtlSeconds: 300
+  platforms: {}
+  mediaCacheDir: "data/media_cache"
+  mediaCacheMaxMb: 500
+  maxAgentCacheSize: 50
+  enableProgressiveEdit: true
+  hooksDir: ""
+
+scheduler:
+  enabled: true
+  maxConcurrentJobs: 10
+
+storage:
+  backend: "sqlite"
+  databasePath: "data/echo_agent.db"
+
+observability:
+  logLevel: "INFO"
+  traceEnabled: true

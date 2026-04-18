@@ -1,0 +1,43 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -m py_compile echo_agent/__init__.py)",
+      "Bash(python3 -m py_compile echo_agent/config/schema.py)",
+      "Bash(python3 -m py_compile echo_agent/config/loader.py)",
+      "Bash(python3 -m py_compile echo_agent/bus/events.py)",
+      "Bash(python3 -m py_compile echo_agent/bus/queue.py)",
+      "Bash(python3 -m py_compile echo_agent/session/manager.py)",
+      "Bash(python3 -m py_compile echo_agent/agent/context.py)",
+      "Bash(python3 -m py_compile echo_agent/memory/store.py)",
+      "Bash(python3 -m py_compile echo_agent/memory/consolidator.py)",
+      "Bash(python3 -m py_compile echo_agent/agent/tools/base.py)",
+      "Bash(python3 -m py_compile echo_agent/agent/executors/base.py)",
+      "Bash(python3 -m py_compile echo_agent/agent/executors/remote.py)",
+      "Bash(python3 -m py_compile echo_agent/workspace/manager.py)",
+      "Bash(python3 -m py_compile echo_agent/tasks/models.py)",
+      "Bash(python3 -m py_compile echo_agent/tasks/manager.py)",
+      "Bash(python3 -m py_compile echo_agent/models/provider.py)",
+      "Bash(python3 -m py_compile echo_agent/models/router.py)",
+      "Bash(python3 -m py_compile echo_agent/models/inference.py)",
+      "Bash(python3 -m py_compile echo_agent/observability/monitor.py)",
+      "Bash(python3 -m py_compile echo_agent/storage/backend.py)",
+      "Bash(python *)",
+      "Bash(grep -E \"\\\\.\\(py|md|yaml|yml|json|txt\\)$\")",
+      "Bash(grep -E \"\\\\.py$\")",
+      "Bash(grep -E '\\\\.\\(py|ts|js|json|yml|yaml|md|sh\\)$')",
+      "Bash(grep -E '\\\\.py$')",
+      "Bash(awk '{print $NF}')",
+      "Bash(xargs -I {} basename {})",
+      "Bash(xargs basename *)",
+      "Bash(python3 skills/development/skill-creator/scripts/quick_validate.py skills/productivity/weather)",
+      "Bash(python3 skills/development/skill-creator/scripts/quick_validate.py skills/productivity/summarize)",
+      "Bash(python3 skills/development/skill-creator/scripts/quick_validate.py skills/development/plan)",
+      "Bash(python3 skills/development/skill-creator/scripts/quick_validate.py skills/research/arxiv)",
+      "Bash(python3 *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(git checkout *)"
+    ]
+  }
+}
