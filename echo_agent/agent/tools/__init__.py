@@ -26,6 +26,8 @@ def discover_tools(
     session_manager: Any = None,
     skill_store: Any = None,
     memory_store: Any = None,
+    task_manager: Any = None,
+    workflow_engine: Any = None,
 ) -> list[Tool]:
     ws = str(workspace)
     restrict = config.tools.restrict_to_workspace
@@ -37,6 +39,8 @@ def discover_tools(
     tools.append(EditFileTool(ws, restrict))
     tools.append(ListDirTool(ws, restrict))
     tools.append(WebFetchTool(proxy=config.tools.web.proxy))
+    if config.tools.web.search_api_key:
+        tools.append(WebSearchTool(api_key=config.tools.web.search_api_key, proxy=config.tools.web.proxy))
     tools.append(MessageTool(publish_fn=bus.publish_outbound))
 
     from echo_agent.agent.tools.search import SearchFilesTool
@@ -47,6 +51,14 @@ def discover_tools(
 
     from echo_agent.agent.tools.todo import TodoTool
     tools.append(TodoTool(store_dir=workspace / "data" / "todos"))
+
+    if task_manager:
+        from echo_agent.agent.tools.task import TaskTool
+        tools.append(TaskTool(manager=task_manager))
+
+    if workflow_engine:
+        from echo_agent.agent.tools.workflow import WorkflowTool
+        tools.append(WorkflowTool(engine=workflow_engine))
 
     from echo_agent.agent.tools.clarify import ClarifyTool
     tools.append(ClarifyTool(bus=bus))
@@ -82,9 +94,11 @@ def discover_tools(
 
     if skill_store:
         from echo_agent.agent.tools.skills import SkillsListTool, SkillViewTool, SkillManageTool
+        from echo_agent.agent.tools.skill_install import SkillInstallTool
         tools.append(SkillsListTool(store=skill_store))
         tools.append(SkillViewTool(store=skill_store))
         tools.append(SkillManageTool(store=skill_store))
+        tools.append(SkillInstallTool(store=skill_store))
 
     if memory_store:
         from echo_agent.agent.tools.memory import MemoryTool

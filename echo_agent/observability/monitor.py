@@ -1,8 +1,7 @@
-"""Observability — full-chain logging, task views, and health checks.
+"""Observability — trace logging and health checks.
 
 Covers:
   - TraceLogger: input → context → tools → output → result chain
-  - TaskObserver: task state, steps, subtask tree, errors, retries, timing
   - HealthChecker: channel/worker/timer health, dead task cleanup, recovery
 """
 
@@ -87,69 +86,6 @@ class TraceLogger:
         return list(self._traces.keys())[-limit:]
 
 
-# ── Task Observer ────────────────────────────────────────────────────────────
-
-@dataclass
-class TaskView:
-    task_id: str
-    title: str
-    status: str
-    parent_id: str | None = None
-    subtasks: list[TaskView] = field(default_factory=list)
-    steps: list[str] = field(default_factory=list)
-    error: str = ""
-    retry_count: int = 0
-    started_at: str = ""
-    completed_at: str = ""
-    duration_ms: int = 0
-
-
-class TaskObserver:
-    """Provides task-level observability beyond chat logs."""
-
-    def __init__(self):
-        self._views: dict[str, TaskView] = {}
-        self._step_log: dict[str, list[str]] = {}
-
-    def register_task(self, task_id: str, title: str, parent_id: str | None = None) -> None:
-        view = TaskView(task_id=task_id, title=title, status="pending", parent_id=parent_id)
-        self._views[task_id] = view
-        if parent_id and parent_id in self._views:
-            self._views[parent_id].subtasks.append(view)
-
-    def update_status(self, task_id: str, status: str, error: str = "") -> None:
-        view = self._views.get(task_id)
-        if view:
-            view.status = status
-            view.error = error
-            if status == "running" and not view.started_at:
-                view.started_at = datetime.now().isoformat()
-            if status in ("success", "failed", "cancelled"):
-                view.completed_at = datetime.now().isoformat()
-
-    def add_step(self, task_id: str, step: str) -> None:
-        view = self._views.get(task_id)
-        if view:
-            view.steps.append(f"[{datetime.now().strftime('%H:%M:%S')}] {step}")
-
-    def record_retry(self, task_id: str) -> None:
-        view = self._views.get(task_id)
-        if view:
-            view.retry_count += 1
-
-    def get_view(self, task_id: str) -> TaskView | None:
-        return self._views.get(task_id)
-
-    def get_all_views(self) -> list[TaskView]:
-        return [v for v in self._views.values() if v.parent_id is None]
-
-    def get_summary(self) -> dict[str, int]:
-        statuses: dict[str, int] = {}
-        for v in self._views.values():
-            statuses[v.status] = statuses.get(v.status, 0) + 1
-        return statuses
-
-
 # ── Health Checker ───────────────────────────────────────────────────────────
 
 class ComponentHealth(str, Enum):
@@ -179,7 +115,12 @@ class HealthChecker:
         self._task: asyncio.Task | None = None
         self._recovery_handlers: dict[str, Callable[[], Awaitable[None]]] = {}
 
-    def register_check(self, name: str, check_fn: Callable[[], Awaitable[ComponentHealth]], recovery_fn: Callable[[], Awaitable[None]] | None = None) -> None:
+    def register_check(
+        self,
+        name: str,
+        check_fn: Callable[[], Awaitable[ComponentHealth]],
+        recovery_fn: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         self._checks[name] = check_fn
         self._components[name] = HealthStatus(component=name)
         if recovery_fn:
@@ -230,7 +171,14 @@ class HealthChecker:
                 overall = ComponentHealth.DEGRADED
         return {
             "overall": overall.value,
-            "components": {name: {"status": hs.status.value, "message": hs.message, "last_check": hs.last_check} for name, hs in self._components.items()},
+            "components": {
+                name: {
+                    "status": hs.status.value,
+                    "message": hs.message,
+                    "last_check": hs.last_check,
+                }
+                for name, hs in self._components.items()
+            },
         }
 
     async def _check_loop(self) -> None:

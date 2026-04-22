@@ -56,6 +56,15 @@ class SQLiteBackend(StorageBackend):
             );
             CREATE INDEX IF NOT EXISTS idx_tasks_workflow ON tasks(workflow_id);
             CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+            CREATE TABLE IF NOT EXISTS workflows (
+                id TEXT PRIMARY KEY,
+                name TEXT,
+                status TEXT NOT NULL,
+                data TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_workflows_status ON workflows(status);
             CREATE TABLE IF NOT EXISTS logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 trace_id TEXT NOT NULL,
@@ -128,6 +137,42 @@ class SQLiteBackend(StorageBackend):
         assert self._conn
         row = self._conn.execute("SELECT data FROM tasks WHERE id=?", (task_id,)).fetchone()
         return json.loads(row[0]) if row else None
+
+    async def list_tasks(self, workflow_id: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
+        assert self._conn
+        clauses: list[str] = []
+        params: list[str] = []
+        if workflow_id:
+            clauses.append("workflow_id=?")
+            params.append(workflow_id)
+        if status:
+            clauses.append("status=?")
+            params.append(status)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        rows = self._conn.execute(f"SELECT data FROM tasks{where} ORDER BY updated_at DESC", params).fetchall()
+        return [json.loads(r[0]) for r in rows]
+
+    async def store_workflow(self, workflow_id: str, data: dict[str, Any]) -> None:
+        assert self._conn
+        now = datetime.now().isoformat()
+        self._conn.execute(
+            "INSERT OR REPLACE INTO workflows (id, name, status, data, created_at, updated_at) VALUES (?, ?, ?, ?, COALESCE((SELECT created_at FROM workflows WHERE id=?), ?), ?)",
+            (workflow_id, data.get("name", ""), data.get("status", "pending"), json.dumps(data, ensure_ascii=False), workflow_id, now, now),
+        )
+        self._conn.commit()
+
+    async def load_workflow(self, workflow_id: str) -> dict[str, Any] | None:
+        assert self._conn
+        row = self._conn.execute("SELECT data FROM workflows WHERE id=?", (workflow_id,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    async def list_workflows(self, status: str | None = None) -> list[dict[str, Any]]:
+        assert self._conn
+        if status:
+            rows = self._conn.execute("SELECT data FROM workflows WHERE status=? ORDER BY updated_at DESC", (status,)).fetchall()
+        else:
+            rows = self._conn.execute("SELECT data FROM workflows ORDER BY updated_at DESC").fetchall()
+        return [json.loads(r[0]) for r in rows]
 
     async def store_log(self, trace_id: str, spans: list[dict[str, Any]]) -> None:
         assert self._conn

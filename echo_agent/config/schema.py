@@ -74,12 +74,24 @@ class WeChatChannelConfig(_Base):
     port: int = 8082
 
 
+class WeixinChannelConfig(_Base):
+    enabled: bool = False
+    account_id: str = ""
+    token: str = ""
+    base_url: str = "https://ilinkai.weixin.qq.com"
+    cdn_base_url: str = "https://novac2c.cdn.weixin.qq.com/c2c"
+    allow_from: list[str] = Field(default_factory=list)
+    dm_policy: str = "open"
+    data_dir: str = ""
+
+
 class QQBotChannelConfig(_Base):
     enabled: bool = False
     app_id: str = ""
     app_secret: str = ""
     allow_from: list[str] = Field(default_factory=list)
     sandbox: bool = False
+    markdown_support: bool = False
 
 
 class FeishuChannelConfig(_Base):
@@ -143,6 +155,7 @@ class ChannelsConfig(_Base):
     slack: SlackChannelConfig = Field(default_factory=SlackChannelConfig)
     whatsapp: WhatsAppChannelConfig = Field(default_factory=WhatsAppChannelConfig)
     wechat: WeChatChannelConfig = Field(default_factory=WeChatChannelConfig)
+    weixin: WeixinChannelConfig = Field(default_factory=WeixinChannelConfig)
     qqbot: QQBotChannelConfig = Field(default_factory=QQBotChannelConfig)
     feishu: FeishuChannelConfig = Field(default_factory=FeishuChannelConfig)
     dingtalk: DingTalkChannelConfig = Field(default_factory=DingTalkChannelConfig)
@@ -199,6 +212,7 @@ class WebToolConfig(_Base):
     enabled: bool = True
     proxy: str | None = None
     timeout_seconds: int = 30
+    search_api_key: str = ""
 
 
 class ImageGenConfig(_Base):
@@ -392,33 +406,6 @@ class SkillsConfig(_Base):
     external_dirs: list[str] = Field(default_factory=list)
 
 
-# ── Agent profile ────────────────────────────────────────────────────────────
-
-class AgentProfile(_Base):
-    id: str = "default"
-    name: str = "Echo"
-    role: str = "assistant"
-    model: str = ""
-    system_prompt: str = ""
-    max_iterations: int = 40
-    reasoning_effort: str = ""
-
-
-class RoutingConfig(_Base):
-    provider_cooldown_seconds: int = 120
-    max_provider_fallback_attempts: int = 3
-    health_persistence_enabled: bool = True
-
-
-class OrchestrationConfig(_Base):
-    enabled: bool = False
-    coordinator: AgentProfile = Field(default_factory=AgentProfile)
-    executors: dict[str, AgentProfile] = Field(default_factory=dict)
-    routing: RoutingConfig = Field(default_factory=RoutingConfig)
-    show_executor_progress: bool = False
-    show_route_decisions: bool = False
-
-
 # ── Root config ──────────────────────────────────────────────────────────────
 
 class Config(_Base):
@@ -433,7 +420,6 @@ class Config(_Base):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
-    orchestration: OrchestrationConfig = Field(default_factory=OrchestrationConfig)
     compression: CompressionConfig = Field(default_factory=CompressionConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
-    workspace: str = "."
+    workspace: str = "~/.echo-agent"

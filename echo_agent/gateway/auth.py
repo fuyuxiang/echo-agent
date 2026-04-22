@@ -83,8 +83,8 @@ class GatewayAuth:
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 self._approved[platform] = set(data)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to load approved list for {}: {}", platform, e)
 
     def _save_approved(self, platform: str) -> None:
         path = self._data_dir / f"{platform}_approved.json"
@@ -96,7 +96,8 @@ class GatewayAuth:
         if path.exists():
             try:
                 self._pending_codes = json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
+            except Exception as e:
+                logger.debug("Failed to load pending codes: {}", e)
                 self._pending_codes = {}
         now = time.time()
         expired = [k for k, v in self._pending_codes.items()

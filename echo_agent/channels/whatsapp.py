@@ -81,7 +81,8 @@ class WhatsAppChannel(BaseChannel):
     async def _webhook(self, request: web.Request) -> web.Response:
         try:
             data = await request.json()
-        except Exception:
+        except Exception as e:
+            logger.debug("Invalid JSON in WhatsApp webhook: {}", e)
             return web.json_response({"error": "invalid json"}, status=400)
 
         for entry in data.get("entry", []):

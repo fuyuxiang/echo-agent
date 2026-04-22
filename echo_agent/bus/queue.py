@@ -44,13 +44,28 @@ class MessageBus:
             logger.warning("No outbound handler for channel={}", event.channel)
             return
 
-        results = await asyncio.gather(
-            *(h(event) for h in handlers),
+        global_results = await asyncio.gather(
+            *(handler(event) for handler in self._global_outbound_handlers),
             return_exceptions=True,
         )
-        for i, result in enumerate(results):
+        for i, result in enumerate(global_results):
             if isinstance(result, Exception):
-                logger.error("Outbound handler {} failed: {}", i, result)
+                logger.error("Global outbound handler {} failed: {}", i, result)
+
+        if event.metadata.get("_drop"):
+            return
+
+        specific_handlers = list(self._outbound_handlers.get(event.channel, []))
+        if not specific_handlers:
+            return
+
+        specific_results = await asyncio.gather(
+            *(handler(event) for handler in specific_handlers),
+            return_exceptions=True,
+        )
+        for i, result in enumerate(specific_results):
+            if isinstance(result, Exception):
+                logger.error("Outbound handler {} for channel {} failed: {}", i, event.channel, result)
 
     def subscribe_inbound(self, handler: InboundHandler) -> None:
         self._inbound_subscribers.append(handler)

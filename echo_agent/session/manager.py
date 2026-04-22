@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 from dataclasses import dataclass, field
@@ -58,18 +59,19 @@ class Session:
 
 
 class SessionManager:
-    """Manages conversation sessions with JSONL persistence.
+    """Manages conversation sessions with JSONL or SQLite persistence.
 
     Session keys follow the pattern `channel:chat_id` to ensure isolation
     across private chats, group chats, different channels, and cron jobs.
     """
 
-    def __init__(self, sessions_dir: Path, expiry_hours: int = 72, archive_hours: int = 168):
+    def __init__(self, sessions_dir: Path, expiry_hours: int = 72, archive_hours: int = 168, storage: Any = None):
         self.sessions_dir = sessions_dir
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self._expiry_delta = timedelta(hours=expiry_hours)
         self._archive_delta = timedelta(hours=archive_hours)
         self._cache: dict[str, Session] = {}
+        self._storage = storage
 
     def _session_path(self, key: str) -> Path:
         safe = key.replace(":", "_").replace("/", "_")
@@ -90,6 +92,29 @@ class SessionManager:
         return session
 
     def _load(self, key: str) -> Session | None:
+        if self._storage:
+            return self._load_from_storage(key)
+        return self._load_from_file(key)
+
+    def _load_from_storage(self, key: str) -> Session | None:
+        try:
+            data = asyncio.get_event_loop().run_until_complete(self._storage.load_session(key))
+            if not data:
+                return None
+            return Session(
+                key=key,
+                messages=data.get("messages", []),
+                created_at=datetime.fromisoformat(data["created_at"]) if data.get("created_at") else datetime.now(),
+                updated_at=datetime.fromisoformat(data["updated_at"]) if data.get("updated_at") else datetime.now(),
+                metadata=data.get("metadata", {}),
+                last_consolidated=data.get("last_consolidated", 0),
+                status=data.get("status", "active"),
+            )
+        except Exception as e:
+            logger.warning("Failed to load session {} from storage: {}", key, e)
+            return None
+
+    def _load_from_file(self, key: str) -> Session | None:
         path = self._session_path(key)
         if not path.exists():
             return None
@@ -97,6 +122,7 @@ class SessionManager:
             messages: list[dict[str, Any]] = []
             metadata: dict[str, Any] = {}
             created_at = None
+            updated_at = None
             last_consolidated = 0
             status = "active"
 
@@ -109,6 +135,7 @@ class SessionManager:
                     if data.get("_type") == "metadata":
                         metadata = data.get("metadata", {})
                         created_at = datetime.fromisoformat(data["created_at"]) if data.get("created_at") else None
+                        updated_at = datetime.fromisoformat(data["updated_at"]) if data.get("updated_at") else None
                         last_consolidated = data.get("last_consolidated", 0)
                         status = data.get("status", "active")
                     else:
@@ -118,6 +145,7 @@ class SessionManager:
                 key=key,
                 messages=messages,
                 created_at=created_at or datetime.now(),
+                updated_at=updated_at or datetime.now(),
                 metadata=metadata,
                 last_consolidated=last_consolidated,
                 status=status,
@@ -127,6 +155,30 @@ class SessionManager:
             return None
 
     def save(self, session: Session) -> None:
+        self._cache[session.key] = session
+        if self._storage:
+            self._save_to_storage(session)
+        else:
+            self._save_to_file(session)
+
+    def _save_to_storage(self, session: Session) -> None:
+        data = {
+            "messages": session.messages,
+            "created_at": session.created_at.isoformat(),
+            "updated_at": session.updated_at.isoformat(),
+            "metadata": session.metadata,
+            "last_consolidated": session.last_consolidated,
+            "status": session.status,
+        }
+        try:
+            asyncio.get_event_loop().run_until_complete(
+                self._storage.store_session(session.key, data)
+            )
+        except Exception as e:
+            logger.warning("Failed to save session {} to storage, falling back to file: {}", session.key, e)
+            self._save_to_file(session)
+
+    def _save_to_file(self, session: Session) -> None:
         path = self._session_path(session.key)
         with open(path, "w", encoding="utf-8") as f:
             meta = {
@@ -141,7 +193,6 @@ class SessionManager:
             f.write(json.dumps(meta, ensure_ascii=False) + "\n")
             for msg in session.messages:
                 f.write(json.dumps(msg, ensure_ascii=False) + "\n")
-        self._cache[session.key] = session
 
     def expire_session(self, key: str) -> None:
         session = self._cache.get(key)
@@ -195,7 +246,8 @@ class SessionManager:
                 elif status == "expired" and (now - updated) > self._archive_delta:
                     self.archive_session(key)
                     count += 1
-            except Exception:
+            except Exception as e:
+                logger.debug("Error during session cleanup for {}: {}", key, e)
                 continue
         return count
 
@@ -215,7 +267,8 @@ class SessionManager:
                         "created_at": data.get("created_at"),
                         "updated_at": data.get("updated_at"),
                     })
-            except Exception:
+            except Exception as e:
+                logger.debug("Failed to read session file {}: {}", path.name, e)
                 continue
         return sorted(sessions, key=lambda x: x.get("updated_at", ""), reverse=True)
 

@@ -23,7 +23,6 @@ poetry.lock
 bridge/node_modules/
 botpy.log
 .DS_Store
-.claude/
 
 # Local runtime state and generated workspace data
 /runtime/cron/jobs.json

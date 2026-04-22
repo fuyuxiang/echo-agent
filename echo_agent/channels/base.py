@@ -50,6 +50,40 @@ class BaseChannel(ABC):
             return True
         return str(sender_id) in allow_list
 
+    def _build_event(
+        self,
+        sender_id: str,
+        chat_id: str,
+        text: str,
+        media: list[dict[str, str]] | None = None,
+        metadata: dict[str, Any] | None = None,
+        session_key: str | None = None,
+        reply_to_id: str | None = None,
+        thread_id: str | None = None,
+    ) -> InboundEvent:
+        if not self.is_allowed(sender_id):
+            logger.warning("Access denied for sender {} on channel {}", sender_id, self.name)
+            raise PermissionError(f"sender {sender_id} is not allowed on channel {self.name}")
+
+        content_blocks = [ContentBlock(type=ContentType.TEXT, text=text)]
+        for item in (media or []):
+            content_blocks.append(ContentBlock(
+                type=ContentType(item.get("type", "file")),
+                url=item.get("url", ""),
+                mime_type=item.get("mime_type", ""),
+            ))
+
+        return InboundEvent(
+            channel=self.name,
+            sender_id=str(sender_id),
+            chat_id=str(chat_id),
+            content=content_blocks,
+            reply_to_id=reply_to_id,
+            thread_id=thread_id,
+            session_key_override=session_key,
+            metadata=metadata or {},
+        )
+
     async def _handle_message(
         self,
         sender_id: str,
@@ -60,30 +94,22 @@ class BaseChannel(ABC):
         session_key: str | None = None,
         reply_to_id: str | None = None,
         thread_id: str | None = None,
-    ) -> None:
-        if not self.is_allowed(sender_id):
-            logger.warning("Access denied for sender {} on channel {}", sender_id, self.name)
-            return
-
-        content_blocks = [ContentBlock(type=ContentType.TEXT, text=text)]
-        for item in (media or []):
-            content_blocks.append(ContentBlock(
-                type=ContentType(item.get("type", "file")),
-                url=item.get("url", ""),
-                mime_type=item.get("mime_type", ""),
-            ))
-
-        event = InboundEvent(
-            channel=self.name,
-            sender_id=str(sender_id),
-            chat_id=str(chat_id),
-            content=content_blocks,
-            reply_to_id=reply_to_id,
-            thread_id=thread_id,
-            session_key_override=session_key,
-            metadata=metadata or {},
-        )
+    ) -> InboundEvent | None:
+        try:
+            event = self._build_event(
+                sender_id=sender_id,
+                chat_id=chat_id,
+                text=text,
+                media=media,
+                metadata=metadata,
+                session_key=session_key,
+                reply_to_id=reply_to_id,
+                thread_id=thread_id,
+            )
+        except PermissionError:
+            return None
         await self.bus.publish_inbound(event)
+        return event
 
     @property
     def is_running(self) -> bool:

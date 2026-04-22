@@ -156,11 +156,27 @@ class ModelRouter:
         )
 
     def _matches_task(self, route: ModelRouteConfig, task_type: str) -> bool:
+        if not task_type:
+            return False
+        if not route.provider:
+            return False
+        provider_lower = route.provider.lower()
+        task_lower = task_type.lower()
+        if task_lower == provider_lower:
+            return True
+        if task_lower in route.model.lower():
+            return True
         return False
 
     def _find_healthy_provider(self, model: str) -> LLMProvider | None:
         for name, provider in self._providers.items():
             health = self._health.get(name)
-            if health and health.is_available:
+            if health and not health.is_available:
+                continue
+            if hasattr(provider, "get_default_model"):
+                default = provider.get_default_model()
+                if model and default and model.lower().startswith(default.split("/")[0].lower()):
+                    return provider
+            if hasattr(provider, "api_base") or hasattr(provider, "api_key"):
                 return provider
-        return None
+        return next(iter(self._providers.values()), None)

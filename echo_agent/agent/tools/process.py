@@ -6,6 +6,8 @@ import asyncio
 import time
 from typing import Any
 
+from loguru import logger
+
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolPermission, ToolResult
 
 _PROCESSES: dict[str, dict[str, Any]] = {}
@@ -118,5 +120,5 @@ class ProcessTool(Tool):
                 info["stdout_buf"] += chunk
                 if len(info["stdout_buf"]) > 100_000:
                     info["stdout_buf"] = info["stdout_buf"][-50_000:]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Error reading process stdout: {}", e)
