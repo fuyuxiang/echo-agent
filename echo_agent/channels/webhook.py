@@ -73,27 +73,31 @@ class WebhookChannel(BaseChannel):
         if not text:
             return web.json_response({"error": "missing text"}, status=400)
 
-        event_id = data.get("event_id", "")
         wait = data.get("wait", False)
+
+        try:
+            event = self._build_event(
+                sender_id=sender_id,
+                chat_id=chat_id,
+                text=text,
+                metadata=data.get("metadata", {}),
+            )
+        except PermissionError:
+            return web.json_response({"error": "forbidden"}, status=403)
 
         future: asyncio.Future[str] | None = None
         if wait:
             future = asyncio.get_event_loop().create_future()
-            self._pending_responses[event_id] = future
+            self._pending_responses[event.event_id] = future
 
-        await self._handle_message(
-            sender_id=sender_id,
-            chat_id=chat_id,
-            text=text,
-            metadata=data.get("metadata", {}),
-        )
+        await self.bus.publish_inbound(event)
 
         if future:
             try:
                 result = await asyncio.wait_for(future, timeout=120)
                 return web.json_response({"response": result})
             except asyncio.TimeoutError:
-                self._pending_responses.pop(event_id, None)
+                self._pending_responses.pop(event.event_id, None)
                 return web.json_response({"error": "timeout"}, status=504)
 
         return web.json_response({"status": "accepted"})

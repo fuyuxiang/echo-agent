@@ -97,8 +97,8 @@ class MCPOAuthClient:
                 async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     if resp.status == 200:
                         return await resp.json()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to discover OAuth metadata: {}", e)
         return {}
 
     async def _register_client(self, endpoint: str) -> str:

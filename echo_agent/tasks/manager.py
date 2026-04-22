@@ -1,111 +1,108 @@
-"""Task state machine and task manager."""
+"""Task manager — CRUD and state-machine transitions backed by SQLite."""
 
 from __future__ import annotations
 
-import asyncio
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from loguru import logger
 
-from echo_agent.tasks.models import TaskRecord, TaskStatus
-
-
-class TaskStateMachine:
-    """Manages state transitions for a single task."""
-
-    _VALID_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
-        TaskStatus.PENDING: {TaskStatus.QUEUED, TaskStatus.CANCELLED},
-        TaskStatus.QUEUED: {TaskStatus.RUNNING, TaskStatus.CANCELLED},
-        TaskStatus.RUNNING: {TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.SUSPENDED},
-        TaskStatus.FAILED: {TaskStatus.RETRYING, TaskStatus.CANCELLED},
-        TaskStatus.RETRYING: {TaskStatus.RUNNING, TaskStatus.CANCELLED},
-        TaskStatus.SUSPENDED: {TaskStatus.RUNNING, TaskStatus.CANCELLED},
-        TaskStatus.SUCCESS: set(),
-        TaskStatus.CANCELLED: set(),
-    }
-
-    @staticmethod
-    def transition(task: TaskRecord, new_status: TaskStatus) -> bool:
-        allowed = TaskStateMachine._VALID_TRANSITIONS.get(task.status, set())
-        if new_status not in allowed:
-            logger.warning("Invalid transition {} -> {} for task {}", task.status, new_status, task.id)
-            return False
-        task.status = new_status
-        task.updated_at = __import__("datetime").datetime.now().isoformat()
-        return True
+from echo_agent.tasks.models import (
+    TaskRecord,
+    TaskStatus,
+    VALID_TASK_TRANSITIONS,
+    TERMINAL_TASK_STATUSES,
+    _now,
+)
 
 
 class TaskManager:
-    """Manages a collection of tasks with dependency resolution and execution."""
+    """Manages task lifecycle with enforced state transitions."""
 
-    def __init__(self):
-        self._tasks: dict[str, TaskRecord] = {}
-        self._listeners: list[Callable[[TaskRecord, TaskStatus], Awaitable[None]]] = []
+    def __init__(self, storage: Any):
+        self._storage = storage
 
-    def add_task(self, task: TaskRecord) -> None:
-        self._tasks[task.id] = task
+    async def create(
+        self,
+        title: str,
+        description: str = "",
+        workflow_id: str = "",
+        parent_task_id: str = "",
+        priority: int = 5,
+        max_retries: int = 3,
+        metadata: dict[str, Any] | None = None,
+    ) -> TaskRecord:
+        task = TaskRecord(
+            title=title, description=description,
+            workflow_id=workflow_id, parent_task_id=parent_task_id,
+            priority=priority, max_retries=max_retries,
+            metadata=metadata or {},
+        )
+        await self._storage.store_task(task.id, task.to_dict())
+        logger.info("Task created: {} '{}'", task.id, title)
+        return task
 
-    def get_task(self, task_id: str) -> TaskRecord | None:
-        return self._tasks.get(task_id)
+    async def get(self, task_id: str) -> TaskRecord | None:
+        data = await self._storage.load_task(task_id)
+        if not data:
+            return None
+        return TaskRecord.from_dict(data)
 
-    def remove_task(self, task_id: str) -> None:
-        self._tasks.pop(task_id, None)
-
-    def list_tasks(self, status: TaskStatus | None = None, workflow_id: str | None = None) -> list[TaskRecord]:
-        tasks = list(self._tasks.values())
-        if status:
-            tasks = [t for t in tasks if t.status == status]
-        if workflow_id:
-            tasks = [t for t in tasks if t.workflow_id == workflow_id]
-        return sorted(tasks, key=lambda t: (t.priority, t.created_at))
-
-    def get_ready_tasks(self) -> list[TaskRecord]:
-        completed = {t.id for t in self._tasks.values() if t.status == TaskStatus.SUCCESS}
-        return [
-            t for t in self._tasks.values()
-            if t.status in (TaskStatus.PENDING, TaskStatus.QUEUED) and t.can_start(completed)
-        ]
-
-    async def transition(self, task_id: str, new_status: TaskStatus) -> bool:
-        task = self._tasks.get(task_id)
+    async def transition(self, task_id: str, new_status: TaskStatus, **kwargs: Any) -> TaskRecord:
+        task = await self.get(task_id)
         if not task:
-            return False
-        old_status = task.status
-        if not TaskStateMachine.transition(task, new_status):
-            return False
-        for listener in self._listeners:
-            try:
-                await listener(task, old_status)
-            except Exception as e:
-                logger.error("Task listener error: {}", e)
-        return True
+            raise ValueError(f"Task '{task_id}' not found")
+        allowed = VALID_TASK_TRANSITIONS.get(task.status, set())
+        if new_status not in allowed:
+            raise ValueError(f"Invalid transition: {task.status.value} → {new_status.value}")
+        task.status = new_status
+        task.updated_at = _now()
+        if new_status == TaskStatus.RUNNING and not task.started_at:
+            task.started_at = task.updated_at
+        if new_status in TERMINAL_TASK_STATUSES:
+            task.completed_at = task.updated_at
+        if "result" in kwargs:
+            task.result = kwargs["result"]
+        if "error" in kwargs:
+            task.error = kwargs["error"]
+        await self._storage.store_task(task.id, task.to_dict())
+        logger.info("Task {} → {}", task_id, new_status.value)
+        return task
 
-    async def retry_task(self, task_id: str) -> bool:
-        task = self._tasks.get(task_id)
+    async def retry(self, task_id: str) -> TaskRecord:
+        task = await self.get(task_id)
         if not task:
-            return False
-        if task.attempt >= task.max_retries:
-            logger.warning("Task {} exceeded max retries ({})", task_id, task.max_retries)
-            return False
-        task.attempt += 1
-        await self.transition(task_id, TaskStatus.RETRYING)
-        await self.transition(task_id, TaskStatus.RUNNING)
-        return True
+            raise ValueError(f"Task '{task_id}' not found")
+        if task.status != TaskStatus.FAILED:
+            raise ValueError(f"Can only retry failed tasks, current: {task.status.value}")
+        if task.retry_count >= task.max_retries:
+            raise ValueError(f"Max retries ({task.max_retries}) exceeded")
+        task.retry_count += 1
+        task.error = ""
+        task.completed_at = ""
+        task.status = TaskStatus.QUEUED
+        task.updated_at = _now()
+        await self._storage.store_task(task.id, task.to_dict())
+        logger.info("Task {} retried (attempt {})", task_id, task.retry_count)
+        return task
 
-    def on_transition(self, listener: Callable[[TaskRecord, TaskStatus], Awaitable[None]]) -> None:
-        self._listeners.append(listener)
+    async def cancel(self, task_id: str) -> TaskRecord:
+        return await self.transition(task_id, TaskStatus.CANCELLED)
 
-    def add_subtask(self, parent_id: str, subtask: TaskRecord) -> None:
-        parent = self._tasks.get(parent_id)
-        if parent:
-            subtask.parent_id = parent_id
-            subtask.workflow_id = parent.workflow_id
-            parent.subtask_ids.append(subtask.id)
-        self._tasks[subtask.id] = subtask
+    async def update(self, task_id: str, **fields: Any) -> TaskRecord:
+        task = await self.get(task_id)
+        if not task:
+            raise ValueError(f"Task '{task_id}' not found")
+        for key in ("title", "description", "priority", "metadata"):
+            if key in fields:
+                setattr(task, key, fields[key])
+        task.updated_at = _now()
+        await self._storage.store_task(task.id, task.to_dict())
+        return task
 
-    def get_subtasks(self, parent_id: str) -> list[TaskRecord]:
-        return [t for t in self._tasks.values() if t.parent_id == parent_id]
+    async def list_by_status(self, status: TaskStatus | None = None) -> list[TaskRecord]:
+        rows = await self._storage.list_tasks(status=status.value if status else None)
+        return [TaskRecord.from_dict(r) for r in rows]
 
-    def is_workflow_complete(self, workflow_id: str) -> bool:
-        tasks = self.list_tasks(workflow_id=workflow_id)
-        return all(t.status in (TaskStatus.SUCCESS, TaskStatus.CANCELLED) for t in tasks)
+    async def list_by_workflow(self, workflow_id: str) -> list[TaskRecord]:
+        rows = await self._storage.list_tasks(workflow_id=workflow_id)
+        return [TaskRecord.from_dict(r) for r in rows]

@@ -66,6 +66,26 @@ class MemoryTool(Tool):
     def __init__(self, store: MemoryStore):
         self._store = store
 
+    def _resolve_entry(self, key: str, old_text: str, mem_type: MemoryType) -> tuple[MemoryEntry | None, str | None]:
+        if key:
+            entry = self._store.find_by_key(key, mem_type)
+            if entry:
+                return entry, None
+
+        if old_text:
+            matches = self._store.find_by_content_matches(old_text, mem_type=mem_type, limit=6)
+            if not matches:
+                return None, None
+            if len(matches) > 1:
+                previews = ", ".join(entry.key or entry.content[:30] for entry in matches[:5])
+                return None, (
+                    f"Multiple matching memories found for old_text='{old_text}'. "
+                    f"Be more specific. Matches: {previews}"
+                )
+            return matches[0], None
+
+        return None, None
+
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         action = params.get("action", "")
         target = params.get("target", "user")
@@ -96,7 +116,10 @@ class MemoryTool(Tool):
             type=mem_type, key=key, content=content,
             tags=tags, importance=importance,
         )
-        result = self._store.add(entry)
+        try:
+            result = self._store.add(entry)
+        except ValueError as exc:
+            return ToolResult(success=False, error=str(exc))
         return ToolResult(success=True, output=f"Memory saved: [{result.type.value}] {result.key}")
 
     def _replace(self, params: dict[str, Any], mem_type: MemoryType) -> ToolResult:
@@ -106,26 +129,25 @@ class MemoryTool(Tool):
         if not content:
             return ToolResult(success=False, error="content is required for replace")
 
-        entry = None
-        if key:
-            entry = self._store.find_by_key(key, mem_type)
-        if not entry and old_text:
-            entry = self._store.find_by_content(old_text, mem_type)
+        entry, resolve_error = self._resolve_entry(key, old_text, mem_type)
+        if resolve_error:
+            return ToolResult(success=False, error=resolve_error)
         if not entry:
             return ToolResult(success=False, error=f"No matching memory found for key='{key}' old_text='{old_text}'")
 
-        self._store.update(entry.id, content=content)
+        try:
+            self._store.update(entry.id, content=content)
+        except ValueError as exc:
+            return ToolResult(success=False, error=str(exc))
         return ToolResult(success=True, output=f"Memory updated: [{entry.type.value}] {entry.key}")
 
     def _remove(self, params: dict[str, Any], mem_type: MemoryType) -> ToolResult:
         key = params.get("key", "")
         old_text = params.get("old_text", "")
 
-        entry = None
-        if key:
-            entry = self._store.find_by_key(key, mem_type)
-        if not entry and old_text:
-            entry = self._store.find_by_content(old_text, mem_type)
+        entry, resolve_error = self._resolve_entry(key, old_text, mem_type)
+        if resolve_error:
+            return ToolResult(success=False, error=resolve_error)
         if not entry:
             return ToolResult(success=False, error=f"No matching memory found for key='{key}' old_text='{old_text}'")
 

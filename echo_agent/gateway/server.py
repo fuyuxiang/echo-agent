@@ -56,6 +56,7 @@ class GatewayServer:
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
         self._ws_clients: dict[str, web.WebSocketResponse] = {}
+        self._pending_http: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._running = False
 
         data_dir = workspace / "data"
@@ -70,6 +71,7 @@ class GatewayServer:
         self.editor = ProgressiveEditor(bus)
         self.session_policy = SessionResetPolicy(config.session_policy)
         self.health = GatewayHealthProvider(self)
+        self._bus.subscribe_outbound_global(self._handle_outbound)
 
         for name, plat_cfg in config.platforms.items():
             if plat_cfg.rate_limit_rpm:
@@ -110,6 +112,11 @@ class GatewayServer:
         self._running = False
         await self.hooks.emit("gateway_stop")
 
+        for future in self._pending_http.values():
+            if not future.done():
+                future.cancel()
+        self._pending_http.clear()
+
         for ws_id, ws in list(self._ws_clients.items()):
             await ws.close(code=aiohttp.WSCloseCode.GOING_AWAY, message=b"shutdown")
         self._ws_clients.clear()
@@ -129,6 +136,7 @@ class GatewayServer:
         app = self._app
         assert app is not None
 
+        app.router.add_get("/", self._handle_playground)
         app.router.add_post(f"{prefix}/message", self._handle_message)
         app.router.add_get(f"{prefix}/health", self._handle_health)
         app.router.add_get(f"{prefix}/sessions", self._handle_list_sessions)
@@ -142,6 +150,29 @@ class GatewayServer:
 
     PLACEHOLDER_CONTINUE = "<!-- more -->"
 
+    def _playground_path(self) -> Path:
+        return Path(__file__).resolve().parent / "static" / "index.html"
+
+    def _build_outbound_payload(self, event: OutboundEvent) -> dict[str, Any]:
+        return {
+            "type": "message",
+            "event_id": event.event_id,
+            "reply_to_id": event.reply_to_id,
+            "channel": event.channel,
+            "chat_id": event.chat_id,
+            "text": event.text,
+            "is_final": event.is_final,
+            "message_kind": event.message_kind,
+            "edit_message_id": event.edit_message_id,
+            "metadata": event.metadata,
+        }
+
+    async def _handle_playground(self, request: web.Request) -> web.Response:
+        path = self._playground_path()
+        if path.exists():
+            return web.FileResponse(path)
+        return web.Response(text="Gateway playground not found.", status=404)
+
     async def _handle_message(self, request: web.Request) -> web.Response:
         try:
             body = await request.json()
@@ -153,6 +184,8 @@ class GatewayServer:
         chat_id = body.get("chat_id", user_id)
         text = body.get("text", "")
         media_urls = body.get("media_urls", [])
+        wait = bool(body.get("wait", False))
+        timeout_seconds = max(1, min(int(body.get("timeout_seconds", 120)), 300))
 
         if not text and not media_urls:
             return web.json_response({"error": "text or media_urls required"}, status=400)
@@ -204,11 +237,38 @@ class GatewayServer:
                     "user_id": user_id,
                 },
             )
+            future: asyncio.Future[dict[str, Any]] | None = None
+            if wait:
+                future = asyncio.get_event_loop().create_future()
+                self._pending_http[event.event_id] = future
+
             await self._bus.publish_inbound(event)
             await self.hooks.emit(
                 "message_received",
                 platform=platform, user_id=user_id, chat_id=chat_id,
             )
+
+            if future:
+                try:
+                    payload = await asyncio.wait_for(future, timeout=timeout_seconds)
+                except asyncio.TimeoutError:
+                    self._pending_http.pop(event.event_id, None)
+                    return web.json_response(
+                        {
+                            "error": "timeout",
+                            "event_id": event.event_id,
+                            "session_key": session_key,
+                        },
+                        status=504,
+                    )
+                return web.json_response(
+                    {
+                        "status": "completed",
+                        "event_id": event.event_id,
+                        "session_key": session_key,
+                        "reply": payload,
+                    }
+                )
 
             return web.json_response({
                 "status": "accepted",
@@ -371,6 +431,24 @@ class GatewayServer:
 
         return ws
 
+    async def _handle_outbound(self, event: OutboundEvent) -> None:
+        if event.metadata.get("_drop"):
+            return
+        if not event.channel.startswith("gateway:"):
+            return
+
+        _, platform = event.channel.split(":", 1)
+        session_key = f"gateway:{platform}:{event.chat_id}"
+        payload = self._build_outbound_payload(event)
+
+        if event.reply_to_id:
+            future = self._pending_http.get(event.reply_to_id)
+            if future is not None and not future.done() and event.is_final:
+                future.set_result(payload)
+                self._pending_http.pop(event.reply_to_id, None)
+
+        await self.broadcast_to_ws(session_key, payload)
+
     async def broadcast_to_ws(self, session_key: str, data: dict[str, Any]) -> bool:
         ws = self._ws_clients.get(session_key)
         if ws is None or ws.closed:
@@ -378,5 +456,6 @@ class GatewayServer:
         try:
             await ws.send_json(data)
             return True
-        except Exception:
+        except Exception as e:
+            logger.warning("Failed to send WebSocket message: {}", e)
             return False

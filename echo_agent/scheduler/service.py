@@ -108,7 +108,8 @@ def _compute_next_run(job: ScheduledJob, now_ms: int) -> int | None:
             base = datetime.fromtimestamp(now_ms / 1000)
             cron = croniter(job.cron_expr, base)
             return int(cron.get_next(datetime).timestamp() * 1000)
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to compute next cron run: {}", e)
             return None
     return None
 
