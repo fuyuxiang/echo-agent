@@ -44,10 +44,12 @@ class MemoryConsolidator:
         memory_store: MemoryStore,
         llm_call: Callable[..., Awaitable[Any]],
         context_window_tokens: int = 65536,
+        consolidation_threshold: int = 50,
     ):
         self.store = memory_store
         self._llm_call = llm_call
         self.context_window_tokens = context_window_tokens
+        self._consolidation_threshold = consolidation_threshold
 
     async def consolidate_chunk(self, messages: list[dict[str, Any]]) -> bool:
         if not messages:
@@ -90,13 +92,16 @@ class MemoryConsolidator:
             logger.info("Memory consolidation complete: {} chars history, {} chars memory",
                         len(history_entry), len(memory_update))
             return True
+        except ValueError as e:
+            logger.warning("Memory consolidation rejected unsafe content: {}", e)
+            return False
         except Exception as e:
             logger.error("Memory consolidation failed: {}", e)
             return False
 
     def should_consolidate(self, session_message_count: int, last_consolidated: int) -> bool:
         unconsolidated = session_message_count - last_consolidated
-        return unconsolidated >= 50
+        return unconsolidated >= self._consolidation_threshold
 
     def pick_boundary(self, messages: list[dict[str, Any]], start: int, target_tokens: int) -> int | None:
         """Find a safe consolidation boundary (end of a user turn)."""

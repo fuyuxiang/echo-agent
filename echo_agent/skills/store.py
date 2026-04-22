@@ -128,7 +128,8 @@ class SkillStore:
             return None
         try:
             fm, _ = parse_frontmatter(skill_md.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to read skill metadata from {}: {}", skill_dir.name, e)
             return None
         name = fm.get("name", skill_dir.name)
         if not name:

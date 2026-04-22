@@ -22,6 +22,7 @@ from echo_agent.channels.telegram import TelegramChannel
 from echo_agent.channels.wechat import WeChatChannel
 from echo_agent.channels.wecom import WeComChannel
 from echo_agent.channels.webhook import WebhookChannel
+from echo_agent.channels.weixin import WeixinChannel
 from echo_agent.channels.whatsapp import WhatsAppChannel
 from echo_agent.config.schema import ChannelsConfig
 
@@ -34,6 +35,7 @@ _CHANNEL_REGISTRY: dict[str, type[BaseChannel]] = {
     "slack": SlackChannel,
     "whatsapp": WhatsAppChannel,
     "wechat": WeChatChannel,
+    "weixin": WeixinChannel,
     "qqbot": QQBotChannel,
     "feishu": FeishuChannel,
     "dingtalk": DingTalkChannel,
@@ -69,8 +71,10 @@ class ChannelManager:
         if event.metadata.get("_progress"):
             is_tool_hint = event.metadata.get("_tool_hint", False)
             if is_tool_hint and not self._send_tool_hints:
+                event.metadata["_drop"] = True
                 return
             if not is_tool_hint and not self._send_progress:
+                event.metadata["_drop"] = True
                 return
 
     async def start_all(self) -> None:

@@ -4,23 +4,40 @@ Two-layer design:
   - User memory: preferences, habits, long-term requirements
   - Environment memory: project background, tool docs, process rules, domain knowledge
 
-Supports: add / update / delete / conflict merge / keyword search /
-          scored multi-keyword search / importance decay / injection into reasoning.
+The implementation keeps the structured memory model used by Echo Agent, while
+adopting Hermes-style safety properties:
+  - per-target file locking to avoid stale concurrent writes
+  - atomic file replacement for durable persistence
+  - prompt-injection / exfiltration scanning before memory is accepted
+  - bounded snapshot rendering for system-prompt injection
 """
 
 from __future__ import annotations
 
 import json
 import math
+import os
 import re
+import tempfile
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from loguru import logger
+
+msvcrt = None
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+    try:
+        import msvcrt
+    except ImportError:
+        pass
 
 _STOP_WORDS = frozenset({
     "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
@@ -29,6 +46,76 @@ _STOP_WORDS = frozenset({
     "on", "with", "at", "by", "from", "as", "into", "about", "it", "its",
     "this", "that", "and", "or", "but", "not", "no", "if", "so", "than",
 })
+
+_MEMORY_THREAT_PATTERNS = [
+    (r"ignore\s+(previous|all|above|prior)\s+instructions", "prompt_injection"),
+    (r"you\s+are\s+now\s+", "role_hijack"),
+    (r"do\s+not\s+tell\s+the\s+user", "deception_hide"),
+    (r"system\s+prompt\s+override", "sys_prompt_override"),
+    (r"disregard\s+(your|all|any)\s+(instructions|rules|guidelines)", "disregard_rules"),
+    (r"act\s+as\s+(if|though)\s+you\s+(have\s+no|don't\s+have)\s+(restrictions|limits|rules)", "bypass_restrictions"),
+    (r"curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)", "exfil_curl"),
+    (r"wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)", "exfil_wget"),
+    (r"cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)", "read_secrets"),
+    (r"authorized_keys", "ssh_backdoor"),
+    (r"\$HOME/\.ssh|\~/\.ssh", "ssh_access"),
+    (r"\$HOME/\.echo-agent|\~/\.echo-agent", "agent_secret_path"),
+]
+
+_INVISIBLE_CHARS = {
+    "\u200b", "\u200c", "\u200d", "\u2060", "\ufeff",
+    "\u202a", "\u202b", "\u202c", "\u202d", "\u202e",
+}
+
+
+def _dedupe_keep_order(values: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+def _normalize_tags(tags: Iterable[str]) -> list[str]:
+    normalized = [tag.strip() for tag in tags if tag and tag.strip()]
+    return _dedupe_keep_order(normalized)
+
+
+def _scan_memory_content(content: str) -> str | None:
+    for char in _INVISIBLE_CHARS:
+        if char in content:
+            return (
+                f"Blocked: content contains invisible unicode character U+{ord(char):04X} "
+                "(possible injection)."
+            )
+
+    for pattern, threat_id in _MEMORY_THREAT_PATTERNS:
+        if re.search(pattern, content, re.IGNORECASE):
+            return (
+                f"Blocked: content matches threat pattern '{threat_id}'. "
+                "Memory entries are injected into prompts and must not contain "
+                "injection or exfiltration payloads."
+            )
+    return None
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=".mem_", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 class MemoryType(str, Enum):
@@ -72,7 +159,7 @@ class MemoryEntry:
             type=MemoryType(data.get("type", "user")),
             key=data.get("key", ""),
             content=data.get("content", ""),
-            tags=data.get("tags", []),
+            tags=_normalize_tags(data.get("tags", [])),
             source_session=data.get("source_session", ""),
             created_at=data.get("created_at", ""),
             updated_at=data.get("updated_at", ""),
@@ -98,9 +185,18 @@ class MemoryEntry:
 
 
 class MemoryStore:
-    """Persistent memory store with file-based storage, importance decay, and scored search."""
+    """Persistent memory store with file-based storage, safety checks, and scored search."""
 
-    def __init__(self, memory_dir: Path, max_user: int = 1000, max_env: int = 500, decay_half_life_days: float = 30.0):
+    def __init__(
+        self,
+        memory_dir: Path,
+        max_user: int = 1000,
+        max_env: int = 500,
+        decay_half_life_days: float = 30.0,
+        user_snapshot_char_limit: int = 1375,
+        env_snapshot_char_limit: int = 2200,
+        storage: Any = None,
+    ):
         self.memory_dir = memory_dir
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self._user_file = memory_dir / "user_memory.json"
@@ -110,123 +206,265 @@ class MemoryStore:
         self._max_user = max_user
         self._max_env = max_env
         self._decay_half_life = decay_half_life_days
+        self._user_snapshot_char_limit = user_snapshot_char_limit
+        self._env_snapshot_char_limit = env_snapshot_char_limit
         self._entries: dict[str, MemoryEntry] = {}
+        self._storage = storage
         self._load()
 
-    def _load(self) -> None:
-        for path, mem_type in [(self._user_file, MemoryType.USER), (self._env_file, MemoryType.ENVIRONMENT)]:
-            if not path.exists():
-                continue
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-                for item in data:
-                    entry = MemoryEntry.from_dict(item)
-                    entry.type = mem_type
-                    self._entries[entry.id] = entry
-            except Exception as e:
-                logger.warning("Failed to load memory from {}: {}", path, e)
+    @staticmethod
+    @contextmanager
+    def _file_lock(path: Path):
+        lock_path = path.with_suffix(path.suffix + ".lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def _save(self) -> None:
-        user = [e.to_dict() for e in self._entries.values() if e.type == MemoryType.USER]
-        env = [e.to_dict() for e in self._entries.values() if e.type == MemoryType.ENVIRONMENT]
-        self._user_file.write_text(json.dumps(user, ensure_ascii=False, indent=2), encoding="utf-8")
-        self._env_file.write_text(json.dumps(env, ensure_ascii=False, indent=2), encoding="utf-8")
+        if fcntl is None and msvcrt is None:
+            yield
+            return
+
+        if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
+            lock_path.write_text(" ", encoding="utf-8")
+
+        fd = open(lock_path, "r+" if msvcrt else "a+", encoding="utf-8")
+        try:
+            if fcntl:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            else:
+                fd.seek(0)
+                msvcrt.locking(fd.fileno(), msvcrt.LK_LOCK, 1)
+            yield
+        finally:
+            if fcntl:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            elif msvcrt:
+                try:
+                    fd.seek(0)
+                    msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
+                except (OSError, IOError):
+                    pass
+            fd.close()
+
+    def _path_for(self, mem_type: MemoryType) -> Path:
+        return self._user_file if mem_type == MemoryType.USER else self._env_file
+
+    def _typed_entries(self, mem_type: MemoryType) -> list[MemoryEntry]:
+        return [entry for entry in self._entries.values() if entry.type == mem_type]
+
+    def _load_type_from_disk(self, mem_type: MemoryType) -> list[MemoryEntry]:
+        path = self._path_for(mem_type)
+        if not path.exists():
+            return []
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("Failed to load memory from {}: {}", path, exc)
+            return []
+
+        entries: list[MemoryEntry] = []
+        seen_ids: set[str] = set()
+        for item in raw:
+            try:
+                entry = MemoryEntry.from_dict(item)
+            except Exception as exc:
+                logger.warning("Failed to parse memory entry from {}: {}", path, exc)
+                continue
+            entry.type = mem_type
+            if entry.id in seen_ids:
+                continue
+            seen_ids.add(entry.id)
+            entries.append(entry)
+        return entries
+
+    def _reload_type(self, mem_type: MemoryType) -> None:
+        for entry_id in [entry.id for entry in self._typed_entries(mem_type)]:
+            self._entries.pop(entry_id, None)
+        for entry in self._load_type_from_disk(mem_type):
+            self._entries[entry.id] = entry
+
+    def _save_type(self, mem_type: MemoryType) -> None:
+        entries = self._typed_entries(mem_type)
+        entries.sort(key=lambda entry: (entry.created_at or "", entry.updated_at or "", entry.id))
+        payload = [entry.to_dict() for entry in entries]
+        _atomic_write_text(
+            self._path_for(mem_type),
+            json.dumps(payload, ensure_ascii=False, indent=2),
+        )
+        if self._storage:
+            import asyncio
+            for entry in entries:
+                try:
+                    asyncio.get_event_loop().run_until_complete(
+                        self._storage.store_memory(entry.id, entry.to_dict())
+                    )
+                except Exception as e:
+                    logger.warning("Failed to sync memory {} to storage: {}", entry.id, e)
+
+    def _load(self) -> None:
+        self._reload_type(MemoryType.USER)
+        self._reload_type(MemoryType.ENVIRONMENT)
+
+    def _find_conflict(self, entry: MemoryEntry) -> MemoryEntry | None:
+        if not entry.key:
+            return None
+        for existing in self._typed_entries(entry.type):
+            if existing.key == entry.key:
+                return existing
+        return None
+
+    def _validate_content(self, content: str, *, field_name: str = "content") -> str:
+        normalized = content.strip()
+        if not normalized:
+            raise ValueError(f"{field_name} cannot be empty")
+        scan_error = _scan_memory_content(normalized)
+        if scan_error:
+            raise ValueError(scan_error)
+        return normalized
+
+    def _evict_oldest(self, mem_type: MemoryType) -> None:
+        typed = sorted(
+            self._typed_entries(mem_type),
+            key=lambda entry: (entry.effective_importance(self._decay_half_life), entry.updated_at or "", entry.id),
+        )
+        if typed:
+            self._entries.pop(typed[0].id, None)
+
+    def _merge_locked(self, existing_id: str, new_entry: MemoryEntry) -> MemoryEntry:
+        existing = self._entries[existing_id]
+        existing.content = self._validate_content(new_entry.content)
+        existing.tags = _normalize_tags([*existing.tags, *new_entry.tags])
+        existing.importance = max(existing.importance, new_entry.importance)
+        existing.updated_at = datetime.now().isoformat()
+        return existing
 
     # ── CRUD ─────────────────────────────────────────────────────────────────
 
     def add(self, entry: MemoryEntry) -> MemoryEntry:
-        existing = self._find_conflict(entry)
-        if existing:
-            return self.merge(existing.id, entry)
-        limit = self._max_user if entry.type == MemoryType.USER else self._max_env
-        count = sum(1 for e in self._entries.values() if e.type == entry.type)
-        if count >= limit:
-            self._evict_oldest(entry.type)
-        self._entries[entry.id] = entry
-        self._save()
-        return entry
+        entry.content = self._validate_content(entry.content)
+        entry.key = entry.key.strip()
+        entry.tags = _normalize_tags(entry.tags)
 
-    def update(self, entry_id: str, content: str | None = None, tags: list[str] | None = None) -> MemoryEntry | None:
+        path = self._path_for(entry.type)
+        with self._file_lock(path):
+            self._reload_type(entry.type)
+
+            duplicate = next(
+                (
+                    existing
+                    for existing in self._typed_entries(entry.type)
+                    if existing.key == entry.key and existing.content == entry.content
+                ),
+                None,
+            )
+            if duplicate:
+                return duplicate
+
+            existing = self._find_conflict(entry)
+            if existing:
+                merged = self._merge_locked(existing.id, entry)
+                self._save_type(entry.type)
+                return merged
+
+            limit = self._max_user if entry.type == MemoryType.USER else self._max_env
+            if len(self._typed_entries(entry.type)) >= limit:
+                self._evict_oldest(entry.type)
+
+            self._entries[entry.id] = entry
+            self._save_type(entry.type)
+            return entry
+
+    def update(
+        self,
+        entry_id: str,
+        content: str | None = None,
+        tags: list[str] | None = None,
+    ) -> MemoryEntry | None:
         entry = self._entries.get(entry_id)
         if not entry:
             return None
-        if content is not None:
-            entry.content = content
-        if tags is not None:
-            entry.tags = tags
-        entry.updated_at = datetime.now().isoformat()
-        self._save()
-        return entry
+
+        normalized_content = self._validate_content(content) if content is not None else None
+        normalized_tags = _normalize_tags(tags) if tags is not None else None
+
+        path = self._path_for(entry.type)
+        with self._file_lock(path):
+            self._reload_type(entry.type)
+            entry = self._entries.get(entry_id)
+            if not entry:
+                return None
+            if normalized_content is not None:
+                entry.content = normalized_content
+            if normalized_tags is not None:
+                entry.tags = normalized_tags
+            entry.updated_at = datetime.now().isoformat()
+            self._save_type(entry.type)
+            return entry
 
     def delete(self, entry_id: str) -> bool:
-        if entry_id in self._entries:
-            del self._entries[entry_id]
-            self._save()
+        entry = self._entries.get(entry_id)
+        if not entry:
+            return False
+
+        path = self._path_for(entry.type)
+        with self._file_lock(path):
+            self._reload_type(entry.type)
+            entry = self._entries.get(entry_id)
+            if not entry:
+                return False
+            self._entries.pop(entry_id, None)
+            self._save_type(entry.type)
             return True
-        return False
 
     def get(self, entry_id: str) -> MemoryEntry | None:
         return self._entries.get(entry_id)
 
     def list_all(self, mem_type: MemoryType | None = None) -> list[MemoryEntry]:
         entries = list(self._entries.values())
-        if mem_type:
-            entries = [e for e in entries if e.type == mem_type]
-        return sorted(entries, key=lambda e: e.updated_at, reverse=True)
-
-    # ── Conflict merge ───────────────────────────────────────────────────────
-
-    def _find_conflict(self, entry: MemoryEntry) -> MemoryEntry | None:
-        for existing in self._entries.values():
-            if existing.type == entry.type and existing.key == entry.key and entry.key:
-                return existing
-        return None
-
-    def merge(self, existing_id: str, new_entry: MemoryEntry) -> MemoryEntry:
-        existing = self._entries[existing_id]
-        existing.content = new_entry.content
-        existing.tags = list(set(existing.tags + new_entry.tags))
-        existing.importance = max(existing.importance, new_entry.importance)
-        existing.updated_at = datetime.now().isoformat()
-        self._save()
-        return existing
-
-    def _evict_oldest(self, mem_type: MemoryType) -> None:
-        typed = sorted(
-            (e for e in self._entries.values() if e.type == mem_type),
-            key=lambda e: (e.effective_importance(self._decay_half_life), e.updated_at),
-        )
-        if typed:
-            del self._entries[typed[0].id]
+        if mem_type is not None:
+            entries = [entry for entry in entries if entry.type == mem_type]
+        return sorted(entries, key=lambda entry: entry.updated_at or "", reverse=True)
 
     # ── Search ───────────────────────────────────────────────────────────────
 
     def search_keyword(self, query: str, mem_type: MemoryType | None = None, limit: int = 20) -> list[MemoryEntry]:
         pattern = re.compile(re.escape(query), re.IGNORECASE)
-        results = []
+        results: list[MemoryEntry] = []
         for entry in self._entries.values():
             if mem_type and entry.type != mem_type:
                 continue
-            if pattern.search(entry.content) or pattern.search(entry.key) or any(pattern.search(t) for t in entry.tags):
+            matched = (
+                pattern.search(entry.content)
+                or pattern.search(entry.key)
+                or any(pattern.search(tag) for tag in entry.tags)
+            )
+            if matched:
                 entry.touch()
                 results.append(entry)
-        results.sort(key=lambda e: e.effective_importance(self._decay_half_life), reverse=True)
-        if results:
-            self._save()
+        results.sort(key=lambda entry: entry.effective_importance(self._decay_half_life), reverse=True)
         return results[:limit]
 
-    def search_scored(self, query: str, mem_type: MemoryType | None = None, limit: int = 10) -> list[tuple[MemoryEntry, float]]:
+    def search_scored(
+        self,
+        query: str,
+        mem_type: MemoryType | None = None,
+        limit: int = 10,
+    ) -> list[tuple[MemoryEntry, float]]:
         """Multi-keyword scored search. Returns (entry, score) pairs sorted by score."""
-        words = [w.lower() for w in re.findall(r"\w+", query) if len(w) > 1 and w.lower() not in _STOP_WORDS]
+        words = [
+            word.lower() for word in re.findall(r"\w+", query)
+            if len(word) > 1 and word.lower() not in _STOP_WORDS
+        ]
         if not words:
-            return [(e, e.effective_importance(self._decay_half_life)) for e in self.search_keyword(query, mem_type, limit)]
+            return [
+                (entry, entry.effective_importance(self._decay_half_life))
+                for entry in self.search_keyword(query, mem_type, limit)
+            ]
 
         scored: list[tuple[MemoryEntry, float]] = []
         for entry in self._entries.values():
             if mem_type and entry.type != mem_type:
                 continue
             haystack = f"{entry.key} {entry.content} {' '.join(entry.tags)}".lower()
-            word_hits = sum(1 for w in words if w in haystack)
+            word_hits = sum(1 for word in words if word in haystack)
             if word_hits == 0:
                 continue
             coverage = word_hits / len(words)
@@ -235,67 +473,114 @@ class MemoryStore:
             entry.touch()
             scored.append((entry, score))
 
-        scored.sort(key=lambda x: x[1], reverse=True)
-        if scored:
-            self._save()
+        scored.sort(key=lambda item: item[1], reverse=True)
         return scored[:limit]
 
     def find_by_key(self, key: str, mem_type: MemoryType | None = None) -> MemoryEntry | None:
-        """Find an entry by exact key match."""
+        normalized_key = key.strip()
+        if not normalized_key:
+            return None
         for entry in self._entries.values():
-            if entry.key == key and (mem_type is None or entry.type == mem_type):
+            if entry.key == normalized_key and (mem_type is None or entry.type == mem_type):
                 return entry
         return None
 
     def find_by_content(self, substring: str, mem_type: MemoryType | None = None) -> MemoryEntry | None:
-        """Find first entry whose content contains the substring."""
+        matches = self.find_by_content_matches(substring, mem_type=mem_type, limit=1)
+        return matches[0] if matches else None
+
+    def find_by_content_matches(
+        self,
+        substring: str,
+        mem_type: MemoryType | None = None,
+        limit: int | None = 10,
+    ) -> list[MemoryEntry]:
+        normalized = substring.strip()
+        if not normalized:
+            return []
+        results: list[MemoryEntry] = []
         for entry in self._entries.values():
             if mem_type and entry.type != mem_type:
                 continue
-            if substring in entry.content:
-                return entry
-        return None
+            if normalized in entry.content or normalized in entry.key:
+                results.append(entry)
+                if limit is not None and len(results) >= limit:
+                    break
+        return results
 
     def search_by_time(
-        self, start: datetime | None = None, end: datetime | None = None, mem_type: MemoryType | None = None,
+        self,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        mem_type: MemoryType | None = None,
     ) -> list[MemoryEntry]:
-        results = []
+        results: list[MemoryEntry] = []
         for entry in self._entries.values():
             if mem_type and entry.type != mem_type:
                 continue
-            ts = datetime.fromisoformat(entry.updated_at)
+            try:
+                ts = datetime.fromisoformat(entry.updated_at)
+            except ValueError:
+                continue
             if start and ts < start:
                 continue
             if end and ts > end:
                 continue
             results.append(entry)
-        return sorted(results, key=lambda e: e.updated_at, reverse=True)
+        return sorted(results, key=lambda entry: entry.updated_at or "", reverse=True)
 
     # ── Context injection ────────────────────────────────────────────────────
 
-    def get_context(self, mem_type: MemoryType | None = None, max_entries: int = 50) -> str:
-        entries = self.list_all(mem_type)[:max_entries]
+    def get_context(
+        self,
+        mem_type: MemoryType | None = None,
+        max_entries: int = 50,
+        max_chars: int | None = None,
+    ) -> str:
+        entries = sorted(
+            self.list_all(mem_type)[:max_entries],
+            key=lambda entry: entry.effective_importance(self._decay_half_life),
+            reverse=True,
+        )
         if not entries:
             return ""
-        entries.sort(key=lambda e: e.effective_importance(self._decay_half_life), reverse=True)
-        lines = []
-        for e in entries:
-            tags = f" [{', '.join(e.tags)}]" if e.tags else ""
-            lines.append(f"- **{e.key}**{tags}: {e.content}")
+
+        lines: list[str] = []
+        used = 0
+        for entry in entries:
+            tags = f" [{', '.join(entry.tags)}]" if entry.tags else ""
+            line = f"- **{entry.key}**{tags}: {entry.content}"
+            delta = len(line) + (1 if lines else 0)
+            if max_chars is not None and used + delta > max_chars:
+                if not lines and max_chars > 3:
+                    truncated = line[: max_chars - 3].rstrip()
+                    if truncated:
+                        lines.append(truncated + "...")
+                break
+            lines.append(line)
+            used += delta
         return "\n".join(lines)
 
     def get_snapshot(self) -> str:
-        """Build a frozen memory snapshot for system prompt injection."""
+        """Build a bounded memory snapshot for system prompt injection."""
         parts: list[str] = []
         long_term = self.read_long_term()
         if long_term:
             parts.append(f"## Long-term Memory\n\n{long_term}")
 
-        user_ctx = self.get_context(MemoryType.USER, max_entries=30)
+        user_ctx = self.get_context(
+            MemoryType.USER,
+            max_entries=30,
+            max_chars=self._user_snapshot_char_limit,
+        )
         if user_ctx:
             parts.append(f"## User Memory\n\n{user_ctx}")
 
-        env_ctx = self.get_context(MemoryType.ENVIRONMENT, max_entries=30)
+        env_ctx = self.get_context(
+            MemoryType.ENVIRONMENT,
+            max_entries=30,
+            max_chars=self._env_snapshot_char_limit,
+        )
         if env_ctx:
             parts.append(f"## Environment Memory\n\n{env_ctx}")
 
@@ -309,11 +594,17 @@ class MemoryStore:
         return ""
 
     def write_long_term(self, content: str) -> None:
-        self._long_term_file.write_text(content, encoding="utf-8")
+        normalized = content.strip()
+        if normalized:
+            self._validate_content(normalized, field_name="memory_update")
+        with self._file_lock(self._long_term_file):
+            _atomic_write_text(self._long_term_file, normalized)
 
     def append_history(self, entry: str) -> None:
-        with open(self._history_file, "a", encoding="utf-8") as f:
-            f.write(entry.rstrip() + "\n\n")
+        with self._file_lock(self._history_file):
+            self._history_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._history_file, "a", encoding="utf-8") as handle:
+                handle.write(entry.rstrip() + "\n\n")
 
     def search_history(self, query: str, limit: int = 20) -> list[str]:
         if not self._history_file.exists():
@@ -321,4 +612,4 @@ class MemoryStore:
         content = self._history_file.read_text(encoding="utf-8")
         entries = content.split("\n\n")
         pattern = re.compile(re.escape(query), re.IGNORECASE)
-        return [e.strip() for e in entries if e.strip() and pattern.search(e)][:limit]
+        return [entry.strip() for entry in entries if entry.strip() and pattern.search(entry)][:limit]

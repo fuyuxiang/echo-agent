@@ -226,8 +226,8 @@ class ExperienceStore:
             data = json.loads(self._path.read_text(encoding="utf-8"))
             for item in data:
                 self._entries.append(ExperienceEntry(**item))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to load experience entries: {}", e)
 
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)

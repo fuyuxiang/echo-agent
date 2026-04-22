@@ -16,7 +16,7 @@ from loguru import logger
 
 from echo_agent.agent.context import ContextBuilder, build_skills_context, build_memory_context
 from echo_agent.agent.compression import ConversationCompressor
-from echo_agent.agent.tools.base import ToolExecutionContext, build_idempotency_key
+from echo_agent.agent.tools.base import ToolExecutionContext, ToolResult, build_idempotency_key
 from echo_agent.agent.tools.registry import ToolRegistry
 from echo_agent.bus.events import InboundEvent, OutboundEvent
 from echo_agent.bus.queue import MessageBus
@@ -25,9 +25,8 @@ from echo_agent.memory.consolidator import MemoryConsolidator
 from echo_agent.memory.store import MemoryStore
 from echo_agent.models.inference import InferenceController
 from echo_agent.models.provider import LLMProvider, LLMResponse
-from echo_agent.models.router import ModelRouter
 from echo_agent.observability.monitor import TraceLogger
-from echo_agent.permissions.manager import ApprovalManager, PermissionManager
+from echo_agent.permissions.manager import ApprovalManager, CredentialManager, PermissionManager
 from echo_agent.session.manager import Session, SessionManager
 from echo_agent.skills.store import SkillStore
 from echo_agent.utils.text import strip_thinking
@@ -45,6 +44,9 @@ class AgentLoop:
         provider: LLMProvider,
         workspace: Path,
         scheduler: Any = None,
+        storage: Any = None,
+        task_manager: Any = None,
+        workflow_engine: Any = None,
     ):
         self.bus = bus
         self.config = config
@@ -54,12 +56,14 @@ class AgentLoop:
         self.sessions = SessionManager(
             sessions_dir=workspace / config.storage.sessions_dir,
             expiry_hours=config.session.expiry_hours,
+            storage=storage,
         )
         self.memory = MemoryStore(
             memory_dir=workspace / config.storage.memory_dir,
             max_user=config.memory.max_user_memories,
             max_env=config.memory.max_env_memories,
             decay_half_life_days=config.memory.importance_decay_days,
+            storage=storage,
         )
         self.tools = ToolRegistry()
         self.context = ContextBuilder(workspace)
@@ -77,18 +81,26 @@ class AgentLoop:
             default_policy=config.permissions.approval.default_policy,
         )
         self.inference = InferenceController()
+        if config.permissions.approval.require_approval:
+            from echo_agent.models.inference import InferenceConstraints
+            self.inference.set_constraints(InferenceConstraints(
+                require_confirmation_for=list(config.permissions.approval.require_approval),
+                blocked_tools=list(config.permissions.approval.auto_deny),
+            ))
+        self.credentials = CredentialManager(store_path=workspace / "data" / "credentials.json")
         self.tracer = TraceLogger(logs_dir=workspace / config.storage.logs_dir)
         self.consolidator = MemoryConsolidator(
             memory_store=self.memory,
             llm_call=self.provider.chat_with_retry,
             context_window_tokens=config.session.context_window_tokens,
+            consolidation_threshold=config.memory.consolidation_threshold,
         )
-        self.model_router: ModelRouter | None = None
         self.mcp_manager: Any = None
 
+        skills_dir = workspace / config.skills.skills_dir
         self.skill_store = SkillStore(
             user_dir=Path.home() / ".echo-agent" / "skills",
-            builtin_dir=workspace / config.skills.skills_dir if (workspace / config.skills.skills_dir).exists() else None,
+            builtin_dir=skills_dir if skills_dir.exists() else None,
             external_dirs=[Path(d) for d in config.skills.external_dirs],
             disabled=config.skills.disabled,
         )
@@ -101,9 +113,9 @@ class AgentLoop:
         self._tool_iters_since_memory_check = 0
         self._snapshot_enabled = config.memory.snapshot_enabled
         self._memory_snapshots: dict[str, str] = {}
-        self._register_tools(scheduler=scheduler)
+        self._register_tools(scheduler=scheduler, task_manager=task_manager, workflow_engine=workflow_engine)
 
-    def _register_tools(self, scheduler: Any = None) -> None:
+    def _register_tools(self, scheduler: Any = None, task_manager: Any = None, workflow_engine: Any = None) -> None:
         from echo_agent.agent.tools import discover_tools
         all_tools = discover_tools(
             config=self.config,
@@ -114,6 +126,8 @@ class AgentLoop:
             session_manager=self.sessions,
             skill_store=self.skill_store,
             memory_store=self.memory,
+            task_manager=task_manager,
+            workflow_engine=workflow_engine,
         )
         for tool in all_tools:
             self.tools.register(tool)
@@ -185,6 +199,10 @@ class AgentLoop:
             history = result.messages
             if result.was_compressed:
                 logger.info("Context compressed: {} → {} tokens", result.tokens_before, result.tokens_after)
+                session.messages = session.messages[:session.last_consolidated] + result.messages
+                self.sessions.save(session)
+
+        session.add_message("user", event.text)
 
         retrieval = ""
         if self.config.memory.enabled:
@@ -223,7 +241,10 @@ class AgentLoop:
                 tools=tool_defs if tool_defs else None,
                 model=self.config.models.default_model,
             )
-            self.tracer.end_span(llm_span, metadata={"model": self.config.models.default_model, "finish": response.finish_reason})
+            self.tracer.end_span(
+                llm_span,
+                metadata={"model": self.config.models.default_model, "finish": response.finish_reason},
+            )
 
             issues = self.inference.validate_response(response)
             if issues:
@@ -242,7 +263,8 @@ class AgentLoop:
             assistant_msg["tool_calls"] = [tc.to_openai_format() for tc in response.tool_calls]
             messages.append(assistant_msg)
 
-            session.add_message("assistant", response.content or "", tool_calls=[tc.to_openai_format() for tc in response.tool_calls])
+            tool_call_fmts = [tc.to_openai_format() for tc in response.tool_calls]
+            session.add_message("assistant", response.content or "", tool_calls=tool_call_fmts)
 
             for i, tc in enumerate(response.tool_calls):
                 tool_span = self.tracer.start_span(trace_id, f"tool_{iteration}_{i}", f"tool:{tc.name}", "tool_call")
@@ -251,6 +273,15 @@ class AgentLoop:
 
                 if self.inference.needs_confirmation(tc.name):
                     logger.info("Tool {} requires confirmation (skipping in auto mode)", tc.name)
+
+                if not self.permissions.check_tool(tc.name, user_id=event.sender_id):
+                    result = ToolResult(success=False, error=f"Permission denied for tool '{tc.name}'")
+                    result_text = result.text
+                    self.tracer.end_span(tool_span, metadata={"success": False, "denied": True})
+                    messages.append({"role": "tool", "tool_call_id": tc.id, "name": tc.name, "content": result_text})
+                    session.add_message("tool", result_text, tool_call_id=tc.id, name=tc.name)
+                    total_tool_calls += 1
+                    continue
 
                 ctx = ToolExecutionContext(
                     execution_id=uuid.uuid4().hex[:12],
@@ -291,7 +322,6 @@ class AgentLoop:
         if response_text:
             response_text = strip_thinking(response_text)
 
-        session.add_message("user", event.text)
         session.add_message("assistant", response_text)
         self.sessions.save(session)
 
@@ -331,8 +361,6 @@ class AgentLoop:
             actions = await reviewer.review(messages)
             if actions:
                 logger.info("Background memory review: {}", "; ".join(actions))
-                if self._snapshot_enabled:
-                    self._memory_snapshots.clear()
         except Exception as e:
             logger.warning("Background memory review failed: {}", e)
 

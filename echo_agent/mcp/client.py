@@ -97,7 +97,8 @@ class MCPClient:
         except asyncio.TimeoutError:
             self._pending.pop(req_id, None)
             raise TimeoutError(f"MCP request '{method}' timed out after {timeout}s")
-        except Exception:
+        except Exception as e:
+            logger.warning("MCP request '{}' failed: {}", method, e)
             self._pending.pop(req_id, None)
             raise
 

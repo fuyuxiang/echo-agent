@@ -63,6 +63,21 @@ class MemoryReviewer:
         self._store = store
         self._model = model
 
+    def _resolve_entry(self, key: str, old_text: str, mem_type: MemoryType) -> tuple[MemoryEntry | None, str | None]:
+        if key:
+            entry = self._store.find_by_key(key, mem_type)
+            if entry:
+                return entry, None
+        if old_text:
+            matches = self._store.find_by_content_matches(old_text, mem_type=mem_type, limit=6)
+            if not matches:
+                return None, None
+            if len(matches) > 1:
+                previews = ", ".join(entry.key or entry.content[:30] for entry in matches[:5])
+                return None, f"Error: multiple matching memories found ({previews})"
+            return matches[0], None
+        return None, None
+
     async def review(self, conversation: list[dict[str, Any]]) -> list[str]:
         """Run a background review. Returns list of action summaries."""
         actions: list[str] = []
@@ -116,30 +131,35 @@ class MemoryReviewer:
             if not key or not content:
                 return "Error: key and content required"
             entry = MemoryEntry(type=mem_type, key=key, content=content, importance=importance)
-            result = self._store.add(entry)
+            try:
+                result = self._store.add(entry)
+            except ValueError as exc:
+                return f"Error: {exc}"
             return f"Added [{target}] {result.key}"
 
         elif action == "replace":
             if not content:
                 return "Error: content required"
-            entry = None
-            if key:
-                entry = self._store.find_by_key(key, mem_type)
-            if not entry and old_text:
-                entry = self._store.find_by_content(old_text, mem_type)
+            entry, resolve_error = self._resolve_entry(key, old_text, mem_type)
+            if resolve_error:
+                return resolve_error
             if not entry:
                 entry = MemoryEntry(type=mem_type, key=key or "auto", content=content, importance=importance)
-                self._store.add(entry)
+                try:
+                    self._store.add(entry)
+                except ValueError as exc:
+                    return f"Error: {exc}"
                 return f"Added (new) [{target}] {entry.key}"
-            self._store.update(entry.id, content=content)
+            try:
+                self._store.update(entry.id, content=content)
+            except ValueError as exc:
+                return f"Error: {exc}"
             return f"Updated [{target}] {entry.key}"
 
         elif action == "remove":
-            entry = None
-            if key:
-                entry = self._store.find_by_key(key, mem_type)
-            if not entry and old_text:
-                entry = self._store.find_by_content(old_text, mem_type)
+            entry, resolve_error = self._resolve_entry(key, old_text, mem_type)
+            if resolve_error:
+                return resolve_error
             if not entry:
                 return "Error: no matching memory found"
             self._store.delete(entry.id)

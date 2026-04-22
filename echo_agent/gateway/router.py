@@ -66,7 +66,8 @@ class DeliveryRouter:
             try:
                 if not predicate(event):
                     continue
-            except Exception:
+            except Exception as e:
+                logger.debug("Route predicate failed: {}", e)
                 continue
 
             routed = OutboundEvent(
