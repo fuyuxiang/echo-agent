@@ -33,7 +33,13 @@ class ToolRegistry:
         return name in self._tools
 
     def get_definitions(self) -> list[dict[str, Any]]:
-        return [tool.to_schema() for tool in self._tools.values()]
+        definitions: list[dict[str, Any]] = []
+        for tool in self._tools.values():
+            try:
+                definitions.append(tool.to_schema())
+            except ValueError as e:
+                logger.error("Skipping tool '{}' due to invalid schema: {}", tool.name, e)
+        return definitions
 
     @property
     def tool_names(self) -> list[str]:
