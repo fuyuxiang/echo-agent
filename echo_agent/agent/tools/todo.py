@@ -22,7 +22,16 @@ class TodoTool(Tool):
             "title": {"type": "string", "description": "Task title (for create/update)."},
             "items": {
                 "type": "array",
-                "description": "Task titles for batch create. Each item may be a string or an object with title/notes.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "description": "Task title."},
+                        "notes": {"type": "string", "description": "Optional notes for the task."},
+                    },
+                    "required": ["title"],
+                    "additionalProperties": False,
+                },
+                "description": "Batch create entries. Each item is an object with title and optional notes.",
             },
             "task_id": {"type": "string", "description": "Task ID (for update/complete/delete)."},
             "status": {"type": "string", "enum": ["pending", "in_progress", "done"], "description": "New status (for update)."},
