@@ -13,6 +13,37 @@ from enum import Enum
 from typing import Any, Mapping
 
 
+def _validate_json_schema(schema: Any, path: str = "parameters") -> None:
+    if not isinstance(schema, dict):
+        return
+
+    schema_type = schema.get("type")
+    if schema_type == "array":
+        if "items" not in schema:
+            raise ValueError(f"Invalid schema at '{path}': array schema missing items")
+        items_schema = schema["items"]
+        if isinstance(items_schema, list):
+            for index, entry in enumerate(items_schema):
+                _validate_json_schema(entry, f"{path}.items[{index}]")
+        else:
+            _validate_json_schema(items_schema, f"{path}.items")
+
+    if schema_type == "object":
+        properties = schema.get("properties", {})
+        if isinstance(properties, dict):
+            for name, prop_schema in properties.items():
+                _validate_json_schema(prop_schema, f"{path}.properties.{name}")
+        additional = schema.get("additionalProperties")
+        if isinstance(additional, dict):
+            _validate_json_schema(additional, f"{path}.additionalProperties")
+
+    for key in ("anyOf", "oneOf", "allOf"):
+        variants = schema.get(key)
+        if isinstance(variants, list):
+            for index, entry in enumerate(variants):
+                _validate_json_schema(entry, f"{path}.{key}[{index}]")
+
+
 class ToolPermission(str, Enum):
     READ = "read"
     WRITE = "write"
@@ -106,6 +137,7 @@ class Tool(ABC):
         return "side_effect"
 
     def to_schema(self) -> dict[str, Any]:
+        _validate_json_schema(self.parameters)
         return {
             "type": "function",
             "function": {
