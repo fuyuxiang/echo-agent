@@ -1,253 +1,81 @@
 # Echo Agent
 
 <p align="center">
-  <strong>一个面向自托管场景的 AI Agent runtime。</strong><br />
-  多通道接入、工具调用、长期记忆、技能沉淀、Gateway API，一套核心运行时统一起来。
+  <strong>面向自托管场景的 AI Agent Runtime。</strong><br />
+  用一套核心运行时统一 CLI、消息通道、工具调用、长期记忆、技能沉淀、计划任务和 Gateway API。
 </p>
 
 <p align="center">
   <a href="#快速开始">快速开始</a> ·
-  <a href="#核心能力">核心能力</a> ·
   <a href="#gateway-api">Gateway API</a> ·
-  <a href="#配置说明">配置说明</a> ·
+  <a href="#后台运行">后台运行</a> ·
+  <a href="#配置">配置</a> ·
   <a href="#开发">开发</a>
 </p>
 
 <p align="center">
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-3776AB.svg?logo=python&logoColor=white">
+  <img alt="Status Alpha" src="https://img.shields.io/badge/status-alpha-f59e0b.svg">
   <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-blue.svg">
   <img alt="Self Hosted" src="https://img.shields.io/badge/deployment-self--hosted-111827">
 </p>
 
-Echo Agent 是一个模块化的 AI Agent 框架。它不是“只会聊天”的 Bot，而是一个可以长期运行的执行层：接收来自 CLI、聊天平台和 HTTP Gateway 的消息，构建带记忆的上下文，调用工具完成任务，并把状态、日志、任务、工作流等信息持久化到工作区中。
+Echo Agent 是一个模块化的 AI Agent 运行时。它不是单一聊天机器人，而是一套可以长期运行的执行层：从 CLI、消息平台、计划任务或 HTTP/WebSocket Gateway 接收请求，构造带记忆的上下文，调用工具完成任务，并把会话、记忆、任务、工作流、日志和状态持久化到你的工作区。
 
-当前代码已经具备的核心部分包括：
+当前项目处于 **alpha** 阶段。核心运行时、CLI、Gateway、SQLite 存储、记忆、技能、MCP 和多通道适配器已经具备，但仍应按自托管工程系统来部署：谨慎配置权限，保护密钥，不要把未认证的 Gateway 暴露到公网。
 
-- 15 个通道适配器，统一进入同一个消息总线和 Agent Loop
-- 两打以上内置工具，外加可扩展的 MCP 工具接入
-- 双层持久记忆、上下文压缩、记忆检索与后台记忆提炼
-- 基于 `SKILL.md` 的技能系统，支持内置技能和外部技能安装
-- SQLite-backed 的会话、记忆、任务、工作流、日志与向量元数据存储
-- 自带 Web playground 的 Gateway API
+## 为什么选择 Echo Agent
 
-## Why Echo Agent
+- **自托管优先**：配置、日志、会话、记忆、技能和运行状态都可以留在你自己的机器或工作区中。
+- **一个运行时，多种入口**：CLI、聊天平台、cron、webhook 和 API 都进入同一个消息总线和 Agent Loop。
+- **工具调用是一等能力**：文件、Shell、搜索、视觉、消息、记忆、技能、任务、工作流和 MCP 工具统一注册、统一鉴权。
+- **为长期助手设计**：会话持久化、记忆快照、上下文压缩、trace 日志和健康检查是内置能力。
+- **可扩展但不重写核心**：新通道、新 provider、新技能、新 MCP server 都可以增量接入。
 
-- **Self-hosted first**: 配置、日志、记忆、技能和状态数据都可以留在你的工作区里。
-- **One runtime, many surfaces**: 一套核心运行时可以同时服务 CLI、聊天平台和 API。
-- **Tool-capable by design**: 文件、Shell、搜索、视觉、消息、记忆、技能、任务和 MCP 都是一级能力。
-- **Built for long-running assistants**: 有会话持久化、记忆快照、上下文压缩、trace 日志和健康检查。
-- **Extensible without rewriting the core**: 新通道、新技能、新 provider、新 MCP server 都能增量接入。
+## 适合做什么
 
-## 架构
-
-```mermaid
-flowchart LR
-    subgraph Inputs[Inputs]
-      CLI[CLI]
-      TG[Telegram]
-      DC[Discord]
-      SL[Slack]
-      WX[WeChat / Weixin]
-      QQ[QQ Bot]
-      FEI[Feishu / DingTalk / WeCom]
-      REST[Webhook / Email / Matrix]
-      API[Gateway API / WebSocket]
-    end
-
-    Inputs --> Bus[Message Bus]
-    Bus --> Agent[Agent Loop]
-
-    Agent --> Context[Context Builder]
-    Agent --> Compress[Conversation Compression]
-    Agent --> Memory[Persistent Memory]
-    Agent --> Skills[Skill Store]
-    Agent --> Tools[Built-in Tools]
-    Agent --> MCP[MCP Tool Adapters]
-    Agent --> Tasks[Tasks / Workflows]
-    Agent --> Trace[Trace / Health]
-
-    Agent --> Providers[LLM Providers]
-    Agent --> Storage[(SQLite Workspace)]
-```
-
-## 核心能力
-
-| 能力 | 当前代码提供什么 |
-| --- | --- |
-| 多通道接入 | 15 个适配器通过统一事件模型接到同一个运行时。 |
-| 工具调用 | 工作区、Web、多模态、协作、技能、记忆类工具统一注册到 `ToolRegistry`。 |
-| 长期记忆 | 用户记忆与环境记忆分层持久化，支持搜索、替换、快照注入和后台 review。 |
-| 上下文控制 | 会话历史持久化、窗口裁剪、摘要压缩、工具结果裁剪和检索增强上下文。 |
-| 技能系统 | 使用 `SKILL.md` + frontmatter 组织技能，支持查看、创建、patch、删除和安装外部技能。 |
-| Gateway | REST、WebSocket、认证、限流、会话策略、媒体缓存、hooks、内置 playground。 |
-| 状态存储 | SQLite 持久化会话、记忆、任务、工作流、日志和向量元数据。 |
-| 可观测性 | Trace 日志、健康检查、网关健康接口和运行状态汇总。 |
-
-## 支持的通道
-
-Echo Agent 当前注册了 15 个通道适配器：
-
-- **本地与系统接入**: `cli`, `webhook`, `cron`
-- **国际通用平台**: `telegram`, `discord`, `slack`, `whatsapp`, `email`, `matrix`
-- **微信与企业协同生态**: `wechat`, `weixin`, `qqbot`, `feishu`, `dingtalk`, `wecom`
-
-其中：
-
-- `cli` 默认启用，适合本地开发与调试。
-- `gateway` 不是消息通道，而是独立的 HTTP / WebSocket 服务层。
-- 配置 `channels.transcriptionApiKey` 后，部分通道可以把音频消息交给 Groq Whisper 转写。
-
-## 工具体系
-
-Echo Agent 的工具能力不是零散脚本，而是统一纳入 `ToolRegistry` 的可调用能力。按当前代码，可以大致分成以下几类。
-
-### 工作区与执行
-
-- `exec`
-- `read_file`
-- `write_file`
-- `edit_file`
-- `list_dir`
-- `search_files`
-- `patch`
-- `execute_code`
-- `process`
-
-### Web 与多模态
-
-- `web_fetch`
-- `web_search`
-  需要配置 `tools.web.searchApiKey`
-- `vision_analyze`
-- `image_generate`
-  需要配置 `tools.imageGen.apiKey`
-- `text_to_speech`
-
-### 协作与消息
-
-- `message`
-- `notify`
-- `clarify`
-- `delegate_task`
-- `spawn_task`
-
-### 记忆、会话与技能
-
-- `memory`
-- `session_search`
-- `skills_list`
-- `skill_view`
-- `skill_manage`
-- `skill_install`
-
-### 计划与跟踪
-
-- `todo`
-- `task`
-- `workflow`
-
-> 重要
->
-> Echo Agent 当前的工具权限是**保守默认值**。如果不配置 `permissions.adminUsers` 或显式权限规则，工具调用会被拒绝。
->
-> 本地 CLI 场景下，通常需要把 `cli_user` 加进 `permissions.adminUsers`。
-
-## 记忆、上下文与技能
-
-### 持久记忆
-
-记忆系统分为两层：
-
-- **User memory**: 用户偏好、表达习惯、长期要求
-- **Environment memory**: 项目事实、约定、工具配置、领域知识
-
-当前实现支持：
-
-- `add / replace / remove / search / list`
-- 关键字与分数检索
-- 重要度与访问衰减
-- 记忆快照注入 system prompt
-- 后台 `MemoryReviewer` 自动提炼有价值信息
-- 对提示注入、隐形字符和敏感 exfiltration 片段的持久化拦截
-- 原子写入与文件锁，降低并发覆盖风险
-
-### 上下文管理
-
-每次推理前，运行时会分层构造上下文：
-
-1. Agent 身份与运行时元数据
-2. 工作区中的 `AGENTS.md` / `SOUL.md` / `USER.md` / `TOOLS.md`
-3. 记忆快照
-4. 技能摘要
-5. 会话历史
-6. 检索到的相关记忆
-
-当历史过长时，`ConversationCompressor` 会执行上下文压缩，减少 token 占用并保留当前轮更相关的信息。
-
-### 技能系统
-
-技能系统使用磁盘目录和 `SKILL.md` 作为标准格式，支持三类操作：
-
-- 发现与读取技能
-- 创建、编辑、patch、删除技能
-- 从 `git` / 本地目录 / URL 安装外部技能
-
-仓库当前内置了 5 个技能：
-
-- `arxiv`
-- `weather`
-- `summarize`
-- `plan`
-- `skill-creator`
-
-在工具调用较多的非平凡对话之后，后台 `SkillReviewer` 还可以把“可复用的方法论”沉淀成技能。
-
-## Provider 与模型路由
-
-当前代码支持以下 Provider：
-
-| Provider | 说明 |
-| --- | --- |
-| OpenAI | 标准 OpenAI 接口 |
-| Anthropic | Claude 系列模型 |
-| Gemini | Google Gemini |
-| Bedrock | 通过 AWS Bedrock 调用模型 |
-| OpenRouter | 通过 OpenRouter 路由模型 |
-| OpenAI-compatible | 未识别 provider name 时回落到 OpenAI-compatible 模式 |
-
-Provider 层当前还带有：
-
-- 默认模型与路由配置
-- 凭证池轮换
-- RPM 限速
-- 错误重试与恢复
-- OpenRouter 扩展 header 与 provider preference
+- 本地开发、运维或研究助手，带项目级长期记忆。
+- 接入 Telegram、Discord、Slack、微信、QQ、飞书、钉钉、企业微信、Matrix、Email、Webhook 的个人或团队 Bot。
+- 通过 REST / WebSocket 提供服务的后端 Agent。
+- 能调用本地工具、MCP server 和技能包的任务执行助手。
+- 带任务状态、工作流记录、日志和健康检查的长期运行自动化系统。
 
 ## 快速开始
 
-### 1. 一键安装
+### 一键安装
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/fuyuxiang/echo-agent/main/scripts/install.sh | bash
 ```
 
-适用于 Linux、macOS 和 WSL2。安装脚本会自动：
+安装脚本支持 Linux、macOS 和 WSL2，会自动完成：
 
-- 安装 `uv` 与 Python 3.11（如缺失）
-- 将仓库克隆到 `~/.echo-agent/echo-agent`
-- 创建虚拟环境并安装 `echo-agent`
-- 把命令链接到 `~/.local/bin/echo-agent`
-- 默认把配置和数据放到 `~/.echo-agent/`
+- 安装 `uv` 和 Python 3.11（如缺失）
+- 克隆仓库到 `~/.echo-agent/echo-agent`
+- 创建虚拟环境并安装依赖
+- 将 `echo-agent` 命令链接到用户 PATH
+- 使用 `~/.echo-agent` 作为默认配置和数据目录
+- 询问是否运行 setup wizard
+- 在 Linux 上询问是否注册 systemd 服务
 
-安装完成后，重新加载 shell：
+如果安装后命令还不可用，重新加载 shell：
 
 ```bash
-source ~/.bashrc    # 或 ~/.zshrc
+source ~/.bashrc
+# 或
+source ~/.zshrc
+```
+
+然后执行：
+
+```bash
 echo-agent setup
 echo-agent
 ```
 
-如果你只想手动安装或参与开发，可以使用源码安装：
+`echo-agent` 默认启动交互式 CLI。如果还没有配置任何模型 provider，运行时会使用 stub provider 启动并返回配置引导信息，而不是发起真实模型调用。
+
+### 源码安装
 
 ```bash
 git clone https://github.com/fuyuxiang/echo-agent.git
@@ -256,41 +84,142 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv venv --python 3.11
 source venv/bin/activate
 uv pip install -e ".[all]"
-```
-
-### 2. 初始化配置
-
-全局安装默认读取 `~/.echo-agent/echo-agent.yaml`。第一次在交互式终端里运行 `echo-agent` 时，如果当前目录和 `~/.echo-agent/` 都没有配置文件，程序会提示是否启动 setup wizard。你也可以显式执行：
-
-```bash
-echo-agent setup
-```
-
-如果你想把配置和工作区放到当前项目目录，而不是 `~/.echo-agent/`：
-
-```bash
 echo-agent setup -w .
+echo-agent run -w .
 ```
 
-常用命令：
+## 常用命令
 
 ```bash
-echo-agent status
-echo-agent run
+echo-agent                         # 启动 CLI 助手
+echo-agent run                     # 显式前台运行
+echo-agent setup                   # 交互式配置向导
+echo-agent setup model             # 配置模型和 provider
+echo-agent setup channel           # 配置消息通道
+echo-agent status                  # 查看当前配置和运行状态
+echo-agent gateway --port 9000     # 前台启动 Gateway
+echo-agent eval -d eval.yaml       # 运行评测数据集
+echo-agent service install         # Linux: 安装 systemd 服务
+echo-agent service start           # Linux: 启动 systemd 服务
+echo-agent service logs            # Linux: 查看服务日志
+```
+
+## 后台运行
+
+Echo Agent 明确区分前台进程和服务托管进程。
+
+| 命令 | 行为 |
+| --- | --- |
+| `echo-agent` / `echo-agent run` | 前台 CLI 进程。可用 `Ctrl+C`、`exit`、`quit` 或 `/quit` 退出。 |
+| `echo-agent gateway` | 前台 Gateway 进程。可用 `Ctrl+C` 停止。 |
+| `echo-agent service install/start` | Linux systemd 服务。后台运行，并可在失败后自动重启。 |
+
+### Linux systemd
+
+```bash
+echo-agent service install -w ~/.echo-agent
+echo-agent service start
+echo-agent service status
+echo-agent service logs
+```
+
+该服务会以指定工作目录运行 `echo-agent run`，适合长期运行消息通道、cron 和启用了 Gateway 的部署。
+
+停止或卸载：
+
+```bash
+echo-agent service stop
+echo-agent service uninstall
+```
+
+### macOS 与 WSL2
+
+内置服务管理当前只覆盖 Linux systemd。macOS 或未启用 systemd 的 WSL2 可以在开发时直接前台运行，也可以放到你自己的进程管理器下，例如 `tmux`、`launchd`、systemd 或容器运行时。
+
+```bash
 echo-agent gateway --port 9000
 ```
 
-如果没有配置任何 provider，Echo Agent 会使用 stub provider 启动，并返回配置引导信息，而不是执行真实模型调用。
+## Gateway API
 
-### 3. 准备一份最小可用配置
+Gateway 将 Echo Agent 暴露为 HTTP / WebSocket 服务，适合被其他应用、Web UI、自动化脚本或远程客户端调用。根路径 `/` 提供内置 playground，API 默认前缀为 `/api/v1`。
 
-默认全局配置文件位置：
+### 启动 Gateway
+
+```bash
+echo-agent gateway -c ~/.echo-agent/echo-agent.yaml --port 9000
+```
+
+打开 playground：
+
+```text
+http://127.0.0.1:9000/
+```
+
+发送消息：
+
+```bash
+curl -X POST "http://127.0.0.1:9000/api/v1/message" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "platform": "api",
+    "user_id": "demo",
+    "chat_id": "demo",
+    "text": "请总结当前工作区的目录结构",
+    "wait": true,
+    "timeout_seconds": 120
+  }'
+```
+
+### 主要接口
+
+| Method | Path | 说明 |
+| --- | --- | --- |
+| `GET` | `/` | 内置 playground |
+| `GET` | `/api/v1/health` | 健康检查 |
+| `POST` | `/api/v1/message` | 发送消息到 Agent |
+| `GET` | `/api/v1/sessions` | 查看会话列表 |
+| `DELETE` | `/api/v1/sessions/{key}` | 重置指定会话 |
+| `POST` | `/api/v1/pair` | 生成配对码 |
+| `POST` | `/api/v1/pair/verify` | 校验配对码 |
+| `GET` | `/api/v1/stats` | 查看运行统计 |
+| `GET` | `/ws` | WebSocket 接口 |
+
+### Gateway 安全
+
+不要把未认证 Gateway 暴露到公网。
+
+本地开发可以使用开放模式：
+
+```yaml
+gateway:
+  enabled: true
+  host: "127.0.0.1"
+  port: 9000
+  auth:
+    mode: "open"
+```
+
+如果 Gateway 会被局域网或公网访问，请启用认证模式，并把服务放在可信网络、VPN、SSH tunnel 或带认证的反向代理后面。绑定 `0.0.0.0` 前应先确认认证和访问控制已经配置好。
+
+## 配置
+
+Echo Agent 会按以下顺序查找配置文件：
+
+1. `-c` / `--config` 显式传入的路径
+2. 当前目录或指定工作区中的 `echo-agent.yaml`
+3. 当前目录或指定工作区中的 `echo-agent.yml`
+4. 当前目录或指定工作区中的 `config.yaml`
+5. 当前目录或指定工作区中的 `config.yml`
+6. 默认 home 目录 `~/.echo-agent/` 下的同名配置文件
+
+默认全局配置文件：
 
 ```text
 ~/.echo-agent/echo-agent.yaml
 ```
 
-最小可用示例：
+### 最小可用配置
 
 ```yaml
 workspace: "~/.echo-agent"
@@ -310,108 +239,12 @@ permissions:
     - "cli_user"
 ```
 
-这份配置的含义是：
+这份配置会：
 
-- 使用 `~/.echo-agent` 作为默认工作区
+- 使用 `~/.echo-agent` 作为状态目录
+- 使用 OpenAI provider
 - 启用 CLI 通道
-- 让本地 CLI 用户 `cli_user` 具备工具使用权限
-- 使用 OpenAI 作为默认模型提供方
-
-如果你是按项目使用 Echo Agent，可以把 `workspace` 改成 `"."`，并将配置保存到项目目录下的 `echo-agent.yaml`。
-
-如果你还需要 Web 搜索，可以继续加：
-
-```yaml
-tools:
-  web:
-    searchApiKey: "<YOUR_SEARCH_API_KEY>"
-```
-
-### 4. 启动
-
-```bash
-echo-agent
-```
-
-或者显式指定：
-
-```bash
-echo-agent run -c ~/.echo-agent/echo-agent.yaml
-echo-agent run -c echo-agent.yaml -w .
-```
-
-启动后你会直接进入 CLI 对话。输入 `exit`、`quit` 或 `/quit` 可以退出。
-
-## Gateway API
-
-Echo Agent 自带一个独立的 HTTP / WebSocket Gateway。启用后，根路径 `/` 会提供内置 playground 页面，API 默认前缀是 `/api/v1`。
-
-### 网关配置示例
-
-```yaml
-gateway:
-  enabled: true
-  host: "0.0.0.0"
-  port: 9000
-  auth:
-    mode: "open"
-```
-
-启动命令：
-
-```bash
-echo-agent gateway -c echo-agent.yaml --port 9000
-```
-
-### 主要接口
-
-| Method | Path | 说明 |
-| --- | --- | --- |
-| `GET` | `/` | 内置 playground 页面 |
-| `POST` | `/api/v1/message` | 发送消息到 Agent |
-| `GET` | `/api/v1/health` | 网关健康状态 |
-| `GET` | `/api/v1/sessions` | 查看会话列表 |
-| `DELETE` | `/api/v1/sessions/{key}` | 重置指定会话 |
-| `POST` | `/api/v1/pair` | 生成配对码 |
-| `POST` | `/api/v1/pair/verify` | 校验配对码 |
-| `GET` | `/api/v1/stats` | 查看统计信息 |
-| `GET` | `/ws` | WebSocket 接口 |
-
-### 请求示例
-
-```bash
-curl -X POST "http://127.0.0.1:9000/api/v1/message" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "platform": "api",
-    "user_id": "demo",
-    "chat_id": "demo",
-    "text": "请总结当前工作区的目录结构",
-    "wait": true,
-    "timeout_seconds": 120
-  }'
-```
-
-Gateway 还内置了：
-
-- `open` / `allowlist` / `pairing` 三种认证模式
-- 平台级速率限制
-- session reset policy
-- progressive edit
-- media cache
-- hooks 目录加载
-- delivery routing
-
-## 配置说明
-
-### 配置文件发现顺序
-
-运行时会在当前目录按以下顺序查找配置文件：
-
-1. `echo-agent.yaml`
-2. `echo-agent.yml`
-3. `config.yaml`
-4. `config.yml`
+- 允许本地 CLI 用户 `cli_user` 调用工具
 
 ### 环境变量覆盖
 
@@ -425,35 +258,81 @@ export ECHO_AGENT_OBSERVABILITY__LOGLEVEL=DEBUG
 
 ### 工作区数据
 
-`workspace` 是 Echo Agent 的状态根目录。默认运行时会在其中写入：
+`workspace` 是 Echo Agent 的状态根目录。默认会写入：
 
-- `data/echo_agent.db`
-- `data/memory/`
-- `data/logs/`
-- `data/media_cache/`
-- `data/credentials.json`
+```text
+data/echo_agent.db
+data/memory/
+data/logs/
+data/media_cache/
+data/credentials.json
+```
 
-如果你希望把状态与代码仓库分离，最简单的做法是把 `workspace` 指到单独目录，例如 `~/.echo-agent`。
+个人服务建议使用独立目录，例如 `~/.echo-agent`。如果你希望状态和某个项目绑定，可以使用项目本地工作区：
 
-### 权限建议
+```bash
+echo-agent setup -w .
+echo-agent run -w .
+```
 
-如果你的目标是“本地 CLI 可以放心地调用工具”，最简单的方式是：
+## 通道
 
-- 把 `cli_user` 配到 `permissions.adminUsers`
+Echo Agent 当前包含以下通道适配器：
 
-如果你的目标是“不同平台、不同用户、不同工具分级授权”，再逐步引入更细的权限规则。
+- 本地与系统：`cli`, `webhook`, `cron`
+- 国际通用平台：`telegram`, `discord`, `slack`, `whatsapp`, `email`, `matrix`
+- 微信与企业协同生态：`wechat`, `weixin`, `qqbot`, `feishu`, `dingtalk`, `wecom`
+
+所有通道都进入同一个消息总线和 Agent Loop，因此会话、记忆、工具和权限模型可以保持一致。
+
+## 工具与权限
+
+Echo Agent 的工具统一注册到工具体系中，并在执行前经过权限层检查。
+
+内置工具大致分为：
+
+- 工作区与执行：文件读写编辑、目录查看、搜索、patch、Shell/process、代码执行
+- Web 与多模态：web fetch、web search、视觉分析、图片生成、文本转语音
+- 协作与消息：message、notify、clarify、任务委派
+- 记忆与会话：memory、session search
+- 技能：list、view、manage、install
+- 计划与跟踪：todo、task、workflow
+- MCP：由 MCP server 暴露的外部工具
+
+默认权限策略偏保守。如果你希望本地 CLI 可以调用工具，至少需要：
+
+```yaml
+permissions:
+  adminUsers:
+    - "cli_user"
+```
+
+面向团队或公网入口时，不建议直接授予广泛 admin 权限，应按通道、用户和工具类型配置更细粒度的权限规则。
+
+## 记忆与技能
+
+Echo Agent 的记忆分为两层：
+
+- **User memory**：用户偏好、长期要求、表达习惯和个人约定
+- **Environment memory**：项目事实、运行环境、工具配置和领域知识
+
+记忆支持添加、替换、删除、列表和搜索。运行时可以把相关记忆快照注入上下文，也可以在较复杂的对话后进行后台 review，将值得保留的信息沉淀下来。
+
+技能系统使用目录加 `SKILL.md` 的格式。仓库内置技能包括：
+
+- `arxiv`
+- `weather`
+- `summarize`
+- `plan`
+- `skill-creator`
+
+技能可以被查看、创建、patch、删除，也可以从本地路径、Git 仓库或 URL 安装。
 
 ## MCP 集成
 
-Echo Agent 可以把 MCP server 暴露的工具注册进自己的 tool registry。当前实现支持：
+Echo Agent 可以连接 MCP server，并把 MCP 暴露的工具接入自己的工具体系。
 
-- `stdio` 启动本地 MCP server
-- `http` 连接远程 MCP server
-- `toolsInclude` / `toolsExclude` 过滤
-- OAuth token 存储
-- 重连与工具刷新
-
-一个最小配置示例：
+示例：
 
 ```yaml
 tools:
@@ -463,58 +342,97 @@ tools:
       enabled: true
 ```
 
-## 项目结构
+当前实现支持本地 `stdio` server、远程 HTTP server、工具 include/exclude 过滤、OAuth token 存储、重连和工具刷新。
+
+## 架构
+
+```mermaid
+flowchart LR
+    subgraph Inputs[Inputs]
+      CLI[CLI]
+      Channels[Messaging Channels]
+      Cron[Cron]
+      API[Gateway API / WebSocket]
+    end
+
+    Inputs --> Bus[Message Bus]
+    Bus --> Agent[Agent Loop]
+
+    Agent --> Context[Context Builder]
+    Agent --> Memory[Memory]
+    Agent --> Skills[Skills]
+    Agent --> Tools[Tools]
+    Agent --> MCP[MCP Adapters]
+    Agent --> Tasks[Tasks / Workflows]
+    Agent --> Providers[LLM Providers]
+
+    Memory --> Storage[(SQLite Workspace)]
+    Skills --> Storage
+    Tasks --> Storage
+    Agent --> Observability[Trace / Health]
+```
+
+项目结构：
 
 ```text
 echo_agent/
-├── agent/          # Agent loop, context builder, compression, tools, executors
-├── bus/            # 统一消息事件总线
-├── channels/       # 15 个消息通道适配器
-├── cli/            # setup/status/terminal UX
-├── config/         # schema, loader, default config
-├── gateway/        # HTTP / WebSocket gateway
-├── mcp/            # MCP client, adapter, oauth, transport
-├── memory/         # memory store, consolidator, reviewer
-├── models/         # provider, router, inference, credential pool
-├── observability/  # trace logger and health checker
-├── permissions/    # permission, approval, credential primitives
-├── scheduler/      # scheduler service
-├── session/        # session persistence and lifecycle
+├── agent/          # Agent loop, context builder, compression, tool execution
+├── bus/            # Message event queue
+├── channels/       # CLI, messaging, webhook, cron adapters
+├── cli/            # setup, status, service management
+├── config/         # schema, loader, defaults
+├── gateway/        # HTTP / WebSocket Gateway
+├── mcp/            # MCP client, transports, OAuth, tool adapter
+├── memory/         # memory store, retrieval, reviewer, graph, vectors
+├── models/         # providers, router, credential pool, rate limiting
+├── observability/  # health checks, spans, telemetry
+├── permissions/    # permission and credential primitives
+├── scheduler/      # scheduled job service
+├── session/        # session persistence
 ├── skills/         # skill store and reviewer
 ├── storage/        # SQLite backend
 └── tasks/          # task manager and workflow engine
 ```
 
-## 适用场景
-
-Echo Agent 比较适合下面这类项目：
-
-- 想把一个 Agent 同时接入多个消息平台，而不是为每个平台重复写业务逻辑
-- 需要 Agent 记住长期偏好、项目约定和环境知识
-- 需要可落地的工具调用，而不是只做问答
-- 需要 HTTP / WebSocket 接口把 Agent 变成一个后端服务
-- 需要技能沉淀和 MCP 扩展，让能力随着项目演进不断积累
-
 ## 开发
 
-安装开发依赖：
-
 ```bash
-pip install -e ".[dev]"
+git clone https://github.com/fuyuxiang/echo-agent.git
+cd echo-agent
+uv venv venv --python 3.11
+source venv/bin/activate
+uv pip install -e ".[all,dev]"
 ```
 
-本仓库当前最直接的本地校验方式是：
+常用检查：
 
 ```bash
 ruff check .
+pytest
+echo-agent status -w .
+echo-agent run -w .
 ```
 
-如果你修改了 README、配置或通道接入逻辑，建议至少做一次本地烟测：
+本地启动 Gateway：
 
 ```bash
-echo-agent status
-echo-agent run -c echo-agent.yaml
+echo-agent gateway -w . --port 9000
 ```
+
+运行评测：
+
+```bash
+echo-agent eval -d eval.yaml -w .
+```
+
+## 运维建议
+
+- 不要把 provider API key、token、cookie 或 `data/credentials.json` 提交到 Git。
+- 本地开发优先绑定 `127.0.0.1`。
+- Gateway 绑定 `0.0.0.0` 前先启用认证和访问控制。
+- Shell/process/code execution 属于高权限能力，应只开放给可信用户。
+- 个人本地使用可以从 `permissions.adminUsers: ["cli_user"]` 开始。
+- 排查问题时先看 `echo-agent status`；Linux 服务部署再看 `echo-agent service logs`。
 
 ## License
 

@@ -392,6 +392,27 @@ run_setup_wizard() {
     fi
 }
 
+setup_service() {
+    if [ "$OS" != "linux" ]; then
+        return 0
+    fi
+
+    local echo_cmd="$INSTALL_DIR/venv/bin/echo-agent"
+    if [ ! -x "$echo_cmd" ]; then
+        return 0
+    fi
+
+    echo ""
+    if prompt_yes_no "Register Echo Agent as a systemd service (auto-start on boot)?" "yes"; then
+        "$echo_cmd" service install -w "$ECHO_HOME"
+        if prompt_yes_no "Start the service now?" "yes"; then
+            "$echo_cmd" service start
+        fi
+    else
+        log_info "You can register later with: echo-agent service install"
+    fi
+}
+
 print_success() {
     echo ""
     echo -e "${GREEN}${BOLD}"
@@ -410,6 +431,7 @@ print_success() {
     echo "  echo-agent setup    Run setup wizard"
     echo "  echo-agent status   Show current config status"
     echo "  echo-agent gateway  Start gateway server"
+    echo "  echo-agent service  Manage systemd service (Linux)"
     echo ""
     echo -e "${CYAN}${BOLD}Command link:${NC}"
     echo "  $(get_command_link_dir)/echo-agent"
@@ -439,6 +461,7 @@ main() {
     setup_path
     prepare_home
     run_setup_wizard
+    setup_service
     print_success
 }
 
