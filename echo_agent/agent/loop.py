@@ -7,6 +7,7 @@ Integrates all subsystems: session, memory, tools, permissions, observability.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -44,6 +45,9 @@ class _ProcessResult:
 
 
 class _TokenStreamPublisher:
+    _PARAGRAPH_RE = re.compile(r"\n\n")
+    _SENTENCE_RE = re.compile(r"[。！？!?\n]")
+
     def __init__(
         self,
         bus: MessageBus,
@@ -52,6 +56,7 @@ class _TokenStreamPublisher:
         enabled: bool,
         flush_chars: int,
         flush_interval_ms: int,
+        paragraph_mode: bool = True,
         intro_text: str = "",
     ):
         self._bus = bus
@@ -59,6 +64,7 @@ class _TokenStreamPublisher:
         self._enabled = enabled
         self._flush_chars = max(1, flush_chars)
         self._flush_interval = max(0.05, flush_interval_ms / 1000.0)
+        self._paragraph_mode = paragraph_mode
         self._full_text = ""
         self._pending = ""
         self._last_flush = time.monotonic()
@@ -82,8 +88,30 @@ class _TokenStreamPublisher:
         self._full_text += delta
         self._pending += delta
         now = time.monotonic()
-        if len(self._pending) >= self._flush_chars or now - self._last_flush >= self._flush_interval:
-            await self._flush(is_final=False)
+
+        if self._paragraph_mode:
+            boundary = self._find_paragraph_boundary()
+            if boundary > 0 and len(self._pending[:boundary]) >= self._flush_chars:
+                await self._flush_up_to(boundary, is_final=False)
+            elif now - self._last_flush >= self._flush_interval:
+                sentence_end = self._find_sentence_boundary()
+                pos = sentence_end if sentence_end > 0 else len(self._pending)
+                await self._flush_up_to(pos, is_final=False)
+        else:
+            if len(self._pending) >= self._flush_chars or now - self._last_flush >= self._flush_interval:
+                await self._flush(is_final=False)
+
+    def _find_paragraph_boundary(self) -> int:
+        m = None
+        for m in self._PARAGRAPH_RE.finditer(self._pending):
+            pass
+        return m.end() if m else 0
+
+    def _find_sentence_boundary(self) -> int:
+        m = None
+        for m in self._SENTENCE_RE.finditer(self._pending):
+            pass
+        return m.end() if m else 0
 
     async def finalize(self, final_text: str) -> bool:
         if not self._enabled:
@@ -112,6 +140,11 @@ class _TokenStreamPublisher:
     async def _flush(self, *, is_final: bool) -> None:
         text = self._pending
         self._pending = ""
+        await self._publish(text, is_final=is_final)
+
+    async def _flush_up_to(self, pos: int, *, is_final: bool) -> None:
+        text = self._pending[:pos]
+        self._pending = self._pending[pos:]
         await self._publish(text, is_final=is_final)
 
     async def _publish(self, text: str, *, is_final: bool) -> None:
@@ -480,6 +513,7 @@ class AgentLoop:
             enabled=publish_response and self._should_stream_channel(event.channel),
             flush_chars=self.config.channels.stream_flush_chars,
             flush_interval_ms=self.config.channels.stream_flush_interval_ms,
+            paragraph_mode=self.config.channels.stream_paragraph_mode,
             intro_text=intro_text,
         )
         if publish_response:
