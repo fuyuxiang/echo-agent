@@ -46,7 +46,7 @@ class _ProcessResult:
 
 class _TokenStreamPublisher:
     _PARAGRAPH_RE = re.compile(r"\n\n")
-    _SENTENCE_RE = re.compile(r"[。！？!?\n]")
+    _SENTENCE_RE = re.compile(r"[。！？!?]")
 
     def __init__(
         self,
@@ -93,10 +93,16 @@ class _TokenStreamPublisher:
             boundary = self._find_paragraph_boundary()
             if boundary > 0 and len(self._pending[:boundary]) >= self._flush_chars:
                 await self._flush_up_to(boundary, is_final=False)
-            elif now - self._last_flush >= self._flush_interval:
+                return
+            elapsed = now - self._last_flush
+            if elapsed >= self._flush_interval:
                 sentence_end = self._find_sentence_boundary()
-                pos = sentence_end if sentence_end > 0 else len(self._pending)
-                await self._flush_up_to(pos, is_final=False)
+                if sentence_end > 0 and len(self._pending[:sentence_end]) >= self._flush_chars:
+                    await self._flush_up_to(sentence_end, is_final=False)
+                elif sentence_end > 0 and elapsed >= self._flush_interval * 2:
+                    await self._flush_up_to(sentence_end, is_final=False)
+                elif elapsed >= self._flush_interval * 3:
+                    await self._flush(is_final=False)
         else:
             if len(self._pending) >= self._flush_chars or now - self._last_flush >= self._flush_interval:
                 await self._flush(is_final=False)
