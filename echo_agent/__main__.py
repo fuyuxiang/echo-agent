@@ -352,6 +352,11 @@ def main() -> None:
     eval_parser.add_argument("-c", "--config", help="Path to config file")
     eval_parser.add_argument("-w", "--workspace", help="Workspace directory")
 
+    # service
+    svc_parser = subparsers.add_parser("service", help="Manage systemd service (Linux)")
+    svc_parser.add_argument("action", choices=["install", "uninstall", "start", "stop", "restart", "status", "logs"], help="Service action")
+    svc_parser.add_argument("-w", "--workspace", help="Workspace directory (used by install)")
+
     # top-level flags for backward compat
     parser.add_argument("-c", "--config", help="Path to config file", dest="top_config")
     parser.add_argument("-w", "--workspace", help="Workspace directory", dest="top_workspace")
@@ -377,6 +382,11 @@ def main() -> None:
 
     if args.command == "eval":
         _run_eval(args)
+        return
+
+    if args.command == "service":
+        from echo_agent.cli.service import run_action
+        run_action(args.action, workspace=args.workspace or args.top_workspace)
         return
 
     # "run" command or no command (backward compat)
