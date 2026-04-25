@@ -15,6 +15,7 @@ REPO_URL_SSH="git@github.com:fuyuxiang/echo-agent.git"
 REPO_URL_HTTPS="https://github.com/fuyuxiang/echo-agent.git"
 ECHO_HOME="${ECHO_HOME:-$HOME/.echo-agent}"
 INSTALL_DIR="${ECHO_INSTALL_DIR:-$ECHO_HOME/echo-agent}"
+ECHO_COMMAND_LINK_DIR="${ECHO_COMMAND_LINK_DIR:-}"
 PYTHON_VERSION="3.11"
 BRANCH="main"
 RUN_SETUP=true
@@ -267,11 +268,25 @@ install_deps() {
 }
 
 get_command_link_dir() {
+    if [ -n "$ECHO_COMMAND_LINK_DIR" ]; then
+        echo "$ECHO_COMMAND_LINK_DIR"
+        return 0
+    fi
+    if [ "$(id -u)" -eq 0 ]; then
+        echo "/usr/local/bin"
+        return 0
+    fi
     echo "$HOME/.local/bin"
 }
 
 get_command_link_display_dir() {
-    echo "~/.local/bin"
+    local link_dir
+    link_dir="$(get_command_link_dir)"
+    if [ "$link_dir" = "$HOME/.local/bin" ]; then
+        echo "~/.local/bin"
+        return 0
+    fi
+    echo "$link_dir"
 }
 
 setup_path() {
@@ -330,22 +345,22 @@ setup_path() {
             ;;
     esac
 
-    PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
+    PATH_LINE="export PATH=\"$link_dir:\$PATH\""
     for shell_config in "${SHELL_CONFIGS[@]}"; do
-        if ! grep -v '^[[:space:]]*#' "$shell_config" 2>/dev/null | grep -q '\.local/bin'; then
+        if ! grep -Fq "$link_dir" "$shell_config" 2>/dev/null; then
             echo "" >> "$shell_config"
             echo "# Echo Agent" >> "$shell_config"
             echo "$PATH_LINE" >> "$shell_config"
-            log_success "Added ~/.local/bin to PATH in $shell_config"
+            log_success "Added $link_display_dir to PATH in $shell_config"
         fi
     done
 
     if [ "$IS_FISH" = true ]; then
-        if ! grep -q 'fish_add_path.*\.local/bin' "$FISH_CONFIG" 2>/dev/null; then
+        if ! grep -Fq "$link_dir" "$FISH_CONFIG" 2>/dev/null; then
             echo "" >> "$FISH_CONFIG"
             echo "# Echo Agent" >> "$FISH_CONFIG"
-            echo 'fish_add_path "$HOME/.local/bin"' >> "$FISH_CONFIG"
-            log_success "Added ~/.local/bin to PATH in $FISH_CONFIG"
+            echo "fish_add_path \"$link_dir\"" >> "$FISH_CONFIG"
+            log_success "Added $link_display_dir to PATH in $FISH_CONFIG"
         fi
     fi
 
@@ -396,13 +411,18 @@ print_success() {
     echo "  echo-agent status   Show current config status"
     echo "  echo-agent gateway  Start gateway server"
     echo ""
-    echo -e "${CYAN}${BOLD}If the command is not available yet:${NC}"
-    case "$(basename "${SHELL:-/bin/bash}")" in
-        zsh) echo "  source ~/.zshrc" ;;
-        fish) echo "  source ~/.config/fish/config.fish" ;;
-        *) echo "  source ~/.bashrc" ;;
-    esac
+    echo -e "${CYAN}${BOLD}Command link:${NC}"
+    echo "  $(get_command_link_dir)/echo-agent"
     echo ""
+    if ! echo "$PATH" | tr ':' '\n' | grep -qx "$(get_command_link_dir)"; then
+        echo -e "${CYAN}${BOLD}If the command is not available yet:${NC}"
+        case "$(basename "${SHELL:-/bin/bash}")" in
+            zsh) echo "  source ~/.zshrc" ;;
+            fish) echo "  source ~/.config/fish/config.fish" ;;
+            *) echo "  source ~/.bashrc" ;;
+        esac
+        echo ""
+    fi
     echo "To use a project-local workspace instead of ~/.echo-agent:"
     echo "  echo-agent setup -w /path/to/workspace"
 }
