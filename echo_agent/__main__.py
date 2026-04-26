@@ -46,6 +46,7 @@ async def _bootstrap(
     from echo_agent.models.providers import create_provider
     from echo_agent.models.router import ModelRouter
     from echo_agent.observability.monitor import HealthChecker
+    from echo_agent.scheduler.delivery import build_scheduled_job_handler
     from echo_agent.storage.sqlite import SQLiteBackend
 
     config_file = resolve_config_file(config_path)
@@ -103,6 +104,7 @@ async def _bootstrap(
     if config.scheduler.enabled:
         scheduler = Scheduler(
             store_path=ws / "data" / "scheduler.json",
+            on_job=build_scheduled_job_handler(bus),
             max_concurrent=config.scheduler.max_concurrent_jobs,
         )
 
