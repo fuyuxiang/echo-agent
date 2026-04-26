@@ -17,7 +17,7 @@ ECHO_HOME="${ECHO_HOME:-$HOME/.echo-agent}"
 INSTALL_DIR="${ECHO_INSTALL_DIR:-$ECHO_HOME/echo-agent}"
 ECHO_COMMAND_LINK_DIR="${ECHO_COMMAND_LINK_DIR:-}"
 PYTHON_VERSION="3.11"
-BRANCH="main"
+BRANCH="master"
 RUN_SETUP=true
 
 if [ -t 0 ]; then
@@ -51,7 +51,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  --skip-setup      Skip interactive setup wizard"
-            echo "  --branch NAME     Git branch to install (default: main)"
+            echo "  --branch NAME     Git branch to install (default: master)"
             echo "  --dir PATH        Installation directory (default: ~/.echo-agent/echo-agent)"
             echo "  --echo-home PATH  Echo home directory (default: ~/.echo-agent)"
             echo "  -h, --help        Show this help"
