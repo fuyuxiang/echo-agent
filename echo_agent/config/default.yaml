@@ -10,8 +10,8 @@ channels:
     - "telegram"
     - "discord"
     - "slack"
-  streamFlushChars: 48
-  streamFlushIntervalMs: 500
+  streamFlushChars: 180
+  streamFlushIntervalMs: 1500
   webhook:
     enabled: false
     host: "0.0.0.0"

@@ -62,9 +62,12 @@ class _TokenStreamPublisher:
         self._bus = bus
         self._event = event
         self._enabled = enabled
+        self._paragraph_mode = paragraph_mode
         self._flush_chars = max(1, flush_chars)
         self._flush_interval = max(0.05, flush_interval_ms / 1000.0)
-        self._paragraph_mode = paragraph_mode
+        if self._paragraph_mode:
+            self._flush_chars = max(120, self._flush_chars)
+            self._flush_interval = max(1.2, self._flush_interval)
         self._full_text = ""
         self._pending = ""
         self._last_flush = time.monotonic()
