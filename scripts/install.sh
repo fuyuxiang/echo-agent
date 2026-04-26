@@ -401,6 +401,11 @@ setup_service() {
     if [ ! -x "$echo_cmd" ]; then
         return 0
     fi
+    if ! "$echo_cmd" service --help >/dev/null 2>&1; then
+        log_warn "Installed echo-agent does not support systemd service management; skipping service registration."
+        log_info "Update the installed code and rerun the installer to enable service management."
+        return 0
+    fi
 
     echo ""
     if prompt_yes_no "Register Echo Agent as a systemd service (auto-start on boot)?" "yes"; then
