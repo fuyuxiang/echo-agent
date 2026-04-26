@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolPermission, ToolResult
+from echo_agent.scheduler.delivery import target_from_session_key
 from echo_agent.scheduler.service import ScheduledJob, Scheduler, TriggerKind
 
 
@@ -19,6 +20,8 @@ class CronjobTool(Tool):
             "schedule": {"type": "string", "description": "Cron expression (for create), e.g., '*/5 * * * *'."},
             "command": {"type": "string", "description": "Command or message to execute on schedule (for create)."},
             "job_id": {"type": "string", "description": "Job ID (for delete/trigger)."},
+            "target_channel": {"type": "string", "description": "Optional delivery channel. Defaults to the current chat."},
+            "target_chat_id": {"type": "string", "description": "Optional delivery chat id. Defaults to the current chat."},
         },
         "required": ["action"],
     }
@@ -39,11 +42,21 @@ class CronjobTool(Tool):
             command = params.get("command", "")
             if not schedule or not command:
                 return ToolResult(success=False, error="Both 'schedule' and 'command' are required for create")
+            source_session_key = ctx.session_key if ctx else ""
+            default_channel, default_chat_id = target_from_session_key(source_session_key)
+            target_channel = params.get("target_channel", "") or default_channel
+            target_chat_id = params.get("target_chat_id", "") or default_chat_id
+            payload = {
+                "command": command,
+                "source_session_key": source_session_key,
+                "deliver_channel": target_channel,
+                "deliver_chat_id": target_chat_id,
+            }
             job = ScheduledJob(
                 name=name,
                 trigger=TriggerKind.CRON,
                 cron_expr=schedule,
-                payload={"command": command},
+                payload=payload,
             )
             created = self._scheduler.add_job(job)
             return ToolResult(output=f"Created job '{name}' (id={created.id}): {schedule}", metadata={"job_id": created.id})
