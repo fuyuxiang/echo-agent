@@ -163,7 +163,7 @@ class ChannelsConfig(_Base):
     matrix: MatrixChannelConfig = Field(default_factory=MatrixChannelConfig)
     send_progress: bool = False
     send_tool_hints: bool = False
-    stream_channels: list[str] = Field(default_factory=lambda: ["weixin", "qqbot"])
+    stream_channels: list[str] = Field(default_factory=lambda: ["telegram", "discord", "slack"])
     stream_flush_chars: int = 200
     stream_flush_interval_ms: int = 3000
     stream_paragraph_mode: bool = True
