@@ -11,7 +11,7 @@ from loguru import logger
 
 from echo_agent.bus.events import OutboundEvent
 from echo_agent.bus.queue import MessageBus
-from echo_agent.channels.base import BaseChannel
+from echo_agent.channels.base import BaseChannel, SendResult
 from echo_agent.config.schema import SlackChannelConfig
 
 _API_BASE = "https://slack.com/api"
@@ -19,6 +19,7 @@ _API_BASE = "https://slack.com/api"
 
 class SlackChannel(BaseChannel):
     name = "slack"
+    supports_edit = True
 
     def __init__(self, config: SlackChannelConfig, bus: MessageBus):
         super().__init__(config, bus)
@@ -53,10 +54,10 @@ class SlackChannel(BaseChannel):
         if self._session:
             await self._session.close()
 
-    async def send(self, event: OutboundEvent) -> None:
+    async def send(self, event: OutboundEvent) -> SendResult | None:
         text = event.text or ""
         if not text:
-            return
+            return None
         payload: dict[str, Any] = {
             "channel": event.chat_id,
             "text": text,
@@ -64,7 +65,36 @@ class SlackChannel(BaseChannel):
         thread_ts = event.metadata.get("thread_ts")
         if thread_ts:
             payload["thread_ts"] = thread_ts
-        await self._api("chat.postMessage", token=self._bot_token, json_body=payload)
+        result = await self._api("chat.postMessage", token=self._bot_token, json_body=payload)
+        if result and result.get("ok"):
+            return SendResult(success=True, message_id=str(result.get("ts", "")))
+        error = str(result.get("error", "Slack chat.postMessage failed")) if result else "Slack chat.postMessage failed"
+        return SendResult(success=False, error=error)
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        text: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+        finalize: bool = False,
+    ) -> SendResult:
+        if not text:
+            return SendResult(success=False, message_id=message_id, error="empty text")
+        result = await self._api(
+            "chat.update",
+            token=self._bot_token,
+            json_body={
+                "channel": chat_id,
+                "ts": message_id,
+                "text": text,
+            },
+        )
+        if result and result.get("ok"):
+            return SendResult(success=True, message_id=str(result.get("ts") or message_id))
+        error = str(result.get("error", "Slack chat.update failed")) if result else "Slack chat.update failed"
+        return SendResult(success=False, message_id=message_id, error=error)
 
     # ── Socket Mode ──────────────────────────────────────────────────────────
 

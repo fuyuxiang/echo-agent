@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,13 @@ from loguru import logger
 
 from echo_agent.bus.events import InboundEvent, OutboundEvent, ContentBlock, ContentType
 from echo_agent.bus.queue import MessageBus
+
+
+@dataclass
+class SendResult:
+    success: bool
+    message_id: str = ""
+    error: str = ""
 
 
 class BaseChannel(ABC):
@@ -39,8 +47,20 @@ class BaseChannel(ABC):
         """Stop and clean up resources."""
 
     @abstractmethod
-    async def send(self, event: OutboundEvent) -> None:
+    async def send(self, event: OutboundEvent) -> SendResult | None:
         """Send a message through this channel."""
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        text: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+        finalize: bool = False,
+    ) -> SendResult:
+        """Edit an existing platform message when the channel supports it."""
+        return SendResult(success=False, error=f"channel {self.name} does not support message editing")
 
     def is_allowed(self, sender_id: str) -> bool:
         allow_list = getattr(self.config, "allow_from", [])
