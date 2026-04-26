@@ -12,7 +12,7 @@ from loguru import logger
 
 from echo_agent.bus.events import OutboundEvent
 from echo_agent.bus.queue import MessageBus
-from echo_agent.channels.base import BaseChannel
+from echo_agent.channels.base import BaseChannel, SendResult
 from echo_agent.config.schema import DiscordChannelConfig
 
 _GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
@@ -23,6 +23,7 @@ _INTENTS = (1 << 0) | (1 << 9) | (1 << 15)  # GUILDS | GUILD_MESSAGES | MESSAGE_
 
 class DiscordChannel(BaseChannel):
     name = "discord"
+    supports_edit = True
 
     def __init__(self, config: DiscordChannelConfig, bus: MessageBus):
         super().__init__(config, bus)
@@ -62,11 +63,12 @@ class DiscordChannel(BaseChannel):
         if self._session:
             await self._session.close()
 
-    async def send(self, event: OutboundEvent) -> None:
+    async def send(self, event: OutboundEvent) -> SendResult | None:
         text = event.text or ""
         if not text or not self._session:
-            return
+            return None
         url = f"{_API_BASE}/channels/{event.chat_id}/messages"
+        first_result: SendResult | None = None
         for chunk in _chunk_text(text, _MAX_TEXT):
             payload: dict[str, Any] = {"content": chunk}
             if event.reply_to_id:
@@ -76,8 +78,42 @@ class DiscordChannel(BaseChannel):
                     if resp.status >= 400:
                         body = await resp.text()
                         logger.warning("Discord send failed ({}): {}", resp.status, body[:200])
+                        send_result = SendResult(success=False, error=body[:200])
+                    else:
+                        data = await resp.json()
+                        send_result = SendResult(success=True, message_id=str(data.get("id", "")))
             except Exception as e:
                 logger.error("Discord send error: {}", e)
+                send_result = SendResult(success=False, error=str(e))
+            if first_result is None:
+                first_result = send_result
+        return first_result
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        text: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+        finalize: bool = False,
+    ) -> SendResult:
+        if not text or not self._session:
+            return SendResult(success=False, message_id=message_id, error="empty text or missing session")
+        if len(text) > _MAX_TEXT:
+            return SendResult(success=False, message_id=message_id, error="message exceeds Discord edit limit")
+        url = f"{_API_BASE}/channels/{chat_id}/messages/{message_id}"
+        try:
+            async with self._session.patch(url, json={"content": text}) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    logger.warning("Discord edit failed ({}): {}", resp.status, body[:200])
+                    return SendResult(success=False, message_id=message_id, error=body[:200])
+                data = await resp.json()
+                return SendResult(success=True, message_id=str(data.get("id") or message_id))
+        except Exception as e:
+            logger.error("Discord edit error: {}", e)
+            return SendResult(success=False, message_id=message_id, error=str(e))
 
     # ── WebSocket lifecycle ──────────────────────────────────────────────────
 

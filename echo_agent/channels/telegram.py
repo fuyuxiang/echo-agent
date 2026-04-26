@@ -10,7 +10,7 @@ from loguru import logger
 
 from echo_agent.bus.events import OutboundEvent
 from echo_agent.bus.queue import MessageBus
-from echo_agent.channels.base import BaseChannel
+from echo_agent.channels.base import BaseChannel, SendResult
 from echo_agent.config.schema import TelegramChannelConfig
 
 _API = "https://api.telegram.org/bot{token}/{method}"
@@ -19,6 +19,7 @@ _MAX_TEXT = 4096
 
 class TelegramChannel(BaseChannel):
     name = "telegram"
+    supports_edit = True
 
     def __init__(self, config: TelegramChannelConfig, bus: MessageBus):
         super().__init__(config, bus)
@@ -57,20 +58,44 @@ class TelegramChannel(BaseChannel):
         if self._session:
             await self._session.close()
 
-    async def send(self, event: OutboundEvent) -> None:
+    async def send(self, event: OutboundEvent) -> SendResult | None:
         text = event.text or ""
         if not text:
-            return
+            return None
         chat_id = event.chat_id
         reply_to = event.reply_to_id
+        first_result: SendResult | None = None
         for chunk in self._chunk_text(text, _MAX_TEXT):
-            await self._api("sendMessage", json={
+            result = await self._api("sendMessage", json={
                 "chat_id": chat_id,
                 "text": chunk,
                 "parse_mode": "HTML",
                 **({"reply_to_message_id": reply_to} if reply_to else {}),
             })
+            send_result = self._send_result(result, "Telegram sendMessage failed")
+            if first_result is None:
+                first_result = send_result
             reply_to = None
+        return first_result
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        text: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+        finalize: bool = False,
+    ) -> SendResult:
+        if not text:
+            return SendResult(success=False, message_id=message_id, error="empty text")
+        result = await self._api("editMessageText", json={
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "parse_mode": "HTML",
+        })
+        return self._send_result(result, "Telegram editMessageText failed", fallback_message_id=message_id)
 
     async def _poll_loop(self) -> None:
         while self._running:
@@ -155,6 +180,18 @@ class TelegramChannel(BaseChannel):
         except Exception as e:
             logger.error("Telegram API {} failed: {}", method, e)
             return None
+
+    @staticmethod
+    def _send_result(
+        result: Any,
+        error: str,
+        *,
+        fallback_message_id: str = "",
+    ) -> SendResult:
+        if isinstance(result, dict):
+            message_id = str(result.get("message_id") or fallback_message_id)
+            return SendResult(success=True, message_id=message_id)
+        return SendResult(success=False, message_id=fallback_message_id, error=error)
 
     @staticmethod
     def _chunk_text(text: str, limit: int) -> list[str]:

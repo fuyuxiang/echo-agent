@@ -134,13 +134,11 @@ class _TokenStreamPublisher:
             self._full_text = final_text
 
         if self._sent_nonfinal:
-            if self._pending:
-                await self._flush(is_final=True)
-            else:
-                await self._publish("", is_final=True)
+            self._pending = ""
+            await self._publish(self._full_text, is_final=True, full_text=True)
             return True
 
-        await self._publish(final_text, is_final=True)
+        await self._publish(final_text, is_final=True, full_text=True)
         return True
 
     async def _flush(self, *, is_final: bool) -> None:
@@ -153,7 +151,7 @@ class _TokenStreamPublisher:
         self._pending = self._pending[pos:]
         await self._publish(text, is_final=is_final)
 
-    async def _publish(self, text: str, *, is_final: bool) -> None:
+    async def _publish(self, text: str, *, is_final: bool, full_text: bool = False) -> None:
         outbound = OutboundEvent.text_reply(
             channel=self._event.channel,
             chat_id=self._event.chat_id,
@@ -165,6 +163,8 @@ class _TokenStreamPublisher:
         outbound.metadata = dict(self._event.metadata)
         outbound.metadata["_inbound_event_id"] = self._event.event_id
         outbound.metadata["_token_stream"] = True
+        if full_text:
+            outbound.metadata["_stream_full_text"] = True
         await self._bus.publish_outbound(outbound)
         self._last_flush = time.monotonic()
         if not is_final and text:

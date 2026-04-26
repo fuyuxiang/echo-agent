@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
 from loguru import logger
 
@@ -45,6 +48,20 @@ _CHANNEL_REGISTRY: dict[str, type[BaseChannel]] = {
 }
 
 
+_STREAM_CURSOR = " ..."
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_THINK_OPEN_RE = re.compile(r"<think>.*$", re.DOTALL | re.IGNORECASE)
+_THINK_CLOSE_RE = re.compile(r"^.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
+@dataclass
+class _StreamState:
+    raw_text: str = ""
+    message_id: str = ""
+    rendered_text: str = ""
+    failed: bool = False
+
+
 def register_channel_type(name: str, cls: type[BaseChannel]) -> None:
     _CHANNEL_REGISTRY[name] = cls
 
@@ -59,6 +76,7 @@ class ChannelManager:
         self._send_progress = config.send_progress
         self._send_tool_hints = config.send_tool_hints
         self._on_cli_exit = on_cli_exit
+        self._stream_states: dict[str, _StreamState] = {}
         self.bus.subscribe_outbound_global(self._filter_and_dispatch)
 
     def get_channel(self, name: str) -> BaseChannel | None:
@@ -69,6 +87,11 @@ class ChannelManager:
         return [name for name, ch in self._channels.items() if ch.is_running]
 
     async def _filter_and_dispatch(self, event: OutboundEvent) -> None:
+        if event.metadata.get("_token_stream"):
+            await self._handle_token_stream(event)
+            if event.metadata.get("_drop"):
+                return
+
         if event.metadata.get("_progress"):
             is_tool_hint = event.metadata.get("_tool_hint", False)
             if is_tool_hint and not self._send_tool_hints:
@@ -77,6 +100,140 @@ class ChannelManager:
             if not is_tool_hint and not self._send_progress:
                 event.metadata["_drop"] = True
                 return
+
+    async def _handle_token_stream(self, event: OutboundEvent) -> None:
+        channel = self._channels.get(event.channel)
+        if channel is None:
+            return
+
+        if not channel.supports_edit:
+            if not event.is_final:
+                event.metadata["_drop"] = True
+            return
+
+        event.metadata["_drop"] = True
+        stream_key = self._stream_key(event)
+        state = self._stream_states.setdefault(stream_key, _StreamState())
+
+        if event.metadata.get("_stream_full_text"):
+            state.raw_text = event.text or ""
+        else:
+            state.raw_text += event.text or ""
+
+        visible_text = self._visible_stream_text(state.raw_text, final=event.is_final)
+
+        if state.failed:
+            if event.is_final:
+                await self._send_stream_fallback(channel, event, visible_text)
+                self._stream_states.pop(stream_key, None)
+            return
+
+        rendered_text = self._render_stream_text(visible_text, final=event.is_final)
+        if not rendered_text:
+            if event.is_final:
+                self._stream_states.pop(stream_key, None)
+            return
+
+        if rendered_text == state.rendered_text:
+            if event.is_final:
+                self._stream_states.pop(stream_key, None)
+            return
+
+        if state.message_id:
+            result = await channel.edit_message(
+                event.chat_id,
+                state.message_id,
+                rendered_text,
+                metadata=self._public_metadata(event.metadata),
+                finalize=event.is_final,
+            )
+        else:
+            send_event = OutboundEvent.text_reply(
+                channel=event.channel,
+                chat_id=event.chat_id,
+                text=rendered_text,
+                reply_to_id=event.reply_to_id,
+            )
+            send_event.is_final = event.is_final
+            send_event.message_kind = event.message_kind
+            send_event.metadata = self._public_metadata(event.metadata)
+            result = await channel.send(send_event)
+
+        if not result or not result.success:
+            error = result.error if result else "channel returned no send result"
+            logger.warning("Token stream delivery failed on {}: {}", event.channel, error)
+            state.failed = True
+            if event.is_final:
+                await self._send_stream_fallback(channel, event, visible_text)
+                self._stream_states.pop(stream_key, None)
+            return
+
+        if result.message_id:
+            state.message_id = result.message_id
+        elif not event.is_final:
+            logger.warning("Token stream send on {} did not return a message id", event.channel)
+            state.failed = True
+            return
+
+        state.rendered_text = rendered_text
+        if event.is_final:
+            self._stream_states.pop(stream_key, None)
+
+    async def _send_stream_fallback(self, channel: BaseChannel, event: OutboundEvent, text: str) -> None:
+        final_text = self._render_stream_text(text, final=True)
+        if not final_text:
+            return
+        fallback = OutboundEvent.text_reply(
+            channel=event.channel,
+            chat_id=event.chat_id,
+            text=final_text,
+            reply_to_id=event.reply_to_id,
+        )
+        fallback.is_final = True
+        fallback.message_kind = "final"
+        fallback.metadata = self._public_metadata(event.metadata)
+        result = await channel.send(fallback)
+        if result and not result.success:
+            logger.warning("Token stream fallback send failed on {}: {}", event.channel, result.error)
+
+    @staticmethod
+    def _stream_key(event: OutboundEvent) -> str:
+        stream_id = str(event.metadata.get("_inbound_event_id") or event.event_id)
+        return f"{event.channel}:{event.chat_id}:{stream_id}"
+
+    @staticmethod
+    def _public_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+        return {key: value for key, value in metadata.items() if not key.startswith("_")}
+
+    @staticmethod
+    def _visible_stream_text(text: str, *, final: bool) -> str:
+        if not text:
+            return ""
+        visible = _THINK_BLOCK_RE.sub("", text)
+        visible = _THINK_CLOSE_RE.sub("", visible)
+        visible = _THINK_OPEN_RE.sub("", visible)
+        if not final:
+            visible = ChannelManager._trim_partial_think_marker(visible)
+            return visible
+        return visible.strip()
+
+    @staticmethod
+    def _trim_partial_think_marker(text: str) -> str:
+        marker = "<think>"
+        lower = text.lower()
+        for length in range(len(marker) - 1, 0, -1):
+            if lower.endswith(marker[:length]):
+                return text[:-length]
+        return text
+
+    @staticmethod
+    def _render_stream_text(text: str, *, final: bool) -> str:
+        rendered = text.strip() if final else text.rstrip()
+        if final:
+            return rendered
+        if not rendered:
+            return ""
+        return f"{rendered}{_STREAM_CURSOR}"
 
     async def start_all(self) -> None:
         for name, cls in _CHANNEL_REGISTRY.items():

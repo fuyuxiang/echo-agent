@@ -7,8 +7,9 @@ channels:
   cli:
     enabled: true
   streamChannels:
-    - "weixin"
-    - "qqbot"
+    - "telegram"
+    - "discord"
+    - "slack"
   streamFlushChars: 48
   streamFlushIntervalMs: 500
   webhook:
