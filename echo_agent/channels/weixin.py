@@ -25,6 +25,7 @@ from echo_agent.bus.events import ContentBlock, ContentType, OutboundEvent
 from echo_agent.bus.queue import MessageBus
 from echo_agent.channels.base import BaseChannel
 from echo_agent.config.schema import WeixinChannelConfig
+from echo_agent.utils.text import split_message
 
 try:
     from cryptography.hazmat.backends import default_backend
@@ -375,13 +376,7 @@ class WeixinChannel(BaseChannel):
 
     @staticmethod
     def _split_text(text: str) -> list[str]:
-        if len(text) <= _MAX_MESSAGE_LENGTH:
-            return [text]
-        chunks = []
-        while text:
-            chunks.append(text[:_MAX_MESSAGE_LENGTH])
-            text = text[_MAX_MESSAGE_LENGTH:]
-        return chunks
+        return split_message(text, _MAX_MESSAGE_LENGTH)
 
     # ── Poll loop ────────────────────────────────────────────────────────────
 

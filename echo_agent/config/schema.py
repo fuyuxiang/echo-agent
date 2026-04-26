@@ -164,8 +164,8 @@ class ChannelsConfig(_Base):
     send_progress: bool = False
     send_tool_hints: bool = False
     stream_channels: list[str] = Field(default_factory=lambda: ["telegram", "discord", "slack"])
-    stream_flush_chars: int = 200
-    stream_flush_interval_ms: int = 3000
+    stream_flush_chars: int = 180
+    stream_flush_interval_ms: int = 1500
     stream_paragraph_mode: bool = True
     transcription_api_key: str = ""
 
