@@ -41,7 +41,7 @@
 ## 快速安装
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/fuyuxiang/echo-agent/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/fuyuxiang/echo-agent/master/scripts/install.sh | bash
 ```
 
 支持 Linux、macOS 和 WSL2。安装脚本会完成 Python 3.11、依赖安装和 PATH 配置；Linux 环境可注册 systemd 服务，用于长期运行。
