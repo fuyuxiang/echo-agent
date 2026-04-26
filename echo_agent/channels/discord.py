@@ -14,6 +14,7 @@ from echo_agent.bus.events import OutboundEvent
 from echo_agent.bus.queue import MessageBus
 from echo_agent.channels.base import BaseChannel, SendResult
 from echo_agent.config.schema import DiscordChannelConfig
+from echo_agent.utils.text import split_message
 
 _GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
 _API_BASE = "https://discord.com/api/v10"
@@ -233,16 +234,4 @@ class DiscordChannel(BaseChannel):
 
 
 def _chunk_text(text: str, limit: int) -> list[str]:
-    if len(text) <= limit:
-        return [text]
-    chunks: list[str] = []
-    while text:
-        if len(text) <= limit:
-            chunks.append(text)
-            break
-        cut = text.rfind("\n", 0, limit)
-        if cut <= 0:
-            cut = limit
-        chunks.append(text[:cut])
-        text = text[cut:].lstrip("\n")
-    return chunks
+    return split_message(text, limit)

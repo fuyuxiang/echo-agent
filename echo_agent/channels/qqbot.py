@@ -19,6 +19,7 @@ from echo_agent.bus.events import OutboundEvent
 from echo_agent.bus.queue import MessageBus
 from echo_agent.channels.base import BaseChannel
 from echo_agent.config.schema import QQBotChannelConfig
+from echo_agent.utils.text import split_message
 
 _API_BASE = "https://api.sgroup.qq.com"
 _SANDBOX_API = "https://sandbox.api.sgroup.qq.com"
@@ -161,13 +162,7 @@ class QQBotChannel(BaseChannel):
 
     @staticmethod
     def _split_text(text: str) -> list[str]:
-        if len(text) <= _MAX_MESSAGE_LENGTH:
-            return [text]
-        chunks = []
-        while text:
-            chunks.append(text[:_MAX_MESSAGE_LENGTH])
-            text = text[_MAX_MESSAGE_LENGTH:]
-        return chunks
+        return split_message(text, _MAX_MESSAGE_LENGTH)
 
     # ── WebSocket ────────────────────────────────────────────────────────────
 
