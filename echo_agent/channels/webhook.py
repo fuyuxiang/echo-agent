@@ -6,7 +6,6 @@ import asyncio
 import hashlib
 import hmac
 import json
-from typing import Any
 
 from aiohttp import web
 from loguru import logger

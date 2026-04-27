@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
-from echo_agent.bus.events import OutboundEvent
 from echo_agent.bus.queue import MessageBus
 
 
