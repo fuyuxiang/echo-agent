@@ -155,12 +155,20 @@ class _TokenStreamPublisher:
         await self._publish(text, is_final=is_final)
 
     async def _publish(self, text: str, *, is_final: bool, full_text: bool = False) -> None:
-        outbound = OutboundEvent.text_reply(
-            channel=self._event.channel,
-            chat_id=self._event.chat_id,
-            text=text,
-            reply_to_id=self._event.reply_to_id,
-        )
+        if is_final and full_text:
+            outbound = OutboundEvent.from_text_with_media(
+                channel=self._event.channel,
+                chat_id=self._event.chat_id,
+                text=text,
+                reply_to_id=self._event.reply_to_id,
+            )
+        else:
+            outbound = OutboundEvent.text_reply(
+                channel=self._event.channel,
+                chat_id=self._event.chat_id,
+                text=text,
+                reply_to_id=self._event.reply_to_id,
+            )
         outbound.is_final = is_final
         outbound.message_kind = "final" if is_final else "streaming"
         outbound.metadata = dict(self._event.metadata)
@@ -469,7 +477,7 @@ class AgentLoop:
             result = await self._process_event(event, trace_id, publish_response=True)
             response_text = result.response_text
             if response_text and not result.outbound_sent:
-                out = OutboundEvent.text_reply(
+                out = OutboundEvent.from_text_with_media(
                     channel=event.channel, chat_id=event.chat_id, text=response_text, reply_to_id=event.reply_to_id,
                 )
                 out.metadata = dict(event.metadata)

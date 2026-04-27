@@ -111,6 +111,21 @@ def build_skills_context(skill_store: Any) -> str:
     return "\n".join(lines)
 
 
+_QQBOT_MEDIA_GUIDANCE = """\
+## QQ Media Tags
+When you need to send files, images, audio, or video to the user, wrap the URL or local file path in the corresponding tag. \
+The system will automatically upload and deliver the media through QQ's rich media API.
+
+- Image: <qqimg>URL_or_path</qqimg>
+- File (Word, PDF, Excel, etc.): <qqfile>URL_or_path</qqfile>
+- Audio/Voice: <qqvoice>URL_or_path</qqvoice>
+- Video: <qqvideo>URL_or_path</qqvideo>
+
+Example: To send a Word document, output <qqfile>https://example.com/report.docx</qqfile>
+You can mix text and media tags in a single response. Each tag will be sent as a separate media message.
+IMPORTANT: Only use these tags when you have a real, accessible URL or file path. Do NOT fabricate URLs."""
+
+
 class ContextBuilder:
     BOOTSTRAP_FILES = ("AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md")
     _RUNTIME_TAG = "[Runtime Context]"
@@ -203,7 +218,10 @@ You are {self.agent_name}, a helpful AI assistant.
         lines = [f"Current Time: {now} ({tz})"]
         if channel and chat_id:
             lines.extend([f"Channel: {channel}", f"Chat ID: {chat_id}"])
-        return self._RUNTIME_TAG + "\n" + "\n".join(lines)
+        ctx = self._RUNTIME_TAG + "\n" + "\n".join(lines)
+        if channel and "qqbot" in channel:
+            ctx += "\n\n" + _QQBOT_MEDIA_GUIDANCE
+        return ctx
 
     def _load_bootstrap_files(self) -> str:
         parts = []

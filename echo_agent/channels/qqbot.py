@@ -47,6 +47,12 @@ _SEND_RETRIES = 3
 _RECONNECT_BACKOFFS = [2, 5, 10, 30, 60]
 _AT_MENTION_RE = re.compile(r"<@!?\d+>\s*")
 
+_FILE_URL_RE = re.compile(
+    r"(https?://\S+\.(?:docx?|xlsx?|pptx?|pdf|zip|rar|7z|tar|gz|csv|txt|md|json|xml|yaml|yml))"
+    r"(?:\s|$|[)\]\"'])",
+    re.IGNORECASE,
+)
+
 
 class QQBotChannel(BaseChannel):
     name = "qqbot"
@@ -146,6 +152,9 @@ class QQBotChannel(BaseChannel):
                 kind = self._content_type_to_kind(block.type, block.url or "", block.mime_type)
                 send_queue.append(SendQueueItem(kind=kind, content=block.url or ""))
 
+        if self._media_enabled:
+            send_queue = self._detect_file_urls_in_text(send_queue)
+
         if not send_queue:
             text = event.text or ""
             if text:
@@ -234,6 +243,33 @@ class QQBotChannel(BaseChannel):
         if ct == ContentType.FILE:
             return detect_media_kind(url, mime)
         return "file"
+
+    @staticmethod
+    def _detect_file_urls_in_text(queue: list[SendQueueItem]) -> list[SendQueueItem]:
+        """Scan text items for bare file URLs and split them into media items."""
+        result: list[SendQueueItem] = []
+        for item in queue:
+            if item.kind != "text":
+                result.append(item)
+                continue
+            last_end = 0
+            found = False
+            for m in _FILE_URL_RE.finditer(item.content):
+                found = True
+                before = item.content[last_end:m.start()].strip()
+                if before:
+                    result.append(SendQueueItem(kind="text", content=before))
+                url = m.group(1)
+                kind = detect_media_kind(url)
+                result.append(SendQueueItem(kind=kind, content=url))
+                last_end = m.end()
+            if found:
+                after = item.content[last_end:].strip()
+                if after:
+                    result.append(SendQueueItem(kind="text", content=after))
+            else:
+                result.append(item)
+        return result
 
     async def _send_chunk(self, chat_id: str, text: str, msg_type: str, reply_to: str) -> None:
         seq = self._next_msg_seq()
