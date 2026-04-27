@@ -6,7 +6,6 @@ single-line summaries. This is a cheap pre-pass that doesn't call the LLM.
 
 from __future__ import annotations
 
-import json
 from typing import Any, Callable
 
 from echo_agent.agent.compression.types import PruneResult

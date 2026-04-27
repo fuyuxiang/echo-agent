@@ -22,7 +22,6 @@ from echo_agent.channels.matrix import MatrixChannel
 from echo_agent.channels.qqbot import QQBotChannel
 from echo_agent.channels.slack import SlackChannel
 from echo_agent.channels.telegram import TelegramChannel
-from echo_agent.channels.wechat import WeChatChannel
 from echo_agent.channels.wecom import WeComChannel
 from echo_agent.channels.webhook import WebhookChannel
 from echo_agent.channels.weixin import WeixinChannel
@@ -37,7 +36,6 @@ _CHANNEL_REGISTRY: dict[str, type[BaseChannel]] = {
     "discord": DiscordChannel,
     "slack": SlackChannel,
     "whatsapp": WhatsAppChannel,
-    "wechat": WeChatChannel,
     "weixin": WeixinChannel,
     "qqbot": QQBotChannel,
     "feishu": FeishuChannel,

@@ -62,17 +62,6 @@ class WhatsAppChannelConfig(_Base):
     port: int = 8081
 
 
-class WeChatChannelConfig(_Base):
-    enabled: bool = False
-    app_id: str = ""
-    app_secret: str = ""
-    token: str = ""
-    encoding_aes_key: str = ""
-    webhook_path: str = "/wechat"
-    host: str = "0.0.0.0"
-    port: int = 8082
-
-
 class WeixinChannelConfig(_Base):
     enabled: bool = False
     account_id: str = ""
@@ -91,6 +80,10 @@ class QQBotChannelConfig(_Base):
     allow_from: list[str] = Field(default_factory=list)
     sandbox: bool = False
     markdown_support: bool = False
+    media_enabled: bool = True
+    media_max_file_size_mb: int = 20
+    media_upload_cache_size: int = 500
+    media_parse_tags: bool = True
 
 
 class FeishuChannelConfig(_Base):
@@ -153,7 +146,6 @@ class ChannelsConfig(_Base):
     cron: CronChannelConfig = Field(default_factory=CronChannelConfig)
     slack: SlackChannelConfig = Field(default_factory=SlackChannelConfig)
     whatsapp: WhatsAppChannelConfig = Field(default_factory=WhatsAppChannelConfig)
-    wechat: WeChatChannelConfig = Field(default_factory=WeChatChannelConfig)
     weixin: WeixinChannelConfig = Field(default_factory=WeixinChannelConfig)
     qqbot: QQBotChannelConfig = Field(default_factory=QQBotChannelConfig)
     feishu: FeishuChannelConfig = Field(default_factory=FeishuChannelConfig)

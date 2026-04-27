@@ -2,6 +2,7 @@
 
 Connects to QQ Bot via WebSocket for receiving messages and REST API for sending.
 Supports C2C (private), group, and guild message types.
+Supports media/file sending via the QQ rich media API (msg_type=7).
 """
 
 from __future__ import annotations
@@ -15,9 +16,23 @@ from typing import Any
 import aiohttp
 from loguru import logger
 
-from echo_agent.bus.events import OutboundEvent
+from echo_agent.bus.events import ContentType, OutboundEvent
 from echo_agent.bus.queue import MessageBus
 from echo_agent.channels.base import BaseChannel
+from echo_agent.channels.qqbot_media import (
+    SendQueueItem,
+    UploadCache,
+    detect_media_kind,
+    is_data_source,
+    is_http_source,
+    is_local_path,
+    media_kind_to_file_type,
+    parse_send_queue,
+    read_local_file_as_base64,
+    send_media_message,
+    upload_media,
+    _next_msg_seq,
+)
 from echo_agent.config.schema import QQBotChannelConfig
 from echo_agent.utils.text import split_message
 
@@ -55,6 +70,14 @@ class QQBotChannel(BaseChannel):
         self._msg_seq: int = 0
         self._seen_messages: dict[str, float] = {}
         self._chat_type_map: dict[str, str] = {}
+        # Media support
+        self._media_enabled = config.media_enabled
+        self._parse_tags = config.media_parse_tags
+        self._max_file_size = config.media_max_file_size_mb * 1024 * 1024
+        self._upload_cache: UploadCache | None = (
+            UploadCache(max_size=config.media_upload_cache_size)
+            if self._media_enabled else None
+        )
 
     @property
     def _api_base(self) -> str:
@@ -103,19 +126,114 @@ class QQBotChannel(BaseChannel):
     # ── Send ─────────────────────────────────────────────────────────────────
 
     async def send(self, event: OutboundEvent) -> None:
-        text = event.text or ""
-        if not text or not self._session:
+        if not self._session:
             return
         await self._ensure_token()
         chat_id = event.chat_id
         msg_type = event.metadata.get("msg_type") or self._chat_type_map.get(chat_id, "group")
         msg_id = event.reply_to_id or ""
-        chunks = self._split_text(text)
-        for i, chunk in enumerate(chunks):
+
+        send_queue: list[SendQueueItem] = []
+        for block in event.content:
+            if block.type == ContentType.TEXT and block.text:
+                if self._media_enabled and self._parse_tags:
+                    send_queue.extend(parse_send_queue(block.text))
+                else:
+                    send_queue.append(SendQueueItem(kind="text", content=block.text))
+            elif self._media_enabled and block.type in (
+                ContentType.IMAGE, ContentType.AUDIO, ContentType.VIDEO, ContentType.FILE,
+            ):
+                kind = self._content_type_to_kind(block.type, block.url or "", block.mime_type)
+                send_queue.append(SendQueueItem(kind=kind, content=block.url or ""))
+
+        if not send_queue:
+            text = event.text or ""
+            if text:
+                send_queue.append(SendQueueItem(kind="text", content=text))
+
+        for i, item in enumerate(send_queue):
             reply = msg_id if i == 0 else ""
-            await self._send_chunk(chat_id, chunk, msg_type, reply)
-            if len(chunks) > 1 and i < len(chunks) - 1:
+            if item.kind == "text":
+                chunks = self._split_text(item.content)
+                for j, chunk in enumerate(chunks):
+                    r = reply if j == 0 else ""
+                    await self._send_chunk(chat_id, chunk, msg_type, r)
+                    if len(chunks) > 1 and j < len(chunks) - 1:
+                        await asyncio.sleep(0.5)
+            else:
+                await self._send_media(chat_id, msg_type, item, reply)
+            if len(send_queue) > 1 and i < len(send_queue) - 1:
                 await asyncio.sleep(0.5)
+
+    async def _send_media(
+        self, chat_id: str, msg_type: str, item: SendQueueItem, reply_to: str,
+    ) -> None:
+        if msg_type == "channel":
+            logger.warning("QQBot: media not supported for channel type, sending as text")
+            await self._send_chunk(chat_id, f"[{item.kind}] {item.content}", msg_type, reply_to)
+            return
+        if not self._session:
+            return
+
+        scope = "c2c" if msg_type == "c2c" else "group"
+        file_type = media_kind_to_file_type(item.kind)
+        source = item.content
+
+        try:
+            url = ""
+            file_data = ""
+            file_name = ""
+
+            if is_http_source(source):
+                url = source
+            elif is_data_source(source):
+                m = re.match(r"^data:[^;]+;base64,(.+)$", source, re.DOTALL)
+                if m:
+                    file_data = m.group(1)
+                else:
+                    raise ValueError(f"Invalid data URL: {source[:50]}")
+            elif is_local_path(source):
+                file_data, file_name = read_local_file_as_base64(
+                    source, self._max_file_size,
+                )
+            else:
+                raise ValueError(f"Unsupported media source: {source[:80]}")
+
+            result = await upload_media(
+                self._session, self._api_base, self._auth_headers(),
+                scope, chat_id, file_type,
+                url=url, file_data=file_data, file_name=file_name,
+                cache=self._upload_cache,
+            )
+            await send_media_message(
+                self._session, self._api_base, self._auth_headers(),
+                scope, chat_id, result["file_info"],
+                self._next_msg_seq(),
+                msg_id=reply_to,
+            )
+            logger.info("QQBot media sent: {} → {}/{}", item.kind, scope, chat_id)
+        except FileNotFoundError as e:
+            logger.error("QQBot media file not found: {}", e)
+            await self._send_chunk(
+                chat_id, f"[文件未找到] {source}", msg_type, reply_to,
+            )
+        except Exception as e:
+            logger.error("QQBot media send failed ({}): {}", item.kind, e)
+            await self._send_chunk(
+                chat_id, f"[媒体发送失败] {e}", msg_type, reply_to,
+            )
+
+    @staticmethod
+    def _content_type_to_kind(ct: ContentType, url: str, mime: str) -> str:
+        if ct == ContentType.IMAGE:
+            return "image"
+        if ct == ContentType.AUDIO:
+            return "voice"
+        if ct == ContentType.VIDEO:
+            return "video"
+        if ct == ContentType.FILE:
+            return detect_media_kind(url, mime)
+        return "file"
 
     async def _send_chunk(self, chat_id: str, text: str, msg_type: str, reply_to: str) -> None:
         seq = self._next_msg_seq()

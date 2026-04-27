@@ -66,7 +66,7 @@ def show_status(config_path: str | Path | None = None, workspace: str | Path | N
     print_header("Channels")
     channel_names = [
         "cli", "webhook", "cron", "telegram", "discord", "slack",
-        "whatsapp", "wechat", "weixin", "qqbot", "feishu", "dingtalk",
+        "whatsapp", "weixin", "qqbot", "feishu", "dingtalk",
         "email", "wecom", "matrix",
     ]
     any_enabled = False

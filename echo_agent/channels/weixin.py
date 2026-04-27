@@ -189,7 +189,6 @@ async def _send_message(
         token=token,
         timeout_ms=_API_TIMEOUT_MS,
     )
-# PLACEHOLDER_WEIXIN_DEDUP
 
 
 # ── Deduplicator & ContextTokenStore ─────────────────────────────────────────
