@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import time
 import xml.etree.ElementTree as ET
-from typing import Any
 
 import aiohttp
 from aiohttp import web

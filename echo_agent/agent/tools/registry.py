@@ -9,7 +9,7 @@ from typing import Any
 
 from loguru import logger
 
-from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult, build_idempotency_key
+from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
 
 
 class ToolRegistry:

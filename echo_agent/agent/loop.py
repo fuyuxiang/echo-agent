@@ -357,7 +357,6 @@ class AgentLoop:
     def _init_advanced_memory(self, config: Config, storage: Any) -> None:
         """初始化高级记忆子系统：四层记忆、向量索引、知识图谱、混合检索、预测预取。"""
         from echo_agent.memory.tiers import WorkingMemory, EpisodicManager, SemanticManager, ArchivalManager
-        from echo_agent.memory.forgetting import ForgettingCurve
         from echo_agent.memory.retrieval import HybridRetriever
 
         forgetting = self.memory.forgetting_curve
@@ -1019,7 +1018,7 @@ class AgentLoop:
     def _build_introduction(self, event: InboundEvent) -> str:
         template = self.config.session.introduction_template.strip()
         if not template:
-            if event.channel in {"wechat", "wecom", "weixin"}:
+            if event.channel in {"wecom", "weixin"}:
                 template = "你好，我是 {agent_name}，很高兴为你服务。"
             else:
                 template = "Hello, I'm {agent_name}. How can I help?"

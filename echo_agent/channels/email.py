@@ -9,7 +9,6 @@ import imaplib
 import re
 import smtplib
 from email.header import decode_header
-from typing import Any
 
 from loguru import logger
 
