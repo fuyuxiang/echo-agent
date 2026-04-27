@@ -5,11 +5,12 @@ All channel sources normalize into these types before entering the agent loop.
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, ClassVar
 
 
 class EventType(str, Enum):
@@ -119,6 +120,54 @@ class OutboundEvent:
             channel=channel,
             chat_id=chat_id,
             content=[ContentBlock(type=ContentType.TEXT, text=text)],
+            reply_to_id=reply_to_id,
+            **kwargs,
+        )
+
+    _MEDIA_TAG_RE: ClassVar[re.Pattern] = re.compile(
+        r"<(qqimg|qqvoice|qqvideo|qqfile|qqmedia)>"
+        r"([^<>]+)"
+        r"</(?:qqimg|qqvoice|qqvideo|qqfile|qqmedia|img)>",
+        re.IGNORECASE,
+    )
+    _TAG_TO_CONTENT_TYPE: ClassVar[dict[str, ContentType]] = {
+        "qqimg": ContentType.IMAGE,
+        "qqvoice": ContentType.AUDIO,
+        "qqvideo": ContentType.VIDEO,
+        "qqfile": ContentType.FILE,
+        "qqmedia": ContentType.FILE,
+    }
+
+    @classmethod
+    def from_text_with_media(
+        cls,
+        channel: str,
+        chat_id: str,
+        text: str,
+        reply_to_id: str | None = None,
+        **kwargs: Any,
+    ) -> OutboundEvent:
+        """Parse media tags in text and create structured content blocks."""
+        blocks: list[ContentBlock] = []
+        last_end = 0
+        for m in cls._MEDIA_TAG_RE.finditer(text):
+            before = text[last_end:m.start()].strip()
+            if before:
+                blocks.append(ContentBlock(type=ContentType.TEXT, text=before))
+            tag = m.group(1).lower()
+            source = m.group(2).strip()
+            ct = cls._TAG_TO_CONTENT_TYPE.get(tag, ContentType.FILE)
+            blocks.append(ContentBlock(type=ct, url=source))
+            last_end = m.end()
+        after = text[last_end:].strip()
+        if after:
+            blocks.append(ContentBlock(type=ContentType.TEXT, text=after))
+        if not blocks:
+            blocks.append(ContentBlock(type=ContentType.TEXT, text=text))
+        return cls(
+            channel=channel,
+            chat_id=chat_id,
+            content=blocks,
             reply_to_id=reply_to_id,
             **kwargs,
         )
