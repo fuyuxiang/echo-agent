@@ -49,7 +49,7 @@ class ApprovalManager:
         require_approval: list[str] | None = None,
         auto_approve: list[str] | None = None,
         auto_deny: list[str] | None = None,
-        default_policy: str = "ask",
+        default_policy: str = "approve",
     ):
         self._require = set(require_approval or [])
         self._auto_approve = set(auto_approve or [])

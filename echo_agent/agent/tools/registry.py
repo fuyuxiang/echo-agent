@@ -15,10 +15,20 @@ from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult, 
 class ToolRegistry:
     """Registry for agent tools with execution, replay guard, and audit logging."""
 
+    _ALIASES: dict[str, str] = {
+        "bash": "exec",
+        "shell": "exec",
+        "run_code": "execute_code",
+        "code": "execute_code",
+    }
+
     def __init__(self):
         self._tools: dict[str, Tool] = {}
         self._replay_cache: dict[str, dict[str, Any]] = {}
         self._execution_log: list[dict[str, Any]] = []
+
+    def _resolve(self, name: str) -> str:
+        return self._ALIASES.get(name, name)
 
     def register(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
@@ -27,10 +37,10 @@ class ToolRegistry:
         self._tools.pop(name, None)
 
     def get(self, name: str) -> Tool | None:
-        return self._tools.get(name)
+        return self._tools.get(self._resolve(name))
 
     def has(self, name: str) -> bool:
-        return name in self._tools
+        return self._resolve(name) in self._tools
 
     def get_definitions(self) -> list[dict[str, Any]]:
         definitions: list[dict[str, Any]] = []
@@ -51,7 +61,7 @@ class ToolRegistry:
         params: dict[str, Any],
         ctx: ToolExecutionContext | None = None,
     ) -> ToolResult:
-        tool = self._tools.get(name)
+        tool = self._tools.get(self._resolve(name))
         if not tool:
             return ToolResult(success=False, error=f"Tool '{name}' not found. Available: {', '.join(self.tool_names)}")
 

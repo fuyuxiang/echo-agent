@@ -748,7 +748,7 @@ class AgentLoop:
 
                 await _emit_progress(f"Using tool: {tool_call.name}", tool_hint=True)
 
-                denial = self._check_permission_and_approval(tool_call.name, tool_call.arguments, event.sender_id)
+                denial = self._check_permission_and_approval(tool_call.name, tool_call.arguments, event.sender_id, channel=event.channel)
                 if denial:
                     self.tracer.end_span(tool_span, metadata={"success": False, "denied": True})
                     messages.append({"role": "tool", "tool_call_id": tool_call.id, "name": tool_call.name, "content": denial.text})
@@ -823,6 +823,7 @@ class AgentLoop:
 
     def _check_permission_and_approval(
         self, tool_name: str, arguments: dict[str, Any], sender_id: str,
+        *, channel: str = "",
     ) -> ToolResult | None:
         """检查工具的审批状态。
 
@@ -841,6 +842,10 @@ class AgentLoop:
                 error=f"Tool '{tool_name}' denied by approval policy: {approval_req.reason}",
             )
         if approval_req.status == ApprovalStatus.PENDING:
+            if channel in ("cli", "direct", ""):
+                self.approval.approve(approval_req.id, decided_by="auto:cli")
+                logger.info("Auto-approved '{}' for non-interactive channel '{}'", tool_name, channel or "cli")
+                return None
             return ToolResult(
                 success=False,
                 error=(
@@ -865,7 +870,7 @@ class AgentLoop:
         if tool_call.name not in allowed_tools:
             return f"Error: Tool '{tool_call.name}' is not allowed for agent '{agent_id}'"
 
-        denial = self._check_permission_and_approval(tool_call.name, tool_call.arguments, event.sender_id)
+        denial = self._check_permission_and_approval(tool_call.name, tool_call.arguments, event.sender_id, channel=event.channel)
         if denial:
             return f"Error: {denial.error or denial.text}"
 
