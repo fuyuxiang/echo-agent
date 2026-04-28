@@ -187,8 +187,33 @@ class ContextBuilder:
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.extend(history)
-        messages.append({"role": "user", "content": merged_user})
+
+        if media:
+            content_parts: list[dict[str, Any]] = [{"type": "text", "text": merged_user}]
+            for url in media:
+                if url.startswith(("http://", "https://", "data:")):
+                    content_parts.append({"type": "image_url", "image_url": {"url": url}})
+                else:
+                    data_url = self._local_image_to_data_url(url)
+                    if data_url:
+                        content_parts.append({"type": "image_url", "image_url": {"url": data_url}})
+            messages.append({"role": "user", "content": content_parts})
+        else:
+            messages.append({"role": "user", "content": merged_user})
         return messages
+
+    @staticmethod
+    def _local_image_to_data_url(path: str) -> str | None:
+        import base64
+        from pathlib import Path as _Path
+        p = _Path(path)
+        if not p.exists():
+            return None
+        ext = p.suffix.lower()
+        mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp"}
+        mime = mime_map.get(ext, "image/png")
+        data = base64.b64encode(p.read_bytes()).decode()
+        return f"data:{mime};base64,{data}"
 
     def _identity(self) -> str:
         sys_info = platform.system()
