@@ -12,7 +12,7 @@ from loguru import logger
 
 from echo_agent.bus.events import OutboundEvent
 from echo_agent.bus.queue import MessageBus
-from echo_agent.channels.base import BaseChannel
+from echo_agent.channels.base import BaseChannel, SendResult
 from echo_agent.config.schema import WebhookChannelConfig
 
 
@@ -42,10 +42,11 @@ class WebhookChannel(BaseChannel):
         if self._runner:
             await self._runner.cleanup()
 
-    async def send(self, event: OutboundEvent) -> None:
+    async def send(self, event: OutboundEvent) -> SendResult | None:
         future = self._pending_responses.pop(event.reply_to_id or "", None)
         if future and not future.done():
             future.set_result(event.text)
+        return SendResult(success=True)
 
     def _verify_signature(self, body: bytes, signature: str) -> bool:
         if not self.config.secret:

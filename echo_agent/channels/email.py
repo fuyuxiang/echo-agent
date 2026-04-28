@@ -14,7 +14,7 @@ from loguru import logger
 
 from echo_agent.bus.events import OutboundEvent
 from echo_agent.bus.queue import MessageBus
-from echo_agent.channels.base import BaseChannel
+from echo_agent.channels.base import BaseChannel, SendResult
 from echo_agent.config.schema import EmailChannelConfig
 from echo_agent.utils.text import html_to_text
 
@@ -43,14 +43,18 @@ class EmailChannel(BaseChannel):
             except asyncio.CancelledError:
                 pass
 
-    async def send(self, event: OutboundEvent) -> None:
+    async def send(self, event: OutboundEvent) -> SendResult | None:
         text = event.text or ""
         if not text:
-            return
+            return SendResult(success=False, error="no text")
         to_addr = event.chat_id
         subject = self._subject_map.get(to_addr, "Re: Echo Agent")
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, self._send_smtp, to_addr, subject, text)
+        try:
+            await loop.run_in_executor(None, self._send_smtp, to_addr, subject, text)
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+        return SendResult(success=True)
 
     def _send_smtp(self, to_addr: str, subject: str, body: str) -> None:
         try:

@@ -23,7 +23,7 @@ from loguru import logger
 
 from echo_agent.bus.events import ContentBlock, ContentType, OutboundEvent
 from echo_agent.bus.queue import MessageBus
-from echo_agent.channels.base import BaseChannel
+from echo_agent.channels.base import BaseChannel, SendResult
 from echo_agent.config.schema import WeixinChannelConfig
 from echo_agent.utils.text import split_message
 
@@ -348,10 +348,10 @@ class WeixinChannel(BaseChannel):
 
     # ── Send ─────────────────────────────────────────────────────────────────
 
-    async def send(self, event: OutboundEvent) -> None:
+    async def send(self, event: OutboundEvent) -> SendResult | None:
         text = event.text or ""
         if not text or not self._send_session or not self._token:
-            return
+            return SendResult(success=False, error="no text, no session, or no token")
         chat_id = event.chat_id
         context_token = self._token_store.get(self._account_id, chat_id)
         chunks = self._split_text(text)
@@ -368,10 +368,13 @@ class WeixinChannel(BaseChannel):
                 errcode = resp.get("errcode", 0)
                 if errcode and errcode != 0:
                     logger.warning("weixin send error: errcode={} errmsg={}", errcode, resp.get("errmsg", ""))
+                    return SendResult(success=False, error=f"errcode={errcode}: {resp.get('errmsg', '')}")
             except Exception as exc:
                 logger.error("weixin send failed to {}: {}", chat_id[:8] if chat_id else "?", exc)
+                return SendResult(success=False, error=str(exc))
             if len(chunks) > 1:
                 await asyncio.sleep(0.3)
+        return SendResult(success=True)
 
     @staticmethod
     def _split_text(text: str) -> list[str]:

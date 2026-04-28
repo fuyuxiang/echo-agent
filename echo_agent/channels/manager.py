@@ -135,6 +135,8 @@ class ChannelManager:
                 return
 
         if event.is_final and event.message_kind == "final":
+            if not event.metadata.get("_token_stream"):
+                await self._deliver_final(event)
             await self._on_outbound_final(event)
 
     async def _on_outbound_final(self, event: OutboundEvent) -> None:
@@ -165,6 +167,29 @@ class ChannelManager:
                 await channel.send_reaction(event.chat_id, platform_msg_id, outcome_emoji)
             except Exception as e:
                 logger.debug("send_reaction failed on {}: {}", event.channel, e)
+
+    async def _deliver_final(self, event: OutboundEvent) -> None:
+        channel = self._channels.get(event.channel)
+        has_content = any(b.text or b.url for b in event.content)
+        if not channel or not has_content:
+            event.metadata["_drop"] = True
+            return
+        send_event = OutboundEvent(
+            channel=event.channel,
+            chat_id=event.chat_id,
+            content=list(event.content),
+            reply_to_id=event.reply_to_id,
+        )
+        send_event.is_final = True
+        send_event.message_kind = "final"
+        send_event.metadata = self._public_metadata(event.metadata)
+        try:
+            result = await channel.send(send_event)
+            if result and not result.success:
+                logger.warning("Final delivery failed on {}: {}", event.channel, result.error)
+        except Exception as e:
+            logger.error("Final delivery exception on {}: {}", event.channel, e)
+        event.metadata["_drop"] = True
 
     async def _handle_token_stream(self, event: OutboundEvent) -> None:
         channel = self._channels.get(event.channel)
