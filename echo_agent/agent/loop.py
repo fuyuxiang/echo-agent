@@ -599,6 +599,7 @@ class AgentLoop:
         messages = self.context.build_messages(
             history=history,
             current_message=event.text,
+            media=event.media_urls or None,
             channel=event.channel,
             chat_id=event.chat_id,
             system_prompt=system_prompt,

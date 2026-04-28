@@ -98,9 +98,14 @@ class WeComChannel(BaseChannel):
         msg_type = root.findtext("MsgType", "")
         from_user = root.findtext("FromUserName", "")
         text = ""
+        media: list[dict[str, str]] = []
 
         if msg_type == "text":
             text = root.findtext("Content", "")
+        elif msg_type == "image":
+            pic_url = root.findtext("PicUrl", "")
+            if pic_url:
+                media.append({"type": "image", "url": pic_url})
         elif msg_type == "event":
             event_type = root.findtext("Event", "")
             if event_type == "subscribe":
@@ -110,11 +115,12 @@ class WeComChannel(BaseChannel):
         else:
             return web.Response(text="success")
 
-        if not text:
+        if not text and not media:
             return web.Response(text="success")
 
         await self._handle_message(
             sender_id=from_user, chat_id=from_user, text=text,
+            media=media or None,
             metadata={"msg_type": msg_type},
         )
         return web.Response(text="success")
