@@ -1,7 +1,4 @@
-"""QQ Bot media helpers — type detection, tag parsing, upload cache, and API calls.
-
-Ported from a TypeScript QQ bot extension to Python.
-"""
+"""QQ Bot media helpers — type detection, tag parsing, upload cache, and API calls."""
 
 from __future__ import annotations
 
