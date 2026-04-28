@@ -47,6 +47,27 @@ _SEND_RETRIES = 3
 _RECONNECT_BACKOFFS = [2, 5, 10, 30, 60]
 _AT_MENTION_RE = re.compile(r"<@!?\d+>\s*")
 
+
+def _extract_attachments(d: dict[str, Any]) -> list[dict[str, str]]:
+    """Extract media info from QQ Bot API v2 attachments array."""
+    media: list[dict[str, str]] = []
+    for att in d.get("attachments", []):
+        url = att.get("url", "")
+        if not url:
+            continue
+        if not url.startswith(("http://", "https://")):
+            url = f"https://{url}"
+        ct = att.get("content_type", "").lower()
+        if ct.startswith("image"):
+            media.append({"type": "image", "url": url, "mime_type": ct})
+        elif ct.startswith("video"):
+            media.append({"type": "video", "url": url, "mime_type": ct})
+        elif ct.startswith("audio"):
+            media.append({"type": "audio", "url": url, "mime_type": ct})
+        else:
+            media.append({"type": "file", "url": url, "mime_type": ct})
+    return media
+
 _FILE_URL_RE = re.compile(
     r"(https?://\S+\.(?:docx?|xlsx?|pptx?|pdf|zip|rar|7z|tar|gz|csv|txt|md|json|xml|yaml|yml))"
     r"(?:\s|$|[)\]\"'])",
@@ -433,11 +454,13 @@ class QQBotChannel(BaseChannel):
         if not msg_id or self._is_duplicate(msg_id):
             return
         content = _AT_MENTION_RE.sub("", content).strip()
-        if not content:
+        media = _extract_attachments(d)
+        if not content and not media:
             return
         self._chat_type_map[channel_id] = "channel"
         await self._handle_message(
             sender_id=sender_id, chat_id=channel_id, text=content,
+            media=media or None,
             reply_to_id=msg_id, metadata={"msg_type": "channel", "guild_id": d.get("guild_id", "")},
         )
 
@@ -450,11 +473,13 @@ class QQBotChannel(BaseChannel):
         if not msg_id or self._is_duplicate(msg_id):
             return
         content = _AT_MENTION_RE.sub("", content).strip()
-        if not content:
+        media = _extract_attachments(d)
+        if not content and not media:
             return
         self._chat_type_map[group_id] = "group"
         await self._handle_message(
             sender_id=sender_id, chat_id=group_id, text=content,
+            media=media or None,
             reply_to_id=msg_id, metadata={"msg_type": "group"},
         )
 
@@ -465,11 +490,13 @@ class QQBotChannel(BaseChannel):
         msg_id = str(d.get("id", ""))
         if not msg_id or self._is_duplicate(msg_id):
             return
-        if not content:
+        media = _extract_attachments(d)
+        if not content and not media:
             return
         self._chat_type_map[sender_id] = "c2c"
         await self._handle_message(
             sender_id=sender_id, chat_id=sender_id, text=content,
+            media=media or None,
             reply_to_id=msg_id, metadata={"msg_type": "c2c"},
         )
 

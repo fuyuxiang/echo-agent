@@ -128,14 +128,28 @@ class DingTalkChannel(BaseChannel):
         sender_id = data.get("senderStaffId", data.get("senderId", ""))
         conversation_type = data.get("conversationType", "1")
         text = ""
+        media: list[dict[str, str]] = []
         msg_type = data.get("msgtype", "text")
         if msg_type == "text":
             text = data.get("text", {}).get("content", "").strip()
-        if not text:
+        elif msg_type == "picture":
+            pic_url = data.get("content", {}).get("downloadCode", "")
+            if not pic_url:
+                pic_url = data.get("content", {}).get("pictureDownloadCode", "")
+            if pic_url:
+                media.append({"type": "image", "url": pic_url})
+        elif msg_type == "richText":
+            for item in data.get("content", {}).get("richText", []):
+                if "text" in item:
+                    text += item["text"]
+                if "downloadCode" in item:
+                    media.append({"type": "image", "url": item["downloadCode"]})
+        if not text and not media:
             return
         chat_id = sender_id if conversation_type == "1" else data.get("conversationId", "")
         await self._handle_message(
             sender_id=sender_id, chat_id=chat_id, text=text,
+            media=media or None,
             metadata={"conversation_type": conversation_type},
         )
 
