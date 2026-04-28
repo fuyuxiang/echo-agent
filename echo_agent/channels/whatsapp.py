@@ -11,7 +11,7 @@ from loguru import logger
 
 from echo_agent.bus.events import OutboundEvent
 from echo_agent.bus.queue import MessageBus
-from echo_agent.channels.base import BaseChannel
+from echo_agent.channels.base import BaseChannel, SendResult
 from echo_agent.config.schema import WhatsAppChannelConfig
 
 _GRAPH_API = "https://graph.facebook.com/v21.0"
@@ -51,10 +51,10 @@ class WhatsAppChannel(BaseChannel):
         if self._session:
             await self._session.close()
 
-    async def send(self, event: OutboundEvent) -> None:
+    async def send(self, event: OutboundEvent) -> SendResult | None:
         text = event.text or ""
         if not text or not self._session:
-            return
+            return SendResult(success=False, error="no text or no session")
         url = f"{_GRAPH_API}/{self._phone_id}/messages"
         payload = {
             "messaging_product": "whatsapp",
@@ -67,8 +67,11 @@ class WhatsAppChannel(BaseChannel):
                 if resp.status >= 400:
                     body = await resp.text()
                     logger.warning("WhatsApp send failed ({}): {}", resp.status, body[:200])
+                    return SendResult(success=False, error=body[:200])
         except Exception as e:
             logger.error("WhatsApp send error: {}", e)
+            return SendResult(success=False, error=str(e))
+        return SendResult(success=True)
 
     async def _verify(self, request: web.Request) -> web.Response:
         mode = request.query.get("hub.mode")

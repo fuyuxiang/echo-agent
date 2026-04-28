@@ -14,7 +14,7 @@ from loguru import logger
 
 from echo_agent.bus.events import OutboundEvent
 from echo_agent.bus.queue import MessageBus
-from echo_agent.channels.base import BaseChannel
+from echo_agent.channels.base import BaseChannel, SendResult
 from echo_agent.config.schema import FeishuChannelConfig
 
 _API_BASE = "https://open.feishu.cn/open-apis"
@@ -56,10 +56,10 @@ class FeishuChannel(BaseChannel):
         if self._session:
             await self._session.close()
 
-    async def send(self, event: OutboundEvent) -> None:
+    async def send(self, event: OutboundEvent) -> SendResult | None:
         text = event.text or ""
         if not text or not self._session:
-            return
+            return SendResult(success=False, error="no text or no session")
         await self._ensure_tenant_token()
         chat_id = event.chat_id
         receive_id_type = event.metadata.get("receive_id_type", "chat_id")
@@ -81,8 +81,11 @@ class FeishuChannel(BaseChannel):
                 data = await resp.json()
                 if data.get("code", 0) != 0:
                     logger.warning("Feishu send error: {} {}", data.get("code"), data.get("msg"))
+                    return SendResult(success=False, error=f"{data.get('code')}: {data.get('msg')}")
         except Exception as e:
             logger.error("Feishu send error: {}", e)
+            return SendResult(success=False, error=str(e))
+        return SendResult(success=True)
 
     # ── Webhook ──────────────────────────────────────────────────────────────
 

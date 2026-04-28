@@ -138,3 +138,72 @@ async def test_token_stream_publisher_final_event_contains_full_text_after_chunk
         ("hello", True),
     ]
     assert captured[-1].metadata["_stream_full_text"] is True
+
+
+def _final_event(text: str, *, channel: str) -> OutboundEvent:
+    event = OutboundEvent.text_reply(channel=channel, chat_id="chat-1", text=text, reply_to_id="reply-1")
+    event.is_final = True
+    event.message_kind = "final"
+    event.metadata = {"_inbound_event_id": "inbound-1"}
+    return event
+
+
+@pytest.mark.asyncio
+async def test_non_stream_final_event_delivered_via_deliver_final() -> None:
+    bus = MessageBus()
+    manager = ChannelManager(ChannelsConfig(), bus)
+    channel = _FakeChannel("qqbot", bus, supports_edit=False)
+    manager._channels["qqbot"] = channel
+    bus.subscribe_outbound("qqbot", channel.send)
+
+    event = _final_event("hello from agent", channel="qqbot")
+    await bus.publish_outbound(event)
+
+    assert len(channel.sent) == 1
+    assert channel.sent[0].text == "hello from agent"
+    assert event.metadata.get("_drop") is True
+
+
+@pytest.mark.asyncio
+async def test_non_stream_final_event_empty_text_not_delivered() -> None:
+    bus = MessageBus()
+    manager = ChannelManager(ChannelsConfig(), bus)
+    channel = _FakeChannel("qqbot", bus, supports_edit=False)
+    manager._channels["qqbot"] = channel
+    bus.subscribe_outbound("qqbot", channel.send)
+
+    event = _final_event("", channel="qqbot")
+    await bus.publish_outbound(event)
+
+    assert len(channel.sent) == 0
+
+
+@pytest.mark.asyncio
+async def test_non_stream_final_event_no_double_delivery() -> None:
+    """_drop prevents bus channel handler from sending again."""
+    bus = MessageBus()
+    manager = ChannelManager(ChannelsConfig(), bus)
+    channel = _FakeChannel("qqbot", bus, supports_edit=False)
+    manager._channels["qqbot"] = channel
+    bus.subscribe_outbound("qqbot", channel.send)
+
+    event = _final_event("single delivery", channel="qqbot")
+    await bus.publish_outbound(event)
+
+    assert len(channel.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_stream_channel_still_works_after_refactor() -> None:
+    """Streaming channels are unaffected by the _deliver_final addition."""
+    bus = MessageBus()
+    manager = ChannelManager(ChannelsConfig(), bus)
+    channel = _FakeChannel("telegram", bus, supports_edit=True)
+    manager._channels["telegram"] = channel
+    bus.subscribe_outbound("telegram", channel.send)
+
+    await bus.publish_outbound(_stream_event("hello", channel="telegram", final=False))
+    await bus.publish_outbound(_stream_event("hello world", channel="telegram", final=True, full_text=True))
+
+    assert [event.text for event in channel.sent] == ["hello ..."]
+    assert channel.edits[-1] == ("chat-1", "msg-1", "hello world")

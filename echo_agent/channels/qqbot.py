@@ -11,6 +11,7 @@ import asyncio
 import json
 import re
 import time
+from collections import OrderedDict
 from typing import Any
 
 import aiohttp
@@ -18,7 +19,7 @@ from loguru import logger
 
 from echo_agent.bus.events import ContentType, OutboundEvent
 from echo_agent.bus.queue import MessageBus
-from echo_agent.channels.base import BaseChannel
+from echo_agent.channels.base import BaseChannel, SendResult
 from echo_agent.channels.qqbot_media import (
     SendQueueItem,
     UploadCache,
@@ -96,7 +97,8 @@ class QQBotChannel(BaseChannel):
         self._heartbeat_interval: float = 41.25
         self._msg_seq: int = 0
         self._seen_messages: dict[str, float] = {}
-        self._chat_type_map: dict[str, str] = {}
+        self._chat_type_map: OrderedDict[str, str] = OrderedDict()
+        self._max_chat_type_entries = 10000
         # Media support
         self._media_enabled = config.media_enabled
         self._parse_tags = config.media_parse_tags
@@ -150,11 +152,17 @@ class QQBotChannel(BaseChannel):
         self._msg_seq += 1
         return self._msg_seq
 
+    def _set_chat_type(self, chat_id: str, chat_type: str) -> None:
+        self._chat_type_map[chat_id] = chat_type
+        self._chat_type_map.move_to_end(chat_id)
+        while len(self._chat_type_map) > self._max_chat_type_entries:
+            self._chat_type_map.popitem(last=False)
+
     # ── Send ─────────────────────────────────────────────────────────────────
 
-    async def send(self, event: OutboundEvent) -> None:
+    async def send(self, event: OutboundEvent) -> SendResult | None:
         if not self._session:
-            return
+            return SendResult(success=False, error="session not initialized")
         await self._ensure_token()
         chat_id = event.chat_id
         msg_type = event.metadata.get("msg_type") or self._chat_type_map.get(chat_id, "group")
@@ -181,19 +189,26 @@ class QQBotChannel(BaseChannel):
             if text:
                 send_queue.append(SendQueueItem(kind="text", content=text))
 
+        all_ok = True
         for i, item in enumerate(send_queue):
             reply = msg_id if i == 0 else ""
             if item.kind == "text":
                 chunks = self._split_text(item.content)
                 for j, chunk in enumerate(chunks):
                     r = reply if j == 0 else ""
-                    await self._send_chunk(chat_id, chunk, msg_type, r)
+                    ok = await self._send_chunk(chat_id, chunk, msg_type, r)
+                    if not ok:
+                        all_ok = False
                     if len(chunks) > 1 and j < len(chunks) - 1:
                         await asyncio.sleep(0.5)
             else:
                 await self._send_media(chat_id, msg_type, item, reply)
             if len(send_queue) > 1 and i < len(send_queue) - 1:
                 await asyncio.sleep(0.5)
+
+        if not send_queue:
+            return SendResult(success=False, error="empty send queue")
+        return SendResult(success=all_ok, error="" if all_ok else "one or more chunks failed")
 
     async def _send_media(
         self, chat_id: str, msg_type: str, item: SendQueueItem, reply_to: str,
@@ -292,7 +307,7 @@ class QQBotChannel(BaseChannel):
                 result.append(item)
         return result
 
-    async def _send_chunk(self, chat_id: str, text: str, msg_type: str, reply_to: str) -> None:
+    async def _send_chunk(self, chat_id: str, text: str, msg_type: str, reply_to: str) -> bool:
         seq = self._next_msg_seq()
         if msg_type == "channel":
             url = f"{self._api_base}/channels/{chat_id}/messages"
@@ -320,20 +335,26 @@ class QQBotChannel(BaseChannel):
             try:
                 async with self._session.post(url, json=payload, headers=self._auth_headers()) as resp:
                     if resp.status < 400:
-                        return
+                        return True
                     body = await resp.text()
                     if resp.status == 400 and "40034024" in body and "msg_id" in payload:
                         logger.info("QQBot msg_id expired, retrying without reply reference")
                         payload.pop("msg_id", None)
                         continue
-                    if resp.status in (400, 401, 403, 404):
+                    if resp.status == 401:
+                        logger.info("QQBot token expired during send, refreshing")
+                        self._token_expires = 0
+                        await self._refresh_token()
+                        continue
+                    if resp.status in (400, 403, 404):
                         logger.warning("QQBot send permanent error ({}): {}", resp.status, body[:200])
-                        return
+                        return False
                     logger.warning("QQBot send error ({}), retry {}/{}: {}", resp.status, attempt + 1, _SEND_RETRIES, body[:200])
             except Exception as e:
                 logger.error("QQBot send exception, retry {}/{}: {}", attempt + 1, _SEND_RETRIES, e)
             if attempt < _SEND_RETRIES - 1:
                 await asyncio.sleep(1 * (attempt + 1))
+        return False
 
     @staticmethod
     def _split_text(text: str) -> list[str]:
@@ -457,7 +478,7 @@ class QQBotChannel(BaseChannel):
         media = _extract_attachments(d)
         if not content and not media:
             return
-        self._chat_type_map[channel_id] = "channel"
+        self._set_chat_type(channel_id, "channel")
         await self._handle_message(
             sender_id=sender_id, chat_id=channel_id, text=content,
             media=media or None,
@@ -476,7 +497,7 @@ class QQBotChannel(BaseChannel):
         media = _extract_attachments(d)
         if not content and not media:
             return
-        self._chat_type_map[group_id] = "group"
+        self._set_chat_type(group_id, "group")
         await self._handle_message(
             sender_id=sender_id, chat_id=group_id, text=content,
             media=media or None,
@@ -493,7 +514,7 @@ class QQBotChannel(BaseChannel):
         media = _extract_attachments(d)
         if not content and not media:
             return
-        self._chat_type_map[sender_id] = "c2c"
+        self._set_chat_type(sender_id, "c2c")
         await self._handle_message(
             sender_id=sender_id, chat_id=sender_id, text=content,
             media=media or None,

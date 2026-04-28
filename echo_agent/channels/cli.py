@@ -11,7 +11,7 @@ from loguru import logger
 
 from echo_agent.bus.events import OutboundEvent
 from echo_agent.bus.queue import MessageBus
-from echo_agent.channels.base import BaseChannel
+from echo_agent.channels.base import BaseChannel, SendResult
 from echo_agent.config.schema import CLIChannelConfig
 
 
@@ -46,10 +46,11 @@ class CLIChannel(BaseChannel):
             except asyncio.CancelledError:
                 pass
 
-    async def send(self, event: OutboundEvent) -> None:
+    async def send(self, event: OutboundEvent) -> SendResult | None:
         text = event.text
         if text:
             print(f"\n{text}\n")
+        return SendResult(success=True)
 
     async def _read_loop(self) -> None:
         loop = asyncio.get_running_loop()

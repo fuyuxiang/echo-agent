@@ -6,7 +6,7 @@ from loguru import logger
 
 from echo_agent.bus.events import EventType, InboundEvent, OutboundEvent, ContentBlock, ContentType
 from echo_agent.bus.queue import MessageBus
-from echo_agent.channels.base import BaseChannel
+from echo_agent.channels.base import BaseChannel, SendResult
 from echo_agent.config.schema import CronChannelConfig
 
 
@@ -26,8 +26,9 @@ class CronChannel(BaseChannel):
     async def stop(self) -> None:
         self._running = False
 
-    async def send(self, event: OutboundEvent) -> None:
+    async def send(self, event: OutboundEvent) -> SendResult | None:
         logger.info("Cron output [{}]: {}", event.chat_id, event.text[:200] if event.text else "")
+        return SendResult(success=True)
 
     async def inject(self, job_id: str, message: str, deliver_channel: str | None = None) -> None:
         """Inject a cron-triggered event into the bus."""
