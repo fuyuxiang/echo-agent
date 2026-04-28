@@ -13,7 +13,7 @@ from loguru import logger
 
 from echo_agent.bus.events import OutboundEvent
 from echo_agent.bus.queue import MessageBus
-from echo_agent.channels.base import BaseChannel
+from echo_agent.channels.base import BaseChannel, SendResult
 from echo_agent.config.schema import DingTalkChannelConfig
 
 _API_BASE = "https://api.dingtalk.com"
@@ -52,10 +52,10 @@ class DingTalkChannel(BaseChannel):
         if self._session:
             await self._session.close()
 
-    async def send(self, event: OutboundEvent) -> None:
+    async def send(self, event: OutboundEvent) -> SendResult | None:
         text = event.text or ""
         if not text or not self._session:
-            return
+            return SendResult(success=False, error="no text or no session")
         await self._ensure_token()
         url = f"{_API_BASE}/v1.0/robot/oToMessages/batchSend"
         payload = {
@@ -78,8 +78,11 @@ class DingTalkChannel(BaseChannel):
                 if resp.status >= 400:
                     body = await resp.text()
                     logger.warning("DingTalk send failed ({}): {}", resp.status, body[:200])
+                    return SendResult(success=False, error=body[:200])
         except Exception as e:
             logger.error("DingTalk send error: {}", e)
+            return SendResult(success=False, error=str(e))
+        return SendResult(success=True)
 
     async def _callback_register_and_poll(self) -> None:
         while self._running:

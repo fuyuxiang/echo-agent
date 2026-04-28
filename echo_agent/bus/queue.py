@@ -36,11 +36,7 @@ class MessageBus:
             logger.warning("Inbound queue full, dropping event from {}:{}", event.channel, event.chat_id)
 
     async def publish_outbound(self, event: OutboundEvent) -> None:
-        handlers = list(self._global_outbound_handlers)
-        if event.channel in self._outbound_handlers:
-            handlers.extend(self._outbound_handlers[event.channel])
-
-        if not handlers:
+        if not self._global_outbound_handlers and event.channel not in self._outbound_handlers:
             logger.warning("No outbound handler for channel={}", event.channel)
             return
 

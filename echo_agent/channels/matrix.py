@@ -49,10 +49,10 @@ class MatrixChannel(BaseChannel):
         if self._session:
             await self._session.close()
 
-    async def send(self, event: OutboundEvent) -> None:
+    async def send(self, event: OutboundEvent) -> SendResult | None:
         text = event.text or ""
         if not text or not self._session:
-            return
+            return SendResult(success=False, error="no text or no session")
         room_id = event.chat_id
         txn_id = f"m{id(text)}{asyncio.get_event_loop().time():.0f}"
         url = f"{self._homeserver}/_matrix/client/v3/rooms/{room_id}/send/m.room.message/{txn_id}"
@@ -62,8 +62,11 @@ class MatrixChannel(BaseChannel):
                 if resp.status >= 400:
                     body = await resp.text()
                     logger.warning("Matrix send failed ({}): {}", resp.status, body[:200])
+                    return SendResult(success=False, error=body[:200])
         except Exception as e:
             logger.error("Matrix send error: {}", e)
+            return SendResult(success=False, error=str(e))
+        return SendResult(success=True)
 
     async def send_typing(self, chat_id: str, metadata: dict[str, Any] | None = None) -> None:
         if not self._session:

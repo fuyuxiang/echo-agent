@@ -276,9 +276,12 @@ class MemoryStore:
             import asyncio
             for entry in entries:
                 try:
-                    asyncio.get_event_loop().run_until_complete(
-                        self._storage.store_memory(entry.id, entry.to_dict())
-                    )
+                    loop = asyncio.get_event_loop()
+                    coro = self._storage.store_memory(entry.id, entry.to_dict())
+                    if loop.is_running():
+                        asyncio.ensure_future(coro)
+                    else:
+                        loop.run_until_complete(coro)
                 except Exception as e:
                     logger.warning("Failed to sync memory {} to storage: {}", entry.id, e)
 
@@ -452,8 +455,8 @@ class MemoryStore:
                         self._retriever.retrieve(query, limit=limit, session_key=session_key or "", mem_type=mem_type)
                     )
                     return results
-            except Exception:
-                pass  # fall through to keyword search
+            except Exception as e:
+                logger.debug("Vector retrieval unavailable, falling back to keyword search: {}", e)
 
         words = [
             word.lower() for word in re.findall(r"\w+", query)

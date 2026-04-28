@@ -10,6 +10,7 @@ import asyncio
 import re
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -222,7 +223,8 @@ class AgentLoop:
         self.workspace = workspace
         try:
             provider_default_model = provider.get_default_model()
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to get default model from provider: {}", e)
             provider_default_model = ""
         self._default_model = config.models.default_model or provider_default_model or ""
 
@@ -255,8 +257,8 @@ class AgentLoop:
                 tc = TokenCounter.for_model(provider_name, self._default_model)
                 if hasattr(self.compressor, 'set_token_counter'):
                     self.compressor.set_token_counter(tc)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Tokenizer initialization skipped: {}", e)
         self.approval = ApprovalManager(
             require_approval=config.permissions.approval.require_approval,
             auto_approve=config.permissions.approval.auto_approve,
@@ -283,7 +285,7 @@ class AgentLoop:
             consolidation_threshold=config.memory.consolidation_threshold,
         )
 
-        self._working_memories: dict[str, Any] = {}
+        self._working_memories: OrderedDict[str, Any] = OrderedDict()
         self._hybrid_retriever = None
         self._prefetcher = None
         if config.memory.enabled:
@@ -340,7 +342,9 @@ class AgentLoop:
         self._tool_iters_since_skill_check = 0
         self._tool_iters_since_memory_check = 0
         self._snapshot_enabled = config.memory.snapshot_enabled
-        self._memory_snapshots: dict[str, str] = {}
+        self._memory_snapshots: OrderedDict[str, str] = OrderedDict()
+        self._max_cached_sessions = 200
+        self._background_tasks: set[asyncio.Task[Any]] = set()
         self._register_tools(scheduler=scheduler, task_manager=task_manager, workflow_engine=workflow_engine)
         self._setup_multi_agent()
 
@@ -453,7 +457,23 @@ class AgentLoop:
         self._running = False
         if self.mcp_manager:
             await self.mcp_manager.stop_all()
+        for task in self._background_tasks:
+            task.cancel()
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+            self._background_tasks.clear()
         logger.info("Agent loop stopped")
+
+    def _spawn_background(self, coro: Any) -> None:
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    def _lru_put(self, cache: OrderedDict, key: str, value: Any) -> None:  # type: ignore[type-arg]
+        cache[key] = value
+        cache.move_to_end(key)
+        while len(cache) > self._max_cached_sessions:
+            cache.popitem(last=False)
 
     async def _start_mcp(self) -> None:
         mcp_servers = self.config.tools.mcp_servers
@@ -511,9 +531,9 @@ class AgentLoop:
         session = await self.sessions.get_or_create(event.session_key)
         if event.session_key not in self._working_memories and self._prefetcher:
             from echo_agent.memory.tiers import WorkingMemory
-            self._working_memories[event.session_key] = WorkingMemory(
+            self._lru_put(self._working_memories, event.session_key, WorkingMemory(
                 max_entries=self.config.memory.max_working_memory
-            )
+            ))
         command_response = await self._handle_approval_command(event)
         if command_response is not None:
             return _ProcessResult(response_text=command_response)
@@ -547,7 +567,7 @@ class AgentLoop:
 
         if self._snapshot_enabled:
             if event.session_key not in self._memory_snapshots:
-                self._memory_snapshots[event.session_key] = self.memory.get_snapshot(session_key=event.session_key)
+                self._lru_put(self._memory_snapshots, event.session_key, self.memory.get_snapshot(session_key=event.session_key))
             memory_ctx = build_memory_context(self.memory, snapshot=self._memory_snapshots[event.session_key], working_memory=working_ctx)
         else:
             memory_ctx = build_memory_context(self.memory, session_key=event.session_key, working_memory=working_ctx)
@@ -815,13 +835,13 @@ class AgentLoop:
         await self.sessions.save(session)
 
         if self.consolidator.should_consolidate(session.message_count, session.last_consolidated):
-            asyncio.create_task(self._consolidate(session))
+            self._spawn_background(self._consolidate(session))
 
         if should_review_skills and total_tool_calls > 0:
-            asyncio.create_task(self._background_skill_review(messages))
+            self._spawn_background(self._background_skill_review(messages))
 
         if should_review_memory and total_tool_calls > 0:
-            asyncio.create_task(self._background_memory_review(messages, event.session_key))
+            self._spawn_background(self._background_memory_review(messages, event.session_key))
 
         outbound_sent = False
         if publish_response:
