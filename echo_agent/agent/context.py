@@ -41,7 +41,12 @@ You have persistent memory across sessions. Use the `memory` tool to manage it.
 - Use `search` to check if relevant memories exist before starting a task.
 - Use `replace` to update outdated information rather than adding duplicates.
 - Use `remove` to delete information that is no longer accurate.
-- Only save information that would be useful in future conversations — skip trivial or one-off details."""
+- Only save information that would be useful in future conversations — skip trivial or one-off details.
+
+CRITICAL: When the user explicitly asks you to "remember", "记住", "别忘了", "你要记住", or any \
+similar instruction to retain information, you MUST immediately call the `memory` tool with action="add" \
+to persist it. A text-only reply like "好的，我记住了" without actually calling the memory tool is \
+NOT acceptable — the information will be lost in the next session. Always persist first, then confirm."""
 
 _FENCE_TAG_RE = re.compile(r"</?\s*memory-context\s*>", re.IGNORECASE)
 _INTERNAL_CONTEXT_RE = re.compile(
