@@ -199,7 +199,7 @@ class SlackChannel(BaseChannel):
             await asyncio.sleep(10)
             return
 
-        self._ws = await self._session.ws_connect(ws_url)
+        self._ws = await self._session.ws_connect(ws_url, heartbeat=30, receive_timeout=120)
         logger.info("Slack Socket Mode connected")
 
         async for msg in self._ws:
