@@ -335,8 +335,8 @@ class WeixinChannel(BaseChannel):
         if self._poll_task and not self._poll_task.done():
             self._poll_task.cancel()
             try:
-                await self._poll_task
-            except asyncio.CancelledError:
+                await asyncio.wait_for(asyncio.shield(self._poll_task), timeout=5)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
         self._poll_task = None
         if self._poll_session and not self._poll_session.closed:
