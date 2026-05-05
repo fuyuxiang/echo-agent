@@ -120,7 +120,10 @@ class MemoryTool(Tool):
             return ToolResult(success=False, error="key and content are required for add")
         tags_str = params.get("tags", "")
         tags = [t.strip() for t in tags_str.split(",") if t.strip()] if tags_str else []
-        importance = min(1.0, max(0.0, params.get("importance", 0.5)))
+        try:
+            importance = min(1.0, max(0.0, float(params.get("importance", 0.5))))
+        except (TypeError, ValueError):
+            importance = 0.5
 
         entry = MemoryEntry(
             type=mem_type, key=key, content=content,

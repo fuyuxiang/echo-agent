@@ -134,7 +134,10 @@ class MemoryReviewer:
         key = params.get("key", "")
         content = params.get("content", "")
         old_text = params.get("old_text", "")
-        importance = min(1.0, max(0.0, params.get("importance", 0.5)))
+        try:
+            importance = min(1.0, max(0.0, float(params.get("importance", 0.5))))
+        except (TypeError, ValueError):
+            importance = 0.5
 
         if action == "add":
             if not key or not content:
