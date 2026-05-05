@@ -470,7 +470,12 @@ class AgentLoop:
     def _spawn_background(self, coro: Any) -> None:
         task = asyncio.create_task(coro)
         self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        task.add_done_callback(self._on_background_done)
+
+    def _on_background_done(self, task: asyncio.Task) -> None:
+        self._background_tasks.discard(task)
+        if not task.cancelled() and task.exception():
+            logger.warning("Background task failed: {}", task.exception())
 
     def _lru_put(self, cache: OrderedDict, key: str, value: Any) -> None:  # type: ignore[type-arg]
         cache[key] = value

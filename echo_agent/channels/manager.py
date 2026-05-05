@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -351,8 +352,10 @@ class ChannelManager:
     async def stop_all(self) -> None:
         for name, channel in self._channels.items():
             try:
-                await channel.stop()
+                await asyncio.wait_for(channel.stop(), timeout=10)
                 logger.info("Channel {} stopped", name)
+            except asyncio.TimeoutError:
+                logger.warning("Channel {} stop timed out", name)
             except Exception as e:
                 logger.error("Failed to stop channel {}: {}", name, e)
         self._channels.clear()

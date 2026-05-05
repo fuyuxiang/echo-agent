@@ -143,6 +143,7 @@ class MemoryStore:
         self._env_snapshot_char_limit = env_snapshot_char_limit
         self._entries: dict[str, MemoryEntry] = {}
         self._storage = storage
+        self._pending_storage_tasks: set = set()
         self._load()
         self._forgetting = ForgettingCurve(
             base_half_life_days=decay_half_life_days,
@@ -308,11 +309,18 @@ class MemoryStore:
                     loop = asyncio.get_event_loop()
                     coro = self._storage.store_memory(entry.id, entry.to_dict())
                     if loop.is_running():
-                        asyncio.ensure_future(coro)
+                        task = asyncio.ensure_future(coro)
+                        task.add_done_callback(self._on_storage_task_done)
+                        self._pending_storage_tasks.add(task)
                     else:
                         loop.run_until_complete(coro)
                 except Exception as e:
                     logger.warning("Failed to sync memory {} to storage: {}", entry.id, e)
+
+    def _on_storage_task_done(self, task: asyncio.Task) -> None:
+        self._pending_storage_tasks.discard(task)
+        if task.exception():
+            logger.warning("Storage sync task failed: {}", task.exception())
 
     def _load(self) -> None:
         self._reload_type(MemoryType.USER)
@@ -481,7 +489,7 @@ class MemoryStore:
             try:
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
-                    pass  # Can't await in sync context, fall through to keyword search
+                    logger.debug("Vector retrieval skipped in running loop, falling back to keyword search")
                 else:
                     results = loop.run_until_complete(
                         self._retriever.retrieve(query, limit=limit, session_key=session_key or "", mem_type=mem_type)
