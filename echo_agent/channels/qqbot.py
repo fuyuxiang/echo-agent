@@ -95,6 +95,7 @@ class QQBotChannel(BaseChannel):
         self._seq: int | None = None
         self._session_id: str = ""
         self._heartbeat_interval: float = 41.25
+        self._heartbeat_ack_received: bool = True
         self._msg_seq: int = 0
         self._seen_messages: dict[str, float] = {}
         self._chat_type_map: OrderedDict[str, str] = OrderedDict()
@@ -460,7 +461,7 @@ class QQBotChannel(BaseChannel):
             if self._ws and not self._ws.closed:
                 await self._ws.close()
         elif op == 11:  # HEARTBEAT ACK
-            pass
+            self._heartbeat_ack_received = True
 
     # ── Event handlers ───────────────────────────────────────────────────────
 
@@ -526,6 +527,12 @@ class QQBotChannel(BaseChannel):
     async def _heartbeat_loop(self) -> None:
         try:
             while self._running and self._ws and not self._ws.closed:
+                if not self._heartbeat_ack_received:
+                    logger.warning("QQBot: heartbeat ACK not received, reconnecting")
+                    if self._ws and not self._ws.closed:
+                        await self._ws.close()
+                    break
+                self._heartbeat_ack_received = False
                 await self._send_ws({"op": 1, "d": self._seq})
                 await asyncio.sleep(self._heartbeat_interval)
         except asyncio.CancelledError:

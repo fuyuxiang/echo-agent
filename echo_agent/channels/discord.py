@@ -34,6 +34,7 @@ class DiscordChannel(BaseChannel):
         self._ws_task: asyncio.Task | None = None
         self._heartbeat_task: asyncio.Task | None = None
         self._heartbeat_interval: float = 41.25
+        self._heartbeat_ack_received: bool = True
         self._seq: int | None = None
         self._session_id: str = ""
         self._bot_id: str = ""
@@ -269,7 +270,7 @@ class DiscordChannel(BaseChannel):
             if self._ws and not self._ws.closed:
                 await self._ws.close()
         elif op == 11:  # HEARTBEAT ACK
-            pass
+            self._heartbeat_ack_received = True
 
     async def _on_message(self, d: dict[str, Any]) -> None:
         author = d.get("author", {})
@@ -312,6 +313,12 @@ class DiscordChannel(BaseChannel):
     async def _heartbeat_loop(self) -> None:
         try:
             while self._running and self._ws and not self._ws.closed:
+                if not self._heartbeat_ack_received:
+                    logger.warning("Discord: heartbeat ACK not received, reconnecting")
+                    if self._ws and not self._ws.closed:
+                        await self._ws.close()
+                    break
+                self._heartbeat_ack_received = False
                 await self._send_ws({"op": 1, "d": self._seq})
                 await asyncio.sleep(self._heartbeat_interval)
         except asyncio.CancelledError:

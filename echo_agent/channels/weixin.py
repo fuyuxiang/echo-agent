@@ -53,6 +53,7 @@ _BACKOFF_DELAY = 30
 _SESSION_EXPIRED_ERRCODE = -14
 _DEDUP_TTL = 300
 _MAX_MESSAGE_LENGTH = 4000
+_LIVENESS_TIMEOUT = 30 * 60  # 30 分钟无消息视为静默失效
 
 _ITEM_TEXT = 1
 _ITEM_IMAGE = 2
@@ -387,6 +388,7 @@ class WeixinChannel(BaseChannel):
         sync_buf = _load_sync_buf(self._data_dir, self._account_id)
         timeout_ms = _LONG_POLL_TIMEOUT_MS
         consecutive_failures = 0
+        last_message_time = time.monotonic()
 
         while self._running:
             try:
@@ -423,8 +425,18 @@ class WeixinChannel(BaseChannel):
                     sync_buf = new_sync_buf
                     _save_sync_buf(self._data_dir, self._account_id, sync_buf)
 
-                for message in response.get("msgs") or []:
+                msgs = response.get("msgs") or []
+                if msgs:
+                    last_message_time = time.monotonic()
+                for message in msgs:
                     asyncio.create_task(self._process_message_safe(message))
+
+                # 活性检测：长时间无消息时重建连接
+                if time.monotonic() - last_message_time > _LIVENESS_TIMEOUT:
+                    logger.warning("weixin: no messages for {}s, rebuilding session", _LIVENESS_TIMEOUT)
+                    await self._poll_session.close()
+                    self._poll_session = aiohttp.ClientSession()
+                    last_message_time = time.monotonic()
             except asyncio.CancelledError:
                 break
             except Exception as exc:
