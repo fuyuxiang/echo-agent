@@ -46,6 +46,7 @@ _MAX_MESSAGE_LENGTH = 4000
 _DEDUP_TTL = 300
 _SEND_RETRIES = 3
 _RECONNECT_BACKOFFS = [2, 5, 10, 30, 60]
+_RATE_LIMIT_BACKOFF = 300  # 5 minutes when rate-limited by REST API
 _AT_MENTION_RE = re.compile(r"<@!?\d+>\s*")
 
 
@@ -96,6 +97,8 @@ class QQBotChannel(BaseChannel):
         self._session_id: str = ""
         self._heartbeat_interval: float = 41.25
         self._heartbeat_ack_received: bool = True
+        self._gateway_url: str | None = None
+        self._rate_limited_until: float = 0
         self._msg_seq: int = 0
         self._seen_messages: dict[str, float] = {}
         self._chat_type_map: OrderedDict[str, str] = OrderedDict()
@@ -366,6 +369,11 @@ class QQBotChannel(BaseChannel):
     async def _ws_loop(self) -> None:
         backoff_idx = 0
         while self._running:
+            # Respect rate limit cooldown
+            wait_until = self._rate_limited_until - time.time()
+            if wait_until > 0:
+                logger.info("QQBot rate-limited, waiting {:.0f}s", wait_until)
+                await asyncio.sleep(wait_until)
             try:
                 await self._connect_and_listen()
                 backoff_idx = 0
@@ -383,13 +391,19 @@ class QQBotChannel(BaseChannel):
         if not self._session:
             return
         await self._ensure_token()
-        gw_url = await self._get_gateway()
+        gw_url = self._gateway_url or await self._get_gateway()
         if not gw_url:
             logger.error("Failed to get QQBot gateway URL")
             return
+        self._gateway_url = gw_url
 
         timeout = aiohttp.ClientTimeout(total=20)
-        self._ws = await self._session.ws_connect(gw_url, timeout=timeout)
+        try:
+            self._ws = await self._session.ws_connect(gw_url, timeout=timeout)
+        except Exception:
+            # Cached URL may be stale, fetch a fresh one on next attempt
+            self._gateway_url = None
+            raise
 
         async for msg in self._ws:
             if msg.type == aiohttp.WSMsgType.TEXT:
@@ -410,7 +424,8 @@ class QQBotChannel(BaseChannel):
             self._session_id = ""
             self._seq = None
         elif code == 4008:
-            logger.warning("QQBot: rate limited (4008)")
+            logger.warning("QQBot: rate limited (4008), backing off {}s", _RATE_LIMIT_BACKOFF)
+            self._rate_limited_until = time.time() + _RATE_LIMIT_BACKOFF
 
     async def _handle_ws_message(self, data: dict[str, Any]) -> None:
         op = data.get("op")
@@ -575,6 +590,12 @@ class QQBotChannel(BaseChannel):
         try:
             async with self._session.get(url, headers=self._auth_headers()) as resp:
                 data = await resp.json()
+                err_code = data.get("code") or data.get("err_code")
+                if err_code:
+                    logger.error("QQBot gateway error: code={} msg={}", err_code, data.get("message") or data.get("err_msg"))
+                    if "频率限制" in str(data.get("message") or data.get("err_msg") or "") or err_code == 40023001:
+                        self._rate_limited_until = time.time() + _RATE_LIMIT_BACKOFF
+                    return None
                 return data.get("url")
         except Exception as e:
             logger.error("QQBot gateway fetch failed: {}", e)

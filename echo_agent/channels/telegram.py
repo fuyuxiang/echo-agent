@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import aiohttp
@@ -17,6 +18,7 @@ from echo_agent.bus.events import PollRequest
 
 _API = "https://api.telegram.org/bot{token}/{method}"
 _MAX_TEXT = 4096
+_RECONNECT_BACKOFFS = [2, 5, 10, 30, 60]
 
 
 class TelegramChannel(BaseChannel):
@@ -29,6 +31,7 @@ class TelegramChannel(BaseChannel):
         self._session: aiohttp.ClientSession | None = None
         self._poll_task: asyncio.Task | None = None
         self._offset = 0
+        self._rate_limited_until: float = 0
         self._group_policy = config.group_policy
         self._bot_id: str = ""
         self._bot_username: str = ""
@@ -156,7 +159,12 @@ class TelegramChannel(BaseChannel):
         return self._send_result(result, "Telegram sendVoice failed")
 
     async def _poll_loop(self) -> None:
+        backoff_idx = 0
         while self._running:
+            wait_until = self._rate_limited_until - time.time()
+            if wait_until > 0:
+                logger.info("Telegram rate-limited, waiting {:.0f}s", wait_until)
+                await asyncio.sleep(wait_until)
             try:
                 updates = await self._api("getUpdates", json={
                     "offset": self._offset,
@@ -164,7 +172,11 @@ class TelegramChannel(BaseChannel):
                     "allowed_updates": ["message"],
                 })
                 if not updates:
+                    delay = _RECONNECT_BACKOFFS[min(backoff_idx, len(_RECONNECT_BACKOFFS) - 1)]
+                    await asyncio.sleep(delay)
+                    backoff_idx += 1
                     continue
+                backoff_idx = 0
                 for update in updates:
                     self._offset = update["update_id"] + 1
                     await self._process_update(update)
@@ -172,7 +184,9 @@ class TelegramChannel(BaseChannel):
                 break
             except Exception as e:
                 logger.error("Telegram poll error: {}", e)
-                await asyncio.sleep(5)
+                delay = _RECONNECT_BACKOFFS[min(backoff_idx, len(_RECONNECT_BACKOFFS) - 1)]
+                await asyncio.sleep(delay)
+                backoff_idx += 1
 
     async def _process_update(self, update: dict[str, Any]) -> None:
         msg = update.get("message")
@@ -232,7 +246,12 @@ class TelegramChannel(BaseChannel):
             async with self._session.post(url, **kwargs) as resp:
                 data = await resp.json()
                 if not data.get("ok"):
-                    logger.warning("Telegram API {}: {}", method, data.get("description", ""))
+                    if data.get("error_code") == 429:
+                        retry_after = data.get("parameters", {}).get("retry_after", 300)
+                        self._rate_limited_until = time.time() + retry_after
+                        logger.warning("Telegram rate-limited, retry_after={}s", retry_after)
+                    else:
+                        logger.warning("Telegram API {}: {}", method, data.get("description", ""))
                     return None
                 return data.get("result")
         except Exception as e:
