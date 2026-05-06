@@ -18,6 +18,8 @@ from echo_agent.config.schema import DingTalkChannelConfig
 
 _API_BASE = "https://api.dingtalk.com"
 _OAPI_BASE = "https://oapi.dingtalk.com"
+_RECONNECT_BACKOFFS = [2, 5, 10, 30, 60]
+_RATE_LIMIT_BACKOFF = 300
 
 
 class DingTalkChannel(BaseChannel):
@@ -32,6 +34,7 @@ class DingTalkChannel(BaseChannel):
         self._access_token: str = ""
         self._token_expires: float = 0
         self._poll_task: asyncio.Task | None = None
+        self._rate_limited_until: float = 0
 
     async def start(self) -> None:
         self._session = aiohttp.ClientSession()
@@ -85,16 +88,27 @@ class DingTalkChannel(BaseChannel):
         return SendResult(success=True)
 
     async def _callback_register_and_poll(self) -> None:
+        backoff_idx = 0
         while self._running:
+            wait_until = self._rate_limited_until - time.time()
+            if wait_until > 0:
+                logger.info("DingTalk rate-limited, waiting {:.0f}s", wait_until)
+                await asyncio.sleep(wait_until)
             try:
                 await self._ensure_token()
                 url = f"{_API_BASE}/v1.0/gateway/connections/open"
                 headers = {"x-acs-dingtalk-access-token": self._access_token}
                 payload = {"clientId": uuid.uuid4().hex, "clientSecret": self._app_secret}
                 async with self._session.post(url, json=payload, headers=headers) as resp:
+                    if resp.status == 429:
+                        self._rate_limited_until = time.time() + _RATE_LIMIT_BACKOFF
+                        logger.warning("DingTalk gateway rate-limited (429), backing off {}s", _RATE_LIMIT_BACKOFF)
+                        continue
                     if resp.status != 200:
                         logger.error("DingTalk gateway open failed: {}", await resp.text())
-                        await asyncio.sleep(10)
+                        delay = _RECONNECT_BACKOFFS[min(backoff_idx, len(_RECONNECT_BACKOFFS) - 1)]
+                        await asyncio.sleep(delay)
+                        backoff_idx += 1
                         continue
                     data = await resp.json()
                     endpoint = data.get("endpoint", "")
@@ -102,12 +116,16 @@ class DingTalkChannel(BaseChannel):
 
                 if endpoint and ticket:
                     await self._stream_listen(endpoint, ticket)
+                    backoff_idx = 0
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error("DingTalk stream error: {}", e)
             if self._running:
-                await asyncio.sleep(5)
+                delay = _RECONNECT_BACKOFFS[min(backoff_idx, len(_RECONNECT_BACKOFFS) - 1)]
+                logger.info("DingTalk reconnecting in {}s", delay)
+                await asyncio.sleep(delay)
+                backoff_idx += 1
 
     async def _stream_listen(self, endpoint: str, ticket: str) -> None:
         if not self._session:
