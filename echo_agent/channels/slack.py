@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any
 
 import aiohttp
@@ -15,6 +16,8 @@ from echo_agent.channels.base import BaseChannel, SendResult
 from echo_agent.config.schema import SlackChannelConfig
 
 _API_BASE = "https://slack.com/api"
+_RECONNECT_BACKOFFS = [2, 5, 10, 30, 60]
+_RATE_LIMIT_BACKOFF = 300
 
 
 class SlackChannel(BaseChannel):
@@ -29,6 +32,8 @@ class SlackChannel(BaseChannel):
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._ws_task: asyncio.Task | None = None
         self._bot_id: str = ""
+        self._ws_url: str | None = None
+        self._rate_limited_until: float = 0
 
     async def start(self) -> None:
         self._session = aiohttp.ClientSession()
@@ -180,15 +185,24 @@ class SlackChannel(BaseChannel):
     # ── Socket Mode ──────────────────────────────────────────────────────────
 
     async def _ws_loop(self) -> None:
+        backoff_idx = 0
         while self._running:
+            wait_until = self._rate_limited_until - time.time()
+            if wait_until > 0:
+                logger.info("Slack rate-limited, waiting {:.0f}s", wait_until)
+                await asyncio.sleep(wait_until)
             try:
                 await self._connect_and_listen()
+                backoff_idx = 0
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error("Slack WS error: {}", e)
             if self._running:
-                await asyncio.sleep(5)
+                delay = _RECONNECT_BACKOFFS[min(backoff_idx, len(_RECONNECT_BACKOFFS) - 1)]
+                logger.info("Slack reconnecting in {}s", delay)
+                await asyncio.sleep(delay)
+                backoff_idx += 1
 
     async def _connect_and_listen(self) -> None:
         if not self._session:
@@ -196,7 +210,6 @@ class SlackChannel(BaseChannel):
         ws_url = await self._get_ws_url()
         if not ws_url:
             logger.error("Failed to get Slack Socket Mode URL")
-            await asyncio.sleep(10)
             return
 
         self._ws = await self._session.ws_connect(ws_url, heartbeat=30, receive_timeout=120)
@@ -260,6 +273,10 @@ class SlackChannel(BaseChannel):
         result = await self._api("apps.connections.open", token=self._app_token)
         if result and result.get("ok"):
             return result.get("url")
+        if result and result.get("error") == "ratelimited":
+            retry_after = int(result.get("headers", {}).get("Retry-After", _RATE_LIMIT_BACKOFF))
+            self._rate_limited_until = time.time() + retry_after
+            logger.warning("Slack rate-limited, backing off {}s", retry_after)
         return None
 
     async def _api(self, method: str, token: str = "", json_body: dict[str, Any] | None = None) -> dict[str, Any] | None:

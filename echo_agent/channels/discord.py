@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any
 
 import aiohttp
@@ -19,6 +20,8 @@ _GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
 _API_BASE = "https://discord.com/api/v10"
 _MAX_TEXT = 2000
 _INTENTS = (1 << 0) | (1 << 9) | (1 << 15)  # GUILDS | GUILD_MESSAGES | MESSAGE_CONTENT
+_RECONNECT_BACKOFFS = [2, 5, 10, 30, 60]
+_RATE_LIMIT_BACKOFF = 300
 
 
 class DiscordChannel(BaseChannel):
@@ -40,6 +43,7 @@ class DiscordChannel(BaseChannel):
         self._bot_id: str = ""
         self._resume_url: str = ""
         self._typing_tasks: dict[str, asyncio.Task] = {}
+        self._rate_limited_until: float = 0
 
     async def start(self) -> None:
         self._session = aiohttp.ClientSession(headers={
@@ -209,27 +213,49 @@ class DiscordChannel(BaseChannel):
     # ── WebSocket lifecycle ──────────────────────────────────────────────────
 
     async def _ws_loop(self) -> None:
+        backoff_idx = 0
         while self._running:
+            wait_until = self._rate_limited_until - time.time()
+            if wait_until > 0:
+                logger.info("Discord rate-limited, waiting {:.0f}s", wait_until)
+                await asyncio.sleep(wait_until)
             try:
                 await self._connect_and_listen()
+                backoff_idx = 0
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error("Discord WS error: {}", e)
             if self._running:
-                await asyncio.sleep(5)
+                delay = _RECONNECT_BACKOFFS[min(backoff_idx, len(_RECONNECT_BACKOFFS) - 1)]
+                logger.info("Discord reconnecting in {}s", delay)
+                await asyncio.sleep(delay)
+                backoff_idx += 1
 
     async def _connect_and_listen(self) -> None:
         if not self._session:
             return
         url = self._resume_url or _GATEWAY_URL
-        self._ws = await self._session.ws_connect(url)
+        try:
+            self._ws = await self._session.ws_connect(url)
+        except Exception:
+            if url != _GATEWAY_URL:
+                self._resume_url = ""
+            raise
 
         async for msg in self._ws:
             if msg.type == aiohttp.WSMsgType.TEXT:
                 await self._handle_ws_message(json.loads(msg.data))
             elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                 break
+
+        close_code = self._ws.close_code if self._ws else None
+        if close_code == 4008:
+            logger.warning("Discord rate-limited (4008), backing off {}s", _RATE_LIMIT_BACKOFF)
+            self._rate_limited_until = time.time() + _RATE_LIMIT_BACKOFF
+        elif close_code == 4014:
+            logger.error("Discord: disallowed intents (4014), cannot reconnect")
+            self._running = False
 
     async def _handle_ws_message(self, data: dict[str, Any]) -> None:
         op = data.get("op")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any
 
 import aiohttp
@@ -14,6 +15,8 @@ from echo_agent.bus.queue import MessageBus
 from echo_agent.channels.base import BaseChannel, SendResult
 from echo_agent.config.schema import MatrixChannelConfig
 from echo_agent.bus.events import PollRequest
+
+_RECONNECT_BACKOFFS = [2, 5, 10, 30, 60]
 
 
 class MatrixChannel(BaseChannel):
@@ -28,6 +31,7 @@ class MatrixChannel(BaseChannel):
         self._session: aiohttp.ClientSession | None = None
         self._sync_task: asyncio.Task | None = None
         self._since: str = ""
+        self._rate_limited_until: float = 0
 
     async def start(self) -> None:
         self._session = aiohttp.ClientSession(headers={
@@ -186,11 +190,20 @@ class MatrixChannel(BaseChannel):
         if initial:
             self._since = initial.get("next_batch", "")
 
+        backoff_idx = 0
         while self._running:
+            wait_until = self._rate_limited_until - time.time()
+            if wait_until > 0:
+                logger.info("Matrix rate-limited, waiting {:.0f}s", wait_until)
+                await asyncio.sleep(wait_until)
             try:
                 data = await self._do_sync(timeout_ms=30000)
                 if not data:
+                    delay = _RECONNECT_BACKOFFS[min(backoff_idx, len(_RECONNECT_BACKOFFS) - 1)]
+                    await asyncio.sleep(delay)
+                    backoff_idx += 1
                     continue
+                backoff_idx = 0
                 self._since = data.get("next_batch", self._since)
                 rooms = data.get("rooms", {}).get("join", {})
                 for room_id, room_data in rooms.items():
@@ -202,7 +215,9 @@ class MatrixChannel(BaseChannel):
                 break
             except Exception as e:
                 logger.error("Matrix sync error: {}", e)
-                await asyncio.sleep(5)
+                delay = _RECONNECT_BACKOFFS[min(backoff_idx, len(_RECONNECT_BACKOFFS) - 1)]
+                await asyncio.sleep(delay)
+                backoff_idx += 1
 
     async def _do_sync(self, timeout_ms: int = 30000) -> dict[str, Any] | None:
         if not self._session:
@@ -218,7 +233,13 @@ class MatrixChannel(BaseChannel):
             async with self._session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=timeout_ms / 1000 + 30)) as resp:
                 if resp.status == 200:
                     return await resp.json()
-                logger.warning("Matrix sync failed ({})", resp.status)
+                if resp.status == 429:
+                    data = await resp.json()
+                    retry_ms = data.get("retry_after_ms", 300000)
+                    self._rate_limited_until = time.time() + retry_ms / 1000
+                    logger.warning("Matrix rate-limited, retry_after={}ms", retry_ms)
+                else:
+                    logger.warning("Matrix sync failed ({})", resp.status)
         except asyncio.TimeoutError:
             pass
         except Exception as e:
