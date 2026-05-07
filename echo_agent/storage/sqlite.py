@@ -126,6 +126,8 @@ _MIGRATIONS: list[tuple[int, str]] = [
         context_query TEXT
     )"""),
     (13, "CREATE INDEX IF NOT EXISTS idx_access_log_memory ON memory_access_log(memory_id)"),
+    (14, "DROP TABLE IF EXISTS memory_graph_edges"),
+    (15, "DROP TABLE IF EXISTS memory_graph_nodes"),
 ]
 
 
