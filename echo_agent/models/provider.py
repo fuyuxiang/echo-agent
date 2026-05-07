@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 from collections.abc import Awaitable, Callable
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -124,7 +125,7 @@ class LLMProvider(ABC):
         return any(m in lower for m in self._TRANSIENT_MARKERS)
 
     async def chat_with_retry(self, **kwargs: Any) -> LLMResponse:
-        for attempt, delay in enumerate(self._RETRY_DELAYS):
+        for attempt, base_delay in enumerate(self._RETRY_DELAYS):
             try:
                 response = await self.chat(**kwargs)
             except asyncio.CancelledError:
@@ -137,8 +138,9 @@ class LLMProvider(ABC):
             if not self._is_transient(response.content or ""):
                 return response
 
-            logger.warning("LLM transient error (attempt {}), retrying in {}s", attempt + 1, delay)
-            await asyncio.sleep(delay)
+            jitter = base_delay * (0.5 + random.random())
+            logger.warning("LLM transient error (attempt {}), retrying in {:.1f}s", attempt + 1, jitter)
+            await asyncio.sleep(jitter)
 
         try:
             return await self.chat(**kwargs)
@@ -161,7 +163,7 @@ class LLMProvider(ABC):
             emitted = True
             await _invoke_stream_callback(on_delta, delta)
 
-        for attempt, delay in enumerate(self._RETRY_DELAYS):
+        for attempt, base_delay in enumerate(self._RETRY_DELAYS):
             emitted = False
             try:
                 response = await self.chat_stream(
@@ -182,8 +184,9 @@ class LLMProvider(ABC):
             if emitted or not self._is_transient(response.content or ""):
                 return response
 
-            logger.warning("LLM transient stream error (attempt {}), retrying in {}s", attempt + 1, delay)
-            await asyncio.sleep(delay)
+            jitter = base_delay * (0.5 + random.random())
+            logger.warning("LLM transient stream error (attempt {}), retrying in {:.1f}s", attempt + 1, jitter)
+            await asyncio.sleep(jitter)
 
         try:
             return await self.chat_stream(
