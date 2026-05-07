@@ -88,8 +88,10 @@ def estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
 
 
 def strip_thinking(text: str) -> str:
-    """Remove <think>...</think> blocks from LLM output."""
-    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    """Remove <think>...</think> blocks and orphaned thinking tags from LLM output."""
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    text = re.sub(r"</?think>", "", text, flags=re.IGNORECASE)
+    return text.strip()
 
 
 def strip_markdown(text: str) -> str:
