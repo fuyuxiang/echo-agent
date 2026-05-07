@@ -113,7 +113,7 @@ class VectorIndex:
             if idx < len(self._source_map):
                 self._deleted_sources.add(self._source_map[idx])
         await self._storage.delete_vector(vec_id)
-        if len(self._deleted_sources) > self._index.ntotal * 0.3 if self._index else False:
+        if self._index and self._deleted_sources and len(self._deleted_sources) > self._index.ntotal * 0.3:
             await self.rebuild()
 
     async def rebuild(self) -> None:

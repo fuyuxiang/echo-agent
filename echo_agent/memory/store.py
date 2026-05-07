@@ -144,6 +144,7 @@ class MemoryStore:
         self._entries: dict[str, MemoryEntry] = {}
         self._storage = storage
         self._pending_storage_tasks: set = set()
+        self._dirty_ids: set[str] = set()
         self._load()
         self._forgetting = ForgettingCurve(
             base_half_life_days=decay_half_life_days,
@@ -306,7 +307,8 @@ class MemoryStore:
         )
         if self._storage:
             import asyncio
-            for entry in entries:
+            dirty_entries = [e for e in entries if e.id in self._dirty_ids]
+            for entry in dirty_entries:
                 try:
                     loop = asyncio.get_event_loop()
                     coro = self._storage.store_memory(entry.id, entry.to_dict())
@@ -318,6 +320,7 @@ class MemoryStore:
                         loop.run_until_complete(coro)
                 except Exception as e:
                     logger.warning("Failed to sync memory {} to storage: {}", entry.id, e)
+            self._dirty_ids -= {e.id for e in entries}
 
     def _on_storage_task_done(self, task: asyncio.Task) -> None:
         self._pending_storage_tasks.discard(task)
@@ -360,6 +363,7 @@ class MemoryStore:
         existing.tags = _normalize_tags([*existing.tags, *new_entry.tags])
         existing.importance = max(existing.importance, new_entry.importance)
         existing.updated_at = datetime.now().isoformat()
+        self._dirty_ids.add(existing_id)
         return existing
 
     # ── CRUD ─────────────────────────────────────────────────────────────────
@@ -400,6 +404,7 @@ class MemoryStore:
                 self._evict_oldest(entry.type)
 
             self._entries[entry.id] = entry
+            self._dirty_ids.add(entry.id)
             self._save_type(entry.type)
             self._queue_embed(entry)
             return entry
@@ -428,6 +433,7 @@ class MemoryStore:
             if normalized_tags is not None:
                 entry.tags = normalized_tags
             entry.updated_at = datetime.now().isoformat()
+            self._dirty_ids.add(entry_id)
             self._save_type(entry.type)
             if normalized_content is not None:
                 self._queue_embed(entry)

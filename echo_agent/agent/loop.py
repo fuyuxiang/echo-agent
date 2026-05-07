@@ -401,6 +401,7 @@ class AgentLoop:
         self._vector_index = vector_index
         self._embed_fn = embed_fn
         self.memory.set_embed_fn(embed_fn)
+        self.consolidator.set_embed_fn(embed_fn)
 
         if config.memory.contradiction_detection and storage:
             from echo_agent.memory.contradiction import ContradictionDetector

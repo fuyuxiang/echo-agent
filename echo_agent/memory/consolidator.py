@@ -56,6 +56,7 @@ class MemoryConsolidator:
         self._forgetting_curve = None
         self._contradiction_detector = None
         self._archival_manager = None
+        self._embed_fn = None
 
     def set_episodic_manager(self, mgr):
         self._episodic_manager = mgr
@@ -71,6 +72,9 @@ class MemoryConsolidator:
 
     def set_archival_manager(self, mgr):
         self._archival_manager = mgr
+
+    def set_embed_fn(self, fn):
+        self._embed_fn = fn
 
     async def consolidate_chunk(self, messages: list[dict[str, Any]]) -> bool:
         if not messages:
@@ -178,7 +182,7 @@ class MemoryConsolidator:
                 for new_entry in promoted:
                     others = [e for e in all_entries if e.id != new_entry.id]
                     contradictions = await self._contradiction_detector.check(
-                        new_entry, others, llm_call=self._llm_call,
+                        new_entry, others, llm_call=self._llm_call, embed_fn=self._embed_fn,
                     )
                     for c in contradictions:
                         await self._contradiction_detector.store_contradiction(c)

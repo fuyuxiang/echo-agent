@@ -64,8 +64,6 @@ class HybridRetriever:
         entries = self._entries_fn()
         if mem_type is not None:
             entries = [e for e in entries if e.type == mem_type]
-        if session_key:
-            entries = [e for e in entries if not e.source_session or e.source_session == session_key]
         if not entries:
             return []
 
@@ -81,6 +79,7 @@ class HybridRetriever:
         all_ids = set(keyword_scores) | set(vector_scores)
         kw_max = max(keyword_scores.values(), default=1.0) or 1.0
         vec_max = max(vector_scores.values(), default=1.0) or 1.0
+        has_vector = bool(vector_scores)
         scored: list[tuple[MemoryEntry, float]] = []
         for memory_id in all_ids:
             entry = entry_map.get(memory_id)
@@ -89,6 +88,7 @@ class HybridRetriever:
             score = self._resonance_score(
                 entry, keyword_scores.get(memory_id, 0.0) / kw_max,
                 vector_scores.get(memory_id, 0.0) / vec_max, entropy,
+                has_vector=has_vector,
             )
             if score > 0:
                 scored.append((entry, score))
@@ -166,11 +166,19 @@ class HybridRetriever:
     def _resonance_score(
         self, entry: MemoryEntry, keyword_score: float,
         vector_score: float, query_entropy: float,
+        has_vector: bool = True,
     ) -> float:
-        """Query-adaptive Resonance Scoring — weights shift with entropy."""
-        e = max(0.0, min(1.0, query_entropy))
-        w_keyword = 0.5 * (1 - e)
-        w_vector = 0.5 + 0.5 * e
-        raw = w_keyword * keyword_score + w_vector * vector_score
+        """Query-adaptive Resonance Scoring — weights shift with entropy.
+
+        When vector search is unavailable, uses keyword score only with
+        full weight to avoid penalizing high-entropy queries.
+        """
+        if not has_vector:
+            raw = keyword_score
+        else:
+            e = max(0.0, min(1.0, query_entropy))
+            w_keyword = 0.5 * (1 - e)
+            w_vector = 0.5 + 0.5 * e
+            raw = w_keyword * keyword_score + w_vector * vector_score
         return raw * self._forgetting.effective_importance(entry)
 
