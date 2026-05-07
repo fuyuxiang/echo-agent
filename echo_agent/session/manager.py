@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
 import tempfile
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -81,26 +83,33 @@ class SessionManager:
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self._expiry_delta = timedelta(hours=expiry_hours)
         self._archive_delta = timedelta(hours=archive_hours)
-        self._cache: dict[str, Session] = {}
+        self._cache: OrderedDict[str, Session] = OrderedDict()
+        self._max_cache_size = 200
         self._storage = storage
+        self._lock = asyncio.Lock()
 
     def _session_path(self, key: str) -> Path:
         safe = key.replace(":", "_").replace("/", "_")
         return self.sessions_dir / f"{safe}.jsonl"
 
     async def get_or_create(self, key: str) -> Session:
-        if key in self._cache:
-            session = self._cache[key]
-            if session.status == "expired":
-                session.status = "active"
-                session.updated_at = datetime.now()
-            return session
+        async with self._lock:
+            if key in self._cache:
+                session = self._cache[key]
+                self._cache.move_to_end(key)
+                if session.status == "expired":
+                    session.status = "active"
+                    session.updated_at = datetime.now()
+                return session
 
-        session = await self._load(key)
-        if session is None:
-            session = Session(key=key)
-        self._cache[key] = session
-        return session
+            session = await self._load(key)
+            if session is None:
+                session = Session(key=key)
+            self._cache[key] = session
+            self._cache.move_to_end(key)
+            while len(self._cache) > self._max_cache_size:
+                self._cache.popitem(last=False)
+            return session
 
     async def _load(self, key: str) -> Session | None:
         if self._storage:
@@ -166,7 +175,9 @@ class SessionManager:
             return None
 
     async def save(self, session: Session) -> None:
-        self._cache[session.key] = session
+        async with self._lock:
+            self._cache[session.key] = session
+            self._cache.move_to_end(session.key)
         if self._storage:
             await self._save_to_storage(session)
         else:
@@ -215,19 +226,21 @@ class SessionManager:
             raise
 
     async def expire_session(self, key: str) -> None:
-        session = self._cache.get(key)
+        async with self._lock:
+            session = self._cache.get(key)
         if session:
             session.status = "expired"
             await self.save(session)
 
-    def archive_session(self, key: str) -> bool:
+    async def archive_session(self, key: str) -> bool:
         path = self._session_path(key)
         if not path.exists():
             return False
         archive_dir = self.sessions_dir / "archive"
         archive_dir.mkdir(exist_ok=True)
         shutil.move(str(path), str(archive_dir / path.name))
-        self._cache.pop(key, None)
+        async with self._lock:
+            self._cache.pop(key, None)
         return True
 
     async def reopen_session(self, key: str) -> Session | None:
@@ -239,8 +252,8 @@ class SessionManager:
         if session:
             session.status = "active"
             session.updated_at = datetime.now()
-            self._cache[key] = session
             await self.save(session)
+        return session
         return session
 
     async def cleanup_expired(self) -> int:
@@ -264,7 +277,7 @@ class SessionManager:
                     await self.expire_session(key)
                     count += 1
                 elif status == "expired" and (now - updated) > self._archive_delta:
-                    self.archive_session(key)
+                    await self.archive_session(key)
                     count += 1
             except Exception as e:
                 logger.debug("Error during session cleanup for {}: {}", key, e)
@@ -292,5 +305,6 @@ class SessionManager:
                 continue
         return sorted(sessions, key=lambda x: x.get("updated_at", ""), reverse=True)
 
-    def invalidate(self, key: str) -> None:
-        self._cache.pop(key, None)
+    async def invalidate(self, key: str) -> None:
+        async with self._lock:
+            self._cache.pop(key, None)

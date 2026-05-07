@@ -157,8 +157,8 @@ class ChannelsConfig(_Base):
     email: EmailChannelConfig = Field(default_factory=EmailChannelConfig)
     wecom: WeComChannelConfig = Field(default_factory=WeComChannelConfig)
     matrix: MatrixChannelConfig = Field(default_factory=MatrixChannelConfig)
-    send_progress: bool = False
-    send_tool_hints: bool = False
+    send_progress: bool = True
+    send_tool_hints: bool = True
     stream_channels: list[str] = Field(default_factory=lambda: ["telegram", "discord", "slack"])
     stream_flush_chars: int = 180
     stream_flush_interval_ms: int = 1500
@@ -291,7 +291,7 @@ class PermissionsConfig(_Base):
 
 class CredentialSecurityConfig(_Base):
     encryption_key_env: str = "ECHO_AGENT_CREDENTIAL_KEY"
-    require_encryption: bool = False
+    require_encryption: bool = True
 
 
 # ── Session configs ──────────────────────────────────────────────────────────

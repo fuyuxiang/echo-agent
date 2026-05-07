@@ -346,6 +346,7 @@ class AgentLoop:
         self._memory_snapshots: OrderedDict[str, str] = OrderedDict()
         self._max_cached_sessions = 200
         self._background_tasks: set[asyncio.Task[Any]] = set()
+        self._state_lock = asyncio.Lock()
         self._register_tools(scheduler=scheduler, task_manager=task_manager, workflow_engine=workflow_engine)
         self._setup_multi_agent()
 
@@ -453,7 +454,7 @@ class AgentLoop:
         self._running = True
         if self._vector_index is not None:
             await self._vector_index.initialize()
-        await self._start_mcp()
+        self._spawn_background(self._start_mcp_background())
         self.bus.subscribe_inbound(self._on_inbound)
         logger.info("Agent loop started")
 
@@ -461,10 +462,16 @@ class AgentLoop:
         self._running = False
         if self.mcp_manager:
             await self.mcp_manager.stop_all()
-        for task in self._background_tasks:
+        async with self._state_lock:
+            tasks = list(self._background_tasks)
+        for task in tasks:
             task.cancel()
-        if self._background_tasks:
-            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+        if tasks:
+            await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=10.0,
+            )
+        async with self._state_lock:
             self._background_tasks.clear()
         logger.info("Agent loop stopped")
 
@@ -478,11 +485,18 @@ class AgentLoop:
         if not task.cancelled() and task.exception():
             logger.warning("Background task failed: {}", task.exception())
 
-    def _lru_put(self, cache: OrderedDict, key: str, value: Any) -> None:  # type: ignore[type-arg]
-        cache[key] = value
-        cache.move_to_end(key)
-        while len(cache) > self._max_cached_sessions:
-            cache.popitem(last=False)
+    async def _lru_put(self, cache: OrderedDict, key: str, value: Any) -> None:  # type: ignore[type-arg]
+        async with self._state_lock:
+            cache[key] = value
+            cache.move_to_end(key)
+            while len(cache) > self._max_cached_sessions:
+                cache.popitem(last=False)
+
+    async def _start_mcp_background(self) -> None:
+        try:
+            await self._start_mcp()
+        except Exception as e:
+            logger.error("MCP initialization failed (agent continues without MCP tools): {}", e)
 
     async def _start_mcp(self) -> None:
         mcp_servers = self.config.tools.mcp_servers
@@ -540,7 +554,7 @@ class AgentLoop:
         session = await self.sessions.get_or_create(event.session_key)
         if event.session_key not in self._working_memories:
             from echo_agent.memory.tiers import WorkingMemory
-            self._lru_put(self._working_memories, event.session_key, WorkingMemory(
+            await self._lru_put(self._working_memories, event.session_key, WorkingMemory(
                 max_entries=self.config.memory.max_working_memory
             ))
         command_response = await self._handle_approval_command(event)
@@ -567,8 +581,8 @@ class AgentLoop:
 
         if self._snapshot_enabled:
             if event.session_key not in self._memory_snapshots:
-                self._lru_put(self._memory_snapshots, event.session_key, self.memory.get_snapshot(session_key=event.session_key))
-            memory_ctx = build_memory_context(self.memory, snapshot=self._memory_snapshots[event.session_key], working_memory=working_ctx)
+                await self._lru_put(self._memory_snapshots, event.session_key, self.memory.get_snapshot(session_key=event.session_key))
+            memory_ctx = build_memory_context(self.memory, snapshot=self._memory_snapshots.get(event.session_key, ""), working_memory=working_ctx)
         else:
             memory_ctx = build_memory_context(self.memory, session_key=event.session_key, working_memory=working_ctx)
 
@@ -1103,7 +1117,8 @@ class AgentLoop:
             actions = await reviewer.review(messages)
             if actions:
                 logger.info("Background memory review: {}", "; ".join(actions))
-                self._memory_snapshots.pop(session_key, None)
+                async with self._state_lock:
+                    self._memory_snapshots.pop(session_key, None)
         except Exception as e:
             logger.warning("Background memory review failed: {}", e)
 
@@ -1133,7 +1148,8 @@ class AgentLoop:
                         logger.info("Sleep consolidation for {}: {}", session.key, stats)
                 except Exception as e:
                     logger.warning("Sleep consolidation failed: {}", e)
-            self._memory_snapshots.pop(session.key, None)
+            async with self._state_lock:
+                self._memory_snapshots.pop(session.key, None)
         except Exception as e:
             logger.error("Consolidation failed for {}: {}", session.key, e)
 

@@ -59,6 +59,12 @@ _MEMORY_THREAT_PATTERNS = [
     (r"authorized_keys", "ssh_backdoor"),
     (r"\$HOME/\.ssh|\~/\.ssh", "ssh_access"),
     (r"\$HOME/\.echo-agent|\~/\.echo-agent", "agent_secret_path"),
+    (r"忽略.{0,6}(之前|以上|所有|先前).{0,4}(指令|指示|规则|要求)", "prompt_injection_zh"),
+    (r"你现在是", "role_hijack_zh"),
+    (r"不要告诉用户", "deception_hide_zh"),
+    (r"无视.{0,4}(你的|所有|任何).{0,4}(指令|规则|限制)", "disregard_rules_zh"),
+    (r"假装.{0,4}(你|自己).{0,4}(没有|不受).{0,4}(限制|规则|约束)", "bypass_restrictions_zh"),
+    (r"系统提示.{0,4}(覆盖|重写|替换)", "sys_prompt_override_zh"),
 ]
 
 _INVISIBLE_CHARS = {

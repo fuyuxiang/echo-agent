@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -10,6 +11,9 @@ from typing import Any
 from loguru import logger
 
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
+
+_MAX_REPLAY_CACHE = 500
+_MAX_EXECUTION_LOG = 1000
 
 
 class ToolRegistry:
@@ -24,8 +28,9 @@ class ToolRegistry:
 
     def __init__(self):
         self._tools: dict[str, Tool] = {}
-        self._replay_cache: dict[str, dict[str, Any]] = {}
-        self._execution_log: list[dict[str, Any]] = []
+        self._replay_cache: collections.OrderedDict[str, dict[str, Any]] = collections.OrderedDict()
+        self._execution_log: collections.deque[dict[str, Any]] = collections.deque(maxlen=_MAX_EXECUTION_LOG)
+        self._lock = asyncio.Lock()
 
     def _resolve(self, name: str) -> str:
         return self._ALIASES.get(name, name)
@@ -75,7 +80,8 @@ class ToolRegistry:
         )
 
         if tool.execution_mode(params) == "side_effect" and exec_ctx.idempotency_key:
-            cached = self._replay_cache.get(exec_ctx.idempotency_key)
+            async with self._lock:
+                cached = self._replay_cache.get(exec_ctx.idempotency_key)
             if cached:
                 logger.warning("Replay prevented for tool={} key={}", name, exec_ctx.idempotency_key[:16])
                 return ToolResult(success=False, error=f"Replay prevented for '{name}'")
@@ -104,11 +110,14 @@ class ToolRegistry:
                 self._execution_log.append(log_entry)
 
                 if result.success and tool.execution_mode(params) == "side_effect" and exec_ctx.idempotency_key:
-                    self._replay_cache[exec_ctx.idempotency_key] = {
-                        "tool": name,
-                        "execution_id": exec_ctx.execution_id,
-                        "at": datetime.now(timezone.utc).isoformat(),
-                    }
+                    async with self._lock:
+                        self._replay_cache[exec_ctx.idempotency_key] = {
+                            "tool": name,
+                            "execution_id": exec_ctx.execution_id,
+                            "at": datetime.now(timezone.utc).isoformat(),
+                        }
+                        while len(self._replay_cache) > _MAX_REPLAY_CACHE:
+                            self._replay_cache.popitem(last=False)
                 return result
             except asyncio.TimeoutError:
                 last_result = ToolResult(success=False, error=f"Tool '{name}' timed out after {tool.timeout_seconds}s")
@@ -126,7 +135,7 @@ class ToolRegistry:
         return last_result
 
     def get_execution_log(self, limit: int = 100) -> list[dict[str, Any]]:
-        return self._execution_log[-limit:]
+        return list(self._execution_log)[-limit:]
 
     def clear_log(self) -> None:
         self._execution_log.clear()
