@@ -30,11 +30,13 @@ class MessageBus:
         self._dispatch_task: asyncio.Task | None = None
         self._lifecycle_lock = asyncio.Lock()
 
-    async def publish_inbound(self, event: InboundEvent) -> None:
+    async def publish_inbound(self, event: InboundEvent) -> bool:
         try:
             await asyncio.wait_for(self._inbound_queue.put(event), timeout=5.0)
+            return True
         except asyncio.TimeoutError:
             logger.error("Inbound queue full after 5s wait, rejecting event from {}:{}", event.channel, event.chat_id)
+            return False
 
     async def publish_outbound(self, event: OutboundEvent) -> None:
         if not self._global_outbound_handlers and event.channel not in self._outbound_handlers:

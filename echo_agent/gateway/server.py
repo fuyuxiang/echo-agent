@@ -61,6 +61,7 @@ class GatewayServer:
         self._site: web.TCPSite | None = None
         self._ws_clients: dict[str, web.WebSocketResponse] = {}
         self._pending_http: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._MAX_PENDING_HTTP = 500
         self._running = False
 
         data_dir = workspace / "data"
@@ -292,10 +293,15 @@ class GatewayServer:
             )
             future: asyncio.Future[dict[str, Any]] | None = None
             if wait:
+                if len(self._pending_http) >= self._MAX_PENDING_HTTP:
+                    return web.json_response({"error": "too many pending requests"}, status=503)
                 future = asyncio.get_event_loop().create_future()
                 self._pending_http[event.event_id] = future
 
-            await self._bus.publish_inbound(event)
+            accepted = await self._bus.publish_inbound(event)
+            if not accepted:
+                self._pending_http.pop(event.event_id, None)
+                return web.json_response({"error": "server overloaded"}, status=503)
             await self.hooks.emit(
                 "message_received",
                 platform=platform, user_id=user_id, chat_id=chat_id,
@@ -305,7 +311,6 @@ class GatewayServer:
                 try:
                     payload = await asyncio.wait_for(future, timeout=timeout_seconds)
                 except asyncio.TimeoutError:
-                    self._pending_http.pop(event.event_id, None)
                     return web.json_response(
                         {
                             "error": "timeout",
@@ -314,6 +319,8 @@ class GatewayServer:
                         },
                         status=504,
                     )
+                finally:
+                    self._pending_http.pop(event.event_id, None)
                 return web.json_response(
                     {
                         "status": "completed",
@@ -484,7 +491,9 @@ class GatewayServer:
                             )
                             event.metadata["gateway"] = True
                             event.metadata["platform"] = platform
-                            await self._bus.publish_inbound(event)
+                            if not await self._bus.publish_inbound(event):
+                                await websocket.send_json({"type": "error", "error": "server overloaded"})
+                                continue
                             await websocket.send_json({
                                 "type": "accepted",
                                 "event_id": event.event_id,
@@ -520,7 +529,10 @@ class GatewayServer:
         if correlation_id:
             future = self._pending_http.get(correlation_id)
             if future is not None and not future.done() and event.is_final:
-                future.set_result(payload)
+                try:
+                    future.set_result(payload)
+                except asyncio.InvalidStateError:
+                    pass
                 self._pending_http.pop(correlation_id, None)
 
         await self.broadcast_to_ws(session_key, payload)

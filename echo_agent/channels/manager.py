@@ -180,8 +180,10 @@ class ChannelManager:
     async def _deliver_final(self, event: OutboundEvent) -> None:
         channel = self._channels.get(event.channel)
         has_content = any(b.text or b.url for b in event.content)
-        if not channel or not has_content:
+        if not has_content:
             event.metadata["_drop"] = True
+            return
+        if not channel:
             return
         send_event = OutboundEvent(
             channel=event.channel,
