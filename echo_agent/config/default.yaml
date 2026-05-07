@@ -65,7 +65,7 @@ session:
 memory:
   enabled: true
   consolidationThreshold: 50
-  vectorEnabled: false
+  vectorEnabled: true
 
 knowledge:
   enabled: false

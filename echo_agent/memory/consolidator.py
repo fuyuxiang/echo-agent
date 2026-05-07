@@ -120,7 +120,10 @@ class MemoryConsolidator:
             logger.error("Memory consolidation failed: {}", e)
             return False
 
-    async def sleep_consolidate(self, session_key: str, messages: list[dict[str, Any]]) -> dict[str, int]:
+    async def sleep_consolidate(
+        self, session_key: str, messages: list[dict[str, Any]],
+        *, chunk_already_consolidated: bool = False,
+    ) -> dict[str, int]:
         """Sleep-time consolidation pipeline:
         1. Create episode from messages
         2. Extract semantic facts and promote
@@ -133,14 +136,16 @@ class MemoryConsolidator:
 
         # Step 1: Create episode
         if self._episodic_manager and messages:
-            summary_result = await self.consolidate_chunk(messages)
+            if chunk_already_consolidated:
+                summary_result = True
+            else:
+                summary_result = await self.consolidate_chunk(messages)
             if summary_result:
-                current_memory = self.store.read_long_term()
-                from echo_agent.memory.types import Episode
+                summary_text = await self._generate_episode_summary(messages)
                 episode = await self._episodic_manager.create_episode(
                     session_key=session_key,
                     messages=messages,
-                    summary=current_memory[:500] if current_memory else "conversation episode",
+                    summary=summary_text,
                     message_range=(0, len(messages)),
                 )
                 stats["episodes"] = 1
@@ -166,13 +171,15 @@ class MemoryConsolidator:
                     except Exception as e:
                         logger.warning("Fact extraction failed: {}", e)
 
-        # Step 3: Run heuristic contradiction detection on newly promoted entries
+        # Step 3: Run contradiction detection on newly promoted entries
         if self._contradiction_detector and promoted:
             try:
                 all_entries = list(self.store._entries.values())
                 for new_entry in promoted:
                     others = [e for e in all_entries if e.id != new_entry.id]
-                    contradictions = await self._contradiction_detector.check(new_entry, others)
+                    contradictions = await self._contradiction_detector.check(
+                        new_entry, others, llm_call=self._llm_call,
+                    )
                     for c in contradictions:
                         await self._contradiction_detector.store_contradiction(c)
                         stats["contradictions"] += 1
@@ -194,6 +201,28 @@ class MemoryConsolidator:
     def should_consolidate(self, session_message_count: int, last_consolidated: int) -> bool:
         unconsolidated = session_message_count - last_consolidated
         return unconsolidated >= self._consolidation_threshold
+
+    async def _generate_episode_summary(self, messages: list[dict[str, Any]]) -> str:
+        """Generate a concise summary of conversation messages for episode storage."""
+        formatted = self._format_messages(messages)
+        if not formatted:
+            return "conversation episode"
+        try:
+            response = await self._llm_call(
+                messages=[
+                    {"role": "system", "content": "Summarize this conversation in 2-3 sentences. Focus on what was discussed, decided, or accomplished."},
+                    {"role": "user", "content": formatted[:3000]},
+                ],
+            )
+            if response.content and response.content.strip():
+                return response.content.strip()[:500]
+        except Exception as e:
+            logger.warning("Episode summary generation failed: {}", e)
+        # Fallback: use first user message as summary
+        for msg in messages:
+            if msg.get("role") == "user" and msg.get("content"):
+                return str(msg["content"])[:200]
+        return "conversation episode"
 
     def pick_boundary(self, messages: list[dict[str, Any]], start: int, target_tokens: int) -> int | None:
         """Find a safe consolidation boundary (end of a user turn)."""
