@@ -88,6 +88,9 @@ class ChannelManager:
         self._on_cli_exit = on_cli_exit
         self._stream_states: dict[str, _StreamState] = {}
         self._inbound_msg_ids: dict[str, tuple[str, str]] = {}
+        self._max_inbound_ids = 1000
+        self._max_stream_states = 500
+        self._state_lock = asyncio.Lock()
         self.bus.subscribe_outbound_global(self._filter_and_dispatch)
         self.bus.subscribe_inbound(self._on_inbound_lifecycle)
 
@@ -103,7 +106,11 @@ class ChannelManager:
         if not channel:
             return
         if event.reply_to_id:
-            self._inbound_msg_ids[event.event_id] = (event.channel, event.reply_to_id)
+            async with self._state_lock:
+                self._inbound_msg_ids[event.event_id] = (event.channel, event.reply_to_id)
+                while len(self._inbound_msg_ids) > self._max_inbound_ids:
+                    oldest = next(iter(self._inbound_msg_ids))
+                    del self._inbound_msg_ids[oldest]
         try:
             await channel.send_typing(event.chat_id, metadata=event.metadata)
         except Exception as e:
@@ -149,7 +156,8 @@ class ChannelManager:
         except Exception as e:
             logger.debug("stop_typing failed on {}: {}", event.channel, e)
         inbound_event_id = str(event.metadata.get("_inbound_event_id", ""))
-        mapping = self._inbound_msg_ids.pop(inbound_event_id, None)
+        async with self._state_lock:
+            mapping = self._inbound_msg_ids.pop(inbound_event_id, None)
         if not mapping:
             return
         _, platform_msg_id = mapping
@@ -204,7 +212,11 @@ class ChannelManager:
 
         event.metadata["_drop"] = True
         stream_key = self._stream_key(event)
-        state = self._stream_states.setdefault(stream_key, _StreamState())
+        async with self._state_lock:
+            state = self._stream_states.setdefault(stream_key, _StreamState())
+            while len(self._stream_states) > self._max_stream_states:
+                oldest = next(iter(self._stream_states))
+                del self._stream_states[oldest]
 
         if event.metadata.get("_stream_full_text"):
             state.raw_text = event.text or ""
@@ -216,18 +228,21 @@ class ChannelManager:
         if state.failed:
             if event.is_final:
                 await self._send_stream_fallback(channel, event, visible_text)
-                self._stream_states.pop(stream_key, None)
+                async with self._state_lock:
+                    self._stream_states.pop(stream_key, None)
             return
 
         rendered_text = self._render_stream_text(visible_text, final=event.is_final)
         if not rendered_text:
             if event.is_final:
-                self._stream_states.pop(stream_key, None)
+                async with self._state_lock:
+                    self._stream_states.pop(stream_key, None)
             return
 
         if rendered_text == state.rendered_text:
             if event.is_final:
-                self._stream_states.pop(stream_key, None)
+                async with self._state_lock:
+                    self._stream_states.pop(stream_key, None)
             return
 
         if state.message_id:
@@ -256,7 +271,8 @@ class ChannelManager:
             state.failed = True
             if event.is_final:
                 await self._send_stream_fallback(channel, event, visible_text)
-                self._stream_states.pop(stream_key, None)
+                async with self._state_lock:
+                    self._stream_states.pop(stream_key, None)
             return
 
         if result.message_id:
@@ -268,7 +284,8 @@ class ChannelManager:
 
         state.rendered_text = rendered_text
         if event.is_final:
-            self._stream_states.pop(stream_key, None)
+            async with self._state_lock:
+                self._stream_states.pop(stream_key, None)
 
     async def _send_stream_fallback(self, channel: BaseChannel, event: OutboundEvent, text: str) -> None:
         final_text = self._render_stream_text(text, final=True)

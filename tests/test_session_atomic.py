@@ -83,7 +83,7 @@ async def test_roundtrip_preserves_data(manager: SessionManager) -> None:
     session.metadata = {"channel": "test"}
     await manager.save(session)
 
-    manager.invalidate("rt:1")
+    await manager.invalidate("rt:1")
     loaded = await manager.get_or_create("rt:1")
     assert len(loaded.messages) == 2
     assert loaded.messages[0]["content"] == "msg1"

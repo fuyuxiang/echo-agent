@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import threading
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -96,6 +97,7 @@ class KnowledgeIndex:
         self._chunks: list[dict[str, Any]] = []
         self._df: Counter[str] = Counter()
         self._loaded = False
+        self._lock = threading.Lock()
 
     @property
     def chunk_count(self) -> int:
@@ -117,43 +119,48 @@ class KnowledgeIndex:
             self.load()
 
     def rebuild(self) -> dict[str, Any]:
-        self._chunks = []
-        self._df = Counter()
-        self.docs_dir.mkdir(parents=True, exist_ok=True)
-        files = [
-            path for path in self.docs_dir.rglob("*")
-            if path.is_file() and path.suffix.lower() in self.allowed_extensions
-        ]
-        for path in sorted(files):
-            self._index_file(path)
-        self._recompute_stats()
-        self._save()
-        self._loaded = True
+        with self._lock:
+            self._chunks = []
+            self._df = Counter()
+            self.docs_dir.mkdir(parents=True, exist_ok=True)
+            files = [
+                path for path in self.docs_dir.rglob("*")
+                if path.is_file() and path.suffix.lower() in self.allowed_extensions
+            ]
+            for path in sorted(files):
+                self._index_file(path)
+            self._recompute_stats()
+            self._save()
+            self._loaded = True
         summary = {"documents": len(files), "chunks": len(self._chunks), "index_path": str(self.index_path)}
         logger.info("Knowledge index rebuilt: {} documents, {} chunks", summary["documents"], summary["chunks"])
         return summary
 
     def load(self) -> None:
-        if not self.index_path.exists():
-            self._chunks = []
-            self._df = Counter()
+        with self._lock:
+            if not self.index_path.exists():
+                self._chunks = []
+                self._df = Counter()
+                self._loaded = True
+                return
+            data = json.loads(self.index_path.read_text(encoding="utf-8"))
+            self._chunks = list(data.get("chunks", []))
+            self._recompute_stats()
             self._loaded = True
-            return
-        data = json.loads(self.index_path.read_text(encoding="utf-8"))
-        self._chunks = list(data.get("chunks", []))
-        self._recompute_stats()
-        self._loaded = True
 
     def search(self, query: str, *, limit: int = 5, user_id: str = "") -> list[KnowledgeSearchResult]:
         self._ensure_loaded()
         query_terms = _tokenize(query)
         if not query_terms:
             return []
+        with self._lock:
+            chunks_snapshot = list(self._chunks)
+            df_snapshot = Counter(self._df)
         query_counts = Counter(query_terms)
-        total_chunks = max(1, len(self._chunks))
+        total_chunks = max(1, len(chunks_snapshot))
         scored: list[tuple[float, dict[str, Any]]] = []
         query_lower = query.lower()
-        for chunk in self._chunks:
+        for chunk in chunks_snapshot:
             if not self._allowed_for_user(chunk.get("metadata", {}), user_id):
                 continue
             terms = Counter(chunk.get("terms", {}))
@@ -165,7 +172,7 @@ class KnowledgeIndex:
                 tf = terms.get(term, 0)
                 if tf <= 0:
                     continue
-                idf = math.log((1 + total_chunks) / (1 + self._df.get(term, 0))) + 1
+                idf = math.log((1 + total_chunks) / (1 + df_snapshot.get(term, 0))) + 1
                 score += (tf / length) * idf * query_tf
             text_lower = chunk.get("text", "").lower()
             if query_lower and query_lower in text_lower:

@@ -28,12 +28,13 @@ class MessageBus:
         self._inbound_subscribers: list[InboundHandler] = []
         self._running = False
         self._dispatch_task: asyncio.Task | None = None
+        self._lifecycle_lock = asyncio.Lock()
 
     async def publish_inbound(self, event: InboundEvent) -> None:
         try:
-            self._inbound_queue.put_nowait(event)
-        except asyncio.QueueFull:
-            logger.warning("Inbound queue full, dropping event from {}:{}", event.channel, event.chat_id)
+            await asyncio.wait_for(self._inbound_queue.put(event), timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.error("Inbound queue full after 5s wait, rejecting event from {}:{}", event.channel, event.chat_id)
 
     async def publish_outbound(self, event: OutboundEvent) -> None:
         if not self._global_outbound_handlers and event.channel not in self._outbound_handlers:
@@ -73,18 +74,23 @@ class MessageBus:
         self._global_outbound_handlers.append(handler)
 
     async def start(self) -> None:
-        self._running = True
-        self._dispatch_task = asyncio.create_task(self._dispatch_loop())
+        async with self._lifecycle_lock:
+            if self._running:
+                return
+            self._running = True
+            self._dispatch_task = asyncio.create_task(self._dispatch_loop())
         logger.info("MessageBus started")
 
     async def stop(self) -> None:
-        self._running = False
-        if self._dispatch_task:
-            self._dispatch_task.cancel()
-            try:
-                await self._dispatch_task
-            except asyncio.CancelledError:
-                pass
+        async with self._lifecycle_lock:
+            self._running = False
+            if self._dispatch_task:
+                self._dispatch_task.cancel()
+                try:
+                    await self._dispatch_task
+                except asyncio.CancelledError:
+                    pass
+                self._dispatch_task = None
         logger.info("MessageBus stopped")
 
     async def _dispatch_loop(self) -> None:
