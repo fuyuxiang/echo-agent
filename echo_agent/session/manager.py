@@ -87,10 +87,22 @@ class SessionManager:
         self._max_cache_size = 200
         self._storage = storage
         self._lock = asyncio.Lock()
+        self._session_locks: OrderedDict[str, asyncio.Lock] = OrderedDict()
+        self._max_session_locks = 200
 
     def _session_path(self, key: str) -> Path:
         safe = key.replace(":", "_").replace("/", "_")
         return self.sessions_dir / f"{safe}.jsonl"
+
+    async def acquire(self, key: str) -> asyncio.Lock:
+        """Return a per-session lock for serializing concurrent access."""
+        async with self._lock:
+            if key not in self._session_locks:
+                self._session_locks[key] = asyncio.Lock()
+            self._session_locks.move_to_end(key)
+            while len(self._session_locks) > self._max_session_locks:
+                self._session_locks.popitem(last=False)
+            return self._session_locks[key]
 
     async def get_or_create(self, key: str) -> Session:
         async with self._lock:
@@ -108,7 +120,14 @@ class SessionManager:
             self._cache[key] = session
             self._cache.move_to_end(key)
             while len(self._cache) > self._max_cache_size:
-                self._cache.popitem(last=False)
+                _, evicted = self._cache.popitem(last=False)
+                try:
+                    if self._storage:
+                        await self._save_to_storage(evicted)
+                    else:
+                        self._save_to_file(evicted)
+                except Exception as e:
+                    logger.warning("Failed to save evicted session {}: {}", evicted.key, e)
             return session
 
     async def _load(self, key: str) -> Session | None:

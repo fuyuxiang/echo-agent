@@ -7,6 +7,7 @@ Integrates all subsystems: session, memory, tools, permissions, observability.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
 import time
 import uuid
@@ -346,6 +347,7 @@ class AgentLoop:
         self._memory_snapshots: OrderedDict[str, str] = OrderedDict()
         self._max_cached_sessions = 200
         self._background_tasks: set[asyncio.Task[Any]] = set()
+        self._pending_consolidations: set[str] = set()
         self._state_lock = asyncio.Lock()
         self._register_tools(scheduler=scheduler, task_manager=task_manager, workflow_engine=workflow_engine)
         self._setup_multi_agent()
@@ -475,8 +477,10 @@ class AgentLoop:
             self._background_tasks.clear()
         logger.info("Agent loop stopped")
 
-    def _spawn_background(self, coro: Any) -> None:
+    def _spawn_background(self, coro: Any, *, session_key: str = "") -> None:
         task = asyncio.create_task(coro)
+        if session_key:
+            task._session_key = session_key  # type: ignore[attr-defined]
         self._background_tasks.add(task)
         task.add_done_callback(self._on_background_done)
 
@@ -484,6 +488,9 @@ class AgentLoop:
         self._background_tasks.discard(task)
         if not task.cancelled() and task.exception():
             logger.warning("Background task failed: {}", task.exception())
+            session_key = getattr(task, '_session_key', None)
+            if session_key:
+                self._pending_consolidations.add(session_key)
 
     async def _lru_put(self, cache: OrderedDict, key: str, value: Any) -> None:  # type: ignore[type-arg]
         async with self._state_lock:
@@ -514,30 +521,32 @@ class AgentLoop:
         """入站事件处理入口，负责追踪、错误处理和响应发布。"""
         if not self._running:
             return
-        trace_id = uuid.uuid4().hex[:12]
-        span = self.tracer.start_span(trace_id, f"s_{trace_id}", "process_message", "input")
-        try:
-            result = await self._process_event(event, trace_id, publish_response=True)
-            response_text = result.response_text
-            if response_text and not result.outbound_sent:
-                out = OutboundEvent.from_text_with_media(
-                    channel=event.channel, chat_id=event.chat_id, text=response_text, reply_to_id=event.reply_to_id,
+        session_lock = await self.sessions.acquire(event.session_key)
+        async with session_lock:
+            trace_id = uuid.uuid4().hex[:12]
+            span = self.tracer.start_span(trace_id, f"s_{trace_id}", "process_message", "input")
+            try:
+                result = await self._process_event(event, trace_id, publish_response=True)
+                response_text = result.response_text
+                if response_text and not result.outbound_sent:
+                    out = OutboundEvent.from_text_with_media(
+                        channel=event.channel, chat_id=event.chat_id, text=response_text, reply_to_id=event.reply_to_id,
+                    )
+                    out.metadata = dict(event.metadata)
+                    out.metadata["_inbound_event_id"] = event.event_id
+                    await self.bus.publish_outbound(out)
+                self.tracer.end_span(span, metadata={"response_len": len(response_text or "")})
+            except Exception as e:
+                logger.error("Processing failed for event {}: {}", event.event_id, e)
+                self.tracer.end_span(span, error=str(e))
+                error_out = OutboundEvent.text_reply(
+                    channel=event.channel, chat_id=event.chat_id, text=f"Sorry, an error occurred: {e}", reply_to_id=event.reply_to_id,
                 )
-                out.metadata = dict(event.metadata)
-                out.metadata["_inbound_event_id"] = event.event_id
-                await self.bus.publish_outbound(out)
-            self.tracer.end_span(span, metadata={"response_len": len(response_text or "")})
-        except Exception as e:
-            logger.error("Processing failed for event {}: {}", event.event_id, e)
-            self.tracer.end_span(span, error=str(e))
-            error_out = OutboundEvent.text_reply(
-                channel=event.channel, chat_id=event.chat_id, text=f"Sorry, an error occurred: {e}", reply_to_id=event.reply_to_id,
-            )
-            error_out.metadata = dict(event.metadata)
-            error_out.metadata["_inbound_event_id"] = event.event_id
-            await self.bus.publish_outbound(error_out)
-        finally:
-            self.tracer.flush_trace(trace_id)
+                error_out.metadata = dict(event.metadata)
+                error_out.metadata["_inbound_event_id"] = event.event_id
+                await self.bus.publish_outbound(error_out)
+            finally:
+                self.tracer.flush_trace(trace_id)
 
     async def _process_event(self, event: InboundEvent, trace_id: str, *, publish_response: bool = False) -> _ProcessResult:
         """处理单个入站事件的完整流水线。
@@ -559,6 +568,9 @@ class AgentLoop:
             ))
         command_response = await self._handle_approval_command(event)
         if command_response is not None:
+            session.add_message("user", event.text)
+            session.add_message("assistant", command_response)
+            await self.sessions.save(session)
             return _ProcessResult(response_text=command_response)
 
         should_introduce = self._should_introduce(session)
@@ -740,11 +752,16 @@ class AgentLoop:
                 outbound_sent = await stream_publisher.finalize(response_text)
             return _ProcessResult(response_text=response_text or "", outbound_sent=outbound_sent)
 
+        consecutive_failures = 0
+        _repeat_tracker: dict[str, int] = {}
+        _tools_disabled = False
+        loop_exhausted = True
+
         for iteration in range(self._max_iterations):
             llm_span = self.tracer.start_span(trace_id, f"llm_{iteration}", "llm_call", "llm_call")
             response, route_decision = await self._chat_stream_with_routing(
                 messages=messages,
-                tools=tool_defs if tool_defs else None,
+                tools=tool_defs if (tool_defs and not _tools_disabled) else None,
                 on_delta=stream_publisher.on_delta if publish_response else None,
                 task_type=task_type,
                 content=event.text,
@@ -769,12 +786,20 @@ class AgentLoop:
             if issues:
                 logger.warning("Inference issues: {}", issues)
 
+            if response.finish_reason == "error":
+                logger.warning("LLM returned error in iteration {}: {}", iteration, response.content)
+                if not response_text:
+                    response_text = "I encountered an issue processing your request. Please try again."
+                loop_exhausted = False
+                break
+
             if response.content:
                 response_text = response.content
 
             if not response.has_tool_calls:
                 if current_plan and not current_plan.is_complete:
                     current_plan.is_complete = True
+                loop_exhausted = False
                 break
 
             if current_plan and iteration < len(current_plan.steps):
@@ -830,6 +855,18 @@ class AgentLoop:
                 total_tool_calls += 1
                 self._tool_iters_since_skill_check += 1
                 self._tool_iters_since_memory_check += 1
+                if result.success:
+                    consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
+
+                _call_key = f"{tool_call.name}:{hashlib.md5(str(sorted(tool_call.arguments.items())).encode()).hexdigest()[:8]}"
+                _repeat_tracker[_call_key] = _repeat_tracker.get(_call_key, 0) + 1
+                if _repeat_tracker[_call_key] >= 4:
+                    result_text_blocked = f"[Blocked] Tool '{tool_call.name}' called with identical arguments {_repeat_tracker[_call_key]} times. Stopping repeated calls."
+                    messages[-1]["content"] = result_text_blocked
+                    logger.warning("Blocked repeated tool call: {} ({}x)", tool_call.name, _repeat_tracker[_call_key])
+
                 if (
                     self._nudge_interval > 0
                     and self._tool_iters_since_skill_check >= self._nudge_interval
@@ -845,6 +882,16 @@ class AgentLoop:
                     should_review_memory = True
                     self._tool_iters_since_memory_check = 0
 
+            if consecutive_failures >= 3 or any(v >= 4 for v in _repeat_tracker.values()):
+                _tools_disabled = True
+                logger.warning("Tools disabled for session {}: consecutive_failures={}, max_repeats={}",
+                               event.session_key, consecutive_failures, max(_repeat_tracker.values(), default=0))
+
+        if loop_exhausted:
+            logger.warning("Agent loop exhausted max iterations ({}) for session {}", self._max_iterations, event.session_key)
+            if not response_text:
+                response_text = "I encountered an issue processing your request. Please try again or rephrase your question."
+
         if response_text:
             response_text = strip_thinking(response_text)
         if intro_text:
@@ -857,7 +904,10 @@ class AgentLoop:
             self._spawn_background(self.memory.flush_pending_embeds())
 
         if self.consolidator.should_consolidate(session.message_count, session.last_consolidated):
-            self._spawn_background(self._consolidate(session))
+            self._spawn_background(self._consolidate(session), session_key=session.key)
+        elif session.key in self._pending_consolidations:
+            self._pending_consolidations.discard(session.key)
+            self._spawn_background(self._consolidate(session), session_key=session.key)
 
         if should_review_skills and total_tool_calls > 0:
             self._spawn_background(self._background_skill_review(messages))
