@@ -63,19 +63,24 @@ class ContradictionDetector:
     # Public API
     # ------------------------------------------------------------------
 
+    MAX_LLM_CANDIDATES = 5
+
     async def check(
         self,
         new_entry: MemoryEntry,
         candidates: list[MemoryEntry],
         llm_call: Callable[..., Any] | None = None,
+        embed_fn: Callable[..., Any] | None = None,
     ) -> list[Contradiction]:
         """Check new_entry against candidates for contradictions.
 
-        If *llm_call* is provided, uses LLM to verify semantic contradiction.
-        Otherwise falls back to heuristic (same key, different content).
+        Pre-filters candidates using heuristic (same key) and vector similarity
+        before calling LLM, to avoid O(n) LLM calls.
         """
         contradictions: list[Contradiction] = []
-        for candidate in candidates:
+        filtered = await self._pre_filter(new_entry, candidates, embed_fn)
+
+        for candidate in filtered:
             if candidate.id == new_entry.id:
                 continue
             result = await self._check_pair(new_entry, candidate, llm_call)
@@ -88,6 +93,39 @@ class ContradictionDetector:
                 new_entry.id,
             )
         return contradictions
+
+    async def _pre_filter(
+        self,
+        new_entry: MemoryEntry,
+        candidates: list[MemoryEntry],
+        embed_fn: Callable[..., Any] | None = None,
+    ) -> list[MemoryEntry]:
+        """Pre-filter candidates to reduce LLM calls.
+
+        Strategy:
+        1. Always include same-key candidates (heuristic match)
+        2. If vector index available, include top-N by similarity
+        3. Cap total at MAX_LLM_CANDIDATES
+        """
+        same_key = [c for c in candidates if c.key and c.key == new_entry.key and c.id != new_entry.id]
+        same_key_ids = {c.id for c in same_key}
+
+        vector_matches: list[MemoryEntry] = []
+        if self._vector_index and embed_fn and new_entry.content:
+            try:
+                text = f"{new_entry.key} {new_entry.content}" if new_entry.key else new_entry.content
+                embedding = await embed_fn(text)
+                if embedding:
+                    results = await self._vector_index.search(embedding, limit=self.MAX_LLM_CANDIDATES * 2)
+                    candidate_map = {c.id: c for c in candidates}
+                    for source_id, score in results:
+                        if score >= self.SIMILARITY_THRESHOLD and source_id in candidate_map and source_id not in same_key_ids:
+                            vector_matches.append(candidate_map[source_id])
+            except Exception as e:
+                logger.debug("Vector pre-filter failed: {}", e)
+
+        combined = same_key + vector_matches
+        return combined[:self.MAX_LLM_CANDIDATES]
 
     async def store_contradiction(self, contradiction: Contradiction) -> None:
         """Persist contradiction to storage."""
