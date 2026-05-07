@@ -53,7 +53,7 @@ permissions:
 
 credentials:
   encryptionKeyEnv: "ECHO_AGENT_CREDENTIAL_KEY"
-  requireEncryption: false
+  requireEncryption: true
 
 session:
   maxHistoryMessages: 500
@@ -64,7 +64,7 @@ session:
 
 memory:
   enabled: true
-  consolidationThreshold: 50
+  consolidationThreshold: 15
   vectorEnabled: true
 
 knowledge:
@@ -78,7 +78,7 @@ knowledge:
   requireCitations: true
 
 multiAgent:
-  enabled: false
+  enabled: true
   mode: "auto"
   defaultAgent: "general"
   routeThreshold: 0.45

@@ -65,7 +65,7 @@ class MultiAgentRuntime:
             return DispatchResult(plan=plan, final_output="", success=False, metadata={"reason": "no agents selected"})
 
         if plan.strategy == "parallel" and len(selected) > 1:
-            results = await asyncio.gather(*[
+            raw_results = await asyncio.gather(*[
                 self._run_agent(
                     profile,
                     query=query,
@@ -75,7 +75,18 @@ class MultiAgentRuntime:
                     trace_id=trace_id,
                 )
                 for profile in selected
-            ])
+            ], return_exceptions=True)
+            results = []
+            for i, r in enumerate(raw_results):
+                if isinstance(r, Exception):
+                    logger.error("Agent {} failed: {}", selected[i].id, r)
+                    results.append(AgentRunResult(
+                        agent_id=selected[i].id,
+                        output=f"Agent failed: {r}",
+                        success=False,
+                    ))
+                else:
+                    results.append(r)
         else:
             results = [
                 await self._run_agent(
@@ -93,7 +104,7 @@ class MultiAgentRuntime:
             plan=plan,
             results=results,
             final_output=final_output,
-            success=all(r.success for r in results),
+            success=any(r.success for r in results),
             metadata={"duration_ms": int((time.monotonic() - started) * 1000)},
         )
         self._audit.write(self._audit_record(dispatch_result))

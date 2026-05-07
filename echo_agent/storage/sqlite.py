@@ -158,10 +158,13 @@ class SQLiteBackend(StorageBackend):
             await self._db.execute("SELECT 1")  # type: ignore[union-attr]
         except Exception:
             logger.warning("SQLite connection lost, reconnecting")
-            try:
-                await self._db.close()  # type: ignore[union-attr]
-            except Exception:
-                pass
+            old_db = self._db
+            self._db = None
+            if old_db is not None:
+                try:
+                    await old_db.close()
+                except Exception:
+                    pass
             await self._connect()
         return self._db  # type: ignore[return-value]
 
