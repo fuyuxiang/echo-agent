@@ -141,6 +141,10 @@ class ChannelManager:
             if not is_tool_hint and not self._send_progress:
                 event.metadata["_drop"] = True
                 return
+            channel = self._channels.get(event.channel)
+            if channel and not channel.supports_edit:
+                event.metadata["_drop"] = True
+                return
 
         if event.is_final and event.message_kind == "final":
             if not event.metadata.get("_token_stream"):
