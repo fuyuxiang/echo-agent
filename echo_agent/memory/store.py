@@ -249,6 +249,8 @@ class MemoryStore:
     def _visible_in_session(self, entry: MemoryEntry, session_key: str | None = None) -> bool:
         if not session_key:
             return True
+        if entry.type == MemoryType.USER:
+            return True
         if entry.type == MemoryType.ENVIRONMENT:
             return True
         if "global" in entry.tags:
@@ -484,20 +486,6 @@ class MemoryStore:
         session_key: str | None = None,
     ) -> list[tuple[MemoryEntry, float]]:
         """Multi-keyword scored search. Returns (entry, score) pairs sorted by score."""
-        if self._retriever is not None:
-            import asyncio
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    logger.debug("Vector retrieval skipped in running loop, falling back to keyword search")
-                else:
-                    results = loop.run_until_complete(
-                        self._retriever.retrieve(query, limit=limit, session_key=session_key or "", mem_type=mem_type)
-                    )
-                    return results
-            except Exception as e:
-                logger.debug("Vector retrieval unavailable, falling back to keyword search: {}", e)
-
         words = [
             word.lower() for word in re.findall(r"\w+", query)
             if len(word) > 1 and word.lower() not in _STOP_WORDS

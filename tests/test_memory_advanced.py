@@ -505,10 +505,9 @@ class TestMemoryStore:
         memory_store.add(_make_entry(key="s1", content="session1 data", source_session="sess1"))
         memory_store.add(_make_entry(key="s2", content="session2 data", source_session="sess2"))
         filtered = memory_store._filtered_entries(session_key="sess1")
-        # Environment entries are always visible; user entries filtered by session
-        for e in filtered:
-            if e.type == MemoryType.USER:
-                assert e.source_session == "sess1" or "global" in e.tags
+        # USER memories are globally visible across sessions
+        assert any(e.key == "s1" for e in filtered)
+        assert any(e.key == "s2" for e in filtered)
 
     def test_add_blocks_injection(self, memory_store: MemoryStore):
         with pytest.raises(ValueError, match="Blocked"):
@@ -884,6 +883,13 @@ class TestConsolidatorContradictionDetection:
                         _FakeToolCall("1", "save_memory", {
                             "history_entry": "[2024-01-01] test",
                             "memory_update": "# Memory",
+                        })
+                    ])
+                if tool_name == "check_contradiction":
+                    return _FakeLLMResponse(tool_calls=[
+                        _FakeToolCall("1", "check_contradiction", {
+                            "is_contradictory": True,
+                            "explanation": "lang changed from Java to Python",
                         })
                     ])
                 return _FakeLLMResponse(tool_calls=[_FakeToolCall("1", tool_name, {})])

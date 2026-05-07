@@ -1102,16 +1102,16 @@ class AgentLoop:
             actions = await reviewer.review(messages)
             if actions:
                 logger.info("Background memory review: {}", "; ".join(actions))
+                self._memory_snapshots.pop(session_key, None)
         except Exception as e:
             logger.warning("Background memory review failed: {}", e)
 
     async def _consolidate(self, session: Session) -> None:
         try:
             chunk = session.messages[session.last_consolidated:]
-            if await self.consolidator.consolidate_chunk(chunk):
+            chunk_ok = await self.consolidator.consolidate_chunk(chunk)
+            if chunk_ok:
                 boundary = len(session.messages)
-                # Walk backward so we never split an assistant(tool_calls)
-                # from its following tool-result messages.
                 while boundary > session.last_consolidated:
                     msg = session.messages[boundary - 1]
                     if msg.get("role") == "tool":
@@ -1125,11 +1125,14 @@ class AgentLoop:
                     await self.sessions.save(session)
             if self.config.memory.sleep_consolidation:
                 try:
-                    stats = await self.consolidator.sleep_consolidate(session.key, chunk)
+                    stats = await self.consolidator.sleep_consolidate(
+                        session.key, chunk, chunk_already_consolidated=chunk_ok,
+                    )
                     if any(v > 0 for v in stats.values()):
                         logger.info("Sleep consolidation for {}: {}", session.key, stats)
                 except Exception as e:
                     logger.warning("Sleep consolidation failed: {}", e)
+            self._memory_snapshots.pop(session.key, None)
         except Exception as e:
             logger.error("Consolidation failed for {}: {}", session.key, e)
 

@@ -33,6 +33,7 @@ class VectorIndex:
         self._index: Any | None = None
         self._id_map: list[str] = []
         self._source_map: list[str] = []
+        self._deleted_sources: set[str] = set()
         self._initialized = False
 
     @property
@@ -92,23 +93,33 @@ class VectorIndex:
         if arr.shape[1] != self._dimensions:
             return []
         faiss.normalize_L2(arr)
-        k = min(limit, self._index.ntotal)
+        k = min(limit + len(self._deleted_sources), self._index.ntotal)
         scores, indices = self._index.search(arr, k)
         results: list[tuple[str, float]] = []
         for score, idx in zip(scores[0], indices[0]):
             if idx < 0 or idx >= len(self._source_map):
                 continue
-            results.append((self._source_map[idx], float(score)))
+            source_id = self._source_map[idx]
+            if source_id in self._deleted_sources:
+                continue
+            results.append((source_id, float(score)))
+            if len(results) >= limit:
+                break
         return results
 
     async def remove(self, vec_id: str) -> None:
         if vec_id in self._id_map:
-            self._id_map = [v for v in self._id_map if v != vec_id]
+            idx = self._id_map.index(vec_id)
+            if idx < len(self._source_map):
+                self._deleted_sources.add(self._source_map[idx])
         await self._storage.delete_vector(vec_id)
+        if len(self._deleted_sources) > self._index.ntotal * 0.3 if self._index else False:
+            await self.rebuild()
 
     async def rebuild(self) -> None:
         self._id_map.clear()
         self._source_map.clear()
+        self._deleted_sources.clear()
         if self._index is not None:
             self._index.reset()
         await self.initialize()
