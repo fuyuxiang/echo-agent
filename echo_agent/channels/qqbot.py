@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import re
 import time
 from collections import OrderedDict
@@ -456,8 +457,10 @@ class QQBotChannel(BaseChannel):
         elif op == 0:  # DISPATCH
             if t == "READY":
                 self._session_id = d.get("session_id", "")
+                self._heartbeat_ack_received = True
                 logger.info("QQBot ready, session={}", self._session_id)
             elif t == "RESUMED":
+                self._heartbeat_ack_received = True
                 logger.info("QQBot session resumed")
             elif t in ("AT_MESSAGE_CREATE", "MESSAGE_CREATE", "GUILD_AT_MESSAGE_CREATE"):
                 asyncio.create_task(self._on_channel_message(d))
@@ -541,6 +544,7 @@ class QQBotChannel(BaseChannel):
 
     async def _heartbeat_loop(self) -> None:
         try:
+            await asyncio.sleep(self._heartbeat_interval * random.random())
             while self._running and self._ws and not self._ws.closed:
                 if not self._heartbeat_ack_received:
                     logger.warning("QQBot: heartbeat ACK not received, reconnecting")
