@@ -347,7 +347,8 @@ class GatewayServer:
         guard = self._require_api_token(request, action="list_sessions")
         if guard is not None:
             return guard
-        sessions = self.session_manager.list_sessions()
+        list_sessions = getattr(self.session_manager, "list_sessions_async", None)
+        sessions = await list_sessions() if list_sessions else self.session_manager.list_sessions()
         gateway_sessions = [s for s in sessions if s.get("key", "").startswith("gateway:")]
         return web.json_response({"sessions": gateway_sessions})
 

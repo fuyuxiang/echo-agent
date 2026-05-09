@@ -32,6 +32,9 @@ class StorageBackend(ABC):
     async def delete_session(self, key: str) -> bool:
         pass
 
+    async def list_sessions(self) -> list[dict[str, Any]]:
+        return []
+
     @abstractmethod
     async def store_memory(self, entry_id: str, data: dict[str, Any]) -> None:
         pass

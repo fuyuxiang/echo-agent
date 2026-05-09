@@ -236,6 +236,31 @@ class SQLiteBackend(StorageBackend):
             logger.error("Failed to delete session '{}': {}", key, e)
             return False
 
+    async def list_sessions(self) -> list[dict[str, Any]]:
+        db = await self._ensure_connection()
+        try:
+            rows = await db.execute_fetchall(
+                "SELECT key, data, created_at, updated_at FROM sessions ORDER BY updated_at DESC"
+            )
+            sessions: list[dict[str, Any]] = []
+            for key, raw, created_at, updated_at in rows:
+                try:
+                    data = json.loads(raw)
+                except Exception:
+                    data = {}
+                sessions.append({
+                    "key": key,
+                    "status": data.get("status", "active"),
+                    "created_at": data.get("created_at") or created_at,
+                    "updated_at": data.get("updated_at") or updated_at,
+                    "metadata": data.get("metadata", {}),
+                    "message_count": len(data.get("messages", [])),
+                })
+            return sessions
+        except Exception as e:
+            logger.error("Failed to list sessions: {}", e)
+            return []
+
     # ── Memory ─────────────────────────────────────────────────────────────
 
     async def store_memory(self, entry_id: str, data: dict[str, Any]) -> None:

@@ -31,7 +31,9 @@ class GatewayHealthProvider:
 
         session_count = 0
         if self._gw.session_manager:
-            session_count = len(self._gw.session_manager.list_sessions())
+            list_sessions = getattr(self._gw.session_manager, "list_sessions_async", None)
+            sessions = await list_sessions() if list_sessions else self._gw.session_manager.list_sessions()
+            session_count = len(sessions)
 
         status = "healthy" if is_running else "unhealthy"
         if is_running and not channel_status:

@@ -80,7 +80,11 @@ class ToolRegistry:
         params: dict[str, Any],
         ctx: ToolExecutionContext | None = None,
     ) -> ToolResult:
-        tool = self._tools.get(self._resolve(name))
+        resolved_name = self._resolve(name)
+        if ctx and ctx.allowed_tools and resolved_name not in ctx.allowed_tools:
+            return ToolResult(success=False, error=f"Tool '{name}' is outside the scoped tool allowlist")
+
+        tool = self._tools.get(resolved_name)
         if not tool:
             return ToolResult(success=False, error=f"Tool '{name}' not found. Available: {', '.join(self.tool_names)}")
 

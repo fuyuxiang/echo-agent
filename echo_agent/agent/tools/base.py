@@ -46,12 +46,14 @@ class ToolExecutionContext:
     trace_id: str = ""
     session_key: str = ""
     user_id: str = ""
+    agent_id: str = ""
     attempt_index: int = 0
     idempotency_key: str = ""
     is_replay: bool = False
     parent_execution_id: str | None = None
     credentials: dict[str, str] = field(default_factory=dict)
     approved_actions: frozenset[str] = field(default_factory=frozenset)
+    allowed_tools: frozenset[str] = field(default_factory=frozenset)
 
 
 def build_idempotency_key(trace_id: str, tool_name: str, index: int, params: Mapping[str, Any]) -> str:
@@ -85,6 +87,7 @@ class Tool(ABC):
     timeout_seconds: int = 30
     max_retries: int = 0
     stream_capable: bool = False
+    capabilities: tuple[str, ...] = ()
 
     @abstractmethod
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:

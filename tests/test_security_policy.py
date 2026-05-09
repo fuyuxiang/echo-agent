@@ -57,6 +57,16 @@ def test_network_deny_hard_blocks_web_tools() -> None:
     assert not is_tool_allowed(cfg, "web_fetch")
 
 
+def test_network_deny_blocks_tools_by_capability() -> None:
+    class CustomNetworkTool:
+        name = "custom_api"
+        capabilities = ("network.outbound",)
+
+    cfg = Config(tools=ToolsConfig(profile="full", also_allow=["custom_api"]))
+
+    assert not is_tool_allowed(cfg, CustomNetworkTool())
+
+
 def test_exec_allowlist_miss_requires_approval() -> None:
     decision = evaluate_shell_command(
         "python3 -m pytest",
