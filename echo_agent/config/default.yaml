@@ -4,7 +4,7 @@
 workspace: "~/.echo-agent"
 
 security:
-  profile: "daemon"
+  profile: "personal_cli"
 
 channels:
   cli:
@@ -39,7 +39,7 @@ tools:
   deny: []
   restrictToWorkspace: true
   exec:
-    enabled: false
+    enabled: true
     host: "sandbox"
     security: "allowlist"
     ask: "on_miss"
@@ -69,7 +69,7 @@ tools:
     searchApiBase: ""
     searchApiKey: ""
   codeExec:
-    enabled: false
+    enabled: true
   mcpSecurityPolicy: "block"
 
 execution:
@@ -81,19 +81,14 @@ permissions:
   approval:
     requireApproval:
       - "cronjob"
-      - "edit_file"
       - "exec"
       - "execute_code"
-      - "knowledge_index"
-      - "patch"
       - "process"
       - "skill_install"
       - "skill_manage"
-      - "workflow"
-      - "write_file"
-    defaultPolicy: "ask"
+    defaultPolicy: "approve"
     waitTimeoutSeconds: 300
-    cliAutoApprove: false
+    cliAutoApprove: true
   elevated:
     enabled: false
     allowFrom: {}
@@ -116,7 +111,7 @@ memory:
   vectorEnabled: true
 
 knowledge:
-  enabled: false
+  enabled: true
   docsDir: "data/knowledge"
   indexPath: "data/knowledge_index.json"
   autoIndex: true

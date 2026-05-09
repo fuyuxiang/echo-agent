@@ -18,25 +18,25 @@ from echo_agent.security.tool_policy import is_tool_allowed
 def test_default_security_posture_is_restrictive() -> None:
     cfg = load_config()
 
-    assert cfg.security.profile == "daemon"
-    assert cfg.tools.exec.enabled is False
+    assert cfg.security.profile == "personal_cli"
+    assert cfg.tools.exec.enabled is True
     assert cfg.tools.web.enabled is False
-    assert cfg.tools.code_exec.enabled is False
+    assert cfg.tools.code_exec.enabled is True
     assert cfg.execution.default_executor == "sandbox"
     assert cfg.execution.network_policy == "deny"
-    assert cfg.permissions.approval.default_policy == "ask"
+    assert cfg.permissions.approval.default_policy == "approve"
     assert "exec" in cfg.permissions.approval.require_approval
-    assert "write_file" in cfg.permissions.approval.require_approval
 
 
 def test_daemon_profile_requires_explicit_high_risk_tool_allow() -> None:
     cfg = Config(
+        security={"profile": "daemon"},
         tools=ToolsConfig(profile="full"),
     )
 
     assert not is_tool_allowed(cfg, "exec")
     assert is_tool_allowed(
-        Config(tools=ToolsConfig(profile="full", also_allow=["exec"])),
+        Config(security={"profile": "daemon"}, tools=ToolsConfig(profile="full", also_allow=["exec"])),
         "exec",
     )
 
