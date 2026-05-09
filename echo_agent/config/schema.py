@@ -201,7 +201,7 @@ class ModelsConfig(_Base):
 # ── Tool configs ─────────────────────────────────────────────────────────────
 
 class ExecToolConfig(_Base):
-    enabled: bool = False
+    enabled: bool = True
     timeout_seconds: int = 30
     max_output_chars: int = 16000
     host: Literal["auto", "local", "sandbox", "container", "remote"] = "sandbox"
@@ -251,7 +251,7 @@ class TTSConfig(_Base):
 
 
 class CodeExecConfig(_Base):
-    enabled: bool = False
+    enabled: bool = True
     timeout_seconds: int = 30
     allowed_languages: list[str] = Field(default_factory=lambda: ["python", "javascript", "bash"])
 
@@ -305,22 +305,17 @@ class ExecutionConfig(_Base):
 class ApprovalConfig(_Base):
     require_approval: list[str] = Field(default_factory=lambda: [
         "cronjob",
-        "edit_file",
         "exec",
         "execute_code",
-        "knowledge_index",
-        "patch",
         "process",
         "skill_install",
         "skill_manage",
-        "workflow",
-        "write_file",
     ])
     auto_approve: list[str] = Field(default_factory=list)
     auto_deny: list[str] = Field(default_factory=list)
-    default_policy: Literal["approve", "deny", "ask"] = "ask"
+    default_policy: Literal["approve", "deny", "ask"] = "approve"
     wait_timeout_seconds: int = 300
-    cli_auto_approve: bool = False
+    cli_auto_approve: bool = True
 
 
 class ElevatedConfig(_Base):
@@ -335,7 +330,7 @@ class PermissionsConfig(_Base):
 
 
 class SecurityConfig(_Base):
-    profile: Literal["personal_cli", "daemon", "public_gateway"] = "daemon"
+    profile: Literal["personal_cli", "daemon", "public_gateway"] = "personal_cli"
 
 
 class CredentialSecurityConfig(_Base):
@@ -381,7 +376,7 @@ class MemoryConfig(_Base):
 
 
 class KnowledgeConfig(_Base):
-    enabled: bool = False
+    enabled: bool = True
     docs_dir: str = "data/knowledge"
     index_path: str = "data/knowledge_index.json"
     auto_index: bool = True
@@ -415,7 +410,7 @@ class AgentProfileConfig(_Base):
 
 
 class MultiAgentConfig(_Base):
-    enabled: bool = False
+    enabled: bool = True
     mode: Literal["assist", "auto"] = "auto"
     default_agent: str = "general"
     route_threshold: float = 0.45
