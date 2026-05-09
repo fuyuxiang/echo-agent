@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from loguru import logger
@@ -59,6 +60,7 @@ class _StreamState:
     message_id: str = ""
     rendered_text: str = ""
     failed: bool = False
+    created_at: float = field(default_factory=time.monotonic)
 
 
 def register_channel_type(name: str, cls: type[BaseChannel]) -> None:
@@ -87,10 +89,13 @@ class ChannelManager:
         self._send_tool_hints = config.send_tool_hints
         self._on_cli_exit = on_cli_exit
         self._stream_states: dict[str, _StreamState] = {}
-        self._inbound_msg_ids: dict[str, tuple[str, str]] = {}
+        self._inbound_msg_ids: dict[str, tuple[str, str, float]] = {}
         self._max_inbound_ids = 1000
         self._max_stream_states = 500
+        self._stream_ttl_seconds = 300.0
+        self._inbound_ttl_seconds = 600.0
         self._state_lock = asyncio.Lock()
+        self._cleanup_task: asyncio.Task | None = None
         self.bus.subscribe_outbound_global(self._filter_and_dispatch)
         self.bus.subscribe_inbound(self._on_inbound_lifecycle)
 
@@ -107,7 +112,7 @@ class ChannelManager:
             return
         if event.reply_to_id:
             async with self._state_lock:
-                self._inbound_msg_ids[event.event_id] = (event.channel, event.reply_to_id)
+                self._inbound_msg_ids[event.event_id] = (event.channel, event.reply_to_id, time.monotonic())
                 while len(self._inbound_msg_ids) > self._max_inbound_ids:
                     oldest = next(iter(self._inbound_msg_ids))
                     del self._inbound_msg_ids[oldest]
@@ -164,7 +169,7 @@ class ChannelManager:
             mapping = self._inbound_msg_ids.pop(inbound_event_id, None)
         if not mapping:
             return
-        _, platform_msg_id = mapping
+        _, platform_msg_id, _ = mapping
         if not getattr(getattr(channel, "config", None), "reactions_enabled", False):
             return
         is_error = event.metadata.get("_error", False)
@@ -371,8 +376,16 @@ class ChannelManager:
                     logger.info("Channel {} inactive", name)
             except Exception as e:
                 logger.error("Failed to start channel {}: {}", name, e)
+        self._cleanup_task = asyncio.create_task(self._ttl_cleanup_loop())
 
     async def stop_all(self) -> None:
+        if self._cleanup_task:
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+            self._cleanup_task = None
         for name, channel in self._channels.items():
             try:
                 await asyncio.wait_for(channel.stop(), timeout=10)
@@ -382,3 +395,23 @@ class ChannelManager:
             except Exception as e:
                 logger.error("Failed to stop channel {}: {}", name, e)
         self._channels.clear()
+
+    async def _ttl_cleanup_loop(self) -> None:
+        """Periodically evict stale stream states and inbound msg IDs."""
+        while True:
+            await asyncio.sleep(60.0)
+            now = time.monotonic()
+            async with self._state_lock:
+                stale_streams = [
+                    k for k, v in self._stream_states.items()
+                    if (now - v.created_at) > self._stream_ttl_seconds
+                ]
+                for k in stale_streams:
+                    del self._stream_states[k]
+
+                stale_inbound = [
+                    k for k, v in self._inbound_msg_ids.items()
+                    if (now - v[2]) > self._inbound_ttl_seconds
+                ]
+                for k in stale_inbound:
+                    del self._inbound_msg_ids[k]

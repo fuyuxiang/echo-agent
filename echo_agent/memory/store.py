@@ -165,6 +165,10 @@ class MemoryStore:
         self._embed_fn = None  # async callable: str -> list[float]
         self._pending_embeds: list[tuple[str, str]] = []  # (entry_id, text) pairs awaiting embedding
 
+    def has_pending_embeds(self) -> bool:
+        """Check if there are pending embeddings to flush."""
+        return bool(self._pending_embeds)
+
     def set_vector_index(self, index):
         self._vector_index = index
 
@@ -317,15 +321,18 @@ class MemoryStore:
 
     def _save_type(self, mem_type: MemoryType) -> None:
         """将指定类型的记忆条目原子写入磁盘。"""
+        import asyncio
+
         entries = self._typed_entries(mem_type)
         entries.sort(key=lambda entry: (entry.created_at or "", entry.updated_at or "", entry.id))
         payload = [entry.to_dict() for entry in entries]
+
         _atomic_write_text(
             self._path_for(mem_type),
             json.dumps(payload, ensure_ascii=False, indent=2),
         )
+
         if self._storage:
-            import asyncio
             sync_ids = (self._dirty_ids | self._failed_sync) & {e.id for e in entries}
             for entry in entries:
                 if entry.id not in sync_ids:

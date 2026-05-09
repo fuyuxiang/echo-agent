@@ -302,7 +302,10 @@ async def test_inbound_stores_msg_id_mapping() -> None:
     await manager._on_inbound_lifecycle(inbound)
 
     assert inbound.event_id in manager._inbound_msg_ids
-    assert manager._inbound_msg_ids[inbound.event_id] == ("telegram", "plat-42")
+    entry = manager._inbound_msg_ids[inbound.event_id]
+    assert entry[0] == "telegram"
+    assert entry[1] == "plat-42"
+    assert isinstance(entry[2], float)  # timestamp
 
 
 # ── 4. ChannelManager outbound lifecycle tests ──────────────────────────────

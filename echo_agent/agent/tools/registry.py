@@ -79,6 +79,8 @@ class ToolRegistry:
         name: str,
         params: dict[str, Any],
         ctx: ToolExecutionContext | None = None,
+        *,
+        replay_scope: str = "",
     ) -> ToolResult:
         resolved_name = self._resolve(name)
         if ctx and ctx.allowed_tools and resolved_name not in ctx.allowed_tools:
@@ -98,10 +100,11 @@ class ToolRegistry:
         )
 
         if tool.execution_mode(params) == "side_effect" and exec_ctx.idempotency_key:
+            effective_key = f"{replay_scope}:{exec_ctx.idempotency_key}" if replay_scope else exec_ctx.idempotency_key
             async with self._lock:
-                cached = self._replay_cache.get(exec_ctx.idempotency_key)
+                cached = self._replay_cache.get(effective_key)
             if cached:
-                logger.warning("Replay prevented for tool={} key={}", name, exec_ctx.idempotency_key[:16])
+                logger.warning("Replay prevented for tool={} key={}", name, effective_key[:16])
                 return ToolResult(success=False, error=f"Replay prevented for '{name}'")
 
         log_entry = {
@@ -128,8 +131,9 @@ class ToolRegistry:
                 self._execution_log.append(log_entry)
 
                 if result.success and tool.execution_mode(params) == "side_effect" and exec_ctx.idempotency_key:
+                    effective_key = f"{replay_scope}:{exec_ctx.idempotency_key}" if replay_scope else exec_ctx.idempotency_key
                     async with self._lock:
-                        self._replay_cache[exec_ctx.idempotency_key] = {
+                        self._replay_cache[effective_key] = {
                             "tool": name,
                             "execution_id": exec_ctx.execution_id,
                             "at": datetime.now(timezone.utc).isoformat(),

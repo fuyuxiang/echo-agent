@@ -125,7 +125,7 @@ class SessionManager:
                     if self._storage:
                         await self._save_to_storage(evicted)
                     else:
-                        self._save_to_file(evicted)
+                        await self._save_to_file(evicted)
                 except Exception as e:
                     logger.warning("Failed to save evicted session {}: {}", evicted.key, e)
             return session
@@ -133,7 +133,7 @@ class SessionManager:
     async def _load(self, key: str) -> Session | None:
         if self._storage:
             return await self._load_from_storage(key)
-        return self._load_from_file(key)
+        return await self._load_from_file(key)
 
     async def _load_from_storage(self, key: str) -> Session | None:
         try:
@@ -153,42 +153,47 @@ class SessionManager:
             logger.warning("Failed to load session {} from storage: {}", key, e)
             return None
 
-    def _load_from_file(self, key: str) -> Session | None:
+    async def _load_from_file(self, key: str) -> Session | None:
         path = self._session_path(key)
         if not path.exists():
             return None
         try:
-            messages: list[dict[str, Any]] = []
-            metadata: dict[str, Any] = {}
-            created_at = None
-            updated_at = None
-            last_consolidated = 0
-            status = "active"
+            import asyncio
 
-            with open(path, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    data = json.loads(line)
-                    if data.get("_type") == "metadata":
-                        metadata = data.get("metadata", {})
-                        created_at = datetime.fromisoformat(data["created_at"]) if data.get("created_at") else None
-                        updated_at = datetime.fromisoformat(data["updated_at"]) if data.get("updated_at") else None
-                        last_consolidated = data.get("last_consolidated", 0)
-                        status = data.get("status", "active")
-                    else:
-                        messages.append(data)
+            def _sync_load() -> Session | None:
+                messages: list[dict[str, Any]] = []
+                metadata: dict[str, Any] = {}
+                created_at = None
+                updated_at = None
+                last_consolidated = 0
+                status = "active"
 
-            return Session(
-                key=key,
-                messages=messages,
-                created_at=created_at or datetime.now(),
-                updated_at=updated_at or datetime.now(),
-                metadata=metadata,
-                last_consolidated=last_consolidated,
-                status=status,
-            )
+                with open(path, encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        data = json.loads(line)
+                        if data.get("_type") == "metadata":
+                            metadata = data.get("metadata", {})
+                            created_at = datetime.fromisoformat(data["created_at"]) if data.get("created_at") else None
+                            updated_at = datetime.fromisoformat(data["updated_at"]) if data.get("updated_at") else None
+                            last_consolidated = data.get("last_consolidated", 0)
+                            status = data.get("status", "active")
+                        else:
+                            messages.append(data)
+
+                return Session(
+                    key=key,
+                    messages=messages,
+                    created_at=created_at or datetime.now(),
+                    updated_at=updated_at or datetime.now(),
+                    metadata=metadata,
+                    last_consolidated=last_consolidated,
+                    status=status,
+                )
+
+            return await asyncio.to_thread(_sync_load)
         except Exception as e:
             logger.warning("Failed to load session {}: {}", key, e)
             return None
@@ -200,7 +205,7 @@ class SessionManager:
         if self._storage:
             await self._save_to_storage(session)
         else:
-            self._save_to_file(session)
+            await self._save_to_file(session)
 
     async def _save_to_storage(self, session: Session) -> None:
         data = {
@@ -215,34 +220,40 @@ class SessionManager:
             await self._storage.store_session(session.key, data)
         except Exception as e:
             logger.warning("Failed to save session {} to storage, falling back to file: {}", session.key, e)
-            self._save_to_file(session)
+            await self._save_to_file(session)
 
-    def _save_to_file(self, session: Session) -> None:
+    async def _save_to_file(self, session: Session) -> None:
+        import asyncio
+
         path = self._session_path(session.key)
-        fd, tmp = tempfile.mkstemp(dir=str(self.sessions_dir), prefix=".sess_", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                meta = {
-                    "_type": "metadata",
-                    "key": session.key,
-                    "created_at": session.created_at.isoformat(),
-                    "updated_at": session.updated_at.isoformat(),
-                    "metadata": session.metadata,
-                    "last_consolidated": session.last_consolidated,
-                    "status": session.status,
-                }
-                f.write(json.dumps(meta, ensure_ascii=False) + "\n")
-                for msg in session.messages:
-                    f.write(json.dumps(msg, ensure_ascii=False) + "\n")
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, str(path))
-        except BaseException:
+
+        def _sync_save() -> None:
+            fd, tmp = tempfile.mkstemp(dir=str(self.sessions_dir), prefix=".sess_", suffix=".tmp")
             try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    meta = {
+                        "_type": "metadata",
+                        "key": session.key,
+                        "created_at": session.created_at.isoformat(),
+                        "updated_at": session.updated_at.isoformat(),
+                        "metadata": session.metadata,
+                        "last_consolidated": session.last_consolidated,
+                        "status": session.status,
+                    }
+                    f.write(json.dumps(meta, ensure_ascii=False) + "\n")
+                    for msg in session.messages:
+                        f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, str(path))
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+
+        await asyncio.to_thread(_sync_save)
 
     async def expire_session(self, key: str) -> None:
         async with self._lock:

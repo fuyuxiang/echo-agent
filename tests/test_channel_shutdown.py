@@ -186,6 +186,7 @@ class TestChannelManagerStopTimeout:
 
         manager = ChannelManager.__new__(ChannelManager)
         manager._channels = {"slow": slow_channel}
+        manager._cleanup_task = None
 
         await asyncio.wait_for(manager.stop_all(), timeout=15)
 
@@ -203,6 +204,7 @@ class TestChannelManagerStopTimeout:
 
         manager = ChannelManager.__new__(ChannelManager)
         manager._channels = {"ch1": ch1, "ch2": ch2}
+        manager._cleanup_task = None
 
         await manager.stop_all()
         ch2.stop.assert_called_once()
