@@ -11,6 +11,7 @@ import hashlib
 import asyncio
 import json
 import os
+import tempfile
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -51,6 +52,7 @@ class ApprovalManager:
         auto_approve: list[str] | None = None,
         auto_deny: list[str] | None = None,
         default_policy: str = "approve",
+        store_path: Path | None = None,
     ):
         self._require = set(require_approval or [])
         self._auto_approve = set(auto_approve or [])
@@ -61,6 +63,8 @@ class ApprovalManager:
         self._history: list[ApprovalRequest] = []
         self._approved_signatures: set[str] = set()
         self._waiters: dict[str, asyncio.Event] = {}
+        self._store_path = store_path
+        self._load_state()
 
     def needs_approval(self, action: str) -> bool:
         if action in self._auto_approve:
@@ -78,6 +82,7 @@ class ApprovalManager:
             self._approved_signatures.remove(signature)
             req = ApprovalRequest(action=action, tool_name=tool_name, params=params, user_id=user_id, status=ApprovalStatus.APPROVED, reason="approved by prior request")
             self._history.append(req)
+            self._save_state()
             return req
         if action in self._auto_approve:
             req = ApprovalRequest(action=action, tool_name=tool_name, params=params, user_id=user_id, status=ApprovalStatus.APPROVED)
@@ -94,6 +99,7 @@ class ApprovalManager:
             req = ApprovalRequest(action=action, tool_name=tool_name, params=params, user_id=user_id)
             self._pending[req.id] = req
             self._pending_by_signature[signature] = req.id
+            self._save_state()
             return req
         if self._default_policy == "approve":
             req = ApprovalRequest(action=action, tool_name=tool_name, params=params, user_id=user_id, status=ApprovalStatus.APPROVED)
@@ -110,6 +116,7 @@ class ApprovalManager:
         req = ApprovalRequest(action=action, tool_name=tool_name, params=params, user_id=user_id)
         self._pending[req.id] = req
         self._pending_by_signature[signature] = req.id
+        self._save_state()
         return req
 
     def approve(self, request_id: str, decided_by: str = "") -> bool:
@@ -123,6 +130,7 @@ class ApprovalManager:
         if request_id not in self._waiters:
             self._approved_signatures.add(self._signature(req.action, req.tool_name, req.params, req.user_id))
         self._history.append(req)
+        self._save_state()
         self._notify_waiter(request_id)
         return True
 
@@ -136,6 +144,7 @@ class ApprovalManager:
         req.decided_by = decided_by
         req.decided_at = datetime.now().isoformat()
         self._history.append(req)
+        self._save_state()
         self._notify_waiter(request_id)
         return True
 
@@ -157,6 +166,7 @@ class ApprovalManager:
             req.reason = "approval timed out"
             req.decided_at = datetime.now().isoformat()
             self._history.append(req)
+            self._save_state()
             return req
         finally:
             self._waiters.pop(request_id, None)
@@ -210,6 +220,82 @@ class ApprovalManager:
         waiter = self._waiters.get(request_id)
         if waiter:
             waiter.set()
+
+    def _load_state(self) -> None:
+        if not self._store_path or not self._store_path.exists():
+            return
+        try:
+            data = json.loads(self._store_path.read_text(encoding="utf-8"))
+            pending = []
+            for item in data.get("pending", []):
+                req = self._request_from_dict(item)
+                if req.status == ApprovalStatus.PENDING:
+                    pending.append(req)
+            history = [self._request_from_dict(item) for item in data.get("history", [])]
+            approved_signatures = set(data.get("approved_signatures", []))
+        except Exception as e:
+            logger.warning("Failed to load approval state from {}: {}", self._store_path, e)
+            return
+        self._pending = {req.id: req for req in pending}
+        self._history = history[-500:]
+        self._approved_signatures = approved_signatures
+        self._pending_by_signature = {
+            self._signature(req.action, req.tool_name, req.params, req.user_id): req.id
+            for req in pending
+        }
+
+    def _save_state(self) -> None:
+        if not self._store_path:
+            return
+        payload = {
+            "pending": [self._request_to_dict(req) for req in self._pending.values()],
+            "history": [self._request_to_dict(req) for req in self._history[-500:]],
+            "approved_signatures": sorted(self._approved_signatures),
+        }
+        self._store_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=str(self._store_path.parent), prefix=".approvals_", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, self._store_path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    @staticmethod
+    def _request_to_dict(req: ApprovalRequest) -> dict[str, Any]:
+        return {
+            "id": req.id,
+            "action": req.action,
+            "tool_name": req.tool_name,
+            "params": req.params,
+            "user_id": req.user_id,
+            "status": req.status.value,
+            "reason": req.reason,
+            "decided_by": req.decided_by,
+            "created_at": req.created_at,
+            "decided_at": req.decided_at,
+        }
+
+    @staticmethod
+    def _request_from_dict(data: dict[str, Any]) -> ApprovalRequest:
+        return ApprovalRequest(
+            id=data.get("id", uuid.uuid4().hex[:10]),
+            action=data.get("action", ""),
+            tool_name=data.get("tool_name", ""),
+            params=dict(data.get("params", {})),
+            user_id=data.get("user_id", ""),
+            status=ApprovalStatus(data.get("status", ApprovalStatus.PENDING.value)),
+            reason=data.get("reason", ""),
+            decided_by=data.get("decided_by", ""),
+            created_at=data.get("created_at", datetime.now().isoformat()),
+            decided_at=data.get("decided_at", ""),
+        )
 
 
 @dataclass

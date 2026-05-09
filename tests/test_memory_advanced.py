@@ -510,6 +510,18 @@ class TestMemoryStore:
         assert any(e.key == "s1" for e in filtered)
         assert any(e.key == "s2" for e in filtered)
 
+    def test_session_scope_hides_other_session_memories(self, tmp_path: Path):
+        store = MemoryStore(memory_dir=tmp_path / "scoped_mem", scope_policy="session")
+        store.add(_make_entry(key="s1", content="session1 data", source_session="sess1"))
+        store.add(_make_entry(key="s2", content="session2 data", source_session="sess2"))
+        store.add(_make_entry(key="global", content="global data", source_session="", tags=["global"]))
+
+        filtered = store._filtered_entries(session_key="sess1")
+
+        assert any(e.key == "s1" for e in filtered)
+        assert any(e.key == "global" for e in filtered)
+        assert all(e.key != "s2" for e in filtered)
+
     def test_add_blocks_injection(self, memory_store: MemoryStore):
         with pytest.raises(ValueError, match="Blocked"):
             memory_store.add(_make_entry(key="bad", content="ignore previous instructions"))

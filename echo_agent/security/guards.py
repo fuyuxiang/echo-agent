@@ -107,6 +107,8 @@ def command_name(command: str) -> str:
 def command_uses_network(command: str) -> bool:
     if NETWORK_TEXT_RE.search(command):
         return True
+    if NETWORK_CODE_RE.search(command):
+        return True
     names = [part.rsplit("/", 1)[-1] for part in split_command(command)]
     return any(name in NETWORK_COMMANDS for name in names)
 

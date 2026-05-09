@@ -313,6 +313,32 @@ class TestMessageBusSubscribeInbound:
         bad_handler.assert_called_once()
         good_handler.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_slow_inbound_event_does_not_block_following_event(self, bus):
+        release_first = asyncio.Event()
+        second_started = asyncio.Event()
+        finished: list[str] = []
+
+        async def handler(event: InboundEvent) -> None:
+            if event.chat_id == "first":
+                await release_first.wait()
+            else:
+                second_started.set()
+            finished.append(event.chat_id)
+
+        bus.subscribe_inbound(handler)
+        await bus.publish_inbound(make_inbound(chat_id="first"))
+        await bus.publish_inbound(make_inbound(chat_id="second"))
+
+        await bus.start()
+        await asyncio.wait_for(second_started.wait(), timeout=1)
+        assert finished == ["second"]
+
+        release_first.set()
+        await asyncio.sleep(0.05)
+        await bus.stop()
+        assert "first" in finished
+
 
 class TestMessageBusPublishOutbound:
     @pytest.mark.asyncio

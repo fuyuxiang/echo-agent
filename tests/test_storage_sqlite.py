@@ -9,6 +9,7 @@ import pytest
 import pytest_asyncio
 
 from echo_agent.storage.sqlite import SQLiteBackend
+from echo_agent.session.manager import SessionManager
 
 
 @pytest_asyncio.fixture
@@ -35,6 +36,44 @@ async def test_store_and_load_session(backend: SQLiteBackend) -> None:
     loaded = await backend.load_session("test:1")
     assert loaded is not None
     assert loaded["messages"][0]["content"] == "hi"
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_returns_storage_metadata(backend: SQLiteBackend) -> None:
+    await backend.store_session(
+        "test:1",
+        {
+            "messages": [{"role": "user", "content": "hi"}],
+            "status": "active",
+            "metadata": {"channel": "test"},
+        },
+    )
+
+    sessions = await backend.list_sessions()
+
+    assert sessions[0]["key"] == "test:1"
+    assert sessions[0]["status"] == "active"
+    assert sessions[0]["metadata"] == {"channel": "test"}
+    assert sessions[0]["message_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_session_manager_archives_storage_session_without_deleting(tmp_path: Path, backend: SQLiteBackend) -> None:
+    manager = SessionManager(sessions_dir=tmp_path / "sessions", storage=backend)
+    session = await manager.get_or_create("store:1")
+    session.add_message("user", "persist me")
+    await manager.save(session)
+
+    assert await manager.archive_session("store:1") is True
+    assert await manager.archive_session("missing:1") is False
+
+    loaded = await backend.load_session("store:1")
+    listed = await manager.list_sessions_async()
+
+    assert loaded is not None
+    assert loaded["status"] == "archived"
+    assert listed[0]["key"] == "store:1"
+    assert listed[0]["status"] == "archived"
 
 
 @pytest.mark.asyncio
