@@ -59,7 +59,7 @@ async def test_atomic_write_preserves_original_on_error(manager: SessionManager,
     session2.add_message("user", "corrupted")
 
     with pytest.raises(OSError, match="simulated disk failure"):
-        manager._save_to_file(session2)
+        await manager._save_to_file(session2)
 
     monkeypatch.undo()
     assert path.read_text(encoding="utf-8") == original_content
