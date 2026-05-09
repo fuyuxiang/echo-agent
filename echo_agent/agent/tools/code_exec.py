@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import re
+from types import SimpleNamespace
 from pathlib import Path
 from typing import Any
 
 from echo_agent.agent.executors.base import BaseExecutor, ExecRequest
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.security.guards import evaluate_code_execution
 
 
 _RUNNERS: dict[str, str] = {
@@ -44,12 +46,16 @@ class CodeExecTool(Tool):
         allowed_languages: list[str] | None = None,
         max_output: int = 32000,
         timeout_seconds: int = 60,
+        exec_policy: Any | None = None,
+        network_policy: str = "allow",
     ):
         self._workspace = Path(workspace)
         self._executor = executor
         self._allowed_languages = set(allowed_languages or _RUNNERS.keys())
         self._max_output = max_output
         self.timeout_seconds = timeout_seconds
+        self._exec_policy = exec_policy
+        self._network_policy = network_policy
         enum = [lang for lang in _RUNNERS if lang in self._allowed_languages]
         self.parameters = {
             "type": "object",
@@ -75,6 +81,18 @@ class CodeExecTool(Tool):
         command = _RUNNERS.get(lang)
         if not command:
             return ToolResult(success=False, error=f"Unsupported language: {lang}")
+
+        policy = self._exec_policy or SimpleNamespace(security="full", ask="off")
+        decision = evaluate_code_execution(
+            code,
+            language=lang,
+            exec_policy=policy,
+            network_policy=self._network_policy,
+            approval_action=self.name,
+        )
+        approved = ctx and (self.name in ctx.approved_actions or decision.pattern_key in ctx.approved_actions)
+        if decision.action == "deny" or (decision.action == "ask" and not approved):
+            return ToolResult(success=False, error=f"Code blocked by execution policy: {decision.reason}")
 
         try:
             if self._executor:

@@ -80,6 +80,7 @@ class LLMProvider(ABC):
 
     _RETRY_DELAYS = (1, 2, 4)
     _TRANSIENT_MARKERS = ("429", "rate limit", "500", "502", "503", "504", "overloaded", "timeout")
+    _PERMANENT_MARKERS = ("401", "403", "authentication", "unauthorized", "forbidden", "invalid_api_key", "invalid api key")
 
     def __init__(self, api_key: str = "", api_base: str = ""):
         self.api_key = api_key
@@ -124,6 +125,10 @@ class LLMProvider(ABC):
         lower = error_text.lower()
         return any(m in lower for m in self._TRANSIENT_MARKERS)
 
+    def _is_permanent(self, error_text: str) -> bool:
+        lower = error_text.lower()
+        return any(m in lower for m in self._PERMANENT_MARKERS)
+
     async def chat_with_retry(self, **kwargs: Any) -> LLMResponse:
         for attempt, base_delay in enumerate(self._RETRY_DELAYS):
             try:
@@ -134,6 +139,8 @@ class LLMProvider(ABC):
                 response = LLMResponse(content=f"Error: {e}", finish_reason="error")
 
             if response.finish_reason != "error":
+                return response
+            if self._is_permanent(response.content or ""):
                 return response
             if not self._is_transient(response.content or ""):
                 return response
@@ -181,7 +188,7 @@ class LLMProvider(ABC):
 
             if response.finish_reason != "error":
                 return response
-            if emitted or not self._is_transient(response.content or ""):
+            if emitted or self._is_permanent(response.content or "") or not self._is_transient(response.content or ""):
                 return response
 
             jitter = base_delay * (0.5 + random.random())

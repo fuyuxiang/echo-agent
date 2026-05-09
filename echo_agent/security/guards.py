@@ -1,0 +1,263 @@
+"""Runtime guards for shell and code execution."""
+
+from __future__ import annotations
+
+import re
+import shlex
+from dataclasses import dataclass
+from typing import Any, Literal
+
+
+GuardAction = Literal["allow", "ask", "deny"]
+
+
+@dataclass(frozen=True)
+class GuardDecision:
+    action: GuardAction = "allow"
+    reason: str = ""
+    pattern_key: str = ""
+    approval_action: str = ""
+
+    @property
+    def needs_approval(self) -> bool:
+        return self.action == "ask"
+
+    @property
+    def denied(self) -> bool:
+        return self.action == "deny"
+
+
+@dataclass(frozen=True)
+class GuardFinding:
+    key: str
+    reason: str
+    hard_block: bool = False
+
+
+SHELL_HARD_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
+    ("root_rm", re.compile(r"\brm\s+-[^\n;|&]*[rf][^\n;|&]*\s+/(?:\s|$)"), "destructive root removal"),
+    ("block_device_write", re.compile(r"\bdd\s+[^\n;|&]*\bof=/dev/"), "destructive block device write"),
+    ("mkfs", re.compile(r"\bmkfs(?:\.\w+)?\b"), "filesystem formatting"),
+    ("shutdown", re.compile(r"\b(shutdown|reboot|halt|poweroff)\b"), "system shutdown"),
+    ("sensitive_account_file", re.compile(r"/(?:private/)?etc/(passwd|shadow|sudoers|gshadow)\b"), "sensitive system account file"),
+    ("root_secret_path", re.compile(r"(/root/\.ssh|/root/\.gnupg|/etc/ssh/)"), "sensitive credential path"),
+)
+
+SHELL_APPROVAL_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
+    ("recursive_delete", re.compile(r"\brm\s+-[^\n;|&]*r"), "recursive file deletion"),
+    ("chmod_777", re.compile(r"\bchmod\s+777\b"), "world-writable permissions"),
+    ("chown_root", re.compile(r"\bchown\s+[^;\n]*\broot\b"), "root ownership change"),
+    ("service_control", re.compile(r"\b(systemctl|service)\s+(stop|restart|disable|mask)\b"), "service control"),
+    ("kill_many", re.compile(r"\b(kill\s+-9\s+-1|pkill|killall)\b"), "broad process termination"),
+    ("curl_pipe_shell", re.compile(r"\b(curl|wget)\b[^;\n|]*\|\s*(sh|bash|zsh)\b"), "download piped to shell"),
+    ("inline_interpreter", re.compile(r"\b(python|python3|perl|ruby|node|sh|bash|zsh)\s+(-c|-e)\b"), "inline interpreter execution"),
+    ("sensitive_project_write", re.compile(r">\s*[^\n;|&]*(\.env|id_rsa|credentials|secrets?)(?:\b|/)"), "write to credential-looking file"),
+    ("sql_destructive", re.compile(r"\b(drop\s+table|truncate\s+table|delete\s+from\s+\w+\s*(?:;|$))", re.I), "destructive SQL"),
+)
+
+NETWORK_COMMANDS = frozenset({
+    "curl",
+    "dig",
+    "ftp",
+    "host",
+    "nc",
+    "netcat",
+    "nslookup",
+    "ping",
+    "rsync",
+    "scp",
+    "sftp",
+    "ssh",
+    "telnet",
+    "wget",
+})
+
+NETWORK_TEXT_RE = re.compile(r"\b(?:https?|ftp|ssh)://", re.I)
+NETWORK_CODE_RE = re.compile(
+    r"\b(import\s+(socket|requests|aiohttp|urllib|http\.client)|"
+    r"from\s+(socket|requests|aiohttp|urllib|http)\s+import|"
+    r"(requests|aiohttp|urllib|http\.client)\.)",
+    re.I,
+)
+CODE_DANGEROUS_RE = re.compile(
+    r"\b(os\.system|subprocess\.|eval\s*\(|exec\s*\(|__import__\s*\(|"
+    r"child_process|ProcessBuilder|Runtime\.getRuntime)\b",
+    re.I,
+)
+SENSITIVE_CODE_RE = re.compile(r"/(?:private/)?etc/(passwd|shadow|sudoers|gshadow)\b|/root/(\.ssh|\.gnupg)|/etc/ssh/")
+
+
+def split_command(command: str) -> list[str]:
+    try:
+        return shlex.split(command, posix=True)
+    except ValueError:
+        return command.strip().split()
+
+
+def command_name(command: str) -> str:
+    parts = split_command(command)
+    if not parts:
+        return ""
+    name = parts[0].rsplit("/", 1)[-1]
+    if name in {"env", "command", "time", "nice"} and len(parts) > 1:
+        return parts[1].rsplit("/", 1)[-1]
+    return name
+
+
+def command_uses_network(command: str) -> bool:
+    if NETWORK_TEXT_RE.search(command):
+        return True
+    names = [part.rsplit("/", 1)[-1] for part in split_command(command)]
+    return any(name in NETWORK_COMMANDS for name in names)
+
+
+def scan_shell_command(command: str) -> list[GuardFinding]:
+    findings: list[GuardFinding] = []
+    for key, pattern, reason in SHELL_HARD_PATTERNS:
+        if pattern.search(command):
+            findings.append(GuardFinding(key, reason, hard_block=True))
+    for key, pattern, reason in SHELL_APPROVAL_PATTERNS:
+        if pattern.search(command):
+            findings.append(GuardFinding(key, reason, hard_block=False))
+    return findings
+
+
+def scan_code(code: str, *, network_policy: str = "deny") -> list[GuardFinding]:
+    findings: list[GuardFinding] = []
+    if SENSITIVE_CODE_RE.search(code):
+        findings.append(GuardFinding("sensitive_file", "sensitive system file access", hard_block=True))
+    if network_policy == "deny" and (NETWORK_TEXT_RE.search(code) or NETWORK_CODE_RE.search(code)):
+        findings.append(GuardFinding("network_denied", "network access is denied by execution policy", hard_block=True))
+    elif NETWORK_TEXT_RE.search(code) or NETWORK_CODE_RE.search(code):
+        findings.append(GuardFinding("network_access", "network access from code"))
+    if CODE_DANGEROUS_RE.search(code):
+        findings.append(GuardFinding("dynamic_execution", "dynamic process or interpreter execution"))
+    return findings
+
+
+def _ask_or_deny(ask: str, reason: str, pattern_key: str, approval_action: str) -> GuardDecision:
+    if ask == "off":
+        return GuardDecision("deny", reason=reason, pattern_key=pattern_key, approval_action=approval_action)
+    return GuardDecision("ask", reason=reason, pattern_key=pattern_key, approval_action=approval_action)
+
+
+def evaluate_shell_command(
+    command: str,
+    *,
+    exec_policy: Any,
+    network_policy: str,
+    approval_action: str = "exec",
+) -> GuardDecision:
+    if not command.strip():
+        return GuardDecision("deny", reason="empty command", pattern_key="empty", approval_action=approval_action)
+
+    security = getattr(exec_policy, "security", "allowlist")
+    ask = getattr(exec_policy, "ask", "on_miss")
+    if security == "deny":
+        return GuardDecision("deny", reason="exec security policy is deny", pattern_key="exec_denied", approval_action=approval_action)
+
+    blocked = list(getattr(exec_policy, "blocked_commands", []) or [])
+    for pattern in blocked:
+        if pattern and pattern in command:
+            return GuardDecision("deny", reason=f"command contains blocked pattern '{pattern}'", pattern_key="blocked_command", approval_action=approval_action)
+
+    if network_policy == "deny" and command_uses_network(command):
+        return GuardDecision("deny", reason="network access is denied by execution policy", pattern_key="network_denied", approval_action=approval_action)
+
+    findings = scan_shell_command(command)
+    hard = next((finding for finding in findings if finding.hard_block), None)
+    if hard:
+        return GuardDecision("deny", reason=hard.reason, pattern_key=hard.key, approval_action=approval_action)
+
+    if ask == "always":
+        return GuardDecision("ask", reason="exec approval policy is always", pattern_key="ask_always", approval_action=approval_action)
+
+    approvable = next((finding for finding in findings if not finding.hard_block), None)
+    if approvable:
+        return _ask_or_deny(ask, approvable.reason, approvable.key, approval_action)
+
+    cmd = command_name(command)
+    allowed = set(getattr(exec_policy, "allowed_commands", []) or [])
+    safe_bins = set(getattr(exec_policy, "safe_bins", []) or [])
+    if security == "allowlist" and cmd not in allowed and cmd not in safe_bins:
+        return _ask_or_deny(ask, f"command '{cmd}' is not in the exec allowlist", "allowlist_miss", approval_action)
+
+    return GuardDecision("allow", approval_action=approval_action)
+
+
+def evaluate_code_execution(
+    code: str,
+    *,
+    language: str,
+    exec_policy: Any,
+    network_policy: str,
+    approval_action: str = "execute_code",
+) -> GuardDecision:
+    security = getattr(exec_policy, "security", "allowlist")
+    ask = getattr(exec_policy, "ask", "on_miss")
+    if security == "deny":
+        return GuardDecision("deny", reason="exec security policy is deny", pattern_key="exec_denied", approval_action=approval_action)
+
+    findings = scan_code(code, network_policy=network_policy)
+    hard = next((finding for finding in findings if finding.hard_block), None)
+    if hard:
+        return GuardDecision("deny", reason=hard.reason, pattern_key=hard.key, approval_action=approval_action)
+
+    if ask == "always":
+        return GuardDecision("ask", reason="code execution approval policy is always", pattern_key="ask_always", approval_action=approval_action)
+
+    approvable = next((finding for finding in findings if not finding.hard_block), None)
+    if approvable:
+        return _ask_or_deny(ask, approvable.reason, approvable.key, approval_action)
+
+    if security == "allowlist" and ask != "off":
+        return GuardDecision(
+            "ask",
+            reason=f"{language} code execution requires approval under allowlist security",
+            pattern_key="code_execution",
+            approval_action=approval_action,
+        )
+
+    return GuardDecision("allow", approval_action=approval_action)
+
+
+def evaluate_tool_call(config: Any, tool_name: str, arguments: dict[str, Any]) -> GuardDecision:
+    """Evaluate runtime safety before a tool call is executed."""
+    exec_policy = config.tools.exec
+    network_policy = config.execution.network_policy
+
+    if tool_name == "exec":
+        if not config.tools.exec.enabled:
+            return GuardDecision("deny", reason="exec tool is disabled", pattern_key="tool_disabled", approval_action="exec")
+        return evaluate_shell_command(
+            str(arguments.get("command") or ""),
+            exec_policy=exec_policy,
+            network_policy=network_policy,
+            approval_action="exec",
+        )
+
+    if tool_name == "execute_code":
+        if not config.tools.exec.enabled or not config.tools.code_exec.enabled:
+            return GuardDecision("deny", reason="code execution tool is disabled", pattern_key="tool_disabled", approval_action="execute_code")
+        return evaluate_code_execution(
+            str(arguments.get("code") or ""),
+            language=str(arguments.get("language") or ""),
+            exec_policy=exec_policy,
+            network_policy=network_policy,
+            approval_action="execute_code",
+        )
+
+    if tool_name == "process" and arguments.get("action") == "start":
+        if not config.tools.exec.enabled:
+            return GuardDecision("deny", reason="process tool is disabled", pattern_key="tool_disabled", approval_action="process")
+        return evaluate_shell_command(
+            str(arguments.get("command") or ""),
+            exec_policy=exec_policy,
+            network_policy=network_policy,
+            approval_action="process",
+        )
+
+    if network_policy == "deny" and tool_name in {"web_fetch", "web_search"}:
+        return GuardDecision("deny", reason="network access is denied by execution policy", pattern_key="network_denied", approval_action=tool_name)
+
+    return GuardDecision("allow", approval_action=tool_name)

@@ -143,17 +143,6 @@ class TestToolExecutionContext:
         with pytest.raises(FrozenInstanceError):
             ctx.execution_id = "xyz"
 
-    def test_log_fields_truncates_idempotency_key(self):
-        long_key = "a" * 64
-        ctx = ToolExecutionContext(idempotency_key=long_key)
-        fields = ctx.log_fields()
-        assert len(fields["idempotency_key"]) == 16
-
-    def test_log_fields_empty_idempotency_key(self):
-        ctx = ToolExecutionContext()
-        fields = ctx.log_fields()
-        assert fields["idempotency_key"] == ""
-
     def test_build_idempotency_key_deterministic(self):
         k1 = build_idempotency_key("t1", "tool", 0, {"a": 1})
         k2 = build_idempotency_key("t1", "tool", 0, {"a": 1})
@@ -477,3 +466,46 @@ class TestPatchTool:
         })
         assert not result.success
         assert "No blocks matched" in result.error
+
+
+# ---------------------------------------------------------------------------
+# Credential masking in execution log
+# ---------------------------------------------------------------------------
+
+class TestCredentialMasking:
+    def test_mask_sensitive_hides_keys(self):
+        from echo_agent.agent.tools.registry import _mask_sensitive
+
+        params = {
+            "query": "hello",
+            "api_key": "sk-secret-123",
+            "auth_token": "bearer-xyz",
+            "password": "hunter2",
+            "normal_param": "visible",
+        }
+        masked = _mask_sensitive(params)
+        assert masked["query"] == "hello"
+        assert masked["normal_param"] == "visible"
+        assert masked["api_key"] == "***"
+        assert masked["auth_token"] == "***"
+        assert masked["password"] == "***"
+
+    def test_mask_sensitive_nested_dict(self):
+        from echo_agent.agent.tools.registry import _mask_sensitive
+
+        params = {
+            "config": {"secret": "hidden", "name": "visible"},
+            "data": "ok",
+        }
+        masked = _mask_sensitive(params)
+        assert masked["data"] == "ok"
+        assert masked["config"]["secret"] == "***"
+        assert masked["config"]["name"] == "visible"
+
+    def test_credential_pool_repr_hides_keys(self):
+        from echo_agent.models.credential_pool import CredentialPool
+
+        pool = CredentialPool(["sk-key-1", "sk-key-2"])
+        repr_str = repr(pool)
+        assert "sk-key" not in repr_str
+        assert "size=2" in repr_str

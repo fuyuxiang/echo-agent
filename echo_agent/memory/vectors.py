@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from typing import Any, TYPE_CHECKING
@@ -35,6 +36,7 @@ class VectorIndex:
         self._source_map: list[str] = []
         self._deleted_sources: set[str] = set()
         self._initialized = False
+        self._lock = asyncio.Lock()
 
     @property
     def available(self) -> bool:
@@ -47,6 +49,10 @@ class VectorIndex:
         return self._index.ntotal
 
     async def initialize(self) -> None:
+        async with self._lock:
+            await self._initialize_unlocked()
+
+    async def _initialize_unlocked(self) -> None:
         if not _HAS_FAISS:
             logger.info("FAISS not installed — vector search disabled")
             return
@@ -69,64 +75,74 @@ class VectorIndex:
                 faiss.normalize_L2(matrix)
                 self._index.add(matrix)
         self._initialized = True
+        if self.count > 50000:
+            logger.warning("Vector index has {} entries — consider enabling sharding", self.count)
         logger.info("Vector index loaded: {} vectors, {} dims", self.count, self._dimensions)
 
     async def add(self, memory_id: str, embedding: list[float]) -> str:
-        vec_id = uuid.uuid4().hex[:12]
-        arr = np.array(embedding, dtype=np.float32).reshape(1, -1)
-        if arr.shape[1] != self._dimensions:
-            logger.warning("Embedding dimension mismatch: {} vs {}", arr.shape[1], self._dimensions)
-            return ""
-        await self._storage.store_vector(vec_id, memory_id, arr.tobytes(), {})
-        if self._index is not None:
-            faiss.normalize_L2(arr)
-            self._index.add(arr)
-            self._id_map.append(vec_id)
-            self._source_map.append(memory_id)
-        return vec_id
+        async with self._lock:
+            vec_id = uuid.uuid4().hex[:12]
+            arr = np.array(embedding, dtype=np.float32).reshape(1, -1)
+            if arr.shape[1] != self._dimensions:
+                logger.warning("Embedding dimension mismatch: {} vs {}", arr.shape[1], self._dimensions)
+                return ""
+            await self._storage.store_vector(vec_id, memory_id, arr.tobytes(), {})
+            if self._index is not None:
+                faiss.normalize_L2(arr)
+                self._index.add(arr)
+                self._id_map.append(vec_id)
+                self._source_map.append(memory_id)
+            return vec_id
 
     async def search(self, query_embedding: list[float], limit: int = 10) -> list[tuple[str, float]]:
         """Search for similar vectors. Returns (source_id, score) pairs."""
-        if self._index is None or self._index.ntotal == 0:
-            return []
-        arr = np.array(query_embedding, dtype=np.float32).reshape(1, -1)
-        if arr.shape[1] != self._dimensions:
-            return []
-        faiss.normalize_L2(arr)
-        k = min(limit + len(self._deleted_sources), self._index.ntotal)
-        scores, indices = self._index.search(arr, k)
-        results: list[tuple[str, float]] = []
-        for score, idx in zip(scores[0], indices[0]):
-            if idx < 0 or idx >= len(self._source_map):
-                continue
-            source_id = self._source_map[idx]
-            if source_id in self._deleted_sources:
-                continue
-            results.append((source_id, float(score)))
-            if len(results) >= limit:
-                break
-        return results
+        async with self._lock:
+            if self._index is None or self._index.ntotal == 0:
+                return []
+            arr = np.array(query_embedding, dtype=np.float32).reshape(1, -1)
+            if arr.shape[1] != self._dimensions:
+                return []
+            faiss.normalize_L2(arr)
+            k = min(limit + len(self._deleted_sources), self._index.ntotal)
+            scores, indices = self._index.search(arr, k)
+            results: list[tuple[str, float]] = []
+            for score, idx in zip(scores[0], indices[0]):
+                if idx < 0 or idx >= len(self._source_map):
+                    continue
+                source_id = self._source_map[idx]
+                if source_id in self._deleted_sources:
+                    continue
+                results.append((source_id, float(score)))
+                if len(results) >= limit:
+                    break
+            return results
 
     async def remove(self, vec_id: str) -> None:
-        if vec_id in self._id_map:
-            idx = self._id_map.index(vec_id)
-            if idx < len(self._source_map):
-                self._deleted_sources.add(self._source_map[idx])
-        await self._storage.delete_vector(vec_id)
-        if self._index and self._deleted_sources and len(self._deleted_sources) > self._index.ntotal * 0.3:
-            await self.rebuild()
+        async with self._lock:
+            if vec_id in self._id_map:
+                idx = self._id_map.index(vec_id)
+                if idx < len(self._source_map):
+                    self._deleted_sources.add(self._source_map[idx])
+            await self._storage.delete_vector(vec_id)
+            if self._index and self._deleted_sources and len(self._deleted_sources) > self._index.ntotal * 0.3:
+                await self._rebuild_unlocked()
 
     async def rebuild(self) -> None:
+        async with self._lock:
+            await self._rebuild_unlocked()
+
+    async def _rebuild_unlocked(self) -> None:
         self._id_map.clear()
         self._source_map.clear()
         self._deleted_sources.clear()
         if self._index is not None:
             self._index.reset()
-        await self.initialize()
+        await self._initialize_unlocked()
 
     async def get_embedding_by_memory_id(self, memory_id: str) -> list[float] | None:
-        row = await self._storage.load_vector_by_source(memory_id)
-        if row and row.get("embedding"):
-            arr = np.frombuffer(row["embedding"], dtype=np.float32)
-            return arr.tolist()
-        return None
+        async with self._lock:
+            row = await self._storage.load_vector_by_source(memory_id)
+            if row and row.get("embedding"):
+                arr = np.frombuffer(row["embedding"], dtype=np.float32)
+                return arr.tolist()
+            return None

@@ -2,6 +2,7 @@
 
 Phase 1: Tool output pruning (cheap, no LLM)
 Phase 2: Boundary resolution (head / middle / tail)
+Phase 2.5: Archive middle segment (persist before lossy compression)
 Phase 3: LLM summary generation
 Phase 4: Message reassembly
 Phase 5: Structural validation
@@ -10,7 +11,8 @@ Phase 5: Structural validation
 from __future__ import annotations
 
 import time
-from typing import Any
+import uuid
+from typing import Any, TYPE_CHECKING
 
 from loguru import logger
 
@@ -24,6 +26,9 @@ from echo_agent.agent.compression.validator import MessageValidator
 from echo_agent.config.schema import CompressionConfig
 from echo_agent.models.provider import LLMProvider
 
+if TYPE_CHECKING:
+    from echo_agent.storage.backend import StorageBackend
+
 
 class ConversationCompressor(ContextEngine):
 
@@ -33,12 +38,15 @@ class ConversationCompressor(ContextEngine):
         context_window_tokens: int,
         provider: LLMProvider,
         default_model: str,
+        storage: StorageBackend | None = None,
     ):
         super().__init__(
             context_window_tokens=context_window_tokens,
             trigger_ratio=config.trigger_ratio,
         )
         self._config = config
+        self._storage = storage
+        self._session_key: str | None = None
 
         self._pruner = ToolOutputPruner(
             tail_budget_ratio=config.tool_pruning_tail_budget_ratio,
@@ -105,6 +113,18 @@ class ConversationCompressor(ContextEngine):
             len(boundary.middle_messages),
             len(boundary.tail_messages),
         )
+
+        # Phase 2.5: Archive middle segment before lossy compression
+        if self._storage and boundary.middle_messages:
+            compression_id = uuid.uuid4().hex[:12]
+            try:
+                await self._storage.archive_messages(
+                    self._session_key or "",
+                    boundary.middle_messages,
+                    compression_id=compression_id,
+                )
+            except Exception as e:
+                logger.debug("Failed to archive middle segment: {}", e)
 
         # Phase 3: LLM summary generation
         summary = await self._summarizer.summarize(
