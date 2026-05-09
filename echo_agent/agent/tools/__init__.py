@@ -14,6 +14,7 @@ from echo_agent.agent.tools.web import WebFetchTool, WebSearchTool
 from echo_agent.bus.queue import MessageBus
 from echo_agent.config.schema import Config
 from echo_agent.models.provider import LLMProvider
+from echo_agent.security.tool_policy import filter_tools_by_policy
 
 
 def discover_tools(
@@ -37,19 +38,21 @@ def discover_tools(
     if config.tools.exec.enabled:
         from echo_agent.agent.executors.factory import create_executor
         from echo_agent.agent.tools.shell import ShellTool
-        executor = create_executor(config.execution, workspace)
+        executor = create_executor(config.execution, workspace, host=config.tools.exec.host)
         tools.append(ShellTool(
             ws,
             allowed=config.tools.exec.allowed_commands,
             blocked=config.tools.exec.blocked_commands,
             max_output=config.tools.exec.max_output_chars,
             executor=executor,
+            exec_policy=config.tools.exec,
+            network_policy=config.execution.network_policy,
         ))
     tools.append(ReadFileTool(ws, restrict))
     tools.append(WriteFileTool(ws, restrict))
     tools.append(EditFileTool(ws, restrict))
     tools.append(ListDirTool(ws, restrict))
-    if config.tools.web.enabled:
+    if config.tools.web.enabled and config.execution.network_policy != "deny":
         tools.append(WebFetchTool(proxy=config.tools.web.proxy))
         if config.tools.web.search_api_key or config.tools.web.search_provider == "searxng":
             tools.append(WebSearchTool(
@@ -84,7 +87,7 @@ def discover_tools(
     from echo_agent.agent.tools.notify import NotifyTool
     tools.append(NotifyTool(bus=bus))
 
-    if config.tools.exec.enabled:
+    if config.tools.exec.enabled and config.tools.code_exec.enabled:
         from echo_agent.agent.tools.code_exec import CodeExecTool
         tools.append(CodeExecTool(
             ws,
@@ -92,10 +95,17 @@ def discover_tools(
             allowed_languages=config.tools.code_exec.allowed_languages,
             max_output=config.tools.exec.max_output_chars,
             timeout_seconds=config.tools.code_exec.timeout_seconds,
+            exec_policy=config.tools.exec,
+            network_policy=config.execution.network_policy,
         ))
 
+    if config.tools.exec.enabled:
         from echo_agent.agent.tools.process import ProcessTool
-        tools.append(ProcessTool(ws))
+        tools.append(ProcessTool(
+            ws,
+            exec_policy=config.tools.exec,
+            network_policy=config.execution.network_policy,
+        ))
 
     if provider:
         from echo_agent.agent.tools.delegate import DelegateTool, SpawnTool
@@ -133,7 +143,8 @@ def discover_tools(
         tools.append(KnowledgeSearchTool(index=knowledge_index, default_limit=config.knowledge.max_results))
         tools.append(KnowledgeIndexTool(index=knowledge_index))
 
-    logger.info("Discovered {} tools", len(tools))
+    tools = filter_tools_by_policy(config, tools)
+    logger.info("Discovered {} tools after policy filtering", len(tools))
     return tools
 
 

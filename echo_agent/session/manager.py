@@ -262,19 +262,6 @@ class SessionManager:
             self._cache.pop(key, None)
         return True
 
-    async def reopen_session(self, key: str) -> Session | None:
-        archive_path = self.sessions_dir / "archive" / self._session_path(key).name
-        if archive_path.exists():
-            target = self._session_path(key)
-            shutil.move(str(archive_path), str(target))
-        session = await self._load(key)
-        if session:
-            session.status = "active"
-            session.updated_at = datetime.now()
-            await self.save(session)
-        return session
-        return session
-
     async def cleanup_expired(self) -> int:
         """Expire stale sessions and archive old expired ones. Returns count processed."""
         now = datetime.now()

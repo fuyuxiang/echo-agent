@@ -51,15 +51,7 @@ class ToolExecutionContext:
     is_replay: bool = False
     parent_execution_id: str | None = None
     credentials: dict[str, str] = field(default_factory=dict)
-
-    def log_fields(self) -> dict[str, Any]:
-        return {
-            "execution_id": self.execution_id,
-            "trace_id": self.trace_id,
-            "attempt_index": self.attempt_index,
-            "idempotency_key": self.idempotency_key[:16] if self.idempotency_key else "",
-            "is_replay": self.is_replay,
-        }
+    approved_actions: frozenset[str] = field(default_factory=frozenset)
 
 
 def build_idempotency_key(trace_id: str, tool_name: str, index: int, params: Mapping[str, Any]) -> str:

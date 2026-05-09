@@ -29,6 +29,9 @@ class GatewayAuth:
 
         self._approved: dict[str, set[str]] = {}
         self._pending_codes: dict[str, dict[str, Any]] = {}
+        self._verify_failures: dict[str, list[float]] = {}
+        self._lockout_seconds = 300
+        self._max_failures = 5
         self._load_approved()
         self._load_pending()
 
@@ -84,7 +87,7 @@ class GatewayAuth:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     def generate_pairing_code(self, platform: str) -> str:
-        code = secrets.token_hex(3).upper()
+        code = secrets.token_hex(5).upper()
         self._pending_codes[code] = {
             "platform": platform,
             "created_at": time.time(),
@@ -96,16 +99,24 @@ class GatewayAuth:
 
     def verify_pairing(self, platform: str, user_id: str, code: str) -> bool:
         code = code.upper().strip()
+
+        if self._is_locked_out(platform):
+            self.audit("pair_verify", platform=platform, user_id=user_id, ok=False, reason="locked_out")
+            return False
+
         entry = self._pending_codes.get(code)
         if entry is None:
+            self._record_verify_failure(platform)
             return False
 
         if time.time() - entry["created_at"] > self._pairing_ttl:
             del self._pending_codes[code]
             self._save_pending()
+            self._record_verify_failure(platform)
             return False
 
         if entry["platform"] != platform:
+            self._record_verify_failure(platform)
             return False
 
         del self._pending_codes[code]
@@ -116,9 +127,23 @@ class GatewayAuth:
         self._approved[platform].add(user_id)
         self._save_approved(platform)
 
+        self._verify_failures.pop(platform, None)
         logger.info("User {}:{} paired successfully", platform, user_id)
         self.audit("pair_verify", platform=platform, user_id=user_id)
         return True
+
+    def _is_locked_out(self, platform: str) -> bool:
+        failures = self._verify_failures.get(platform, [])
+        if len(failures) < self._max_failures:
+            return False
+        recent = [t for t in failures if time.time() - t < self._lockout_seconds]
+        self._verify_failures[platform] = recent
+        return len(recent) >= self._max_failures
+
+    def _record_verify_failure(self, platform: str) -> None:
+        if platform not in self._verify_failures:
+            self._verify_failures[platform] = []
+        self._verify_failures[platform].append(time.time())
 
     def _load_approved(self) -> None:
         for path in self._data_dir.glob("*_approved.json"):

@@ -25,7 +25,7 @@ from typing import Any, Iterable
 
 from loguru import logger
 
-from echo_agent.memory.types import MemoryEntry, MemoryTier, MemoryType, Episode, Contradiction
+from echo_agent.memory.types import MemoryEntry, MemoryTier, MemoryType
 from echo_agent.memory.forgetting import ForgettingCurve
 
 msvcrt = None
@@ -151,6 +151,7 @@ class MemoryStore:
         self._storage = storage
         self._pending_storage_tasks: set = set()
         self._dirty_ids: set[str] = set()
+        self._failed_sync: set[str] = set()
         self._load()
         self._forgetting = ForgettingCurve(
             base_half_life_days=decay_half_life_days,
@@ -313,25 +314,32 @@ class MemoryStore:
         )
         if self._storage:
             import asyncio
-            dirty_entries = [e for e in entries if e.id in self._dirty_ids]
-            for entry in dirty_entries:
+            sync_ids = (self._dirty_ids | self._failed_sync) & {e.id for e in entries}
+            for entry in entries:
+                if entry.id not in sync_ids:
+                    continue
                 try:
                     loop = asyncio.get_event_loop()
                     coro = self._storage.store_memory(entry.id, entry.to_dict())
                     if loop.is_running():
                         task = asyncio.ensure_future(coro)
-                        task.add_done_callback(self._on_storage_task_done)
+                        task.add_done_callback(
+                            lambda t, eid=entry.id: self._on_storage_sync_done(t, eid)
+                        )
                         self._pending_storage_tasks.add(task)
                     else:
                         loop.run_until_complete(coro)
+                    self._failed_sync.discard(entry.id)
                 except Exception as e:
                     logger.warning("Failed to sync memory {} to storage: {}", entry.id, e)
+                    self._failed_sync.add(entry.id)
             self._dirty_ids -= {e.id for e in entries}
 
-    def _on_storage_task_done(self, task: asyncio.Task) -> None:
+    def _on_storage_sync_done(self, task: asyncio.Task, entry_id: str) -> None:
         self._pending_storage_tasks.discard(task)
         if task.exception():
-            logger.warning("Storage sync task failed: {}", task.exception())
+            logger.warning("Storage sync task failed for {}: {}", entry_id, task.exception())
+            self._failed_sync.add(entry_id)
 
     def _load(self) -> None:
         self._reload_type(MemoryType.USER)
@@ -563,27 +571,6 @@ class MemoryStore:
                 if limit is not None and len(results) >= limit:
                     break
         return results
-
-    def search_by_time(
-        self,
-        start: datetime | None = None,
-        end: datetime | None = None,
-        mem_type: MemoryType | None = None,
-    ) -> list[MemoryEntry]:
-        results: list[MemoryEntry] = []
-        for entry in self._entries.values():
-            if mem_type and entry.type != mem_type:
-                continue
-            try:
-                ts = datetime.fromisoformat(entry.updated_at)
-            except ValueError:
-                continue
-            if start and ts < start:
-                continue
-            if end and ts > end:
-                continue
-            results.append(entry)
-        return sorted(results, key=lambda entry: entry.updated_at or "", reverse=True)
 
     # ── Context injection ────────────────────────────────────────────────────
 

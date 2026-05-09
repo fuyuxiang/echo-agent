@@ -201,15 +201,36 @@ class ModelsConfig(_Base):
 # ── Tool configs ─────────────────────────────────────────────────────────────
 
 class ExecToolConfig(_Base):
-    enabled: bool = True
+    enabled: bool = False
     timeout_seconds: int = 30
     max_output_chars: int = 16000
+    host: Literal["auto", "local", "sandbox", "container", "remote"] = "sandbox"
+    security: Literal["deny", "allowlist", "full"] = "allowlist"
+    ask: Literal["off", "on_miss", "always"] = "on_miss"
+    safe_bins: list[str] = Field(default_factory=lambda: [
+        "awk",
+        "cat",
+        "date",
+        "echo",
+        "find",
+        "grep",
+        "head",
+        "ls",
+        "pwd",
+        "rg",
+        "sed",
+        "sort",
+        "tail",
+        "tr",
+        "uniq",
+        "wc",
+    ])
     allowed_commands: list[str] = Field(default_factory=list)
     blocked_commands: list[str] = Field(default_factory=list)
 
 
 class WebToolConfig(_Base):
-    enabled: bool = True
+    enabled: bool = False
     proxy: str | None = None
     timeout_seconds: int = 30
     search_api_key: str = ""
@@ -230,7 +251,7 @@ class TTSConfig(_Base):
 
 
 class CodeExecConfig(_Base):
-    enabled: bool = True
+    enabled: bool = False
     timeout_seconds: int = 30
     allowed_languages: list[str] = Field(default_factory=lambda: ["python", "javascript", "bash"])
 
@@ -251,6 +272,10 @@ class MCPServerConfig(_Base):
 
 
 class ToolsConfig(_Base):
+    profile: Literal["minimal", "messaging", "coding", "full"] = "coding"
+    allow: list[str] = Field(default_factory=list)
+    also_allow: list[str] = Field(default_factory=list)
+    deny: list[str] = Field(default_factory=list)
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
     web: WebToolConfig = Field(default_factory=WebToolConfig)
     restrict_to_workspace: bool = True
@@ -264,7 +289,7 @@ class ToolsConfig(_Base):
 # ── Execution environment configs ────────────────────────────────────────────
 
 class ExecutionConfig(_Base):
-    default_executor: Literal["local", "sandbox", "container", "remote"] = "local"
+    default_executor: Literal["local", "sandbox", "container", "remote"] = "sandbox"
     sandbox_root: str = "/tmp/echo-agent-sandbox"
     container_image: str = ""
     remote_host: str = ""
@@ -272,21 +297,45 @@ class ExecutionConfig(_Base):
     remote_key_path: str = ""
     remote_strict_host_key: Literal["no", "accept-new", "yes"] = "accept-new"
     remote_connect_timeout: int = 10
-    network_policy: Literal["allow", "deny", "restricted"] = "allow"
+    network_policy: Literal["allow", "deny", "restricted"] = "deny"
 
 
 # ── Permission configs ───────────────────────────────────────────────────────
 
 class ApprovalConfig(_Base):
-    require_approval: list[str] = Field(default_factory=list)
+    require_approval: list[str] = Field(default_factory=lambda: [
+        "cronjob",
+        "edit_file",
+        "exec",
+        "execute_code",
+        "knowledge_index",
+        "patch",
+        "process",
+        "skill_install",
+        "skill_manage",
+        "workflow",
+        "write_file",
+    ])
     auto_approve: list[str] = Field(default_factory=list)
     auto_deny: list[str] = Field(default_factory=list)
-    default_policy: Literal["approve", "deny", "ask"] = "approve"
+    default_policy: Literal["approve", "deny", "ask"] = "ask"
+    wait_timeout_seconds: int = 300
+    cli_auto_approve: bool = False
+
+
+class ElevatedConfig(_Base):
+    enabled: bool = False
+    allow_from: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class PermissionsConfig(_Base):
     admin_users: list[str] = Field(default_factory=list)
     approval: ApprovalConfig = Field(default_factory=ApprovalConfig)
+    elevated: ElevatedConfig = Field(default_factory=ElevatedConfig)
+
+
+class SecurityConfig(_Base):
+    profile: Literal["personal_cli", "daemon", "public_gateway"] = "daemon"
 
 
 class CredentialSecurityConfig(_Base):
@@ -504,6 +553,7 @@ class EvalConfig(_Base):
 
 
 class Config(_Base):
+    security: SecurityConfig = Field(default_factory=SecurityConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)

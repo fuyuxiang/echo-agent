@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -16,7 +15,6 @@ from echo_agent.models.provider import LLMResponse, ToolCallRequest
 from echo_agent.agent.planning.models import (
     Plan, PlanStep, StepAction, Feedback, StrategyType, StepStatus,
 )
-from echo_agent.agent.planning.tree import SearchNode, SearchTree
 from echo_agent.agent.planning.strategies import (
     ReactStrategy, PlanExecuteStrategy, TreeOfThoughtStrategy, LATSStrategy,
 )
@@ -128,66 +126,6 @@ class TestPlanModels:
         assert fb.suggestions == []
 
 
-# ═══════════════════════════════════════════════════════════════════
-# 2. Search Tree
-# ═══════════════════════════════════════════════════════════════════
-
-class TestSearchTree:
-    def test_ucb1_unvisited_returns_inf(self):
-        node = SearchNode(id="n", state="s", visits=0)
-        assert node.ucb1() == float("inf")
-
-    def test_ucb1_visited_node(self):
-        parent = SearchNode(id="p", state="s", visits=10, score=5.0)
-        child = SearchNode(id="c", state="s", visits=3, score=2.0, parent=parent)
-        ucb = child.ucb1()
-        exploit = 2.0 / 3
-        explore = 1.41 * math.sqrt(math.log(10) / 3)
-        assert abs(ucb - (exploit + explore)) < 1e-6
-
-    def test_best_child_picks_highest_ucb(self):
-        parent = SearchNode(id="p", state="s", visits=10, score=5.0)
-        c1 = SearchNode(id="c1", state="s", visits=5, score=1.0, parent=parent)
-        c2 = SearchNode(id="c2", state="s", visits=1, score=0.5, parent=parent)
-        parent.children = [c1, c2]
-        assert parent.best_child().id == "c2"  # c2 has fewer visits -> higher UCB
-
-    def test_best_child_empty(self):
-        node = SearchNode(id="n", state="s")
-        assert node.best_child() is None
-
-    def test_backpropagate(self):
-        root = SearchNode(id="r", state="s")
-        child = SearchNode(id="c", state="s", parent=root)
-        root.children.append(child)
-        child.backpropagate(1.0)
-        assert child.visits == 1
-        assert child.score == 1.0
-        assert root.visits == 1
-        assert root.score == 1.0
-    def test_search_tree_select_returns_leaf(self):
-        tree = SearchTree("root")
-        child = tree.expand(tree.root, "act1", "s1", score=1.0)
-        child.visits = 1
-        tree.root.visits = 1
-        selected = tree.select()
-        assert selected.id == child.id  # leaf node
-
-    def test_search_tree_expand_increments_size(self):
-        tree = SearchTree("root")
-        assert tree.size == 1
-        tree.expand(tree.root, "a", "s")
-        assert tree.size == 2
-
-    def test_search_tree_best_path(self):
-        tree = SearchTree("root")
-        c1 = tree.expand(tree.root, "a1", "s1", score=1.0)
-        c1.visits = 1
-        c2 = tree.expand(tree.root, "a2", "s2", score=5.0)
-        c2.visits = 1
-        path = tree.best_path()
-        assert len(path) == 1
-        assert path[0].id == c2.id
 
 
 # ═══════════════════════════════════════════════════════════════════

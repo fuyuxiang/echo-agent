@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import uuid
@@ -1052,3 +1053,63 @@ class TestProviderEmbed:
 
         result = await provider.embed("hello")
         assert result is None
+
+
+# ===========================================================================
+# Vector index concurrency safety
+# ===========================================================================
+
+class TestVectorIndexConcurrency:
+    @pytest.mark.asyncio
+    async def test_concurrent_add_and_search(self, storage: SQLiteBackend):
+        vi = VectorIndex(storage, dimensions=4)
+        await vi.initialize()
+        if not vi.available:
+            pytest.skip("FAISS not installed")
+
+        async def add_vectors(start: int):
+            for i in range(5):
+                vec = [0.0, 0.0, 0.0, 0.0]
+                vec[i % 4] = 1.0
+                await vi.add(f"mem_{start}_{i}", vec)
+
+        async def search_vectors():
+            for _ in range(5):
+                await vi.search([1.0, 0.0, 0.0, 0.0], limit=3)
+
+        await asyncio.gather(
+            add_vectors(0),
+            add_vectors(10),
+            search_vectors(),
+            search_vectors(),
+        )
+        assert vi.count == 10
+
+    @pytest.mark.asyncio
+    async def test_concurrent_add_and_remove(self, storage: SQLiteBackend):
+        vi = VectorIndex(storage, dimensions=4)
+        await vi.initialize()
+        if not vi.available:
+            pytest.skip("FAISS not installed")
+
+        vec_ids = []
+        for i in range(5):
+            vec = [0.0, 0.0, 0.0, 0.0]
+            vec[i % 4] = 1.0
+            vid = await vi.add(f"mem_{i}", vec)
+            vec_ids.append(vid)
+
+        async def remove_some():
+            for vid in vec_ids[:2]:
+                await vi.remove(vid)
+
+        async def add_more():
+            for i in range(5, 8):
+                vec = [0.0, 0.0, 0.0, 0.0]
+                vec[i % 4] = 1.0
+                await vi.add(f"mem_{i}", vec)
+
+        await asyncio.gather(remove_some(), add_more())
+        results = await vi.search([1.0, 0.0, 0.0, 0.0], limit=20)
+        source_ids = {sid for sid, _ in results}
+        assert "mem_0" not in source_ids or "mem_1" not in source_ids

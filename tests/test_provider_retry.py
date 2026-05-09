@@ -132,3 +132,43 @@ async def test_chat_stream_with_retry_retry_before_emit() -> None:
 
     assert result.content == "success"
     assert call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_chat_with_retry_permanent_401_no_retry() -> None:
+    provider = _TestProvider()
+    provider.chat_mock.return_value = LLMResponse(content="Error: 401 unauthorized", finish_reason="error")
+
+    result = await provider.chat_with_retry(messages=[{"role": "user", "content": "hi"}])
+
+    assert result.finish_reason == "error"
+    assert "401" in (result.content or "")
+    assert provider.chat_mock.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_chat_with_retry_permanent_403_no_retry() -> None:
+    provider = _TestProvider()
+    provider.chat_mock.return_value = LLMResponse(content="Error: 403 forbidden", finish_reason="error")
+
+    result = await provider.chat_with_retry(messages=[{"role": "user", "content": "hi"}])
+
+    assert result.finish_reason == "error"
+    assert provider.chat_mock.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_with_retry_permanent_no_retry() -> None:
+    provider = _TestProvider()
+
+    async def fake_stream(messages, tools=None, model=None, tool_choice=None, on_delta=None, **kw):
+        return LLMResponse(content="Error: 401 authentication failed", finish_reason="error")
+
+    provider.chat_stream = AsyncMock(side_effect=fake_stream)
+
+    result = await provider.chat_stream_with_retry(
+        messages=[{"role": "user", "content": "hi"}],
+    )
+
+    assert result.finish_reason == "error"
+    assert provider.chat_stream.call_count == 1

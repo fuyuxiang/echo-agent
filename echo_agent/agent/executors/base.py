@@ -18,6 +18,8 @@ from pathlib import Path
 
 from loguru import logger
 
+from echo_agent.security.guards import command_uses_network
+
 
 @dataclass
 class ExecRequest:
@@ -80,6 +82,8 @@ class LocalExecutor(BaseExecutor):
         pass
 
     async def execute(self, request: ExecRequest) -> ExecResponse:
+        if self._network_policy == "deny" and command_uses_network(request.command):
+            return ExecResponse(success=False, stderr="Network access is denied by execution policy", return_code=-1, executor=self.name)
         cwd = request.cwd or self._workspace
         env = self.inject_credentials({**os.environ}, request.credentials)
         env.update(request.env)
@@ -156,6 +160,8 @@ class SandboxExecutor(BaseExecutor):
     async def execute(self, request: ExecRequest) -> ExecResponse:
         if not self._sandbox_dir:
             await self.setup()
+        if self._network_policy == "deny" and command_uses_network(request.command):
+            return ExecResponse(success=False, stderr="Network access is denied by execution policy", return_code=-1, executor=self.name)
         cwd = str(self._resolve_cwd(request.cwd))
         env = self.inject_credentials({"HOME": cwd, "TMPDIR": cwd}, request.credentials)
         env.update(request.env)

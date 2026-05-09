@@ -8,6 +8,7 @@ Covers:
 from __future__ import annotations
 
 import hashlib
+import asyncio
 import json
 import os
 import uuid
@@ -56,8 +57,10 @@ class ApprovalManager:
         self._auto_deny = set(auto_deny or [])
         self._default_policy = default_policy
         self._pending: dict[str, ApprovalRequest] = {}
+        self._pending_by_signature: dict[str, str] = {}
         self._history: list[ApprovalRequest] = []
         self._approved_signatures: set[str] = set()
+        self._waiters: dict[str, asyncio.Event] = {}
 
     def needs_approval(self, action: str) -> bool:
         if action in self._auto_approve:
@@ -85,8 +88,12 @@ class ApprovalManager:
             self._history.append(req)
             return req
         if action in self._require:
+            existing = self._existing_pending(signature)
+            if existing:
+                return existing
             req = ApprovalRequest(action=action, tool_name=tool_name, params=params, user_id=user_id)
             self._pending[req.id] = req
+            self._pending_by_signature[signature] = req.id
             return req
         if self._default_policy == "approve":
             req = ApprovalRequest(action=action, tool_name=tool_name, params=params, user_id=user_id, status=ApprovalStatus.APPROVED)
@@ -97,34 +104,88 @@ class ApprovalManager:
             self._history.append(req)
             return req
 
+        existing = self._existing_pending(signature)
+        if existing:
+            return existing
         req = ApprovalRequest(action=action, tool_name=tool_name, params=params, user_id=user_id)
         self._pending[req.id] = req
+        self._pending_by_signature[signature] = req.id
         return req
 
     def approve(self, request_id: str, decided_by: str = "") -> bool:
         req = self._pending.pop(request_id, None)
         if not req:
             return False
+        self._pending_by_signature.pop(self._signature(req.action, req.tool_name, req.params, req.user_id), None)
         req.status = ApprovalStatus.APPROVED
         req.decided_by = decided_by
         req.decided_at = datetime.now().isoformat()
-        self._approved_signatures.add(self._signature(req.action, req.tool_name, req.params, req.user_id))
+        if request_id not in self._waiters:
+            self._approved_signatures.add(self._signature(req.action, req.tool_name, req.params, req.user_id))
         self._history.append(req)
+        self._notify_waiter(request_id)
         return True
 
     def deny(self, request_id: str, reason: str = "", decided_by: str = "") -> bool:
         req = self._pending.pop(request_id, None)
         if not req:
             return False
+        self._pending_by_signature.pop(self._signature(req.action, req.tool_name, req.params, req.user_id), None)
         req.status = ApprovalStatus.DENIED
         req.reason = reason
         req.decided_by = decided_by
         req.decided_at = datetime.now().isoformat()
         self._history.append(req)
+        self._notify_waiter(request_id)
         return True
+
+    async def wait_for_decision(self, request_id: str, timeout_seconds: int) -> ApprovalRequest | None:
+        """Wait until a pending request is approved or denied."""
+        req = self._pending.get(request_id)
+        if req is None:
+            return self._find_history(request_id)
+
+        waiter = self._waiters.setdefault(request_id, asyncio.Event())
+        try:
+            await asyncio.wait_for(waiter.wait(), timeout=max(0.1, timeout_seconds))
+        except asyncio.TimeoutError:
+            req = self._pending.pop(request_id, None)
+            if req is None:
+                return self._find_history(request_id)
+            self._pending_by_signature.pop(self._signature(req.action, req.tool_name, req.params, req.user_id), None)
+            req.status = ApprovalStatus.EXPIRED
+            req.reason = "approval timed out"
+            req.decided_at = datetime.now().isoformat()
+            self._history.append(req)
+            return req
+        finally:
+            self._waiters.pop(request_id, None)
+        return self._find_history(request_id)
 
     def get_pending(self) -> list[ApprovalRequest]:
         return list(self._pending.values())
+
+    def check_and_request(
+        self,
+        action: str,
+        tool_name: str = "",
+        params: dict[str, Any] | None = None,
+        user_id: str = "",
+    ) -> tuple[bool, ApprovalRequest | None]:
+        """Unified permission check: returns (allowed, request_or_none).
+
+        If allowed is True, execution can proceed (request will have APPROVED status).
+        If allowed is False and request is not None, approval is pending.
+        If allowed is False and request is None, action was auto-denied.
+        """
+        if not self.needs_approval(action):
+            return True, None
+        req = self.request_approval(action, tool_name, params, user_id)
+        if req.status == ApprovalStatus.APPROVED:
+            return True, req
+        if req.status == ApprovalStatus.DENIED:
+            return False, None
+        return False, req
 
     def get(self, request_id: str) -> ApprovalRequest | None:
         return self._pending.get(request_id)
@@ -132,6 +193,23 @@ class ApprovalManager:
     def _signature(self, action: str, tool_name: str, params: dict[str, Any], user_id: str) -> str:
         payload = json.dumps(params, ensure_ascii=False, sort_keys=True, default=str)
         return hashlib.sha256(f"{user_id}:{action}:{tool_name}:{payload}".encode()).hexdigest()
+
+    def _existing_pending(self, signature: str) -> ApprovalRequest | None:
+        request_id = self._pending_by_signature.get(signature)
+        if not request_id:
+            return None
+        return self._pending.get(request_id)
+
+    def _find_history(self, request_id: str) -> ApprovalRequest | None:
+        for req in reversed(self._history):
+            if req.id == request_id:
+                return req
+        return None
+
+    def _notify_waiter(self, request_id: str) -> None:
+        waiter = self._waiters.get(request_id)
+        if waiter:
+            waiter.set()
 
 
 @dataclass
@@ -294,6 +372,3 @@ class CredentialManager:
             "tool_scope": cred.tool_scope,
             "timestamp": datetime.now().isoformat(),
         })
-
-    def get_audit_log(self, limit: int = 100) -> list[dict[str, Any]]:
-        return self._audit[-limit:]

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -17,6 +18,13 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from loguru import logger
+
+try:
+    import fcntl
+    _HAS_FCNTL = True
+except ImportError:
+    fcntl = None  # type: ignore[assignment]
+    _HAS_FCNTL = False
 
 
 class TriggerKind(str, Enum):
@@ -131,6 +139,8 @@ class Scheduler:
         self._timer_task: asyncio.Task | None = None
         self._event_handlers: dict[str, list[str]] = {}
         self._background_tasks: dict[str, asyncio.Task] = {}
+        self._lock_dir = store_path.parent / "scheduler_locks"
+        self._lock_dir.mkdir(parents=True, exist_ok=True)
         self._load()
 
     def _load(self) -> None:
@@ -252,6 +262,16 @@ class Scheduler:
                 await asyncio.sleep(5)
 
     async def _execute_job(self, job: ScheduledJob) -> None:
+        lock_fd = self._try_acquire_lock(job.id)
+        if lock_fd is None:
+            logger.debug("Job {} locked by another instance, skipping", job.id)
+            return
+        try:
+            await self._run_job(job)
+        finally:
+            self._release_lock(lock_fd)
+
+    async def _run_job(self, job: ScheduledJob) -> None:
         job.last_run_ms = _now_ms()
         job.run_count += 1
         try:
@@ -272,6 +292,26 @@ class Scheduler:
             job.next_run_ms = _compute_next_run(job, _now_ms())
 
         self._save()
+
+    def _try_acquire_lock(self, job_id: str) -> Any:
+        if not _HAS_FCNTL:
+            return True
+        lock_path = self._lock_dir / f"{job_id}.lock"
+        try:
+            fd = open(lock_path, "w")
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except (IOError, OSError):
+            return None
+
+    def _release_lock(self, lock_fd: Any) -> None:
+        if lock_fd is True:
+            return
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
+        except (IOError, OSError):
+            pass
 
     def run_in_background(self, job_id: str, coro: Any) -> None:
         task = asyncio.create_task(self._background_wrapper(job_id, coro))

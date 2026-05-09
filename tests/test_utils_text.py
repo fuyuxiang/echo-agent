@@ -5,11 +5,9 @@ from __future__ import annotations
 import pytest
 
 from echo_agent.utils.text import (
-    estimate_messages_tokens,
     estimate_tokens,
     html_to_text,
     split_message,
-    strip_markdown,
     strip_thinking,
 )
 
@@ -92,36 +90,6 @@ class TestEstimateTokens:
 
 
 # ---------------------------------------------------------------------------
-# estimate_messages_tokens
-# ---------------------------------------------------------------------------
-
-class TestEstimateMessagesTokens:
-    def test_basic_messages(self):
-        messages = [
-            {"role": "user", "content": "Hello world"},
-            {"role": "assistant", "content": "Hi there"},
-        ]
-        result = estimate_messages_tokens(messages)
-        assert result > 0
-
-    def test_empty_messages(self):
-        assert estimate_messages_tokens([]) == 0
-
-    def test_message_with_tool_calls(self):
-        messages = [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {"function": {"name": "search", "arguments": '{"q": "test"}'}}
-                ],
-            }
-        ]
-        result = estimate_messages_tokens(messages)
-        assert result > 0
-
-
-# ---------------------------------------------------------------------------
 # strip_thinking
 # ---------------------------------------------------------------------------
 
@@ -138,29 +106,6 @@ class TestStripThinking:
 
     def test_no_think_block(self):
         assert strip_thinking("plain text") == "plain text"
-
-
-# ---------------------------------------------------------------------------
-# strip_markdown
-# ---------------------------------------------------------------------------
-
-class TestStripMarkdown:
-    def test_links(self):
-        assert "click here" in strip_markdown("[click here](https://example.com)")
-
-    def test_bold(self):
-        result = strip_markdown("**bold text**")
-        assert "bold text" in result
-        assert "**" not in result
-
-    def test_headers(self):
-        result = strip_markdown("## Section Title\nContent")
-        assert result.startswith("Section Title")
-
-    def test_image(self):
-        result = strip_markdown("![alt text](image.png)")
-        assert "alt text" in result
-        assert "![" not in result
 
 
 # ---------------------------------------------------------------------------

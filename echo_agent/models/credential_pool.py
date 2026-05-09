@@ -27,6 +27,9 @@ class CredentialPool:
     def size(self) -> int:
         return len(self._keys)
 
+    def __repr__(self) -> str:
+        return f"CredentialPool(size={self.size})"
+
     def get_next(self) -> str:
         with self._lock:
             attempts = 0
