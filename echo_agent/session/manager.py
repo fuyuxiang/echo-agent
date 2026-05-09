@@ -252,6 +252,19 @@ class SessionManager:
             await self.save(session)
 
     async def archive_session(self, key: str) -> bool:
+        if self._storage:
+            async with self._lock:
+                session = self._cache.get(key)
+            if session is None:
+                session = await self._load_from_storage(key)
+            if session is None:
+                return False
+            session.status = "archived"
+            session.updated_at = datetime.now()
+            await self.save(session)
+            async with self._lock:
+                self._cache.pop(key, None)
+            return True
         path = self._session_path(key)
         if not path.exists():
             return False
@@ -266,7 +279,26 @@ class SessionManager:
         """Expire stale sessions and archive old expired ones. Returns count processed."""
         now = datetime.now()
         count = 0
+        if self._storage:
+            for item in await self.list_sessions_async():
+                try:
+                    updated = datetime.fromisoformat(item["updated_at"]) if item.get("updated_at") else now
+                    status = item.get("status", "active")
+                    key = item.get("key", "")
+                    if not key or status == "archived":
+                        continue
+                    if status == "active" and (now - updated) > self._expiry_delta:
+                        await self.expire_session(key)
+                        count += 1
+                    elif status == "expired" and (now - updated) > self._archive_delta:
+                        await self.archive_session(key)
+                        count += 1
+                except Exception as e:
+                    logger.debug("Error during storage session cleanup for {}: {}", item.get("key", ""), e)
+                    continue
+            return count
         for path in self.sessions_dir.glob("*.jsonl"):
+            key = path.stem
             try:
                 with open(path, encoding="utf-8") as f:
                     first = f.readline().strip()
@@ -290,7 +322,34 @@ class SessionManager:
                 continue
         return count
 
+    async def list_sessions_async(self) -> list[dict[str, Any]]:
+        if self._storage and hasattr(self._storage, "list_sessions"):
+            sessions = await self._storage.list_sessions()
+            return sorted(sessions, key=lambda x: x.get("updated_at", ""), reverse=True)
+        return self.list_sessions()
+
     def list_sessions(self) -> list[dict[str, Any]]:
+        if self._storage:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return asyncio.run(self.list_sessions_async())
+            if loop.is_running():
+                return sorted(
+                    [
+                        {
+                            "key": session.key,
+                            "status": session.status,
+                            "created_at": session.created_at.isoformat(),
+                            "updated_at": session.updated_at.isoformat(),
+                            "metadata": session.metadata,
+                            "message_count": len(session.messages),
+                        }
+                        for session in self._cache.values()
+                    ],
+                    key=lambda x: x.get("updated_at", ""),
+                    reverse=True,
+                )
         sessions = []
         for path in self.sessions_dir.glob("*.jsonl"):
             try:

@@ -358,6 +358,7 @@ class SessionConfig(_Base):
 
 class MemoryConfig(_Base):
     enabled: bool = True
+    scope_policy: Literal["legacy", "session"] = "session"
     consolidation_threshold: int = 50
     vector_enabled: bool = True
     vector_dimensions: int = 1536

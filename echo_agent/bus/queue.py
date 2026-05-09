@@ -28,6 +28,7 @@ class MessageBus:
         self._inbound_subscribers: list[InboundHandler] = []
         self._running = False
         self._dispatch_task: asyncio.Task | None = None
+        self._inflight_inbound: set[asyncio.Task] = set()
         self._lifecycle_lock = asyncio.Lock()
 
     async def publish_inbound(self, event: InboundEvent) -> bool:
@@ -93,6 +94,12 @@ class MessageBus:
                 except asyncio.CancelledError:
                     pass
                 self._dispatch_task = None
+            if self._inflight_inbound:
+                tasks = list(self._inflight_inbound)
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                self._inflight_inbound.clear()
         logger.info("MessageBus stopped")
 
     async def _dispatch_loop(self) -> None:
@@ -104,11 +111,18 @@ class MessageBus:
             except asyncio.CancelledError:
                 break
 
-            for handler in self._inbound_subscribers:
-                try:
-                    await handler(event)
-                except Exception as e:
-                    logger.error("Inbound handler failed for event {}: {}", event.event_id, e)
+            task = asyncio.create_task(self._dispatch_inbound_event(event))
+            self._inflight_inbound.add(task)
+            task.add_done_callback(self._inflight_inbound.discard)
+
+    async def _dispatch_inbound_event(self, event: InboundEvent) -> None:
+        results = await asyncio.gather(
+            *(handler(event) for handler in self._inbound_subscribers),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                logger.error("Inbound handler failed for event {}: {}", event.event_id, result)
 
     @property
     def pending_inbound(self) -> int:

@@ -18,9 +18,10 @@ from typing import Any
 
 from loguru import logger
 
+from echo_agent.agent.approval_gate import ApprovalCheck, ApprovalGate
 from echo_agent.agent.context import ContextBuilder, build_skills_context, build_memory_context
 from echo_agent.agent.compression import ConversationCompressor
-from echo_agent.agent.tools.base import ToolExecutionContext, ToolResult, build_idempotency_key
+from echo_agent.agent.tools.base import ToolExecutionContext, build_idempotency_key
 from echo_agent.agent.tools.registry import ToolRegistry
 from echo_agent.bus.events import InboundEvent, OutboundEvent
 from echo_agent.bus.queue import MessageBus
@@ -31,11 +32,8 @@ from echo_agent.models.inference import InferenceController
 from echo_agent.models.provider import LLMProvider, LLMResponse, ToolCallRequest
 from echo_agent.models.router import ModelRouter, RouteDecision
 from echo_agent.observability.monitor import TraceLogger
-from echo_agent.permissions.manager import (
-    ApprovalManager, ApprovalStatus, CredentialManager,
-)
+from echo_agent.permissions.manager import ApprovalManager, CredentialManager
 from echo_agent.runtime_paths import bundled_skills_dir
-from echo_agent.security.guards import GuardDecision, evaluate_tool_call
 from echo_agent.session.manager import Session, SessionManager
 from echo_agent.skills.store import SkillStore
 from echo_agent.utils.text import strip_thinking
@@ -45,12 +43,6 @@ from echo_agent.utils.text import strip_thinking
 class _ProcessResult:
     response_text: str = ""
     outbound_sent: bool = False
-
-
-@dataclass
-class _ApprovalCheck:
-    denial: ToolResult | None = None
-    approved_actions: frozenset[str] = frozenset()
 
 
 class _TokenStreamPublisher:
@@ -247,6 +239,7 @@ class AgentLoop:
             max_env=config.memory.max_env_memories,
             decay_half_life_days=config.memory.importance_decay_days,
             storage=storage,
+            scope_policy=config.memory.scope_policy,
         )
         self.tools = ToolRegistry()
         self.context = ContextBuilder(workspace)
@@ -273,6 +266,7 @@ class AgentLoop:
             auto_approve=config.permissions.approval.auto_approve,
             auto_deny=config.permissions.approval.auto_deny,
             default_policy=config.permissions.approval.default_policy,
+            store_path=workspace / "data" / "approvals.json",
         )
         self.inference = InferenceController()
         if config.permissions.approval.require_approval:
@@ -281,6 +275,12 @@ class AgentLoop:
                 require_confirmation_for=list(config.permissions.approval.require_approval),
                 blocked_tools=list(config.permissions.approval.auto_deny),
             ))
+        self.approval_gate = ApprovalGate(
+            config=config,
+            approval=self.approval,
+            inference=self.inference,
+            bus=bus,
+        )
         self.credentials = CredentialManager(
             store_path=workspace / "data" / "credentials.json",
             encryption_key_env=config.credentials.encryption_key_env,
@@ -973,157 +973,15 @@ class AgentLoop:
     async def _check_permission_and_approval(
         self, tool_name: str, arguments: dict[str, Any], sender_id: str,
         *, channel: str = "", event: InboundEvent | None = None,
-    ) -> _ApprovalCheck:
-        """检查工具的审批状态。
-
-        Returns:
-            _ApprovalCheck: denial 为空表示通过，approved_actions 会传给工具做二次校验。
-        """
-        guard = evaluate_tool_call(self.config, tool_name, arguments)
-        if guard.denied:
-            return _ApprovalCheck(ToolResult(
-                success=False,
-                error=f"Tool '{tool_name}' blocked by security policy: {guard.reason}",
-                metadata={"guard_pattern": guard.pattern_key},
-            ))
-
-        if self._requires_elevated(tool_name) and not self._elevated_allowed(channel, sender_id):
-            return _ApprovalCheck(ToolResult(
-                success=False,
-                error=(
-                    f"Tool '{tool_name}' requires elevated execution rights for the configured "
-                    "executor/security policy."
-                ),
-                metadata={"requires_elevated": True},
-            ))
-
-        if not self._approval_required(tool_name, guard):
-            return _ApprovalCheck()
-
-        approval_req = self.approval.request_approval(
-            tool_name, tool_name=tool_name, params=arguments, user_id=sender_id,
+    ) -> ApprovalCheck:
+        return await self.approval_gate.check(
+            tool_name,
+            arguments,
+            sender_id,
+            channel=channel,
+            event=event,
+            running=self._running,
         )
-        if approval_req.status == ApprovalStatus.DENIED:
-            return _ApprovalCheck(ToolResult(
-                success=False,
-                error=f"Tool '{tool_name}' denied by approval policy: {approval_req.reason}",
-            ))
-        approved_actions = self._approved_actions(tool_name, guard)
-        if approval_req.status == ApprovalStatus.APPROVED:
-            return _ApprovalCheck(approved_actions=approved_actions)
-        if approval_req.status == ApprovalStatus.PENDING:
-            if self._should_auto_approve(channel):
-                self.approval.approve(approval_req.id, decided_by="auto:cli")
-                logger.info("Auto-approved '{}' for channel '{}' under personal_cli profile", tool_name, channel or "cli")
-                return _ApprovalCheck(approved_actions=approved_actions)
-            if event is not None:
-                await self._publish_approval_request(event, approval_req.id, tool_name, guard)
-            if not self._running and channel in {"cli", "direct", ""}:
-                return _ApprovalCheck(ToolResult(
-                    success=False,
-                    error=(
-                        f"Approval required before executing '{tool_name}'. "
-                        f"Request id: {approval_req.id}."
-                    ),
-                    metadata={"approval_request_id": approval_req.id},
-                ))
-            decided = await self.approval.wait_for_decision(
-                approval_req.id,
-                timeout_seconds=self.config.permissions.approval.wait_timeout_seconds,
-            )
-            if decided and decided.status == ApprovalStatus.APPROVED:
-                return _ApprovalCheck(approved_actions=approved_actions)
-            if decided and decided.status == ApprovalStatus.DENIED:
-                return _ApprovalCheck(ToolResult(
-                    success=False,
-                    error=f"Tool '{tool_name}' denied by approval policy: {decided.reason}",
-                    metadata={"approval_request_id": approval_req.id},
-                ))
-            return _ApprovalCheck(ToolResult(
-                success=False,
-                error=(
-                    f"Approval timed out before executing '{tool_name}'. "
-                    f"Request id: {approval_req.id}. "
-                    f"An admin can reply `/approve {approval_req.id}` or `/deny {approval_req.id} <reason>`."
-                ),
-                metadata={"approval_request_id": approval_req.id},
-            ))
-        return _ApprovalCheck(approved_actions=approved_actions)
-
-    async def _publish_approval_request(
-        self,
-        event: InboundEvent,
-        request_id: str,
-        tool_name: str,
-        guard: GuardDecision,
-    ) -> None:
-        reason = guard.reason or "approval policy requires confirmation"
-        text = (
-            f"Approval required before executing '{tool_name}'.\n"
-            f"Reason: {reason}\n"
-            f"Request id: {request_id}\n"
-            f"Reply `/approve {request_id}` or `/deny {request_id} <reason>`."
-        )
-        out = OutboundEvent.text_reply(
-            channel=event.channel,
-            chat_id=event.chat_id,
-            text=text,
-            reply_to_id=event.reply_to_id,
-        )
-        out.metadata = dict(event.metadata)
-        out.metadata["_inbound_event_id"] = event.event_id
-        out.metadata["_approval_request_id"] = request_id
-        out.message_kind = "approval_required"
-        out.is_final = False
-        await self.bus.publish_outbound(out)
-
-    def _approval_required(self, tool_name: str, guard: GuardDecision) -> bool:
-        approval_cfg = self.config.permissions.approval
-        if tool_name in approval_cfg.auto_approve:
-            return False
-        if tool_name in approval_cfg.auto_deny:
-            return True
-        if guard.needs_approval:
-            return True
-        if self.inference.needs_confirmation(tool_name):
-            return True
-        if tool_name in approval_cfg.require_approval:
-            return True
-        return False
-
-    def _approved_actions(self, tool_name: str, guard: GuardDecision) -> frozenset[str]:
-        actions = {tool_name}
-        if guard.pattern_key:
-            actions.add(guard.pattern_key)
-        if guard.approval_action:
-            actions.add(guard.approval_action)
-        return frozenset(actions)
-
-    def _should_auto_approve(self, channel: str) -> bool:
-        approval_cfg = self.config.permissions.approval
-        return (
-            self.config.security.profile == "personal_cli"
-            and approval_cfg.cli_auto_approve
-            and channel in {"cli", "direct", ""}
-        )
-
-    def _requires_elevated(self, tool_name: str) -> bool:
-        if tool_name not in {"exec", "execute_code", "process"}:
-            return False
-        host = self.config.tools.exec.host
-        if host == "auto":
-            host = self.config.execution.default_executor
-        return host in {"local", "remote"} or self.config.tools.exec.security == "full"
-
-    def _elevated_allowed(self, channel: str, sender_id: str) -> bool:
-        elevated = self.config.permissions.elevated
-        if not elevated.enabled:
-            return False
-        allow_from = elevated.allow_from or {}
-        candidates = set(allow_from.get("*", [])) | set(allow_from.get(channel, []))
-        if "*" in candidates or sender_id in candidates:
-            return True
-        return sender_id in (self.config.permissions.admin_users or [])
 
     async def _execute_child_tool_call(
         self,
@@ -1153,11 +1011,13 @@ class AgentLoop:
             trace_id=trace_id,
             session_key=event.session_key,
             user_id=event.sender_id,
+            agent_id=agent_id,
             attempt_index=0,
             idempotency_key=build_idempotency_key(trace_id, f"{agent_id}:{tool_call.name}", index, tool_call.arguments),
             parent_execution_id=f"multi_agent:{agent_id}",
             credentials=self.credentials.get_for_tool(tool_call.name),
             approved_actions=approval_check.approved_actions,
+            allowed_tools=frozenset(allowed_tools),
         )
         result = await self.tools.execute(tool_call.name, tool_call.arguments, ctx)
         result_text = result.text

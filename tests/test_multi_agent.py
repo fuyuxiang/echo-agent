@@ -169,6 +169,21 @@ async def test_multi_agent_runtime_executes_tool_callback(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_tool_registry_enforces_scoped_allowed_tools() -> None:
+    tools = ToolRegistry()
+    tools.register(DummyTool())
+
+    result = await tools.execute(
+        "exec",
+        {"command": "date"},
+        ToolExecutionContext(allowed_tools=frozenset({"read_file"})),
+    )
+
+    assert not result.success
+    assert "outside the scoped tool allowlist" in result.error
+
+
+@pytest.mark.asyncio
 async def test_agent_loop_auto_dispatches_to_specialist(tmp_path) -> None:
     cfg = Config(
         workspace=str(tmp_path),

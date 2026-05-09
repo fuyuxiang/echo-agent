@@ -43,9 +43,14 @@ class SessionSearchTool(Tool):
             session = await self._sessions.get_or_create(session_key)
             self._search_session(session, pattern, role_filter, results, max_results)
         else:
-            for key in self._sessions.list_sessions():
+            list_sessions = getattr(self._sessions, "list_sessions_async", None)
+            session_items = await list_sessions() if list_sessions else self._sessions.list_sessions()
+            for item in session_items:
                 if len(results) >= max_results:
                     break
+                key = item.get("key", "") if isinstance(item, dict) else str(item)
+                if not key:
+                    continue
                 session = await self._sessions.get_or_create(key)
                 self._search_session(session, pattern, role_filter, results, max_results)
 

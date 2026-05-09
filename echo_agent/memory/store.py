@@ -135,6 +135,7 @@ class MemoryStore:
         user_snapshot_char_limit: int = 1375,
         env_snapshot_char_limit: int = 2200,
         storage: Any = None,
+        scope_policy: str = "legacy",
     ):
         self.memory_dir = memory_dir
         self.memory_dir.mkdir(parents=True, exist_ok=True)
@@ -149,6 +150,7 @@ class MemoryStore:
         self._env_snapshot_char_limit = env_snapshot_char_limit
         self._entries: dict[str, MemoryEntry] = {}
         self._storage = storage
+        self._scope_policy = scope_policy
         self._pending_storage_tasks: set = set()
         self._dirty_ids: set[str] = set()
         self._failed_sync: set[str] = set()
@@ -257,20 +259,30 @@ class MemoryStore:
     def _visible_in_session(self, entry: MemoryEntry, session_key: str | None = None) -> bool:
         if not session_key:
             return True
-        if entry.type == MemoryType.USER:
-            return True
-        if entry.type == MemoryType.ENVIRONMENT:
-            return True
+        if self._scope_policy == "legacy":
+            if entry.type == MemoryType.USER:
+                return True
+            if entry.type == MemoryType.ENVIRONMENT:
+                return True
+            if "global" in entry.tags:
+                return True
+            return entry.source_session == session_key
         if "global" in entry.tags:
+            return True
+        if not entry.source_session:
             return True
         return entry.source_session == session_key
 
     def _same_scope(self, existing: MemoryEntry, incoming: MemoryEntry) -> bool:
         if existing.type != incoming.type:
             return False
-        if incoming.type == MemoryType.ENVIRONMENT:
-            return True
-        return existing.source_session == incoming.source_session
+        if self._scope_policy == "legacy":
+            if incoming.type == MemoryType.ENVIRONMENT:
+                return True
+            return existing.source_session == incoming.source_session
+        if "global" in incoming.tags or "global" in existing.tags:
+            return "global" in incoming.tags and "global" in existing.tags
+        return (existing.source_session or "") == (incoming.source_session or "")
 
     def _load_type_from_disk(self, mem_type: MemoryType) -> list[MemoryEntry]:
         path = self._path_for(mem_type)
@@ -625,6 +637,7 @@ class MemoryStore:
             MemoryType.ENVIRONMENT,
             max_entries=30,
             max_chars=self._env_snapshot_char_limit,
+            session_key=session_key,
         )
         if env_ctx:
             parts.append(f"## Environment Memory\n\n{env_ctx}")
