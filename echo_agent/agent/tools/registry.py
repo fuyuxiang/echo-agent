@@ -15,6 +15,20 @@ from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
 _MAX_REPLAY_CACHE = 500
 _MAX_EXECUTION_LOG = 1000
 
+_SENSITIVE_KEYS = frozenset({"key", "token", "secret", "password", "api_key", "credential", "auth"})
+
+
+def _mask_sensitive(params: dict[str, Any]) -> dict[str, Any]:
+    masked: dict[str, Any] = {}
+    for k, v in params.items():
+        if any(s in k.lower() for s in _SENSITIVE_KEYS):
+            masked[k] = "***"
+        elif isinstance(v, dict):
+            masked[k] = _mask_sensitive(v)
+        else:
+            masked[k] = v
+    return masked
+
 
 class ToolRegistry:
     """Registry for agent tools with execution, replay guard, and audit logging."""
@@ -88,7 +102,7 @@ class ToolRegistry:
 
         log_entry = {
             "tool": name,
-            "params": params,
+            "params": _mask_sensitive(params),
             "execution_id": exec_ctx.execution_id,
             "trace_id": exec_ctx.trace_id,
             "started_at": datetime.now(timezone.utc).isoformat(),

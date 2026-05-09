@@ -1,9 +1,10 @@
-"""Tests for ModelRouter health tracking, cooldown, and cost control."""
+"""Tests for ModelRouter health tracking, cooldown, and persistence."""
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock
+from pathlib import Path
 
 import pytest
 
@@ -89,12 +90,42 @@ def test_route_candidates_skips_cooldown_provider() -> None:
     assert "backup" in provider_names
 
 
-def test_cost_limit_enforcement() -> None:
-    router, _, _ = _make_router()
-    router._config.cost_limit_daily_usd = 1.0
+def test_health_persistence_save_and_load(tmp_path: Path) -> None:
+    health_file = tmp_path / "health.json"
+    config = ModelsConfig(
+        default_model="fake-model",
+        providers=[ProviderConfig(name="primary", api_key="k1")],
+        routes=[],
+    )
+    router = ModelRouter(config, cooldown_seconds=120, health_file=health_file)
+    router.register_provider("primary", _FakeProvider())
 
-    router.record_cost(0.8)
-    assert router.check_cost_limit() is True
+    router.mark_failure("primary", "e1")
+    router.mark_failure("primary", "e2")
+    router.mark_failure("primary", "e3")
 
-    router.record_cost(0.3)
-    assert router.check_cost_limit() is False
+    assert health_file.exists()
+    data = json.loads(health_file.read_text())
+    assert data["primary"]["status"] == "cooldown"
+    assert data["primary"]["failure_count"] == 3
+
+    router2 = ModelRouter(config, cooldown_seconds=120, health_file=health_file)
+    router2.register_provider("primary", _FakeProvider())
+    assert router2._health["primary"].status == HealthStatus.COOLDOWN
+    assert router2._health["primary"].failure_count == 3
+
+
+def test_health_persistence_expired_cooldown_resets_on_load(tmp_path: Path) -> None:
+    health_file = tmp_path / "health.json"
+    expired = (datetime.now(timezone.utc) - timedelta(seconds=300)).isoformat()
+    data = {"primary": {"status": "cooldown", "failure_count": 3, "last_error": "e", "cooldown_until": expired}}
+    health_file.write_text(json.dumps(data))
+
+    config = ModelsConfig(
+        default_model="fake-model",
+        providers=[ProviderConfig(name="primary", api_key="k1")],
+        routes=[],
+    )
+    router = ModelRouter(config, cooldown_seconds=120, health_file=health_file)
+    assert router._health["primary"].status == HealthStatus.HEALTHY
+

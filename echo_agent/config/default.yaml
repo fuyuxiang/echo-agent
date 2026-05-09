@@ -3,6 +3,9 @@
 
 workspace: "~/.echo-agent"
 
+security:
+  profile: "daemon"
+
 channels:
   cli:
     enabled: true
@@ -30,26 +33,70 @@ models:
   routes: []
 
 tools:
+  profile: "coding"
+  allow: []
+  alsoAllow: []
+  deny: []
   restrictToWorkspace: true
   exec:
-    enabled: true
+    enabled: false
+    host: "sandbox"
+    security: "allowlist"
+    ask: "on_miss"
     timeoutSeconds: 30
+    safeBins:
+      - "awk"
+      - "cat"
+      - "date"
+      - "echo"
+      - "find"
+      - "grep"
+      - "head"
+      - "ls"
+      - "pwd"
+      - "rg"
+      - "sed"
+      - "sort"
+      - "tail"
+      - "tr"
+      - "uniq"
+      - "wc"
+    allowedCommands: []
+    blockedCommands: []
   web:
-    enabled: true
+    enabled: false
     searchProvider: "brave"
     searchApiBase: ""
     searchApiKey: ""
+  codeExec:
+    enabled: false
   mcpSecurityPolicy: "block"
 
 execution:
-  defaultExecutor: "local"
-  networkPolicy: "allow"
+  defaultExecutor: "sandbox"
+  networkPolicy: "deny"
 
 permissions:
   adminUsers: []
   approval:
-    requireApproval: []
-    defaultPolicy: "approve"
+    requireApproval:
+      - "cronjob"
+      - "edit_file"
+      - "exec"
+      - "execute_code"
+      - "knowledge_index"
+      - "patch"
+      - "process"
+      - "skill_install"
+      - "skill_manage"
+      - "workflow"
+      - "write_file"
+    defaultPolicy: "ask"
+    waitTimeoutSeconds: 300
+    cliAutoApprove: false
+  elevated:
+    enabled: false
+    allowFrom: {}
 
 credentials:
   encryptionKeyEnv: "ECHO_AGENT_CREDENTIAL_KEY"

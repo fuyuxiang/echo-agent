@@ -365,3 +365,55 @@ class TestDeliveryRouter:
         assert len(good_published) == 1
         assert good_published[0].channel == "good_dst"
 
+
+# ---------------------------------------------------------------------------
+# GatewayAuth pairing lockout
+# ---------------------------------------------------------------------------
+
+class TestGatewayAuthPairingLockout:
+    def _make_auth(self, tmp_path: Path):
+        from echo_agent.config.schema import GatewayAuthConfig
+        from echo_agent.gateway.auth import GatewayAuth
+
+        config = GatewayAuthConfig(mode="pairing", pairing_ttl_seconds=60)
+        return GatewayAuth(config, tmp_path)
+
+    def test_pairing_code_length_is_10(self, tmp_path: Path):
+        auth = self._make_auth(tmp_path)
+        code = auth.generate_pairing_code("telegram")
+        assert len(code) == 10
+
+    def test_lockout_after_max_failures(self, tmp_path: Path):
+        auth = self._make_auth(tmp_path)
+        auth.generate_pairing_code("telegram")
+
+        for _ in range(5):
+            auth.verify_pairing("telegram", "user1", "WRONGCODE1")
+
+        result = auth.verify_pairing("telegram", "user1", "WRONGCODE2")
+        assert result is False
+
+    def test_lockout_does_not_affect_other_platforms(self, tmp_path: Path):
+        auth = self._make_auth(tmp_path)
+        code = auth.generate_pairing_code("discord")
+
+        for _ in range(5):
+            auth.verify_pairing("telegram", "user1", "WRONGCODE1")
+
+        result = auth.verify_pairing("discord", "user1", code)
+        assert result is True
+
+    def test_successful_verify_clears_failures(self, tmp_path: Path):
+        auth = self._make_auth(tmp_path)
+
+        for _ in range(3):
+            auth.verify_pairing("telegram", "user1", "WRONGCODE1")
+
+        code = auth.generate_pairing_code("telegram")
+        result = auth.verify_pairing("telegram", "user1", code)
+        assert result is True
+
+        for _ in range(4):
+            auth.verify_pairing("telegram", "user1", "WRONGCODE2")
+        assert auth._is_locked_out("telegram") is False
+

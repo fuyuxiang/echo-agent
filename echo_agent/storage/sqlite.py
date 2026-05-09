@@ -128,6 +128,15 @@ _MIGRATIONS: list[tuple[int, str]] = [
     (13, "CREATE INDEX IF NOT EXISTS idx_access_log_memory ON memory_access_log(memory_id)"),
     (14, "DROP TABLE IF EXISTS memory_graph_edges"),
     (15, "DROP TABLE IF EXISTS memory_graph_nodes"),
+    (16, """CREATE TABLE IF NOT EXISTS message_archive (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_key TEXT NOT NULL,
+        compression_id TEXT NOT NULL DEFAULT '',
+        messages TEXT NOT NULL,
+        message_count INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+    )"""),
+    (17, "CREATE INDEX IF NOT EXISTS idx_archive_session ON message_archive(session_key)"),
 ]
 
 
@@ -450,4 +459,40 @@ class SQLiteBackend(StorageBackend):
             return [dict(zip(columns, row)) for row in rows]
         except Exception as e:
             logger.error("SQL fetch failed: {}", e)
+            return []
+
+    # ── Message Archive ────────────────────────────────────────────────────
+
+    async def archive_messages(self, session_key: str, messages: list[dict[str, Any]], compression_id: str = "") -> None:
+        db = await self._ensure_connection()
+        now = datetime.now().isoformat()
+        try:
+            await db.execute(
+                "INSERT INTO message_archive (session_key, compression_id, messages, message_count, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (session_key, compression_id, json.dumps(messages, ensure_ascii=False), len(messages), now),
+            )
+            await db.commit()
+        except Exception as e:
+            logger.error("Failed to archive messages for session '{}': {}", session_key, e)
+
+    async def load_archived_messages(self, session_key: str, limit: int = 100) -> list[dict[str, Any]]:
+        db = await self._ensure_connection()
+        try:
+            cursor = await db.execute(
+                "SELECT messages, compression_id, created_at FROM message_archive "
+                "WHERE session_key = ? ORDER BY created_at DESC LIMIT ?",
+                (session_key, limit),
+            )
+            rows = await cursor.fetchall()
+            results = []
+            for row in rows:
+                results.append({
+                    "messages": json.loads(row[0]),
+                    "compression_id": row[1],
+                    "created_at": row[2],
+                })
+            return results
+        except Exception as e:
+            logger.error("Failed to load archived messages for '{}': {}", session_key, e)
             return []

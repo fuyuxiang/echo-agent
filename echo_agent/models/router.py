@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -64,19 +66,19 @@ class ProviderHealth:
 class ModelRouter:
     """Routes requests to the best model based on task type, cost, and availability."""
 
-    def __init__(self, config: ModelsConfig, cooldown_seconds: int = 120):
+    def __init__(self, config: ModelsConfig, cooldown_seconds: int = 120, health_file: Path | None = None):
         self._config = config
         self._providers: dict[str, LLMProvider] = {}
-        self._daily_cost: float = 0.0
         self._health: dict[str, ProviderHealth] = {}
         self._cooldown_seconds = cooldown_seconds
+        self._health_file = health_file
+        if health_file:
+            self._load_health()
 
     def register_provider(self, name: str, provider: LLMProvider) -> None:
         self._providers[name] = provider
-        self._health[name] = ProviderHealth()
-
-    def get_provider(self, name: str) -> LLMProvider | None:
-        return self._providers.get(name)
+        if name not in self._health:
+            self._health[name] = ProviderHealth()
 
     def route(self, task_type: str = "", content: str = "", preferred_model: str = "") -> RouteDecision:
         if preferred_model:
@@ -93,24 +95,6 @@ class ModelRouter:
             reason="default model",
             max_tokens=4096,
         )
-
-    def route_with_fallback(self, task_type: str = "", content: str = "") -> tuple[LLMProvider, RouteDecision]:
-        candidates = self.route_candidates(task_type, content)
-        if candidates:
-            _, provider, decision = candidates[0]
-            return provider, decision
-        raise RuntimeError("No LLM providers available")
-
-    def route_provider_with_fallback(
-        self,
-        task_type: str = "",
-        content: str = "",
-        preferred_model: str = "",
-    ) -> tuple[str, LLMProvider, RouteDecision]:
-        candidates = self.route_candidates(task_type, content, preferred_model=preferred_model)
-        if not candidates:
-            raise RuntimeError("No LLM providers available")
-        return candidates[0]
 
     def route_candidates(
         self,
@@ -184,6 +168,7 @@ class ModelRouter:
         else:
             health.status = HealthStatus.DEGRADED
             logger.info("Provider {} -> degraded (failures={})", provider_name, health.failure_count)
+        self._save_health()
 
     def mark_success(self, provider_name: str) -> None:
         health = self._health.get(provider_name)
@@ -192,29 +177,7 @@ class ModelRouter:
             health.failure_count = 0
             health.cooldown_until = None
             logger.info("Provider {} -> healthy", provider_name)
-
-    def mark_unhealthy(self, provider_name: str) -> None:
-        self.mark_failure(provider_name, "manual")
-
-    def mark_healthy(self, provider_name: str) -> None:
-        self.mark_success(provider_name)
-
-    def get_health_summary(self) -> dict[str, dict[str, Any]]:
-        return {
-            name: {"status": h.status, "failures": h.failure_count, "score": h.score}
-            for name, h in self._health.items()
-        }
-
-    def check_cost_limit(self) -> bool:
-        if self._config.cost_limit_daily_usd <= 0:
-            return True
-        return self._daily_cost < self._config.cost_limit_daily_usd
-
-    def record_cost(self, amount: float) -> None:
-        self._daily_cost += amount
-
-    def reset_daily_cost(self) -> None:
-        self._daily_cost = 0.0
+            self._save_health()
 
     def _build_decision(self, route: ModelRouteConfig) -> RouteDecision:
         return RouteDecision(
@@ -241,10 +204,6 @@ class ModelRouter:
         if task_lower in route.model.lower():
             return True
         return False
-
-    def _find_healthy_provider(self, model: str) -> LLMProvider | None:
-        entry = self._find_healthy_provider_entry(model)
-        return entry[1] if entry else None
 
     def _find_healthy_provider_entry(
         self,
@@ -285,3 +244,46 @@ class ModelRouter:
                 return True
             return model in pc.models
         return False
+
+    def _save_health(self) -> None:
+        if not self._health_file:
+            return
+        data = {}
+        for name, h in self._health.items():
+            data[name] = {
+                "status": h.status.value,
+                "failure_count": h.failure_count,
+                "last_error": h.last_error,
+                "cooldown_until": h.cooldown_until.isoformat() if h.cooldown_until else None,
+            }
+        try:
+            self._health_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except Exception as e:
+            logger.debug("Failed to save health state: {}", e)
+
+    def _load_health(self) -> None:
+        if not self._health_file or not self._health_file.exists():
+            return
+        try:
+            data = json.loads(self._health_file.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.debug("Failed to load health state: {}", e)
+            return
+        for name, info in data.items():
+            cooldown_until = None
+            if info.get("cooldown_until"):
+                try:
+                    cooldown_until = datetime.fromisoformat(info["cooldown_until"])
+                except (ValueError, TypeError):
+                    pass
+            status = HealthStatus(info.get("status", "healthy"))
+            if status == HealthStatus.COOLDOWN and cooldown_until:
+                if datetime.now(timezone.utc) >= cooldown_until:
+                    status = HealthStatus.HEALTHY
+                    cooldown_until = None
+            self._health[name] = ProviderHealth(
+                status=status,
+                failure_count=info.get("failure_count", 0),
+                last_error=info.get("last_error", ""),
+                cooldown_until=cooldown_until,
+            )

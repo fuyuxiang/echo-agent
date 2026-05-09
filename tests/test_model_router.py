@@ -41,7 +41,8 @@ async def test_router_returns_task_route_and_fallback_after_failure() -> None:
     router.register_provider("fast", FakeProvider("fast-model"))
     router.register_provider("deep", FakeProvider("deep-model"))
 
-    first_name, _, first_decision = router.route_provider_with_fallback(task_type="code")
+    candidates = router.route_candidates(task_type="code")
+    first_name, _, first_decision = candidates[0]
     assert first_name == "fast"
     assert first_decision.model == "fast-model"
 
@@ -49,7 +50,8 @@ async def test_router_returns_task_route_and_fallback_after_failure() -> None:
     router.mark_failure("fast", "two")
     router.mark_failure("fast", "three")
 
-    second_name, _, second_decision = router.route_provider_with_fallback(task_type="code")
+    candidates = router.route_candidates(task_type="code")
+    second_name, _, second_decision = candidates[0]
     assert second_name == "deep"
     assert second_decision.model == "deep-model"
 

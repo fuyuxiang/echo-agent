@@ -10,6 +10,7 @@ from pathlib import Path
 from loguru import logger
 
 from echo_agent.agent.executors.base import BaseExecutor, ExecRequest, ExecResponse
+from echo_agent.security.guards import command_uses_network
 
 
 class ContainerExecutor(BaseExecutor):
@@ -121,12 +122,14 @@ class RemoteExecutor(BaseExecutor):
         key_path: str = "",
         strict_host_key: str = "accept-new",
         connect_timeout: int = 10,
+        network_policy: str = "restricted",
     ):
         self._host = host
         self._user = user
         self._key_path = key_path
         self._strict_host_key = strict_host_key
         self._connect_timeout = connect_timeout
+        self._network_policy = network_policy
 
     async def setup(self) -> None:
         if not self._host:
@@ -161,6 +164,8 @@ class RemoteExecutor(BaseExecutor):
         return safe_cmd
 
     async def execute(self, request: ExecRequest) -> ExecResponse:
+        if self._network_policy == "deny" and command_uses_network(request.command):
+            return ExecResponse(success=False, stderr="Network access is denied by execution policy", return_code=-1, executor=self.name)
         ssh_cmd = self._build_ssh_base()
         ssh_cmd.append(self._build_remote_command(request))
 

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import time
+from types import SimpleNamespace
 from typing import Any
 
 from loguru import logger
 
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.security.guards import evaluate_shell_command
 
 _PROCESSES: dict[str, dict[str, Any]] = {}
 
@@ -28,14 +30,16 @@ class ProcessTool(Tool):
     }
     timeout_seconds = 10
 
-    def __init__(self, workspace: str):
+    def __init__(self, workspace: str, *, exec_policy: Any | None = None, network_policy: str = "allow"):
         self._workspace = workspace
+        self._exec_policy = exec_policy
+        self._network_policy = network_policy
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         action = params["action"]
 
         if action == "start":
-            return await self._start(params)
+            return await self._start(params, ctx)
         elif action == "list":
             return self._list()
         elif action == "poll":
@@ -44,10 +48,21 @@ class ProcessTool(Tool):
             return await self._stop(params.get("process_id", ""))
         return ToolResult(success=False, error=f"Unknown action: {action}")
 
-    async def _start(self, params: dict[str, Any]) -> ToolResult:
+    async def _start(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         cmd = params.get("command", "")
         if not cmd:
             return ToolResult(success=False, error="No command provided")
+
+        policy = self._exec_policy or SimpleNamespace(security="full", ask="off")
+        decision = evaluate_shell_command(
+            cmd,
+            exec_policy=policy,
+            network_policy=self._network_policy,
+            approval_action=self.name,
+        )
+        approved = ctx and (self.name in ctx.approved_actions or decision.pattern_key in ctx.approved_actions)
+        if decision.action == "deny" or (decision.action == "ask" and not approved):
+            return ToolResult(success=False, error=f"Process blocked by execution policy: {decision.reason}")
 
         proc = await asyncio.create_subprocess_shell(
             cmd,
