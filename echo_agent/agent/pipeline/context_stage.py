@@ -1,0 +1,220 @@
+"""Context stage — assembles system prompt, memory, retrieval, and messages for LLM."""
+
+from __future__ import annotations
+
+import copy
+from collections import OrderedDict
+from typing import Any, TYPE_CHECKING
+
+from loguru import logger
+
+from echo_agent.agent.context import ContextBuilder, build_memory_context, build_skills_context
+from echo_agent.agent.pipeline.types import PipelineContext
+from echo_agent.bus.events import InboundEvent
+from echo_agent.session.manager import Session
+
+if TYPE_CHECKING:
+    from echo_agent.agent.compression import ConversationCompressor
+    from echo_agent.agent.multi_agent.runtime import MultiAgentRuntime
+    from echo_agent.agent.planning.planner import AgentPlanner
+    from echo_agent.config.schema import Config
+    from echo_agent.knowledge.index import KnowledgeIndex
+    from echo_agent.memory.retriever import HybridRetriever
+    from echo_agent.memory.store import MemoryStore
+    from echo_agent.models.inference import InferenceController
+    from echo_agent.session.manager import SessionManager
+    from echo_agent.skills.store import SkillStore
+
+
+class ContextStage:
+    """Builds the full pipeline context: system prompt, messages, retrieval, tool defs."""
+
+    _TASK_MARKERS = {
+        "code": ("代码", "报错", "bug", "函数", "class ", "def ", "typescript", "python"),
+        "research": ("搜索", "查找", "search", "find", "look up", "查一下"),
+        "planning": ("计划", "规划", "plan", "schedule", "安排"),
+    }
+
+    def __init__(
+        self,
+        *,
+        config: Config,
+        sessions: SessionManager,
+        memory: MemoryStore,
+        compressor: ConversationCompressor,
+        context_builder: ContextBuilder,
+        skill_store: SkillStore | None,
+        knowledge: KnowledgeIndex | None,
+        hybrid_retriever: HybridRetriever | None,
+        multi_agent: MultiAgentRuntime | None,
+        planner: AgentPlanner | None,
+        inference: InferenceController,
+        working_memories: OrderedDict,
+        memory_snapshots: OrderedDict,
+        snapshot_enabled: bool,
+        tool_definitions_fn: Any,
+    ):
+        self._config = config
+        self._sessions = sessions
+        self._memory = memory
+        self._compressor = compressor
+        self._context_builder = context_builder
+        self._skill_store = skill_store
+        self._knowledge = knowledge
+        self._hybrid_retriever = hybrid_retriever
+        self._multi_agent = multi_agent
+        self._planner = planner
+        self._inference = inference
+        self._working_memories = working_memories
+        self._memory_snapshots = memory_snapshots
+        self._snapshot_enabled = snapshot_enabled
+        self._tool_definitions_fn = tool_definitions_fn
+
+    async def build(
+        self,
+        event: InboundEvent,
+        session: Session,
+        *,
+        publish_response: bool,
+        trace_id: str,
+        stream_publisher: Any,
+        intro_text: str,
+    ) -> PipelineContext:
+        working_ctx = ""
+        if event.session_key in self._working_memories:
+            working_ctx = self._working_memories[event.session_key].get_context()
+
+        if self._snapshot_enabled:
+            if event.session_key not in self._memory_snapshots:
+                self._memory_snapshots[event.session_key] = self._memory.get_snapshot(
+                    session_key=event.session_key
+                )
+                self._memory_snapshots.move_to_end(event.session_key)
+            memory_ctx = build_memory_context(
+                self._memory,
+                snapshot=self._memory_snapshots.get(event.session_key, ""),
+                working_memory=working_ctx,
+            )
+        else:
+            memory_ctx = build_memory_context(
+                self._memory, session_key=event.session_key, working_memory=working_ctx
+            )
+
+        skills_ctx = build_skills_context(self._skill_store)
+        system_prompt = self._context_builder.build_system_prompt(
+            memory_context=memory_ctx, skills_context=skills_ctx
+        )
+
+        history = session.get_history(self._config.session.max_history_messages)
+        if self._compressor.should_compress(history):
+            self._compressor._session_key = event.session_key
+            history_copy = copy.deepcopy(history)
+            result = await self._compressor.compress(history_copy, focus_topic=event.text)
+            history = result.messages
+            if result.was_compressed:
+                logger.info(
+                    "Context compressed: {} → {} tokens",
+                    result.tokens_before,
+                    result.tokens_after,
+                )
+                session.messages = session.messages[:session.last_consolidated] + result.messages
+                await self._sessions.save(session)
+
+        session.add_message("user", event.text)
+
+        retrieval_parts: list[str] = []
+        if self._config.memory.enabled:
+            if self._hybrid_retriever:
+                scored = await self._hybrid_retriever.retrieve(
+                    event.text, limit=5, session_key=event.session_key
+                )
+            else:
+                scored = self._memory.search_scored(
+                    event.text, limit=5, session_key=event.session_key
+                )
+            if scored:
+                retrieval_parts.append(
+                    "Relevant memory:\n"
+                    + "\n".join(f"- {r.key}: {r.content}" for r, _ in scored)
+                )
+
+        if self._knowledge:
+            knowledge_results = self._knowledge.search(
+                event.text,
+                limit=self._config.knowledge.max_results,
+                user_id=event.sender_id,
+            )
+            knowledge_context = self._knowledge.format_results(knowledge_results)
+            if knowledge_context:
+                retrieval_parts.append(knowledge_context)
+
+        task_type = self._infer_task_type(event.text)
+        dispatch_plan = None
+        if self._multi_agent:
+            dispatch_plan = self._multi_agent.plan(event.text, task_type=task_type)
+            if self._config.multi_agent.mode == "assist" and dispatch_plan.candidates:
+                selected = (
+                    ", ".join(dispatch_plan.selected_agent_ids)
+                    or dispatch_plan.primary_agent_id
+                )
+                retrieval_parts.append(
+                    "Multi-agent routing suggestion:\n"
+                    f"- strategy: {dispatch_plan.strategy}\n"
+                    f"- selected: {selected}\n"
+                    f"- rationale: {dispatch_plan.rationale}"
+                )
+
+        retrieval = "\n\n".join(retrieval_parts)
+
+        messages = self._context_builder.build_messages(
+            history=history,
+            current_message=event.text,
+            media=event.media_urls or None,
+            channel=event.channel,
+            chat_id=event.chat_id,
+            system_prompt=system_prompt,
+            retrieval_context=retrieval,
+        )
+
+        tool_defs = self._inference.filter_tools(self._tool_definitions_fn())
+
+        execution_plan = None
+        if self._planner and tool_defs:
+            try:
+                token_est = len(event.text) // 4
+                execution_plan = await self._planner.create_plan(
+                    query=event.text,
+                    tools=tool_defs,
+                    context=retrieval,
+                    token_estimate=token_est,
+                )
+                if execution_plan and execution_plan.steps:
+                    plan_context = execution_plan.to_prompt()
+                    messages[-1]["content"] = (
+                        messages[-1]["content"] + f"\n\n[Plan]\n{plan_context}"
+                    )
+            except Exception as e:
+                logger.debug("Planning failed, proceeding without plan: {}", e)
+
+        return PipelineContext(
+            event=event,
+            session=session,
+            trace_id=trace_id,
+            publish_response=publish_response,
+            system_prompt=system_prompt,
+            messages=messages,
+            tool_defs=tool_defs,
+            retrieval=retrieval,
+            task_type=task_type,
+            dispatch_plan=dispatch_plan,
+            execution_plan=execution_plan,
+            intro_text=intro_text,
+            stream_publisher=stream_publisher,
+        )
+
+    def _infer_task_type(self, text: str) -> str:
+        lower = text.lower()
+        for task_type, markers in self._TASK_MARKERS.items():
+            if any(marker in lower for marker in markers):
+                return task_type
+        return "chat"

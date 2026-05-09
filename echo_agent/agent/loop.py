@@ -1,13 +1,12 @@
 """Agent loop — the core processing engine.
 
 Receives events → builds context → calls LLM → executes tools → sends responses.
-Integrates all subsystems: session, memory, tools, permissions, observability.
+Orchestrates pipeline stages: context building, inference, and response finalization.
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import re
 import time
 import uuid
@@ -19,9 +18,14 @@ from typing import Any
 from loguru import logger
 
 from echo_agent.agent.approval_gate import ApprovalCheck, ApprovalGate
-from echo_agent.agent.context import ContextBuilder, build_skills_context, build_memory_context
+from echo_agent.agent.consolidation import ConsolidationWorker
+from echo_agent.agent.context import ContextBuilder
 from echo_agent.agent.compression import ConversationCompressor
+from echo_agent.agent.pipeline.context_stage import ContextStage
+from echo_agent.agent.pipeline.inference_stage import InferenceStage
+from echo_agent.agent.pipeline.response_stage import ResponseStage
 from echo_agent.agent.tools.base import ToolExecutionContext, build_idempotency_key
+from echo_agent.agent.tools.circuit_breaker import ToolCircuitBreaker
 from echo_agent.agent.tools.registry import ToolRegistry
 from echo_agent.bus.events import InboundEvent, OutboundEvent
 from echo_agent.bus.queue import MessageBus
@@ -29,14 +33,13 @@ from echo_agent.config.schema import Config
 from echo_agent.memory.consolidator import MemoryConsolidator
 from echo_agent.memory.store import MemoryStore
 from echo_agent.models.inference import InferenceController
-from echo_agent.models.provider import LLMProvider, LLMResponse, ToolCallRequest
-from echo_agent.models.router import ModelRouter, RouteDecision
+from echo_agent.models.provider import LLMProvider, ToolCallRequest
+from echo_agent.models.router import ModelRouter
 from echo_agent.observability.monitor import TraceLogger
 from echo_agent.permissions.manager import ApprovalManager, CredentialManager
 from echo_agent.runtime_paths import bundled_skills_dir
 from echo_agent.session.manager import Session, SessionManager
 from echo_agent.skills.store import SkillStore
-from echo_agent.utils.text import strip_thinking
 
 
 @dataclass
@@ -357,8 +360,64 @@ class AgentLoop:
         self._background_tasks: set[asyncio.Task[Any]] = set()
         self._pending_consolidations: set[str] = set()
         self._state_lock = asyncio.Lock()
+        self._working_memories: OrderedDict[str, Any] = OrderedDict()
         self._register_tools(scheduler=scheduler, task_manager=task_manager, workflow_engine=workflow_engine)
         self._setup_multi_agent()
+
+        # Pipeline stages
+        self._circuit_breaker = ToolCircuitBreaker(
+            failure_threshold=config.circuit_breaker.failure_threshold,
+            recovery_seconds=config.circuit_breaker.recovery_seconds,
+            half_open_max=config.circuit_breaker.half_open_max,
+        )
+        self._consolidation_worker = ConsolidationWorker(
+            sessions=self.sessions,
+            consolidator=self.consolidator,
+            sleep_consolidation=config.memory.sleep_consolidation,
+        )
+        self._context_stage = ContextStage(
+            config=config,
+            sessions=self.sessions,
+            memory=self.memory,
+            compressor=self.compressor,
+            context_builder=self.context,
+            skill_store=self.skill_store,
+            knowledge=self.knowledge,
+            hybrid_retriever=getattr(self, '_hybrid_retriever', None),
+            multi_agent=self.multi_agent,
+            planner=self.planner,
+            inference=self.inference,
+            working_memories=self._working_memories,
+            memory_snapshots=self._memory_snapshots,
+            snapshot_enabled=self._snapshot_enabled,
+            tool_definitions_fn=self.tools.get_definitions,
+        )
+        self._inference_stage = InferenceStage(
+            config=config,
+            bus=bus,
+            provider=provider,
+            router=self.router,
+            tools=self.tools,
+            approval_gate=self.approval_gate,
+            credentials=self.credentials,
+            tracer=self.tracer,
+            telemetry=self._telemetry,
+            inference=self.inference,
+            circuit_breaker=self._circuit_breaker,
+            default_model=self._default_model,
+            max_iterations=self._max_iterations,
+            multi_agent=self.multi_agent,
+        )
+        self._response_stage = ResponseStage(
+            config=config,
+            sessions=self.sessions,
+            memory=self.memory,
+            provider=provider,
+            consolidation_worker=self._consolidation_worker,
+            default_model=self._default_model,
+            spawn_fn=self._spawn_background,
+            clear_memory_snapshot_fn=self._clear_memory_snapshot,
+        )
 
     def _register_tools(self, scheduler: Any = None, task_manager: Any = None, workflow_engine: Any = None) -> None:
         from echo_agent.agent.tools import discover_tools
@@ -507,6 +566,10 @@ class AgentLoop:
             while len(cache) > self._max_cached_sessions:
                 cache.popitem(last=False)
 
+    async def _clear_memory_snapshot(self, session_key: str) -> None:
+        async with self._state_lock:
+            self._memory_snapshots.pop(session_key, None)
+
     async def _start_mcp_background(self) -> None:
         try:
             await self._start_mcp()
@@ -590,17 +653,7 @@ class AgentLoop:
                 self.tracer.flush_trace(trace_id)
 
     async def _process_event(self, event: InboundEvent, trace_id: str, *, publish_response: bool = False) -> _ProcessResult:
-        """处理单个入站事件的完整流水线。
-
-        流程: 会话初始化 → 上下文构建 → LLM 调用 → 工具执行循环 → 响应输出。
-
-        Args:
-            event: 入站事件（用户消息）
-            trace_id: 追踪标识符
-            publish_response: 是否通过消息总线发布响应
-        Returns:
-            _ProcessResult: 包含响应文本和发送状态
-        """
+        """处理单个入站事件 — 委托给 pipeline stages。"""
         session = await self.sessions.get_or_create(event.session_key)
         if event.session_key not in self._working_memories:
             from echo_agent.memory.tiers import WorkingMemory
@@ -628,347 +681,21 @@ class AgentLoop:
         if publish_response:
             await stream_publisher.start()
 
-        working_ctx = ""
-        if event.session_key in self._working_memories:
-            working_ctx = self._working_memories[event.session_key].get_context()
-
-        if self._snapshot_enabled:
-            if event.session_key not in self._memory_snapshots:
-                await self._lru_put(self._memory_snapshots, event.session_key, self.memory.get_snapshot(session_key=event.session_key))
-            memory_ctx = build_memory_context(self.memory, snapshot=self._memory_snapshots.get(event.session_key, ""), working_memory=working_ctx)
-        else:
-            memory_ctx = build_memory_context(self.memory, session_key=event.session_key, working_memory=working_ctx)
-
-        skills_ctx = build_skills_context(self.skill_store)
-        system_prompt = self.context.build_system_prompt(memory_context=memory_ctx, skills_context=skills_ctx)
-
-        history = session.get_history(self.config.session.max_history_messages)
-        if self.compressor.should_compress(history):
-            self.compressor._session_key = event.session_key
-            result = await self.compressor.compress(history, focus_topic=event.text)
-            history = result.messages
-            if result.was_compressed:
-                logger.info("Context compressed: {} → {} tokens", result.tokens_before, result.tokens_after)
-                session.messages = session.messages[:session.last_consolidated] + result.messages
-                await self.sessions.save(session)
-        session.add_message("user", event.text)
-
-        retrieval_parts: list[str] = []
-        if self.config.memory.enabled:
-            if self._hybrid_retriever:
-                scored = await self._hybrid_retriever.retrieve(
-                    event.text, limit=5, session_key=event.session_key,
-                )
-            else:
-                scored = self.memory.search_scored(event.text, limit=5, session_key=event.session_key)
-            if scored:
-                retrieval_parts.append("Relevant memory:\n" + "\n".join(f"- {r.key}: {r.content}" for r, _ in scored))
-
-        if self.knowledge:
-            knowledge_results = self.knowledge.search(
-                event.text,
-                limit=self.config.knowledge.max_results,
-                user_id=event.sender_id,
-            )
-            knowledge_context = self.knowledge.format_results(knowledge_results)
-            if knowledge_context:
-                retrieval_parts.append(knowledge_context)
-
-        task_type = self._infer_task_type(event.text)
-        dispatch_plan = None
-        if self.multi_agent:
-            dispatch_plan = self.multi_agent.plan(event.text, task_type=task_type)
-            if self.config.multi_agent.mode == "assist" and dispatch_plan.candidates:
-                selected = ", ".join(dispatch_plan.selected_agent_ids) or dispatch_plan.primary_agent_id
-                retrieval_parts.append(
-                    "Multi-agent routing suggestion:\n"
-                    f"- strategy: {dispatch_plan.strategy}\n"
-                    f"- selected: {selected}\n"
-                    f"- rationale: {dispatch_plan.rationale}"
-                )
-
-        retrieval = "\n\n".join(retrieval_parts)
-
-        messages = self.context.build_messages(
-            history=history,
-            current_message=event.text,
-            media=event.media_urls or None,
-            channel=event.channel,
-            chat_id=event.chat_id,
-            system_prompt=system_prompt,
-            retrieval_context=retrieval,
+        # Stage 1: Context building
+        ctx = await self._context_stage.build(
+            event, session,
+            publish_response=publish_response,
+            trace_id=trace_id,
+            stream_publisher=stream_publisher,
+            intro_text=intro_text,
         )
 
-        tool_defs = self.inference.filter_tools(self.tools.get_definitions())
+        # Stage 2: Inference (LLM + tool execution loop)
+        inference_result = await self._inference_stage.run(ctx)
 
-        current_plan = None
-        if self.planner and tool_defs:
-            try:
-                token_est = len(event.text) // 4
-                current_plan = await self.planner.create_plan(
-                    query=event.text, tools=tool_defs, context=retrieval, token_estimate=token_est,
-                )
-                if current_plan and current_plan.steps:
-                    plan_context = current_plan.to_prompt()
-                    messages[-1]["content"] = messages[-1]["content"] + f"\n\n[Plan]\n{plan_context}"
-            except Exception as e:
-                logger.debug("Planning failed, proceeding without plan: {}", e)
-
-        async def _emit_progress(text: str, *, tool_hint: bool = False) -> None:
-            out = OutboundEvent.text_reply(
-                channel=event.channel, chat_id=event.chat_id, text=text, reply_to_id=event.reply_to_id,
-            )
-            out.is_final = False
-            out.message_kind = "tool" if tool_hint else "progress"
-            out.metadata = dict(event.metadata)
-            out.metadata.update({"_progress": True, "_tool_hint": tool_hint, "_inbound_event_id": event.event_id})
-            await self.bus.publish_outbound(out)
-
-        response_text = ""
-        should_review_skills = False
-        should_review_memory = False
-        total_tool_calls = 0
-
-        if (
-            self.multi_agent
-            and self.config.multi_agent.mode == "auto"
-            and dispatch_plan
-            and dispatch_plan.should_dispatch
-        ):
-            selected = ", ".join(dispatch_plan.selected_agent_ids)
-            await _emit_progress(f"Dispatching to specialist agent(s): {selected}", tool_hint=True)
-            dispatch_span = self.tracer.start_span(trace_id, "multi_agent_dispatch", "multi_agent_dispatch", "agent_dispatch")
-
-            async def _child_tool_executor(
-                agent_id: str,
-                tool_call: ToolCallRequest,
-                index: int,
-                child_messages: list[dict[str, Any]],
-                allowed_tools: set[str],
-            ) -> str:
-                return await self._execute_child_tool_call(
-                    agent_id=agent_id,
-                    tool_call=tool_call,
-                    index=index,
-                    event=event,
-                    trace_id=trace_id,
-                    allowed_tools=allowed_tools,
-                )
-
-            dispatch_result = await self.multi_agent.dispatch(
-                query=event.text,
-                plan=dispatch_plan,
-                base_messages=messages,
-                retrieval_context=retrieval,
-                tool_executor=_child_tool_executor,
-                trace_id=trace_id,
-            )
-            self.tracer.end_span(
-                dispatch_span,
-                metadata={
-                    "strategy": dispatch_plan.strategy,
-                    "selected": dispatch_plan.selected_agent_ids,
-                    "confidence": dispatch_plan.confidence,
-                    "success": dispatch_result.success,
-                    "duration_ms": dispatch_result.metadata.get("duration_ms", 0),
-                },
-            )
-            response_text = dispatch_result.final_output
-            if response_text:
-                response_text = strip_thinking(response_text)
-            if intro_text:
-                response_text = f"{intro_text}\n\n{response_text}" if response_text else intro_text
-            session.add_message(
-                "assistant",
-                response_text,
-                dispatch={
-                    "strategy": dispatch_plan.strategy,
-                    "selected": dispatch_plan.selected_agent_ids,
-                    "confidence": dispatch_plan.confidence,
-                    "success": dispatch_result.success,
-                },
-            )
-            await self.sessions.save(session)
-            outbound_sent = False
-            if publish_response:
-                outbound_sent = await stream_publisher.finalize(response_text)
-            return _ProcessResult(response_text=response_text or "", outbound_sent=outbound_sent)
-
-        consecutive_failures = 0
-        _repeat_tracker: dict[str, int] = {}
-        _tools_disabled = False
-        loop_exhausted = True
-
-        for iteration in range(self._max_iterations):
-            llm_span = self.tracer.start_span(trace_id, f"llm_{iteration}", "llm_call", "llm_call")
-            response, route_decision = await self._chat_stream_with_routing(
-                messages=messages,
-                tools=tool_defs if (tool_defs and not _tools_disabled) else None,
-                on_delta=stream_publisher.on_delta if publish_response else None,
-                task_type=task_type,
-                content=event.text,
-            )
-            self.tracer.end_span(
-                llm_span,
-                metadata={
-                    "model": route_decision.model,
-                    "provider": route_decision.provider_name,
-                    "route_reason": route_decision.reason,
-                    "finish": response.finish_reason,
-                },
-            )
-
-            if self._telemetry and self._telemetry.available and response.usage:
-                from echo_agent.observability.spans import start_llm_span, record_llm_usage, end_llm_span
-                otel_span = start_llm_span(self._telemetry.get_tracer(), route_decision.model, route_decision.provider_name)
-                record_llm_usage(otel_span, response.usage, route_decision.model)
-                end_llm_span(otel_span)
-
-            issues = self.inference.validate_response(response)
-            if issues:
-                logger.warning("Inference issues: {}", issues)
-
-            if response.finish_reason == "error":
-                logger.warning("LLM returned error in iteration {}: {}", iteration, response.content)
-                if not response_text:
-                    response_text = "I encountered an issue processing your request. Please try again."
-                loop_exhausted = False
-                break
-
-            if response.content:
-                response_text = response.content
-
-            if not response.has_tool_calls:
-                if current_plan and not current_plan.is_complete:
-                    current_plan.is_complete = True
-                loop_exhausted = False
-                break
-
-            if current_plan and iteration < len(current_plan.steps):
-                current_plan.mark_step_complete(iteration, response.content or "")
-
-            if response.content:
-                await _emit_progress(response.content)
-
-            assistant_msg: dict[str, Any] = {"role": "assistant", "content": response.content}
-            assistant_msg["tool_calls"] = [tool_call.to_openai_format() for tool_call in response.tool_calls]
-            messages.append(assistant_msg)
-
-            tool_call_fmts = [tool_call.to_openai_format() for tool_call in response.tool_calls]
-            session.add_message("assistant", response.content or "", tool_calls=tool_call_fmts)
-
-            for tool_index, tool_call in enumerate(response.tool_calls):
-                tool_span = self.tracer.start_span(trace_id, f"tool_{iteration}_{tool_index}", f"tool:{tool_call.name}", "tool_call")
-
-                await _emit_progress(f"Using tool: {tool_call.name}", tool_hint=True)
-
-                approval_check = await self._check_permission_and_approval(
-                    tool_call.name,
-                    tool_call.arguments,
-                    event.sender_id,
-                    channel=event.channel,
-                    event=event,
-                )
-                if approval_check.denial:
-                    self.tracer.end_span(tool_span, metadata={"success": False, "denied": True})
-                    messages.append({"role": "tool", "tool_call_id": tool_call.id, "name": tool_call.name, "content": approval_check.denial.text})
-                    session.add_message("tool", approval_check.denial.text, tool_call_id=tool_call.id, name=tool_call.name)
-                    total_tool_calls += 1
-                    continue
-
-                tool_exec_ctx = ToolExecutionContext(
-                    execution_id=uuid.uuid4().hex[:12],
-                    trace_id=trace_id,
-                    session_key=event.session_key,
-                    user_id=event.sender_id,
-                    attempt_index=0,
-                    idempotency_key=build_idempotency_key(trace_id, tool_call.name, tool_index, tool_call.arguments),
-                    credentials=self.credentials.get_for_tool(tool_call.name),
-                    approved_actions=approval_check.approved_actions,
-                )
-                result = await self.tools.execute(tool_call.name, tool_call.arguments, tool_exec_ctx)
-                result_text = result.text
-                if len(result_text) > self._MAX_TOOL_RESULT_CHARS:
-                    result_text = result_text[:self._MAX_TOOL_RESULT_CHARS] + "\n...(truncated)"
-
-                self.tracer.end_span(tool_span, metadata={"success": result.success})
-
-                if self._telemetry and self._telemetry.available:
-                    from echo_agent.observability.spans import start_tool_span, end_tool_span
-                    otel_tool = start_tool_span(self._telemetry.get_tracer(), tool_call.name)
-                    end_tool_span(otel_tool, error=None if result.success else result.error)
-
-                messages.append({"role": "tool", "tool_call_id": tool_call.id, "name": tool_call.name, "content": result_text})
-                session.add_message("tool", result_text, tool_call_id=tool_call.id, name=tool_call.name)
-
-                total_tool_calls += 1
-                self._tool_iters_since_skill_check += 1
-                self._tool_iters_since_memory_check += 1
-                if result.success:
-                    consecutive_failures = 0
-                else:
-                    consecutive_failures += 1
-
-                _call_key = f"{tool_call.name}:{hashlib.md5(str(sorted(tool_call.arguments.items())).encode()).hexdigest()[:8]}"
-                _repeat_tracker[_call_key] = _repeat_tracker.get(_call_key, 0) + 1
-                if _repeat_tracker[_call_key] >= 4:
-                    result_text_blocked = f"[Blocked] Tool '{tool_call.name}' called with identical arguments {_repeat_tracker[_call_key]} times. Stopping repeated calls."
-                    messages[-1]["content"] = result_text_blocked
-                    logger.warning("Blocked repeated tool call: {} ({}x)", tool_call.name, _repeat_tracker[_call_key])
-
-                if (
-                    self._nudge_interval > 0
-                    and self._tool_iters_since_skill_check >= self._nudge_interval
-                    and self.tools.has("skill_manage")
-                ):
-                    should_review_skills = True
-                    self._tool_iters_since_skill_check = 0
-                if (
-                    self._memory_nudge_interval > 0
-                    and self._tool_iters_since_memory_check >= self._memory_nudge_interval
-                    and self.tools.has("memory")
-                ):
-                    should_review_memory = True
-                    self._tool_iters_since_memory_check = 0
-
-            if consecutive_failures >= 3 or any(v >= 4 for v in _repeat_tracker.values()):
-                _tools_disabled = True
-                logger.warning("Tools disabled for session {}: consecutive_failures={}, max_repeats={}",
-                               event.session_key, consecutive_failures, max(_repeat_tracker.values(), default=0))
-
-        if loop_exhausted:
-            logger.warning("Agent loop exhausted max iterations ({}) for session {}", self._max_iterations, event.session_key)
-            if not response_text:
-                response_text = "I encountered an issue processing your request. Please try again or rephrase your question."
-
-        if response_text:
-            response_text = strip_thinking(response_text)
-        if intro_text:
-            response_text = f"{intro_text}\n\n{response_text}" if response_text else intro_text
-
-        session.add_message("assistant", response_text)
-        await self.sessions.save(session)
-
-        if self.memory._pending_embeds:
-            self._spawn_background(self.memory.flush_pending_embeds())
-
-        if self.consolidator.should_consolidate(session.message_count, session.last_consolidated):
-            self._spawn_background(self._consolidate(session), session_key=session.key)
-        elif session.key in self._pending_consolidations:
-            self._pending_consolidations.discard(session.key)
-            self._spawn_background(self._consolidate(session), session_key=session.key)
-
-        if should_review_skills and total_tool_calls > 0:
-            self._spawn_background(self._background_skill_review(messages))
-
-        if should_review_memory and total_tool_calls > 0:
-            self._spawn_background(self._background_memory_review(messages, event.session_key))
-
-        outbound_sent = False
-        if publish_response:
-            outbound_sent = await stream_publisher.finalize(response_text)
-
-        return _ProcessResult(response_text=response_text or "", outbound_sent=outbound_sent)
+        # Stage 3: Response finalization
+        result = await self._response_stage.finalize(ctx, inference_result)
+        return _ProcessResult(response_text=result.response_text, outbound_sent=result.outbound_sent)
 
     async def _check_permission_and_approval(
         self, tool_name: str, arguments: dict[str, Any], sender_id: str,
@@ -1024,84 +751,6 @@ class AgentLoop:
         if len(result_text) > self._MAX_TOOL_RESULT_CHARS:
             result_text = result_text[:self._MAX_TOOL_RESULT_CHARS] + "\n...(truncated)"
         return result_text
-
-    async def _chat_stream_with_routing(
-        self,
-        *,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None,
-        on_delta: Any = None,
-        task_type: str = "",
-        content: str = "",
-    ) -> tuple[LLMResponse, RouteDecision]:
-        """带路由和降级的 LLM 调用。
-
-        按路由决策选择模型，失败时沿降级链尝试备选模型。
-        支持流式输出和工具调用。
-        """
-        if not self.router:
-            response = await self.provider.chat_stream_with_retry(
-                messages=messages,
-                tools=tools,
-                model=self._default_model or None,
-                on_delta=on_delta,
-            )
-            return response, RouteDecision(
-                provider_name="default",
-                model=self._default_model,
-                reason="router disabled",
-            )
-
-        emitted = False
-
-        async def routed_delta(delta: str) -> None:
-            nonlocal emitted
-            emitted = True
-            if on_delta:
-                maybe = on_delta(delta)
-                if asyncio.iscoroutine(maybe):
-                    await maybe
-
-        last_response: LLMResponse | None = None
-        last_decision: RouteDecision | None = None
-        for provider_name, provider, decision in self.router.route_candidates(task_type, content):
-            response = await provider.chat_stream_with_retry(
-                messages=messages,
-                tools=tools,
-                model=decision.model,
-                on_delta=routed_delta if on_delta else None,
-                max_tokens=decision.max_tokens,
-                temperature=decision.temperature,
-            )
-            last_response = response
-            last_decision = decision
-            if response.finish_reason != "error":
-                self.router.mark_success(provider_name)
-                return response, decision
-            self.router.mark_failure(provider_name, response.content or "LLM error")
-            logger.warning("LLM provider '{}' failed for model '{}': {}", provider_name, decision.model, response.content)
-            if emitted:
-                return response, decision
-
-        if last_response and last_decision:
-            return last_response, last_decision
-        response = await self.provider.chat_stream_with_retry(
-            messages=messages,
-            tools=tools,
-            model=self._default_model or None,
-            on_delta=on_delta,
-        )
-        return response, RouteDecision(provider_name="default", model=self._default_model, reason="router empty")
-
-    def _infer_task_type(self, text: str) -> str:
-        lower = text.lower()
-        if any(marker in lower for marker in ("代码", "报错", "bug", "函数", "class ", "def ", "typescript", "python")):
-            return "code"
-        if any(marker in lower for marker in ("搜索", "最新", "今天", "新闻", "价格", "search", "latest")):
-            return "research"
-        if any(marker in lower for marker in ("规划", "方案", "架构", "设计", "plan", "architecture")):
-            return "planning"
-        return "chat"
 
     async def _handle_approval_command(self, event: InboundEvent) -> str | None:
         text = event.text.strip()
@@ -1180,68 +829,6 @@ class AgentLoop:
         if channel.startswith("gateway:"):
             return False
         return channel in set(self.config.channels.stream_channels)
-
-    async def _background_skill_review(self, messages: list[dict[str, Any]]) -> None:
-        try:
-            from echo_agent.skills.reviewer import SkillReviewer
-            reviewer = SkillReviewer(
-                provider=self.provider,
-                store=self.skill_store,
-                model=self._default_model,
-            )
-            actions = await reviewer.review(messages)
-            if actions:
-                logger.info("Background skill review: {}", "; ".join(actions))
-        except Exception as e:
-            logger.warning("Background skill review failed: {}", e)
-
-    async def _background_memory_review(self, messages: list[dict[str, Any]], session_key: str) -> None:
-        try:
-            from echo_agent.memory.reviewer import MemoryReviewer
-            reviewer = MemoryReviewer(
-                provider=self.provider,
-                store=self.memory,
-                model=self._default_model,
-                session_key=session_key,
-            )
-            actions = await reviewer.review(messages)
-            if actions:
-                logger.info("Background memory review: {}", "; ".join(actions))
-                async with self._state_lock:
-                    self._memory_snapshots.pop(session_key, None)
-        except Exception as e:
-            logger.warning("Background memory review failed: {}", e)
-
-    async def _consolidate(self, session: Session) -> None:
-        try:
-            chunk = session.messages[session.last_consolidated:]
-            chunk_ok = await self.consolidator.consolidate_chunk(chunk)
-            if chunk_ok:
-                boundary = len(session.messages)
-                while boundary > session.last_consolidated:
-                    msg = session.messages[boundary - 1]
-                    if msg.get("role") == "tool":
-                        boundary -= 1
-                    elif msg.get("role") == "assistant" and msg.get("tool_calls"):
-                        boundary -= 1
-                    else:
-                        break
-                if boundary > session.last_consolidated:
-                    session.last_consolidated = boundary
-                    await self.sessions.save(session)
-            if self.config.memory.sleep_consolidation:
-                try:
-                    stats = await self.consolidator.sleep_consolidate(
-                        session.key, chunk, chunk_already_consolidated=chunk_ok,
-                    )
-                    if any(v > 0 for v in stats.values()):
-                        logger.info("Sleep consolidation for {}: {}", session.key, stats)
-                except Exception as e:
-                    logger.warning("Sleep consolidation failed: {}", e)
-            async with self._state_lock:
-                self._memory_snapshots.pop(session.key, None)
-        except Exception as e:
-            logger.error("Consolidation failed for {}: {}", session.key, e)
 
     async def process_direct(self, content: str, session_key: str = "cli:direct") -> str:
         """Process a message directly (for CLI or testing)."""

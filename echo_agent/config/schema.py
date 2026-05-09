@@ -529,6 +529,28 @@ class SkillsConfig(_Base):
     external_dirs: list[str] = Field(default_factory=list)
 
 
+# ── Bus configs ─────────────────────────────────────────────────────────────
+
+class BusConfig(_Base):
+    max_queue_size: int = 1000
+    max_concurrency: int = 50
+
+
+# ── Rate limit configs ──────────────────────────────────────────────────────
+
+class RateLimitConfig(_Base):
+    session_rpm: int = 20
+    session_burst: int = 5
+
+
+# ── Circuit breaker configs ─────────────────────────────────────────────────
+
+class CircuitBreakerConfig(_Base):
+    failure_threshold: int = 5
+    recovery_seconds: float = 60.0
+    half_open_max: int = 2
+
+
 # ── Root config ──────────────────────────────────────────────────────────────
 
 class PlanningConfig(_Base):
@@ -574,4 +596,7 @@ class Config(_Base):
     planning: PlanningConfig = Field(default_factory=PlanningConfig)
     a2a: A2AConfig = Field(default_factory=A2AConfig)
     evaluation: EvalConfig = Field(default_factory=EvalConfig)
+    bus: BusConfig = Field(default_factory=BusConfig)
+    rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
+    circuit_breaker: CircuitBreakerConfig = Field(default_factory=CircuitBreakerConfig)
     workspace: str = "~/.echo-agent"
