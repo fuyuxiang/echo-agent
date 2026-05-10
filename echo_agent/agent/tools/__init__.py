@@ -108,8 +108,7 @@ def discover_tools(
         ))
 
     if provider:
-        from echo_agent.agent.tools.delegate import DelegateTool, SpawnTool
-        tools.append(DelegateTool(provider=provider))
+        from echo_agent.agent.tools.delegate import SpawnTool
         tools.append(SpawnTool(provider=provider, bus=bus))
 
         from echo_agent.agent.tools.vision import VisionTool

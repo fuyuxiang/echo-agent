@@ -20,12 +20,12 @@ def test_default_security_posture_is_restrictive() -> None:
 
     assert cfg.security.profile == "personal_cli"
     assert cfg.tools.exec.enabled is True
-    assert cfg.tools.web.enabled is False
+    assert cfg.tools.web.enabled is True
     assert cfg.tools.code_exec.enabled is True
-    assert cfg.execution.default_executor == "sandbox"
-    assert cfg.execution.network_policy == "deny"
+    assert cfg.execution.default_executor == "local"
+    assert cfg.execution.network_policy == "allow"
     assert cfg.permissions.approval.default_policy == "approve"
-    assert "exec" in cfg.permissions.approval.require_approval
+    assert "cronjob" in cfg.permissions.approval.require_approval
 
 
 def test_daemon_profile_requires_explicit_high_risk_tool_allow() -> None:

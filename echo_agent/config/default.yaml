@@ -33,7 +33,7 @@ models:
   routes: []
 
 tools:
-  profile: "coding"
+  profile: "full"
   allow: []
   alsoAllow: []
   deny: []
@@ -64,7 +64,7 @@ tools:
     allowedCommands: []
     blockedCommands: []
   web:
-    enabled: false
+    enabled: true
     searchProvider: "brave"
     searchApiBase: ""
     searchApiKey: ""
@@ -73,17 +73,14 @@ tools:
   mcpSecurityPolicy: "block"
 
 execution:
-  defaultExecutor: "sandbox"
-  networkPolicy: "deny"
+  defaultExecutor: "local"
+  networkPolicy: "allow"
 
 permissions:
   adminUsers: []
   approval:
     requireApproval:
       - "cronjob"
-      - "exec"
-      - "execute_code"
-      - "process"
       - "skill_install"
       - "skill_manage"
     defaultPolicy: "approve"
@@ -126,64 +123,29 @@ knowledge:
 
 multiAgent:
   enabled: true
-  mode: "auto"
-  defaultAgent: "general"
-  routeThreshold: 0.45
-  multiThreshold: 0.62
-  maxParallelAgents: 3
-  maxIterations: 8
-  synthesizeResults: true
-  auditPath: "data/multi_agent_dispatch.jsonl"
-  agents:
-    - id: "general"
-      name: "General Assistant"
-      description: "General conversation, lightweight reasoning, and fallback handling."
-      capabilities: ["general", "chat", "reasoning"]
-      keywords: []
-      taskTypes: ["chat"]
-      toolsAllow: ["read_file", "list_dir", "search_files", "memory", "knowledge_search", "message"]
-      priority: 0
-    - id: "planner"
-      name: "Planning Agent"
-      description: "Breaks ambiguous goals into structured plans, milestones, risks, and execution steps."
-      capabilities: ["planning", "architecture", "decomposition", "strategy"]
-      keywords: ["plan", "planning", "architecture", "roadmap", "方案", "规划", "架构", "拆解", "设计"]
-      taskTypes: ["planning"]
-      toolsAllow: ["read_file", "list_dir", "search_files", "knowledge_search", "memory", "todo"]
-      priority: 20
+  maxDepth: 3
+  maxParallelWorkers: 4
+  maxIterations: 12
+  auditPath: "data/delegation_audit.jsonl"
+  workerProfiles:
     - id: "coder"
-      name: "Coding Agent"
-      description: "Inspects code, implements changes, runs code-oriented tools, and explains technical tradeoffs."
-      capabilities: ["code", "debugging", "refactor", "implementation", "tests"]
-      keywords: ["code", "bug", "test", "pytest", "python", "typescript", "代码", "报错", "测试", "实现", "修复"]
-      taskTypes: ["code"]
-      toolsAllow: ["read_file", "write_file", "edit_file", "list_dir", "search_files", "patch", "exec", "execute_code", "process", "todo", "memory"]
-      priority: 30
+      name: "Coding Worker"
+      description: "Code implementation, debugging, and testing."
+      instructions: "Focus on writing correct, tested code. Use exec to verify results."
+      defaultTools: ["read_file", "write_file", "edit_file", "list_dir", "search_files", "patch", "exec", "execute_code", "process"]
+      temperature: 0.3
     - id: "researcher"
-      name: "Research Agent"
-      description: "Searches web and local sources, compares evidence, and returns cited findings."
-      capabilities: ["research", "web", "source_analysis", "comparison"]
-      keywords: ["search", "latest", "compare", "news", "调研", "搜索", "最新", "比较", "资料", "来源"]
-      taskTypes: ["research"]
-      toolsAllow: ["web_search", "web_fetch", "knowledge_search", "read_file", "search_files", "memory"]
-      criticalTools: ["web_search"]
-      priority: 25
-    - id: "knowledge"
-      name: "Knowledge Agent"
-      description: "Answers from internal knowledge, memory, local files, and indexed documents with citations."
-      capabilities: ["knowledge", "rag", "memory", "docs", "qa"]
-      keywords: ["knowledge", "docs", "document", "policy", "内部知识", "知识库", "文档", "制度", "资料"]
-      taskTypes: ["knowledge", "research"]
-      toolsAllow: ["knowledge_search", "memory", "read_file", "search_files", "list_dir"]
-      priority: 22
+      name: "Research Worker"
+      description: "Web research, source comparison, and evidence synthesis."
+      instructions: "Search multiple sources, compare findings, cite evidence clearly."
+      defaultTools: ["web_search", "web_fetch", "read_file", "search_files", "knowledge_search"]
+      temperature: 0.4
     - id: "operator"
-      name: "Operations Agent"
-      description: "Runs operational commands, diagnostics, scheduled jobs, and system checks with approvals."
-      capabilities: ["operations", "shell", "diagnostics", "automation"]
-      keywords: ["run", "execute", "deploy", "status", "health", "运行", "执行", "部署", "诊断", "状态"]
-      taskTypes: ["operations", "code"]
-      toolsAllow: ["exec", "execute_code", "process", "read_file", "list_dir", "search_files", "cronjob", "task", "workflow"]
-      priority: 18
+      name: "Operations Worker"
+      description: "System operations, file management, process execution."
+      instructions: "Execute commands carefully, verify results before reporting."
+      defaultTools: ["exec", "process", "read_file", "write_file", "list_dir", "search_files"]
+      temperature: 0.2
 
 compression:
   enabled: true

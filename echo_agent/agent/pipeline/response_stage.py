@@ -61,19 +61,7 @@ class ResponseStage:
         if ctx.intro_text:
             response_text = f"{ctx.intro_text}\n\n{response_text}" if response_text else ctx.intro_text
 
-        if result.dispatched:
-            session.add_message(
-                "assistant",
-                response_text,
-                dispatch={
-                    "strategy": ctx.dispatch_plan.strategy,
-                    "selected": ctx.dispatch_plan.selected_agent_ids,
-                    "confidence": ctx.dispatch_plan.confidence,
-                    "success": bool(response_text),
-                },
-            )
-        else:
-            session.add_message("assistant", response_text)
+        session.add_message("assistant", response_text)
         await self._sessions.save(session)
 
         # Flush pending memory embeddings
