@@ -12,6 +12,7 @@ from typing import Any
 from echo_agent.agent.executors.base import BaseExecutor, ExecRequest
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
 from echo_agent.security.guards import evaluate_shell_command
+from echo_agent.security.path_policy import check_cwd
 
 
 class ShellTool(Tool):
@@ -93,7 +94,9 @@ class ShellTool(Tool):
     def _resolve_cwd(self, cwd: str) -> str:
         raw = Path(cwd).expanduser()
         resolved = raw.resolve() if raw.is_absolute() else (Path(self._workspace) / raw).resolve()
-        resolved.relative_to(Path(self._workspace))
+        violation = check_cwd(str(resolved))
+        if violation:
+            raise ValueError(violation)
         return str(resolved)
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:

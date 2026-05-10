@@ -32,6 +32,7 @@ def discover_tools(
 ) -> list[Tool]:
     ws = str(workspace)
     restrict = config.tools.restrict_to_workspace
+    safe_write_root = config.tools.safe_write_root
     tools: list[Tool] = []
     executor = None
 
@@ -49,8 +50,8 @@ def discover_tools(
             network_policy=config.execution.network_policy,
         ))
     tools.append(ReadFileTool(ws, restrict))
-    tools.append(WriteFileTool(ws, restrict))
-    tools.append(EditFileTool(ws, restrict))
+    tools.append(WriteFileTool(ws, restrict, safe_write_root))
+    tools.append(EditFileTool(ws, restrict, safe_write_root))
     tools.append(ListDirTool(ws, restrict))
     if config.tools.web.enabled and config.execution.network_policy != "deny":
         tools.append(WebFetchTool(proxy=config.tools.web.proxy))
@@ -68,7 +69,7 @@ def discover_tools(
     tools.append(SearchFilesTool(ws, restrict))
 
     from echo_agent.agent.tools.patch import PatchTool
-    tools.append(PatchTool(ws, restrict))
+    tools.append(PatchTool(ws, restrict, safe_write_root))
 
     from echo_agent.agent.tools.todo import TodoTool
     tools.append(TodoTool(store_dir=workspace / "data" / "todos"))
