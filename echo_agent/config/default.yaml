@@ -89,6 +89,10 @@ permissions:
     defaultPolicy: "approve"
     waitTimeoutSeconds: 300
     cliAutoApprove: true
+    trustedChannels: []
+    mode: "smart"
+    smartModel: ""
+    unattendedPolicy: "deny"
   elevated:
     enabled: false
     allowFrom: {}

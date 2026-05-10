@@ -12,6 +12,7 @@ from echo_agent.scheduler.service import ScheduledJob, Scheduler, TriggerKind
 class CronjobTool(Tool):
     name = "cronjob"
     description = "Manage scheduled tasks: create, list, update, or delete cron-based jobs."
+    risk_level = "dangerous"
     parameters = {
         "type": "object",
         "properties": {

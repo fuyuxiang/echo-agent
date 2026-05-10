@@ -13,6 +13,7 @@ from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
 class WebFetchTool(Tool):
     name = "web_fetch"
     description = "Fetch content from a URL."
+    risk_level = "read_only"
     parameters = {
         "type": "object",
         "properties": {
@@ -56,6 +57,7 @@ class WebFetchTool(Tool):
 class WebSearchTool(Tool):
     name = "web_search"
     description = "Search the web for information."
+    risk_level = "read_only"
     parameters = {
         "type": "object",
         "properties": {

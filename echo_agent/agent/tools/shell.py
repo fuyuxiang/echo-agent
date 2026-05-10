@@ -17,6 +17,7 @@ from echo_agent.security.guards import evaluate_shell_command
 class ShellTool(Tool):
     name = "exec"
     description = "Execute a shell command in the workspace."
+    risk_level = "exec"
     parameters = {
         "type": "object",
         "properties": {

@@ -316,6 +316,10 @@ class ApprovalConfig(_Base):
     default_policy: Literal["approve", "deny", "ask"] = "approve"
     wait_timeout_seconds: int = 300
     cli_auto_approve: bool = True
+    trusted_channels: list[str] = Field(default_factory=list)
+    mode: Literal["manual", "smart", "off"] = "smart"
+    smart_model: str = ""
+    unattended_policy: Literal["deny", "allow_safe"] = "deny"
 
 
 class ElevatedConfig(_Base):

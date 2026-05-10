@@ -18,6 +18,7 @@ _PROCESSES: dict[str, dict[str, Any]] = {}
 class ProcessTool(Tool):
     name = "process"
     description = "Manage background processes: start, list, poll output, or stop."
+    risk_level = "exec"
     parameters = {
         "type": "object",
         "properties": {

@@ -146,6 +146,7 @@ async def _run_install_specs(specs: list[dict], timeout: int = _TIMEOUT) -> list
 
 class SkillInstallTool(Tool):
     name = "skill_install"
+    risk_level = "dangerous"
     description = (
         "Install a skill from an external source into the local skill store. "
         "Supported sources: 'git' (clone a repo), 'local' (copy from filesystem path), "

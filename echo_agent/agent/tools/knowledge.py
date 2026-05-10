@@ -12,6 +12,7 @@ from echo_agent.knowledge.index import KnowledgeIndex
 class KnowledgeSearchTool(Tool):
     name = "knowledge_search"
     description = "Search the local internal knowledge base and return cited snippets."
+    risk_level = "read_only"
     parameters = {
         "type": "object",
         "properties": {
