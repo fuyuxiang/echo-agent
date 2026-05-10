@@ -332,7 +332,6 @@ class AgentLoop:
                 self.tracer.set_otel_tracer(self._telemetry.get_tracer())
         self.mcp_manager: Any = None
         self.knowledge: Any = None
-        self.multi_agent: Any = None
         if config.knowledge.enabled:
             from echo_agent.knowledge import KnowledgeIndex
             self.knowledge = KnowledgeIndex(
@@ -367,7 +366,7 @@ class AgentLoop:
         self._state_lock = asyncio.Lock()
         self._working_memories: OrderedDict[str, Any] = OrderedDict()
         self._register_tools(scheduler=scheduler, task_manager=task_manager, workflow_engine=workflow_engine)
-        self._setup_multi_agent()
+        self._setup_delegation()
 
         # Pipeline stages
         self._circuit_breaker = ToolCircuitBreaker(
@@ -389,7 +388,6 @@ class AgentLoop:
             skill_store=self.skill_store,
             knowledge=self.knowledge,
             hybrid_retriever=getattr(self, '_hybrid_retriever', None),
-            multi_agent=self.multi_agent,
             planner=self.planner,
             inference=self.inference,
             working_memories=self._working_memories,
@@ -411,7 +409,6 @@ class AgentLoop:
             circuit_breaker=self._circuit_breaker,
             default_model=self._default_model,
             max_iterations=self._max_iterations,
-            multi_agent=self.multi_agent,
         )
         self._response_stage = ResponseStage(
             config=config,
@@ -502,46 +499,32 @@ class AgentLoop:
         )
         self.memory.set_retriever(self._hybrid_retriever)
 
-    def _setup_multi_agent(self) -> None:
+    def _setup_delegation(self) -> None:
         if not self.config.multi_agent.enabled:
             return
-        from echo_agent.agent.multi_agent import AgentRegistry, IntentRouter, MultiAgentRuntime
-        from echo_agent.agent.tools.agents import AgentsListTool, AgentsRouteTool
-        registry = AgentRegistry.from_config(self.config.multi_agent)
-        router = IntentRouter(
-            registry,
-            default_agent=self.config.multi_agent.default_agent,
-            route_threshold=self.config.multi_agent.route_threshold,
-            multi_threshold=self.config.multi_agent.multi_threshold,
-            max_parallel_agents=self.config.multi_agent.max_parallel_agents,
-        )
+        from echo_agent.agent.multi_agent.registry import WorkerRegistry
+        from echo_agent.agent.tools.delegate import DelegateTool
+
+        worker_registry = WorkerRegistry.from_config(self.config.multi_agent)
         audit_path = Path(self.config.multi_agent.audit_path).expanduser()
         if not audit_path.is_absolute():
             audit_path = self.workspace / audit_path
-        self.multi_agent = MultiAgentRuntime(
-            registry=registry,
-            router=router,
+
+        delegate_tool = DelegateTool(
             provider=self.provider,
             model_router=self.router,
-            tools=self.tools,
+            tool_registry=self.tools,
+            worker_registry=worker_registry,
+            approval_gate=self.approval_gate,
+            credentials=self.credentials,
             audit_path=audit_path,
-            max_iterations=self.config.multi_agent.max_iterations,
-            synthesize_results=self.config.multi_agent.synthesize_results,
+            max_depth=self.config.multi_agent.max_depth,
+            max_parallel_workers=self.config.multi_agent.max_parallel_workers,
+            max_worker_iterations=self.config.multi_agent.max_iterations,
+            default_model=self._default_model,
         )
-        self.tools.register(AgentsListTool(self.multi_agent))
-        self.tools.register(AgentsRouteTool(self.multi_agent))
-        logger.info("Multi-agent dispatch enabled with {} profiles", len(registry.list()))
-
-        # Warn about agents whose critical tools are unavailable
-        ready_names = set(self.tools.ready_tool_names)
-        for profile in registry.list():
-            if profile.critical_tools:
-                missing = set(profile.critical_tools) - ready_names
-                if missing:
-                    logger.warning(
-                        "Agent '{}' has unavailable critical tools: {} — it will be deprioritized in routing",
-                        profile.id, ", ".join(missing),
-                    )
+        self.tools.register(delegate_tool)
+        logger.info("Delegation enabled with {} worker templates", len(worker_registry.list()))
 
     async def start(self) -> None:
         self._running = True
@@ -733,48 +716,6 @@ class AgentLoop:
             event=event,
             running=self._running,
         )
-
-    async def _execute_child_tool_call(
-        self,
-        *,
-        agent_id: str,
-        tool_call: ToolCallRequest,
-        index: int,
-        event: InboundEvent,
-        trace_id: str,
-        allowed_tools: set[str],
-    ) -> str:
-        if tool_call.name not in allowed_tools:
-            return f"Error: Tool '{tool_call.name}' is not allowed for agent '{agent_id}'"
-
-        approval_check = await self._check_permission_and_approval(
-            tool_call.name,
-            tool_call.arguments,
-            event.sender_id,
-            channel=event.channel,
-            event=event,
-        )
-        if approval_check.denial:
-            return f"Error: {approval_check.denial.error or approval_check.denial.text}"
-
-        ctx = ToolExecutionContext(
-            execution_id=uuid.uuid4().hex[:12],
-            trace_id=trace_id,
-            session_key=event.session_key,
-            user_id=event.sender_id,
-            agent_id=agent_id,
-            attempt_index=0,
-            idempotency_key=build_idempotency_key(trace_id, f"{agent_id}:{tool_call.name}", index, tool_call.arguments),
-            parent_execution_id=f"multi_agent:{agent_id}",
-            credentials=self.credentials.get_for_tool(tool_call.name),
-            approved_actions=approval_check.approved_actions,
-            allowed_tools=frozenset(allowed_tools),
-        )
-        result = await self.tools.execute(tool_call.name, tool_call.arguments, ctx)
-        result_text = result.text
-        if len(result_text) > self._MAX_TOOL_RESULT_CHARS:
-            result_text = result_text[:self._MAX_TOOL_RESULT_CHARS] + "\n...(truncated)"
-        return result_text
 
     async def _handle_approval_command(self, event: InboundEvent) -> str | None:
         text = event.text.strip()

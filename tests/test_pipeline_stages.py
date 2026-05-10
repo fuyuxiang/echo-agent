@@ -22,13 +22,11 @@ class TestPipelineTypes:
         ctx = PipelineContext(event=event, session=session, trace_id="abc", publish_response=False)
         assert ctx.task_type == "chat"
         assert ctx.messages == []
-        assert ctx.dispatch_plan is None
 
     def test_inference_result_defaults(self):
         result = InferenceResult()
         assert result.response_text == ""
         assert result.total_tool_calls == 0
-        assert not result.dispatched
 
 
 class TestContextStage:
@@ -37,8 +35,6 @@ class TestContextStage:
         config = MagicMock()
         config.session.max_history_messages = 100
         config.memory.enabled = False
-        config.multi_agent = MagicMock()
-        config.multi_agent.mode = "auto"
         config.knowledge = MagicMock()
         config.knowledge.enabled = False
 
@@ -71,7 +67,6 @@ class TestContextStage:
             skill_store=None,
             knowledge=None,
             hybrid_retriever=None,
-            multi_agent=None,
             planner=None,
             inference=inference,
             working_memories=OrderedDict(),
@@ -101,7 +96,7 @@ class TestContextStage:
         stage = ContextStage(
             config=MagicMock(), sessions=MagicMock(), memory=MagicMock(),
             compressor=MagicMock(), context_builder=MagicMock(), skill_store=None,
-            knowledge=None, hybrid_retriever=None, multi_agent=None, planner=None,
+            knowledge=None, hybrid_retriever=None, planner=None,
             inference=MagicMock(), working_memories=OrderedDict(),
             memory_snapshots=OrderedDict(), snapshot_enabled=False,
             tool_definitions_fn=lambda: [],
@@ -113,7 +108,7 @@ class TestContextStage:
         stage = ContextStage(
             config=MagicMock(), sessions=MagicMock(), memory=MagicMock(),
             compressor=MagicMock(), context_builder=MagicMock(), skill_store=None,
-            knowledge=None, hybrid_retriever=None, multi_agent=None, planner=None,
+            knowledge=None, hybrid_retriever=None, planner=None,
             inference=MagicMock(), working_memories=OrderedDict(),
             memory_snapshots=OrderedDict(), snapshot_enabled=False,
             tool_definitions_fn=lambda: [],
@@ -124,7 +119,7 @@ class TestContextStage:
         stage = ContextStage(
             config=MagicMock(), sessions=MagicMock(), memory=MagicMock(),
             compressor=MagicMock(), context_builder=MagicMock(), skill_store=None,
-            knowledge=None, hybrid_retriever=None, multi_agent=None, planner=None,
+            knowledge=None, hybrid_retriever=None, planner=None,
             inference=MagicMock(), working_memories=OrderedDict(),
             memory_snapshots=OrderedDict(), snapshot_enabled=False,
             tool_definitions_fn=lambda: [],

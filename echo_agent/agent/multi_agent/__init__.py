@@ -1,23 +1,15 @@
-"""Multi-agent intent routing and dispatch runtime."""
+"""Multi-agent delegation: worker profiles, execution, and audit."""
 
 from echo_agent.agent.multi_agent.models import (
-    AgentProfile,
-    AgentRunResult,
-    DispatchCandidate,
-    DispatchPlan,
-    DispatchResult,
+    WorkerProfile,
+    WorkerResult,
 )
-from echo_agent.agent.multi_agent.registry import AgentRegistry
-from echo_agent.agent.multi_agent.router import IntentRouter
-from echo_agent.agent.multi_agent.runtime import MultiAgentRuntime
+from echo_agent.agent.multi_agent.registry import WorkerRegistry
+from echo_agent.agent.multi_agent.runtime import WorkerExecutor
 
 __all__ = [
-    "AgentProfile",
-    "AgentRunResult",
-    "DispatchCandidate",
-    "DispatchPlan",
-    "DispatchResult",
-    "AgentRegistry",
-    "IntentRouter",
-    "MultiAgentRuntime",
+    "WorkerProfile",
+    "WorkerResult",
+    "WorkerRegistry",
+    "WorkerExecutor",
 ]

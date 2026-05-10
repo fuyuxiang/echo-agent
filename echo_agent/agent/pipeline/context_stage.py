@@ -15,7 +15,6 @@ from echo_agent.session.manager import Session
 
 if TYPE_CHECKING:
     from echo_agent.agent.compression import ConversationCompressor
-    from echo_agent.agent.multi_agent.runtime import MultiAgentRuntime
     from echo_agent.agent.planning.planner import AgentPlanner
     from echo_agent.config.schema import Config
     from echo_agent.knowledge.index import KnowledgeIndex
@@ -46,7 +45,6 @@ class ContextStage:
         skill_store: SkillStore | None,
         knowledge: KnowledgeIndex | None,
         hybrid_retriever: HybridRetriever | None,
-        multi_agent: MultiAgentRuntime | None,
         planner: AgentPlanner | None,
         inference: InferenceController,
         working_memories: OrderedDict,
@@ -62,7 +60,6 @@ class ContextStage:
         self._skill_store = skill_store
         self._knowledge = knowledge
         self._hybrid_retriever = hybrid_retriever
-        self._multi_agent = multi_agent
         self._planner = planner
         self._inference = inference
         self._working_memories = working_memories
@@ -149,20 +146,6 @@ class ContextStage:
                 retrieval_parts.append(knowledge_context)
 
         task_type = self._infer_task_type(event.text)
-        dispatch_plan = None
-        if self._multi_agent:
-            dispatch_plan = self._multi_agent.plan(event.text, task_type=task_type)
-            if self._config.multi_agent.mode == "assist" and dispatch_plan.candidates:
-                selected = (
-                    ", ".join(dispatch_plan.selected_agent_ids)
-                    or dispatch_plan.primary_agent_id
-                )
-                retrieval_parts.append(
-                    "Multi-agent routing suggestion:\n"
-                    f"- strategy: {dispatch_plan.strategy}\n"
-                    f"- selected: {selected}\n"
-                    f"- rationale: {dispatch_plan.rationale}"
-                )
 
         retrieval = "\n\n".join(retrieval_parts)
 
@@ -206,7 +189,6 @@ class ContextStage:
             tool_defs=tool_defs,
             retrieval=retrieval,
             task_type=task_type,
-            dispatch_plan=dispatch_plan,
             execution_plan=execution_plan,
             intro_text=intro_text,
             stream_publisher=stream_publisher,
