@@ -12,8 +12,10 @@ from echo_agent.bus.events import InboundEvent, OutboundEvent
 from echo_agent.bus.queue import MessageBus
 from echo_agent.config.schema import Config
 from echo_agent.models.inference import InferenceController
+from echo_agent.permissions.allowlist import ApprovalAllowlist, ApprovalLevel, build_pattern_key
 from echo_agent.permissions.manager import ApprovalManager, ApprovalStatus
 from echo_agent.security.guards import GuardDecision, evaluate_tool_call
+from echo_agent.security.risk_classifier import RiskLevel, classify_risk
 
 
 @dataclass
@@ -23,7 +25,7 @@ class ApprovalCheck:
 
 
 class ApprovalGate:
-    """Combines static policy, runtime guards, elevation, and async approval."""
+    """Combines risk classification, channel trust, smart approval, and manual approval."""
 
     def __init__(
         self,
@@ -32,11 +34,15 @@ class ApprovalGate:
         approval: ApprovalManager,
         inference: InferenceController,
         bus: MessageBus,
+        provider: Any = None,
+        allowlist: ApprovalAllowlist | None = None,
     ):
         self._config = config
         self._approval = approval
         self._inference = inference
         self._bus = bus
+        self._provider = provider
+        self._allowlist = allowlist or ApprovalAllowlist()
 
     async def check(
         self,
@@ -48,6 +54,9 @@ class ApprovalGate:
         event: InboundEvent | None = None,
         running: bool = True,
     ) -> ApprovalCheck:
+        approval_cfg = self._config.permissions.approval
+
+        # Step 1: Static guard (hard block dangerous patterns)
         guard = evaluate_tool_call(self._config, tool_name, arguments)
         if guard.denied:
             return ApprovalCheck(ToolResult(
@@ -56,6 +65,7 @@ class ApprovalGate:
                 metadata={"guard_pattern": guard.pattern_key},
             ))
 
+        # Step 2: Elevated rights check
         if self._requires_elevated(tool_name) and not self._elevated_allowed(channel, sender_id):
             return ApprovalCheck(ToolResult(
                 success=False,
@@ -66,9 +76,86 @@ class ApprovalGate:
                 metadata={"requires_elevated": True},
             ))
 
-        if not self._approval_required(tool_name, guard):
+        # Step 3: Risk classification
+        risk = classify_risk(tool_name, arguments)
+
+        # Step 4: READ_ONLY and WRITE always pass — they are protected by sandbox/path restrictions
+        if risk in (RiskLevel.READ_ONLY, RiskLevel.WRITE):
             return ApprovalCheck()
 
+        # Step 5: Explicit auto_approve list
+        if tool_name in approval_cfg.auto_approve:
+            return ApprovalCheck()
+
+        # Step 6: CLI auto-approve (all levels)
+        if self._should_auto_approve_cli(channel):
+            return ApprovalCheck()
+
+        # Step 7: Channel trust — EXEC level auto-approved on trusted channels
+        if risk == RiskLevel.EXEC and self._is_trusted_channel(channel):
+            return ApprovalCheck()
+
+        # Step 8: Approval mode "off" — bypass everything except hard blocks
+        if approval_cfg.mode == "off":
+            return ApprovalCheck()
+
+        # Step 9: Check if this tool actually requires approval
+        if not self._approval_required(tool_name, guard, risk):
+            return ApprovalCheck()
+
+        # Step 10: Allowlist check (EXEC level)
+        session_key = event.session_key if event else ""
+        pattern_key = build_pattern_key(tool_name, arguments)
+        if risk == RiskLevel.EXEC and self._allowlist.is_approved(session_key, pattern_key):
+            return ApprovalCheck()
+
+        # Step 11: Unattended mode check
+        if self._is_unattended(event, channel):
+            return self._resolve_unattended(tool_name, risk, session_key, pattern_key)
+
+        # Step 12: Smart approval (EXEC level only)
+        if risk == RiskLevel.EXEC and approval_cfg.mode == "smart" and self._provider:
+            verdict = await self._run_smart_approval(tool_name, arguments, guard)
+            if verdict == "approve":
+                self._allowlist.approve(session_key, pattern_key, ApprovalLevel.SESSION)
+                return ApprovalCheck()
+            if verdict == "deny":
+                return ApprovalCheck(ToolResult(
+                    success=False,
+                    error=f"Smart approval denied '{tool_name}': {guard.reason or 'assessed as dangerous'}",
+                ))
+
+        # Step 13: Manual approval flow
+        approved_actions = self._approved_actions(tool_name, guard)
+        return await self._manual_approval_flow(
+            tool_name, arguments, sender_id, channel, event, running,
+            guard, approved_actions, session_key, pattern_key,
+        )
+
+    # PLACEHOLDER_METHODS
+
+    async def _run_smart_approval(
+        self, tool_name: str, arguments: dict[str, Any], guard: GuardDecision,
+    ) -> str:
+        from echo_agent.security.smart_approval import smart_approve
+        command = str(arguments.get("command", "") or arguments.get("code", "") or arguments)
+        description = guard.reason or f"tool '{tool_name}' requires approval"
+        model = self._config.permissions.approval.smart_model
+        return await smart_approve(tool_name, command, description, self._provider, model=model)
+
+    async def _manual_approval_flow(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        sender_id: str,
+        channel: str,
+        event: InboundEvent | None,
+        running: bool,
+        guard: GuardDecision,
+        approved_actions: frozenset[str],
+        session_key: str,
+        pattern_key: str,
+    ) -> ApprovalCheck:
         approval_req = self._approval.request_approval(
             tool_name, tool_name=tool_name, params=arguments, user_id=sender_id,
         )
@@ -77,53 +164,47 @@ class ApprovalGate:
                 success=False,
                 error=f"Tool '{tool_name}' denied by approval policy: {approval_req.reason}",
             ))
-
-        approved_actions = self._approved_actions(tool_name, guard)
         if approval_req.status == ApprovalStatus.APPROVED:
             return ApprovalCheck(approved_actions=approved_actions)
 
-        if approval_req.status == ApprovalStatus.PENDING:
-            if self._should_auto_approve(channel):
-                self._approval.approve(approval_req.id, decided_by="auto:cli")
-                logger.info("Auto-approved '{}' for channel '{}' under personal_cli profile", tool_name, channel or "cli")
-                return ApprovalCheck(approved_actions=approved_actions)
+        if event is not None:
+            await self._publish_approval_request(event, approval_req.id, tool_name, guard, pattern_key)
 
-            if event is not None:
-                await self._publish_approval_request(event, approval_req.id, tool_name, guard)
-
-            if not running and channel in {"cli", "direct", ""}:
-                return ApprovalCheck(ToolResult(
-                    success=False,
-                    error=(
-                        f"Approval required before executing '{tool_name}'. "
-                        f"Request id: {approval_req.id}."
-                    ),
-                    metadata={"approval_request_id": approval_req.id},
-                ))
-
-            decided = await self._approval.wait_for_decision(
-                approval_req.id,
-                timeout_seconds=self._config.permissions.approval.wait_timeout_seconds,
-            )
-            if decided and decided.status == ApprovalStatus.APPROVED:
-                return ApprovalCheck(approved_actions=approved_actions)
-            if decided and decided.status == ApprovalStatus.DENIED:
-                return ApprovalCheck(ToolResult(
-                    success=False,
-                    error=f"Tool '{tool_name}' denied by approval policy: {decided.reason}",
-                    metadata={"approval_request_id": approval_req.id},
-                ))
+        if not running and channel in {"cli", "direct", ""}:
             return ApprovalCheck(ToolResult(
                 success=False,
                 error=(
-                    f"Approval timed out before executing '{tool_name}'. "
-                    f"Request id: {approval_req.id}. "
-                    f"An admin can reply `/approve {approval_req.id}` or `/deny {approval_req.id} <reason>`."
+                    f"Approval required before executing '{tool_name}'. "
+                    f"Request id: {approval_req.id}."
                 ),
                 metadata={"approval_request_id": approval_req.id},
             ))
 
-        return ApprovalCheck(approved_actions=approved_actions)
+        decided = await self._approval.wait_for_decision(
+            approval_req.id,
+            timeout_seconds=self._config.permissions.approval.wait_timeout_seconds,
+        )
+        if decided and decided.status == ApprovalStatus.APPROVED:
+            level = self._parse_approval_level(decided.reason)
+            self._allowlist.approve(session_key, pattern_key, level)
+            return ApprovalCheck(approved_actions=approved_actions)
+        if decided and decided.status == ApprovalStatus.DENIED:
+            return ApprovalCheck(ToolResult(
+                success=False,
+                error=f"Tool '{tool_name}' denied: {decided.reason}",
+                metadata={"approval_request_id": approval_req.id},
+            ))
+        return ApprovalCheck(ToolResult(
+            success=False,
+            error=(
+                f"Approval timed out for '{tool_name}'. "
+                f"Request id: {approval_req.id}. "
+                f"Reply `/approve {approval_req.id}` or `/deny {approval_req.id} <reason>`."
+            ),
+            metadata={"approval_request_id": approval_req.id},
+        ))
+
+    # PLACEHOLDER_HELPERS
 
     async def _publish_approval_request(
         self,
@@ -131,13 +212,17 @@ class ApprovalGate:
         request_id: str,
         tool_name: str,
         guard: GuardDecision,
+        pattern_key: str,
     ) -> None:
         reason = guard.reason or "approval policy requires confirmation"
         text = (
-            f"Approval required before executing '{tool_name}'.\n"
-            f"Reason: {reason}\n"
-            f"Request id: {request_id}\n"
-            f"Reply `/approve {request_id}` or `/deny {request_id} <reason>`."
+            f"⚠️ 需要确认执行: {tool_name}\n"
+            f"原因: {reason}\n\n"
+            f"回复:\n"
+            f"  /approve {request_id} — 允许本次\n"
+            f"  /approve {request_id} session — 本会话内允许同类操作\n"
+            f"  /approve {request_id} always — 永久允许同类操作\n"
+            f"  /deny {request_id} [原因] — 拒绝"
         )
         out = OutboundEvent.text_reply(
             channel=event.channel,
@@ -146,16 +231,12 @@ class ApprovalGate:
             reply_to_id=event.reply_to_id,
         )
         out.metadata = dict(event.metadata)
+        out.metadata["_approval_request"] = True
         out.metadata["_inbound_event_id"] = event.event_id
-        out.metadata["_approval_request_id"] = request_id
-        out.message_kind = "approval_required"
-        out.is_final = False
         await self._bus.publish_outbound(out)
 
-    def _approval_required(self, tool_name: str, guard: GuardDecision) -> bool:
+    def _approval_required(self, tool_name: str, guard: GuardDecision, risk: RiskLevel) -> bool:
         approval_cfg = self._config.permissions.approval
-        if tool_name in approval_cfg.auto_approve:
-            return False
         if tool_name in approval_cfg.auto_deny:
             return True
         if guard.needs_approval:
@@ -164,7 +245,37 @@ class ApprovalGate:
             return True
         if tool_name in approval_cfg.require_approval:
             return True
+        if risk == RiskLevel.DANGEROUS:
+            return True
         return False
+
+    def _should_auto_approve_cli(self, channel: str) -> bool:
+        approval_cfg = self._config.permissions.approval
+        return (
+            self._config.security.profile == "personal_cli"
+            and approval_cfg.cli_auto_approve
+            and channel in {"cli", "direct", ""}
+        )
+
+    def _is_trusted_channel(self, channel: str) -> bool:
+        return channel in self._config.permissions.approval.trusted_channels
+
+    def _is_unattended(self, event: InboundEvent | None, channel: str) -> bool:
+        if event and event.metadata.get("_unattended"):
+            return True
+        return channel in {"cron", "scheduler"}
+
+    def _resolve_unattended(self, tool_name: str, risk: RiskLevel, session_key: str, pattern_key: str) -> ApprovalCheck:
+        policy = self._config.permissions.approval.unattended_policy
+        if policy == "allow_safe":
+            if risk == RiskLevel.WRITE:
+                return ApprovalCheck()
+            if risk == RiskLevel.EXEC and self._allowlist.is_approved(session_key, pattern_key):
+                return ApprovalCheck()
+        return ApprovalCheck(ToolResult(
+            success=False,
+            error=f"Tool '{tool_name}' requires approval but no user is available (unattended mode).",
+        ))
 
     @staticmethod
     def _approved_actions(tool_name: str, guard: GuardDecision) -> frozenset[str]:
@@ -175,13 +286,15 @@ class ApprovalGate:
             actions.add(guard.approval_action)
         return frozenset(actions)
 
-    def _should_auto_approve(self, channel: str) -> bool:
-        approval_cfg = self._config.permissions.approval
-        return (
-            self._config.security.profile == "personal_cli"
-            and approval_cfg.cli_auto_approve
-            and channel in {"cli", "direct", ""}
-        )
+    @staticmethod
+    def _parse_approval_level(reason: str) -> ApprovalLevel:
+        if reason:
+            lower = reason.strip().lower()
+            if lower == "always":
+                return ApprovalLevel.ALWAYS
+            if lower == "session":
+                return ApprovalLevel.SESSION
+        return ApprovalLevel.ONCE
 
     def _requires_elevated(self, tool_name: str) -> bool:
         if tool_name not in {"exec", "execute_code", "process"}:

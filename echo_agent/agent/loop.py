@@ -20,6 +20,7 @@ from loguru import logger
 from echo_agent.agent.approval_gate import ApprovalCheck, ApprovalGate
 from echo_agent.agent.consolidation import ConsolidationWorker
 from echo_agent.agent.context import ContextBuilder
+from echo_agent.permissions.allowlist import ApprovalAllowlist
 from echo_agent.agent.compression import ConversationCompressor
 from echo_agent.agent.pipeline.context_stage import ContextStage
 from echo_agent.agent.pipeline.inference_stage import InferenceStage
@@ -283,6 +284,10 @@ class AgentLoop:
             approval=self.approval,
             inference=self.inference,
             bus=bus,
+            provider=provider,
+            allowlist=ApprovalAllowlist(
+                store_path=self.workspace / "data" / "approval_allowlist.json",
+            ),
         )
         self.credentials = CredentialManager(
             store_path=workspace / "data" / "credentials.json",

@@ -88,6 +88,7 @@ class Tool(ABC):
     max_retries: int = 0
     stream_capable: bool = False
     capabilities: tuple[str, ...] = ()
+    risk_level: str = "write"
 
     def is_ready(self) -> bool:
         """Whether this tool is functional (e.g. API keys configured). Default True."""
