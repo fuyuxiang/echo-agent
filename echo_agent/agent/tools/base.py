@@ -89,6 +89,14 @@ class Tool(ABC):
     stream_capable: bool = False
     capabilities: tuple[str, ...] = ()
 
+    def is_ready(self) -> bool:
+        """Whether this tool is functional (e.g. API keys configured). Default True."""
+        return True
+
+    def readiness_detail(self) -> tuple[bool, str]:
+        """Returns (ready, reason). Override for tools with external dependencies."""
+        return True, "ok"
+
     @abstractmethod
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         """Execute the tool with given parameters."""

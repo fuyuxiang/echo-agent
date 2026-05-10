@@ -61,6 +61,7 @@ def _profile_from_config(cfg: AgentProfileConfig) -> AgentProfile:
         task_types=tuple(cfg.task_types),
         tools_allow=tuple(cfg.tools_allow),
         tools_deny=tuple(cfg.tools_deny),
+        critical_tools=tuple(cfg.critical_tools),
         model=cfg.model,
         provider=cfg.provider,
         max_iterations=cfg.max_iterations,

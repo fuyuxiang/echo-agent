@@ -437,6 +437,14 @@ class AgentLoop:
         for tool in all_tools:
             self.tools.register(tool)
 
+        # Startup diagnostics: report tool readiness
+        report = self.tools.get_readiness_report()
+        not_ready = [(name, reason) for name, ready, reason in report if not ready]
+        if not_ready:
+            logger.warning("Tools not ready: {}", ", ".join(f"{n} ({r})" for n, r in not_ready))
+        else:
+            logger.info("All {} registered tools are ready", len(report))
+
     def _init_advanced_memory(self, config: Config, storage: Any) -> None:
         """初始化高级记忆子系统：分层记忆、向量索引、混合检索、矛盾检测。"""
         from echo_agent.memory.tiers import EpisodicManager, SemanticManager, ArchivalManager
@@ -518,6 +526,17 @@ class AgentLoop:
         self.tools.register(AgentsListTool(self.multi_agent))
         self.tools.register(AgentsRouteTool(self.multi_agent))
         logger.info("Multi-agent dispatch enabled with {} profiles", len(registry.list()))
+
+        # Warn about agents whose critical tools are unavailable
+        ready_names = set(self.tools.ready_tool_names)
+        for profile in registry.list():
+            if profile.critical_tools:
+                missing = set(profile.critical_tools) - ready_names
+                if missing:
+                    logger.warning(
+                        "Agent '{}' has unavailable critical tools: {} — it will be deprioritized in routing",
+                        profile.id, ", ".join(missing),
+                    )
 
     async def start(self) -> None:
         self._running = True

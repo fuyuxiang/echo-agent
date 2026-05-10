@@ -28,6 +28,14 @@ class ImageGenTool(Tool):
         self._api_base = (api_base or "https://api.openai.com/v1").rstrip("/")
         self._model = model
 
+    def is_ready(self) -> bool:
+        return bool(self._api_key)
+
+    def readiness_detail(self) -> tuple[bool, str]:
+        if self._api_key:
+            return True, "ok"
+        return False, "image generation API key not configured"
+
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         if not self._api_key:
             return ToolResult(success=False, error="Image generation API key not configured")
