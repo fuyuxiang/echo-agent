@@ -393,38 +393,28 @@ class KnowledgeConfig(_Base):
     require_citations: bool = True
 
 
-# ── Multi-agent dispatch configs ─────────────────────────────────────────────
+# ── Multi-agent delegation configs ─────────────────────────────────────────────
 
-class AgentProfileConfig(_Base):
+class WorkerProfileConfig(_Base):
     id: str = ""
     name: str = ""
     description: str = ""
     instructions: str = ""
-    capabilities: list[str] = Field(default_factory=list)
-    keywords: list[str] = Field(default_factory=list)
-    task_types: list[str] = Field(default_factory=list)
-    tools_allow: list[str] = Field(default_factory=list)
-    tools_deny: list[str] = Field(default_factory=list)
-    critical_tools: list[str] = Field(default_factory=list)
+    default_tools: list[str] = Field(default_factory=list)
     model: str = ""
     provider: str = ""
-    max_iterations: int = 8
+    max_iterations: int = 12
     max_tokens: int = 4096
     temperature: float = 0.4
-    priority: int = 0
 
 
 class MultiAgentConfig(_Base):
     enabled: bool = True
-    mode: Literal["assist", "auto"] = "auto"
-    default_agent: str = "general"
-    route_threshold: float = 0.45
-    multi_threshold: float = 0.62
-    max_parallel_agents: int = 3
-    max_iterations: int = 8
-    synthesize_results: bool = True
-    audit_path: str = "data/multi_agent_dispatch.jsonl"
-    agents: list[AgentProfileConfig] = Field(default_factory=list)
+    max_depth: int = 3
+    max_parallel_workers: int = 4
+    max_iterations: int = 12
+    audit_path: str = "data/delegation_audit.jsonl"
+    worker_profiles: list[WorkerProfileConfig] = Field(default_factory=list)
 
 
 # ── Scheduler configs ───────────────────────────────────────────────────────

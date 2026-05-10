@@ -15,7 +15,6 @@ from echo_agent.agent.tools.circuit_breaker import ToolCircuitBreaker
 from echo_agent.bus.events import OutboundEvent
 from echo_agent.models.provider import LLMResponse, ToolCallRequest
 from echo_agent.models.router import RouteDecision
-from echo_agent.utils.text import strip_thinking
 
 if TYPE_CHECKING:
     from echo_agent.agent.approval_gate import ApprovalGate
@@ -50,7 +49,6 @@ class InferenceStage:
         circuit_breaker: ToolCircuitBreaker,
         default_model: str,
         max_iterations: int,
-        multi_agent: Any | None,
     ):
         self._config = config
         self._bus = bus
@@ -65,7 +63,6 @@ class InferenceStage:
         self._circuit_breaker = circuit_breaker
         self._default_model = default_model
         self._max_iterations = max_iterations
-        self._multi_agent = multi_agent
         self._nudge_interval: int = config.skills.nudge_interval if hasattr(config, 'skills') and hasattr(config.skills, 'nudge_interval') else 0
         self._memory_nudge_interval: int = config.memory.nudge_interval if hasattr(config.memory, 'nudge_interval') else 0
         self._tool_iters_since_skill_check = 0
@@ -91,15 +88,6 @@ class InferenceStage:
             out.metadata = dict(event.metadata)
             out.metadata.update({"_progress": True, "_tool_hint": tool_hint, "_inbound_event_id": event.event_id})
             await self._bus.publish_outbound(out)
-
-        # Multi-agent auto dispatch path
-        if (
-            self._multi_agent
-            and self._config.multi_agent.mode == "auto"
-            and ctx.dispatch_plan
-            and ctx.dispatch_plan.should_dispatch
-        ):
-            return await self._run_multi_agent_dispatch(ctx, _emit_progress)
 
         # Standard inference loop
         response_text = ""
@@ -279,79 +267,6 @@ class InferenceStage:
             total_tool_calls=total_tool_calls,
             should_review_skills=should_review_skills,
             should_review_memory=should_review_memory,
-        )
-
-    async def _run_multi_agent_dispatch(self, ctx: PipelineContext, emit_progress: Any) -> InferenceResult:
-        """Handle multi-agent auto dispatch."""
-        event = ctx.event
-        dispatch_plan = ctx.dispatch_plan
-        trace_id = ctx.trace_id
-
-        selected = ", ".join(dispatch_plan.selected_agent_ids)
-        await emit_progress(f"Dispatching to specialist agent(s): {selected}", tool_hint=True)
-        dispatch_span = self._tracer.start_span(trace_id, "multi_agent_dispatch", "multi_agent_dispatch", "agent_dispatch")
-
-        async def _child_tool_executor(
-            agent_id: str,
-            tool_call: ToolCallRequest,
-            index: int,
-            child_messages: list[dict[str, Any]],
-            allowed_tools: set[str],
-        ) -> str:
-            if tool_call.name not in allowed_tools:
-                return f"Error: Tool '{tool_call.name}' is not allowed for agent '{agent_id}'"
-            approval_check = await self._approval_gate.check(
-                tool_call.name, tool_call.arguments, event.sender_id,
-                channel=event.channel, event=event, running=True,
-            )
-            if approval_check.denial:
-                return approval_check.denial.text
-            tool_exec_ctx = ToolExecutionContext(
-                execution_id=uuid.uuid4().hex[:12],
-                trace_id=trace_id,
-                session_key=event.session_key,
-                user_id=event.sender_id,
-                agent_id=agent_id,
-                attempt_index=0,
-                idempotency_key=build_idempotency_key(trace_id, tool_call.name, index, tool_call.arguments),
-                credentials=self._credentials.get_for_tool(tool_call.name),
-                approved_actions=approval_check.approved_actions,
-            )
-            result = await self._tools.execute(
-                tool_call.name, tool_call.arguments, tool_exec_ctx,
-                replay_scope=f"dispatch_{trace_id}_{agent_id}",
-            )
-            result_text = result.text
-            if len(result_text) > self._MAX_TOOL_RESULT_CHARS:
-                result_text = result_text[:self._MAX_TOOL_RESULT_CHARS] + "\n...(truncated)"
-            return result_text
-
-        dispatch_result = await self._multi_agent.dispatch(
-            query=event.text,
-            plan=dispatch_plan,
-            base_messages=ctx.messages,
-            retrieval_context=ctx.retrieval,
-            tool_executor=_child_tool_executor,
-            trace_id=trace_id,
-        )
-        self._tracer.end_span(
-            dispatch_span,
-            metadata={
-                "strategy": dispatch_plan.strategy,
-                "selected": dispatch_plan.selected_agent_ids,
-                "confidence": dispatch_plan.confidence,
-                "success": dispatch_result.success,
-                "duration_ms": dispatch_result.metadata.get("duration_ms", 0),
-            },
-        )
-
-        response_text = dispatch_result.final_output
-        if response_text:
-            response_text = strip_thinking(response_text)
-
-        return InferenceResult(
-            response_text=response_text,
-            dispatched=True,
         )
 
     async def _chat_stream_with_routing(

@@ -1,217 +1,214 @@
-from __future__ import annotations
+"""Tests for the multi-agent delegation system (WorkerRegistry, WorkerExecutor, DelegateTool)."""
+
+import asyncio
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from echo_agent.agent.multi_agent import AgentRegistry, IntentRouter, MultiAgentRuntime
-from echo_agent.agent.loop import AgentLoop
-from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
-from echo_agent.agent.tools.registry import ToolRegistry
-from echo_agent.bus.queue import MessageBus
-from echo_agent.config.schema import AgentProfileConfig, MultiAgentConfig, Config, SessionConfig
-from echo_agent.models.provider import LLMProvider, LLMResponse, ToolCallRequest
+from echo_agent.agent.multi_agent.models import WorkerProfile, WorkerResult
+from echo_agent.agent.multi_agent.registry import WorkerRegistry
+from echo_agent.agent.multi_agent.runtime import WorkerExecutor
+from echo_agent.agent.tools.delegate import DelegateTool, WORKER_BLOCKED_TOOLS
 
 
-class EchoProvider(LLMProvider):
-    def __init__(self):
-        super().__init__()
-        self.calls: list[dict] = []
+class TestWorkerRegistry:
+    def test_from_config_empty(self):
+        config = MagicMock()
+        config.worker_profiles = []
+        registry = WorkerRegistry.from_config(config)
+        assert registry.list() == []
 
-    async def chat(self, messages, tools=None, model=None, tool_choice=None, **kwargs):
-        self.calls.append({"messages": messages, "tools": tools or [], "model": model})
-        agent_id = ""
-        system = messages[0]["content"] if messages else ""
-        for line in system.splitlines():
-            if line.startswith("Agent ID:"):
-                agent_id = line.split(":", 1)[1].strip()
-        return LLMResponse(content=f"{agent_id or 'supervisor'} handled")
+    def test_from_config_with_profiles(self):
+        cfg1 = MagicMock()
+        cfg1.id = "coder"
+        cfg1.name = "Coding Worker"
+        cfg1.description = "Code tasks"
+        cfg1.instructions = "Write code"
+        cfg1.default_tools = ["exec", "read_file"]
+        cfg1.model = ""
+        cfg1.provider = ""
+        cfg1.max_iterations = 12
+        cfg1.max_tokens = 4096
+        cfg1.temperature = 0.3
 
-    def get_default_model(self) -> str:
-        return "fake-model"
+        config = MagicMock()
+        config.worker_profiles = [cfg1]
+        registry = WorkerRegistry.from_config(config)
 
+        assert len(registry.list()) == 1
+        profile = registry.get("coder")
+        assert profile is not None
+        assert profile.name == "Coding Worker"
+        assert profile.default_tools == ("exec", "read_file")
 
-class ToolCallingProvider(EchoProvider):
-    async def chat(self, messages, tools=None, model=None, tool_choice=None, **kwargs):
-        self.calls.append({"messages": messages, "tools": tools or [], "model": model})
-        if not any(msg.get("role") == "tool" for msg in messages):
-            return LLMResponse(
-                tool_calls=[ToolCallRequest(id="tc1", name="exec", arguments={"command": "date"})],
-                finish_reason="tool_calls",
-            )
-        return LLMResponse(content="tool done")
+    def test_get_nonexistent(self):
+        registry = WorkerRegistry([])
+        assert registry.get("nonexistent") is None
 
-
-class DummyTool(Tool):
-    name = "exec"
-    description = "Dummy exec"
-    parameters = {
-        "type": "object",
-        "properties": {"command": {"type": "string"}},
-        "required": ["command"],
-    }
-
-    async def execute(self, params: dict, ctx: ToolExecutionContext | None = None) -> ToolResult:
-        return ToolResult(output=f"ran {params['command']}")
-
-
-def _registry() -> AgentRegistry:
-    cfg = MultiAgentConfig(
-        enabled=True,
-        agents=[
-            AgentProfileConfig(id="general", name="General", task_types=["chat"], capabilities=["chat"]),
-            AgentProfileConfig(
-                id="coder",
-                name="Coder",
-                task_types=["code"],
-                capabilities=["code", "tests"],
-                keywords=["代码", "bug", "pytest"],
-                tools_allow=["read_file", "exec"],
-                priority=30,
-            ),
-            AgentProfileConfig(
-                id="researcher",
-                name="Researcher",
-                task_types=["research"],
-                capabilities=["research", "web"],
-                keywords=["搜索", "最新", "比较"],
-                tools_allow=["web_search"],
-                priority=20,
-            ),
-        ],
-    )
-    return AgentRegistry.from_config(cfg)
+    def test_list_ids(self):
+        profiles = [
+            WorkerProfile(id="a", name="A"),
+            WorkerProfile(id="b", name="B"),
+        ]
+        registry = WorkerRegistry(profiles)
+        assert set(registry.list_ids()) == {"a", "b"}
 
 
-def test_intent_router_selects_coder_for_code_request() -> None:
-    router = IntentRouter(_registry(), route_threshold=0.45)
+class TestWorkerExecutor:
+    @pytest.mark.asyncio
+    async def test_run_simple_completion(self):
+        provider = AsyncMock()
+        response = MagicMock()
+        response.finish_reason = "stop"
+        response.content = "Task completed successfully."
+        response.has_tool_calls = False
+        response.usage = None
+        provider.chat_with_retry = AsyncMock(return_value=response)
 
-    plan = router.build_plan("帮我修复这个 Python bug 并跑 pytest", task_type="chat", available_tools=["exec"])
+        executor = WorkerExecutor(provider=provider)
+        result = await executor.run(
+            task_index=0,
+            goal="Say hello",
+            tool_defs=[],
+            tool_executor=AsyncMock(),
+            max_iterations=5,
+        )
 
-    assert plan.should_dispatch
-    assert plan.primary_agent_id == "coder"
-    assert plan.task_type == "code"
-    assert plan.confidence >= 0.45
+        assert result.status == "completed"
+        assert result.output == "Task completed successfully."
+        assert result.iterations == 1
+        assert result.tool_calls == 0
 
+    @pytest.mark.asyncio
+    async def test_run_with_tool_calls(self):
+        provider = AsyncMock()
 
-def test_intent_router_parallel_when_request_has_two_strong_domains() -> None:
-    router = IntentRouter(_registry(), route_threshold=0.45, multi_threshold=0.5, max_parallel_agents=2)
+        tc = MagicMock()
+        tc.id = "tc_1"
+        tc.name = "read_file"
+        tc.arguments = {"path": "/tmp/test.txt"}
+        tc.to_openai_format = MagicMock(return_value={
+            "id": "tc_1", "type": "function",
+            "function": {"name": "read_file", "arguments": "{}"},
+        })
 
-    plan = router.build_plan("同时搜索最新资料并比较代码实现方案", task_type="chat", available_tools=["exec", "web_search"])
+        response1 = MagicMock()
+        response1.finish_reason = "tool_calls"
+        response1.content = "Let me read the file."
+        response1.has_tool_calls = True
+        response1.tool_calls = [tc]
+        response1.usage = None
 
-    assert plan.strategy == "parallel"
-    assert "coder" in plan.selected_agent_ids
-    assert "researcher" in plan.selected_agent_ids
+        response2 = MagicMock()
+        response2.finish_reason = "stop"
+        response2.content = "The file contains: hello world"
+        response2.has_tool_calls = False
+        response2.usage = None
 
+        provider.chat_with_retry = AsyncMock(side_effect=[response1, response2])
+        tool_executor = AsyncMock(return_value="hello world")
 
-@pytest.mark.asyncio
-async def test_multi_agent_runtime_filters_tools_and_runs_agent(tmp_path) -> None:
-    registry = _registry()
-    router = IntentRouter(registry)
-    provider = EchoProvider()
-    tools = ToolRegistry()
-    tools.register(DummyTool())
-    runtime = MultiAgentRuntime(
-        registry=registry,
-        router=router,
-        provider=provider,
-        model_router=None,
-        tools=tools,
-        audit_path=tmp_path / "audit.jsonl",
-    )
-    plan = router.build_plan("修复代码 bug", task_type="code", available_tools=tools.tool_names)
+        executor = WorkerExecutor(provider=provider)
+        result = await executor.run(
+            task_index=0,
+            goal="Read the file",
+            tool_defs=[{"type": "function", "function": {"name": "read_file"}}],
+            tool_executor=tool_executor,
+            max_iterations=5,
+        )
 
-    async def executor(agent_id, tool_call, index, messages, allowed_tools):
-        return "unused"
+        assert result.status == "completed"
+        assert result.tool_calls == 1
+        assert result.iterations == 2
 
-    result = await runtime.dispatch(
-        query="修复代码 bug",
-        plan=plan,
-        base_messages=[{"role": "system", "content": "base"}, {"role": "user", "content": "修复代码 bug"}],
-        tool_executor=executor,
-    )
+    @pytest.mark.asyncio
+    async def test_run_timeout(self):
+        provider = AsyncMock()
 
-    assert result.final_output == "coder handled"
-    assert provider.calls[0]["tools"][0]["function"]["name"] == "exec"
-    assert (tmp_path / "audit.jsonl").exists()
+        async def slow_chat(**kwargs):
+            await asyncio.sleep(10)
+            return MagicMock(finish_reason="stop", content="done", has_tool_calls=False)
 
+        provider.chat_with_retry = slow_chat
 
-@pytest.mark.asyncio
-async def test_multi_agent_runtime_executes_tool_callback(tmp_path) -> None:
-    registry = _registry()
-    router = IntentRouter(registry)
-    provider = ToolCallingProvider()
-    tools = ToolRegistry()
-    tools.register(DummyTool())
-    runtime = MultiAgentRuntime(
-        registry=registry,
-        router=router,
-        provider=provider,
-        model_router=None,
-        tools=tools,
-        audit_path=tmp_path / "audit.jsonl",
-    )
-    plan = router.build_plan("运行诊断代码", task_type="code", available_tools=tools.tool_names)
-    seen = []
+        executor = WorkerExecutor(provider=provider)
+        result = await executor.run(
+            task_index=0,
+            goal="Slow task",
+            tool_defs=[],
+            tool_executor=AsyncMock(),
+            max_iterations=5,
+            timeout_seconds=0.1,
+        )
 
-    async def executor(agent_id, tool_call, index, messages, allowed_tools):
-        seen.append((agent_id, tool_call.name, set(allowed_tools)))
-        return "ran date"
-
-    result = await runtime.dispatch(
-        query="运行诊断代码",
-        plan=plan,
-        base_messages=[{"role": "system", "content": "base"}, {"role": "user", "content": "运行诊断代码"}],
-        tool_executor=executor,
-    )
-
-    assert result.results[0].tool_calls == 1
-    assert result.final_output == "tool done"
-    assert seen == [("coder", "exec", {"exec"})]
-
-
-@pytest.mark.asyncio
-async def test_tool_registry_enforces_scoped_allowed_tools() -> None:
-    tools = ToolRegistry()
-    tools.register(DummyTool())
-
-    result = await tools.execute(
-        "exec",
-        {"command": "date"},
-        ToolExecutionContext(allowed_tools=frozenset({"read_file"})),
-    )
-
-    assert not result.success
-    assert "outside the scoped tool allowlist" in result.error
+        assert result.status == "timeout"
 
 
-@pytest.mark.asyncio
-async def test_agent_loop_auto_dispatches_to_specialist(tmp_path) -> None:
-    cfg = Config(
-        workspace=str(tmp_path),
-        session=SessionConfig(introduction_enabled=False),
-        multi_agent=MultiAgentConfig(
-            enabled=True,
-            synthesize_results=False,
-            agents=[
-                AgentProfileConfig(id="general", name="General", task_types=["chat"], capabilities=["chat"]),
-                AgentProfileConfig(
-                    id="coder",
-                    name="Coder",
-                    task_types=["code"],
-                    capabilities=["code"],
-                    keywords=["Python", "bug"],
-                    tools_allow=[],
-                    priority=30,
-                ),
-            ],
-        ),
-    )
-    agent = AgentLoop(
-        bus=MessageBus(),
-        config=cfg,
-        provider=EchoProvider(),
-        workspace=tmp_path,
-    )
+class TestDelegateTool:
+    def test_normalize_tasks_single(self):
+        tool = self._make_tool()
+        tasks = tool._normalize_tasks({"goal": "do something", "tools": ["exec"]})
+        assert len(tasks) == 1
+        assert tasks[0]["goal"] == "do something"
 
-    response = await agent.process_direct("请修复这个 Python bug", session_key="test:auto-dispatch")
+    def test_normalize_tasks_array(self):
+        tool = self._make_tool()
+        tasks = tool._normalize_tasks({
+            "tasks": [
+                {"goal": "task 1"},
+                {"goal": "task 2"},
+            ]
+        })
+        assert len(tasks) == 2
 
-    assert response == "coder handled"
+    def test_normalize_tasks_empty(self):
+        tool = self._make_tool()
+        tasks = tool._normalize_tasks({})
+        assert tasks == []
+
+    def test_resolve_worker_tools_with_explicit(self):
+        tool = self._make_tool()
+        available = {"exec", "read_file", "write_file", "web_search"}
+        result = tool._resolve_worker_tools({"tools": ["exec", "read_file", "nonexistent"]}, available)
+        assert result == {"exec", "read_file"}
+
+    def test_resolve_worker_tools_with_profile(self):
+        tool = self._make_tool()
+        available = {"exec", "read_file", "write_file", "web_search"}
+        result = tool._resolve_worker_tools({"worker_profile": "coder"}, available)
+        assert result == {"exec", "read_file"}
+
+    def test_blocked_tools(self):
+        assert "delegate_task" in WORKER_BLOCKED_TOOLS
+        assert "clarify" in WORKER_BLOCKED_TOOLS
+        assert "message" in WORKER_BLOCKED_TOOLS
+
+    @pytest.mark.asyncio
+    async def test_depth_limit(self):
+        tool = self._make_tool(max_depth=2)
+        from echo_agent.agent.tools.base import ToolExecutionContext
+        ctx = ToolExecutionContext(parent_execution_id="worker:test:2")
+        result = await tool.execute({"goal": "test"}, ctx)
+        assert not result.success
+        assert "depth limit" in result.error.lower()
+
+    def _make_tool(self, max_depth=3):
+        registry = WorkerRegistry([
+            WorkerProfile(id="coder", name="Coder", default_tools=("exec", "read_file")),
+        ])
+        tool_registry = MagicMock()
+        tool_registry.ready_tool_names = ["exec", "read_file", "write_file", "web_search"]
+        tool_registry.get_ready_definitions = MagicMock(return_value=[])
+
+        return DelegateTool(
+            provider=AsyncMock(),
+            tool_registry=tool_registry,
+            worker_registry=registry,
+            approval_gate=AsyncMock(),
+            credentials=MagicMock(),
+            audit_path=None,
+            max_depth=max_depth,
+            max_parallel_workers=4,
+            max_worker_iterations=12,
+        )
