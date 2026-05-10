@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.security.path_policy import check_read, resolve_path
 
 
 class SearchFilesTool(Tool):
@@ -17,7 +18,7 @@ class SearchFilesTool(Tool):
         "type": "object",
         "properties": {
             "pattern": {"type": "string", "description": "Regex pattern to search in file contents, or glob pattern for file names."},
-            "path": {"type": "string", "description": "Subdirectory to search in (relative to workspace). Defaults to '.'."},
+            "path": {"type": "string", "description": "Subdirectory to search in (relative to workspace or absolute). Defaults to '.'."},
             "mode": {"type": "string", "enum": ["content", "glob"], "description": "Search mode: 'content' for regex in files, 'glob' for filename matching."},
             "max_results": {"type": "integer", "description": "Maximum results to return.", "default": 50},
         },
@@ -35,12 +36,15 @@ class SearchFilesTool(Tool):
         sub = params.get("path", ".")
         max_results = params.get("max_results", 50)
 
-        search_root = (self._workspace / sub).resolve()
+        search_root = resolve_path(sub, str(self._workspace))
         if self._restrict:
             try:
                 search_root.relative_to(self._workspace)
             except ValueError:
                 return ToolResult(success=False, error="Path outside workspace")
+        violation = check_read(str(search_root), str(self._workspace))
+        if violation:
+            return ToolResult(success=False, error=violation)
 
         if not search_root.is_dir():
             return ToolResult(success=False, error=f"Directory not found: {sub}")
@@ -53,7 +57,10 @@ class SearchFilesTool(Tool):
         matches = []
         for p in root.rglob(pattern):
             if p.is_file():
-                matches.append(str(p.relative_to(self._workspace)))
+                try:
+                    matches.append(str(p.relative_to(self._workspace)))
+                except ValueError:
+                    matches.append(str(p))
                 if len(matches) >= limit:
                     break
         return ToolResult(output="\n".join(matches) if matches else "No files matched.", metadata={"count": len(matches)})
@@ -78,7 +85,10 @@ class SearchFilesTool(Tool):
                 continue
             for i, line in enumerate(text.splitlines(), 1):
                 if regex.search(line):
-                    rel = path.relative_to(self._workspace)
+                    try:
+                        rel = path.relative_to(self._workspace)
+                    except ValueError:
+                        rel = path
                     results.append(f"{rel}:{i}: {line.rstrip()[:200]}")
                     if len(results) >= limit:
                         return ToolResult(output="\n".join(results), metadata={"count": len(results), "truncated": True})

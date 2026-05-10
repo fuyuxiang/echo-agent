@@ -278,7 +278,8 @@ class ToolsConfig(_Base):
     deny: list[str] = Field(default_factory=list)
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
     web: WebToolConfig = Field(default_factory=WebToolConfig)
-    restrict_to_workspace: bool = True
+    restrict_to_workspace: bool = False
+    safe_write_root: str = ""
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
     mcp_security_policy: Literal["warn", "block"] = "block"
     image_gen: ImageGenConfig = Field(default_factory=ImageGenConfig)
