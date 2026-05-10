@@ -47,7 +47,12 @@ class MultiAgentRuntime:
         self._synthesize_results = synthesize_results
 
     def plan(self, query: str, *, task_type: str = "chat") -> DispatchPlan:
-        return self.router.build_plan(query, task_type=task_type, available_tools=self._tools.tool_names)
+        return self.router.build_plan(
+            query,
+            task_type=task_type,
+            available_tools=self._tools.tool_names,
+            ready_tools=set(self._tools.ready_tool_names),
+        )
 
     async def dispatch(
         self,
@@ -99,6 +104,23 @@ class MultiAgentRuntime:
                 )
             ]
 
+        # Fallback to general agent on config/auth failures
+        if len(results) == 1 and not results[0].success and results[0].error_type in ("config", "auth"):
+            failed = results[0]
+            logger.info(
+                "Specialist '{}' failed with {}, falling back to general agent",
+                failed.agent_id, failed.error_type,
+            )
+            fallback = await self._fallback_to_general(
+                query=query,
+                failed_result=failed,
+                base_messages=base_messages,
+                retrieval_context=retrieval_context,
+                tool_executor=tool_executor,
+                trace_id=trace_id,
+            )
+            results = [fallback]
+
         final_output = await self._aggregate(query=query, plan=plan, results=results)
         dispatch_result = DispatchResult(
             plan=plan,
@@ -120,9 +142,11 @@ class MultiAgentRuntime:
         tool_executor: ToolExecutor,
         trace_id: str,
     ) -> AgentRunResult:
-        allowed_tools = set(self.registry.filter_tool_names(profile.id, self._tools.tool_names))
+        from echo_agent.agent.multi_agent.error_types import ToolErrorType, classify_tool_error
+
+        allowed_tools = set(self.registry.filter_tool_names(profile.id, self._tools.ready_tool_names))
         tool_defs = [
-            schema for schema in self._tools.get_definitions()
+            schema for schema in self._tools.get_ready_definitions()
             if schema.get("function", {}).get("name") in allowed_tools
         ]
         messages = self._build_agent_messages(profile, query, base_messages, retrieval_context)
@@ -130,6 +154,8 @@ class MultiAgentRuntime:
         iterations = 0
         tool_calls = 0
         last_content = ""
+        config_error_count = 0
+        last_error_text = ""
 
         for iteration in range(min(profile.max_iterations, self._max_iterations)):
             iterations = iteration + 1
@@ -145,6 +171,7 @@ class MultiAgentRuntime:
                     agent_id=profile.id,
                     success=False,
                     error=response.content or "LLM error",
+                    error_type=ToolErrorType.TRANSIENT.value,
                     iterations=iterations,
                     model=model,
                     provider_name=provider_name,
@@ -179,6 +206,34 @@ class MultiAgentRuntime:
                     "content": result_text[:16000],
                 })
 
+                # Fast-fail on repeated config/auth errors
+                if result_text.startswith("Error:"):
+                    error_type = classify_tool_error(result_text)
+                    if error_type in (ToolErrorType.CONFIG, ToolErrorType.AUTH):
+                        if result_text == last_error_text:
+                            config_error_count += 1
+                        else:
+                            config_error_count = 1
+                            last_error_text = result_text
+                        if config_error_count >= 2:
+                            logger.warning(
+                                "Agent '{}' fast-fail: repeated {} error on tool '{}': {}",
+                                profile.id, error_type.value, tc.name, result_text[:200],
+                            )
+                            return AgentRunResult(
+                                agent_id=profile.id,
+                                success=False,
+                                output=last_content,
+                                error=result_text,
+                                error_type=error_type.value,
+                                iterations=iterations,
+                                model=model,
+                                provider_name=provider_name,
+                                tool_calls=tool_calls,
+                            )
+                    else:
+                        config_error_count = 0
+
         return AgentRunResult(
             agent_id=profile.id,
             success=False,
@@ -190,21 +245,62 @@ class MultiAgentRuntime:
             tool_calls=tool_calls,
         )
 
+    async def _fallback_to_general(
+        self,
+        *,
+        query: str,
+        failed_result: AgentRunResult,
+        base_messages: list[dict[str, Any]],
+        retrieval_context: str,
+        tool_executor: ToolExecutor,
+        trace_id: str,
+    ) -> AgentRunResult:
+        """Re-run with general agent when a specialist fails due to config/capability issues."""
+        general = self.registry.require("general")
+        degradation_note = (
+            f"Note: The specialist agent '{failed_result.agent_id}' could not complete this task "
+            f"because required tools are unavailable ({failed_result.error_type}). "
+            f"Please answer using your general knowledge and any available tools. "
+            f"If you cannot fully answer, explain what information you would need."
+        )
+        augmented_retrieval = (
+            f"{retrieval_context}\n\n[Degradation Context]\n{degradation_note}"
+            if retrieval_context else degradation_note
+        )
+        return await self._run_agent(
+            general,
+            query=query,
+            base_messages=base_messages,
+            retrieval_context=augmented_retrieval,
+            tool_executor=tool_executor,
+            trace_id=trace_id,
+        )
+
     async def _aggregate(self, *, query: str, plan: DispatchPlan, results: list[AgentRunResult]) -> str:
+        from echo_agent.agent.multi_agent.error_messages import sanitize_error_for_user
+
         if len(results) == 1:
             result = results[0]
             if result.success:
                 return result.output
-            return f"Agent {result.agent_id} failed: {result.error}\n\n{result.output}".strip()
+            return sanitize_error_for_user(result.error, result.output)
 
         sections = []
+        all_failed = True
         for result in results:
             label = f"[{result.agent_id}]"
-            body = result.output if result.success else f"FAILED: {result.error}\n{result.output}".strip()
-            sections.append(f"{label}\n{body}")
+            if result.success:
+                all_failed = False
+                sections.append(f"{label}\n{result.output}")
+            else:
+                sections.append(f"{label}\n{sanitize_error_for_user(result.error, result.output)}")
         combined = "\n\n".join(sections)
+
+        if all_failed:
+            return sanitize_error_for_user("", "")
+
         if not self._synthesize_results:
-            return f"Multi-agent results for: {query}\n\n{combined}"
+            return combined
 
         supervisor = self.registry.get("planner") or self.registry.get(plan.primary_agent_id) or self.registry.require("general")
         provider_name, provider, model = self._select_provider(supervisor, query)

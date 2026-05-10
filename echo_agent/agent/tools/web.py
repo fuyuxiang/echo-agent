@@ -81,6 +81,18 @@ class WebSearchTool(Tool):
         self._proxy = proxy
         self.timeout_seconds = timeout_seconds
 
+    def is_ready(self) -> bool:
+        if self._provider == "searxng":
+            return bool(self._api_base)
+        return bool(self._api_key)
+
+    def readiness_detail(self) -> tuple[bool, str]:
+        if self.is_ready():
+            return True, "ok"
+        if self._provider == "searxng":
+            return False, "searxng api_base not configured"
+        return False, f"{self._provider} search API key not configured"
+
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         query = params["query"].strip()
         max_results = max(1, min(int(params.get("max_results", 5)), 20))

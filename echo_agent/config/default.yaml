@@ -162,6 +162,7 @@ multiAgent:
       keywords: ["search", "latest", "compare", "news", "调研", "搜索", "最新", "比较", "资料", "来源"]
       taskTypes: ["research"]
       toolsAllow: ["web_search", "web_fetch", "knowledge_search", "read_file", "search_files", "memory"]
+      criticalTools: ["web_search"]
       priority: 25
     - id: "knowledge"
       name: "Knowledge Agent"

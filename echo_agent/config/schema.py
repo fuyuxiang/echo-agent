@@ -401,6 +401,7 @@ class AgentProfileConfig(_Base):
     task_types: list[str] = Field(default_factory=list)
     tools_allow: list[str] = Field(default_factory=list)
     tools_deny: list[str] = Field(default_factory=list)
+    critical_tools: list[str] = Field(default_factory=list)
     model: str = ""
     provider: str = ""
     max_iterations: int = 8

@@ -70,6 +70,26 @@ class ToolRegistry:
                 logger.error("Skipping tool '{}' due to invalid schema: {}", tool.name, e)
         return definitions
 
+    def get_ready_definitions(self) -> list[dict[str, Any]]:
+        """Like get_definitions() but only includes tools where is_ready() is True."""
+        definitions: list[dict[str, Any]] = []
+        for tool in self._tools.values():
+            if not tool.is_ready():
+                continue
+            try:
+                definitions.append(tool.to_schema())
+            except ValueError as e:
+                logger.error("Skipping tool '{}' due to invalid schema: {}", tool.name, e)
+        return definitions
+
+    @property
+    def ready_tool_names(self) -> list[str]:
+        return [name for name, tool in self._tools.items() if tool.is_ready()]
+
+    def get_readiness_report(self) -> list[tuple[str, bool, str]]:
+        """Returns [(tool_name, ready, reason), ...] for all registered tools."""
+        return [(name, *tool.readiness_detail()) for name, tool in self._tools.items()]
+
     @property
     def tool_names(self) -> list[str]:
         return list(self._tools.keys())

@@ -51,11 +51,12 @@ class IntentRouter:
             return fallback
         return scores.most_common(1)[0][0]
 
-    def build_plan(self, text: str, *, task_type: str = "chat", available_tools: list[str] | None = None) -> DispatchPlan:
+    def build_plan(self, text: str, *, task_type: str = "chat", available_tools: list[str] | None = None, ready_tools: set[str] | None = None) -> DispatchPlan:
         inferred = task_type if task_type and task_type != "chat" else self.infer_task_type(text, fallback=task_type or "chat")
         tokens = self._tokens(text)
         available = set(available_tools or [])
-        candidates = [self._score(profile, tokens, text, inferred, available) for profile in self._registry.list()]
+        ready = ready_tools if ready_tools is not None else available
+        candidates = [self._score(profile, tokens, text, inferred, available, ready) for profile in self._registry.list()]
         candidates.sort(key=lambda item: (item.score, item.confidence), reverse=True)
         top = candidates[0] if candidates else DispatchCandidate(self._default_agent, 0.0, 0.0, ["no agents configured"])
 
@@ -100,8 +101,17 @@ class IntentRouter:
         text: str,
         task_type: str,
         available_tools: set[str],
+        ready_tools: set[str],
     ) -> DispatchCandidate:
         reasons: list[str] = []
+
+        # If agent has critical tools and none are ready, exclude it
+        if profile.critical_tools:
+            critical_ready = set(profile.critical_tools).intersection(ready_tools)
+            if not critical_ready:
+                reasons.append("critical_tools_unavailable")
+                return DispatchCandidate(profile.id, -1.0, 0.0, reasons)
+
         score = float(profile.priority) / 100.0
         profile_terms = {
             *(item.lower() for item in profile.capabilities),
@@ -126,10 +136,17 @@ class IntentRouter:
             reasons.append("terms=" + ",".join(capability_hits[:5]))
 
         if profile.tools_allow and available_tools:
-            coverage = len(set(profile.tools_allow).intersection(available_tools)) / max(1, len(profile.tools_allow))
+            coverage = len(set(profile.tools_allow).intersection(ready_tools)) / max(1, len(profile.tools_allow))
             score += coverage * 0.5
             if coverage:
                 reasons.append(f"tool_coverage={coverage:.2f}")
+
+        # Penalize if some critical tools are missing (but not all — that case is excluded above)
+        if profile.critical_tools:
+            critical_missing = set(profile.critical_tools) - ready_tools
+            if critical_missing:
+                score -= 2.0
+                reasons.append(f"partial_critical_missing={','.join(critical_missing)}")
 
         if profile.is_general:
             score += 0.25
