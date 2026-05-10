@@ -7,52 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
-
-
-class _PathSafety:
-    """Validates file paths stay within workspace boundaries."""
-
-    _SENSITIVE_EXACT = {
-        "/etc/passwd",
-        "/private/etc/passwd",
-        "/etc/shadow",
-        "/private/etc/shadow",
-        "/etc/sudoers",
-        "/private/etc/sudoers",
-        "/etc/gshadow",
-        "/private/etc/gshadow",
-        "/etc/security/opasswd",
-        "/private/etc/security/opasswd",
-    }
-    _SENSITIVE_PREFIXES = (
-        "/root/.ssh/",
-        "/root/.gnupg/",
-        "/etc/ssh/",
-    )
-
-    def __init__(self, workspace: str, restrict: bool = False):
-        self._workspace = Path(workspace).resolve()
-        self._restrict = restrict
-
-    def resolve(self, path: str) -> Path:
-        raw = Path(path).expanduser()
-        return raw.resolve() if raw.is_absolute() else (self._workspace / raw).resolve()
-
-    def check(self, path: str) -> str | None:
-        resolved = self.resolve(path)
-        raw_text = str(Path(path).expanduser())
-        resolved_text = str(resolved)
-        if raw_text in self._SENSITIVE_EXACT or resolved_text in self._SENSITIVE_EXACT or any(
-            resolved_text.startswith(prefix) for prefix in self._SENSITIVE_PREFIXES
-        ):
-            return f"Path {path} is blocked by sensitive system file policy"
-        if not self._restrict:
-            return None
-        try:
-            resolved.relative_to(self._workspace)
-            return None
-        except ValueError:
-            return f"Path {path} is outside workspace {self._workspace}"
+from echo_agent.security.path_policy import check_read, check_write, resolve_path
 
 
 class ReadFileTool(Tool):
@@ -70,15 +25,22 @@ class ReadFileTool(Tool):
     }
 
     def __init__(self, workspace: str, restrict: bool = False):
-        self._safety = _PathSafety(workspace, restrict)
+        self._workspace = str(Path(workspace).resolve())
+        self._restrict = restrict
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         path = params["path"]
-        violation = self._safety.check(path)
+        violation = check_read(path, self._workspace)
         if violation:
             return ToolResult(success=False, error=violation)
+        if self._restrict:
+            resolved = resolve_path(path, self._workspace)
+            try:
+                resolved.relative_to(self._workspace)
+            except ValueError:
+                return ToolResult(success=False, error=f"Path {path} is outside workspace {self._workspace}")
         try:
-            target = self._safety.resolve(path)
+            target = resolve_path(path, self._workspace)
             with open(target, encoding="utf-8", errors="replace") as f:
                 lines = f.readlines()
             offset = params.get("offset", 0)
@@ -105,16 +67,24 @@ class WriteFileTool(Tool):
         "required": ["path", "content"],
     }
 
-    def __init__(self, workspace: str, restrict: bool = False):
-        self._safety = _PathSafety(workspace, restrict)
+    def __init__(self, workspace: str, restrict: bool = False, safe_write_root: str = ""):
+        self._workspace = str(Path(workspace).resolve())
+        self._restrict = restrict
+        self._safe_write_root = safe_write_root
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         path = params["path"]
-        violation = self._safety.check(path)
+        violation = check_write(path, self._workspace, self._safe_write_root)
         if violation:
             return ToolResult(success=False, error=violation)
+        if self._restrict:
+            resolved = resolve_path(path, self._workspace)
+            try:
+                resolved.relative_to(self._workspace)
+            except ValueError:
+                return ToolResult(success=False, error=f"Path {path} is outside workspace {self._workspace}")
         try:
-            p = self._safety.resolve(path)
+            p = resolve_path(path, self._workspace)
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(params["content"], encoding="utf-8")
             return ToolResult(output=f"Written {len(params['content'])} chars to {path}")
@@ -136,16 +106,24 @@ class EditFileTool(Tool):
         "required": ["path", "old_string", "new_string"],
     }
 
-    def __init__(self, workspace: str, restrict: bool = False):
-        self._safety = _PathSafety(workspace, restrict)
+    def __init__(self, workspace: str, restrict: bool = False, safe_write_root: str = ""):
+        self._workspace = str(Path(workspace).resolve())
+        self._restrict = restrict
+        self._safe_write_root = safe_write_root
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         path = params["path"]
-        violation = self._safety.check(path)
+        violation = check_write(path, self._workspace, self._safe_write_root)
         if violation:
             return ToolResult(success=False, error=violation)
+        if self._restrict:
+            resolved = resolve_path(path, self._workspace)
+            try:
+                resolved.relative_to(self._workspace)
+            except ValueError:
+                return ToolResult(success=False, error=f"Path {path} is outside workspace {self._workspace}")
         try:
-            target = self._safety.resolve(path)
+            target = resolve_path(path, self._workspace)
             content = target.read_text(encoding="utf-8")
             old = params["old_string"]
             if old not in content:
@@ -172,15 +150,22 @@ class ListDirTool(Tool):
     }
 
     def __init__(self, workspace: str, restrict: bool = False):
-        self._safety = _PathSafety(workspace, restrict)
+        self._workspace = str(Path(workspace).resolve())
+        self._restrict = restrict
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         path = params["path"]
-        violation = self._safety.check(path)
+        violation = check_read(path, self._workspace)
         if violation:
             return ToolResult(success=False, error=violation)
+        if self._restrict:
+            resolved = resolve_path(path, self._workspace)
+            try:
+                resolved.relative_to(self._workspace)
+            except ValueError:
+                return ToolResult(success=False, error=f"Path {path} is outside workspace {self._workspace}")
         try:
-            target = self._safety.resolve(path)
+            target = resolve_path(path, self._workspace)
             entries = sorted(os.listdir(target))
             lines = []
             for entry in entries:

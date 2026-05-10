@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.security.path_policy import check_write, resolve_path
 
 
 class PatchTool(Tool):
@@ -15,7 +16,7 @@ class PatchTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "file_path": {"type": "string", "description": "Path to the file to patch (relative to workspace)."},
+            "file_path": {"type": "string", "description": "Path to the file to patch (relative to workspace or absolute)."},
             "patch": {"type": "string", "description": "Unified diff content, or search/replace block in <<<SEARCH ... === ... REPLACE>>> format."},
             "fuzzy_threshold": {"type": "number", "description": "Similarity threshold for fuzzy matching (0.0-1.0).", "default": 0.6},
         },
@@ -23,13 +24,18 @@ class PatchTool(Tool):
     }
     timeout_seconds = 15
 
-    def __init__(self, workspace: str, restrict: bool = False):
+    def __init__(self, workspace: str, restrict: bool = False, safe_write_root: str = ""):
         self._workspace = Path(workspace).resolve()
         self._restrict = restrict
+        self._safe_write_root = safe_write_root
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         rel = params["file_path"]
-        target = (self._workspace / rel).resolve()
+        target = resolve_path(rel, str(self._workspace))
+
+        violation = check_write(str(target), str(self._workspace), self._safe_write_root)
+        if violation:
+            return ToolResult(success=False, error=violation)
         if self._restrict:
             try:
                 target.relative_to(self._workspace)

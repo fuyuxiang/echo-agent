@@ -37,7 +37,8 @@ tools:
   allow: []
   alsoAllow: []
   deny: []
-  restrictToWorkspace: true
+  restrictToWorkspace: false
+  safeWriteRoot: ""
   exec:
     enabled: true
     host: "sandbox"
