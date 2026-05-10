@@ -15,6 +15,7 @@ from echo_agent.skills.store import SkillStore
 
 class SkillsListTool(Tool):
     name = "skills_list"
+    risk_level = "read_only"
     description = (
         "List all available skills with compact metadata (name, description, category, version). "
         "Use this to discover what skills exist before viewing or managing them."
@@ -37,6 +38,7 @@ class SkillsListTool(Tool):
 
 class SkillViewTool(Tool):
     name = "skill_view"
+    risk_level = "read_only"
     description = (
         "View the full content of a skill (SKILL.md) or a specific supporting file. "
         "Without file_path, returns the full SKILL.md and lists linked files. "
@@ -83,6 +85,7 @@ class SkillViewTool(Tool):
 
 class SkillManageTool(Tool):
     name = "skill_manage"
+    risk_level = "dangerous"
     description = (
         "Create, edit, patch, or delete skills. Use this to capture reusable knowledge "
         "from completed tasks. Actions: create, edit, patch, delete, write_file, remove_file."

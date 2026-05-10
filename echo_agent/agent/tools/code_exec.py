@@ -23,6 +23,7 @@ _RUNNERS: dict[str, str] = {
 class CodeExecTool(Tool):
     name = "execute_code"
     description = "Execute a code snippet in a sandboxed subprocess. Supports Python, JavaScript, and Bash."
+    risk_level = "exec"
     parameters = {
         "type": "object",
         "properties": {

@@ -12,6 +12,7 @@ from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
 class SearchFilesTool(Tool):
     name = "search_files"
     description = "Search file contents by regex pattern or find files by glob pattern within the workspace."
+    risk_level = "read_only"
     parameters = {
         "type": "object",
         "properties": {

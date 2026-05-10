@@ -58,6 +58,7 @@ class _PathSafety:
 class ReadFileTool(Tool):
     name = "read_file"
     description = "Read the contents of a file."
+    risk_level = "read_only"
     parameters = {
         "type": "object",
         "properties": {
@@ -161,6 +162,7 @@ class EditFileTool(Tool):
 class ListDirTool(Tool):
     name = "list_dir"
     description = "List files and directories at a path."
+    risk_level = "read_only"
     parameters = {
         "type": "object",
         "properties": {
