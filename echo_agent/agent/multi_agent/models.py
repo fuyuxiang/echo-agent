@@ -17,6 +17,7 @@ class AgentProfile:
     task_types: tuple[str, ...] = ()
     tools_allow: tuple[str, ...] = ()
     tools_deny: tuple[str, ...] = ()
+    critical_tools: tuple[str, ...] = ()
     model: str = ""
     provider: str = ""
     max_iterations: int = 8
@@ -59,6 +60,7 @@ class AgentRunResult:
     success: bool
     output: str = ""
     error: str = ""
+    error_type: str = ""
     iterations: int = 0
     model: str = ""
     provider_name: str = ""
