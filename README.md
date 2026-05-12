@@ -1,7 +1,7 @@
 # Echo Agent
 
 <p align="center">
-  <strong>可自托管、可长期运行的跨平台 AI Agent。</strong>
+  <strong>你私有的 Agent 操作系统。多 Agent 协作，全平台连接，永远在线。</strong>
 </p>
 
 <p align="center">
@@ -19,21 +19,19 @@
   <img alt="Self Hosted" src="https://img.shields.io/badge/self--hosted-111827?style=for-the-badge">
 </p>
 
-**Echo Agent** 是一个面向私有部署和持续运行场景的 AI Agent。它可以部署在本地设备、VPS 或现有基础设施中，统一处理 CLI、消息通道、计划任务与 Gateway API，并在同一套会话、记忆、工具、技能、权限和可观测体系下协同工作。适用于个人助理、团队自动化、内部工具入口和跨平台机器人等场景。
+**Echo Agent** 是一个面向私有部署的 Agent 操作系统。一支由 planner、coder、researcher、operator 组成的 AI 团队，部署在你自己的服务器上，7×24 常驻运行。认知级记忆系统（四层架构 + 遗忘曲线 + 矛盾检测）让它越用越懂你；LLM 驱动的安全审批让高风险操作摆脱死板规则；原生 A2A 和 MCP 协议让它成为 Agent 互联网中的一等公民。从微信到 Telegram，从 CLI 到 Gateway API，一个入口统一所有。
 
-使用你信任的模型服务。Echo Agent 支持 OpenAI、Anthropic Claude、Google Gemini、AWS Bedrock、OpenRouter，以及任何 OpenAI 兼容端点。通过配置管理 provider、模型、fallback 策略和凭证池，让同一个 Agent 在不同任务和环境中保持稳定、可控。
-
-<!-- PLACEHOLDER_FEATURES_TABLE -->
+支持 OpenAI、Anthropic Claude、Google Gemini、AWS Bedrock、OpenRouter，以及任何 OpenAI 兼容端点。通过配置管理 provider、模型、fallback 策略和凭证池，让同一个 Agent 团队在不同任务和环境中保持稳定、可控。
 
 <table>
-<tr><td><b>持续运行的 Agent 服务</b></td><td>CLI、消息通道、Webhook、计划任务和 Gateway API 共用同一个 Agent Loop。来自不同入口的请求进入统一的会话、记忆、工具和权限上下文。</td></tr>
-<tr><td><b>多平台消息接入</b></td><td>Telegram、Discord、Slack、WhatsApp、微信、QQ、飞书、钉钉、企业微信、Matrix、Email 等通道通过统一消息总线接入，支持从本地终端到云端常驻的部署方式。</td></tr>
-<tr><td><b>持久化上下文与技能</b></td><td>四层记忆层级（Working → Episodic → Semantic → Archival），支持 BM25 + 向量混合检索、Ebbinghaus 自适应遗忘、矛盾检测与版本化信念修正、会话后自动整理。技能以目录和 <code>SKILL.md</code> 形式沉淀，支持创建、安装和共享。</td></tr>
-<tr><td><b>受控工具执行</b></td><td>内置文件、Shell、Web、视觉、TTS、MCP、知识检索、任务和工作流等 30+ 工具，并可从 MCP server 动态注册扩展工具。高风险操作由权限规则、管理员配置和审批流程统一约束。</td></tr>
-<tr><td><b>面向系统集成的 Gateway</b></td><td>提供 REST + WebSocket API，内置 Playground、会话管理、健康检查、认证（allowlist / pairing / token）和 A2A 协议入口。</td></tr>
-<tr><td><b>多 Agent 路由与并行执行</b></td><td>按任务类型路由到 general、planner、coder、researcher、knowledge、operator 等专用 Agent，支持调度审计、并行执行和长任务编排。</td></tr>
-<tr><td><b>自然语言计划任务</b></td><td>内置 cron 调度器，可将日报、巡检、备份、提醒等任务投递到任意通道，适合在 VPS、工作站或现有基础设施上常驻运行。</td></tr>
-<tr><td><b>生产部署</b></td><td>开发阶段使用前台 CLI，生产环境注册为 systemd 服务。一条命令完成安装、启用、状态查看和日志排查。</td></tr>
+<tr><td><b>🧠 认知级记忆系统</b></td><td>四层记忆（Working → Episodic → Semantic → Archival）+ Ebbinghaus 遗忘曲线 + 矛盾检测与信念版本化。BM25 + 向量混合检索，越用越懂你。</td></tr>
+<tr><td><b>🤖 多 Agent 团队协作</b></td><td>planner、coder、researcher、knowledge、operator 等专业 Agent 按任务自动路由，支持并行执行、调度审计和长任务编排。一个人拥有一支 AI 团队。</td></tr>
+<tr><td><b>🔐 LLM 驱动的安全审批</b></td><td>Smart Mode 用 LLM 对高风险工具调用做实时风险预审，告别死板的黑白名单。结合路径策略、能力声明和管理员审批，安全且灵活。</td></tr>
+<tr><td><b>🌐 A2A + MCP 协议原生支持</b></td><td>实现 Google A2A（Agent-to-Agent）协议，Agent 可被其他 Agent 发现和调用；集成 Anthropic MCP，动态挂载外部工具。你的 Agent 是互联网中的一等节点。</td></tr>
+<tr><td><b>📡 全平台消息接入</b></td><td>Telegram、Discord、Slack、WhatsApp、微信、QQ、飞书、钉钉、企业微信、Matrix、Email 等 12+ 通道，统一消息总线，一个 Agent 覆盖所有平台。</td></tr>
+<tr><td><b>⚡ 7×24 常驻运行</b></td><td>CLI、消息通道、Webhook、计划任务和 Gateway API 共用同一个 Agent Loop。部署在 VPS、工作站或任何基础设施上，永不下线。</td></tr>
+<tr><td><b>🛠️ 30+ 内置工具 + MCP 扩展</b></td><td>文件、Shell、Web、视觉、TTS、代码执行、知识检索、任务编排、工作流引擎。MCP server 动态注册无限扩展。</td></tr>
+<tr><td><b>🎯 Gateway + 可观测性</b></td><td>REST / WebSocket API、内置 Playground、OpenTelemetry 遥测、熔断器、健康检查。生产级基础设施，开箱即用。</td></tr>
 </table>
 
 ---
@@ -164,8 +162,6 @@ permissions:
 
 ---
 
-<!-- PLACEHOLDER_REST -->
-
 ## 记忆
 
 Echo Agent 的记忆系统采用四层分级架构，在两类记忆（用户记忆 / 环境记忆）之上实现从短期到长期的完整生命周期管理。
@@ -248,18 +244,21 @@ Echo Agent 的记忆系统采用四层分级架构，在两类记忆（用户记
 
 ```text
 echo_agent/
+├── a2a/            # A2A 协议（Agent-to-Agent 互操作）
 ├── agent/          # Agent loop、上下文构建、压缩、工具执行
 ├── bus/            # 消息事件队列
 ├── channels/       # CLI、消息通道、webhook、cron 适配器
 ├── cli/            # 配置向导、状态查看、服务管理
 ├── config/         # 配置 schema、加载器、默认值
 ├── gateway/        # HTTP / WebSocket Gateway
+├── knowledge/      # 知识库索引与检索
 ├── mcp/            # MCP 客户端、传输层、OAuth
 ├── memory/         # 四层记忆、混合检索、遗忘曲线、矛盾检测、向量索引
 ├── models/         # Provider、路由、凭证池
 ├── observability/  # 健康检查、Span、遥测
 ├── permissions/    # 权限和凭证原语
 ├── scheduler/      # 计划任务服务
+├── security/       # 风险分类、路径策略、LLM 安全审批
 ├── session/        # 会话持久化
 ├── skills/         # 技能存储和审查
 ├── storage/        # SQLite 后端
