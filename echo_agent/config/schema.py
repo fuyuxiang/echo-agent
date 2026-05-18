@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
@@ -559,6 +559,16 @@ class A2AConfig(_Base):
     capabilities: list[str] = Field(default_factory=lambda: ["chat", "tool_use"])
 
 
+class PluginsConfig(_Base):
+    """Plugin system configuration."""
+
+    enabled: bool = True
+    allow: list[str] = Field(default_factory=list)
+    deny: list[str] = Field(default_factory=list)
+    extra_dirs: list[str] = Field(default_factory=list)
+    config: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+
 class EvalConfig(_Base):
     enabled: bool = True
     dataset_path: str = "data/eval"
@@ -590,4 +600,5 @@ class Config(_Base):
     bus: BusConfig = Field(default_factory=BusConfig)
     rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
     circuit_breaker: CircuitBreakerConfig = Field(default_factory=CircuitBreakerConfig)
+    plugins: PluginsConfig = Field(default_factory=PluginsConfig)
     workspace: str = "~/.echo-agent"
