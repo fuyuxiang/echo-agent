@@ -365,6 +365,7 @@ class AgentLoop:
         self._pending_consolidations: set[str] = set()
         self._state_lock = asyncio.Lock()
         self._working_memories: OrderedDict[str, Any] = OrderedDict()
+        self._plugin_manager: Any = None
         self._register_tools(scheduler=scheduler, task_manager=task_manager, workflow_engine=workflow_engine)
         self._setup_delegation()
 
@@ -526,16 +527,26 @@ class AgentLoop:
         self.tools.register(delegate_tool)
         logger.info("Delegation enabled with {} worker templates", len(worker_registry.list()))
 
+    def set_plugin_manager(self, manager: Any) -> None:
+        """Attach the plugin manager after bootstrap. Passes hook_registry to InferenceStage."""
+        self._plugin_manager = manager
+        self._inference_stage._hook_registry = manager.hooks
+
     async def start(self) -> None:
         self._running = True
         if self._vector_index is not None:
             await self._vector_index.initialize()
         self._spawn_background(self._start_mcp_background())
         self.bus.subscribe_inbound(self._on_inbound)
+        if self._plugin_manager:
+            await self._plugin_manager.hooks.dispatch("on_agent_start")
         logger.info("Agent loop started")
 
     async def stop(self) -> None:
         self._running = False
+        if self._plugin_manager:
+            await self._plugin_manager.hooks.dispatch("on_agent_stop")
+            await self._plugin_manager.shutdown()
         if self.mcp_manager:
             await self.mcp_manager.stop_all()
         async with self._state_lock:

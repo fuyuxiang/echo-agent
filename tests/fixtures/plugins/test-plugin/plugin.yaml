@@ -1,0 +1,14 @@
+name: test-plugin
+version: "1.0.0"
+description: "A test plugin for unit/integration tests"
+author: "Test"
+requires_env: []
+provides:
+  tools:
+    - test_echo
+  hooks:
+    - pre_tool_call
+    - post_tool_call
+kind: tool
+config_key: test_plugin
+depends_on: []

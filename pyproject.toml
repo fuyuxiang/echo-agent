@@ -48,6 +48,9 @@ dev = ["ruff>=0.4", "pytest>=8.0", "pytest-asyncio>=0.23"]
 [project.scripts]
 echo-agent = "echo_agent.__main__:main"
 
+[project.entry-points."echo_agent.plugins"]
+# External plugins register here via their own pyproject.toml
+
 [tool.hatch.build]
 include = [
     "echo_agent/**/*.py",

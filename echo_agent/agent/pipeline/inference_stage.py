@@ -63,6 +63,7 @@ class InferenceStage:
         self._circuit_breaker = circuit_breaker
         self._default_model = default_model
         self._max_iterations = max_iterations
+        self._hook_registry: Any = None
         self._nudge_interval: int = config.skills.nudge_interval if hasattr(config, 'skills') and hasattr(config.skills, 'nudge_interval') else 0
         self._memory_nudge_interval: int = config.memory.nudge_interval if hasattr(config.memory, 'nudge_interval') else 0
         self._tool_iters_since_skill_check = 0
@@ -109,6 +110,13 @@ class InferenceStage:
             ] if unavailable else tool_defs
 
             llm_span = self._tracer.start_span(trace_id, f"llm_{iteration}", "llm_call", "llm_call")
+
+            # pre_llm_call hook
+            if self._hook_registry and self._hook_registry.has_hooks("pre_llm_call"):
+                messages = await self._hook_registry.dispatch_modify(
+                    "pre_llm_call", messages, active_tool_defs, self._default_model,
+                )
+
             response, route_decision = await self._chat_stream_with_routing(
                 messages=messages,
                 tools=active_tool_defs if active_tool_defs else None,
@@ -116,6 +124,13 @@ class InferenceStage:
                 task_type=ctx.task_type,
                 content=event.text,
             )
+
+            # post_llm_call hook
+            if self._hook_registry and self._hook_registry.has_hooks("post_llm_call"):
+                response = await self._hook_registry.dispatch_modify(
+                    "post_llm_call", response, messages,
+                )
+
             self._tracer.end_span(
                 llm_span,
                 metadata={
@@ -199,7 +214,38 @@ class InferenceStage:
                     credentials=self._credentials.get_for_tool(tool_call.name),
                     approved_actions=approval_check.approved_actions,
                 )
+
+                # pre_tool_call hook
+                if self._hook_registry and self._hook_registry.has_hooks("pre_tool_call"):
+                    hook_results = await self._hook_registry.dispatch(
+                        "pre_tool_call", tool_call.name, tool_call.arguments, tool_exec_ctx,
+                    )
+                    _hook_cancelled = False
+                    for hr in hook_results:
+                        if hr.cancel:
+                            result = type("_R", (), {"success": False, "text": f"Blocked by plugin: {hr.cancel_reason}", "error": hr.cancel_reason, "metadata": {}})()
+                            messages.append({
+                                "role": "tool", "tool_call_id": tool_call.id,
+                                "name": tool_call.name, "content": result.text,
+                            })
+                            session.add_message("tool", result.text, tool_call_id=tool_call.id, name=tool_call.name)
+                            self._tracer.end_span(tool_span, metadata={"success": False, "hook_cancelled": True})
+                            total_tool_calls += 1
+                            _hook_cancelled = True
+                            break
+                        if hr.modified is not None:
+                            tool_call.arguments = hr.modified
+                    if _hook_cancelled:
+                        continue
+
                 result = await self._tools.execute(tool_call.name, tool_call.arguments, tool_exec_ctx)
+
+                # post_tool_call hook
+                if self._hook_registry and self._hook_registry.has_hooks("post_tool_call"):
+                    result = await self._hook_registry.dispatch_modify(
+                        "post_tool_call", result, tool_call.name, tool_call.arguments, tool_exec_ctx,
+                    )
+
                 result_text = result.text
                 if len(result_text) > self._MAX_TOOL_RESULT_CHARS:
                     result_text = result_text[:self._MAX_TOOL_RESULT_CHARS] + "\n...(truncated)"
