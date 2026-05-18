@@ -119,6 +119,20 @@ async def _bootstrap(
         scheduler=scheduler, storage=storage,
         task_manager=task_manager, workflow_engine=workflow_engine,
     )
+
+    # Plugin system — discover and activate plugins
+    from echo_agent.plugins.manager import PluginManager
+
+    plugin_manager = PluginManager(
+        config=config,
+        workspace=ws,
+        bus=bus,
+        tool_registry=agent.tools,
+        provider=provider,
+    )
+    await plugin_manager.discover_and_load()
+    agent.set_plugin_manager(plugin_manager)
+
     channels = ChannelManager(config.channels, bus, on_cli_exit=on_cli_exit)
     health = HealthChecker(check_interval=config.observability.health_check_interval_seconds)
 
@@ -359,6 +373,13 @@ def main() -> None:
     svc_parser.add_argument("action", choices=["install", "uninstall", "start", "stop", "restart", "status", "logs"], help="Service action")
     svc_parser.add_argument("-w", "--workspace", help="Workspace directory (used by install)")
 
+    # plugin
+    plugin_parser = subparsers.add_parser("plugin", help="Manage plugins")
+    plugin_parser.add_argument("action", choices=["list", "info", "enable", "disable", "check"], help="Plugin action")
+    plugin_parser.add_argument("name", nargs="?", default="", help="Plugin name (for info/enable/disable)")
+    plugin_parser.add_argument("-c", "--config", help="Path to config file")
+    plugin_parser.add_argument("-w", "--workspace", help="Workspace directory")
+
     # top-level flags for backward compat
     parser.add_argument("-c", "--config", help="Path to config file", dest="top_config")
     parser.add_argument("-w", "--workspace", help="Workspace directory", dest="top_workspace")
@@ -389,6 +410,16 @@ def main() -> None:
     if args.command == "service":
         from echo_agent.cli.service import run_action
         run_action(args.action, workspace=args.workspace or args.top_workspace)
+        return
+
+    if args.command == "plugin":
+        from echo_agent.cli.plugins_cmd import run_plugin_command
+        run_plugin_command(
+            action=args.action,
+            name=args.name,
+            config_path=args.config or args.top_config,
+            workspace=args.workspace or args.top_workspace,
+        )
         return
 
     # "run" command or no command (backward compat)

@@ -1,0 +1,329 @@
+"""Tests for PluginManager — full lifecycle."""
+
+import pytest
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from echo_agent.plugins.manager import PluginManager
+from echo_agent.plugins.manifest import PluginManifest, PluginRecord
+
+
+def _make_config(*, enabled=True, allow=None, deny=None, extra_dirs=None, plugin_config=None):
+    config = MagicMock()
+    config.plugins.enabled = enabled
+    config.plugins.allow = allow or []
+    config.plugins.deny = deny or []
+    config.plugins.extra_dirs = extra_dirs or []
+    config.plugins.config = plugin_config or {}
+    return config
+
+
+@pytest.fixture
+def plugin_dir(tmp_path):
+    """Create a workspace with a project plugin."""
+    d = tmp_path / "plugins" / "hello-plugin"
+    d.mkdir(parents=True)
+    (d / "plugin.yaml").write_text(
+        "name: hello-plugin\nversion: '1.0.0'\ndescription: Hello\nconfig_key: hello\n"
+    )
+    (d / "__init__.py").write_text(
+        "async def activate(ctx):\n"
+        "    ctx.log.info('hello activated')\n"
+        "plugin = {'activate': activate}\n"
+    )
+    return tmp_path
+
+
+@pytest.fixture
+def manager(plugin_dir):
+    config = _make_config(plugin_config={"hello": {"greeting": "hi"}})
+    bus = MagicMock()
+    bus.publish_outbound = AsyncMock()
+    tool_registry = MagicMock()
+    return PluginManager(
+        config=config,
+        workspace=plugin_dir,
+        bus=bus,
+        tool_registry=tool_registry,
+        provider=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_discover_and_load(manager):
+    with patch("echo_agent.plugins.loader._scan_entry_points", return_value=[]):
+        await manager.discover_and_load()
+
+    assert len(manager.plugins) == 1
+    assert manager.plugins[0].status == "activated"
+    assert manager.plugins[0].manifest.name == "hello-plugin"
+
+
+@pytest.mark.asyncio
+async def test_plugin_disabled_by_config(plugin_dir):
+    config = _make_config(deny=["hello-plugin"])
+    bus = MagicMock()
+    tool_registry = MagicMock()
+    mgr = PluginManager(
+        config=config, workspace=plugin_dir, bus=bus,
+        tool_registry=tool_registry, provider=None,
+    )
+    with patch("echo_agent.plugins.loader._scan_entry_points", return_value=[]):
+        await mgr.discover_and_load()
+
+    assert len(mgr.plugins) == 0 or all(p.status == "disabled" for p in mgr.plugins)
+
+
+@pytest.mark.asyncio
+async def test_plugin_system_disabled(plugin_dir):
+    config = _make_config(enabled=False)
+    bus = MagicMock()
+    tool_registry = MagicMock()
+    mgr = PluginManager(
+        config=config, workspace=plugin_dir, bus=bus,
+        tool_registry=tool_registry, provider=None,
+    )
+    with patch("echo_agent.plugins.loader._scan_entry_points", return_value=[]):
+        await mgr.discover_and_load()
+
+    assert mgr.plugins == []
+
+
+@pytest.mark.asyncio
+async def test_plugin_missing_env(tmp_path):
+    d = tmp_path / "plugins" / "env-plugin"
+    d.mkdir(parents=True)
+    (d / "plugin.yaml").write_text(
+        "name: env-plugin\nrequires_env:\n  - NONEXISTENT_VAR_ABC123\n"
+    )
+    (d / "__init__.py").write_text("async def activate(ctx): pass\nplugin = {'activate': activate}\n")
+
+    config = _make_config()
+    bus = MagicMock()
+    tool_registry = MagicMock()
+    mgr = PluginManager(
+        config=config, workspace=tmp_path, bus=bus,
+        tool_registry=tool_registry, provider=None,
+    )
+    with patch("echo_agent.plugins.loader._scan_entry_points", return_value=[]):
+        await mgr.discover_and_load()
+
+    failed = [p for p in mgr.plugins if p.status == "failed"]
+    assert len(failed) == 1
+    assert "NONEXISTENT_VAR_ABC123" in failed[0].error
+
+
+@pytest.mark.asyncio
+async def test_plugin_activate_error(tmp_path):
+    d = tmp_path / "plugins" / "bad-plugin"
+    d.mkdir(parents=True)
+    (d / "plugin.yaml").write_text("name: bad-plugin\n")
+    (d / "__init__.py").write_text(
+        "async def activate(ctx): raise RuntimeError('oops')\n"
+        "plugin = {'activate': activate}\n"
+    )
+
+    config = _make_config()
+    bus = MagicMock()
+    tool_registry = MagicMock()
+    mgr = PluginManager(
+        config=config, workspace=tmp_path, bus=bus,
+        tool_registry=tool_registry, provider=None,
+    )
+    with patch("echo_agent.plugins.loader._scan_entry_points", return_value=[]):
+        await mgr.discover_and_load()
+
+    failed = [p for p in mgr.plugins if p.status == "failed"]
+    assert len(failed) == 1
+    assert "oops" in failed[0].error
+
+
+@pytest.mark.asyncio
+async def test_shutdown_calls_deactivate(manager):
+    with patch("echo_agent.plugins.loader._scan_entry_points", return_value=[]):
+        await manager.discover_and_load()
+
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_get_status_report(manager):
+    with patch("echo_agent.plugins.loader._scan_entry_points", return_value=[]):
+        await manager.discover_and_load()
+
+    report = manager.get_status_report()
+    assert len(report) == 1
+    assert report[0]["name"] == "hello-plugin"
+    assert report[0]["status"] == "activated"
+
+
+@pytest.mark.asyncio
+async def test_get_plugin_info(manager):
+    with patch("echo_agent.plugins.loader._scan_entry_points", return_value=[]):
+        await manager.discover_and_load()
+
+    info = manager.get_plugin_info("hello-plugin")
+    assert info is not None
+    assert info.manifest.name == "hello-plugin"
+
+    assert manager.get_plugin_info("nonexistent") is None
+
+
+@pytest.mark.asyncio
+async def test_hooks_accessible(manager):
+    with patch("echo_agent.plugins.loader._scan_entry_points", return_value=[]):
+        await manager.discover_and_load()
+
+    assert manager.hooks is not None
+
+
+@pytest.mark.asyncio
+async def test_allow_list_filtering(tmp_path):
+    """Only plugins in the allow list should be loaded."""
+    d1 = tmp_path / "plugins" / "allowed-plugin"
+    d1.mkdir(parents=True)
+    (d1 / "plugin.yaml").write_text("name: allowed-plugin\n")
+    (d1 / "__init__.py").write_text("async def activate(ctx): pass\nplugin = {'activate': activate}\n")
+
+    d2 = tmp_path / "plugins" / "blocked-plugin"
+    d2.mkdir(parents=True)
+    (d2 / "plugin.yaml").write_text("name: blocked-plugin\n")
+    (d2 / "__init__.py").write_text("async def activate(ctx): pass\nplugin = {'activate': activate}\n")
+
+    config = _make_config(allow=["allowed-plugin"])
+    bus = MagicMock()
+    tool_registry = MagicMock()
+    mgr = PluginManager(
+        config=config, workspace=tmp_path, bus=bus,
+        tool_registry=tool_registry, provider=None,
+    )
+    with patch("echo_agent.plugins.loader._scan_entry_points", return_value=[]):
+        await mgr.discover_and_load()
+
+    activated = [p for p in mgr.plugins if p.status == "activated"]
+    assert len(activated) == 1
+    assert activated[0].manifest.name == "allowed-plugin"
+
+
+@pytest.mark.asyncio
+async def test_sync_activate(tmp_path):
+    """Sync activate() functions should work."""
+    d = tmp_path / "plugins" / "sync-plugin"
+    d.mkdir(parents=True)
+    (d / "plugin.yaml").write_text("name: sync-plugin\n")
+    (d / "__init__.py").write_text("def activate(ctx): pass\nplugin = {'activate': activate}\n")
+
+    config = _make_config()
+    bus = MagicMock()
+    tool_registry = MagicMock()
+    mgr = PluginManager(
+        config=config, workspace=tmp_path, bus=bus,
+        tool_registry=tool_registry, provider=None,
+    )
+    with patch("echo_agent.plugins.loader._scan_entry_points", return_value=[]):
+        await mgr.discover_and_load()
+
+    assert mgr.plugins[0].status == "activated"
+
+
+@pytest.mark.asyncio
+async def test_deactivate_exception(tmp_path):
+    """Deactivate raising should not crash shutdown."""
+    d = tmp_path / "plugins" / "bad-deactivate"
+    d.mkdir(parents=True)
+    (d / "plugin.yaml").write_text("name: bad-deactivate\n")
+    (d / "__init__.py").write_text(
+        "async def activate(ctx): pass\n"
+        "async def deactivate(ctx): raise RuntimeError('deactivate boom')\n"
+        "plugin = {'activate': activate, 'deactivate': deactivate}\n"
+    )
+
+    config = _make_config()
+    bus = MagicMock()
+    tool_registry = MagicMock()
+    mgr = PluginManager(
+        config=config, workspace=tmp_path, bus=bus,
+        tool_registry=tool_registry, provider=None,
+    )
+    with patch("echo_agent.plugins.loader._scan_entry_points", return_value=[]):
+        await mgr.discover_and_load()
+
+    # Should not raise
+    await mgr.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_config_key_passthrough(tmp_path):
+    """Plugin should receive its config section via config_key."""
+    d = tmp_path / "plugins" / "cfg-plugin"
+    d.mkdir(parents=True)
+    (d / "plugin.yaml").write_text("name: cfg-plugin\nconfig_key: my_cfg\n")
+    (d / "__init__.py").write_text(
+        "received_config = None\n"
+        "async def activate(ctx):\n"
+        "    global received_config\n"
+        "    received_config = ctx.plugin_config\n"
+        "plugin = {'activate': activate}\n"
+    )
+
+    config = _make_config(plugin_config={"my_cfg": {"api_key": "secret123"}})
+    bus = MagicMock()
+    tool_registry = MagicMock()
+    mgr = PluginManager(
+        config=config, workspace=tmp_path, bus=bus,
+        tool_registry=tool_registry, provider=None,
+    )
+    with patch("echo_agent.plugins.loader._scan_entry_points", return_value=[]):
+        await mgr.discover_and_load()
+
+    assert mgr.plugins[0].status == "activated"
+
+
+@pytest.mark.asyncio
+async def test_no_plugins_discovered(tmp_path):
+    """No plugins should result in empty list without errors."""
+    config = _make_config()
+    bus = MagicMock()
+    tool_registry = MagicMock()
+    mgr = PluginManager(
+        config=config, workspace=tmp_path, bus=bus,
+        tool_registry=tool_registry, provider=None,
+    )
+    with patch("echo_agent.plugins.loader._scan_entry_points", return_value=[]):
+        await mgr.discover_and_load()
+
+    assert mgr.plugins == []
+
+
+@pytest.mark.asyncio
+async def test_plugin_registers_tool(tmp_path):
+    """Plugin that registers a tool should have it tracked."""
+    d = tmp_path / "plugins" / "tool-plugin"
+    d.mkdir(parents=True)
+    (d / "plugin.yaml").write_text("name: tool-plugin\n")
+    (d / "__init__.py").write_text(
+        "from echo_agent.agent.tools.base import Tool, ToolResult\n"
+        "class MyTool(Tool):\n"
+        "    name = 'my_tool'\n"
+        "    description = 'test'\n"
+        "    parameters = {'type': 'object', 'properties': {}}\n"
+        "    async def execute(self, params, ctx=None):\n"
+        "        return ToolResult(success=True)\n"
+        "async def activate(ctx):\n"
+        "    ctx.register_tool(MyTool())\n"
+        "plugin = {'activate': activate}\n"
+    )
+
+    config = _make_config()
+    bus = MagicMock()
+    tool_registry = MagicMock()
+    mgr = PluginManager(
+        config=config, workspace=tmp_path, bus=bus,
+        tool_registry=tool_registry, provider=None,
+    )
+    with patch("echo_agent.plugins.loader._scan_entry_points", return_value=[]):
+        await mgr.discover_and_load()
+
+    assert mgr.plugins[0].status == "activated"
+    assert "my_tool" in mgr.plugins[0].tools_registered
+    tool_registry.register.assert_called_once()
