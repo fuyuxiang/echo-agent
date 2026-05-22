@@ -343,9 +343,16 @@ def main() -> None:
 
     # setup
     setup_parser = subparsers.add_parser("setup", help="Run the setup wizard")
-    setup_parser.add_argument("section", nargs="?", default=None, help="Setup section: model, channel, advanced")
+    setup_parser.add_argument(
+        "section", nargs="?", default=None,
+        help="Setup section: language, model, permissions, terminal, agent, tools, channel, gateway, observability, doctor",
+    )
     setup_parser.add_argument("-c", "--config", help="Path to config file")
     setup_parser.add_argument("-w", "--workspace", help="Workspace directory")
+    setup_parser.add_argument("--lang", choices=["en", "zh", "auto"], default=None,
+                              help="Override interface language (default: auto-detect from OS)")
+    setup_parser.add_argument("--flow", choices=["quickstart", "full"], default=None,
+                              help="Skip the menu and run a specific flow")
 
     # status
     status_parser = subparsers.add_parser("status", help="Show current configuration status")
@@ -388,7 +395,16 @@ def main() -> None:
 
     if args.command == "setup":
         from echo_agent.cli.setup import run_setup_wizard
-        run_setup_wizard(section=args.section, config_path=args.config or args.top_config, workspace=args.workspace or args.top_workspace)
+        lang_arg = getattr(args, "lang", None)
+        if lang_arg == "auto":
+            lang_arg = None
+        run_setup_wizard(
+            section=args.section,
+            config_path=args.config or args.top_config,
+            workspace=args.workspace or args.top_workspace,
+            lang=lang_arg,
+            flow=getattr(args, "flow", None),
+        )
         return
 
     if args.command == "status":
