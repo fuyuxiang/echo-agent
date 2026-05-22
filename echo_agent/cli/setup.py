@@ -1,6 +1,6 @@
 """Interactive setup wizard for Echo Agent.
 
-The wizard is structured into nine sections, each runnable independently:
+The wizard is structured into ten sections, each runnable independently:
 
     1. Language          — auto-detected, overridable
     2. Model & Provider  — LLM provider + default model
@@ -11,6 +11,7 @@ The wizard is structured into nine sections, each runnable independently:
     7. Channels          — messaging integrations + allowlist
     8. Gateway           — Web/WS API exposure
     9. Observability     — log level + OpenTelemetry export
+   10. Evolution         — self-evolving skill harness (off by default)
 
 Followed by a Capability Check ("doctor") + summary.
 
@@ -618,7 +619,194 @@ def setup_observability(config: dict) -> None:
                     otel=t("common.yes") if otel_on else t("common.no")))
 
 
-# ── Capability Check (doctor) ─────────────────────────────────────────────────
+# ── Section 10: Self-evolving skill harness ───────────────────────────────────
+
+_EVOLUTION_TRIGGER_KEYS: list[str] = ["manual", "threshold", "scheduled"]
+
+
+def setup_evolution(config: dict) -> None:
+    """Configure the self-evolving skill harness.
+
+    Disabled by default. When enabled, this section also writes
+    ``data/eval/baseline.yaml`` (the gating dataset) if it does not already
+    exist, since promotion is impossible without it.
+    """
+    _print_section_header("evolution")
+    print_info(t("evolution.intro"))
+    print_warning(t("evolution.warning"))
+    print()
+
+    evo = _ensure_dict(config, "evolution")
+
+    enabled = prompt_yes_no(
+        t("evolution.enabled"),
+        default=bool(evo.get("enabled", False)),
+    )
+    evo["enabled"] = enabled
+    if not enabled:
+        evo["record_trajectories"] = bool(evo.get("record_trajectories", True))
+        print_success(t("evolution.saved_disabled"))
+        return
+
+    # Trigger mode
+    trigger_labels = [t(f"evolution.trigger_{k}") for k in _EVOLUTION_TRIGGER_KEYS]
+    current_trigger = evo.get("trigger_mode") or evo.get("triggerMode") or "manual"
+    default_trigger = (
+        _EVOLUTION_TRIGGER_KEYS.index(current_trigger)
+        if current_trigger in _EVOLUTION_TRIGGER_KEYS
+        else 0
+    )
+    print_info(t("evolution.trigger_hint"))
+    t_idx = prompt_choice(t("evolution.trigger"), trigger_labels, default=default_trigger)
+    trigger = _EVOLUTION_TRIGGER_KEYS[t_idx]
+    evo["trigger_mode"] = trigger
+
+    if trigger == "threshold":
+        cur = int(evo.get("threshold_trajectories") or evo.get("thresholdTrajectories") or 50)
+        raw = prompt(f"  {t('evolution.threshold')}", default=str(cur))
+        try:
+            evo["threshold_trajectories"] = max(1, int(raw))
+        except ValueError:
+            print_warning(t("common.invalid"))
+            evo["threshold_trajectories"] = cur
+    elif trigger == "scheduled":
+        cur = evo.get("cron_expression") or evo.get("cronExpression") or "0 4 * * *"
+        raw = prompt(f"  {t('evolution.cron')}", default=cur)
+        evo["cron_expression"] = raw or cur
+
+    # Eval dataset path
+    cur_dataset = evo.get("eval_dataset_path") or evo.get("evalDatasetPath") or "data/eval/baseline.yaml"
+    raw = prompt(f"  {t('evolution.dataset_path')}", default=cur_dataset)
+    evo["eval_dataset_path"] = raw or cur_dataset
+
+    # Strict / regression policy
+    evo["require_strict_improvement"] = prompt_yes_no(
+        t("evolution.strict"),
+        default=bool(evo.get("require_strict_improvement", True)),
+    )
+    cur_thr = float(evo.get("regression_threshold") or evo.get("regressionThreshold") or 0.05)
+    print_info(t("evolution.regression_hint"))
+    raw = prompt(f"  {t('evolution.regression')}", default=f"{cur_thr:.2f}")
+    try:
+        v = float(raw)
+        if 0.0 <= v <= 0.5:
+            evo["regression_threshold"] = v
+        else:
+            print_warning(t("common.invalid"))
+    except ValueError:
+        print_warning(t("common.invalid"))
+
+    # Operational knobs
+    evo["candidate_review_required"] = prompt_yes_no(
+        t("evolution.review_required"),
+        default=bool(evo.get("candidate_review_required", False)),
+    )
+    cur_cand = int(evo.get("max_candidates_per_run") or evo.get("maxCandidatesPerRun") or 3)
+    raw = prompt(f"  {t('evolution.max_candidates')}", default=str(cur_cand))
+    try:
+        evo["max_candidates_per_run"] = max(1, int(raw))
+    except ValueError:
+        evo["max_candidates_per_run"] = cur_cand
+
+    cur_retain = int(evo.get("trajectory_retention_days") or evo.get("trajectoryRetentionDays") or 30)
+    raw = prompt(f"  {t('evolution.retention_days')}", default=str(cur_retain))
+    try:
+        evo["trajectory_retention_days"] = max(0, int(raw))
+    except ValueError:
+        evo["trajectory_retention_days"] = cur_retain
+
+    evo["redact_args"] = prompt_yes_no(
+        t("evolution.redact_args"),
+        default=bool(evo.get("redact_args", True)),
+    )
+    evo["record_trajectories"] = prompt_yes_no(
+        t("evolution.record"),
+        default=bool(evo.get("record_trajectories", True)),
+    )
+
+    # Eval execution knobs (used by PromotionGate)
+    cur_par = int(evo.get("eval_parallel") or evo.get("evalParallel") or 2)
+    raw = prompt(f"  {t('evolution.eval_parallel')}", default=str(cur_par))
+    try:
+        evo["eval_parallel"] = max(1, int(raw))
+    except ValueError:
+        evo["eval_parallel"] = cur_par
+
+    cur_to = int(evo.get("eval_timeout_seconds") or evo.get("evalTimeoutSeconds") or 60)
+    raw = prompt(f"  {t('evolution.eval_timeout')}", default=str(cur_to))
+    try:
+        evo["eval_timeout_seconds"] = max(1, int(raw))
+    except ValueError:
+        evo["eval_timeout_seconds"] = cur_to
+
+    # Ensure the baseline dataset exists — otherwise PromotionGate will
+    # reject every candidate. Resolve workspace from config (it may be
+    # relative; in that case we anchor at cwd).
+    workspace_raw = config.get("workspace") or "~/.echo-agent"
+    ws = Path(str(workspace_raw)).expanduser()
+    if not ws.is_absolute():
+        ws = (Path.cwd() / ws).resolve()
+    dataset_path = ws / evo["eval_dataset_path"]
+    if not dataset_path.exists():
+        try:
+            dataset_path.parent.mkdir(parents=True, exist_ok=True)
+            from echo_agent.cli.evolution_cmd import _DEFAULT_DATASET
+            dataset_path.write_text(_DEFAULT_DATASET, encoding="utf-8")
+            print_info(t("evolution.dataset_seeded", path=str(dataset_path)))
+        except Exception as e:
+            print_warning(t("evolution.dataset_seed_failed", error=str(e)))
+
+    print_success(t(
+        "evolution.saved_enabled",
+        trigger=trigger,
+        dataset=evo["eval_dataset_path"],
+    ))
+
+
+# ── Section registry ──────────────────────────────────────────────────────────
+
+SETUP_SECTIONS: list[tuple[str, Callable[[dict], None]]] = [
+    ("language", setup_language),
+    ("model", setup_model),
+    ("permissions", setup_permissions),
+    ("terminal", setup_terminal),
+    ("agent", setup_agent),
+    ("tools", setup_tools),
+    ("channel", setup_channels),
+    ("gateway", setup_gateway),
+    ("observability", setup_observability),
+    ("evolution", setup_evolution),
+]
+
+# Aliases so users can pass any reasonable section name from the CLI.
+SECTION_ALIASES: dict[str, str] = {
+    "lang": "language",
+    "language": "language",
+    "model": "model",
+    "provider": "model",
+    "permission": "permissions",
+    "permissions": "permissions",
+    "approval": "permissions",
+    "sandbox": "terminal",
+    "terminal": "terminal",
+    "execution": "terminal",
+    "agent": "agent",
+    "behavior": "agent",
+    "tool": "tools",
+    "tools": "tools",
+    "channel": "channel",
+    "channels": "channel",
+    "gateway": "gateway",
+    "network": "gateway",
+    "observability": "observability",
+    "logging": "observability",
+    "evolution": "evolution",
+    "evolve": "evolution",
+    "self-evolve": "evolution",
+    "self_evolve": "evolution",
+    "doctor": "doctor",
+    "check": "doctor",
+}
 
 def _capability_check(config: dict) -> list[tuple[str, bool, str]]:
     """Return a list of (label, ok, hint) tuples summarising what's available."""
@@ -696,47 +884,6 @@ def setup_doctor(config: dict) -> None:
             line += color(f"  ({extra})", Colors.DIM)
         print(line)
     print()
-
-
-# ── Section registry ──────────────────────────────────────────────────────────
-
-SETUP_SECTIONS: list[tuple[str, Callable[[dict], None]]] = [
-    ("language", setup_language),
-    ("model", setup_model),
-    ("permissions", setup_permissions),
-    ("terminal", setup_terminal),
-    ("agent", setup_agent),
-    ("tools", setup_tools),
-    ("channel", setup_channels),
-    ("gateway", setup_gateway),
-    ("observability", setup_observability),
-]
-
-# Aliases so users can pass any reasonable section name from the CLI.
-SECTION_ALIASES: dict[str, str] = {
-    "lang": "language",
-    "language": "language",
-    "model": "model",
-    "provider": "model",
-    "permission": "permissions",
-    "permissions": "permissions",
-    "approval": "permissions",
-    "sandbox": "terminal",
-    "terminal": "terminal",
-    "execution": "terminal",
-    "agent": "agent",
-    "behavior": "agent",
-    "tool": "tools",
-    "tools": "tools",
-    "channel": "channel",
-    "channels": "channel",
-    "gateway": "gateway",
-    "network": "gateway",
-    "observability": "observability",
-    "logging": "observability",
-    "doctor": "doctor",
-    "check": "doctor",
-}
 
 
 # ── Summary ───────────────────────────────────────────────────────────────────
