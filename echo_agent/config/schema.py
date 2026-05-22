@@ -576,6 +576,25 @@ class EvalConfig(_Base):
     timeout_per_case: int = 120
 
 
+class UIConfig(_Base):
+    """User interface preferences (CLI / setup wizard)."""
+
+    locale: Literal["en", "zh", "auto"] = "auto"
+
+
+class AgentBehaviorConfig(_Base):
+    """High-level agent loop tuning surfaced by the setup wizard.
+
+    These mirror knobs scattered across other configs but give the wizard
+    a single, opinionated home so users don't have to know that
+    ``max_iterations`` lives elsewhere. ``AgentLoop`` reads from here when
+    a value is non-default; otherwise it falls back to its built-in 40.
+    """
+
+    max_iterations: int = 40
+    reasoning_effort: Literal["low", "medium", "high", "auto"] = "auto"
+
+
 class Config(_Base):
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
@@ -601,4 +620,6 @@ class Config(_Base):
     rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
     circuit_breaker: CircuitBreakerConfig = Field(default_factory=CircuitBreakerConfig)
     plugins: PluginsConfig = Field(default_factory=PluginsConfig)
+    ui: UIConfig = Field(default_factory=UIConfig)
+    agent: AgentBehaviorConfig = Field(default_factory=AgentBehaviorConfig)
     workspace: str = "~/.echo-agent"

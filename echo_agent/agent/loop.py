@@ -353,7 +353,7 @@ class AgentLoop:
         )
 
         self._running = False
-        self._max_iterations = 40
+        self._max_iterations = config.agent.max_iterations
         self._nudge_interval = config.skills.creation_nudge_interval
         self._memory_nudge_interval = config.memory.memory_nudge_interval
         self._tool_iters_since_skill_check = 0
