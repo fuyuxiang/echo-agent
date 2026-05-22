@@ -576,6 +576,30 @@ class EvalConfig(_Base):
     timeout_per_case: int = 120
 
 
+class EvolutionConfig(_Base):
+    """Self-evolving skill harness — see echo_agent/evolution/."""
+
+    enabled: bool = False
+    trigger_mode: Literal["manual", "threshold", "scheduled"] = "manual"
+    threshold_trajectories: int = 50
+    cron_expression: str = "0 4 * * *"
+    max_candidates_per_run: int = 3
+    max_trajectories_per_run: int = 200
+    eval_dataset_path: str = "data/eval/baseline.yaml"
+    regression_threshold: float = 0.05
+    require_strict_improvement: bool = True
+    record_trajectories: bool = True
+    trajectory_retention_days: int = 30
+    evolver_model: str = ""
+    skill_size_limit_bytes: int = 50_000
+    redact_args: bool = True
+    eval_parallel: int = 2
+    eval_timeout_seconds: int = 60
+    cooldown_seconds_after_promote: int = 86_400
+    auto_promote: bool = True
+    candidate_review_required: bool = False
+
+
 class UIConfig(_Base):
     """User interface preferences (CLI / setup wizard)."""
 
@@ -622,4 +646,5 @@ class Config(_Base):
     plugins: PluginsConfig = Field(default_factory=PluginsConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
     agent: AgentBehaviorConfig = Field(default_factory=AgentBehaviorConfig)
+    evolution: EvolutionConfig = Field(default_factory=EvolutionConfig)
     workspace: str = "~/.echo-agent"

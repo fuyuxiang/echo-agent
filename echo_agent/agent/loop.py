@@ -332,6 +332,7 @@ class AgentLoop:
                 self.tracer.set_otel_tracer(self._telemetry.get_tracer())
         self.mcp_manager: Any = None
         self.knowledge: Any = None
+        self.evolution: Any = None
         if config.knowledge.enabled:
             from echo_agent.knowledge import KnowledgeIndex
             self.knowledge = KnowledgeIndex(
@@ -532,6 +533,19 @@ class AgentLoop:
         self._plugin_manager = manager
         self._inference_stage._hook_registry = manager.hooks
 
+    def set_evolution_engine(self, engine: Any) -> None:
+        """Attach the evolution engine after bootstrap. Registers its tools and shares hooks."""
+        self.evolution = engine
+        if engine is None:
+            return
+        # Register agent-facing evolution tools so the LLM can introspect / trigger.
+        try:
+            from echo_agent.evolution.tools import build_evolution_tools
+            for tool in build_evolution_tools(engine):
+                self.tools.register(tool)
+        except Exception as e:
+            logger.warning("Failed to register evolution tools: {}", e)
+
     async def start(self) -> None:
         self._running = True
         if self._vector_index is not None:
@@ -540,10 +554,20 @@ class AgentLoop:
         self.bus.subscribe_inbound(self._on_inbound)
         if self._plugin_manager:
             await self._plugin_manager.hooks.dispatch("on_agent_start")
+        if self.evolution is not None:
+            try:
+                await self.evolution.start()
+            except Exception as e:
+                logger.warning("Evolution engine failed to start: {}", e)
         logger.info("Agent loop started")
 
     async def stop(self) -> None:
         self._running = False
+        if self.evolution is not None:
+            try:
+                await self.evolution.stop()
+            except Exception as e:
+                logger.debug("Evolution engine stop raised: {}", e)
         if self._plugin_manager:
             await self._plugin_manager.hooks.dispatch("on_agent_stop")
             await self._plugin_manager.shutdown()
@@ -685,6 +709,19 @@ class AgentLoop:
             await self.sessions.save(session)
             return _ProcessResult(response_text=command_response)
 
+        recorder = self.evolution.recorder if self.evolution is not None else None
+        if recorder is not None:
+            try:
+                await recorder.begin_turn(
+                    session_key=event.session_key,
+                    chat_id=event.chat_id,
+                    channel=event.channel,
+                    task_input=event.text or "",
+                    model_used=self._default_model,
+                )
+            except Exception as e:
+                logger.debug("Recorder begin_turn failed: {}", e)
+
         should_introduce = self._should_introduce(session)
         intro_text = self._build_introduction(event) if should_introduce else ""
         stream_publisher = _TokenStreamPublisher(
@@ -699,20 +736,48 @@ class AgentLoop:
         if publish_response:
             await stream_publisher.start()
 
-        # Stage 1: Context building
-        ctx = await self._context_stage.build(
-            event, session,
-            publish_response=publish_response,
-            trace_id=trace_id,
-            stream_publisher=stream_publisher,
-            intro_text=intro_text,
-        )
+        ctx = None
+        inference_result = None
+        result = None
+        process_error: Exception | None = None
+        try:
+            # Stage 1: Context building
+            ctx = await self._context_stage.build(
+                event, session,
+                publish_response=publish_response,
+                trace_id=trace_id,
+                stream_publisher=stream_publisher,
+                intro_text=intro_text,
+            )
 
-        # Stage 2: Inference (LLM + tool execution loop)
-        inference_result = await self._inference_stage.run(ctx)
+            # Stage 2: Inference (LLM + tool execution loop)
+            inference_result = await self._inference_stage.run(ctx)
 
-        # Stage 3: Response finalization
-        result = await self._response_stage.finalize(ctx, inference_result)
+            # Stage 3: Response finalization
+            result = await self._response_stage.finalize(ctx, inference_result)
+        except Exception as e:
+            process_error = e
+            raise
+        finally:
+            if recorder is not None:
+                try:
+                    if process_error is not None:
+                        await recorder.end_turn(
+                            session_key=event.session_key,
+                            error=f"{type(process_error).__name__}: {process_error}",
+                            outcome="failure",
+                            task_type=getattr(ctx, "task_type", "") if ctx is not None else "",
+                        )
+                    else:
+                        await recorder.end_turn(
+                            session_key=event.session_key,
+                            response_text=result.response_text if result else "",
+                            iteration_count=getattr(inference_result, "total_tool_calls", 0) or 0,
+                            task_type=getattr(ctx, "task_type", "") if ctx is not None else "",
+                        )
+                except Exception as e:
+                    logger.debug("Recorder end_turn failed: {}", e)
+
         return _ProcessResult(response_text=result.response_text, outbound_sent=result.outbound_sent)
 
     async def _check_permission_and_approval(
