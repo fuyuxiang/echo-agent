@@ -20,9 +20,22 @@ venv/
 __pycache__/
 poetry.lock
 .pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
 bridge/node_modules/
 botpy.log
 .DS_Store
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Claude Code local session/settings
+.claude/
 
 # Local runtime state and generated workspace data
 /runtime/cron/jobs.json
