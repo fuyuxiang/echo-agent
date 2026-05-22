@@ -133,6 +133,51 @@ async def _bootstrap(
     await plugin_manager.discover_and_load()
     agent.set_plugin_manager(plugin_manager)
 
+    # Self-evolving skill harness
+    if config.evolution.enabled:
+        try:
+            from echo_agent.evaluation.dataset import EvalDataset
+            from echo_agent.evaluation.runner import EvalRunner
+            from echo_agent.evolution.engine import EvolutionEngine
+
+            dataset_path = ws / config.evolution.eval_dataset_path
+            if not dataset_path.is_absolute():
+                dataset_path = (ws / config.evolution.eval_dataset_path).resolve()
+
+            def _load_eval_dataset() -> EvalDataset:
+                return EvalDataset.from_path(dataset_path)
+
+            def _make_eval_runner() -> EvalRunner:
+                return EvalRunner(
+                    agent,
+                    parallel=config.evolution.eval_parallel,
+                    timeout=config.evolution.eval_timeout_seconds,
+                )
+
+            reflection_module = None
+            try:
+                from echo_agent.agent.planning.reflection import ReflectionModule
+                reflection_module = ReflectionModule(provider.chat_with_retry)
+            except Exception as e:
+                logger.debug("Reflection module unavailable for evolution: {}", e)
+
+            evolution_engine = EvolutionEngine(
+                config=config.evolution,
+                workspace=ws,
+                storage=storage,
+                provider=provider,
+                skill_store=agent.skill_store,
+                skill_manager=None,
+                eval_runner_factory=_make_eval_runner,
+                eval_dataset_loader=_load_eval_dataset,
+                hooks=plugin_manager.hooks,
+                reflection=reflection_module,
+            )
+            agent.set_evolution_engine(evolution_engine)
+            logger.info("Evolution engine attached (trigger={})", config.evolution.trigger_mode)
+        except Exception as e:
+            logger.warning("Failed to attach evolution engine: {}", e)
+
     channels = ChannelManager(config.channels, bus, on_cli_exit=on_cli_exit)
     health = HealthChecker(check_interval=config.observability.health_check_interval_seconds)
 
@@ -345,7 +390,7 @@ def main() -> None:
     setup_parser = subparsers.add_parser("setup", help="Run the setup wizard")
     setup_parser.add_argument(
         "section", nargs="?", default=None,
-        help="Setup section: language, model, permissions, terminal, agent, tools, channel, gateway, observability, doctor",
+        help="Setup section: language, model, permissions, terminal, agent, tools, channel, gateway, observability, evolution, doctor",
     )
     setup_parser.add_argument("-c", "--config", help="Path to config file")
     setup_parser.add_argument("-w", "--workspace", help="Workspace directory")
@@ -386,6 +431,21 @@ def main() -> None:
     plugin_parser.add_argument("name", nargs="?", default="", help="Plugin name (for info/enable/disable)")
     plugin_parser.add_argument("-c", "--config", help="Path to config file")
     plugin_parser.add_argument("-w", "--workspace", help="Workspace directory")
+
+    # evolution
+    evo_parser = subparsers.add_parser("evolution", help="Manage the self-evolving skill harness")
+    evo_parser.add_argument(
+        "action",
+        choices=[
+            "status", "run", "list-candidates", "show-candidate",
+            "promote", "rollback", "init-dataset",
+        ],
+        help="Evolution action",
+    )
+    evo_parser.add_argument("target", nargs="?", default="", help="Skill name (rollback) or candidate id (show-candidate/promote)")
+    evo_parser.add_argument("--status", dest="status_filter", default="", help="Filter list-candidates by status")
+    evo_parser.add_argument("-c", "--config", help="Path to config file")
+    evo_parser.add_argument("-w", "--workspace", help="Workspace directory")
 
     # top-level flags for backward compat
     parser.add_argument("-c", "--config", help="Path to config file", dest="top_config")
@@ -436,6 +496,28 @@ def main() -> None:
             config_path=args.config or args.top_config,
             workspace=args.workspace or args.top_workspace,
         )
+        return
+
+    if args.command == "evolution":
+        from echo_agent.cli.evolution_cmd import run_evolution_command
+        target = getattr(args, "target", "") or ""
+        skill = ""
+        candidate_id = ""
+        if args.action == "rollback":
+            skill = target
+        elif args.action in ("show-candidate", "promote"):
+            candidate_id = target
+        try:
+            run_evolution_command(
+                action=args.action,
+                skill=skill,
+                status_filter=getattr(args, "status_filter", "") or "",
+                candidate_id=candidate_id,
+                config_path=args.config or args.top_config,
+                workspace=args.workspace or args.top_workspace,
+            )
+        except KeyboardInterrupt:
+            pass
         return
 
     # "run" command or no command (backward compat)

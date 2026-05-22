@@ -85,6 +85,24 @@ class EvalRunner:
                 timeout=self._timeout,
             )
             result.response = proc_result.response_text or ""
+            try:
+                session = await self._loop.sessions.get_or_create(event.session_key)
+                seen: list[str] = []
+                seen_set: set[str] = set()
+                for msg in session.get_history(max_messages=500):
+                    if msg.get("role") != "tool":
+                        continue
+                    name = msg.get("name") or ""
+                    if name and name not in seen_set:
+                        seen_set.add(name)
+                        seen.append(name)
+                result.tools_used = seen
+                result.iterations = sum(
+                    1 for m in session.get_history(max_messages=500)
+                    if m.get("role") == "assistant"
+                )
+            except Exception as e:
+                logger.debug("Failed to extract tools_used for case {}: {}", case.id, e)
         except asyncio.TimeoutError:
             result.error = "Timeout"
         except Exception as e:
