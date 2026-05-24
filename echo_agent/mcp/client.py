@@ -18,10 +18,13 @@ class MCPClient:
         self._transport = transport
         self._request_id = 0
         self._pending: dict[int, asyncio.Future] = {}
-        self._notifications: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        # Bounded notification queue — silently drop the oldest entry when
+        # the producer outpaces the (rare) consumer instead of leaking.
+        self._notifications: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=1024)
         self._reader_task: asyncio.Task | None = None
         self._server_info: dict[str, Any] = {}
         self._server_capabilities: dict[str, Any] = {}
+        self._closed = False
 
     async def connect(self, timeout: float = 60) -> None:
         if hasattr(self._transport, "connect"):
@@ -30,6 +33,7 @@ class MCPClient:
         await self.initialize()
 
     async def disconnect(self) -> None:
+        self._closed = True
         if self._reader_task:
             self._reader_task.cancel()
             try:
@@ -83,24 +87,32 @@ class MCPClient:
         return resp
 
     async def _request(self, method: str, params: dict[str, Any], timeout: float = 30) -> dict[str, Any]:
+        if self._closed:
+            raise ConnectionError(f"MCP client '{self.name}' is closed")
         self._request_id += 1
         req_id = self._request_id
         message = {"jsonrpc": "2.0", "id": req_id, "method": method, "params": params}
 
-        future: asyncio.Future[dict[str, Any]] = asyncio.get_event_loop().create_future()
+        future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending[req_id] = future
 
         try:
-            await self._transport.send(message)
-            result = await asyncio.wait_for(future, timeout=timeout)
-            return result
-        except asyncio.TimeoutError:
-            self._pending.pop(req_id, None)
-            raise TimeoutError(f"MCP request '{method}' timed out after {timeout}s")
-        except Exception as e:
-            logger.warning("MCP request '{}' failed: {}", method, e)
-            self._pending.pop(req_id, None)
-            raise
+            try:
+                await self._transport.send(message)
+                result = await asyncio.wait_for(future, timeout=timeout)
+                return result
+            except asyncio.TimeoutError:
+                raise TimeoutError(f"MCP request '{method}' timed out after {timeout}s")
+            except Exception as e:
+                logger.warning("MCP request '{}' failed: {}", method, e)
+                raise
+        finally:
+            # Always release the pending entry — covers normal return,
+            # timeout, transport error, and CancelledError (which would
+            # otherwise leak the future).
+            pending = self._pending.pop(req_id, None)
+            if pending is not None and not pending.done():
+                pending.cancel()
 
     async def _notify(self, method: str, params: dict[str, Any]) -> None:
         message = {"jsonrpc": "2.0", "method": method, "params": params}
@@ -127,7 +139,17 @@ class MCPClient:
                     if fut and not fut.done():
                         fut.set_exception(RuntimeError(f"MCP error {err.get('code', -1)}: {err.get('message', '')}"))
                 elif "method" in msg and "id" not in msg:
-                    await self._notifications.put(msg)
+                    # Bounded queue: if no consumer is draining, drop oldest
+                    # to keep memory steady on long-running connections.
+                    while True:
+                        try:
+                            self._notifications.put_nowait(msg)
+                            break
+                        except asyncio.QueueFull:
+                            try:
+                                self._notifications.get_nowait()
+                            except asyncio.QueueEmpty:
+                                break
                 else:
                     logger.debug("Unhandled MCP message: {}", str(msg)[:200])
         except asyncio.CancelledError:

@@ -72,7 +72,7 @@ class MCPOAuthClient:
             f"&code_challenge={code_challenge}&code_challenge_method=S256"
         )
 
-        code_future: asyncio.Future[str] = asyncio.get_event_loop().create_future()
+        code_future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         server = await self._start_callback_server(redirect_port, state, code_future)
 
         logger.info("Opening browser for MCP OAuth: {}", self._server_name)

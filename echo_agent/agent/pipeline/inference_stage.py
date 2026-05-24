@@ -95,8 +95,8 @@ class InferenceStage:
         should_review_skills = False
         should_review_memory = False
         total_tool_calls = 0
-        consecutive_failures = 0
         _repeat_tracker: dict[str, int] = {}
+        _REPEAT_BLOCK_THRESHOLD = 4
         loop_exhausted = True
 
         on_delta = stream_publisher.on_delta if ctx.publish_response else None
@@ -184,121 +184,168 @@ class InferenceStage:
                 tool_span = self._tracer.start_span(
                     trace_id, f"tool_{iteration}_{tool_index}", f"tool:{tool_call.name}", "tool_call"
                 )
-                await _emit_progress(f"Using tool: {tool_call.name}", tool_hint=True)
+                tool_message_appended = False
+                try:
+                    await _emit_progress(f"Using tool: {tool_call.name}", tool_hint=True)
 
-                approval_check = await self._approval_gate.check(
-                    tool_call.name,
-                    tool_call.arguments,
-                    event.sender_id,
-                    channel=event.channel,
-                    event=event,
-                    running=True,
-                )
-                if approval_check.denial:
-                    self._tracer.end_span(tool_span, metadata={"success": False, "denied": True})
-                    messages.append({
-                        "role": "tool", "tool_call_id": tool_call.id,
-                        "name": tool_call.name, "content": approval_check.denial.text,
-                    })
-                    session.add_message("tool", approval_check.denial.text, tool_call_id=tool_call.id, name=tool_call.name)
-                    total_tool_calls += 1
-                    continue
-
-                tool_exec_ctx = ToolExecutionContext(
-                    execution_id=uuid.uuid4().hex[:12],
-                    trace_id=trace_id,
-                    session_key=event.session_key,
-                    user_id=event.sender_id,
-                    attempt_index=0,
-                    idempotency_key=build_idempotency_key(trace_id, tool_call.name, tool_index, tool_call.arguments),
-                    credentials=self._credentials.get_for_tool(tool_call.name),
-                    approved_actions=approval_check.approved_actions,
-                )
-
-                # pre_tool_call hook
-                if self._hook_registry and self._hook_registry.has_hooks("pre_tool_call"):
-                    hook_results = await self._hook_registry.dispatch(
-                        "pre_tool_call", tool_call.name, tool_call.arguments, tool_exec_ctx,
+                    approval_check = await self._approval_gate.check(
+                        tool_call.name,
+                        tool_call.arguments,
+                        event.sender_id,
+                        channel=event.channel,
+                        event=event,
+                        running=True,
                     )
-                    _hook_cancelled = False
-                    for hr in hook_results:
-                        if hr.cancel:
-                            result = type("_R", (), {"success": False, "text": f"Blocked by plugin: {hr.cancel_reason}", "error": hr.cancel_reason, "metadata": {}})()
-                            messages.append({
-                                "role": "tool", "tool_call_id": tool_call.id,
-                                "name": tool_call.name, "content": result.text,
-                            })
-                            session.add_message("tool", result.text, tool_call_id=tool_call.id, name=tool_call.name)
-                            self._tracer.end_span(tool_span, metadata={"success": False, "hook_cancelled": True})
-                            total_tool_calls += 1
-                            _hook_cancelled = True
-                            break
-                        if hr.modified is not None:
-                            tool_call.arguments = hr.modified
-                    if _hook_cancelled:
+                    if approval_check.denial:
+                        self._tracer.end_span(tool_span, metadata={"success": False, "denied": True})
+                        messages.append({
+                            "role": "tool", "tool_call_id": tool_call.id,
+                            "name": tool_call.name, "content": approval_check.denial.text,
+                        })
+                        tool_message_appended = True
+                        session.add_message("tool", approval_check.denial.text, tool_call_id=tool_call.id, name=tool_call.name)
+                        total_tool_calls += 1
                         continue
 
-                result = await self._tools.execute(tool_call.name, tool_call.arguments, tool_exec_ctx)
+                    # Repeat-call guard: count BEFORE executing so identical
+                    # calls don't keep firing side effects. The N-th identical
+                    # call is short-circuited with an error message instead.
+                    _call_key = f"{tool_call.name}:{hashlib.md5(str(sorted(tool_call.arguments.items())).encode()).hexdigest()[:8]}"
+                    _repeat_tracker[_call_key] = _repeat_tracker.get(_call_key, 0) + 1
+                    if _repeat_tracker[_call_key] >= _REPEAT_BLOCK_THRESHOLD:
+                        result_text_blocked = (
+                            f"[Blocked] Tool '{tool_call.name}' called with identical arguments "
+                            f"{_repeat_tracker[_call_key]} times. Stopping repeated calls — "
+                            "vary the arguments or take a different action."
+                        )
+                        messages.append({
+                            "role": "tool", "tool_call_id": tool_call.id,
+                            "name": tool_call.name, "content": result_text_blocked,
+                        })
+                        tool_message_appended = True
+                        session.add_message(
+                            "tool", result_text_blocked,
+                            tool_call_id=tool_call.id, name=tool_call.name,
+                        )
+                        self._tracer.end_span(tool_span, metadata={"success": False, "repeat_blocked": True})
+                        logger.warning(
+                            "Blocked repeated tool call: {} ({}x)",
+                            tool_call.name, _repeat_tracker[_call_key],
+                        )
+                        total_tool_calls += 1
+                        continue
 
-                # post_tool_call hook
-                if self._hook_registry and self._hook_registry.has_hooks("post_tool_call"):
-                    result = await self._hook_registry.dispatch_modify(
-                        "post_tool_call", result, tool_call.name, tool_call.arguments, tool_exec_ctx,
+                    tool_exec_ctx = ToolExecutionContext(
+                        execution_id=uuid.uuid4().hex[:12],
+                        trace_id=trace_id,
+                        session_key=event.session_key,
+                        user_id=event.sender_id,
+                        attempt_index=0,
+                        idempotency_key=build_idempotency_key(trace_id, tool_call.name, tool_index, tool_call.arguments),
+                        credentials=self._credentials.get_for_tool(tool_call.name),
+                        approved_actions=approval_check.approved_actions,
                     )
 
-                result_text = result.text
-                if len(result_text) > self._MAX_TOOL_RESULT_CHARS:
-                    result_text = result_text[:self._MAX_TOOL_RESULT_CHARS] + "\n...(truncated)"
+                    # pre_tool_call hook
+                    if self._hook_registry and self._hook_registry.has_hooks("pre_tool_call"):
+                        hook_results = await self._hook_registry.dispatch(
+                            "pre_tool_call", tool_call.name, tool_call.arguments, tool_exec_ctx,
+                        )
+                        _hook_cancelled = False
+                        for hr in hook_results:
+                            if hr.cancel:
+                                result = type("_R", (), {"success": False, "text": f"Blocked by plugin: {hr.cancel_reason}", "error": hr.cancel_reason, "metadata": {}})()
+                                messages.append({
+                                    "role": "tool", "tool_call_id": tool_call.id,
+                                    "name": tool_call.name, "content": result.text,
+                                })
+                                tool_message_appended = True
+                                session.add_message("tool", result.text, tool_call_id=tool_call.id, name=tool_call.name)
+                                self._tracer.end_span(tool_span, metadata={"success": False, "hook_cancelled": True})
+                                total_tool_calls += 1
+                                _hook_cancelled = True
+                                break
+                            if hr.modified is not None:
+                                tool_call.arguments = hr.modified
+                        if _hook_cancelled:
+                            continue
 
-                self._tracer.end_span(tool_span, metadata={"success": result.success})
+                    result = await self._tools.execute(tool_call.name, tool_call.arguments, tool_exec_ctx)
 
-                if self._telemetry and self._telemetry.available:
-                    from echo_agent.observability.spans import start_tool_span, end_tool_span
-                    otel_tool = start_tool_span(self._telemetry.get_tracer(), tool_call.name)
-                    end_tool_span(otel_tool, error=None if result.success else result.error)
+                    # post_tool_call hook
+                    if self._hook_registry and self._hook_registry.has_hooks("post_tool_call"):
+                        result = await self._hook_registry.dispatch_modify(
+                            "post_tool_call", result, tool_call.name, tool_call.arguments, tool_exec_ctx,
+                        )
 
-                messages.append({
-                    "role": "tool", "tool_call_id": tool_call.id,
-                    "name": tool_call.name, "content": result_text,
-                })
-                session.add_message("tool", result_text, tool_call_id=tool_call.id, name=tool_call.name)
+                    result_text = result.text
+                    if len(result_text) > self._MAX_TOOL_RESULT_CHARS:
+                        result_text = result_text[:self._MAX_TOOL_RESULT_CHARS] + "\n...(truncated)"
 
-                total_tool_calls += 1
-                self._tool_iters_since_skill_check += 1
-                self._tool_iters_since_memory_check += 1
+                    self._tracer.end_span(tool_span, metadata={"success": result.success})
 
-                # Per-tool circuit breaker
-                if result.success:
-                    consecutive_failures = 0
-                    self._circuit_breaker.record_success(tool_call.name)
-                else:
-                    consecutive_failures += 1
-                    self._circuit_breaker.record_failure(tool_call.name)
+                    if self._telemetry and self._telemetry.available:
+                        from echo_agent.observability.spans import start_tool_span, end_tool_span
+                        otel_tool = start_tool_span(self._telemetry.get_tracer(), tool_call.name)
+                        end_tool_span(otel_tool, error=None if result.success else result.error)
 
-                _call_key = f"{tool_call.name}:{hashlib.md5(str(sorted(tool_call.arguments.items())).encode()).hexdigest()[:8]}"
-                _repeat_tracker[_call_key] = _repeat_tracker.get(_call_key, 0) + 1
-                if _repeat_tracker[_call_key] >= 4:
-                    result_text_blocked = (
-                        f"[Blocked] Tool '{tool_call.name}' called with identical arguments "
-                        f"{_repeat_tracker[_call_key]} times. Stopping repeated calls."
-                    )
-                    messages[-1]["content"] = result_text_blocked
-                    logger.warning("Blocked repeated tool call: {} ({}x)", tool_call.name, _repeat_tracker[_call_key])
+                    messages.append({
+                        "role": "tool", "tool_call_id": tool_call.id,
+                        "name": tool_call.name, "content": result_text,
+                    })
+                    tool_message_appended = True
+                    session.add_message("tool", result_text, tool_call_id=tool_call.id, name=tool_call.name)
 
-                if (
-                    self._nudge_interval > 0
-                    and self._tool_iters_since_skill_check >= self._nudge_interval
-                    and self._tools.has("skill_manage")
-                ):
-                    should_review_skills = True
-                    self._tool_iters_since_skill_check = 0
-                if (
-                    self._memory_nudge_interval > 0
-                    and self._tool_iters_since_memory_check >= self._memory_nudge_interval
-                    and self._tools.has("memory")
-                ):
-                    should_review_memory = True
-                    self._tool_iters_since_memory_check = 0
+                    total_tool_calls += 1
+                    self._tool_iters_since_skill_check += 1
+                    self._tool_iters_since_memory_check += 1
+
+                    # Per-tool circuit breaker
+                    if result.success:
+                        self._circuit_breaker.record_success(tool_call.name)
+                    else:
+                        self._circuit_breaker.record_failure(tool_call.name)
+
+                    if (
+                        self._nudge_interval > 0
+                        and self._tool_iters_since_skill_check >= self._nudge_interval
+                        and self._tools.has("skill_manage")
+                    ):
+                        should_review_skills = True
+                        self._tool_iters_since_skill_check = 0
+                    if (
+                        self._memory_nudge_interval > 0
+                        and self._tool_iters_since_memory_check >= self._memory_nudge_interval
+                        and self._tools.has("memory")
+                    ):
+                        should_review_memory = True
+                        self._tool_iters_since_memory_check = 0
+                except BaseException:
+                    # Ensure every announced tool_call gets a paired tool message,
+                    # otherwise the next LLM turn will reject the conversation
+                    # ("tool_calls must be followed by tool messages").
+                    if not tool_message_appended:
+                        err_text = "Tool execution interrupted before producing a result."
+                        messages.append({
+                            "role": "tool", "tool_call_id": tool_call.id,
+                            "name": tool_call.name, "content": err_text,
+                        })
+                        try:
+                            session.add_message("tool", err_text, tool_call_id=tool_call.id, name=tool_call.name)
+                        except Exception:
+                            pass
+                        try:
+                            self._tracer.end_span(tool_span, error="interrupted")
+                        except Exception:
+                            pass
+                        # Mark this tool as failing so the circuit breaker
+                        # eventually disables it instead of letting interrupted
+                        # calls silently skew failure stats.
+                        try:
+                            self._circuit_breaker.record_failure(tool_call.name)
+                        except Exception:
+                            pass
+                    raise
 
         if loop_exhausted:
             logger.warning(

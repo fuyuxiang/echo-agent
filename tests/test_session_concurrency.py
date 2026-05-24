@@ -83,3 +83,60 @@ async def test_concurrent_messages_serialized(manager: SessionManager) -> None:
 
     # With serialization, we expect [1,1,2,2] or [2,2,1,1], not interleaved
     assert order == [1, 1, 2, 2] or order == [2, 2, 1, 1]
+
+
+@pytest.mark.asyncio
+async def test_held_lock_not_evicted_when_cache_full(manager: SessionManager) -> None:
+    """A lock that's currently held must NOT be replaced by LRU eviction —
+    otherwise a second caller would create a fresh Lock for the same key
+    and break mutual exclusion. The held entry is skipped; an unheld entry
+    is evicted instead.
+    """
+    held_lock = await manager.acquire("session:hold")
+    async with held_lock:
+        # Fill the cache past _max_session_locks (=3) so eviction must run.
+        await manager.acquire("session:b")
+        await manager.acquire("session:c")
+        await manager.acquire("session:d")  # cache now over limit
+
+        # Re-acquiring the held key MUST return the same lock instance —
+        # if it were evicted, this would be a new Lock and the outer
+        # `async with held_lock` would no longer protect anything.
+        same_lock = await manager.acquire("session:hold")
+        assert same_lock is held_lock
+
+
+@pytest.mark.asyncio
+async def test_eviction_falls_back_to_growth_when_all_locked(manager: SessionManager) -> None:
+    """If every lock in the cache is currently held, the cache is allowed
+    to grow rather than violate mutual exclusion."""
+
+    async def hold(key: str, gate: asyncio.Event) -> None:
+        lock = await manager.acquire(key)
+        async with lock:
+            await gate.wait()
+
+    gate = asyncio.Event()
+    holders = [
+        asyncio.create_task(hold(f"session:hold{i}", gate))
+        for i in range(3)
+    ]
+    # Yield until every holder has actually entered its critical section.
+    while True:
+        if all(
+            manager._session_locks.get(f"session:hold{i}") is not None
+            and manager._session_locks[f"session:hold{i}"].locked()
+            for i in range(3)
+        ):
+            break
+        await asyncio.sleep(0)
+
+    # All 3 slots are held. Asking for a fresh key must succeed without
+    # nuking any held entry.
+    new_lock = await manager.acquire("session:new")
+    assert new_lock is not None
+    for i in range(3):
+        assert f"session:hold{i}" in manager._session_locks
+
+    gate.set()
+    await asyncio.gather(*holders)

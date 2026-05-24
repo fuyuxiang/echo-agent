@@ -21,6 +21,7 @@ recovery a simple directory move.
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -29,6 +30,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from loguru import logger
+
+try:
+    import fcntl  # POSIX-only; gate degrades to in-process lock on Windows.
+    _HAS_FCNTL = True
+except ImportError:  # pragma: no cover - non-POSIX platforms
+    fcntl = None  # type: ignore[assignment]
+    _HAS_FCNTL = False
 
 from echo_agent.evolution.types import SkillCandidate
 from echo_agent.skills.store import SkillStore
@@ -79,7 +87,45 @@ class PromotionGate:
     async def evaluate(self, candidate: SkillCandidate) -> PromotionDecision:
         """Run the full A/B test cycle on a single candidate."""
         async with self._eval_lock:
-            return await self._evaluate_locked(candidate)
+            file_lock_fd = self._acquire_user_dir_lock()
+            try:
+                return await self._evaluate_locked(candidate)
+            finally:
+                self._release_user_dir_lock(file_lock_fd)
+
+    def _acquire_user_dir_lock(self) -> Any:
+        """Take an exclusive lock on the skill user_dir for the eval window.
+
+        Other processes (or other PromotionGate instances) writing to the same
+        directory would otherwise have their changes wiped by _restore_backup.
+        """
+        if not _HAS_FCNTL:
+            return None
+        user_dir = self._skill_store.user_dir
+        try:
+            user_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            return None
+        lock_path = user_dir / ".evolution_eval.lock"
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            return fd
+        except OSError as e:
+            logger.warning("Failed to take eval lock on {}: {}", user_dir, e)
+            return None
+
+    def _release_user_dir_lock(self, fd: Any) -> None:
+        if fd is None or not _HAS_FCNTL:
+            return
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
     async def _evaluate_locked(self, candidate: SkillCandidate) -> PromotionDecision:
         candidate.status = "evaluating"
@@ -153,6 +199,8 @@ class PromotionGate:
             candidate.promoted_at = datetime.now().isoformat()
             self._refresh_skill_manager_after_promote(candidate, backup_dir, backup_token)
             self._cleanup_backup(backup_dir)
+            self._pending_disable_skill = None
+            self._disable_was_present = False
             await self._store.update_candidate(candidate)
             return decision
 
@@ -208,6 +256,11 @@ class PromotionGate:
                 disabled = getattr(self._skill_store, "_disabled", None)
                 if disabled is None:
                     return "skill_store has no _disabled attribute"
+                # Remember whether this skill was already disabled by user
+                # config so restore can roll back ONLY our addition without
+                # wiping the user's configured disable list.
+                self._disable_was_present = candidate.skill_name in disabled
+                self._pending_disable_skill = candidate.skill_name
                 disabled.add(candidate.skill_name)
                 return True
 
@@ -234,10 +287,20 @@ class PromotionGate:
             logger.error("Failed to restore skill backup from {}: {}", backup_dir, e)
         finally:
             self._cleanup_backup(backup_dir)
-            # Also clear any in-memory disable flag set by `apply` for disable ops.
+            # Roll back the in-memory disable flag we set in _apply_candidate
+            # WITHOUT touching skills the user disabled via config.
             disabled = getattr(self._skill_store, "_disabled", None)
-            if disabled is not None and isinstance(disabled, set):
-                disabled.clear()
+            pending_skill = getattr(self, "_pending_disable_skill", None)
+            was_present_before = getattr(self, "_disable_was_present", False)
+            if (
+                disabled is not None
+                and isinstance(disabled, set)
+                and pending_skill is not None
+                and not was_present_before
+            ):
+                disabled.discard(pending_skill)
+            self._pending_disable_skill = None
+            self._disable_was_present = False
 
     def _cleanup_backup(self, backup_dir: Path) -> None:
         try:

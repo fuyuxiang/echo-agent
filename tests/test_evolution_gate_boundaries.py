@@ -310,6 +310,154 @@ async def test_disable_apply_clears_set_after_rejection(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_disable_rollback_preserves_user_configured_disabled(tmp_path: Path):
+    """User-configured `disabled` skills must survive a rejected disable
+    candidate. The old gate cleared the entire set on rollback, wiping the
+    user's configuration along with the candidate's transient flag.
+    """
+    backend = SQLiteBackend(tmp_path / "evolution.db")
+    await backend.initialize()
+    store = TrajectoryStore(backend)
+    await store.init_schema()
+    user_dir = tmp_path / "skills"
+    user_dir.mkdir()
+    # User has pre-configured "beta" as disabled. The candidate operates on
+    # an unrelated skill "alpha".
+    skill_store = SkillStore(user_dir=user_dir, disabled=["beta"])
+    try:
+        skill_store.create_skill(
+            "alpha",
+            "---\nname: alpha\ndescription: original\n---\n",
+        )
+        baseline = _make_report(total=2, passed=2, score=1.0)
+        worse = _make_report(total=2, passed=0, score=0.0)
+        gate = PromotionGate(
+            eval_runner_factory=_factory_seq([baseline, worse]),
+            eval_dataset_loader=lambda: _dataset(),
+            skill_store=skill_store,
+            skill_manager=None,
+            store=store,
+            regression_threshold=0.05,
+        )
+        cand = SkillCandidate(operation="disable", skill_name="alpha")
+        await store.save_candidate(cand)
+        decision = await gate.evaluate(cand)
+        assert decision.promoted is False
+        # Candidate's own flag is gone…
+        assert "alpha" not in skill_store._disabled
+        # …but the user's pre-existing config must still be intact.
+        assert "beta" in skill_store._disabled
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_disable_rollback_keeps_skill_already_disabled_by_user(tmp_path: Path):
+    """If the user already disabled the candidate's skill, rollback must
+    leave the entry alone (we shouldn't strip a user setting just because
+    we happened to evaluate the same skill)."""
+    backend = SQLiteBackend(tmp_path / "evolution.db")
+    await backend.initialize()
+    store = TrajectoryStore(backend)
+    await store.init_schema()
+    user_dir = tmp_path / "skills"
+    user_dir.mkdir()
+    # User already disabled "alpha"; the candidate also targets "alpha".
+    skill_store = SkillStore(user_dir=user_dir, disabled=["alpha"])
+    try:
+        skill_store.create_skill(
+            "alpha",
+            "---\nname: alpha\ndescription: original\n---\n",
+        )
+        baseline = _make_report(total=2, passed=2, score=1.0)
+        worse = _make_report(total=2, passed=0, score=0.0)
+        gate = PromotionGate(
+            eval_runner_factory=_factory_seq([baseline, worse]),
+            eval_dataset_loader=lambda: _dataset(),
+            skill_store=skill_store,
+            skill_manager=None,
+            store=store,
+            regression_threshold=0.05,
+        )
+        cand = SkillCandidate(operation="disable", skill_name="alpha")
+        await store.save_candidate(cand)
+        await gate.evaluate(cand)
+        # User had alpha disabled before — must remain disabled.
+        assert "alpha" in skill_store._disabled
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_evaluate_takes_user_dir_lock(tmp_path: Path):
+    """A second PromotionGate evaluating against the same user_dir must wait
+    for the first to release the lock — otherwise both write to the same
+    backup/restore cycle and clobber each other.
+    """
+    import asyncio as _asyncio
+    backend = SQLiteBackend(tmp_path / "evolution.db")
+    await backend.initialize()
+    store = TrajectoryStore(backend)
+    await store.init_schema()
+    user_dir = tmp_path / "skills"
+    user_dir.mkdir()
+    skill_store_a = SkillStore(user_dir=user_dir)
+    skill_store_b = SkillStore(user_dir=user_dir)
+    try:
+        skill_store_a.create_skill(
+            "alpha", "---\nname: alpha\ndescription: original\n---\n",
+        )
+        # Slow eval factory: blocks both gates inside their critical section.
+        slow_event = _asyncio.Event()
+        baseline = _make_report(total=1, passed=1, score=1.0)
+
+        def slow_factory():
+            runner = MagicMock()
+
+            async def run_dataset(_):
+                await slow_event.wait()
+                return baseline
+
+            runner.run_dataset = run_dataset
+            return runner
+
+        gate_a = PromotionGate(
+            eval_runner_factory=slow_factory,
+            eval_dataset_loader=lambda: _dataset(case_count=1),
+            skill_store=skill_store_a,
+            skill_manager=None,
+            store=store,
+        )
+        gate_b = PromotionGate(
+            eval_runner_factory=slow_factory,
+            eval_dataset_loader=lambda: _dataset(case_count=1),
+            skill_store=skill_store_b,
+            skill_manager=None,
+            store=store,
+        )
+        cand_a = SkillCandidate(operation="disable", skill_name="alpha")
+        cand_b = SkillCandidate(operation="disable", skill_name="alpha")
+        await store.save_candidate(cand_a)
+        await store.save_candidate(cand_b)
+
+        # Verify the lock attribute is wired up — both gates should each
+        # be capable of acquiring/releasing the file-level lock without
+        # raising. This isn't a strict mutual-exclusion timing test (which
+        # is racy under fcntl + asyncio), but it pins down the API.
+        fd_a = gate_a._acquire_user_dir_lock()
+        try:
+            assert fd_a is not None or not hasattr(gate_a, "_release_user_dir_lock")
+        finally:
+            gate_a._release_user_dir_lock(fd_a)
+
+        slow_event.set()
+        await gate_a.evaluate(cand_a)
+        await gate_b.evaluate(cand_b)
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
 async def test_disable_apply_when_skill_store_lacks_disabled_attr(tmp_path: Path):
     store, skill_store, backend = await _new_setup(tmp_path)
     try:

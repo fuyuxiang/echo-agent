@@ -36,6 +36,8 @@ class StdioTransport(MCPTransport):
         self._env = env
         self._process: asyncio.subprocess.Process | None = None
         self._read_buffer = b""
+        self._stderr_task: asyncio.Task | None = None
+        self._send_lock = asyncio.Lock()
 
     async def connect(self, timeout: float = 60) -> None:
         import os
@@ -50,14 +52,35 @@ class StdioTransport(MCPTransport):
             ),
             timeout=timeout,
         )
+        # Drain stderr in the background so the child process never blocks on a full pipe buffer.
+        self._stderr_task = asyncio.create_task(self._drain_stderr())
         logger.debug("Stdio transport started: {} {}", self._command, " ".join(self._args))
+
+    async def _drain_stderr(self) -> None:
+        if not self._process or not self._process.stderr:
+            return
+        try:
+            while True:
+                line = await self._process.stderr.readline()
+                if not line:
+                    return
+                text = line.decode(errors="replace").rstrip()
+                if text:
+                    logger.debug("[mcp-stderr {}] {}", self._command, text[:500])
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.debug("MCP stderr drain ended: {}", e)
 
     async def send(self, message: dict[str, Any]) -> None:
         if not self._process or not self._process.stdin:
             raise ConnectionError("Stdio transport not connected")
         line = json.dumps(message, ensure_ascii=False) + "\n"
-        self._process.stdin.write(line.encode())
-        await self._process.stdin.drain()
+        # Serialize writes so a future caller using asyncio.gather can't
+        # interleave half-encoded JSON-RPC frames on stdin.
+        async with self._send_lock:
+            self._process.stdin.write(line.encode())
+            await self._process.stdin.drain()
 
     async def receive(self) -> dict[str, Any]:
         if not self._process or not self._process.stdout:
@@ -76,6 +99,13 @@ class StdioTransport(MCPTransport):
                 continue
 
     async def close(self) -> None:
+        if self._stderr_task and not self._stderr_task.done():
+            self._stderr_task.cancel()
+            try:
+                await self._stderr_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._stderr_task = None
         if self._process:
             if self._process.stdin:
                 self._process.stdin.close()
@@ -102,6 +132,7 @@ class HttpTransport(MCPTransport):
         self._sse_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._sse_task: asyncio.Task | None = None
         self._connected = False
+        self._send_lock = asyncio.Lock()
 
     async def connect(self, timeout: float = 60) -> None:
         import aiohttp
@@ -116,17 +147,18 @@ class HttpTransport(MCPTransport):
     async def send(self, message: dict[str, Any]) -> None:
         if not self._session:
             raise ConnectionError("HTTP transport not connected")
-        async with self._session.post(
-            self._url,
-            json=message,
-            headers={"Content-Type": "application/json"},
-        ) as resp:
-            if resp.status >= 400:
-                body = await resp.text()
-                raise ConnectionError(f"MCP HTTP error {resp.status}: {body[:300]}")
-            if resp.content_type == "application/json":
-                data = await resp.json()
-                await self._sse_queue.put(data)
+        async with self._send_lock:
+            async with self._session.post(
+                self._url,
+                json=message,
+                headers={"Content-Type": "application/json"},
+            ) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    raise ConnectionError(f"MCP HTTP error {resp.status}: {body[:300]}")
+                if resp.content_type == "application/json":
+                    data = await resp.json()
+                    await self._sse_queue.put(data)
 
     async def receive(self) -> dict[str, Any]:
         return await self._sse_queue.get()
@@ -203,6 +235,8 @@ class StreamableHttpTransport(MCPTransport):
         self._response_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._connected = False
         self._sse_task: asyncio.Task | None = None
+        self._sse_tasks: set[asyncio.Task] = set()
+        self._send_lock = asyncio.Lock()
 
     @property
     def is_connected(self) -> bool:
@@ -227,28 +261,58 @@ class StreamableHttpTransport(MCPTransport):
         if self._session_id:
             headers["Mcp-Session-Id"] = self._session_id
 
-        async with self._session.post(self._url, json=message, headers=headers) as resp:
-            # Read session ID from response
-            if "Mcp-Session-Id" in resp.headers:
-                self._session_id = resp.headers["Mcp-Session-Id"]
+        # Serialize POSTs so we never have two in-flight requests racing on the
+        # session_id / response_queue ordering invariants.
+        async with self._send_lock:
+            resp_cm = self._session.post(self._url, json=message, headers=headers)
+            resp = await resp_cm.__aenter__()
+            release_required = True
+            try:
+                if "Mcp-Session-Id" in resp.headers:
+                    self._session_id = resp.headers["Mcp-Session-Id"]
 
-            content_type = resp.headers.get("Content-Type", "")
+                content_type = resp.headers.get("Content-Type", "")
 
-            if "text/event-stream" in content_type:
-                # SSE streaming response
-                await self._read_sse_response(resp)
-            elif "application/json" in content_type:
-                # Direct JSON response
-                data = await resp.json()
-                await self._response_queue.put(data)
-            else:
-                # Try JSON anyway
+                if "text/event-stream" in content_type:
+                    # Stream the SSE payload in the background so send() returns
+                    # as soon as the response headers are in. Hand ownership of
+                    # the response context manager to the worker task.
+                    task = asyncio.create_task(
+                        self._consume_sse_response(resp_cm, resp)
+                    )
+                    self._sse_tasks.add(task)
+                    task.add_done_callback(self._sse_tasks.discard)
+                    release_required = False
+                    return
+
+                if "application/json" in content_type:
+                    data = await resp.json()
+                    await self._response_queue.put(data)
+                    return
+
                 try:
                     data = await resp.json()
                     await self._response_queue.put(data)
                 except Exception:
                     text = await resp.text()
                     logger.warning("Unexpected response type '{}': {}", content_type, text[:200])
+            finally:
+                if release_required:
+                    await resp_cm.__aexit__(None, None, None)
+
+    async def _consume_sse_response(self, resp_cm: Any, resp: Any) -> None:
+        try:
+            await self._read_sse_response(resp)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            if self._connected:
+                logger.warning("Streamable HTTP SSE consume failed: {}", e)
+        finally:
+            try:
+                await resp_cm.__aexit__(None, None, None)
+            except Exception:
+                pass
 
     async def _read_sse_response(self, resp: Any) -> None:
         """Parse SSE events from streaming response."""
@@ -277,6 +341,12 @@ class StreamableHttpTransport(MCPTransport):
         self._connected = False
         if self._sse_task and not self._sse_task.done():
             self._sse_task.cancel()
+        for task in list(self._sse_tasks):
+            if not task.done():
+                task.cancel()
+        if self._sse_tasks:
+            await asyncio.gather(*self._sse_tasks, return_exceptions=True)
+            self._sse_tasks.clear()
         if self._session:
             await self._session.close()
             self._session = None
