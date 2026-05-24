@@ -116,8 +116,17 @@ class Tool(ABC):
                 expected_type = prop.get("type")
                 if expected_type == "string" and not isinstance(value, str):
                     errors.append(f"{key} must be a string")
-                elif expected_type == "integer" and not isinstance(value, int):
+                elif expected_type == "integer" and (
+                    not isinstance(value, int) or isinstance(value, bool)
+                ):
+                    # bool is a subclass of int — exclude it explicitly so a
+                    # tool that asks for an integer doesn't silently accept
+                    # True/False from the LLM.
                     errors.append(f"{key} must be an integer")
+                elif expected_type == "number" and (
+                    not isinstance(value, (int, float)) or isinstance(value, bool)
+                ):
+                    errors.append(f"{key} must be a number")
                 elif expected_type == "boolean" and not isinstance(value, bool):
                     errors.append(f"{key} must be a boolean")
                 if "enum" in prop and value not in prop["enum"]:

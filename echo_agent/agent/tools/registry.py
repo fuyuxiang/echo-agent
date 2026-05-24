@@ -123,7 +123,9 @@ class ToolRegistry:
             effective_key = f"{replay_scope}:{exec_ctx.idempotency_key}" if replay_scope else exec_ctx.idempotency_key
             async with self._lock:
                 cached = self._replay_cache.get(effective_key)
-            if cached:
+            if cached and not exec_ctx.is_replay:
+                # Honour explicit replay requests; otherwise refuse to repeat
+                # a side-effecting call with the same idempotency key.
                 logger.warning("Replay prevented for tool={} key={}", name, effective_key[:16])
                 return ToolResult(success=False, error=f"Replay prevented for '{name}'")
 

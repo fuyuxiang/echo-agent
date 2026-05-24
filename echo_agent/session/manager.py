@@ -95,13 +95,31 @@ class SessionManager:
         return self.sessions_dir / f"{safe}.jsonl"
 
     async def acquire(self, key: str) -> asyncio.Lock:
-        """Return a per-session lock for serializing concurrent access."""
+        """Return a per-session lock for serializing concurrent access.
+
+        LRU eviction MUST NOT remove a lock that is currently held — doing so
+        would let a second caller create a fresh Lock for the same key while
+        the original holder is still inside its critical section, breaking
+        mutual exclusion. Held locks are skipped during eviction.
+        """
         async with self._lock:
             if key not in self._session_locks:
                 self._session_locks[key] = asyncio.Lock()
             self._session_locks.move_to_end(key)
             while len(self._session_locks) > self._max_session_locks:
-                self._session_locks.popitem(last=False)
+                evicted = False
+                for candidate_key in list(self._session_locks.keys()):
+                    if candidate_key == key:
+                        continue
+                    candidate_lock = self._session_locks[candidate_key]
+                    if not candidate_lock.locked():
+                        del self._session_locks[candidate_key]
+                        evicted = True
+                        break
+                if not evicted:
+                    # All other locks are in use; allow the cache to grow rather
+                    # than violate mutex semantics.
+                    break
             return self._session_locks[key]
 
     async def get_or_create(self, key: str) -> Session:

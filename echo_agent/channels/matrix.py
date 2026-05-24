@@ -58,7 +58,7 @@ class MatrixChannel(BaseChannel):
         if not text or not self._session:
             return SendResult(success=False, error="no text or no session")
         room_id = event.chat_id
-        txn_id = f"m{id(text)}{asyncio.get_event_loop().time():.0f}"
+        txn_id = f"m{id(text)}{time.monotonic():.0f}"
         url = f"{self._homeserver}/_matrix/client/v3/rooms/{room_id}/send/m.room.message/{txn_id}"
         payload = {"msgtype": "m.text", "body": text}
         try:
@@ -97,7 +97,7 @@ class MatrixChannel(BaseChannel):
     async def send_reaction(self, chat_id: str, message_id: str, emoji: str, metadata: dict[str, Any] | None = None) -> SendResult:
         if not getattr(self.config, "reactions_enabled", True) or not self._session:
             return SendResult(success=False, error="reactions disabled or no session")
-        txn_id = f"r{id(emoji)}{asyncio.get_event_loop().time():.0f}"
+        txn_id = f"r{id(emoji)}{time.monotonic():.0f}"
         url = f"{self._homeserver}/_matrix/client/v3/rooms/{chat_id}/send/m.reaction/{txn_id}"
         payload = {
             "m.relates_to": {
@@ -130,7 +130,7 @@ class MatrixChannel(BaseChannel):
     async def delete_message(self, chat_id: str, message_id: str, metadata: dict[str, Any] | None = None) -> SendResult:
         if not self._session:
             return SendResult(success=False, error="no session")
-        txn_id = f"d{id(message_id)}{asyncio.get_event_loop().time():.0f}"
+        txn_id = f"d{id(message_id)}{time.monotonic():.0f}"
         url = f"{self._homeserver}/_matrix/client/v3/rooms/{chat_id}/redact/{message_id}/{txn_id}"
         try:
             async with self._session.put(url, json={}) as resp:
@@ -144,7 +144,7 @@ class MatrixChannel(BaseChannel):
     async def send_poll(self, chat_id: str, poll: PollRequest, metadata: dict[str, Any] | None = None) -> SendResult:
         if not self._session:
             return SendResult(success=False, error="no session")
-        txn_id = f"p{id(poll)}{asyncio.get_event_loop().time():.0f}"
+        txn_id = f"p{id(poll)}{time.monotonic():.0f}"
         url = f"{self._homeserver}/_matrix/client/v3/rooms/{chat_id}/send/m.poll.start/{txn_id}"
         answers = [{"id": str(i), "org.matrix.msc3381.v2.text": o} for i, o in enumerate(poll.options)]
         payload = {
@@ -168,7 +168,7 @@ class MatrixChannel(BaseChannel):
     async def send_voice(self, chat_id: str, audio_source: str, metadata: dict[str, Any] | None = None) -> SendResult:
         if not self._session:
             return SendResult(success=False, error="no session")
-        txn_id = f"v{id(audio_source)}{asyncio.get_event_loop().time():.0f}"
+        txn_id = f"v{id(audio_source)}{time.monotonic():.0f}"
         url = f"{self._homeserver}/_matrix/client/v3/rooms/{chat_id}/send/m.room.message/{txn_id}"
         payload = {
             "msgtype": "m.audio",

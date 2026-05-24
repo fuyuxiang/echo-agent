@@ -19,6 +19,11 @@ class TokenBucketLimiter:
         self._lock = asyncio.Lock()
 
     async def acquire(self, count: int = 1) -> None:
+        if count > self._capacity:
+            raise ValueError(
+                f"acquire(count={count}) exceeds bucket capacity {self._capacity}; "
+                "the request can never be satisfied"
+            )
         while True:
             async with self._lock:
                 self._refill()

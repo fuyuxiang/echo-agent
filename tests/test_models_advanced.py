@@ -100,6 +100,35 @@ class TestCredentialPool:
         pool.report_error("a")
         assert pool.get_next() == "a"
 
+    def test_exhausted_key_recovers_after_cooldown(self, monkeypatch):
+        """A key that hits the error threshold must auto-recover when its
+        cooldown window elapses, instead of staying permanently blacklisted
+        until *every* key dies and the pool resets wholesale."""
+        import echo_agent.models.credential_pool as cp_mod
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(cp_mod.time, "monotonic", lambda: clock["now"])
+        pool = CredentialPool(["a", "b"], cooldown_seconds=60)
+        for _ in range(3):
+            pool.report_error("a")
+        # While cooldown is active, get_next must skip "a".
+        results_during = [pool.get_next() for _ in range(4)]
+        assert "a" not in results_during
+
+        # Advance past the cooldown window.
+        clock["now"] += 61
+        seen = {pool.get_next() for _ in range(6)}
+        assert "a" in seen, "key should rejoin rotation after cooldown"
+
+    def test_zero_cooldown_keeps_legacy_behavior(self):
+        """cooldown_seconds=0 must preserve the old "exhaust forever" behavior
+        for callers that opt out of automatic recovery."""
+        pool = CredentialPool(["a", "b"], cooldown_seconds=0)
+        for _ in range(3):
+            pool.report_error("a")
+        results = [pool.get_next() for _ in range(6)]
+        # "a" should never come back without an explicit success report.
+        assert "a" not in results
+
 
 # ===========================================================================
 # TestInferenceConstraints

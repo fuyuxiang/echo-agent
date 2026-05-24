@@ -295,7 +295,7 @@ class GatewayServer:
             if wait:
                 if len(self._pending_http) >= self._MAX_PENDING_HTTP:
                     return web.json_response({"error": "too many pending requests"}, status=503)
-                future = asyncio.get_event_loop().create_future()
+                future = asyncio.get_running_loop().create_future()
                 self._pending_http[event.event_id] = future
 
             accepted = await self._bus.publish_inbound(event)

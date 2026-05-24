@@ -50,8 +50,11 @@ class MessageBus:
             logger.warning("No outbound handler for channel={}", event.channel)
             return
 
+        # Snapshot handler lists before iterating so a handler that mutates the list
+        # (e.g. subscribes/unsubscribes) won't trigger "list changed size" errors.
+        global_handlers = list(self._global_outbound_handlers)
         global_results = await asyncio.gather(
-            *(handler(event) for handler in self._global_outbound_handlers),
+            *(handler(event) for handler in global_handlers),
             return_exceptions=True,
         )
         for i, result in enumerate(global_results):
@@ -140,8 +143,10 @@ class MessageBus:
             self._concurrency_sem.release()
 
     async def _dispatch_inbound_event(self, event: InboundEvent) -> None:
+        # Snapshot subscribers list to be safe against concurrent (un)subscriptions.
+        subscribers = list(self._inbound_subscribers)
         results = await asyncio.gather(
-            *(handler(event) for handler in self._inbound_subscribers),
+            *(handler(event) for handler in subscribers),
             return_exceptions=True,
         )
         for result in results:

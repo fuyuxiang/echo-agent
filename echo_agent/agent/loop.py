@@ -877,5 +877,10 @@ class AgentLoop:
             channel="cli", sender_id="user", chat_id="direct", text=content,
             session_key_override=session_key,
         )
-        result = await self._process_event(event, uuid.uuid4().hex[:12], publish_response=False)
+        # Hold the same per-session lock the inbound dispatcher uses so two
+        # concurrent CLI calls on the same session_key serialize their writes
+        # to the message history.
+        session_lock = await self.sessions.acquire(event.session_key)
+        async with session_lock:
+            result = await self._process_event(event, uuid.uuid4().hex[:12], publish_response=False)
         return result.response_text or ""
