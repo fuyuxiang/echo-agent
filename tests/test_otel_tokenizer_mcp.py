@@ -276,6 +276,69 @@ class TestStreamableHttpTransport:
         t = StreamableHttpTransport(url="http://x", headers={"Authorization": "Bearer tok"})
         assert t._headers["Authorization"] == "Bearer tok"
 
+    @pytest.mark.asyncio
+    async def test_send_with_sse_response_does_not_block(self):
+        """The streamable-HTTP send() must return as soon as the response
+        headers arrive — the SSE body is consumed in the background. A
+        previous version awaited the entire stream inside send(), which
+        turned the bidirectional transport into a serialized one."""
+        import asyncio
+        import json
+        from unittest.mock import MagicMock, AsyncMock
+        from echo_agent.mcp.transport import StreamableHttpTransport
+
+        t = StreamableHttpTransport(url="http://x")
+        t._connected = True
+
+        # A response object that streams two SSE events, then *stalls* — i.e.
+        # the body is intentionally never closed. send() must still return.
+        body_started = asyncio.Event()
+        body_release = asyncio.Event()
+
+        class _StreamContent:
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if not body_started.is_set():
+                    body_started.set()
+                    return (
+                        b"data: " + json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}).encode() + b"\n\n"
+                    )
+                # Hang until the test releases us.
+                await body_release.wait()
+                raise StopAsyncIteration
+
+        resp = MagicMock()
+        resp.headers = {"Content-Type": "text/event-stream", "Mcp-Session-Id": "sess-1"}
+        resp.content = _StreamContent()
+
+        class _RespCtx:
+            async def __aenter__(self_inner):
+                return resp
+
+            async def __aexit__(self_inner, exc_type, exc, tb):
+                return False
+
+        session = MagicMock()
+        session.post = MagicMock(return_value=_RespCtx())
+        session.close = AsyncMock()
+        t._session = session
+
+        # send() must complete promptly even though the SSE body is still open.
+        await asyncio.wait_for(t.send({"jsonrpc": "2.0", "id": 1, "method": "ping"}), timeout=1.0)
+
+        # Session ID was captured from response headers.
+        assert t.session_id == "sess-1"
+
+        # The first SSE event eventually lands in the response queue.
+        msg = await asyncio.wait_for(t._response_queue.get(), timeout=1.0)
+        assert msg["id"] == 1
+
+        # Tear down: release the stalled stream and close the transport.
+        body_release.set()
+        await t.close()
+
 
 class TestStdioTransport:
     def test_init_not_connected(self):
@@ -289,6 +352,79 @@ class TestStdioTransport:
         assert t._command == "/usr/bin/node"
         assert t._args == ["server.js"]
         assert t._env == {"FOO": "1"}
+
+    @pytest.mark.asyncio
+    async def test_send_serializes_concurrent_writers(self):
+        """Two coroutines writing to stdin at the same time must NOT
+        interleave their JSON-RPC frames. The transport's _send_lock
+        guarantees a frame is fully written before the next one starts.
+        """
+        import asyncio
+        from echo_agent.mcp.transport import StdioTransport
+
+        t = StdioTransport(command="echo")
+
+        # Capture writes in order without actually launching a subprocess.
+        writes: list[bytes] = []
+
+        class _Stdin:
+            def write(self, data: bytes) -> None:
+                writes.append(data)
+
+            async def drain(self) -> None:
+                # Yield control so the second coroutine could (incorrectly)
+                # interleave if there were no lock.
+                await asyncio.sleep(0)
+
+        proc = type("P", (), {})()
+        proc.stdin = _Stdin()
+        t._process = proc  # type: ignore[assignment]
+
+        async def writer(i: int) -> None:
+            await t.send({"id": i, "data": "x" * 200})
+
+        await asyncio.gather(*[writer(i) for i in range(8)])
+
+        # Each write should be a full single-line JSON-RPC frame.
+        for line in writes:
+            assert line.endswith(b"\n")
+            # Exactly one newline per frame (no interleaving).
+            assert line.count(b"\n") == 1
+
+
+class TestMCPClient:
+    @pytest.mark.asyncio
+    async def test_request_after_disconnect_raises(self):
+        """Once disconnect() runs, _request must refuse to register a new
+        pending future (otherwise it would hang forever waiting for a
+        response that nobody's reading)."""
+        import asyncio
+        from echo_agent.mcp.client import MCPClient
+
+        class _DummyTransport:
+            is_connected = True
+            async def send(self, msg): ...
+            async def receive(self): return {}
+            async def close(self): ...
+
+        client = MCPClient(name="dummy", transport=_DummyTransport())
+        await client.disconnect()
+        with pytest.raises(ConnectionError):
+            await client._request("ping", {}, timeout=0.1)
+
+    def test_notification_queue_is_bounded(self):
+        from echo_agent.mcp.client import MCPClient
+
+        class _DummyTransport:
+            is_connected = False
+            async def send(self, msg): ...
+            async def receive(self): return {}
+            async def close(self): ...
+
+        client = MCPClient(name="d", transport=_DummyTransport())
+        # Bounded queue prevents unbounded growth on connections that emit
+        # notifications faster than any consumer drains them.
+        assert client._notifications.maxsize > 0
 
 
 class TestHttpTransport:

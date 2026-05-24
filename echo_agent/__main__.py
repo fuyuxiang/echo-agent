@@ -212,7 +212,7 @@ async def _bootstrap(
 
 
 def _install_signal_handler(shutdown: asyncio.Event) -> None:
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, shutdown.set)

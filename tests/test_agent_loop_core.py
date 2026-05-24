@@ -96,6 +96,129 @@ async def test_process_event_circuit_breaker_consecutive_failures(tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_process_direct_holds_session_lock(tmp_path: Path) -> None:
+    """process_direct used to bypass the session lock that the inbound
+    dispatcher uses, so two concurrent CLI calls on the same session_key
+    could interleave their writes to the message history. The lock now
+    serialises them just like normal inbound traffic."""
+    agent, bus, _ = _make_agent_loop(tmp_path)
+    order: list[str] = []
+
+    original = agent._process_event
+
+    async def tracked(event, trace_id, **kwargs):
+        order.append(f"start:{event.text}")
+        await asyncio.sleep(0.05)
+        result = await original(event, trace_id, **kwargs)
+        order.append(f"end:{event.text}")
+        return result
+
+    agent._process_event = tracked
+
+    await asyncio.gather(
+        agent.process_direct("hi-1", session_key="cli:same"),
+        agent.process_direct("hi-2", session_key="cli:same"),
+    )
+
+    # Lock must serialize: each call's start/end must wrap before the other
+    # starts. No "start:hi-1, start:hi-2, end:hi-1, end:hi-2" interleaving.
+    starts = [s for s in order if s.startswith("start:")]
+    ends = [s for s in order if s.startswith("end:")]
+    assert len(starts) == 2 and len(ends) == 2
+    # The first end must come before the second start.
+    assert order.index(ends[0]) < order.index(starts[1])
+
+
+@pytest.mark.asyncio
+async def test_tool_cancellation_records_circuit_breaker_failure(tmp_path: Path) -> None:
+    """When a tool is interrupted (CancelledError), the inference loop's
+    BaseException handler must still call circuit_breaker.record_failure
+    so the breaker eventually trips on a stuck tool. Without this, an
+    interrupted tool just stays "untracked" and the breaker stat skews."""
+    from echo_agent.agent.tools.base import Tool, ToolResult
+
+    class _SlowTool(Tool):
+        name = "slow_tool"
+        description = "stub that hangs forever"
+        parameters = {"type": "object", "properties": {}, "required": []}
+        timeout_seconds = 60
+
+        async def execute(self, params, ctx=None):
+            await asyncio.sleep(99)
+            return ToolResult(success=True, output="never")
+
+    provider = _StubProvider([
+        LLMResponse(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[ToolCallRequest(id="tc1", name="slow_tool", arguments={})],
+        ),
+    ])
+    agent, bus, _ = _make_agent_loop(tmp_path, provider)
+    agent.tools.register(_SlowTool())
+    event = InboundEvent.text_message(channel="test", sender_id="u1", chat_id="c1", text="hang")
+
+    task = asyncio.create_task(agent._process_event(event, "trace_cancel"))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    try:
+        await task
+    except (asyncio.CancelledError, BaseException):
+        pass
+
+    # The breaker should have recorded the failure even though the tool
+    # never returned a normal result.
+    assert agent._circuit_breaker._circuits.get("slow_tool") is not None
+    assert agent._circuit_breaker._circuits["slow_tool"].failure_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_repeated_identical_tool_call_is_short_circuited(tmp_path: Path) -> None:
+    """The 4th identical tool call must be blocked WITHOUT actually invoking
+    the tool. Old code only renamed the displayed message and let the tool
+    keep running. We assert that after the threshold the underlying tool
+    isn't invoked again.
+    """
+    from echo_agent.agent.tools.base import Tool, ToolResult
+
+    invocations: list[dict] = []
+
+    class _SideEffectTool(Tool):
+        name = "se_tool"
+        description = "side-effect tool used to verify repeat blocking"
+        parameters = {"type": "object", "properties": {}, "required": []}
+
+        async def execute(self, params, ctx=None):
+            invocations.append(dict(params))
+            return ToolResult(success=True, output="ok")
+
+    # Five identical tool calls then a final stop. Block kicks in on the 4th.
+    responses = [
+        LLMResponse(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[ToolCallRequest(id=f"tc{i}", name="se_tool", arguments={"x": 1})],
+        )
+        for i in range(5)
+    ] + [LLMResponse(content="done", finish_reason="stop")]
+    provider = _StubProvider(responses)
+    agent, bus, _ = _make_agent_loop(tmp_path, provider)
+    agent.tools.register(_SideEffectTool())
+    event = InboundEvent.text_message(channel="test", sender_id="u1", chat_id="c1", text="repeat")
+
+    await agent._process_event(event, "trace_repeat")
+
+    # Real invocations are bounded — the repeat tracker cuts off well before
+    # all five identical calls reach the tool. Without the fix the 4th and
+    # 5th would still execute (only the displayed text was being rewritten).
+    assert len(invocations) <= 3, (
+        f"expected at most 3 real executions, got {len(invocations)}: {invocations}"
+    )
+    # And at least the very first call DID run — proving we're not over-blocking.
+    assert len(invocations) >= 1
+
+
+@pytest.mark.asyncio
 async def test_on_inbound_session_lock_serializes(tmp_path: Path) -> None:
     agent, bus, _ = _make_agent_loop(tmp_path)
     agent._running = True

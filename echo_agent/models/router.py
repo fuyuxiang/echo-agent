@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -46,11 +49,26 @@ class ProviderHealth:
         if self.status == HealthStatus.DISABLED:
             return False
         if self.status == HealthStatus.COOLDOWN and self.cooldown_until:
-            if datetime.now(timezone.utc) < self.cooldown_until:
-                return False
+            return datetime.now(timezone.utc) >= self.cooldown_until
+        return True
+
+    def refresh_if_recovered(self) -> bool:
+        """If the cooldown window has passed, transition back to HEALTHY.
+
+        Returns True iff state was mutated. Callers that read availability and
+        also need the side-effect (e.g. ModelRouter._provider_available) should
+        call this explicitly so the transition is auditable.
+        """
+        if (
+            self.status == HealthStatus.COOLDOWN
+            and self.cooldown_until
+            and datetime.now(timezone.utc) >= self.cooldown_until
+        ):
             self.status = HealthStatus.HEALTHY
             self.failure_count = 0
-        return True
+            self.cooldown_until = None
+            return True
+        return False
 
     @property
     def score(self) -> float:
@@ -72,6 +90,7 @@ class ModelRouter:
         self._health: dict[str, ProviderHealth] = {}
         self._cooldown_seconds = cooldown_seconds
         self._health_file = health_file
+        self._health_save_lock = threading.Lock()
         if health_file:
             self._load_health()
 
@@ -232,7 +251,12 @@ class ModelRouter:
 
     def _provider_available(self, provider_name: str) -> bool:
         health = self._health.get(provider_name)
-        return health.is_available if health else provider_name in self._providers
+        if health is None:
+            return provider_name in self._providers
+        # Promote out of cooldown when the window has passed before answering.
+        if health.refresh_if_recovered():
+            self._save_health()
+        return health.is_available
 
     def _provider_config_supports_model(self, provider_name: str, model: str) -> bool:
         for pc in self._config.providers:
@@ -248,18 +272,30 @@ class ModelRouter:
     def _save_health(self) -> None:
         if not self._health_file:
             return
-        data = {}
-        for name, h in self._health.items():
-            data[name] = {
-                "status": h.status.value,
-                "failure_count": h.failure_count,
-                "last_error": h.last_error,
-                "cooldown_until": h.cooldown_until.isoformat() if h.cooldown_until else None,
-            }
-        try:
-            self._health_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        except Exception as e:
-            logger.debug("Failed to save health state: {}", e)
+        with self._health_save_lock:
+            data = {}
+            for name, h in self._health.items():
+                data[name] = {
+                    "status": h.status.value,
+                    "failure_count": h.failure_count,
+                    "last_error": h.last_error,
+                    "cooldown_until": h.cooldown_until.isoformat() if h.cooldown_until else None,
+                }
+            try:
+                self._health_file.parent.mkdir(parents=True, exist_ok=True)
+                fd, tmp = tempfile.mkstemp(dir=str(self._health_file.parent), suffix=".tmp")
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        json.dump(data, f, indent=2, ensure_ascii=False)
+                    os.replace(tmp, str(self._health_file))
+                except BaseException:
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
+                    raise
+            except Exception as e:
+                logger.debug("Failed to save health state: {}", e)
 
     def _load_health(self) -> None:
         if not self._health_file or not self._health_file.exists():

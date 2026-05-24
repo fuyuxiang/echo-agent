@@ -113,7 +113,16 @@ def _compute_next_run(job: ScheduledJob, now_ms: int) -> int | None:
     if job.trigger == TriggerKind.CRON and job.cron_expr:
         try:
             from croniter import croniter
-            base = datetime.fromtimestamp(now_ms / 1000)
+            if job.timezone:
+                try:
+                    from zoneinfo import ZoneInfo
+                    tz = ZoneInfo(job.timezone)
+                    base = datetime.fromtimestamp(now_ms / 1000, tz=tz)
+                except Exception as tz_e:
+                    logger.debug("Invalid timezone '{}', falling back to local: {}", job.timezone, tz_e)
+                    base = datetime.fromtimestamp(now_ms / 1000)
+            else:
+                base = datetime.fromtimestamp(now_ms / 1000)
             cron = croniter(job.cron_expr, base)
             return int(cron.get_next(datetime).timestamp() * 1000)
         except Exception as e:
@@ -141,6 +150,9 @@ class Scheduler:
         self._background_tasks: dict[str, asyncio.Task] = {}
         self._lock_dir = store_path.parent / "scheduler_locks"
         self._lock_dir.mkdir(parents=True, exist_ok=True)
+        self._concurrency_sem: asyncio.Semaphore | None = None
+        self._tick_tasks: set[asyncio.Task] = set()
+        self._inflight_jobs: set[str] = set()
         self._load()
 
     def _load(self) -> None:
@@ -159,10 +171,32 @@ class Scheduler:
     def _save(self) -> None:
         self._store_path.parent.mkdir(parents=True, exist_ok=True)
         data = {"jobs": [j.to_dict() for j in self._jobs.values()]}
-        self._store_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        payload = json.dumps(data, ensure_ascii=False, indent=2)
+        # Atomic write: tempfile in the same directory + os.replace.
+        # A crash mid-write must never leave the JSON truncated, otherwise
+        # _load on next startup loses every scheduled job.
+        import tempfile as _tempfile
+        fd, tmp = _tempfile.mkstemp(
+            dir=str(self._store_path.parent),
+            prefix=".scheduler_",
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, str(self._store_path))
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
     async def start(self) -> None:
         self._running = True
+        self._concurrency_sem = asyncio.Semaphore(self._max_concurrent)
         for job in self._jobs.values():
             if job.enabled and job.status == JobStatus.ACTIVE:
                 job.next_run_ms = _compute_next_run(job, _now_ms())
@@ -178,6 +212,12 @@ class Scheduler:
                 await self._timer_task
             except asyncio.CancelledError:
                 pass
+        for task in list(self._tick_tasks):
+            task.cancel()
+        if self._tick_tasks:
+            await asyncio.gather(*self._tick_tasks, return_exceptions=True)
+            self._tick_tasks.clear()
+        self._inflight_jobs.clear()
         for task in self._background_tasks.values():
             task.cancel()
         self._save()
@@ -252,14 +292,36 @@ class Scheduler:
                 for job in list(self._jobs.values()):
                     if not job.enabled or job.status != JobStatus.ACTIVE:
                         continue
-                    if job.next_run_ms and now >= job.next_run_ms:
-                        await self._execute_job(job)
+                    if not job.next_run_ms or now < job.next_run_ms:
+                        continue
+                    if job.id in self._inflight_jobs:
+                        # Previous run still executing — skip this tick rather
+                        # than queue a duplicate, otherwise a slow job whose
+                        # interval is shorter than its runtime would pile up.
+                        continue
+                    self._inflight_jobs.add(job.id)
+                    task = asyncio.create_task(self._tick_dispatch(job))
+                    self._tick_tasks.add(task)
+                    task.add_done_callback(self._tick_tasks.discard)
                 await asyncio.sleep(1)
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error("Scheduler tick error: {}", e)
                 await asyncio.sleep(5)
+
+    async def _tick_dispatch(self, job: ScheduledJob) -> None:
+        sem = self._concurrency_sem
+        try:
+            if sem is not None:
+                async with sem:
+                    await self._execute_job(job)
+            else:
+                await self._execute_job(job)
+        except Exception as e:
+            logger.error("Tick dispatch for job {} crashed: {}", job.id, e)
+        finally:
+            self._inflight_jobs.discard(job.id)
 
     async def _execute_job(self, job: ScheduledJob) -> None:
         lock_fd = self._try_acquire_lock(job.id)

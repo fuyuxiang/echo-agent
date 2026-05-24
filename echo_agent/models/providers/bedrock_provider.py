@@ -137,7 +137,7 @@ class BedrockProvider(LLMProvider):
 
         try:
             import asyncio
-            resp = await asyncio.get_event_loop().run_in_executor(None, lambda: client.converse(**params))
+            resp = await asyncio.get_running_loop().run_in_executor(None, lambda: client.converse(**params))
         except Exception as e:
             logger.error("Bedrock Converse error: {}", e)
             return LLMResponse(content=f"Error: {e}", finish_reason="error")

@@ -338,16 +338,29 @@ class MemoryStore:
                 if entry.id not in sync_ids:
                     continue
                 try:
-                    loop = asyncio.get_event_loop()
                     coro = self._storage.store_memory(entry.id, entry.to_dict())
-                    if loop.is_running():
+                    try:
+                        loop = asyncio.get_running_loop()
+                    except RuntimeError:
+                        loop = None
+                    if loop is not None:
                         task = asyncio.ensure_future(coro)
                         task.add_done_callback(
                             lambda t, eid=entry.id: self._on_storage_sync_done(t, eid)
                         )
                         self._pending_storage_tasks.add(task)
                     else:
-                        loop.run_until_complete(coro)
+                        # No running loop: drive the coroutine on a throwaway
+                        # loop so synchronous callers still get the side-effect.
+                        # asyncio.run() would close the loop and disrupt later
+                        # asyncio.Future() construction in the same thread, so
+                        # use a fresh event loop manually and leave thread-local
+                        # state intact.
+                        new_loop = asyncio.new_event_loop()
+                        try:
+                            new_loop.run_until_complete(coro)
+                        finally:
+                            new_loop.close()
                     self._failed_sync.discard(entry.id)
                 except Exception as e:
                     logger.warning("Failed to sync memory {} to storage: {}", entry.id, e)

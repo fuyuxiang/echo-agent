@@ -101,7 +101,7 @@ class QQBotChannel(BaseChannel):
         self._gateway_url: str | None = None
         self._rate_limited_until: float = 0
         self._msg_seq: int = 0
-        self._seen_messages: dict[str, float] = {}
+        self._seen_messages: OrderedDict[str, float] = OrderedDict()
         self._chat_type_map: OrderedDict[str, str] = OrderedDict()
         self._max_chat_type_entries = 10000
         # Media support
@@ -147,8 +147,15 @@ class QQBotChannel(BaseChannel):
 
     def _is_duplicate(self, msg_id: str) -> bool:
         now = time.time()
-        self._seen_messages = {k: v for k, v in self._seen_messages.items() if now - v < _DEDUP_TTL}
+        # Amortized O(1): only sweep entries from the front of the LRU as long
+        # as they're stale, instead of rebuilding the whole dict each call.
+        while self._seen_messages:
+            oldest_id, oldest_ts = next(iter(self._seen_messages.items()))
+            if now - oldest_ts < _DEDUP_TTL:
+                break
+            self._seen_messages.pop(oldest_id, None)
         if msg_id in self._seen_messages:
+            self._seen_messages.move_to_end(msg_id)
             return True
         self._seen_messages[msg_id] = now
         return False
@@ -336,17 +343,34 @@ class QQBotChannel(BaseChannel):
             if reply_to:
                 payload["msg_id"] = reply_to
 
-        for attempt in range(_SEND_RETRIES):
+        attempt = 0
+        token_refreshes = 0
+        msg_id_drops = 0
+        while attempt < _SEND_RETRIES:
             try:
                 async with self._session.post(url, json=payload, headers=self._auth_headers()) as resp:
                     if resp.status < 400:
                         return True
                     body = await resp.text()
                     if resp.status == 400 and "40034024" in body and "msg_id" in payload:
+                        # Stale msg_id is a payload fixup, not a transport
+                        # failure — retry without consuming the retry budget,
+                        # but cap it so we can't loop forever.
+                        if msg_id_drops >= 1:
+                            logger.warning("QQBot msg_id drop already attempted; giving up")
+                            return False
+                        msg_id_drops += 1
                         logger.info("QQBot msg_id expired, retrying without reply reference")
                         payload.pop("msg_id", None)
                         continue
                     if resp.status == 401:
+                        # Token expired mid-flight: refresh and retry without
+                        # consuming the retry budget. Cap refresh attempts
+                        # so a misconfigured app_id can't spin forever.
+                        if token_refreshes >= 2:
+                            logger.warning("QQBot 401 persists after token refresh; giving up")
+                            return False
+                        token_refreshes += 1
                         logger.info("QQBot token expired during send, refreshing")
                         self._token_expires = 0
                         await self._refresh_token()
@@ -357,8 +381,9 @@ class QQBotChannel(BaseChannel):
                     logger.warning("QQBot send error ({}), retry {}/{}: {}", resp.status, attempt + 1, _SEND_RETRIES, body[:200])
             except Exception as e:
                 logger.error("QQBot send exception, retry {}/{}: {}", attempt + 1, _SEND_RETRIES, e)
-            if attempt < _SEND_RETRIES - 1:
-                await asyncio.sleep(1 * (attempt + 1))
+            attempt += 1
+            if attempt < _SEND_RETRIES:
+                await asyncio.sleep(1 * attempt)
         return False
 
     @staticmethod
@@ -573,7 +598,14 @@ class QQBotChannel(BaseChannel):
             try:
                 async with self._session.post(_TOKEN_URL, json=payload) as resp:
                     data = await resp.json()
-                    self._access_token = data.get("access_token", "")
+                    token = data.get("access_token", "")
+                    if not token:
+                        # Empty token = silent failure. Do not extend the
+                        # expiry window or the next call will skip refresh
+                        # forever and every API call will 401.
+                        logger.error("QQBot token refresh returned empty token: {}", data)
+                        return
+                    self._access_token = token
                     expires_in = int(data.get("expires_in", 7200))
                     self._token_expires = time.time() + expires_in - 60
                     logger.info("QQBot access token refreshed")

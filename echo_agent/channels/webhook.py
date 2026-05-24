@@ -87,7 +87,7 @@ class WebhookChannel(BaseChannel):
 
         future: asyncio.Future[str] | None = None
         if wait:
-            future = asyncio.get_event_loop().create_future()
+            future = asyncio.get_running_loop().create_future()
             self._pending_responses[event.event_id] = future
 
         await self.bus.publish_inbound(event)

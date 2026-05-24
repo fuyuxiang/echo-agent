@@ -80,6 +80,91 @@ class TestToolBase:
         errors = tool.validate_params({"msg": "hi", "count": "not_int"})
         assert any("integer" in e for e in errors)
 
+    def test_validate_params_bool_rejected_for_integer(self):
+        """`bool` is a subclass of `int` in Python; an integer-typed param
+        must explicitly reject True/False or the LLM can pass `True` where
+        the tool expects a real number (e.g. timeout=True → wait_for(True))."""
+        tool = _make_dummy_tool()
+        errors_true = tool.validate_params({"msg": "hi", "count": True})
+        assert any("integer" in e for e in errors_true)
+        errors_false = tool.validate_params({"msg": "hi", "count": False})
+        assert any("integer" in e for e in errors_false)
+
+    def test_validate_params_bool_rejected_for_number(self):
+        class NumTool(Tool):
+            name = "n"
+            description = "n"
+            parameters = {
+                "type": "object",
+                "properties": {"x": {"type": "number"}},
+                "required": ["x"],
+            }
+
+            async def execute(self, params, ctx=None):
+                return ToolResult(output="ok")
+
+        errors = NumTool().validate_params({"x": True})
+        assert any("number" in e for e in errors)
+
+
+class TestRegistryReplay:
+    """Replay-prevention guard for side-effecting tools with idempotency keys."""
+
+    @pytest.mark.asyncio
+    async def test_second_call_with_same_idempotency_key_blocked(self):
+        registry = ToolRegistry()
+        called = {"n": 0}
+
+        class _Side(Tool):
+            name = "side"
+            description = "x"
+            parameters = {"type": "object", "properties": {}, "required": []}
+
+            async def execute(self, params, ctx=None):
+                called["n"] += 1
+                return ToolResult(success=True, output="ok")
+
+        registry.register(_Side())
+        ctx = ToolExecutionContext(
+            execution_id="e1", trace_id="t1", idempotency_key="same-key",
+        )
+        r1 = await registry.execute("side", {}, ctx)
+        r2 = await registry.execute("side", {}, ctx)
+        assert r1.success is True
+        assert r2.success is False
+        assert "Replay prevented" in r2.error
+        assert called["n"] == 1
+
+    @pytest.mark.asyncio
+    async def test_is_replay_bypasses_replay_guard(self):
+        """A caller that explicitly sets ctx.is_replay=True is asking the
+        tool to be re-run on purpose (e.g. interrupt recovery). The guard
+        must respect that flag instead of refusing.
+        """
+        registry = ToolRegistry()
+        called = {"n": 0}
+
+        class _Side(Tool):
+            name = "side2"
+            description = "x"
+            parameters = {"type": "object", "properties": {}, "required": []}
+
+            async def execute(self, params, ctx=None):
+                called["n"] += 1
+                return ToolResult(success=True, output="ok")
+
+        registry.register(_Side())
+        ctx = ToolExecutionContext(
+            execution_id="e2", trace_id="t2", idempotency_key="replay-key",
+        )
+        await registry.execute("side2", {}, ctx)
+        replay_ctx = ToolExecutionContext(
+            execution_id="e3", trace_id="t2", idempotency_key="replay-key", is_replay=True,
+        )
+        r2 = await registry.execute("side2", {}, replay_ctx)
+        assert r2.success is True, f"expected replay to succeed, got: {r2.error}"
+        assert called["n"] == 2
+
     def test_validate_params_wrong_type_boolean(self):
         tool = _make_dummy_tool()
         errors = tool.validate_params({"msg": "hi", "flag": "yes"})

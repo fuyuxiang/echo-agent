@@ -74,6 +74,9 @@ def test_cooldown_recovery_after_timeout() -> None:
     router._health["primary"].cooldown_until = datetime.now(timezone.utc) - timedelta(seconds=1)
 
     assert router._health["primary"].is_available is True
+    # Recovery is now an explicit transition rather than a side-effect of the
+    # is_available read.
+    assert router._health["primary"].refresh_if_recovered() is True
     assert router._health["primary"].status == HealthStatus.HEALTHY
 
 

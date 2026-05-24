@@ -68,7 +68,7 @@ class GeminiProvider(LLMProvider):
         if tool_defs:
             send_kwargs["tools"] = tool_defs
 
-        resp = await asyncio.get_event_loop().run_in_executor(
+        resp = await asyncio.get_running_loop().run_in_executor(
             None, lambda: gemini_model.generate_content(**send_kwargs),
         )
         return self._parse_response(resp, model_name)

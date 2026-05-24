@@ -49,7 +49,7 @@ class EmailChannel(BaseChannel):
             return SendResult(success=False, error="no text")
         to_addr = event.chat_id
         subject = self._subject_map.get(to_addr, "Re: Echo Agent")
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             await loop.run_in_executor(None, self._send_smtp, to_addr, subject, text)
         except Exception as e:
@@ -75,7 +75,7 @@ class EmailChannel(BaseChannel):
             logger.error("Email send failed to {}: {}", to_addr, e)
 
     async def _poll_loop(self) -> None:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         while self._running:
             try:
                 messages = await loop.run_in_executor(None, self._fetch_imap)
