@@ -272,7 +272,9 @@ class MCPServerConfig(_Base):
 
 
 class ToolsConfig(_Base):
-    profile: Literal["minimal", "messaging", "coding", "full"] = "coding"
+    # Keep in sync with default.yaml (tools.profile). "full" is the packaged
+    # default; both must agree so the effective profile is unambiguous.
+    profile: Literal["minimal", "messaging", "coding", "full"] = "full"
     allow: list[str] = Field(default_factory=list)
     also_allow: list[str] = Field(default_factory=list)
     deny: list[str] = Field(default_factory=list)

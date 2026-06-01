@@ -23,6 +23,7 @@ from loguru import logger
 from echo_agent.bus.events import InboundEvent, OutboundEvent, ContentBlock, ContentType
 from echo_agent.bus.queue import MessageBus
 from echo_agent.channels.manager import ChannelManager
+from echo_agent.channels.qqbot_media import detect_media_kind
 from echo_agent.config.schema import GatewayConfig
 from echo_agent.gateway.auth import GatewayAuth
 from echo_agent.gateway.editor import ProgressiveEditor
@@ -37,6 +38,12 @@ from echo_agent.session.manager import SessionManager
 
 
 class GatewayServer:
+    _MEDIA_KIND_TO_CONTENT_TYPE = {
+        "image": ContentType.IMAGE,
+        "video": ContentType.VIDEO,
+        "voice": ContentType.AUDIO,
+        "file": ContentType.FILE,
+    }
 
     def __init__(
         self,
@@ -167,6 +174,15 @@ class GatewayServer:
 
     PLACEHOLDER_CONTINUE = "<!-- more -->"
 
+    def _infer_media_content_type(self, *sources: str, mime_type: str = "") -> ContentType:
+        """Classify cached media by extension/MIME, reusing the shared detector so
+        the gateway agrees with the channel layer on what counts as image/video/audio."""
+        for source in sources:
+            kind = detect_media_kind(source, mime_type)
+            if kind != "file":
+                return self._MEDIA_KIND_TO_CONTENT_TYPE[kind]
+        return ContentType.FILE
+
     def _request_token(self, request: web.Request) -> str:
         token = self.auth.token_from_headers(request.headers)
         if token:
@@ -266,18 +282,22 @@ class GatewayServer:
         )
 
         try:
-            cached_media = []
-            for url in media_urls:
-                path = await self.media_cache.download(url, platform)
-                if path:
-                    cached_media.append({"type": "file", "url": str(path)})
-
             content_blocks = [ContentBlock(type=ContentType.TEXT, text=text)]
-            for m in cached_media:
-                content_blocks.append(ContentBlock(
-                    type=ContentType.FILE,
-                    url=m["url"],
-                ))
+            if media_urls:
+                paths = await asyncio.gather(
+                    *(self.media_cache.download(url, platform) for url in media_urls),
+                    return_exceptions=True,
+                )
+                for url, path in zip(media_urls, paths):
+                    if isinstance(path, Exception):
+                        logger.warning("Gateway media download failed for {}: {}", url, path)
+                        continue
+                    if not path:
+                        continue
+                    content_blocks.append(ContentBlock(
+                        type=self._infer_media_content_type(str(path), url),
+                        url=str(path),
+                    ))
 
             event = InboundEvent(
                 channel=f"gateway:{platform}",

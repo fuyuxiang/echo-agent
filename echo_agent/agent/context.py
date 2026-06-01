@@ -11,6 +11,7 @@ Handles layered injection:
 
 from __future__ import annotations
 
+import asyncio
 import platform
 import re
 import time
@@ -135,9 +136,63 @@ class ContextBuilder:
     BOOTSTRAP_FILES = ("AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md")
     _RUNTIME_TAG = "[Runtime Context]"
 
-    def __init__(self, workspace: Path, agent_name: str = "Echo"):
+    def __init__(self, workspace: Path, agent_name: str = "Echo", media_cache: Any = None):
         self.workspace = workspace
         self.agent_name = agent_name
+        self._media_cache = media_cache
+
+    def _get_media_cache(self) -> Any:
+        """Return the media cache, building a workspace-local fallback only when the
+        gateway's cache was not injected. Prefer injecting the gateway instance (so
+        config'd dir/size limits and cleanup are shared) over relying on this fallback."""
+        if self._media_cache is None:
+            from echo_agent.gateway.media import MediaCache
+            self._media_cache = MediaCache(self.workspace / "data" / "media_cache")
+        return self._media_cache
+
+    @staticmethod
+    def _block_name(block: Any) -> str:
+        """Human-readable attachment name, if the channel attached one."""
+        meta = getattr(block, "metadata", None) or {}
+        return meta.get("name", "") or ""
+
+    async def resolve_inbound_media(
+        self, items: list[Any], channel: str = ""
+    ) -> list[dict[str, str]]:
+        """Resolve inbound media into type-aware dicts for the model.
+
+        Remote images are downloaded to the local cache concurrently so they survive
+        expiry-prone CDN URLs; on failure we fall back to the original URL so the
+        message is never dropped. Non-image attachments (file/video/audio) are not
+        downloaded — the model cannot consume their bytes, so we only reference them
+        by name/URL and skip the wasted I/O."""
+        resolved: list[dict[str, str]] = []
+        download_targets: list[tuple[int, str]] = []
+        for idx, block in enumerate(items):
+            btype = getattr(block.type, "value", str(block.type))
+            url = block.url
+            entry = {
+                "type": btype,
+                "url": url,
+                "mime_type": getattr(block, "mime_type", "") or "",
+                "name": self._block_name(block),
+            }
+            resolved.append(entry)
+            if btype == "image" and url.startswith(("http://", "https://")):
+                download_targets.append((idx, url))
+
+        if download_targets:
+            cache = self._get_media_cache()
+            results = await asyncio.gather(
+                *(cache.download(url, channel or "inbound") for _, url in download_targets),
+                return_exceptions=True,
+            )
+            for (idx, url), result in zip(download_targets, results):
+                if isinstance(result, Exception):
+                    logger.warning("Inbound media download failed, using original URL: {}", result)
+                elif result:
+                    resolved[idx]["url"] = str(result)
+        return resolved
 
     def build_system_prompt(
         self,
@@ -174,7 +229,7 @@ class ContextBuilder:
         self,
         history: list[dict[str, Any]],
         current_message: str,
-        media: list[str] | None = None,
+        media: list[Any] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
         system_prompt: str = "",
@@ -193,30 +248,68 @@ class ContextBuilder:
             messages.append({"role": "system", "content": system_prompt})
         messages.extend(history)
 
-        if media:
+        normalized = self._normalize_media(media)
+        if normalized:
             content_parts: list[dict[str, Any]] = [{"type": "text", "text": merged_user}]
-            for url in media:
-                if url.startswith(("http://", "https://", "data:")):
-                    content_parts.append({"type": "image_url", "image_url": {"url": url}})
+            file_notes: list[str] = []
+            for item in normalized:
+                mtype = item.get("type", "image")
+                url = item.get("url", "")
+                if not url:
+                    continue
+                name = item.get("name") or item.get("mime_type") or mtype
+                if mtype == "image":
+                    image_url = self._as_image_url(url)
+                    if image_url:
+                        content_parts.append({"type": "image_url", "image_url": {"url": image_url}})
+                    else:
+                        # 图片本地缓存已失效/不可读：不要静默丢弃，降级为文本引用，
+                        # 让模型至少知道用户发过一张图。
+                        file_notes.append(f"[附件] 类型=image 名称={name} 路径={url}")
                 else:
-                    data_url = self._local_image_to_data_url(url)
-                    if data_url:
-                        content_parts.append({"type": "image_url", "image_url": {"url": data_url}})
+                    # 非图片附件（文件/视频/音频）模型无法直接看图，改为文本引用，
+                    # 给出类型、名称和本地路径，避免被误当成图片塞进 image_url。
+                    file_notes.append(f"[附件] 类型={mtype} 名称={name} 路径={url}")
+            if file_notes:
+                content_parts[0]["text"] = merged_user + "\n\n" + "\n".join(file_notes)
             messages.append({"role": "user", "content": content_parts})
         else:
             messages.append({"role": "user", "content": merged_user})
         return messages
 
     @staticmethod
+    def _normalize_media(media: Any) -> list[dict[str, str]]:
+        """Accept either a list of bare URL strings (legacy) or type-aware dicts."""
+        if not media:
+            return []
+        normalized: list[dict[str, str]] = []
+        for entry in media:
+            if isinstance(entry, str):
+                normalized.append({"type": "image", "url": entry, "mime_type": "", "name": ""})
+            elif isinstance(entry, dict):
+                normalized.append({
+                    "type": entry.get("type", "image"),
+                    "url": entry.get("url", ""),
+                    "mime_type": entry.get("mime_type", ""),
+                    "name": entry.get("name", ""),
+                })
+        return normalized
+
+    def _as_image_url(self, url: str) -> str | None:
+        if url.startswith(("http://", "https://", "data:")):
+            return url
+        return self._local_image_to_data_url(url)
+
+    @staticmethod
     def _local_image_to_data_url(path: str) -> str | None:
         import base64
-        from pathlib import Path as _Path
-        p = _Path(path)
+
+        from echo_agent.channels.qqbot_media import image_mime_for
+
+        p = Path(path)
         if not p.exists():
             return None
-        ext = p.suffix.lower()
-        mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp"}
-        mime = mime_map.get(ext, "image/png")
+        mime = image_mime_for(path)
         data = base64.b64encode(p.read_bytes()).decode()
         return f"data:{mime};base64,{data}"
 

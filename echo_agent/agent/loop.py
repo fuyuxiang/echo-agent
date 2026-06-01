@@ -246,7 +246,12 @@ class AgentLoop:
             scope_policy=config.memory.scope_policy,
         )
         self.tools = ToolRegistry()
-        self.context = ContextBuilder(workspace)
+        from echo_agent.gateway.media import MediaCache
+        media_cache = MediaCache(
+            cache_dir=workspace / config.gateway.media_cache_dir,
+            max_size_mb=config.gateway.media_cache_max_mb,
+        )
+        self.context = ContextBuilder(workspace, media_cache=media_cache)
         self.compressor = ConversationCompressor(
             config=config.compression,
             context_window_tokens=config.session.context_window_tokens,
