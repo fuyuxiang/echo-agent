@@ -480,10 +480,21 @@ class WeixinChannel(BaseChannel):
         text = _extract_text(item_list)
 
         media: list[dict[str, str]] = []
+        placeholders: list[str] = []
         for item in item_list:
             m = self._extract_media_info(item)
-            if m:
+            if not m:
+                continue
+            if m.get("url"):
                 media.append(m)
+            elif m.get("label"):
+                placeholders.append(m["label"])
+
+        # 媒体存在但拿不到下载地址时（CDN 链接缺失/过期），不要静默丢弃，
+        # 而是用占位文本告知用户收到了文件。
+        if placeholders:
+            notice = "\n".join(placeholders)
+            text = f"{text}\n{notice}".strip() if text else notice
 
         if not text and not media:
             return
@@ -496,19 +507,38 @@ class WeixinChannel(BaseChannel):
             metadata={"message_id": message_id, "chat_type": chat_type},
         )
 
+    def _resolve_media_url(self, url: str) -> str:
+        """Normalize a media URL, joining relative paths against the CDN base."""
+        url = (url or "").strip()
+        if not url:
+            return ""
+        if url.startswith(("http://", "https://")):
+            return url
+        if url.startswith("//"):
+            return f"https:{url}"
+        if self._cdn_base_url:
+            return f"{self._cdn_base_url}/{url.lstrip('/')}"
+        return url
+
     def _extract_media_info(self, item: dict[str, Any]) -> dict[str, str] | None:
         item_type = item.get("type")
         if item_type == _ITEM_IMAGE:
-            media = _media_reference(item, "image_item")
-            url = media.get("full_url") or ""
+            url = self._resolve_media_url(_media_reference(item, "image_item").get("full_url") or "")
             if url:
                 return {"type": "image", "url": url}
-        elif item_type == _ITEM_FILE:
-            media = _media_reference(item, "file_item")
-            url = media.get("full_url") or ""
+            return {"type": "image", "label": "[收到图片]"}
+        if item_type == _ITEM_FILE:
             name = (item.get("file_item") or {}).get("file_name") or "file"
+            url = self._resolve_media_url(_media_reference(item, "file_item").get("full_url") or "")
             if url:
-                return {"type": "file", "url": url, "mime_type": name}
+                return {"type": "file", "url": url, "name": name}
+            return {"type": "file", "label": f"[收到文件: {name}]"}
+        if item_type == _ITEM_VIDEO:
+            url = self._resolve_media_url(_media_reference(item, "video_item").get("full_url") or "")
+            if url:
+                return {"type": "video", "url": url}
+            return {"type": "video", "label": "[收到视频]"}
+        # 语音消息的转写文本已由 _extract_text 处理，无需作为附件重复采集。
         return None
 
     # ── QR login (static, for CLI use) ───────────────────────────────────────

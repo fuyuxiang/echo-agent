@@ -84,6 +84,12 @@ class InboundEvent:
     def media_urls(self) -> list[str]:
         return [b.url for b in self.content if b.url and b.type != ContentType.TEXT]
 
+    @property
+    def media_items(self) -> list[ContentBlock]:
+        """Non-text content blocks, preserving type/mime so downstream can route
+        images vs. files correctly (instead of flattening to bare URLs)."""
+        return [b for b in self.content if b.url and b.type != ContentType.TEXT]
+
     @classmethod
     def text_message(
         cls,
