@@ -64,7 +64,7 @@ class InferenceStage:
         self._default_model = default_model
         self._max_iterations = max_iterations
         self._hook_registry: Any = None
-        self._nudge_interval: int = config.skills.nudge_interval if hasattr(config, 'skills') and hasattr(config.skills, 'nudge_interval') else 0
+        self._nudge_interval: int = config.skills.creation_nudge_interval if hasattr(config, 'skills') and hasattr(config.skills, 'creation_nudge_interval') else 0
         self._memory_nudge_interval: int = config.memory.memory_nudge_interval if hasattr(config.memory, 'memory_nudge_interval') else 0
         self._tool_iters_since_skill_check = 0
         self._tool_iters_since_memory_check = 0
