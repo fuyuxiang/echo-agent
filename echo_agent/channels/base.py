@@ -111,10 +111,12 @@ class BaseChannel(ABC):
 
         content_blocks = [ContentBlock(type=ContentType.TEXT, text=text)]
         for item in (media or []):
+            name = item.get("name", "")
             content_blocks.append(ContentBlock(
                 type=ContentType(item.get("type", "file")),
                 url=item.get("url", ""),
                 mime_type=item.get("mime_type", ""),
+                metadata={"name": name} if name else {},
             ))
 
         return InboundEvent(

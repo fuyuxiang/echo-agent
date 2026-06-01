@@ -11,9 +11,9 @@ from echo_agent.models.provider import LLMProvider
 
 
 def _encode_image(path: str) -> tuple[str, str]:
-    ext = Path(path).suffix.lower()
-    mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp"}
-    mime = mime_map.get(ext, "image/png")
+    from echo_agent.channels.qqbot_media import image_mime_for
+
+    mime = image_mime_for(path)
     data = Path(path).read_bytes()
     return mime, base64.b64encode(data).decode()
 

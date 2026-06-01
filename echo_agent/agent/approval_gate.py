@@ -79,46 +79,54 @@ class ApprovalGate:
         # Step 3: Risk classification
         risk = classify_risk(tool_name, arguments)
 
+        # Approved-pass: any path that lets the call through must tell the tool
+        # which actions were approved. The tool's own guard (e.g. CodeExecTool)
+        # re-checks exec/code policy and blocks unless ctx.approved_actions
+        # contains the action — so returning an empty ApprovalCheck() here would
+        # silently fail EXEC tools even though the gate "approved" them.
+        def _approved() -> ApprovalCheck:
+            return ApprovalCheck(approved_actions=self._approved_actions(tool_name, guard))
+
         # Step 4: READ_ONLY and WRITE always pass — they are protected by sandbox/path restrictions
         if risk in (RiskLevel.READ_ONLY, RiskLevel.WRITE):
-            return ApprovalCheck()
+            return _approved()
 
         # Step 5: Explicit auto_approve list
         if tool_name in approval_cfg.auto_approve:
-            return ApprovalCheck()
+            return _approved()
 
         # Step 6: CLI auto-approve (all levels)
         if self._should_auto_approve_cli(channel):
-            return ApprovalCheck()
+            return _approved()
 
         # Step 7: Channel trust — EXEC level auto-approved on trusted channels
         if risk == RiskLevel.EXEC and self._is_trusted_channel(channel):
-            return ApprovalCheck()
+            return _approved()
 
         # Step 8: Approval mode "off" — bypass everything except hard blocks
         if approval_cfg.mode == "off":
-            return ApprovalCheck()
+            return _approved()
 
         # Step 9: Check if this tool actually requires approval
         if not self._approval_required(tool_name, guard, risk):
-            return ApprovalCheck()
+            return _approved()
 
         # Step 10: Allowlist check (EXEC level)
         session_key = event.session_key if event else ""
         pattern_key = build_pattern_key(tool_name, arguments)
         if risk == RiskLevel.EXEC and self._allowlist.is_approved(session_key, pattern_key):
-            return ApprovalCheck()
+            return _approved()
 
         # Step 11: Unattended mode check
         if self._is_unattended(event, channel):
-            return self._resolve_unattended(tool_name, risk, session_key, pattern_key)
+            return self._resolve_unattended(tool_name, risk, session_key, pattern_key, guard)
 
         # Step 12: Smart approval (EXEC level only)
         if risk == RiskLevel.EXEC and approval_cfg.mode == "smart" and self._provider:
             verdict = await self._run_smart_approval(tool_name, arguments, guard)
             if verdict == "approve":
                 self._allowlist.approve(session_key, pattern_key, ApprovalLevel.SESSION)
-                return ApprovalCheck()
+                return _approved()
             if verdict == "deny":
                 return ApprovalCheck(ToolResult(
                     success=False,
@@ -265,13 +273,16 @@ class ApprovalGate:
             return True
         return channel in {"cron", "scheduler"}
 
-    def _resolve_unattended(self, tool_name: str, risk: RiskLevel, session_key: str, pattern_key: str) -> ApprovalCheck:
+    def _resolve_unattended(
+        self, tool_name: str, risk: RiskLevel, session_key: str, pattern_key: str, guard: GuardDecision,
+    ) -> ApprovalCheck:
         policy = self._config.permissions.approval.unattended_policy
+        approved = self._approved_actions(tool_name, guard)
         if policy == "allow_safe":
             if risk == RiskLevel.WRITE:
-                return ApprovalCheck()
+                return ApprovalCheck(approved_actions=approved)
             if risk == RiskLevel.EXEC and self._allowlist.is_approved(session_key, pattern_key):
-                return ApprovalCheck()
+                return ApprovalCheck(approved_actions=approved)
         return ApprovalCheck(ToolResult(
             success=False,
             error=f"Tool '{tool_name}' requires approval but no user is available (unattended mode).",

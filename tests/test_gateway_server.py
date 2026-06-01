@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -14,13 +15,14 @@ from echo_agent.bus.queue import MessageBus
 def _make_gateway():
     """Create a minimal GatewayServer for testing."""
     from echo_agent.gateway.server import GatewayServer
-    from echo_agent.config.schema import GatewayConfig, GatewayAuthConfig
+    from echo_agent.config.schema import GatewayConfig, GatewayAuthConfig, GatewaySessionPolicyConfig
 
     config = GatewayConfig(
         enabled=True,
         host="127.0.0.1",
         port=19999,
         auth=GatewayAuthConfig(mode="open"),
+        session_policy=GatewaySessionPolicyConfig(mode="none"),
     )
     bus = MessageBus()
     channel_manager = MagicMock()
@@ -38,6 +40,16 @@ def _make_gateway():
         agent_loop=agent_loop,
     )
     return gw, bus
+
+
+class _JsonRequest:
+    def __init__(self, body: dict):
+        self._body = body
+        self.headers = {}
+        self.query = {}
+
+    async def json(self) -> dict:
+        return self._body
 
 
 @pytest.mark.asyncio
@@ -111,6 +123,49 @@ async def test_pending_http_capacity_limit() -> None:
         gw._pending_http[f"event-{i}"] = asyncio.get_event_loop().create_future()
 
     assert len(gw._pending_http) == gw._MAX_PENDING_HTTP
+
+
+@pytest.mark.asyncio
+async def test_handle_message_preserves_gateway_media_url_image_type(tmp_path: Path) -> None:
+    gw, bus = _make_gateway()
+    cached_image = tmp_path / "cached.png"
+    gw.media_cache.download = AsyncMock(return_value=cached_image)
+    bus.publish_inbound = AsyncMock(return_value=True)
+
+    response = await gw._handle_message(_JsonRequest({
+        "platform": "api",
+        "user_id": "user-1",
+        "chat_id": "chat-1",
+        "text": "describe this",
+        "media_urls": ["https://cdn.example.com/source"],
+    }))
+
+    assert response.status == 200
+    event = bus.publish_inbound.await_args.args[0]
+    assert event.content[1].type == ContentType.IMAGE
+    assert event.media_items[0].type == ContentType.IMAGE
+
+
+@pytest.mark.asyncio
+async def test_handle_message_infers_image_from_cached_extension(tmp_path: Path) -> None:
+    # 回归：URL 无扩展名，但下载后按 Content-Type 落地为 .heic，
+    # 仍应识别为 IMAGE，而不是退化成 FILE（否则模型看不到图片）。
+    gw, bus = _make_gateway()
+    cached_heic = tmp_path / "abc123.heic"
+    gw.media_cache.download = AsyncMock(return_value=cached_heic)
+    bus.publish_inbound = AsyncMock(return_value=True)
+
+    response = await gw._handle_message(_JsonRequest({
+        "platform": "api",
+        "user_id": "user-1",
+        "chat_id": "chat-1",
+        "text": "describe this",
+        "media_urls": ["https://cdn.example.com/abc123"],
+    }))
+
+    assert response.status == 200
+    event = bus.publish_inbound.await_args.args[0]
+    assert event.content[1].type == ContentType.IMAGE
 
 
 @pytest.mark.asyncio

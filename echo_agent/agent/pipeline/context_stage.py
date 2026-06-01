@@ -149,10 +149,17 @@ class ContextStage:
 
         retrieval = "\n\n".join(retrieval_parts)
 
+        media_items = event.media_items
+        resolved_media = (
+            await self._context_builder.resolve_inbound_media(media_items, event.channel)
+            if media_items
+            else None
+        )
+
         messages = self._context_builder.build_messages(
             history=history,
             current_message=event.text,
-            media=event.media_urls or None,
+            media=resolved_media,
             channel=event.channel,
             chat_id=event.chat_id,
             system_prompt=system_prompt,

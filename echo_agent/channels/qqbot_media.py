@@ -33,7 +33,10 @@ class MediaFileType(IntEnum):
 
 # ── Media type detection ─────────────────────────────────────────────────────
 
-IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"})
+IMAGE_EXTS = frozenset({
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp",
+    ".heic", ".heif", ".avif", ".tiff", ".tif", ".svg",
+})
 VIDEO_EXTS = frozenset({".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv"})
 AUDIO_EXTS = frozenset({
     ".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a",
@@ -43,7 +46,14 @@ AUDIO_EXTS = frozenset({
 IMAGE_MIME_TYPES: dict[str, str] = {
     ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
     ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+    ".heic": "image/heic", ".heif": "image/heif", ".avif": "image/avif",
+    ".tiff": "image/tiff", ".tif": "image/tiff", ".svg": "image/svg+xml",
 }
+
+
+def image_mime_for(path: str) -> str:
+    """Best-effort image MIME type from a path/URL extension (defaults to png)."""
+    return IMAGE_MIME_TYPES.get(get_clean_extension(path), "image/png")
 
 # ── Media type detection functions ────────────────────────────────────────────
 
