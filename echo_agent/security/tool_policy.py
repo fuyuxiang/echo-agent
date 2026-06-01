@@ -31,9 +31,10 @@ MINIMAL_TOOLS = frozenset({
 })
 
 MESSAGING_TOOLS = MINIMAL_TOOLS | frozenset({
+    "image_generate",
     "memory",
-    "tts",
-    "vision",
+    "text_to_speech",
+    "vision_analyze",
 })
 
 CODING_TOOLS = MESSAGING_TOOLS | frozenset({
