@@ -65,9 +65,10 @@ class InferenceStage:
         self._max_iterations = max_iterations
         self._hook_registry: Any = None
         self._nudge_interval: int = config.skills.nudge_interval if hasattr(config, 'skills') and hasattr(config.skills, 'nudge_interval') else 0
-        self._memory_nudge_interval: int = config.memory.nudge_interval if hasattr(config.memory, 'nudge_interval') else 0
+        self._memory_nudge_interval: int = config.memory.memory_nudge_interval if hasattr(config.memory, 'memory_nudge_interval') else 0
         self._tool_iters_since_skill_check = 0
         self._tool_iters_since_memory_check = 0
+        self._turns_since_memory_check = 0
 
     async def run(self, ctx: PipelineContext) -> InferenceResult:
         """Execute the inference loop, returning the final result."""
@@ -354,6 +355,15 @@ class InferenceStage:
             )
             if not response_text:
                 response_text = "I encountered an issue processing your request. Please try again or rephrase your question."
+
+        # Turn-based memory review trigger: fires even for pure chat (no tool calls).
+        # The tool-iteration path above only counts tool loops, so personal facts
+        # shared in plain conversation would never be reviewed without this.
+        if self._memory_nudge_interval > 0 and self._tools.has("memory"):
+            self._turns_since_memory_check += 1
+            if self._turns_since_memory_check >= self._memory_nudge_interval:
+                should_review_memory = True
+                self._turns_since_memory_check = 0
 
         return InferenceResult(
             response_text=response_text,

@@ -8,7 +8,12 @@ from typing import Any, TYPE_CHECKING
 
 from loguru import logger
 
-from echo_agent.agent.context import ContextBuilder, build_memory_context, build_skills_context
+from echo_agent.agent.context import (
+    ContextBuilder,
+    build_capabilities_context,
+    build_memory_context,
+    build_skills_context,
+)
 from echo_agent.agent.pipeline.types import PipelineContext
 from echo_agent.bus.events import InboundEvent
 from echo_agent.session.manager import Session
@@ -98,8 +103,13 @@ class ContextStage:
             )
 
         skills_ctx = build_skills_context(self._skill_store)
+        # Derive capabilities from the live tool registry (config, not memory).
+        tool_defs = self._inference.filter_tools(self._tool_definitions_fn())
+        capabilities_ctx = build_capabilities_context(tool_defs)
         system_prompt = self._context_builder.build_system_prompt(
-            memory_context=memory_ctx, skills_context=skills_ctx
+            memory_context=memory_ctx,
+            skills_context=skills_ctx,
+            capabilities=capabilities_ctx,
         )
 
         history = session.get_history(self._config.session.max_history_messages)
@@ -166,7 +176,7 @@ class ContextStage:
             retrieval_context=retrieval,
         )
 
-        tool_defs = self._inference.filter_tools(self._tool_definitions_fn())
+        # tool_defs already computed above for capability derivation.
 
         execution_plan = None
         if self._planner and tool_defs:

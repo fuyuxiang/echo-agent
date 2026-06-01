@@ -14,6 +14,7 @@ from echo_agent.agent.context import (
     _MEMORY_GUIDANCE,
     _QQBOT_MEDIA_GUIDANCE,
     _SKILLS_GUIDANCE,
+    build_capabilities_context,
     build_memory_context,
     build_recalled_memory_block,
     build_skills_context,
@@ -461,3 +462,35 @@ class TestBuildMessages:
         )
         user_content = msgs[-1]["content"]
         assert "QQ Media Tags" in user_content
+
+
+class TestBuildCapabilitiesContext:
+    """Capabilities are derived from the live tool registry, not memory."""
+
+    def _tool(self, name: str, desc: str = "") -> dict:
+        return {"type": "function", "function": {"name": name, "description": desc}}
+
+    def test_lists_available_tools(self):
+        defs = [self._tool("web_search"), self._tool("memory"), self._tool("weather")]
+        ctx = build_capabilities_context(defs)
+        assert "web_search" in ctx
+        assert "memory" in ctx
+        assert "weather" in ctx
+
+    def test_empty_tools_states_no_capabilities(self):
+        ctx = build_capabilities_context([])
+        assert "no tools" in ctx.lower()
+
+    def test_none_tools_states_no_capabilities(self):
+        ctx = build_capabilities_context(None)
+        assert "no tools" in ctx.lower()
+
+    def test_instructs_to_judge_from_live_list(self):
+        ctx = build_capabilities_context([self._tool("memory")])
+        # Must tell the model to judge capabilities from this list, not from memory.
+        assert "live list" in ctx.lower() or "currently available" in ctx.lower()
+
+    def test_tools_sorted_for_stable_prompt(self):
+        defs = [self._tool("zebra"), self._tool("alpha")]
+        ctx = build_capabilities_context(defs)
+        assert ctx.index("alpha") < ctx.index("zebra")

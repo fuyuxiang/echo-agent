@@ -161,28 +161,50 @@ class TestForgettingCurve:
     def test_old_entry_decays(self):
         curve = ForgettingCurve(base_half_life_days=30.0)
         past = (datetime.now() - timedelta(days=60)).isoformat()
-        entry = _make_entry(last_accessed=past, importance=1.0, access_count=0)
+        entry = _make_entry(type=MemoryType.ENVIRONMENT, last_accessed=past, importance=1.0, access_count=0)
         eff = curve.effective_importance(entry)
         assert eff < 0.3  # two half-lives => ~0.25
 
     def test_high_access_count_slows_decay(self):
         curve = ForgettingCurve(base_half_life_days=30.0)
         past = (datetime.now() - timedelta(days=60)).isoformat()
-        low = _make_entry(last_accessed=past, importance=1.0, access_count=0)
-        high = _make_entry(last_accessed=past, importance=1.0, access_count=100)
+        low = _make_entry(type=MemoryType.ENVIRONMENT, last_accessed=past, importance=1.0, access_count=0)
+        high = _make_entry(type=MemoryType.ENVIRONMENT, last_accessed=past, importance=1.0, access_count=100)
         assert curve.effective_importance(high) > curve.effective_importance(low)
 
     def test_should_archive(self):
         curve = ForgettingCurve(base_half_life_days=10.0, archive_threshold=0.05)
         old = (datetime.now() - timedelta(days=100)).isoformat()
-        entry = _make_entry(last_accessed=old, importance=0.5, access_count=0)
+        entry = _make_entry(type=MemoryType.ENVIRONMENT, last_accessed=old, importance=0.5, access_count=0)
         assert curve.should_archive(entry)
 
     def test_should_forget(self):
         curve = ForgettingCurve(base_half_life_days=5.0, forget_threshold=0.01)
         old = (datetime.now() - timedelta(days=200)).isoformat()
-        entry = _make_entry(last_accessed=old, importance=0.3, access_count=0)
+        entry = _make_entry(type=MemoryType.ENVIRONMENT, last_accessed=old, importance=0.3, access_count=0)
         assert curve.should_forget(entry)
+
+    def test_user_memory_never_decays(self):
+        """Core philosophy: facts about the user must never decay or be forgotten,
+        no matter how long ago they were last accessed."""
+        curve = ForgettingCurve(base_half_life_days=5.0, archive_threshold=0.05, forget_threshold=0.01)
+        ancient = (datetime.now() - timedelta(days=3650)).isoformat()
+        user_entry = _make_entry(type=MemoryType.USER, last_accessed=ancient, importance=0.5, access_count=0)
+        # Effective importance stays pinned to raw importance, no decay.
+        assert curve.effective_importance(user_entry) == 0.5
+        # And it is never marked for archival or forgetting.
+        assert not curve.should_archive(user_entry)
+        assert not curve.should_forget(user_entry)
+
+    @pytest.mark.asyncio
+    async def test_run_decay_pass_skips_user_memory(self):
+        """run_decay_pass must never archive/forget USER memories."""
+        curve = ForgettingCurve(base_half_life_days=5.0, archive_threshold=0.05, forget_threshold=0.01)
+        old = (datetime.now() - timedelta(days=200)).isoformat()
+        user_old = _make_entry(type=MemoryType.USER, last_accessed=old, importance=0.3, tier=MemoryTier.SEMANTIC)
+        to_archive, to_forget = await curve.run_decay_pass([user_old])
+        assert user_old not in to_archive
+        assert user_old not in to_forget
 
     def test_half_life_days(self):
         curve = ForgettingCurve(base_half_life_days=30.0)
