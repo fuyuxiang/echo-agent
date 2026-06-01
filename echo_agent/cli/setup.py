@@ -377,8 +377,12 @@ def setup_tools(config: dict) -> None:
     tools = _ensure_dict(config, "tools")
     profile_keys = ["minimal", "messaging", "coding", "full"]
     profile_labels = [t(f"tools.profile_{k}") for k in profile_keys]
-    current_profile = tools.get("profile", "coding")
-    default_profile = profile_keys.index(current_profile) if current_profile in profile_keys else 2
+    # Keep the fallback in sync with schema.py (ToolsConfig.profile) and
+    # default.yaml (tools.profile) — all three default to "full". A stale
+    # "coding" fallback here silently drops execute_code/exec from the
+    # exposed tool set even though they're registered and approved.
+    current_profile = tools.get("profile", "full")
+    default_profile = profile_keys.index(current_profile) if current_profile in profile_keys else profile_keys.index("full")
     p_idx = prompt_choice(t("tools.profile"), profile_labels, default=default_profile)
     tools["profile"] = profile_keys[p_idx]
 
@@ -826,7 +830,7 @@ def _capability_check(config: dict) -> list[tuple[str, bool, str]]:
     else:
         checks.append((t("doctor.channel_missing"), False, ""))
 
-    profile = (config.get("tools", {}) or {}).get("profile", "coding")
+    profile = (config.get("tools", {}) or {}).get("profile", "full")
     checks.append((t("doctor.tools_ok", profile=profile), True, ""))
 
     perm_mode = ((config.get("permissions", {}) or {}).get("approval", {}) or {}).get("mode", "smart")
