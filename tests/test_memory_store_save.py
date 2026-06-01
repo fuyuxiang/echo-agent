@@ -153,3 +153,52 @@ class TestStoreAddUpdateDelete:
         r2 = store.add(entry2)
         assert r1.id == r2.id
         assert len(store.list_all(MemoryType.USER)) == 1
+
+
+class TestCoreResidentUserMemory:
+    """Core philosophy: user facts are resident and durable, never decayed out."""
+
+    def test_stale_user_fact_still_in_snapshot(self, tmp_path: Path) -> None:
+        """A birthday mentioned long ago must still appear in the snapshot,
+        even when many fresher, higher-importance non-user memories exist."""
+        from datetime import timedelta
+
+        store = MemoryStore(memory_dir=tmp_path / "mem")
+        ancient = (datetime.now() - timedelta(days=365)).isoformat()
+        birthday = _make_entry(
+            type=MemoryType.USER,
+            key="birthday",
+            content="用户公历生日 1988-10-11",
+            importance=0.5,
+            last_accessed=ancient,
+        )
+        store.add(birthday)
+
+        # Add many fresh, high-importance environment memories that would
+        # out-rank the stale birthday if it were subject to decay.
+        for i in range(40):
+            store.add(_make_entry(
+                type=MemoryType.ENVIRONMENT,
+                key=f"env_{i}",
+                content=f"fresh environment fact {i}",
+                importance=0.9,
+                last_accessed=datetime.now().isoformat(),
+            ))
+
+        snapshot = store.get_snapshot()
+        assert "1988-10-11" in snapshot
+        assert "## What I Know About You" in snapshot
+
+    def test_user_overflow_emits_curation_notice(self, tmp_path: Path) -> None:
+        """When user facts exceed the budget, a curation notice appears rather
+        than silently dropping facts."""
+        store = MemoryStore(memory_dir=tmp_path / "mem", user_snapshot_char_limit=200)
+        for i in range(30):
+            store.add(_make_entry(
+                type=MemoryType.USER,
+                key=f"fact_{i}",
+                content=f"a reasonably long user fact number {i} that consumes budget",
+                importance=0.5,
+            ))
+        snapshot = store.get_snapshot()
+        assert "more durable facts about the user not shown" in snapshot

@@ -44,6 +44,14 @@ You have persistent memory across sessions. Use the `memory` tool to manage it.
 - Use `remove` to delete information that is no longer accurate.
 - Only save information that would be useful in future conversations — skip trivial or one-off details.
 
+SELF-AWARENESS: You DO remember things across sessions. Facts the user told you about themselves
+(name, birthday, family, preferences, ongoing projects) are persisted and re-injected for you under
+"What I Know About You" above. When the user asks about something from a past conversation, FIRST check
+that section and the conversation history already in your context, THEN answer. Never claim you are
+"stateless", "passive", "cannot remember", or that the user "must explicitly ask you to save" — that is
+false and unhelpful. If a fact genuinely isn't in your memory or history, say you don't have it on record
+and offer to save it now.
+
 CRITICAL: When the user explicitly asks you to "remember", "记住", "别忘了", "你要记住", or any \
 similar instruction to retain information, you MUST immediately call the `memory` tool with action="add" \
 to persist it. A text-only reply like "好的，我记住了" without actually calling the memory tool is \
@@ -114,6 +122,38 @@ def build_skills_context(skill_store: Any) -> str:
     for s in skills:
         tag = f" [{s.category}]" if s.category else ""
         lines.append(f"  - {s.name}{tag}: {s.description}")
+    return "\n".join(lines)
+
+
+def build_capabilities_context(tool_defs: list[dict[str, Any]] | None) -> str:
+    """Derive the agent's capabilities from the LIVE tool registry.
+
+    Capabilities (what the agent can/cannot do) are a function of which tools
+    are currently registered — they are configuration, not memory. Deriving
+    them here every turn avoids the failure mode where stale, self-contradictory
+    capability claims accumulate in MEMORY.md ("I cannot generate images",
+    "sunset.png was NEVER generated", etc.) and drift out of sync with reality.
+    """
+    if not tool_defs:
+        return (
+            "You currently have no tools available beyond direct conversation. "
+            "Do not claim capabilities that require tools."
+        )
+    names: list[str] = []
+    for t in tool_defs:
+        fn = t.get("function", {}) if isinstance(t, dict) else {}
+        name = fn.get("name")
+        if name:
+            names.append(name)
+    if not names:
+        return ""
+    lines = [
+        "These are your CURRENTLY available tools. Your capabilities are exactly "
+        "what these tools provide — no more, no less. Do not assert you can or "
+        "cannot do something based on past memory; judge from this live list.",
+        "",
+        "Available tools: " + ", ".join(sorted(names)),
+    ]
     return "\n".join(lines)
 
 
@@ -201,12 +241,19 @@ class ContextBuilder:
         user_profile: str = "",
         env_context: str = "",
         custom_instructions: str = "",
+        capabilities: str = "",
     ) -> str:
         parts = [self._identity()]
 
         bootstrap = self._load_bootstrap_files()
         if bootstrap:
             parts.append(bootstrap)
+
+        # Capabilities are derived at runtime from the live tool registry, NOT
+        # stored in mutable memory. This prevents stale/self-contradictory claims
+        # like "I cannot generate images" persisting across tool-config changes.
+        if capabilities:
+            parts.append(f"# Capabilities\n\n{capabilities}")
 
         if memory_context:
             parts.append(f"# Memory\n\n{memory_context}")

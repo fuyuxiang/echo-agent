@@ -132,7 +132,7 @@ class MemoryStore:
         max_user: int = 1000,
         max_env: int = 500,
         decay_half_life_days: float = 30.0,
-        user_snapshot_char_limit: int = 1375,
+        user_snapshot_char_limit: int = 4000,
         env_snapshot_char_limit: int = 2200,
         storage: Any = None,
         scope_policy: str = "legacy",
@@ -612,17 +612,20 @@ class MemoryStore:
         max_entries: int = 50,
         max_chars: int | None = None,
         session_key: str | None = None,
+        overflow_notice: str | None = None,
     ) -> str:
-        entries = sorted(
-            self.list_all(mem_type, session_key=session_key)[:max_entries],
+        all_entries = sorted(
+            self.list_all(mem_type, session_key=session_key),
             key=lambda entry: self._forgetting.effective_importance(entry),
             reverse=True,
         )
+        entries = all_entries[:max_entries]
         if not entries:
             return ""
 
         lines: list[str] = []
         used = 0
+        dropped = max(0, len(all_entries) - len(entries))
         for entry in entries:
             tags = f" [{', '.join(entry.tags)}]" if entry.tags else ""
             line = f"- **{entry.key}**{tags}: {entry.content}"
@@ -632,9 +635,15 @@ class MemoryStore:
                     truncated = line[: max_chars - 3].rstrip()
                     if truncated:
                         lines.append(truncated + "...")
+                dropped += len(entries) - len(lines)
                 break
             lines.append(line)
             used += delta
+        # Overflow is a curation signal, not silent loss. Tell the model that
+        # more durable facts exist than fit the budget so it can consolidate
+        # rather than assume what's shown is everything.
+        if dropped > 0 and overflow_notice:
+            lines.append(overflow_notice.format(dropped=dropped))
         return "\n".join(lines)
 
     def get_snapshot(self, session_key: str | None = None) -> str:
@@ -646,12 +655,16 @@ class MemoryStore:
 
         user_ctx = self.get_context(
             MemoryType.USER,
-            max_entries=30,
+            max_entries=50,
             max_chars=self._user_snapshot_char_limit,
             session_key=session_key,
+            overflow_notice=(
+                "- _(+{dropped} more durable facts about the user not shown — "
+                "consider consolidating with the memory tool)_"
+            ),
         )
         if user_ctx:
-            parts.append(f"## Session User Memory\n\n{user_ctx}")
+            parts.append(f"## What I Know About You\n\n{user_ctx}")
 
         env_ctx = self.get_context(
             MemoryType.ENVIRONMENT,
