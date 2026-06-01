@@ -166,7 +166,86 @@ class TestResponseStage:
         assert session.messages[-1]["content"] == "Hello!"
 
     @pytest.mark.asyncio
-    async def test_finalize_strips_thinking(self):
+    async def test_pure_chat_triggers_memory_review(self):
+        """Regression: memory review must fire for pure chat (no tool calls).
+
+        Previously gated on `total_tool_calls > 0`, so personal facts shared in
+        plain conversation were never reviewed/persisted.
+        """
+        sessions = AsyncMock()
+        memory = MagicMock()
+        memory.has_pending_embeds = MagicMock(return_value=False)
+
+        consolidation = MagicMock()
+        consolidation._consolidator = MagicMock()
+        consolidation._consolidator.should_consolidate = MagicMock(return_value=False)
+
+        spawned = []
+
+        def _record_spawn(coro):
+            spawned.append(coro)
+            coro.close()  # avoid "coroutine never awaited" warning
+
+        stage = ResponseStage(
+            config=MagicMock(),
+            sessions=sessions,
+            memory=memory,
+            provider=MagicMock(),
+            consolidation_worker=consolidation,
+            default_model="m",
+            spawn_fn=_record_spawn,
+            clear_memory_snapshot_fn=AsyncMock(),
+        )
+
+        event = InboundEvent.text_message(channel="weixin", sender_id="u1", chat_id="c1", text="我生日是10月11日")
+        session = Session(key="weixin:c1")
+        ctx = PipelineContext(event=event, session=session, trace_id="t1", publish_response=False)
+        # Pure chat: no tool calls, but review was requested by the turn-based trigger.
+        result = InferenceResult(response_text="好的", total_tool_calls=0, should_review_memory=True)
+
+        await stage.finalize(ctx, result)
+
+        # The memory review coroutine must have been spawned despite zero tool calls.
+        assert len(spawned) == 1
+
+    @pytest.mark.asyncio
+    async def test_skill_review_still_requires_tool_calls(self):
+        """Skill review reviews tool-usage patterns, so it stays gated on tool calls."""
+        sessions = AsyncMock()
+        memory = MagicMock()
+        memory.has_pending_embeds = MagicMock(return_value=False)
+
+        consolidation = MagicMock()
+        consolidation._consolidator = MagicMock()
+        consolidation._consolidator.should_consolidate = MagicMock(return_value=False)
+
+        spawned = []
+
+        def _record_spawn(coro):
+            spawned.append(coro)
+            coro.close()
+
+        stage = ResponseStage(
+            config=MagicMock(),
+            sessions=sessions,
+            memory=memory,
+            provider=MagicMock(),
+            consolidation_worker=consolidation,
+            default_model="m",
+            spawn_fn=_record_spawn,
+            clear_memory_snapshot_fn=AsyncMock(),
+        )
+
+        event = InboundEvent.text_message(channel="cli", sender_id="u1", chat_id="c1", text="hi")
+        session = Session(key="cli:c1")
+        ctx = PipelineContext(event=event, session=session, trace_id="t1", publish_response=False)
+        result = InferenceResult(response_text="hi", total_tool_calls=0, should_review_skills=True)
+
+        await stage.finalize(ctx, result)
+
+        # Skill review should NOT spawn with zero tool calls.
+        assert len(spawned) == 0
+
         sessions = AsyncMock()
         memory = MagicMock()
         memory.has_pending_embeds = MagicMock(return_value=False)
@@ -194,6 +273,45 @@ class TestResponseStage:
         process_result = await stage.finalize(ctx, result)
         assert "internal" not in process_result.response_text
         assert "Visible response" in process_result.response_text
+
+    @pytest.mark.asyncio
+    async def test_eval_channel_skips_consolidation_and_review(self):
+        """Eval/test traffic must not feed long-term memory or memory review."""
+        sessions = AsyncMock()
+        memory = MagicMock()
+        memory.has_pending_embeds = MagicMock(return_value=False)
+
+        consolidation = MagicMock()
+        consolidation._consolidator = MagicMock()
+        consolidation._consolidator.should_consolidate = MagicMock(return_value=True)
+        consolidation.schedule = AsyncMock()
+
+        spawned = []
+
+        def _record_spawn(coro):
+            spawned.append(coro)
+            coro.close()
+
+        stage = ResponseStage(
+            config=MagicMock(),
+            sessions=sessions,
+            memory=memory,
+            provider=MagicMock(),
+            consolidation_worker=consolidation,
+            default_model="m",
+            spawn_fn=_record_spawn,
+            clear_memory_snapshot_fn=AsyncMock(),
+        )
+
+        event = InboundEvent.text_message(channel="eval", sender_id="u1", chat_id="list_skills", text="x")
+        session = Session(key="eval:list_skills")
+        ctx = PipelineContext(event=event, session=session, trace_id="t1", publish_response=False)
+        result = InferenceResult(response_text="ok", total_tool_calls=0, should_review_memory=True)
+
+        await stage.finalize(ctx, result)
+
+        consolidation.schedule.assert_not_called()
+        assert len(spawned) == 0
 
     @pytest.mark.asyncio
     async def test_finalize_prepends_intro(self):

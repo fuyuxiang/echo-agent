@@ -26,6 +26,23 @@ class ProcessResult:
     outbound_sent: bool = False
 
 
+# Channels whose traffic is synthetic (evaluation/benchmark/test harnesses) and
+# must never pollute long-term memory. Their session keys look like "eval:...".
+_NON_PERSISTING_CHANNELS = frozenset({"eval", "test", "benchmark"})
+
+
+def _is_ephemeral_session(session_key: str, channel: str) -> bool:
+    """True if this traffic should be excluded from consolidation/memory review.
+
+    Eval/test traffic was previously consolidated into MEMORY.md, producing noise
+    like 'rejected rm -rf 25 times' that drowned out real user facts.
+    """
+    if channel and channel.lower() in _NON_PERSISTING_CHANNELS:
+        return True
+    prefix = session_key.split(":", 1)[0].lower() if session_key else ""
+    return prefix in _NON_PERSISTING_CHANNELS
+
+
 class ResponseStage:
     """Finalizes the response: strips thinking, saves session, triggers background work."""
 
@@ -68,9 +85,13 @@ class ResponseStage:
         if self._memory.has_pending_embeds():
             self._spawn_fn(self._memory.flush_pending_embeds())
 
+        # Eval/test traffic must never feed long-term memory or memory review —
+        # otherwise synthetic benchmark noise accumulates in MEMORY.md.
+        ephemeral = _is_ephemeral_session(session.key, event.channel)
+
         # Schedule consolidation (safe — acquires its own lock)
         from echo_agent.memory.consolidator import MemoryConsolidator
-        if hasattr(self._consolidation, '_consolidator'):
+        if not ephemeral and hasattr(self._consolidation, '_consolidator'):
             consolidator = self._consolidation._consolidator
             if consolidator.should_consolidate(session.message_count, session.last_consolidated):
                 await self._consolidation.schedule(
@@ -79,10 +100,13 @@ class ResponseStage:
                     on_complete=self._clear_memory_snapshot,
                 )
 
-        # Background skill/memory reviews
+        # Background skill/memory reviews.
+        # Skill review still requires tool activity (it reviews tool usage patterns).
+        # Memory review must run even for pure chat — personal facts are shared in
+        # plain conversation without any tool calls, so it does NOT gate on tool count.
         if result.should_review_skills and result.total_tool_calls > 0:
             self._spawn_fn(self._background_skill_review(ctx.messages))
-        if result.should_review_memory and result.total_tool_calls > 0:
+        if result.should_review_memory and not ephemeral:
             self._spawn_fn(self._background_memory_review(ctx.messages, event.session_key))
 
         # Finalize streaming

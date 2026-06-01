@@ -34,6 +34,14 @@ class ForgettingCurve:
         self._forget_threshold = forget_threshold
 
     def effective_importance(self, entry: MemoryEntry) -> float:
+        # Core philosophy: facts about the user (identity, preferences, family,
+        # long-term goals) are the relationship core. They are durable by nature
+        # and must never decay — a personal assistant forgetting your birthday
+        # because you haven't mentioned it in a while is unacceptable. USER
+        # memories are pinned to their raw importance, exempt from the curve.
+        from echo_agent.memory.types import MemoryType
+        if entry.type == MemoryType.USER:
+            return entry.importance
         if not entry.last_accessed or self._base_half_life <= 0:
             return entry.importance
         try:
@@ -87,7 +95,11 @@ class ForgettingCurve:
         to_archive: list[MemoryEntry] = []
         to_forget: list[MemoryEntry] = []
         for entry in entries:
-            from echo_agent.memory.types import MemoryTier
+            from echo_agent.memory.types import MemoryTier, MemoryType
+            # User facts are the relationship core — never archive or forget them,
+            # regardless of importance score. Hard guarantee, not score-dependent.
+            if entry.type == MemoryType.USER:
+                continue
             if entry.tier == MemoryTier.ARCHIVAL:
                 if self.should_forget(entry):
                     to_forget.append(entry)
