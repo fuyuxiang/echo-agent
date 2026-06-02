@@ -211,3 +211,9 @@ MIT License。许可证声明位于 `pyproject.toml`。
 <a href="https://github.com/fuyuxiang/echo-agent/tree/master/docs">完整文档</a>
 
 </div>
+
+---
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=fuyuxiang/echo-agent&type=Date)](https://star-history.com/#fuyuxiang/echo-agent&Date)
