@@ -187,7 +187,7 @@ echo-agent run -w .
 
 - 设计讨论、用法咨询、Roadmap 互动：[GitHub Discussions](https://github.com/fuyuxiang/echo-agent/discussions)
 - 适合上手的方向：通道适配器、内置工具、MCP 集成、技能示例、评测数据集、文档完善、部署模板
-- QQ群：47572014
+- QQ群：[47572014](https://qm.qq.com/q/JWOPDBNssw)
 
 ### 问题反馈
 
