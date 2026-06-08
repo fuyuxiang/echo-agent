@@ -380,6 +380,7 @@ class MemoryConfig(_Base):
     embedding_model: str = ""
     embedding_batch_size: int = 32
     consolidation_idle_seconds: int = 300
+    contradiction_scan_on_store: bool = False
 
 
 class KnowledgeConfig(_Base):
@@ -569,6 +570,7 @@ class PluginsConfig(_Base):
     deny: list[str] = Field(default_factory=list)
     extra_dirs: list[str] = Field(default_factory=list)
     config: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    trusted_plugins: list[str] = Field(default_factory=list)
 
 
 class EvalConfig(_Base):

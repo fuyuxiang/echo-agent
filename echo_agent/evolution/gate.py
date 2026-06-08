@@ -69,10 +69,13 @@ class PromotionGate:
         eval_dataset_loader: Callable[[], Awaitable["EvalDataset"]] | Callable[[], "EvalDataset"],
         skill_store: SkillStore,
         skill_manager: "SkillManager | None",
-        store: TrajectoryStore,
+        store: "TrajectoryStore",
         regression_threshold: float = 0.05,
         require_strict_improvement: bool = True,
         candidate_review_required: bool = False,
+        auto_promote: bool = True,
+        cooldown_seconds_after_promote: int = 86_400,
+        max_candidates_per_run: int = 3,
     ):
         self._make_runner = eval_runner_factory
         self._load_dataset = eval_dataset_loader
@@ -83,6 +86,30 @@ class PromotionGate:
         self._require_strict = bool(require_strict_improvement)
         self._review_required = bool(candidate_review_required)
         self._eval_lock = asyncio.Lock()
+        self._metrics: dict[str, int] = {"promoted": 0, "rejected": 0, "regressions": 0}
+
+        from echo_agent.evolution.validation import log_config_warnings
+        from echo_agent.config.schema import EvolutionConfig
+
+        validation_config = EvolutionConfig(
+            auto_promote=auto_promote,
+            require_strict_improvement=require_strict_improvement,
+            regression_threshold=regression_threshold,
+            cooldown_seconds_after_promote=cooldown_seconds_after_promote,
+            candidate_review_required=candidate_review_required,
+            max_candidates_per_run=max_candidates_per_run,
+        )
+        config_warnings = log_config_warnings(validation_config)
+        errors = [w for w in config_warnings if w.level == "error"]
+        if errors:
+            raise ValueError(
+                f"Evolution config has {len(errors)} error(s): "
+                + "; ".join(w.message for w in errors)
+            )
+
+    @property
+    def metrics(self) -> dict[str, int]:
+        return dict(self._metrics)
 
     async def evaluate(self, candidate: SkillCandidate) -> PromotionDecision:
         """Run the full A/B test cycle on a single candidate."""
@@ -194,7 +221,18 @@ class PromotionGate:
 
         decision = self._decide(baseline_report, with_report)
 
+        logger.info(
+            "Evolution gate decision for '{}': promoted={} reason='{}' "
+            "baseline_pass_rate={} candidate_pass_rate={}",
+            candidate.skill_name,
+            decision.promoted,
+            decision.reason,
+            decision.baseline.get("pass_rate") if decision.baseline else None,
+            decision.with_candidate.get("pass_rate") if decision.with_candidate else None,
+        )
+
         if decision.promoted and not self._review_required:
+            self._metrics["promoted"] += 1
             candidate.status = "promoted"
             candidate.promoted_at = datetime.now().isoformat()
             self._refresh_skill_manager_after_promote(candidate, backup_dir, backup_token)
@@ -223,6 +261,9 @@ class PromotionGate:
         self._restore_backup(user_dir, backup_dir)
         candidate.status = "rejected"
         candidate.rejected_reason = decision.reason
+        if "regression" in decision.reason.lower():
+            self._metrics["regressions"] += 1
+        self._metrics["rejected"] += 1
         await self._store.update_candidate(candidate)
         return decision
 

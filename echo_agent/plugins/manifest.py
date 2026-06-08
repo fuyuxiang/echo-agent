@@ -33,6 +33,7 @@ class PluginManifest(BaseModel):
     kind: str = "integration"
     config_key: str = ""
     depends_on: list[str] = Field(default_factory=list)
+    permissions: list[str] = Field(default_factory=list)
 
 
 @dataclass
