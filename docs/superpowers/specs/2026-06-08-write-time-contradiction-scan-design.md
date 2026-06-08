@@ -53,10 +53,17 @@
 `store.py` 的 `_run_contradiction_scan(entry)`：
 
 - 移除 `older.superseded_by = entry.id` 这一行（及相关 `_dirty_ids` 写入）——写入路径不再产生任何物理取代。
-- 命中疑似冲突时，改为在**旧条目**的 `tags` 上追加软标记 `suspected_conflict`（经 `_normalize_tags` 去重），并记 `logger.info`。
+- 命中疑似冲突时，改为在 `Contradiction` 涉及的两端条目（`memory_id_a`/`memory_id_b`，即检测器算出的 older/newer）的 `tags` 上追加软标记 `suspected_conflict`（经 `_normalize_tags` 去重），并记 `logger.info`。
 - `check_lightweight_sync` 返回的 `Contradiction` 仅用于日志与标记，不再驱动状态变更。
+- `add()` 中将 `_save_type(entry.type)` 移到 scan 之后，确保 scan 给同类条目打的标记在同一次写入内被持久化。
 
 效果：写入只「标出可疑」，不「裁决」。对齐 mem0「change as evolution, not replacement」与项目「不静默丢弃」。
+
+#### 3.1.1 实现期发现：原 scan 是死代码（候选筛选改前缀匹配）
+
+实现时发现 `check_lightweight_sync` 原本只挑选 **完整 key 相同** 的候选，但 `add()` 中完整 key 相同的条目早已被路径 1 的 `_find_conflict`/`_merge_locked` 合并并提前 `return`，根本到不了 scan——即原写入时 scan 在 store 调用路径里**永远扫不到候选，是死代码**。
+
+修正：`check_lightweight_sync` 的候选筛选从「完整 key 相同」改为「**key 前缀相同**」（如 `pref:lang` 与 `pref:editor` 共享前缀 `pref`），与 `_temporal_conflict_check` 内部本就使用的前缀判定一致。这样「不同完整 key、同前缀」的语义相关条目才能被扫到——这正是路径 1（确定性同 key 合并）覆盖不到、本特性应补的唯一空档。无冒号的 key（如 `name`）前缀即其自身，行为不变。
 
 ### 3.2 改动点 B：修复 supersede 方向 bug（防御性）
 
@@ -103,7 +110,7 @@ sleep_consolidate [异步，定期]
 - 单测：`_temporal_conflict_check` 在「新写入条目时间戳更旧」时，`memory_id_a`=较旧者、`memory_id_b`=较新者（验证方向修复）。
 - 单测：开关关闭（默认）时，`add()` 行为与改动前完全一致（无标记、无副作用）。
 - 单测：同一冲突重复触发 → 标记不重复（幂等）。
-- 回归：现有 `tests/test_contradiction_advanced.py` 中依赖旧「自动 supersede」语义的用例需相应更新为「只标记」。
+- 新增 store 层测试覆盖上述场景（`_run_contradiction_scan` 当前无测试覆盖）。现有 `tests/test_contradiction_advanced.py` 均为检测器层面（`_temporal_conflict_check`/`check_lightweight_sync`），只验证「能否检出冲突」与 `Contradiction` 的 a/b 方向，不涉及自动 supersede，**无需改动**。
 
 ## 7. 验证
 
