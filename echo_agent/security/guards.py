@@ -7,6 +7,9 @@ import shlex
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from echo_agent.security.normalizer import normalize_command
+from echo_agent.security.tokenizer import ShellTokenizer
+
 
 GuardAction = Literal["allow", "ask", "deny"]
 
@@ -115,12 +118,33 @@ def command_uses_network(command: str) -> bool:
 
 def scan_shell_command(command: str) -> list[GuardFinding]:
     findings: list[GuardFinding] = []
-    for key, pattern, reason in SHELL_HARD_PATTERNS:
-        if pattern.search(command):
-            findings.append(GuardFinding(key, reason, hard_block=True))
-    for key, pattern, reason in SHELL_APPROVAL_PATTERNS:
-        if pattern.search(command):
-            findings.append(GuardFinding(key, reason, hard_block=False))
+    seen_keys: set[str] = set()
+
+    normalized = normalize_command(command)
+    sub_commands = ShellTokenizer().tokenize(normalized)
+
+    targets = [normalized] + [sc for sc in sub_commands if sc != normalized]
+
+    for target in targets:
+        for key, pattern, reason in SHELL_HARD_PATTERNS:
+            if key not in seen_keys and pattern.search(target):
+                findings.append(GuardFinding(key, reason, hard_block=True))
+                seen_keys.add(key)
+        for key, pattern, reason in SHELL_APPROVAL_PATTERNS:
+            if key not in seen_keys and pattern.search(target):
+                findings.append(GuardFinding(key, reason, hard_block=False))
+                seen_keys.add(key)
+
+    if command != normalized:
+        for key, pattern, reason in SHELL_HARD_PATTERNS:
+            if key not in seen_keys and pattern.search(command):
+                findings.append(GuardFinding(key, reason, hard_block=True))
+                seen_keys.add(key)
+        for key, pattern, reason in SHELL_APPROVAL_PATTERNS:
+            if key not in seen_keys and pattern.search(command):
+                findings.append(GuardFinding(key, reason, hard_block=False))
+                seen_keys.add(key)
+
     return findings
 
 
@@ -159,11 +183,12 @@ def evaluate_shell_command(
         return GuardDecision("deny", reason="exec security policy is deny", pattern_key="exec_denied", approval_action=approval_action)
 
     blocked = list(getattr(exec_policy, "blocked_commands", []) or [])
+    normalized = normalize_command(command)
     for pattern in blocked:
-        if pattern and pattern in command:
+        if pattern and (pattern in command or pattern in normalized):
             return GuardDecision("deny", reason=f"command contains blocked pattern '{pattern}'", pattern_key="blocked_command", approval_action=approval_action)
 
-    if network_policy == "deny" and command_uses_network(command):
+    if network_policy == "deny" and (command_uses_network(command) or command_uses_network(normalized)):
         return GuardDecision("deny", reason="network access is denied by execution policy", pattern_key="network_denied", approval_action=approval_action)
 
     findings = scan_shell_command(command)

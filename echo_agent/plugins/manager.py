@@ -18,6 +18,7 @@ from echo_agent.plugins.loader import (
     topological_sort,
 )
 from echo_agent.plugins.manifest import PluginRecord, check_required_env
+from echo_agent.plugins.sandbox import PluginSandbox
 
 if TYPE_CHECKING:
     from echo_agent.agent.tools.registry import ToolRegistry
@@ -141,6 +142,10 @@ class PluginManager:
             record.manifest.config_key or name, {}
         )
 
+        trusted_list = getattr(self._config.plugins, "trusted_plugins", []) or []
+        is_trusted = name in trusted_list
+        sandbox = PluginSandbox(name, record.manifest, trusted=is_trusted)
+
         ctx = PluginContext(
             plugin_name=name,
             config=self._config,
@@ -166,6 +171,17 @@ class PluginManager:
             logger.warning("Plugin '{}' activation failed: {}", name, e)
             self._hooks.unregister_plugin(name)
             return
+
+        if ctx.registered_tools and not sandbox.check_tool_register():
+            logger.warning("Plugin '{}' registered tools without permission — unregistering", name)
+            for tool_name in ctx.registered_tools:
+                self._tool_registry.unregister(tool_name)
+            ctx._registered_tools.clear()
+
+        if ctx.registered_hooks and not sandbox.check_hook_register():
+            logger.warning("Plugin '{}' registered hooks without permission — unregistering", name)
+            self._hooks.unregister_plugin(name)
+            ctx._registered_hooks.clear()
 
         record.status = "activated"
         record.tools_registered = ctx.registered_tools

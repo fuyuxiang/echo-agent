@@ -76,6 +76,12 @@ def sanitize_recalled_memory(text: str) -> str:
     return text.strip()
 
 
+def _sanitize_memory_content(text: str) -> str:
+    """Escape template-like patterns in memory content to prevent injection."""
+    text = text.replace("{", "{{").replace("}", "}}")
+    return text
+
+
 def build_recalled_memory_block(raw_context: str) -> str:
     """Fence recalled memory so it is treated as background context, not user intent."""
     clean = sanitize_recalled_memory(raw_context)
@@ -94,14 +100,14 @@ def build_memory_context(memory_store: Any, snapshot: str = "", session_key: str
     """Build the memory section for the system prompt."""
     parts: list[str] = [_MEMORY_GUIDANCE]
     if working_memory:
-        parts.append(f"## Active Context\n\n{working_memory}")
+        parts.append(f"## Active Context\n\n{_sanitize_memory_content(working_memory)}")
     if snapshot:
-        parts.append(snapshot)
+        parts.append(_sanitize_memory_content(snapshot))
     elif memory_store is not None:
         try:
             snap = memory_store.get_snapshot(session_key=session_key)
             if snap:
-                parts.append(snap)
+                parts.append(_sanitize_memory_content(snap))
         except Exception as e:
             logger.debug("Failed to load memory snapshot: {}", e)
     return "\n\n".join(parts) if len(parts) > 1 else parts[0]

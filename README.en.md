@@ -13,7 +13,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/fuyuxiang/echo-agent?style=social)](https://github.com/fuyuxiang/echo-agent)
 [![Downloads](https://static.pepy.tech/badge/echo-agent)](https://pepy.tech/project/echo-agent)
 
-[中文](README.md) · English · [Docs](https://github.com/fuyuxiang/echo-agent/tree/master/docs) · [Discussions](https://github.com/fuyuxiang/echo-agent/discussions)
+[中文](README.md) · English
 
 </div>
 
@@ -134,14 +134,6 @@ MIT License — see [pyproject.toml](pyproject.toml)
 
 ---
 
-<div align="center">
-
-<a href="https://github.com/fuyuxiang/echo-agent">GitHub</a> ·
-<a href="https://gitee.com/fuyuxiang/echo-agent">Gitee</a> ·
-<a href="https://github.com/fuyuxiang/echo-agent/issues">Issues</a> ·
-<a href="https://github.com/fuyuxiang/echo-agent/tree/master/docs">Full Docs</a>
-
-</div>
 
 ## Star History
 
