@@ -136,6 +136,7 @@ class MemoryStore:
         env_snapshot_char_limit: int = 2200,
         storage: Any = None,
         scope_policy: str = "legacy",
+        contradiction_scan_on_store: bool = False,
     ):
         self.memory_dir = memory_dir
         self.memory_dir.mkdir(parents=True, exist_ok=True)
@@ -164,6 +165,8 @@ class MemoryStore:
         self._retriever = None  # set externally via set_retriever()
         self._embed_fn = None  # async callable: str -> list[float]
         self._pending_embeds: list[tuple[str, str]] = []  # (entry_id, text) pairs awaiting embedding
+        self._contradiction_scan_on_store = contradiction_scan_on_store
+        self._contradiction_detector = None  # set externally or lazily created
 
     def has_pending_embeds(self) -> bool:
         """Check if there are pending embeddings to flush."""
@@ -451,9 +454,46 @@ class MemoryStore:
 
             self._entries[entry.id] = entry
             self._dirty_ids.add(entry.id)
-            self._save_type(entry.type)
             self._queue_embed(entry)
+
+            if self._contradiction_scan_on_store:
+                self._run_contradiction_scan(entry)
+
+            # Save after the scan so any suspected_conflict tags it sets on
+            # sibling entries are persisted in the same write.
+            self._save_type(entry.type)
+
             return entry
+
+    SUSPECTED_CONFLICT_TAG = "suspected_conflict"
+
+    def _run_contradiction_scan(self, entry: MemoryEntry) -> None:
+        """Observe-only contradiction scan on store (heuristic + temporal).
+
+        Write-time scan never supersedes: it only flags involved entries with a
+        ``suspected_conflict`` tag so the LLM-backed consolidator (the only place
+        that should adjudicate semantic conflicts) can prioritize them for review.
+        Actual supersession stays with deterministic same-key merge (_merge_locked)
+        and the consolidator's check(). See
+        docs/superpowers/specs/2026-06-08-write-time-contradiction-scan-design.md.
+        """
+        if self._contradiction_detector is None:
+            from echo_agent.memory.contradiction import ContradictionDetector
+            self._contradiction_detector = ContradictionDetector(storage=self._storage)
+
+        candidates = [e for e in self._typed_entries(entry.type) if e.id != entry.id and not e.is_superseded]
+        contradictions = self._contradiction_detector.check_lightweight_sync(entry, candidates)
+        for c in contradictions:
+            # memory_id_a/b are older/newer as computed by the detector; flag both
+            # ends that still exist, never delete or supersede.
+            for flagged_id in (c.memory_id_a, c.memory_id_b):
+                flagged = self._entries.get(flagged_id)
+                if flagged is None:
+                    continue
+                if self.SUSPECTED_CONFLICT_TAG not in flagged.tags:
+                    flagged.tags = _normalize_tags([*flagged.tags, self.SUSPECTED_CONFLICT_TAG])
+                    self._dirty_ids.add(flagged_id)
+            logger.info("Suspected contradiction flagged on store: {}", c.description)
 
     def update(
         self,
