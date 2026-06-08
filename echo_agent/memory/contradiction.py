@@ -50,6 +50,8 @@ class ContradictionDetector:
     """
 
     SIMILARITY_THRESHOLD = 0.75
+    STRONG_SIMILARITY_THRESHOLD = 0.85
+    TEMPORAL_CONFLICT_DAYS = 1
 
     def __init__(
         self,
@@ -104,7 +106,7 @@ class ContradictionDetector:
 
         Strategy:
         1. Always include same-key candidates (heuristic match)
-        2. If vector index available, include top-N by similarity
+        2. If vector index available, include high-similarity entries even with different keys
         3. Cap total at MAX_LLM_CANDIDATES
         """
         same_key = [c for c in candidates if c.key and c.key == new_entry.key and c.id != new_entry.id]
@@ -119,8 +121,11 @@ class ContradictionDetector:
                     results = await self._vector_index.search(embedding, limit=self.MAX_LLM_CANDIDATES * 2)
                     candidate_map = {c.id: c for c in candidates}
                     for source_id, score in results:
-                        if score >= self.SIMILARITY_THRESHOLD and source_id in candidate_map and source_id not in same_key_ids:
-                            vector_matches.append(candidate_map[source_id])
+                        if source_id in candidate_map and source_id not in same_key_ids:
+                            if score >= self.STRONG_SIMILARITY_THRESHOLD:
+                                vector_matches.append(candidate_map[source_id])
+                            elif score >= self.SIMILARITY_THRESHOLD and candidate_map[source_id].key == new_entry.key:
+                                vector_matches.append(candidate_map[source_id])
             except Exception as e:
                 logger.debug("Vector pre-filter failed: {}", e)
 
@@ -210,6 +215,103 @@ class ContradictionDetector:
             new_entry.id,
             new_entry.version,
         )
+
+    @staticmethod
+    def _key_prefix(key: str) -> str:
+        return key.split(":")[0] if ":" in key else key
+
+    def check_lightweight_sync(
+        self,
+        new_entry: MemoryEntry,
+        candidates: list[MemoryEntry],
+    ) -> list[Contradiction]:
+        """Synchronous lightweight check (heuristic + temporal only, no LLM/vector).
+
+        Candidates are matched by key *prefix* (e.g. ``pref:lang`` vs
+        ``pref:editor`` share prefix ``pref``), not full key. Full-key matches are
+        already handled deterministically by MemoryStore._merge_locked before this
+        scan runs, so prefix matching is what lets this observe-only scan cover the
+        remaining gap: semantically related entries under different full keys.
+        """
+        contradictions: list[Contradiction] = []
+        new_prefix = self._key_prefix(new_entry.key) if new_entry.key else ""
+        if not new_prefix:
+            return contradictions
+        same_prefix = [
+            c for c in candidates
+            if c.key and self._key_prefix(c.key) == new_prefix and c.id != new_entry.id
+        ]
+
+        for candidate in same_prefix[:self.MAX_LLM_CANDIDATES]:
+            result = self._heuristic_check(new_entry, candidate)
+            if result is None:
+                result = self._temporal_conflict_check(new_entry, candidate)
+            if result is not None:
+                contradictions.append(result)
+        return contradictions
+
+    async def check_lightweight(
+        self,
+        new_entry: MemoryEntry,
+        candidates: list[MemoryEntry],
+        embed_fn: Callable[..., Any] | None = None,
+    ) -> list[Contradiction]:
+        """Lightweight contradiction check (heuristic + vector only, no LLM)."""
+        contradictions: list[Contradiction] = []
+        filtered = await self._pre_filter(new_entry, candidates, embed_fn)
+
+        for candidate in filtered:
+            if candidate.id == new_entry.id:
+                continue
+            result = self._heuristic_check(new_entry, candidate)
+            if result is None:
+                result = self._temporal_conflict_check(new_entry, candidate)
+            if result is not None:
+                contradictions.append(result)
+        return contradictions
+
+    def _temporal_conflict_check(
+        self, a: MemoryEntry, b: MemoryEntry
+    ) -> Contradiction | None:
+        """Detect temporal conflicts: same key prefix with different content over time."""
+        if not a.key or not b.key:
+            return None
+        a_prefix = a.key.split(":")[0] if ":" in a.key else a.key
+        b_prefix = b.key.split(":")[0] if ":" in b.key else b.key
+        if a_prefix != b_prefix:
+            return None
+        if a.content.strip() == b.content.strip():
+            return None
+
+        a_time = a.updated_at or a.created_at
+        b_time = b.updated_at or b.created_at
+        if not a_time or not b_time:
+            return None
+
+        try:
+            if isinstance(a_time, str):
+                a_dt = datetime.fromisoformat(a_time)
+            else:
+                a_dt = a_time
+            if isinstance(b_time, str):
+                b_dt = datetime.fromisoformat(b_time)
+            else:
+                b_dt = b_time
+            delta = abs((a_dt - b_dt).total_seconds())
+            if delta >= self.TEMPORAL_CONFLICT_DAYS * 86400:
+                newer = a if a_dt > b_dt else b
+                older = b if newer is a else a
+                return Contradiction(
+                    id=uuid.uuid4().hex[:12],
+                    memory_id_a=older.id,
+                    memory_id_b=newer.id,
+                    description=f"Temporal conflict on '{a_prefix}': newer entry supersedes older.",
+                    resolution="newer_wins",
+                    resolved_at=datetime.now().isoformat(),
+                )
+        except (TypeError, ValueError):
+            pass
+        return None
 
     # ------------------------------------------------------------------
     # Internal helpers
