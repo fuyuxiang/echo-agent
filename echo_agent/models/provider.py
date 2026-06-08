@@ -129,6 +129,10 @@ class LLMProvider(ABC):
         lower = error_text.lower()
         return any(m in lower for m in self._PERMANENT_MARKERS)
 
+    @property
+    def is_stub(self) -> bool:
+        return False
+
     async def chat_with_retry(self, **kwargs: Any) -> LLMResponse:
         for attempt, base_delay in enumerate(self._RETRY_DELAYS):
             try:

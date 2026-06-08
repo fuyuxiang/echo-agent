@@ -42,7 +42,7 @@ async def _bootstrap(
     from echo_agent.bus.queue import MessageBus
     from echo_agent.channels.manager import ChannelManager
     from echo_agent.config.loader import load_config, resolve_config_file
-    from echo_agent.models.provider import LLMProvider, LLMResponse
+    from echo_agent.models.provider import LLMProvider
     from echo_agent.models.providers import create_provider
     from echo_agent.models.router import ModelRouter
     from echo_agent.observability.monitor import HealthChecker
@@ -80,23 +80,20 @@ async def _bootstrap(
             logger.warning("Failed to create provider '{}': {}", pc.name, e)
 
     if provider is None:
+        from echo_agent.models.stub import StubProvider
+
         if config.models.providers:
             details = "; ".join(provider_errors) or "all configured providers were skipped"
             stub_message = (
                 "[No LLM provider could be initialized. Check provider SDK/API key. "
                 f"Details: {details}]"
             )
-            logger.warning("No providers initialized — using stub: {}", details)
+            logger.error("No providers initialized — using stub: {}", details)
         else:
             stub_message = "[No LLM provider configured. Set up a provider in echo-agent.yaml]"
-            logger.warning("No providers configured — using stub")
+            logger.error("No providers configured — using stub")
 
-        class _StubProvider(LLMProvider):
-            async def chat(self, messages, tools=None, model=None, tool_choice=None, **kw):
-                return LLMResponse(content=stub_message)
-            def get_default_model(self):
-                return "stub"
-        provider = _StubProvider()
+        provider = StubProvider(stub_message)
         router.register_provider("stub", provider)
 
     from echo_agent.scheduler.service import Scheduler
