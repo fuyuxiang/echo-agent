@@ -116,3 +116,63 @@ class TestBusConcurrency:
         await bus.stop()
 
         assert call_count == 4
+
+
+class TestBusUnsubscribe:
+    @pytest.mark.asyncio
+    async def test_unsubscribe_inbound_stops_delivery(self):
+        bus = MessageBus(max_queue_size=100, max_concurrency=50)
+        received = []
+
+        async def handler(event: InboundEvent) -> None:
+            received.append(event)
+
+        bus.subscribe_inbound(handler)
+        await bus.start()
+
+        event1 = InboundEvent.text_message(channel="test", sender_id="u1", chat_id="c1", text="first")
+        await bus.publish_inbound(event1)
+        await asyncio.sleep(0.1)
+
+        bus.unsubscribe_inbound(handler)
+
+        event2 = InboundEvent.text_message(channel="test", sender_id="u1", chat_id="c2", text="second")
+        await bus.publish_inbound(event2)
+        await asyncio.sleep(0.1)
+        await bus.stop()
+
+        assert len(received) == 1
+        assert received[0].text == "first"
+
+    @pytest.mark.asyncio
+    async def test_unsubscribe_outbound_stops_delivery(self):
+        bus = MessageBus(max_queue_size=100, max_concurrency=50)
+        received = []
+
+        async def handler(event: OutboundEvent) -> None:
+            received.append(event)
+
+        bus.subscribe_outbound("test", handler)
+        await bus.start()
+
+        out1 = OutboundEvent.text_reply(channel="test", chat_id="c1", text="first")
+        await bus.publish_outbound(out1)
+
+        bus.unsubscribe_outbound("test", handler)
+
+        out2 = OutboundEvent.text_reply(channel="test", chat_id="c2", text="second")
+        await bus.publish_outbound(out2)
+        await bus.stop()
+
+        assert len(received) == 1
+
+    @pytest.mark.asyncio
+    async def test_unsubscribe_nonexistent_is_noop(self):
+        bus = MessageBus()
+
+        async def handler(event: InboundEvent) -> None:
+            pass
+
+        bus.unsubscribe_inbound(handler)
+        bus.unsubscribe_outbound("fake", handler)
+        bus.unsubscribe_outbound_global(handler)

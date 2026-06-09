@@ -27,7 +27,7 @@ class TestTemporalConflictCheck:
         new = _make_entry("a2", "preference:color", "user likes red", days_ago=0)
         result = self.detector._temporal_conflict_check(new, old)
         assert result is not None
-        assert result.resolution == "newer_wins"
+        assert result.resolution is None
         assert result.memory_id_a == old.id
         assert result.memory_id_b == new.id
 

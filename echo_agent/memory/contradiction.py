@@ -305,9 +305,7 @@ class ContradictionDetector:
                     id=uuid.uuid4().hex[:12],
                     memory_id_a=older.id,
                     memory_id_b=newer.id,
-                    description=f"Temporal conflict on '{a_prefix}': newer entry supersedes older.",
-                    resolution="newer_wins",
-                    resolved_at=datetime.now().isoformat(),
+                    description=f"Temporal conflict on '{a_prefix}': content differs across time boundary.",
                 )
         except (TypeError, ValueError):
             pass

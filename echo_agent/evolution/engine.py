@@ -88,6 +88,9 @@ class EvolutionEngine:
             regression_threshold=config.regression_threshold,
             require_strict_improvement=config.require_strict_improvement,
             candidate_review_required=config.candidate_review_required,
+            auto_promote=config.auto_promote,
+            cooldown_seconds_after_promote=config.cooldown_seconds_after_promote,
+            max_candidates_per_run=config.max_candidates_per_run,
         )
         self._scheduler = EvolutionScheduler(
             run_fn=self.run_evolution,
@@ -283,7 +286,8 @@ class EvolutionEngine:
                 else:
                     run.candidates_rejected += 1
 
-            await self._store.mark_consumed(decision.consumed_trajectory_ids, run.id)
+            all_fetched_ids = [t.id for t in trajectories]
+            await self._store.mark_consumed(all_fetched_ids, run.id)
         except Exception as e:
             run.error = f"{type(e).__name__}: {e}"
             logger.error("EvolutionEngine run failed: {}", e)
