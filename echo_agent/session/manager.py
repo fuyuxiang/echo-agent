@@ -276,8 +276,9 @@ class SessionManager:
     async def expire_session(self, key: str) -> None:
         async with self._lock:
             session = self._cache.get(key)
+            if session:
+                session.status = "expired"
         if session:
-            session.status = "expired"
             await self.save(session)
 
     async def archive_session(self, key: str) -> bool:

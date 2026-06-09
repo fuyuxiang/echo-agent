@@ -202,3 +202,59 @@ class TestCoreResidentUserMemory:
             ))
         snapshot = store.get_snapshot()
         assert "more durable facts about the user not shown" in snapshot
+
+
+class TestTouchDirtyTracking:
+    """Tests that search_keyword marks touched entries as dirty for persistence."""
+
+    def test_search_keyword_marks_dirty(self, tmp_path: Path) -> None:
+        store = MemoryStore(memory_dir=tmp_path / "mem")
+        entry = store.add(_make_entry(key="color", content="user likes blue"))
+        store._dirty_ids.clear()
+
+        results = store.search_keyword("blue")
+        assert len(results) == 1
+        assert entry.id in store._dirty_ids
+
+    def test_search_scored_marks_dirty(self, tmp_path: Path) -> None:
+        store = MemoryStore(memory_dir=tmp_path / "mem")
+        entry = store.add(_make_entry(key="lang", content="user prefers python"))
+        store._dirty_ids.clear()
+
+        results = store.search_scored("python")
+        assert len(results) == 1
+        assert entry.id in store._dirty_ids
+
+    def test_touch_increments_access_count(self, tmp_path: Path) -> None:
+        store = MemoryStore(memory_dir=tmp_path / "mem")
+        entry = store.add(_make_entry(key="food", content="user likes sushi"))
+        initial_count = entry.access_count
+
+        store.search_keyword("sushi")
+        assert entry.access_count == initial_count + 1
+
+
+class TestKeyIndex:
+    """Tests that the key index accelerates conflict detection."""
+
+    def test_key_index_populated_on_add(self, tmp_path: Path) -> None:
+        store = MemoryStore(memory_dir=tmp_path / "mem")
+        entry = store.add(_make_entry(key="name", content="Alice"))
+        assert entry.id in store._key_index.get("name", set())
+
+    def test_key_index_cleared_on_delete(self, tmp_path: Path) -> None:
+        store = MemoryStore(memory_dir=tmp_path / "mem")
+        entry = store.add(_make_entry(key="role", content="engineer"))
+        assert entry.id in store._key_index.get("role", set())
+
+        store.delete(entry.id)
+        role_ids = store._key_index.get("role", set())
+        assert entry.id not in role_ids
+
+    def test_find_conflict_uses_index(self, tmp_path: Path) -> None:
+        store = MemoryStore(memory_dir=tmp_path / "mem")
+        store.add(_make_entry(key="city", content="Beijing"))
+        new = _make_entry(key="city", content="Shanghai")
+        conflict = store._find_conflict(new)
+        assert conflict is not None
+        assert conflict.content == "Beijing"

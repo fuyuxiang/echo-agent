@@ -69,6 +69,7 @@ class WorkerExecutor:
         iterations = 0
         tool_call_count = 0
         last_content = ""
+        state = {"iterations": 0, "tool_calls": 0, "last_content": ""}
 
         try:
             result = await asyncio.wait_for(
@@ -80,7 +81,7 @@ class WorkerExecutor:
                     model=effective_model,
                     max_tokens=effective_max_tokens,
                     temperature=effective_temp,
-                    state={"iterations": 0, "tool_calls": 0, "last_content": ""},
+                    state=state,
                 ),
                 timeout=timeout_seconds,
             )
@@ -98,10 +99,10 @@ class WorkerExecutor:
             return WorkerResult(
                 task_index=task_index,
                 status="timeout",
-                output=last_content,
+                output=state["last_content"],
                 error=f"Worker timed out after {timeout_seconds}s",
-                iterations=iterations,
-                tool_calls=tool_call_count,
+                iterations=state["iterations"],
+                tool_calls=state["tool_calls"],
                 duration_seconds=time.monotonic() - started,
                 model=effective_model,
             )
@@ -111,11 +112,13 @@ class WorkerExecutor:
                 task_index=task_index,
                 status="failed",
                 error=str(e),
-                iterations=iterations,
-                tool_calls=tool_call_count,
+                iterations=state["iterations"],
+                tool_calls=state["tool_calls"],
                 duration_seconds=time.monotonic() - started,
                 model=effective_model,
             )
+
+    _MAX_MESSAGES = 200
 
     async def _run_loop(
         self,
@@ -131,6 +134,10 @@ class WorkerExecutor:
     ) -> dict[str, Any]:
         for iteration in range(max_iterations):
             state["iterations"] = iteration + 1
+
+            if len(messages) > self._MAX_MESSAGES:
+                system_msg = messages[0]
+                messages[:] = [system_msg] + messages[-(self._MAX_MESSAGES - 1):]
 
             response = await self._provider.chat_with_retry(
                 messages=messages,

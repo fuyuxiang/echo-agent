@@ -302,6 +302,29 @@ def test_activate_cooldown_zero_seconds_is_noop(tmp_path: Path):
     assert "alpha" not in engine._cooldowns
 
 
+def test_engine_passes_actual_config_to_gate_validation(tmp_path: Path):
+    config = EvolutionConfig(
+        enabled=True,
+        auto_promote=False,
+        require_strict_improvement=False,
+        regression_threshold=0.2,
+        cooldown_seconds_after_promote=0,
+        max_candidates_per_run=12,
+    )
+    engine = EvolutionEngine(
+        config=config,
+        workspace=tmp_path,
+        storage=MagicMock(),
+        provider=AsyncMock(),
+        skill_store=MagicMock(),
+        skill_manager=None,
+        eval_runner_factory=lambda: MagicMock(),
+        eval_dataset_loader=lambda: MagicMock(),
+    )
+
+    assert engine._config is config
+
+
 def test_activate_cooldown_empty_skill_name_is_noop(tmp_path: Path):
     config = EvolutionConfig(enabled=True, cooldown_seconds_after_promote=60)
     engine = EvolutionEngine(
@@ -632,4 +655,31 @@ async def test_store_and_recorder_properties_expose_internals(tmp_path: Path):
         assert engine.store is engine._store
         assert engine.recorder is engine._recorder
     finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_all_fetched_trajectories_marked_consumed(tmp_path: Path):
+    """All trajectories fetched in a run should be marked consumed, even if the
+    evolver doesn't reference them in its proposal."""
+    config = EvolutionConfig(
+        enabled=True, record_trajectories=False, max_trajectories_per_run=5,
+        auto_promote=False,
+    )
+    engine, backend, _ = await _new_engine(tmp_path, config=config)
+    try:
+        await engine.start()
+        for _ in range(3):
+            await engine.store.append_trajectory(_make_traj(outcome="success", reflection_score=0.9))
+
+        unconsumed_before = await engine.store.count_unconsumed()
+        assert unconsumed_before == 3
+
+        run = await engine.run_evolution(trigger="manual")
+
+        unconsumed_after = await engine.store.count_unconsumed()
+        assert unconsumed_after == 0
+        assert run.trajectories_consumed == 3
+    finally:
+        await engine.stop()
         await backend.close()
