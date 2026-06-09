@@ -6,6 +6,7 @@ import re
 import shlex
 from dataclasses import dataclass
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 from echo_agent.security.normalizer import normalize_command
 from echo_agent.security.tokenizer import ShellTokenizer
@@ -76,6 +77,27 @@ NETWORK_COMMANDS = frozenset({
 })
 
 NETWORK_TEXT_RE = re.compile(r"\b(?:https?|ftp|ssh)://", re.I)
+
+
+_INTERNAL_HOST_RE = re.compile(
+    r"^(localhost|127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|"
+    r"172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+|"
+    r"\[?::1\]?|0\.0\.0\.0|169\.254\.\d+\.\d+|"
+    r".*\.local|.*\.internal|.*\.corp|.*\.lan)$",
+    re.I,
+)
+
+
+def _is_internal_url(url: str) -> bool:
+    """Detect URLs targeting internal/private network addresses."""
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").strip(".")
+        if not host:
+            return False
+        return bool(_INTERNAL_HOST_RE.match(host))
+    except Exception:
+        return False
 NETWORK_CODE_RE = re.compile(
     r"\b(import\s+(socket|requests|aiohttp|urllib|http\.client)|"
     r"from\s+(socket|requests|aiohttp|urllib|http)\s+import|"
@@ -274,17 +296,41 @@ def evaluate_tool_call(config: Any, tool_name: str, arguments: dict[str, Any]) -
             approval_action="execute_code",
         )
 
-    if tool_name == "process" and arguments.get("action") == "start":
+    if tool_name == "process":
         if not config.tools.exec.enabled:
             return GuardDecision("deny", reason="process tool is disabled", pattern_key="tool_disabled", approval_action="process")
-        return evaluate_shell_command(
-            str(arguments.get("command") or ""),
-            exec_policy=exec_policy,
-            network_policy=network_policy,
-            approval_action="process",
-        )
+        action = arguments.get("action", "start")
+        if action == "start":
+            return evaluate_shell_command(
+                str(arguments.get("command") or ""),
+                exec_policy=exec_policy,
+                network_policy=network_policy,
+                approval_action="process",
+            )
+        if action == "signal":
+            signal = str(arguments.get("signal") or "").upper()
+            dangerous_signals = {"SIGKILL", "KILL", "9", "SIGTERM", "TERM", "15"}
+            if signal in dangerous_signals:
+                ask = getattr(exec_policy, "ask", "on_miss")
+                return _ask_or_deny(ask, f"sending {signal} to process", "process_signal", "process")
+            return GuardDecision("allow", approval_action="process")
+        if action == "stdin":
+            stdin_data = str(arguments.get("data") or arguments.get("input") or "")
+            if stdin_data.strip():
+                findings = scan_shell_command(stdin_data)
+                hard = next((f for f in findings if f.hard_block), None)
+                if hard:
+                    return GuardDecision("deny", reason=f"stdin contains: {hard.reason}", pattern_key=hard.key, approval_action="process")
+            return GuardDecision("allow", approval_action="process")
+        return GuardDecision("allow", approval_action="process")
 
     if network_policy == "deny" and tool_name in {"web_fetch", "web_search"}:
         return GuardDecision("deny", reason="network access is denied by execution policy", pattern_key="network_denied", approval_action=tool_name)
+
+    if tool_name == "web_fetch":
+        url = str(arguments.get("url") or "")
+        if _is_internal_url(url):
+            ask = getattr(exec_policy, "ask", "on_miss")
+            return _ask_or_deny(ask, f"web_fetch targeting internal/private URL: {url[:100]}", "ssrf_internal", "web_fetch")
 
     return GuardDecision("allow", approval_action=tool_name)

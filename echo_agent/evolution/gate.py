@@ -24,6 +24,7 @@ import asyncio
 import os
 import shutil
 import tempfile
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -322,14 +323,21 @@ class PromotionGate:
     def _restore_backup(self, user_dir: Path, backup_dir: Path) -> None:
         try:
             if user_dir.exists():
-                shutil.rmtree(user_dir)
-            shutil.copytree(backup_dir, user_dir)
+                trash_dir = user_dir.with_suffix(".trash_" + uuid.uuid4().hex[:8])
+                user_dir.rename(trash_dir)
+                try:
+                    shutil.copytree(backup_dir, user_dir)
+                except Exception:
+                    if not user_dir.exists() and trash_dir.exists():
+                        trash_dir.rename(user_dir)
+                    raise
+                shutil.rmtree(trash_dir, ignore_errors=True)
+            else:
+                shutil.copytree(backup_dir, user_dir)
         except Exception as e:
             logger.error("Failed to restore skill backup from {}: {}", backup_dir, e)
         finally:
             self._cleanup_backup(backup_dir)
-            # Roll back the in-memory disable flag we set in _apply_candidate
-            # WITHOUT touching skills the user disabled via config.
             disabled = getattr(self._skill_store, "_disabled", None)
             pending_skill = getattr(self, "_pending_disable_skill", None)
             was_present_before = getattr(self, "_disable_was_present", False)

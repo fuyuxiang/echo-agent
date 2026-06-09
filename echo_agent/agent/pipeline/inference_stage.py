@@ -66,9 +66,6 @@ class InferenceStage:
         self._hook_registry: Any = None
         self._nudge_interval: int = config.skills.creation_nudge_interval if hasattr(config, 'skills') and hasattr(config.skills, 'creation_nudge_interval') else 0
         self._memory_nudge_interval: int = config.memory.memory_nudge_interval if hasattr(config.memory, 'memory_nudge_interval') else 0
-        self._tool_iters_since_skill_check = 0
-        self._tool_iters_since_memory_check = 0
-        self._turns_since_memory_check = 0
 
     async def run(self, ctx: PipelineContext) -> InferenceResult:
         """Execute the inference loop, returning the final result."""
@@ -298,8 +295,8 @@ class InferenceStage:
                     session.add_message("tool", result_text, tool_call_id=tool_call.id, name=tool_call.name)
 
                     total_tool_calls += 1
-                    self._tool_iters_since_skill_check += 1
-                    self._tool_iters_since_memory_check += 1
+                    ctx.tool_iters_since_skill_check += 1
+                    ctx.tool_iters_since_memory_check += 1
 
                     # Per-tool circuit breaker
                     if result.success:
@@ -309,18 +306,18 @@ class InferenceStage:
 
                     if (
                         self._nudge_interval > 0
-                        and self._tool_iters_since_skill_check >= self._nudge_interval
+                        and ctx.tool_iters_since_skill_check >= self._nudge_interval
                         and self._tools.has("skill_manage")
                     ):
                         should_review_skills = True
-                        self._tool_iters_since_skill_check = 0
+                        ctx.tool_iters_since_skill_check = 0
                     if (
                         self._memory_nudge_interval > 0
-                        and self._tool_iters_since_memory_check >= self._memory_nudge_interval
+                        and ctx.tool_iters_since_memory_check >= self._memory_nudge_interval
                         and self._tools.has("memory")
                     ):
                         should_review_memory = True
-                        self._tool_iters_since_memory_check = 0
+                        ctx.tool_iters_since_memory_check = 0
                 except BaseException:
                     # Ensure every announced tool_call gets a paired tool message,
                     # otherwise the next LLM turn will reject the conversation
@@ -360,10 +357,10 @@ class InferenceStage:
         # The tool-iteration path above only counts tool loops, so personal facts
         # shared in plain conversation would never be reviewed without this.
         if self._memory_nudge_interval > 0 and self._tools.has("memory"):
-            self._turns_since_memory_check += 1
-            if self._turns_since_memory_check >= self._memory_nudge_interval:
+            ctx.turns_since_memory_check += 1
+            if ctx.turns_since_memory_check >= self._memory_nudge_interval:
                 should_review_memory = True
-                self._turns_since_memory_check = 0
+                ctx.turns_since_memory_check = 0
 
         return InferenceResult(
             response_text=response_text,

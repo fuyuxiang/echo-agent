@@ -79,11 +79,33 @@ class MessageBus:
     def subscribe_inbound(self, handler: InboundHandler) -> None:
         self._inbound_subscribers.append(handler)
 
+    def unsubscribe_inbound(self, handler: InboundHandler) -> None:
+        try:
+            self._inbound_subscribers.remove(handler)
+        except ValueError:
+            pass
+
     def subscribe_outbound(self, channel: str, handler: OutboundHandler) -> None:
         self._outbound_handlers[channel].append(handler)
 
+    def unsubscribe_outbound(self, channel: str, handler: OutboundHandler) -> None:
+        handlers = self._outbound_handlers.get(channel)
+        if handlers:
+            try:
+                handlers.remove(handler)
+            except ValueError:
+                pass
+            if not handlers:
+                del self._outbound_handlers[channel]
+
     def subscribe_outbound_global(self, handler: OutboundHandler) -> None:
         self._global_outbound_handlers.append(handler)
+
+    def unsubscribe_outbound_global(self, handler: OutboundHandler) -> None:
+        try:
+            self._global_outbound_handlers.remove(handler)
+        except ValueError:
+            pass
 
     async def start(self) -> None:
         async with self._lifecycle_lock:

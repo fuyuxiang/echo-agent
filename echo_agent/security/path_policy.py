@@ -98,6 +98,36 @@ SYSTEM_PATH_PREFIXES: tuple[str, ...] = (
 )
 
 # ---------------------------------------------------------------------------
+# Read denylist — credential files (prevent secret exfiltration)
+# ---------------------------------------------------------------------------
+
+def _build_read_denied_credential_paths() -> set[str]:
+    home = _home()
+    return {
+        os.path.realpath(p)
+        for p in [
+            os.path.join(home, ".ssh", "id_rsa"),
+            os.path.join(home, ".ssh", "id_ed25519"),
+            os.path.join(home, ".ssh", "id_ecdsa"),
+            os.path.join(home, ".netrc"),
+            os.path.join(home, ".pgpass"),
+            os.path.join(home, ".aws", "credentials"),
+            os.path.join(home, ".docker", "config.json"),
+            os.path.join(home, ".kube", "config"),
+            os.path.join(home, ".azure", "credentials"),
+            "/etc/shadow",
+            "/etc/gshadow",
+            "/private/etc/shadow",
+        ]
+    }
+
+
+def _build_read_denied_patterns() -> list[str]:
+    """Filename patterns for credential-like files."""
+    return [".env", "credentials.json", "service-account.json", "secrets.yaml", "secrets.yml"]
+
+
+# ---------------------------------------------------------------------------
 # Read denylist — internal cache dirs (prevent prompt injection)
 # ---------------------------------------------------------------------------
 
@@ -152,8 +182,19 @@ def check_read(path: str, workspace: str) -> Optional[str]:
     if normalized.startswith("/proc/") and normalized.endswith(("/fd/0", "/fd/1", "/fd/2")):
         return f"Cannot read '{path}': stdio device alias"
 
-    # Block internal cache directories
+    # Block credential files
     resolved = resolve_path(path, workspace)
+    resolved_str = str(resolved)
+    if resolved_str in _build_read_denied_credential_paths():
+        return f"Read denied: {path} is a credential file"
+
+    # Block credential-like filenames
+    filename = resolved.name
+    for pattern in _build_read_denied_patterns():
+        if filename == pattern or filename.endswith(pattern):
+            return f"Read denied: {path} appears to be a credential file ({pattern})"
+
+    # Block internal cache directories
     for blocked_dir in _build_read_blocked_dirs():
         try:
             resolved.relative_to(blocked_dir)

@@ -150,6 +150,7 @@ class MemoryStore:
         self._user_snapshot_char_limit = user_snapshot_char_limit
         self._env_snapshot_char_limit = env_snapshot_char_limit
         self._entries: dict[str, MemoryEntry] = {}
+        self._key_index: dict[str, set[str]] = {}  # key -> set of entry IDs for O(1) conflict lookup
         self._storage = storage
         self._scope_policy = scope_policy
         self._pending_storage_tasks: set = set()
@@ -252,6 +253,18 @@ class MemoryStore:
     def _typed_entries(self, mem_type: MemoryType) -> list[MemoryEntry]:
         return [entry for entry in self._entries.values() if entry.type == mem_type]
 
+    def _index_entry(self, entry: MemoryEntry) -> None:
+        if entry.key:
+            self._key_index.setdefault(entry.key, set()).add(entry.id)
+
+    def _unindex_entry(self, entry: MemoryEntry) -> None:
+        if entry.key:
+            ids = self._key_index.get(entry.key)
+            if ids:
+                ids.discard(entry.id)
+                if not ids:
+                    del self._key_index[entry.key]
+
     def _filtered_entries(
         self, mem_type: MemoryType | None = None, session_key: str | None = None,
     ) -> list[MemoryEntry]:
@@ -318,9 +331,12 @@ class MemoryStore:
 
     def _reload_type(self, mem_type: MemoryType) -> None:
         for entry_id in [entry.id for entry in self._typed_entries(mem_type)]:
-            self._entries.pop(entry_id, None)
+            old_entry = self._entries.pop(entry_id, None)
+            if old_entry:
+                self._unindex_entry(old_entry)
         for entry in self._load_type_from_disk(mem_type):
             self._entries[entry.id] = entry
+            self._index_entry(entry)
 
     def _save_type(self, mem_type: MemoryType) -> None:
         """将指定类型的记忆条目原子写入磁盘。"""
@@ -383,8 +399,10 @@ class MemoryStore:
     def _find_conflict(self, entry: MemoryEntry) -> MemoryEntry | None:
         if not entry.key:
             return None
-        for existing in self._typed_entries(entry.type):
-            if existing.key == entry.key and self._same_scope(existing, entry):
+        candidate_ids = self._key_index.get(entry.key, set())
+        for eid in candidate_ids:
+            existing = self._entries.get(eid)
+            if existing and existing.type == entry.type and self._same_scope(existing, entry):
                 return existing
         return None
 
@@ -404,7 +422,9 @@ class MemoryStore:
             key=lambda entry: (self._forgetting.effective_importance(entry), entry.updated_at or "", entry.id),
         )
         if typed:
-            self._entries.pop(typed[0].id, None)
+            evicted = self._entries.pop(typed[0].id, None)
+            if evicted:
+                self._unindex_entry(evicted)
 
     def _merge_locked(self, existing_id: str, new_entry: MemoryEntry) -> MemoryEntry:
         existing = self._entries[existing_id]
@@ -453,6 +473,7 @@ class MemoryStore:
                 self._evict_oldest(entry.type)
 
             self._entries[entry.id] = entry
+            self._index_entry(entry)
             self._dirty_ids.add(entry.id)
             self._queue_embed(entry)
 
@@ -537,6 +558,7 @@ class MemoryStore:
             if not entry:
                 return False
             self._entries.pop(entry_id, None)
+            self._unindex_entry(entry)
             self._save_type(entry.type)
             return True
 
@@ -566,6 +588,7 @@ class MemoryStore:
             )
             if matched:
                 entry.touch()
+                self._dirty_ids.add(entry.id)
                 results.append(entry)
         results.sort(key=lambda entry: self._forgetting.effective_importance(entry), reverse=True)
         return results[:limit]
@@ -598,6 +621,7 @@ class MemoryStore:
             eff_imp = self._forgetting.effective_importance(entry)
             score = coverage * 0.7 + eff_imp * 0.3
             entry.touch()
+            self._dirty_ids.add(entry.id)
             scored.append((entry, score))
 
         scored.sort(key=lambda item: item[1], reverse=True)
