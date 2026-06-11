@@ -9,7 +9,7 @@ from loguru import logger
 
 from echo_agent.config.schema import ProviderConfig
 from echo_agent.models.credential_pool import CredentialPool
-from echo_agent.models.provider import LLMProvider, LLMResponse, StreamDeltaCallback
+from echo_agent.models.provider import LLMProvider, StreamDeltaCallback
 from echo_agent.models.rate_limiter import RateLimitedProvider, TokenBucketLimiter
 
 _PROVIDER_MAP: dict[str, str] = {

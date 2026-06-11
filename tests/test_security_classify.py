@@ -1,9 +1,7 @@
 """Tests for security capability mapping and risk classification."""
 
-import pytest
 
 from echo_agent.security.capabilities import (
-    TOOL_CAPABILITIES,
     tool_capabilities,
     tool_name,
 )

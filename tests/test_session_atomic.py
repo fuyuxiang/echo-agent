@@ -47,8 +47,6 @@ async def test_atomic_write_preserves_original_on_error(manager: SessionManager,
     path = manager._session_path("safe:1")
     original_content = path.read_text(encoding="utf-8")
 
-    original_replace = os.replace
-
     def failing_replace(src, dst):
         os.unlink(src)
         raise OSError("simulated disk failure")

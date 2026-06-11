@@ -92,7 +92,7 @@ class TestDispatchAuditLog:
         audit.write({"seq": 1})
         audit.write({"seq": 2})
 
-        lines = [json.loads(l) for l in log_path.read_text().strip().splitlines()]
+        lines = [json.loads(line) for line in log_path.read_text().strip().splitlines()]
         assert len(lines) == 2
         assert lines[0]["seq"] == 1
         assert lines[1]["seq"] == 2

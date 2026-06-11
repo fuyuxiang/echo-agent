@@ -174,7 +174,6 @@ class TestMCPManager:
 
     @pytest.mark.asyncio
     async def test_discover_tools(self, tmp_path):
-        from echo_agent.mcp.manager import MCPManager
 
         mgr = self._make(tmp_path)
         mock_client = MagicMock()

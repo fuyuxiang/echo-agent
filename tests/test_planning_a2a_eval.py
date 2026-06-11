@@ -306,7 +306,7 @@ class TestA2AProtocol:
     @pytest.mark.asyncio
     async def test_handle_send_existing_task(self):
         proto = A2AProtocol(self._echo_process)
-        r1 = await proto.handle({
+        await proto.handle({
             "jsonrpc": "2.0", "id": "1", "method": "tasks/send",
             "params": {"id": "t1", "message": {"role": "user", "parts": [{"type": "text", "text": "first"}]}},
         })

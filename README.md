@@ -10,8 +10,12 @@
 
 <br/>
 
-[![GitHub stars](https://img.shields.io/github/stars/fuyuxiang/echo-agent?style=social)](https://github.com/fuyuxiang/echo-agent)
+[![PyPI](https://img.shields.io/pypi/v/echo-agent)](https://pypi.org/project/echo-agent/)
+[![Python](https://img.shields.io/pypi/pyversions/echo-agent)](https://pypi.org/project/echo-agent/)
+[![CI](https://github.com/fuyuxiang/echo-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/fuyuxiang/echo-agent/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Downloads](https://static.pepy.tech/badge/echo-agent)](https://pepy.tech/project/echo-agent)
+[![GitHub stars](https://img.shields.io/github/stars/fuyuxiang/echo-agent?style=social)](https://github.com/fuyuxiang/echo-agent)
 
 [中文](README.md) · [English](README.en.md)
 
@@ -38,15 +42,18 @@ Echo Agent 是一个可自托管的长期运行 AI Agent。与一次性问答不
 
 ```bash
 # 安装
-git clone https://github.com/fuyuxiang/echo-agent.git
-cd echo-agent
-uv venv venv --python 3.11 && source venv/bin/activate
-uv pip install -e ".[all]"
+pip install "echo-agent[all]"
 
-# 配置并启动
+# 配置模型 API Key（任选其一）
 export OPENAI_API_KEY="sk-..."
-echo-agent setup -w .
-echo-agent run -w .
+# 也支持 ANTHROPIC_API_KEY / GOOGLE_API_KEY / OPENROUTER_API_KEY，
+# 以及 AWS Bedrock（使用标准 AWS 凭证）
+
+# 交互式配置向导（数据默认存放在 ~/.echo-agent）
+echo-agent setup
+
+# 启动
+echo-agent run
 ```
 
 <details>
@@ -54,20 +61,20 @@ echo-agent run -w .
 
 ```bash
 # 阿里云镜像加速
-uv pip install -e ".[all]" -i https://mirrors.aliyun.com/pypi/simple/
-
-# Gitee 镜像
-git clone https://gitee.com/fuyuxiang/echo-agent.git
+pip install "echo-agent[all]" -i https://mirrors.aliyun.com/pypi/simple/
 ```
 
 ```powershell
-# PowerShell
+# Windows（PowerShell）
+pip install "echo-agent[all]"
 $env:OPENAI_API_KEY = "sk-..."
-echo-agent run -w .
+echo-agent setup
+echo-agent run
 ```
 
 ```bash
-# 一键安装脚本（仅限本地开发）
+# 一键安装脚本（仅支持 Linux / macOS / WSL2，会从源码安装到 ~/.echo-agent
+# 并可注册 systemd 服务；建议先审查脚本内容再执行）
 curl -fsSL -o install.sh https://raw.githubusercontent.com/fuyuxiang/echo-agent/master/scripts/install.sh
 less install.sh && bash install.sh
 ```
@@ -112,13 +119,20 @@ less install.sh && bash install.sh
 
 ## 开发与贡献
 
+从源码安装（开发模式）：
+
 ```bash
+git clone https://github.com/fuyuxiang/echo-agent.git   # 国内可用 https://gitee.com/fuyuxiang/echo-agent.git
+cd echo-agent
+uv venv venv --python 3.11 && source venv/bin/activate
 uv pip install -e ".[all,dev]"
+
+# 提交前检查
 ruff check .
 pytest
 ```
 
-PR 前请确保 lint 和测试通过，并同步更新中英文 README。
+PR 前请确保 lint 和测试通过（CI 会在 PR 上自动运行同样的检查），并同步更新中英文 README。
 
 **参与方向：** 通道适配器 · 内置工具 · MCP 集成 · 技能示例 · 评测数据集 · 文档完善 · 部署模板
 
@@ -131,7 +145,7 @@ PR 前请确保 lint 和测试通过，并同步更新中英文 README。
 
 ## 协议
 
-MIT License — 详见 [pyproject.toml](pyproject.toml)
+[MIT License](LICENSE)
 
 ---
 

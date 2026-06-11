@@ -1,7 +1,6 @@
 """Tests for plugin loader — discovery and module loading."""
 
 import pytest
-from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from echo_agent.plugins.loader import (
@@ -151,8 +150,6 @@ def test_scan_directory_plugin_yml(tmp_path):
 
 def test_discover_all_override_semantics(tmp_path):
     """Project plugins override user plugins with the same name."""
-    user_dir = Path.home() / ".echo-agent" / "plugins"
-
     proj_dir = tmp_path / "plugins" / "shared-name"
     proj_dir.mkdir(parents=True)
     (proj_dir / "plugin.yaml").write_text("name: shared-name\nversion: '2.0.0'\n")
