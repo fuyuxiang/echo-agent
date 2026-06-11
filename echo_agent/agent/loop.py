@@ -361,6 +361,7 @@ class AgentLoop:
             vector_index=vector_index,
             forgetting=forgetting,
             embed_fn=embed_fn,
+            embed_timeout=config.memory.embed_timeout_seconds,
         )
         self.memory.set_retriever(self._hybrid_retriever)
 
@@ -640,6 +641,7 @@ class AgentLoop:
                             error=f"{type(process_error).__name__}: {process_error}",
                             outcome="failure",
                             task_type=getattr(ctx, "task_type", "") if ctx is not None else "",
+                            spawn_fn=self._spawn_background,
                         )
                     else:
                         await recorder.end_turn(
@@ -647,6 +649,7 @@ class AgentLoop:
                             response_text=result.response_text if result else "",
                             iteration_count=getattr(inference_result, "total_tool_calls", 0) or 0,
                             task_type=getattr(ctx, "task_type", "") if ctx is not None else "",
+                            spawn_fn=self._spawn_background,
                         )
                 except Exception as e:
                     logger.debug("Recorder end_turn failed: {}", e)
