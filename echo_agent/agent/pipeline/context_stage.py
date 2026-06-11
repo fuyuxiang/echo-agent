@@ -188,7 +188,9 @@ class ContextStage:
                     context=retrieval,
                     token_estimate=token_est,
                 )
-                if execution_plan and execution_plan.steps:
+                # A single-step plan ("reason and act iteratively") carries no
+                # information — injecting it just burns prompt tokens.
+                if execution_plan and len(execution_plan.steps) > 1:
                     plan_context = execution_plan.to_prompt()
                     messages[-1]["content"] = (
                         messages[-1]["content"] + f"\n\n[Plan]\n{plan_context}"

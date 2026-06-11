@@ -190,3 +190,45 @@ class TestConsolidationWorker:
         await asyncio.gather(*spawned)
 
         assert not worker.is_pending("test:7")
+
+
+class TestSnapshotValidity:
+    """Full-region comparison: a mid-region rewrite (e.g. by compression)
+    must invalidate the snapshot even when the tail message is identical."""
+
+    def _session(self, messages, last_consolidated=0):
+        from types import SimpleNamespace
+        return SimpleNamespace(messages=messages, last_consolidated=last_consolidated)
+
+    def test_valid_when_region_unchanged(self):
+        chunk = [
+            {"role": "user", "content": "a"},
+            {"role": "assistant", "content": "b"},
+        ]
+        session = self._session(list(chunk) + [{"role": "user", "content": "newer"}])
+        assert ConsolidationWorker._snapshot_still_valid(session, 0, chunk, 2) is True
+
+    def test_invalid_when_middle_message_rewritten_but_tail_matches(self):
+        chunk = [
+            {"role": "user", "content": "a"},
+            {"role": "assistant", "content": "b"},
+        ]
+        # Compression rewrote the first message; the tail is still identical.
+        session = self._session([
+            {"role": "user", "content": "[compressed summary]"},
+            {"role": "assistant", "content": "b"},
+        ])
+        assert ConsolidationWorker._snapshot_still_valid(session, 0, chunk, 2) is False
+
+    def test_invalid_when_boundary_moved(self):
+        chunk = [{"role": "user", "content": "a"}]
+        session = self._session([{"role": "user", "content": "a"}], last_consolidated=1)
+        assert ConsolidationWorker._snapshot_still_valid(session, 0, chunk, 1) is False
+
+    def test_invalid_when_history_truncated(self):
+        chunk = [
+            {"role": "user", "content": "a"},
+            {"role": "assistant", "content": "b"},
+        ]
+        session = self._session([{"role": "user", "content": "a"}])
+        assert ConsolidationWorker._snapshot_still_valid(session, 0, chunk, 2) is False

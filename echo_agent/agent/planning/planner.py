@@ -34,9 +34,12 @@ class AgentPlanner:
                 return StrategyType(self._default_strategy)
             except ValueError:
                 pass
-        if token_estimate < 500 and tool_count <= 2:
-            return StrategyType.REACT
-        if tool_count > 5 or token_estimate > 2000:
+        # Complexity must come from the task, not the installation: tool_count
+        # is a property of which tools are registered (typically dozens), and
+        # gating on it made PLAN_EXECUTE — an extra blocking LLM round-trip —
+        # fire on every single message. Only genuinely large tasks pay for an
+        # upfront planning call; everything else uses zero-cost ReAct.
+        if token_estimate > 2000:
             return StrategyType.PLAN_EXECUTE
         return StrategyType.REACT
 

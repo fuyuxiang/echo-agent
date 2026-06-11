@@ -159,7 +159,7 @@ class ChannelsConfig(_Base):
     matrix: MatrixChannelConfig = Field(default_factory=MatrixChannelConfig)
     send_progress: bool = True
     send_tool_hints: bool = True
-    stream_channels: list[str] = Field(default_factory=lambda: ["telegram", "discord", "slack"])
+    stream_channels: list[str] = Field(default_factory=lambda: ["cli", "telegram", "discord", "slack"])
     stream_flush_chars: int = 180
     stream_flush_interval_ms: int = 1500
     stream_paragraph_mode: bool = True
@@ -383,6 +383,11 @@ class MemoryConfig(_Base):
     max_episodes: int = 500
     embedding_model: str = ""
     embedding_batch_size: int = 32
+    # Latency budget for the per-message query-embedding round-trip in hybrid
+    # retrieval. On timeout retrieval degrades to keyword-only for that turn.
+    # Raise this if your embedding endpoint is on a high-latency network and
+    # you prefer recall quality over response latency.
+    embed_timeout_seconds: float = 1.5
     consolidation_idle_seconds: int = 300
     contradiction_scan_on_store: bool = False
 
