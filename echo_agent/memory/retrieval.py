@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 import re
 from collections import Counter
@@ -41,11 +42,19 @@ class HybridRetriever:
         vector_index: VectorIndex | None = None,
         forgetting: ForgettingCurve | None = None,
         embed_fn: Callable[[str], Awaitable[list[float]]] | None = None,
+        embed_timeout: float = 1.5,
     ):
         self._entries_fn = entries_fn
         self._vector_index = vector_index
         self._forgetting = forgetting or ForgettingCurve()
         self._embed_fn = embed_fn
+        # Latency budget for the embedding round-trip (configurable via
+        # memory.embedTimeoutSeconds). Retrieval runs on the user-facing
+        # critical path of every message; vector similarity is an enhancement,
+        # so a slow embedding endpoint degrades to BM25-only for that turn
+        # rather than stalling the reply.
+        self._embed_timeout = max(0.1, float(embed_timeout))
+        self._embed_timeout_warned = False
 
     async def retrieve(
         self, query: str, limit: int = 10,
@@ -141,7 +150,23 @@ class HybridRetriever:
         if not self._embed_fn or not self._vector_index:
             return []
         try:
-            embedding = await self._embed_fn(query)
+            embedding = await asyncio.wait_for(
+                self._embed_fn(query), timeout=self._embed_timeout,
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            # A silent quality downgrade is worse than the timeout itself —
+            # tell the operator loudly once, then stay quiet.
+            if not self._embed_timeout_warned:
+                self._embed_timeout_warned = True
+                logger.warning(
+                    "Embedding call exceeded the {}s budget; memory retrieval degraded to "
+                    "keyword-only for such turns. If your embedding endpoint is slow, raise "
+                    "memory.embedTimeoutSeconds in your config.",
+                    self._embed_timeout,
+                )
+            else:
+                logger.debug("embed_fn exceeded {}s budget, degrading to keyword-only", self._embed_timeout)
+            return []
         except Exception:
             logger.warning("embed_fn failed for vector search")
             return []

@@ -24,6 +24,12 @@ class CLIChannel(BaseChannel):
         self._on_exit = on_exit
         self._reader_stop: threading.Event | None = None
         self._reader_thread: threading.Thread | None = None
+        # Streamed text printed so far, keyed by inbound event id. The stream
+        # publisher sends a final FULL-text message after the chunks (meant
+        # for channels that edit messages in place); a print-only channel must
+        # print just the remainder or the reply appears twice.
+        self._stream_printed: dict[str, str] = {}
+        self._max_stream_entries = 32
 
     async def start(self) -> None:
         if not sys.stdin.isatty():
@@ -47,9 +53,40 @@ class CLIChannel(BaseChannel):
                 pass
 
     async def send(self, event: OutboundEvent) -> SendResult | None:
-        text = event.text
+        text = event.text or ""
+        if event.metadata.get("_token_stream"):
+            return self._send_stream(event, text)
         if text:
             print(f"\n{text}\n")
+        return SendResult(success=True)
+
+    def _send_stream(self, event: OutboundEvent, text: str) -> SendResult:
+        eid = str(event.metadata.get("_inbound_event_id", ""))
+        is_final = getattr(event, "message_kind", "final") == "final"
+
+        if not is_final:
+            if eid not in self._stream_printed:
+                print()  # open the reply block
+                self._stream_printed[eid] = ""
+                while len(self._stream_printed) > self._max_stream_entries:
+                    self._stream_printed.pop(next(iter(self._stream_printed)))
+            print(text, end="", flush=True)
+            self._stream_printed[eid] += text
+            return SendResult(success=True)
+
+        printed = self._stream_printed.pop(eid, "")
+        if not printed:
+            if text:
+                print(f"\n{text}\n")
+            return SendResult(success=True)
+        if text.startswith(printed):
+            remainder = text[len(printed):]
+            if remainder:
+                print(remainder, end="", flush=True)
+            print("\n")
+        else:
+            # Final text diverged from the streamed chunks — reprint cleanly.
+            print(f"\n--- 完整回复 ---\n{text}\n")
         return SendResult(success=True)
 
     async def _read_loop(self) -> None:

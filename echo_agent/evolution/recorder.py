@@ -117,7 +117,13 @@ class TrajectoryRecorder:
         iteration_count: int | None = None,
         outcome: Outcome | None = None,
         task_type: str = "",
+        spawn_fn: Any = None,
     ) -> Trajectory | None:
+        """Finish the turn. The pop + trajectory build are synchronous (the
+        next ``begin_turn`` for this session must not race them); the slow
+        part — LLM reflection + persistence — runs in the background when a
+        ``spawn_fn`` is provided, so it never extends the session-lock window.
+        """
         async with self._lock:
             partial = self._active.pop(session_key, None)
         if partial is None:
@@ -151,6 +157,22 @@ class TrajectoryRecorder:
             model_used=partial.model_used,
         )
 
+        if spawn_fn is not None:
+            # Reflection is an LLM call and persistence hits the DB — neither
+            # needs to delay the caller (which may hold the session lock).
+            spawn_fn(self._reflect_and_store(trajectory, partial, error, response_text))
+            return trajectory
+
+        persisted = await self._reflect_and_store(trajectory, partial, error, response_text)
+        return trajectory if persisted else None
+
+    async def _reflect_and_store(
+        self,
+        trajectory: Trajectory,
+        partial: _Partial,
+        error: str,
+        response_text: str,
+    ) -> bool:
         if self._reflection is not None and not error and partial.iterations > 0:
             try:
                 feedback = await self._safe_reflect(trajectory)
@@ -167,11 +189,10 @@ class TrajectoryRecorder:
 
         try:
             await self._store.append_trajectory(trajectory)
+            return True
         except Exception as e:
             logger.warning("Failed to persist trajectory: {}", e)
-            return None
-
-        return trajectory
+            return False
 
     async def discard_turn(self, session_key: str) -> None:
         async with self._lock:

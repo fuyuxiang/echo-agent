@@ -1147,3 +1147,65 @@ class TestVectorIndexConcurrency:
         results = await vi.search([1.0, 0.0, 0.0, 0.0], limit=20)
         source_ids = {sid for sid, _ in results}
         assert "mem_0" not in source_ids or "mem_1" not in source_ids
+
+
+class TestEmbedTimeoutDegradation:
+    """A slow embedding endpoint must degrade retrieval to keyword-only
+    within the configured budget instead of stalling the turn."""
+
+    @pytest.mark.asyncio
+    async def test_slow_embed_degrades_to_keyword_only(self):
+        entries = [_make_entry(id="a", key="python", content="python is great")]
+
+        async def slow_embed(text: str) -> list[float]:
+            await asyncio.sleep(0.5)
+            return [1.0, 0.0]
+
+        class _FakeIndex:
+            async def search(self, embedding, limit):
+                raise AssertionError("vector search must not run after embed timeout")
+
+        retriever = HybridRetriever(
+            entries_fn=lambda: entries,
+            vector_index=_FakeIndex(),
+            embed_fn=slow_embed,
+            embed_timeout=0.05,
+        )
+        results = await retriever.retrieve("python", limit=5)
+        # Keyword path still works
+        assert results and results[0][0].id == "a"
+        # First timeout raises the operator-visible warning flag
+        assert retriever._embed_timeout_warned is True
+
+    @pytest.mark.asyncio
+    async def test_fast_embed_within_budget_uses_vector(self):
+        entries = [_make_entry(id="a", key="python", content="python is great")]
+        searched: list[int] = []
+
+        async def fast_embed(text: str) -> list[float]:
+            return [1.0, 0.0]
+
+        class _FakeIndex:
+            async def search(self, embedding, limit):
+                searched.append(limit)
+                return [("a", 0.9)]
+
+        retriever = HybridRetriever(
+            entries_fn=lambda: entries,
+            vector_index=_FakeIndex(),
+            embed_fn=fast_embed,
+            embed_timeout=1.0,
+        )
+        results = await retriever.retrieve("python", limit=5)
+        assert searched, "vector search should run when embed is within budget"
+        assert results and results[0][0].id == "a"
+        assert retriever._embed_timeout_warned is False
+
+    def test_timeout_configurable_from_memory_config(self):
+        from echo_agent.config.schema import MemoryConfig
+        config = MemoryConfig(embed_timeout_seconds=5.0)
+        retriever = HybridRetriever(
+            entries_fn=lambda: [],
+            embed_timeout=config.embed_timeout_seconds,
+        )
+        assert retriever._embed_timeout == 5.0
