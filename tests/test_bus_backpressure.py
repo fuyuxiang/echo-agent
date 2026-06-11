@@ -25,7 +25,7 @@ async def test_publish_inbound_returns_false_when_full() -> None:
     e2 = InboundEvent.text_message(channel="test", sender_id="u1", chat_id="c1", text="second")
 
     await bus.publish_inbound(e1)  # fills the queue
-    result = await bus.publish_inbound(e2)  # should fail (timeout after 5s is too long for test)
+    await bus.publish_inbound(e2)  # should fail (timeout after 5s is too long for test)
     # We need a shorter timeout - let's test via the queue being full
     assert bus.pending_inbound == 1
 

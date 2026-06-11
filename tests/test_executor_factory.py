@@ -1,12 +1,11 @@
 """Tests for echo_agent.agent.executors.factory — executor creation."""
 
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 from echo_agent.agent.executors.factory import create_executor
-from echo_agent.agent.executors.base import LocalExecutor, SandboxExecutor
+from echo_agent.agent.executors.base import LocalExecutor
 from echo_agent.agent.executors.remote import RemoteExecutor
 from echo_agent.config.schema import ExecutionConfig
 

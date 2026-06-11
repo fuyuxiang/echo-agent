@@ -251,8 +251,6 @@ class TestDeliveryRouter:
         router.add_rule(lambda e: e.channel == "src", "dst", "chat_dst")
 
         published: list[OutboundEvent] = []
-        original_publish = bus.publish_outbound
-
         async def capture(event: OutboundEvent):
             published.append(event)
             # Don't recurse into global handlers for routed events

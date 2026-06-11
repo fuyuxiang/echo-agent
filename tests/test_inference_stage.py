@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from echo_agent.agent.pipeline.inference_stage import InferenceStage
-from echo_agent.agent.pipeline.types import InferenceResult, PipelineContext
+from echo_agent.agent.pipeline.types import PipelineContext
 from echo_agent.models.provider import LLMResponse, ToolCallRequest
-from echo_agent.models.router import RouteDecision
 
 
 def _make_config():
@@ -212,7 +210,6 @@ class TestInferenceStageMaxIterations:
     @pytest.mark.asyncio
     async def test_max_iterations_fallback(self):
         tc = ToolCallRequest(id="call_1", name="tool_a", arguments={"x": "1"})
-        tc2 = ToolCallRequest(id="call_2", name="tool_b", arguments={"y": "2"})
 
         provider = AsyncMock()
         # Always return tool calls, never stop

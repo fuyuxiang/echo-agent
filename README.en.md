@@ -10,8 +10,12 @@
 
 <br/>
 
-[![GitHub stars](https://img.shields.io/github/stars/fuyuxiang/echo-agent?style=social)](https://github.com/fuyuxiang/echo-agent)
+[![PyPI](https://img.shields.io/pypi/v/echo-agent)](https://pypi.org/project/echo-agent/)
+[![Python](https://img.shields.io/pypi/pyversions/echo-agent)](https://pypi.org/project/echo-agent/)
+[![CI](https://github.com/fuyuxiang/echo-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/fuyuxiang/echo-agent/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Downloads](https://static.pepy.tech/badge/echo-agent)](https://pepy.tech/project/echo-agent)
+[![GitHub stars](https://img.shields.io/github/stars/fuyuxiang/echo-agent?style=social)](https://github.com/fuyuxiang/echo-agent)
 
 [中文](README.md) · English
 
@@ -38,36 +42,39 @@ Requirements: Python 3.11+, at least one model API key.
 
 ```bash
 # Install
-git clone https://github.com/fuyuxiang/echo-agent.git
-cd echo-agent
-uv venv venv --python 3.11 && source venv/bin/activate
-uv pip install -e ".[all]"
+pip install "echo-agent[all]"
 
-# Configure and run
+# Configure a model API key (any one of these)
 export OPENAI_API_KEY="sk-..."
-echo-agent setup -w .
-echo-agent run -w .
+# ANTHROPIC_API_KEY / GOOGLE_API_KEY / OPENROUTER_API_KEY are also supported,
+# as well as AWS Bedrock (via standard AWS credentials)
+
+# Interactive setup wizard (data lives in ~/.echo-agent by default)
+echo-agent setup
+
+# Run
+echo-agent run
 ```
 
 <details>
 <summary>China mirror / Windows / one-liner script</summary>
 
 ```bash
-# Aliyun mirror
-uv pip install -e ".[all]" -i https://mirrors.aliyun.com/pypi/simple/
-
-# Gitee mirror
-git clone https://gitee.com/fuyuxiang/echo-agent.git
+# Aliyun PyPI mirror
+pip install "echo-agent[all]" -i https://mirrors.aliyun.com/pypi/simple/
 ```
 
 ```powershell
-# PowerShell
+# Windows (PowerShell)
+pip install "echo-agent[all]"
 $env:OPENAI_API_KEY = "sk-..."
-echo-agent run -w .
+echo-agent setup
+echo-agent run
 ```
 
 ```bash
-# One-liner install script (local dev only)
+# One-liner install script (Linux / macOS / WSL2 only; installs from source
+# into ~/.echo-agent and can register a systemd service — review before running)
 curl -fsSL -o install.sh https://raw.githubusercontent.com/fuyuxiang/echo-agent/master/scripts/install.sh
 less install.sh && bash install.sh
 ```
@@ -112,13 +119,20 @@ less install.sh && bash install.sh
 
 ## Development & Contributing
 
+Install from source (development mode):
+
 ```bash
+git clone https://github.com/fuyuxiang/echo-agent.git   # mirror: https://gitee.com/fuyuxiang/echo-agent.git
+cd echo-agent
+uv venv venv --python 3.11 && source venv/bin/activate
 uv pip install -e ".[all,dev]"
+
+# Pre-submit checks
 ruff check .
 pytest
 ```
 
-Please ensure lint and tests pass before submitting a PR, and keep both Chinese and English READMEs in sync.
+Please ensure lint and tests pass before submitting a PR (CI runs the same checks on every PR), and keep both Chinese and English READMEs in sync.
 
 **Good entry points:** channel adapters · built-in tools · MCP integrations · skill examples · eval datasets · documentation · deployment templates
 
@@ -130,7 +144,7 @@ Please ensure lint and tests pass before submitting a PR, and keep both Chinese 
 
 ## License
 
-MIT License — see [pyproject.toml](pyproject.toml)
+[MIT License](LICENSE)
 
 ---
 

@@ -1,11 +1,10 @@
 """Tests for TokenStreamPublisher — adaptive streaming with boundary-aware flushing."""
 
-import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from echo_agent.agent.streaming import TokenStreamPublisher, ProcessResult
+from echo_agent.agent.streaming import TokenStreamPublisher
 
 
 def _make_event():

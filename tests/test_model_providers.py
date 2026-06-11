@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from echo_agent.models.provider import LLMResponse, ToolCallRequest
+from echo_agent.models.provider import LLMResponse
 from echo_agent.models.stub import StubProvider
 from echo_agent.models.tokenizer import TokenCounter
 
