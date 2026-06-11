@@ -76,7 +76,8 @@ class TestStorageSync:
 
     def test_save_type_calls_storage_backend(self, tmp_path: Path) -> None:
         mock_storage = MagicMock()
-        future: asyncio.Future = asyncio.Future()
+        loop = asyncio.new_event_loop()
+        future: asyncio.Future = loop.create_future()
         future.set_result(None)
         mock_storage.store_memory = MagicMock(return_value=future)
 
@@ -100,7 +101,8 @@ class TestStorageSync:
 
     def test_pending_storage_tasks_tracked(self, tmp_path: Path) -> None:
         mock_storage = MagicMock()
-        future: asyncio.Future = asyncio.Future()
+        loop = asyncio.new_event_loop()
+        future: asyncio.Future = loop.create_future()
         future.set_result(None)
         mock_storage.store_memory = MagicMock(return_value=future)
 
