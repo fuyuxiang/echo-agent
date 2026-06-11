@@ -99,24 +99,25 @@ class GatewayAuth:
 
     def verify_pairing(self, platform: str, user_id: str, code: str) -> bool:
         code = code.upper().strip()
+        lockout_key = f"{platform}:{user_id}"
 
-        if self._is_locked_out(platform):
+        if self._is_locked_out(lockout_key):
             self.audit("pair_verify", platform=platform, user_id=user_id, ok=False, reason="locked_out")
             return False
 
         entry = self._pending_codes.get(code)
         if entry is None:
-            self._record_verify_failure(platform)
+            self._record_verify_failure(lockout_key)
             return False
 
         if time.time() - entry["created_at"] > self._pairing_ttl:
             del self._pending_codes[code]
             self._save_pending()
-            self._record_verify_failure(platform)
+            self._record_verify_failure(lockout_key)
             return False
 
         if entry["platform"] != platform:
-            self._record_verify_failure(platform)
+            self._record_verify_failure(lockout_key)
             return False
 
         del self._pending_codes[code]
@@ -127,23 +128,25 @@ class GatewayAuth:
         self._approved[platform].add(user_id)
         self._save_approved(platform)
 
-        self._verify_failures.pop(platform, None)
+        self._verify_failures.pop(lockout_key, None)
         logger.info("User {}:{} paired successfully", platform, user_id)
         self.audit("pair_verify", platform=platform, user_id=user_id)
         return True
 
-    def _is_locked_out(self, platform: str) -> bool:
-        failures = self._verify_failures.get(platform, [])
+    def _is_locked_out(self, lockout_key: str) -> bool:
+        # Keyed by platform:user — keying by platform alone would let one
+        # remote attacker lock out pairing for every user on the platform.
+        failures = self._verify_failures.get(lockout_key, [])
         if len(failures) < self._max_failures:
             return False
         recent = [t for t in failures if time.time() - t < self._lockout_seconds]
-        self._verify_failures[platform] = recent
+        self._verify_failures[lockout_key] = recent
         return len(recent) >= self._max_failures
 
-    def _record_verify_failure(self, platform: str) -> None:
-        if platform not in self._verify_failures:
-            self._verify_failures[platform] = []
-        self._verify_failures[platform].append(time.time())
+    def _record_verify_failure(self, lockout_key: str) -> None:
+        if lockout_key not in self._verify_failures:
+            self._verify_failures[lockout_key] = []
+        self._verify_failures[lockout_key].append(time.time())
 
     def _load_approved(self) -> None:
         for path in self._data_dir.glob("*_approved.json"):

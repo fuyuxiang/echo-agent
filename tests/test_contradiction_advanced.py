@@ -1,6 +1,5 @@
 """Tests for enhanced contradiction detection — temporal conflicts and high-similarity cross-key."""
 
-import pytest
 from datetime import datetime, timedelta
 
 from echo_agent.memory.contradiction import ContradictionDetector

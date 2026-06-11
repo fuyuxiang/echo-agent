@@ -101,6 +101,7 @@ class GatewayServer:
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
     async def start(self) -> None:
+        self._check_bind_safety()
         self._app = web.Application()
         self._setup_routes()
 
@@ -118,6 +119,23 @@ class GatewayServer:
         logger.info(
             "Gateway listening on {}:{}",
             self._config.host, self._config.port,
+        )
+
+    def _check_bind_safety(self) -> None:
+        """Refuse to expose an unauthenticated gateway beyond localhost.
+
+        With no api_tokens configured, ``authenticate_token`` accepts every
+        request — fine on loopback, an open door on 0.0.0.0. Configure
+        gateway.auth.apiTokens, or bind to 127.0.0.1.
+        """
+        host = (self._config.host or "").strip()
+        loopback = host in ("127.0.0.1", "localhost", "::1", "")
+        if loopback or self._config.auth.api_tokens:
+            return
+        raise RuntimeError(
+            f"Gateway is configured to bind {host}:{self._config.port} without any "
+            "API token. Set gateway.auth.apiTokens (or bind to 127.0.0.1) before "
+            "exposing the gateway to the network."
         )
 
     async def stop(self) -> None:

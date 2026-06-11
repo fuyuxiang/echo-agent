@@ -45,6 +45,8 @@ class EvolutionScheduler:
         self._task: asyncio.Task | None = None
         self._running = False
         self._next_cron_ts: float | None = None
+        self._consecutive_failures = 0
+        self._backoff_until: float = 0.0
 
     @property
     def mode(self) -> str:
@@ -90,6 +92,8 @@ class EvolutionScheduler:
             return
 
     async def _tick(self) -> None:
+        if self._backoff_until and datetime.now().timestamp() < self._backoff_until:
+            return
         if self._mode == "threshold":
             await self._tick_threshold()
         elif self._mode == "scheduled":
@@ -116,9 +120,25 @@ class EvolutionScheduler:
 
     async def _safe_run(self, trigger: str) -> None:
         try:
-            await self._run_fn(trigger=trigger)
+            run = await self._run_fn(trigger=trigger)
+            failed = bool(getattr(run, "error", None))
         except Exception as e:
             logger.warning("Scheduled evolution run failed ({}): {}", trigger, e)
+            failed = True
+        if failed:
+            # Exponential backoff on persistent failure: in threshold mode the
+            # trigger condition stays true (trajectories not consumed), so
+            # without this every poll re-burns an LLM run 30 s apart.
+            self._consecutive_failures += 1
+            delay = min(3600.0, self._poll_interval * (2 ** self._consecutive_failures))
+            self._backoff_until = datetime.now().timestamp() + delay
+            logger.warning(
+                "Evolution runs backing off for {:.0f}s after {} consecutive failure(s)",
+                delay, self._consecutive_failures,
+            )
+        else:
+            self._consecutive_failures = 0
+            self._backoff_until = 0.0
 
     def _compute_next_cron_ts(self, base: datetime) -> float | None:
         if not self._cron_expression:

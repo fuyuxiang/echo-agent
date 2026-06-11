@@ -123,6 +123,7 @@ def create_provider(config: ProviderConfig, *, default_model: str = "") -> LLMPr
         api_key = config.api_key or _env_api_key(name)
 
     provider = cls(api_key=api_key, api_base=config.api_base, **kwargs)
+    provider.request_timeout = float(config.timeout_seconds)
 
     if pool:
         provider = _PooledProvider(provider, pool, cls, config)
@@ -130,6 +131,10 @@ def create_provider(config: ProviderConfig, *, default_model: str = "") -> LLMPr
     if config.rate_limit_rpm > 0:
         limiter = TokenBucketLimiter(tokens_per_minute=config.rate_limit_rpm)
         provider = RateLimitedProvider(provider, limiter)
+
+    # The retry wrapper (chat_with_retry) runs on the outermost provider, so
+    # the timeout must be visible there too.
+    provider.request_timeout = float(config.timeout_seconds)
 
     return provider
 

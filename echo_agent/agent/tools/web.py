@@ -2,12 +2,48 @@
 
 from __future__ import annotations
 
+import asyncio
+import ipaddress
+import socket
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import aiohttp
 
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
+
+
+async def check_url_ssrf(url: str) -> str | None:
+    """Return an error message when *url* points at a non-public address.
+
+    Blocks loopback, private, link-local (cloud metadata), reserved and
+    multicast targets — web_fetch takes model-controlled URLs, so without
+    this it is a free proxy into the host's internal network.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return f"Blocked: unsupported URL scheme '{parsed.scheme}'"
+    host = parsed.hostname
+    if not host:
+        return "Blocked: URL has no host"
+    try:
+        infos = await asyncio.to_thread(socket.getaddrinfo, host, None)
+    except OSError as e:
+        return f"Blocked: cannot resolve host '{host}': {e}"
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if (
+            ip.is_private or ip.is_loopback or ip.is_link_local
+            or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+        ):
+            return (
+                f"Blocked: '{host}' resolves to non-public address {ip}. "
+                "Set tools.web.allowPrivateAddresses to true to permit internal targets."
+            )
+    return None
 
 
 class WebFetchTool(Tool):
@@ -24,12 +60,17 @@ class WebFetchTool(Tool):
     }
     timeout_seconds = 30
 
-    def __init__(self, proxy: str | None = None):
+    def __init__(self, proxy: str | None = None, allow_private: bool = False):
         self._proxy = proxy
+        self._allow_private = allow_private
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         url = params["url"]
         max_chars = params.get("max_chars", 16000)
+        if not self._allow_private and not self._proxy:
+            ssrf_error = await check_url_ssrf(url)
+            if ssrf_error:
+                return ToolResult(success=False, error=ssrf_error)
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, proxy=self._proxy, timeout=aiohttp.ClientTimeout(total=self.timeout_seconds)) as resp:

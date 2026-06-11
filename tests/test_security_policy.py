@@ -9,7 +9,7 @@ from echo_agent.agent.tools.base import ToolExecutionContext
 from echo_agent.agent.tools.code_exec import CodeExecTool
 from echo_agent.agent.tools.shell import ShellTool
 from echo_agent.config.loader import load_config
-from echo_agent.config.schema import Config, ExecToolConfig, ExecutionConfig, ToolsConfig
+from echo_agent.config.schema import Config, ExecToolConfig, ToolsConfig
 from echo_agent.permissions.manager import ApprovalManager, ApprovalStatus
 from echo_agent.security.guards import evaluate_shell_command
 from echo_agent.security.tool_policy import is_tool_allowed

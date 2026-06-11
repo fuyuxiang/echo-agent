@@ -1,11 +1,9 @@
 """Tests for shell command normalization and tokenization security hardening."""
 
-import pytest
 
 from echo_agent.security.normalizer import (
     collapse_slashes,
     decode_percent_encoding,
-    expand_home,
     normalize_command,
     resolve_path_traversal,
     strip_escapes,

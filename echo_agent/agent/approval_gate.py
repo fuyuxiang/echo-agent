@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from loguru import logger
 
 from echo_agent.agent.tools.base import ToolResult
 from echo_agent.bus.events import InboundEvent, OutboundEvent

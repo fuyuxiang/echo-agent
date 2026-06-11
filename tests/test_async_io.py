@@ -1,6 +1,5 @@
 """Tests for async file I/O utilities."""
 
-import asyncio
 import json
 from pathlib import Path
 

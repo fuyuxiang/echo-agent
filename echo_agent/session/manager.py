@@ -138,7 +138,22 @@ class SessionManager:
             self._cache[key] = session
             self._cache.move_to_end(key)
             while len(self._cache) > self._max_cache_size:
-                _, evicted = self._cache.popitem(last=False)
+                # Never evict a session whose per-session lock is held: its
+                # holder is mid-turn, so saving here would snapshot a
+                # half-finished state (and could later overwrite the holder's
+                # complete save with a stale one).
+                evicted_key = None
+                for candidate_key in self._cache:
+                    if candidate_key == key:
+                        continue
+                    candidate_lock = self._session_locks.get(candidate_key)
+                    if candidate_lock is not None and candidate_lock.locked():
+                        continue
+                    evicted_key = candidate_key
+                    break
+                if evicted_key is None:
+                    break  # everything is busy; let the cache grow temporarily
+                evicted = self._cache.pop(evicted_key)
                 try:
                     if self._storage:
                         await self._save_to_storage(evicted)
@@ -244,22 +259,25 @@ class SessionManager:
         import asyncio
 
         path = self._session_path(session.key)
+        # Snapshot on the event loop before handing off to a thread: the
+        # writer must not iterate a list another task may still append to.
+        messages_snapshot = list(session.messages)
+        meta = {
+            "_type": "metadata",
+            "key": session.key,
+            "created_at": session.created_at.isoformat(),
+            "updated_at": session.updated_at.isoformat(),
+            "metadata": dict(session.metadata),
+            "last_consolidated": session.last_consolidated,
+            "status": session.status,
+        }
 
         def _sync_save() -> None:
             fd, tmp = tempfile.mkstemp(dir=str(self.sessions_dir), prefix=".sess_", suffix=".tmp")
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    meta = {
-                        "_type": "metadata",
-                        "key": session.key,
-                        "created_at": session.created_at.isoformat(),
-                        "updated_at": session.updated_at.isoformat(),
-                        "metadata": session.metadata,
-                        "last_consolidated": session.last_consolidated,
-                        "status": session.status,
-                    }
                     f.write(json.dumps(meta, ensure_ascii=False) + "\n")
-                    for msg in session.messages:
+                    for msg in messages_snapshot:
                         f.write(json.dumps(msg, ensure_ascii=False) + "\n")
                     f.flush()
                     os.fsync(f.fileno())
@@ -359,6 +377,9 @@ class SessionManager:
         return self.list_sessions()
 
     def list_sessions(self) -> list[dict[str, Any]]:
+        """Synchronous listing. With SQLite storage and a running event loop
+        this can only see the in-memory cache (≤ max_cache_size entries) —
+        prefer ``list_sessions_async`` for a complete listing."""
         if self._storage:
             try:
                 loop = asyncio.get_running_loop()

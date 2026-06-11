@@ -2,7 +2,7 @@
 
 import pytest
 
-from echo_agent.plugins.hooks import HookRegistry, HookResult, VALID_HOOKS
+from echo_agent.plugins.hooks import HookRegistry, HookResult
 
 
 @pytest.fixture

@@ -1,12 +1,11 @@
 """Tests for the multi-agent delegation system (WorkerRegistry, WorkerExecutor, DelegateTool)."""
 
 import asyncio
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from echo_agent.agent.multi_agent.models import WorkerProfile, WorkerResult
+from echo_agent.agent.multi_agent.models import WorkerProfile
 from echo_agent.agent.multi_agent.registry import WorkerRegistry
 from echo_agent.agent.multi_agent.runtime import WorkerExecutor
 from echo_agent.agent.tools.delegate import DelegateTool, WORKER_BLOCKED_TOOLS

@@ -90,7 +90,11 @@ class WebhookChannel(BaseChannel):
             future = asyncio.get_running_loop().create_future()
             self._pending_responses[event.event_id] = future
 
-        await self.bus.publish_inbound(event)
+        accepted = await self.bus.publish_inbound(event)
+        if not accepted:
+            if future:
+                self._pending_responses.pop(event.event_id, None)
+            return web.json_response({"error": "busy, try again later"}, status=503)
 
         if future:
             try:

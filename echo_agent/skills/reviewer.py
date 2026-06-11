@@ -6,7 +6,6 @@ to capture a reusable skill. Runs in the background so it doesn't block the user
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from loguru import logger

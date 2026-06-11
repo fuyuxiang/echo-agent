@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
 from echo_agent.bus.events import InboundEvent, OutboundEvent
 from echo_agent.bus.queue import MessageBus
 from echo_agent.models.provider import LLMProvider, LLMResponse, ToolCallRequest
-from echo_agent.session.manager import SessionManager
 
 
 class _StubProvider(LLMProvider):

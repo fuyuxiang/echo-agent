@@ -15,7 +15,7 @@ from echo_agent.config.schema import MCPServerConfig
 from echo_agent.mcp.client import MCPClient
 from echo_agent.mcp.security import validate_mcp_tools
 from echo_agent.mcp.tool_adapter import MCPToolAdapter
-from echo_agent.mcp.transport import HttpTransport, StdioTransport, StreamableHttpTransport
+from echo_agent.mcp.transport import StdioTransport, StreamableHttpTransport
 
 
 _RECONNECT_DELAYS = (1, 2, 4, 8, 16, 30, 60)

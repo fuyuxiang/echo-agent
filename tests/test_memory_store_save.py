@@ -8,10 +8,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
-import pytest_asyncio
 
 from echo_agent.memory.store import MemoryStore
 from echo_agent.memory.types import MemoryEntry, MemoryTier, MemoryType

@@ -2,7 +2,6 @@
 
 import time
 
-import pytest
 
 from echo_agent.agent.tools.circuit_breaker import CircuitState, ToolCircuitBreaker
 

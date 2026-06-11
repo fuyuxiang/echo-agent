@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from echo_agent.agent.executors.base import ExecRequest
 from echo_agent.agent.executors.remote import RemoteExecutor

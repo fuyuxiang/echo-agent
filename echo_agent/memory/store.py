@@ -14,6 +14,7 @@ using built-in safety properties:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -106,6 +107,15 @@ def _scan_memory_content(content: str) -> str | None:
     return None
 
 
+def scan_text_for_threats(content: str) -> str | None:
+    """Public entry point for the prompt-injection/exfiltration scan.
+
+    Used by other subsystems whose output is injected into prompts (e.g. the
+    evolution gate vetting candidate skill content) so they get the same
+    protections as memory writes."""
+    return _scan_memory_content(content)
+
+
 def _atomic_write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=".mem_", suffix=".tmp")
@@ -194,18 +204,38 @@ class MemoryStore:
         batch = list(self._pending_embeds)
         self._pending_embeds.clear()
         count = 0
+        assigned: dict[MemoryType, dict[str, str]] = {}
         for entry_id, text in batch:
-            if entry_id not in self._entries:
+            entry = self._entries.get(entry_id)
+            if entry is None:
                 continue
             try:
                 embedding = await self._embed_fn(text)
                 if embedding:
                     vec_id = await self._vector_index.add(entry_id, embedding)
                     if vec_id:
-                        self._entries[entry_id].embedding_id = vec_id
+                        entry.embedding_id = vec_id
+                        assigned.setdefault(entry.type, {})[entry_id] = vec_id
                         count += 1
             except Exception as e:
                 logger.debug("Embedding generation failed for {}: {}", entry_id, e)
+        # Persist embedding_id assignments — without this, vector cleanup on
+        # delete/forget has nothing to key on and the index grows forever.
+        for mem_type, ids in assigned.items():
+            try:
+                with self._file_lock(self._path_for(mem_type)):
+                    self._reload_type(mem_type)
+                    changed = False
+                    for entry_id, vec_id in ids.items():
+                        entry = self._entries.get(entry_id)
+                        if entry is not None and entry.embedding_id != vec_id:
+                            entry.embedding_id = vec_id
+                            self._dirty_ids.add(entry_id)
+                            changed = True
+                    if changed:
+                        self._save_type(mem_type)
+            except Exception as e:
+                logger.warning("Failed to persist embedding ids for {}: {}", mem_type, e)
         if count:
             logger.info("Generated {} embeddings", count)
         return count
@@ -311,7 +341,24 @@ class MemoryStore:
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:
-            logger.warning("Failed to load memory from {}: {}", path, exc)
+            # Quarantine instead of returning [] over a live file: the next
+            # save would otherwise overwrite the corrupt-but-maybe-recoverable
+            # bytes with only the newest entry, silently wiping all memories.
+            quarantine = path.with_name(
+                f"{path.name}.corrupt-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            )
+            try:
+                os.replace(path, quarantine)
+                logger.error(
+                    "Memory file {} is corrupt and was quarantined to {} — "
+                    "recover it manually if needed: {}",
+                    path, quarantine.name, exc,
+                )
+            except OSError as move_exc:
+                logger.error(
+                    "Memory file {} is corrupt and could not be quarantined ({}): {}",
+                    path, move_exc, exc,
+                )
             return []
 
         entries: list[MemoryEntry] = []
@@ -330,18 +377,25 @@ class MemoryStore:
         return entries
 
     def _reload_type(self, mem_type: MemoryType) -> None:
-        for entry_id in [entry.id for entry in self._typed_entries(mem_type)]:
+        previous = {entry.id: entry for entry in self._typed_entries(mem_type)}
+        for entry_id in list(previous):
             old_entry = self._entries.pop(entry_id, None)
             if old_entry:
                 self._unindex_entry(old_entry)
         for entry in self._load_type_from_disk(mem_type):
+            prev = previous.get(entry.id)
+            # Carry over unsaved spaced-repetition reinforcement (touch()
+            # marks entries dirty but searches don't save) — otherwise every
+            # reload before a save discards access_count/last_accessed, the
+            # inputs to the decay half-life.
+            if prev is not None and prev.id in self._dirty_ids and prev.access_count > entry.access_count:
+                entry.access_count = prev.access_count
+                entry.last_accessed = prev.last_accessed or entry.last_accessed
             self._entries[entry.id] = entry
             self._index_entry(entry)
 
     def _save_type(self, mem_type: MemoryType) -> None:
         """将指定类型的记忆条目原子写入磁盘。"""
-        import asyncio
-
         entries = self._typed_entries(mem_type)
         entries.sort(key=lambda entry: (entry.created_at or "", entry.updated_at or "", entry.id))
         payload = [entry.to_dict() for entry in entries]
@@ -384,7 +438,7 @@ class MemoryStore:
                 except Exception as e:
                     logger.warning("Failed to sync memory {} to storage: {}", entry.id, e)
                     self._failed_sync.add(entry.id)
-            self._dirty_ids -= {e.id for e in entries}
+        self._dirty_ids -= {e.id for e in entries}
 
     def _on_storage_sync_done(self, task: asyncio.Task, entry_id: str) -> None:
         self._pending_storage_tasks.discard(task)
@@ -559,6 +613,93 @@ class MemoryStore:
                 return False
             self._entries.pop(entry_id, None)
             self._unindex_entry(entry)
+            self._save_type(entry.type)
+        # The JSON file is authoritative; also clean the SQLite mirror and the
+        # vector index so neither accumulates rows for entries that no longer
+        # exist (best-effort, outside the file lock).
+        self._cleanup_deleted(entry)
+        return True
+
+    def _cleanup_deleted(self, entry: MemoryEntry) -> None:
+        async def _cleanup() -> None:
+            if self._storage:
+                try:
+                    await self._storage.delete_memory(entry.id)
+                except Exception as e:
+                    logger.debug("Mirror cleanup failed for {}: {}", entry.id, e)
+            if self._vector_index and entry.embedding_id:
+                try:
+                    await self._vector_index.remove(entry.embedding_id)
+                except Exception as e:
+                    logger.debug("Vector cleanup failed for {}: {}", entry.id, e)
+
+        if not self._storage and not (self._vector_index and entry.embedding_id):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None:
+            task = asyncio.ensure_future(_cleanup())
+            self._pending_storage_tasks.add(task)
+            task.add_done_callback(self._pending_storage_tasks.discard)
+        else:
+            new_loop = asyncio.new_event_loop()
+            try:
+                new_loop.run_until_complete(_cleanup())
+            finally:
+                new_loop.close()
+
+    def set_tier(self, entry_id: str, tier: MemoryTier) -> bool:
+        """Persist a tier change (e.g. archival) to the authoritative JSON store."""
+        entry = self._entries.get(entry_id)
+        if not entry:
+            return False
+        path = self._path_for(entry.type)
+        with self._file_lock(path):
+            self._reload_type(entry.type)
+            entry = self._entries.get(entry_id)
+            if not entry:
+                return False
+            if entry.tier == tier:
+                return True
+            entry.tier = tier
+            entry.updated_at = datetime.now().isoformat()
+            self._dirty_ids.add(entry_id)
+            self._save_type(entry.type)
+            return True
+
+    def mark_superseded(self, entry_id: str, superseded_by: str) -> bool:
+        """Persist a supersession marker to the authoritative JSON store, so
+        retrieval's ``is_superseded`` filter actually takes effect."""
+        entry = self._entries.get(entry_id)
+        if not entry:
+            return False
+        path = self._path_for(entry.type)
+        with self._file_lock(path):
+            self._reload_type(entry.type)
+            entry = self._entries.get(entry_id)
+            if not entry:
+                return False
+            entry.superseded_by = superseded_by
+            entry.updated_at = datetime.now().isoformat()
+            self._dirty_ids.add(entry_id)
+            self._save_type(entry.type)
+            return True
+
+    def set_version(self, entry_id: str, version: int) -> bool:
+        entry = self._entries.get(entry_id)
+        if not entry:
+            return False
+        path = self._path_for(entry.type)
+        with self._file_lock(path):
+            self._reload_type(entry.type)
+            entry = self._entries.get(entry_id)
+            if not entry:
+                return False
+            entry.version = version
+            entry.updated_at = datetime.now().isoformat()
+            self._dirty_ids.add(entry_id)
             self._save_type(entry.type)
             return True
 
@@ -755,9 +896,25 @@ class MemoryStore:
         with self._file_lock(self._long_term_file):
             _atomic_write_text(self._long_term_file, normalized)
 
+    _MAX_HISTORY_BYTES = 1_000_000
+
     def append_history(self, entry: str) -> None:
         with self._file_lock(self._history_file):
             self._history_file.parent.mkdir(parents=True, exist_ok=True)
+            # Rotate instead of growing forever — HISTORY.md is append-only
+            # and would otherwise be an unbounded file.
+            try:
+                if (
+                    self._history_file.exists()
+                    and self._history_file.stat().st_size > self._MAX_HISTORY_BYTES
+                ):
+                    rotated = self._history_file.with_name(
+                        f"HISTORY-{datetime.now().strftime('%Y%m%d%H%M%S')}.md"
+                    )
+                    os.replace(self._history_file, rotated)
+                    logger.info("Rotated history file to {}", rotated.name)
+            except OSError as e:
+                logger.warning("History rotation failed: {}", e)
             with open(self._history_file, "a", encoding="utf-8") as handle:
                 handle.write(entry.rstrip() + "\n\n")
 

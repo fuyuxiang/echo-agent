@@ -236,6 +236,10 @@ class WebToolConfig(_Base):
     search_api_key: str = ""
     search_provider: Literal["brave", "tavily", "serpapi", "searxng"] = "brave"
     search_api_base: str = ""
+    # SSRF guard: block web_fetch requests to loopback/private/link-local
+    # addresses (cloud metadata endpoints, internal services). Opt out only
+    # when the agent legitimately needs to reach internal hosts.
+    allow_private_addresses: bool = False
 
 
 class ImageGenConfig(_Base):

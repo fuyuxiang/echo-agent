@@ -155,7 +155,6 @@ class BedrockProvider(LLMProvider):
             kwargs["aws_access_key_id"] = self._access_key
             kwargs["aws_secret_access_key"] = self._secret_key
         if self._profile:
-            import botocore.session
             session = boto3.Session(profile_name=self._profile)
             return session.client("bedrock-runtime", **{k: v for k, v in kwargs.items() if k != "aws_access_key_id" and k != "aws_secret_access_key"})
         return boto3.client("bedrock-runtime", **kwargs)

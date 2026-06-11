@@ -7,6 +7,7 @@ supporting belief revision and history queries.
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
@@ -57,9 +58,13 @@ class ContradictionDetector:
         self,
         storage: StorageBackend,
         vector_index: VectorIndex | None = None,
+        store: Any = None,
     ) -> None:
         self._storage = storage
         self._vector_index = vector_index
+        # Authoritative MemoryStore — supersession markers must land there,
+        # because retrieval filters on the JSON-loaded entries, not the mirror.
+        self._store = store
 
     # ------------------------------------------------------------------
     # Public API
@@ -174,10 +179,15 @@ class ContradictionDetector:
                 loser_id = (
                     row["memory_id_b"] if winner_id == row["memory_id_a"] else row["memory_id_a"]
                 )
-                await self._storage.execute_sql(
-                    "UPDATE memories SET superseded_by = ? WHERE id = ?",
-                    (winner_id, loser_id),
-                )
+                if self._store is not None:
+                    self._store.mark_superseded(loser_id, winner_id)
+                else:
+                    # Mirror-only fallback — has no effect on retrieval, which
+                    # reads the JSON store; kept for storage-only callers.
+                    await self._storage.execute_sql(
+                        "UPDATE memories SET superseded_by = ? WHERE id = ?",
+                        (winner_id, loser_id),
+                    )
 
     async def get_unresolved(self, limit: int = 10) -> list[Contradiction]:
         """Get unresolved contradictions."""
@@ -207,8 +217,8 @@ class ContradictionDetector:
         """Mark old_entry as superseded by new_entry in the version lattice."""
         old_entry.superseded_by = new_entry.id
         new_entry.version = old_entry.version + 1
-        await store.update(old_entry)
-        await store.update(new_entry)
+        store.mark_superseded(old_entry.id, new_entry.id)
+        store.set_version(new_entry.id, new_entry.version)
         logger.info(
             "Memory {} superseded by {} (v{})",
             old_entry.id,
@@ -219,6 +229,16 @@ class ContradictionDetector:
     @staticmethod
     def _key_prefix(key: str) -> str:
         return key.split(":")[0] if ":" in key else key
+
+    @staticmethod
+    def _content_overlap(a: str, b: str) -> bool:
+        """Cheap lexical relatedness check: shared word token or containment."""
+        tokens_a = {t for t in re.findall(r"\w+", a.lower()) if len(t) > 1}
+        tokens_b = {t for t in re.findall(r"\w+", b.lower()) if len(t) > 1}
+        if tokens_a & tokens_b:
+            return True
+        a_s, b_s = a.strip().lower(), b.strip().lower()
+        return bool(a_s and b_s and (a_s in b_s or b_s in a_s))
 
     def check_lightweight_sync(
         self,
@@ -281,6 +301,12 @@ class ContradictionDetector:
         if a_prefix != b_prefix:
             return None
         if a.content.strip() == b.content.strip():
+            return None
+        # Prefix-only matches (different full keys) additionally require some
+        # lexical relatedness — otherwise every pair in a namespace flags each
+        # other (e.g. pref:lang="Python" vs pref:editor="vim"), and over time
+        # the whole namespace drowns in suspected_conflict noise.
+        if a.key != b.key and not self._content_overlap(a.content, b.content):
             return None
 
         a_time = a.updated_at or a.created_at
