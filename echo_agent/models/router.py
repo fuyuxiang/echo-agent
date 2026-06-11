@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import tempfile
@@ -34,6 +35,7 @@ class HealthStatus(str, Enum):
     HEALTHY = "healthy"
     DEGRADED = "degraded"
     COOLDOWN = "cooldown"
+    HALF_OPEN = "half_open"
     DISABLED = "disabled"
 
 
@@ -43,6 +45,11 @@ class ProviderHealth:
     failure_count: int = 0
     last_error: str = ""
     cooldown_until: datetime | None = None
+    # Probe tickets handed out while HALF_OPEN — bounds the thundering herd
+    # on a recovering provider to a couple of requests instead of all traffic.
+    half_open_allowance: int = 0
+
+    HALF_OPEN_MAX_PROBES = 2
 
     @property
     def is_available(self) -> bool:
@@ -50,23 +57,32 @@ class ProviderHealth:
             return False
         if self.status == HealthStatus.COOLDOWN and self.cooldown_until:
             return datetime.now(timezone.utc) >= self.cooldown_until
+        if self.status == HealthStatus.HALF_OPEN:
+            return self.half_open_allowance > 0
         return True
 
     def refresh_if_recovered(self) -> bool:
-        """If the cooldown window has passed, transition back to HEALTHY.
+        """If the cooldown window has passed, transition to HALF_OPEN.
 
-        Returns True iff state was mutated. Callers that read availability and
-        also need the side-effect (e.g. ModelRouter._provider_available) should
-        call this explicitly so the transition is auditable.
+        The provider then serves a bounded number of probe requests; the first
+        ``mark_success`` promotes it to HEALTHY, the first ``mark_failure``
+        sends it straight back to COOLDOWN. Returns True iff state was mutated.
         """
         if (
             self.status == HealthStatus.COOLDOWN
             and self.cooldown_until
             and datetime.now(timezone.utc) >= self.cooldown_until
         ):
-            self.status = HealthStatus.HEALTHY
-            self.failure_count = 0
+            self.status = HealthStatus.HALF_OPEN
+            self.half_open_allowance = self.HALF_OPEN_MAX_PROBES
             self.cooldown_until = None
+            return True
+        return False
+
+    def take_probe_ticket(self) -> bool:
+        """Consume one HALF_OPEN probe slot. Returns False when exhausted."""
+        if self.half_open_allowance > 0:
+            self.half_open_allowance -= 1
             return True
         return False
 
@@ -75,6 +91,7 @@ class ProviderHealth:
         scores = {
             HealthStatus.HEALTHY: 1.0,
             HealthStatus.DEGRADED: 0.5,
+            HealthStatus.HALF_OPEN: 0.25,
             HealthStatus.COOLDOWN: 0.0,
             HealthStatus.DISABLED: -1.0,
         }
@@ -180,14 +197,20 @@ class ModelRouter:
             self._health[provider_name] = health
         health.failure_count += 1
         health.last_error = error
-        if health.failure_count >= 3:
+        if health.status == HealthStatus.HALF_OPEN:
+            # A failed probe sends the provider straight back to cooldown.
+            health.status = HealthStatus.COOLDOWN
+            health.cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=self._cooldown_seconds)
+            health.half_open_allowance = 0
+            logger.warning("Provider {} probe failed -> cooldown", provider_name)
+        elif health.failure_count >= 3:
             health.status = HealthStatus.COOLDOWN
             health.cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=self._cooldown_seconds)
             logger.warning("Provider {} -> cooldown (failures={})", provider_name, health.failure_count)
         else:
             health.status = HealthStatus.DEGRADED
             logger.info("Provider {} -> degraded (failures={})", provider_name, health.failure_count)
-        self._save_health()
+        self._schedule_save_health()
 
     def mark_success(self, provider_name: str) -> None:
         health = self._health.get(provider_name)
@@ -195,8 +218,9 @@ class ModelRouter:
             health.status = HealthStatus.HEALTHY
             health.failure_count = 0
             health.cooldown_until = None
+            health.half_open_allowance = 0
             logger.info("Provider {} -> healthy", provider_name)
-            self._save_health()
+            self._schedule_save_health()
 
     def _build_decision(self, route: ModelRouteConfig) -> RouteDecision:
         return RouteDecision(
@@ -255,7 +279,11 @@ class ModelRouter:
             return provider_name in self._providers
         # Promote out of cooldown when the window has passed before answering.
         if health.refresh_if_recovered():
-            self._save_health()
+            self._schedule_save_health()
+        if health.status == HealthStatus.HALF_OPEN:
+            # Hand out a bounded number of probe tickets instead of opening
+            # the floodgates on a provider that may still be down.
+            return health.take_probe_ticket()
         return health.is_available
 
     def _provider_config_supports_model(self, provider_name: str, model: str) -> bool:
@@ -269,18 +297,40 @@ class ModelRouter:
             return model in pc.models
         return False
 
+    def _schedule_save_health(self) -> None:
+        """Persist health state without blocking the event loop.
+
+        The snapshot is built synchronously (health is only mutated on the
+        loop); only the fsync'd file write moves to the executor.
+        """
+        if not self._health_file:
+            return
+        data = self._health_snapshot()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._write_health(data)
+            return
+        loop.run_in_executor(None, self._write_health, data)
+
+    def _health_snapshot(self) -> dict[str, Any]:
+        data: dict[str, Any] = {}
+        for name, h in self._health.items():
+            data[name] = {
+                "status": h.status.value,
+                "failure_count": h.failure_count,
+                "last_error": h.last_error,
+                "cooldown_until": h.cooldown_until.isoformat() if h.cooldown_until else None,
+            }
+        return data
+
     def _save_health(self) -> None:
         if not self._health_file:
             return
+        self._write_health(self._health_snapshot())
+
+    def _write_health(self, data: dict[str, Any]) -> None:
         with self._health_save_lock:
-            data = {}
-            for name, h in self._health.items():
-                data[name] = {
-                    "status": h.status.value,
-                    "failure_count": h.failure_count,
-                    "last_error": h.last_error,
-                    "cooldown_until": h.cooldown_until.isoformat() if h.cooldown_until else None,
-                }
             try:
                 self._health_file.parent.mkdir(parents=True, exist_ok=True)
                 fd, tmp = tempfile.mkstemp(dir=str(self._health_file.parent), suffix=".tmp")

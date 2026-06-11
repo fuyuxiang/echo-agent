@@ -80,7 +80,14 @@ class ProcessTool(Tool):
             "stderr_buf": b"",
         }
 
-        asyncio.create_task(self._collect_output(pid))
+        # Keep a strong reference in the registry — a bare create_task result
+        # can be garbage-collected mid-execution.
+        collector = asyncio.create_task(self._collect_output(pid))
+        collector.add_done_callback(
+            lambda t: not t.cancelled() and t.exception()
+            and logger.warning("Output collector for {} failed: {}", pid, t.exception())
+        )
+        _PROCESSES[pid]["collector"] = collector
         return ToolResult(output=f"Started process {pid}: {cmd}", metadata={"process_id": pid})
 
     def _list(self) -> ToolResult:
@@ -119,6 +126,9 @@ class ProcessTool(Tool):
             except asyncio.TimeoutError:
                 proc.kill()
                 await proc.wait()
+        collector = info.get("collector")
+        if collector is not None:
+            collector.cancel()
         del _PROCESSES[pid]
         return ToolResult(output=f"Stopped {pid}")
 

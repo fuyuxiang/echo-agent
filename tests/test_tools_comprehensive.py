@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from dataclasses import FrozenInstanceError
 from pathlib import Path
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -15,7 +12,6 @@ from echo_agent.agent.tools.base import (
     Tool,
     ToolExecutionContext,
     ToolResult,
-    _validate_json_schema,
     build_idempotency_key,
 )
 from echo_agent.agent.tools.registry import ToolRegistry

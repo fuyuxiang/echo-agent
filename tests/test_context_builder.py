@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
-from typing import Any
-from unittest.mock import MagicMock, PropertyMock
+from unittest.mock import MagicMock
 
-import pytest
 
 from echo_agent.agent.context import (
     ContextBuilder,

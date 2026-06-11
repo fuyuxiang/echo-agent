@@ -13,7 +13,7 @@ from echo_agent.agent.pipeline.types import InferenceResult, PipelineContext
 from echo_agent.agent.tools.base import ToolExecutionContext, build_idempotency_key
 from echo_agent.agent.tools.circuit_breaker import ToolCircuitBreaker
 from echo_agent.bus.events import OutboundEvent
-from echo_agent.models.provider import LLMResponse, ToolCallRequest
+from echo_agent.models.provider import LLMResponse
 from echo_agent.models.router import RouteDecision
 
 if TYPE_CHECKING:
@@ -66,6 +66,10 @@ class InferenceStage:
         self._hook_registry: Any = None
         self._nudge_interval: int = config.skills.creation_nudge_interval if hasattr(config, 'skills') and hasattr(config.skills, 'creation_nudge_interval') else 0
         self._memory_nudge_interval: int = config.memory.memory_nudge_interval if hasattr(config.memory, 'memory_nudge_interval') else 0
+
+    def set_hook_registry(self, registry: Any) -> None:
+        """Inject the plugin hook registry (attached after bootstrap)."""
+        self._hook_registry = registry
 
     async def run(self, ctx: PipelineContext) -> InferenceResult:
         """Execute the inference loop, returning the final result."""

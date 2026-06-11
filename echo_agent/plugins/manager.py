@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
@@ -10,7 +9,7 @@ from typing import Any, TYPE_CHECKING
 from loguru import logger
 
 from echo_agent.plugins.context import PluginContext
-from echo_agent.plugins.errors import PluginActivationError, PluginLoadError
+from echo_agent.plugins.errors import PluginLoadError
 from echo_agent.plugins.hooks import HookRegistry
 from echo_agent.plugins.loader import (
     discover_all,

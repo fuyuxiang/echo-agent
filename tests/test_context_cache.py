@@ -1,6 +1,5 @@
 """Tests for context cache and memory content sanitization."""
 
-import pytest
 
 from echo_agent.agent.context import _sanitize_memory_content, build_memory_context
 from echo_agent.agent.context_cache import ContextCache

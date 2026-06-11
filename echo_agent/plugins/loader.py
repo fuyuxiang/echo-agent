@@ -12,11 +12,10 @@ from typing import Any
 
 from loguru import logger
 
-from echo_agent.plugins.errors import PluginLoadError, PluginManifestError
+from echo_agent.plugins.errors import PluginLoadError
 from echo_agent.plugins.manifest import (
     PluginManifest,
     PluginRecord,
-    check_required_env,
     parse_manifest,
 )
 

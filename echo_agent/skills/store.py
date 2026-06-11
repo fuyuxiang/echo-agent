@@ -7,6 +7,7 @@ Skills are stored as SKILL.md files with YAML frontmatter in a directory hierarc
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -95,7 +96,42 @@ class SkillStore:
         self._user_dir.mkdir(parents=True, exist_ok=True)
         self._builtin_dir = builtin_dir
         self._external_dirs = external_dirs or []
-        self._disabled = set(disabled or [])
+        # Disables promoted by the evolution gate are persisted here so they
+        # survive restarts — the in-memory set alone evaporates with the process.
+        self._disabled_file = self._user_dir / ".evolution_disabled.json"
+        self._persisted_disabled = self._load_persisted_disabled()
+        self._disabled = set(disabled or []) | self._persisted_disabled
+
+    def _load_persisted_disabled(self) -> set[str]:
+        try:
+            if self._disabled_file.exists():
+                data = json.loads(self._disabled_file.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    return {str(item) for item in data}
+        except Exception as e:
+            logger.warning("Failed to load persisted skill disables: {}", e)
+        return set()
+
+    def _save_persisted_disabled(self) -> None:
+        try:
+            self._disabled_file.write_text(
+                json.dumps(sorted(self._persisted_disabled), indent=2),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            logger.warning("Failed to persist skill disables: {}", e)
+
+    def persist_disable(self, name: str) -> None:
+        """Disable a skill durably (used by evolution promote)."""
+        self._disabled.add(name)
+        self._persisted_disabled.add(name)
+        self._save_persisted_disabled()
+
+    def persist_enable(self, name: str) -> None:
+        """Undo a durable disable (used by evolution rollback)."""
+        self._disabled.discard(name)
+        self._persisted_disabled.discard(name)
+        self._save_persisted_disabled()
 
     @property
     def user_dir(self) -> Path:

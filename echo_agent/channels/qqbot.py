@@ -33,7 +33,6 @@ from echo_agent.channels.qqbot_media import (
     read_local_file_as_base64,
     send_media_message,
     upload_media,
-    _next_msg_seq,
 )
 from echo_agent.config.schema import QQBotChannelConfig
 from echo_agent.utils.text import split_message
@@ -112,6 +111,19 @@ class QQBotChannel(BaseChannel):
             UploadCache(max_size=config.media_upload_cache_size)
             if self._media_enabled else None
         )
+        # Strong refs for per-message tasks: a bare create_task result can be
+        # garbage-collected mid-execution and is invisible to stop().
+        self._msg_tasks: set[asyncio.Task] = set()
+
+    def _spawn_msg_task(self, coro: Any) -> None:
+        task = asyncio.create_task(coro)
+        self._msg_tasks.add(task)
+        task.add_done_callback(self._on_msg_task_done)
+
+    def _on_msg_task_done(self, task: asyncio.Task) -> None:
+        self._msg_tasks.discard(task)
+        if not task.cancelled() and task.exception():
+            logger.warning("QQBot message task failed: {}", task.exception())
 
     @property
     def _api_base(self) -> str:
@@ -137,6 +149,12 @@ class QQBotChannel(BaseChannel):
                 await self._ws_task
             except asyncio.CancelledError:
                 pass
+        if self._msg_tasks:
+            tasks = list(self._msg_tasks)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            self._msg_tasks.clear()
         if self._ws and not self._ws.closed:
             await self._ws.close()
         if self._session:
@@ -488,11 +506,11 @@ class QQBotChannel(BaseChannel):
                 self._heartbeat_ack_received = True
                 logger.info("QQBot session resumed")
             elif t in ("AT_MESSAGE_CREATE", "MESSAGE_CREATE", "GUILD_AT_MESSAGE_CREATE"):
-                asyncio.create_task(self._on_channel_message(d))
+                self._spawn_msg_task(self._on_channel_message(d))
             elif t == "GROUP_AT_MESSAGE_CREATE":
-                asyncio.create_task(self._on_group_message(d))
+                self._spawn_msg_task(self._on_group_message(d))
             elif t in ("C2C_MESSAGE_CREATE", "DIRECT_MESSAGE_CREATE"):
-                asyncio.create_task(self._on_c2c_message(d))
+                self._spawn_msg_task(self._on_c2c_message(d))
         elif op == 7:  # RECONNECT
             logger.info("QQBot: server requested reconnect")
             if self._ws and not self._ws.closed:

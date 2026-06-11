@@ -189,15 +189,29 @@ class SemanticManager:
 
 
 class ArchivalManager:
-    """Compressed long-term storage for old/low-importance memories."""
+    """Compressed long-term storage for old/low-importance memories.
 
-    def __init__(self, storage: StorageBackend):
+    When constructed with the authoritative ``MemoryStore``, tier changes and
+    deletions go through it (and thus persist to the JSON files the store
+    actually loads from). The raw-SQL path is kept only as a fallback for
+    callers that have no store — writing the SQLite mirror alone has no effect
+    on what the agent remembers, because the store never reads it back.
+    """
+
+    def __init__(self, storage: StorageBackend, store: Any = None):
         self._storage = storage
+        self._store = store
 
     async def archive(self, entries: list[MemoryEntry]) -> int:
         """Move entries to archival tier. Returns count archived."""
         count = 0
         for entry in entries:
+            if self._store is not None:
+                from echo_agent.memory.types import MemoryTier as _Tier
+                if self._store.set_tier(entry.id, _Tier.ARCHIVAL):
+                    entry.tier = _Tier.ARCHIVAL
+                    count += 1
+                continue
             entry.tier = MemoryTier.ARCHIVAL
             entry.updated_at = datetime.now().isoformat()
             await self._storage.execute_sql(
@@ -230,6 +244,11 @@ class ArchivalManager:
     async def delete_forgotten(self, entries: list[MemoryEntry]) -> int:
         count = 0
         for entry in entries:
+            if self._store is not None:
+                # store.delete persists to JSON and cleans mirror + vectors.
+                if self._store.delete(entry.id):
+                    count += 1
+                continue
             await self._storage.execute_sql(
                 "DELETE FROM memories WHERE id = ?", (entry.id,),
             )

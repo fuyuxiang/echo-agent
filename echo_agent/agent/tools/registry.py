@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import json
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -14,6 +16,7 @@ from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
 
 _MAX_REPLAY_CACHE = 500
 _MAX_EXECUTION_LOG = 1000
+_MAX_AUDIT_FILE_BYTES = 5_000_000
 
 _SENSITIVE_KEYS = frozenset({"key", "token", "secret", "password", "api_key", "credential", "auth"})
 
@@ -40,11 +43,35 @@ class ToolRegistry:
         "code": "execute_code",
     }
 
-    def __init__(self):
+    def __init__(self, audit_log_path: Path | None = None):
         self._tools: dict[str, Tool] = {}
         self._replay_cache: collections.OrderedDict[str, dict[str, Any]] = collections.OrderedDict()
         self._execution_log: collections.deque[dict[str, Any]] = collections.deque(maxlen=_MAX_EXECUTION_LOG)
         self._lock = asyncio.Lock()
+        # Durable JSONL audit trail — the in-memory deque alone evaporates on
+        # restart, which defeats the point of an audit log.
+        self._audit_log_path = audit_log_path
+
+    def set_audit_log_path(self, path: Path) -> None:
+        self._audit_log_path = path
+
+    def _append_audit(self, entry: dict[str, Any]) -> None:
+        if self._audit_log_path is None:
+            return
+        try:
+            self._audit_log_path.parent.mkdir(parents=True, exist_ok=True)
+            if (
+                self._audit_log_path.exists()
+                and self._audit_log_path.stat().st_size > _MAX_AUDIT_FILE_BYTES
+            ):
+                rotated = self._audit_log_path.with_name(
+                    f"{self._audit_log_path.stem}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}.jsonl"
+                )
+                self._audit_log_path.replace(rotated)
+            with self._audit_log_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+        except Exception as e:
+            logger.debug("Failed to append tool audit entry: {}", e)
 
     def _resolve(self, name: str) -> str:
         return self._ALIASES.get(name, name)
@@ -151,6 +178,7 @@ class ToolRegistry:
                 log_entry["success"] = result.success
                 log_entry["attempt"] = attempt + 1
                 self._execution_log.append(log_entry)
+                self._append_audit(log_entry)
 
                 if result.success and tool.execution_mode(params) == "side_effect" and exec_ctx.idempotency_key:
                     effective_key = f"{replay_scope}:{exec_ctx.idempotency_key}" if replay_scope else exec_ctx.idempotency_key
@@ -176,6 +204,7 @@ class ToolRegistry:
         log_entry["error"] = last_result.error
         log_entry["attempt"] = attempt
         self._execution_log.append(log_entry)
+        self._append_audit(log_entry)
         return last_result
 
     def get_execution_log(self, limit: int = 100) -> list[dict[str, Any]]:

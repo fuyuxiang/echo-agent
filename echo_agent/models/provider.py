@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import re
 from collections.abc import Awaitable, Callable
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -79,13 +80,20 @@ class LLMProvider(ABC):
     """Abstract base for LLM providers (OpenAI, Anthropic, etc.)."""
 
     _RETRY_DELAYS = (1, 2, 4)
-    _TRANSIENT_MARKERS = ("429", "rate limit", "500", "502", "503", "504", "overloaded", "timeout")
-    _PERMANENT_MARKERS = ("401", "403", "authentication", "unauthorized", "forbidden", "invalid_api_key", "invalid api key")
+    # Status codes are matched with word boundaries so a "429" inside a URL or
+    # request id does not misclassify the error.
+    _TRANSIENT_CODE_RE = re.compile(r"\b(429|500|502|503|504)\b")
+    _TRANSIENT_WORDS = ("rate limit", "overloaded", "timeout", "timed out", "connection reset", "connection error")
+    _PERMANENT_CODE_RE = re.compile(r"\b(400|401|403|404|422)\b")
+    _PERMANENT_WORDS = ("authentication", "unauthorized", "forbidden", "invalid_api_key", "invalid api key")
 
     def __init__(self, api_key: str = "", api_base: str = ""):
         self.api_key = api_key
         self.api_base = api_base
         self.generation = GenerationParams()
+        # Hard cap per attempt — a stalled request must never hold the
+        # per-session lock forever. Wired from ProviderConfig.timeout_seconds.
+        self.request_timeout: float = 120.0
 
     @abstractmethod
     async def chat(
@@ -122,31 +130,74 @@ class LLMProvider(ABC):
         return response
 
     def _is_transient(self, error_text: str) -> bool:
-        lower = error_text.lower()
-        return any(m in lower for m in self._TRANSIENT_MARKERS)
+        return self._classify_error_text(error_text) == "transient"
 
     def _is_permanent(self, error_text: str) -> bool:
+        return self._classify_error_text(error_text) == "permanent"
+
+    def _classify_error_text(self, error_text: str) -> str:
+        """Classify an error message as 'transient', 'permanent' or 'unknown'."""
         lower = error_text.lower()
-        return any(m in lower for m in self._PERMANENT_MARKERS)
+        if self._PERMANENT_CODE_RE.search(lower) or any(m in lower for m in self._PERMANENT_WORDS):
+            return "permanent"
+        if self._TRANSIENT_CODE_RE.search(lower) or any(m in lower for m in self._TRANSIENT_WORDS):
+            return "transient"
+        return "unknown"
+
+    @staticmethod
+    def _status_code_of(e: Exception) -> int | None:
+        """Extract an HTTP status code from SDK exceptions when available."""
+        code = getattr(e, "status_code", None)
+        if isinstance(code, int):
+            return code
+        resp = getattr(e, "response", None)
+        for attr in ("status_code", "status"):
+            code = getattr(resp, attr, None)
+            if isinstance(code, int):
+                return code
+        return None
+
+    def _classify_exception(self, e: Exception) -> str:
+        """Classify a raised exception — prefer typed status codes over text."""
+        code = self._status_code_of(e)
+        if code is not None:
+            if code == 429 or code >= 500:
+                return "transient"
+            if 400 <= code < 500:
+                return "permanent"
+        if isinstance(e, (TimeoutError, ConnectionError, asyncio.TimeoutError)):
+            return "transient"
+        return self._classify_error_text(str(e))
 
     @property
     def is_stub(self) -> bool:
         return False
 
+    @property
+    def _stream_timeout(self) -> float | None:
+        # Streams legitimately run longer than a unary call; still bound them
+        # so a stalled stream cannot brick the session.
+        return self.request_timeout * 5 if self.request_timeout else None
+
     async def chat_with_retry(self, **kwargs: Any) -> LLMResponse:
+        timeout = self.request_timeout or None
         for attempt, base_delay in enumerate(self._RETRY_DELAYS):
             try:
-                response = await self.chat(**kwargs)
+                response = await asyncio.wait_for(self.chat(**kwargs), timeout=timeout)
             except asyncio.CancelledError:
                 raise
+            except (TimeoutError, asyncio.TimeoutError):
+                response = LLMResponse(content=f"Error: request timed out after {timeout}s", finish_reason="error")
+                classification = "transient"
             except Exception as e:
                 response = LLMResponse(content=f"Error: {e}", finish_reason="error")
+                classification = self._classify_exception(e)
+            else:
+                if response.finish_reason != "error":
+                    return response
+                classification = self._classify_error_text(response.content or "")
 
-            if response.finish_reason != "error":
-                return response
-            if self._is_permanent(response.content or ""):
-                return response
-            if not self._is_transient(response.content or ""):
+            if classification != "transient":
                 return response
 
             jitter = base_delay * (0.5 + random.random())
@@ -154,7 +205,9 @@ class LLMProvider(ABC):
             await asyncio.sleep(jitter)
 
         try:
-            return await self.chat(**kwargs)
+            return await asyncio.wait_for(self.chat(**kwargs), timeout=timeout)
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             return LLMResponse(content=f"Error: {e}", finish_reason="error")
 
@@ -168,39 +221,15 @@ class LLMProvider(ABC):
         **kwargs: Any,
     ) -> LLMResponse:
         emitted = False
+        timeout = self._stream_timeout
 
         async def wrapped(delta: str) -> None:
             nonlocal emitted
             emitted = True
             await _invoke_stream_callback(on_delta, delta)
 
-        for attempt, base_delay in enumerate(self._RETRY_DELAYS):
-            emitted = False
-            try:
-                response = await self.chat_stream(
-                    messages=messages,
-                    tools=tools,
-                    model=model,
-                    tool_choice=tool_choice,
-                    on_delta=wrapped,
-                    **kwargs,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                response = LLMResponse(content=f"Error: {e}", finish_reason="error")
-
-            if response.finish_reason != "error":
-                return response
-            if emitted or self._is_permanent(response.content or "") or not self._is_transient(response.content or ""):
-                return response
-
-            jitter = base_delay * (0.5 + random.random())
-            logger.warning("LLM transient stream error (attempt {}), retrying in {:.1f}s", attempt + 1, jitter)
-            await asyncio.sleep(jitter)
-
-        try:
-            return await self.chat_stream(
+        def _stream_call() -> Awaitable[LLMResponse]:
+            return self.chat_stream(
                 messages=messages,
                 tools=tools,
                 model=model,
@@ -208,5 +237,35 @@ class LLMProvider(ABC):
                 on_delta=wrapped,
                 **kwargs,
             )
+
+        for attempt, base_delay in enumerate(self._RETRY_DELAYS):
+            emitted = False
+            try:
+                response = await asyncio.wait_for(_stream_call(), timeout=timeout)
+            except asyncio.CancelledError:
+                raise
+            except (TimeoutError, asyncio.TimeoutError):
+                response = LLMResponse(content=f"Error: stream timed out after {timeout}s", finish_reason="error")
+                classification = "transient"
+            except Exception as e:
+                response = LLMResponse(content=f"Error: {e}", finish_reason="error")
+                classification = self._classify_exception(e)
+            else:
+                if response.finish_reason != "error":
+                    return response
+                classification = self._classify_error_text(response.content or "")
+
+            # Never retry after partial emission — the user already saw tokens.
+            if emitted or classification != "transient":
+                return response
+
+            jitter = base_delay * (0.5 + random.random())
+            logger.warning("LLM transient stream error (attempt {}), retrying in {:.1f}s", attempt + 1, jitter)
+            await asyncio.sleep(jitter)
+
+        try:
+            return await asyncio.wait_for(_stream_call(), timeout=timeout)
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             return LLMResponse(content=f"Error: {e}", finish_reason="error")

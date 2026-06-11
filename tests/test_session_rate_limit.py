@@ -2,7 +2,6 @@
 
 import time
 
-import pytest
 
 from echo_agent.bus.rate_limiter import SessionRateLimiter
 

@@ -398,7 +398,6 @@ class TestMCPClient:
         """Once disconnect() runs, _request must refuse to register a new
         pending future (otherwise it would hang forever waiting for a
         response that nobody's reading)."""
-        import asyncio
         from echo_agent.mcp.client import MCPClient
 
         class _DummyTransport:

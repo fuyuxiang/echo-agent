@@ -1,11 +1,9 @@
 """Tests for PluginManager — full lifecycle."""
 
 import pytest
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from echo_agent.plugins.manager import PluginManager
-from echo_agent.plugins.manifest import PluginManifest, PluginRecord
 
 
 def _make_config(*, enabled=True, allow=None, deny=None, extra_dirs=None, plugin_config=None):

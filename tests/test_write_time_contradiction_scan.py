@@ -25,9 +25,10 @@ def _add(store: MemoryStore, key: str, content: str, days_ago: int = 0) -> Memor
 class TestObserveOnlyScan:
     def test_flags_but_never_supersedes(self):
         store = _store(scan_on=True)
-        # Different full keys, same prefix → not merged by path 1, reaches the scan.
-        old = _add(store, "pref:lang", "Python", days_ago=5)
-        new = _add(store, "pref:editor", "vim", days_ago=0)
+        # Different full keys, same prefix, lexically related content →
+        # not merged by path 1, reaches the scan and gets flagged.
+        old = _add(store, "pref:lang", "prefers Python for scripting", days_ago=5)
+        new = _add(store, "pref:lang-style", "Python with type hints only", days_ago=0)
 
         old_after = store._entries[old.id]
         # Observe-only: older entry flagged, but NOT superseded.
@@ -35,10 +36,20 @@ class TestObserveOnlyScan:
         assert old_after.superseded_by == ""
         assert new.superseded_by == ""
 
-    def test_disabled_by_default_no_side_effects(self):
-        store = _store(scan_on=False)
+    def test_no_flag_when_contents_unrelated(self):
+        store = _store(scan_on=True)
+        # Same prefix but lexically unrelated contents (different facts in the
+        # same namespace) must NOT flag — this was the false-positive case.
         old = _add(store, "pref:lang", "Python", days_ago=5)
         _add(store, "pref:editor", "vim", days_ago=0)
+
+        old_after = store._entries[old.id]
+        assert store.SUSPECTED_CONFLICT_TAG not in old_after.tags
+
+    def test_disabled_by_default_no_side_effects(self):
+        store = _store(scan_on=False)
+        old = _add(store, "pref:lang", "prefers Python for scripting", days_ago=5)
+        _add(store, "pref:lang-style", "Python with type hints only", days_ago=0)
 
         old_after = store._entries[old.id]
         assert store.SUSPECTED_CONFLICT_TAG not in old_after.tags
@@ -46,9 +57,9 @@ class TestObserveOnlyScan:
 
     def test_flag_is_idempotent(self):
         store = _store(scan_on=True)
-        old = _add(store, "pref:lang", "Python", days_ago=10)
-        _add(store, "pref:editor", "vim", days_ago=5)
-        _add(store, "pref:shell", "bash", days_ago=0)
+        old = _add(store, "pref:lang", "uses Python daily", days_ago=10)
+        _add(store, "pref:lang-style", "Python with type hints", days_ago=5)
+        _add(store, "pref:lang-version", "Python 3.12 required", days_ago=0)
 
         old_after = store._entries[old.id]
         assert old_after.tags.count(store.SUSPECTED_CONFLICT_TAG) == 1

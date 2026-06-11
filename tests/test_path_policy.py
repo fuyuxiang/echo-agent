@@ -2,9 +2,7 @@
 
 import os
 from pathlib import Path
-from unittest.mock import patch
 
-import pytest
 
 from echo_agent.security.path_policy import (
     check_cwd,

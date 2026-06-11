@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 
@@ -19,6 +19,7 @@ class ToolCircuit:
     last_failure: float = 0.0
     state: CircuitState = CircuitState.CLOSED
     half_open_successes: int = 0
+    half_open_probes: int = 0
 
 
 class ToolCircuitBreaker:
@@ -49,9 +50,15 @@ class ToolCircuitBreaker:
             if time.monotonic() - circuit.last_failure >= self._recovery_seconds:
                 circuit.state = CircuitState.HALF_OPEN
                 circuit.half_open_successes = 0
+                circuit.half_open_probes = 1
                 return True
             return False
-        return True
+        # HALF_OPEN: bound concurrent probes — without this every queued call
+        # rushes the possibly-still-broken tool at once.
+        if circuit.half_open_probes < self._half_open_max:
+            circuit.half_open_probes += 1
+            return True
+        return False
 
     def record_success(self, tool_name: str) -> None:
         circuit = self._circuits.get(tool_name)
@@ -62,6 +69,7 @@ class ToolCircuitBreaker:
             if circuit.half_open_successes >= self._half_open_max:
                 circuit.state = CircuitState.CLOSED
                 circuit.failure_count = 0
+                circuit.half_open_probes = 0
         elif circuit.state == CircuitState.CLOSED:
             circuit.failure_count = 0
 
@@ -69,7 +77,11 @@ class ToolCircuitBreaker:
         circuit = self._circuits.setdefault(tool_name, ToolCircuit())
         circuit.failure_count += 1
         circuit.last_failure = time.monotonic()
-        if circuit.failure_count >= self._failure_threshold:
+        if circuit.state == CircuitState.HALF_OPEN:
+            # A failed probe reopens the circuit immediately.
+            circuit.state = CircuitState.OPEN
+            circuit.half_open_probes = 0
+        elif circuit.failure_count >= self._failure_threshold:
             circuit.state = CircuitState.OPEN
 
     def get_unavailable_tools(self) -> set[str]:

@@ -85,7 +85,7 @@ def _make_ctx(engine: MagicMock | None) -> MagicMock:
 
 def _patch_bootstrap(ctx: MagicMock):
     """Patch the lazy import done inside each CLI helper."""
-    return patch("echo_agent.__main__._bootstrap", AsyncMock(return_value=ctx))
+    return patch("echo_agent.app.bootstrap", AsyncMock(return_value=ctx))
 
 
 # ── Dispatcher (synchronous validation paths only) ──────────────────────────

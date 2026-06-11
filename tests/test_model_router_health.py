@@ -6,9 +6,8 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import pytest
 
-from echo_agent.config.schema import ModelsConfig, ModelRouteConfig, ProviderConfig
+from echo_agent.config.schema import ModelsConfig, ProviderConfig
 from echo_agent.models.provider import LLMProvider, LLMResponse
 from echo_agent.models.router import ModelRouter, HealthStatus
 
@@ -74,10 +73,36 @@ def test_cooldown_recovery_after_timeout() -> None:
     router._health["primary"].cooldown_until = datetime.now(timezone.utc) - timedelta(seconds=1)
 
     assert router._health["primary"].is_available is True
-    # Recovery is now an explicit transition rather than a side-effect of the
-    # is_available read.
+    # Recovery transitions to HALF_OPEN with a bounded probe allowance rather
+    # than flooding the possibly-still-down provider with all traffic.
     assert router._health["primary"].refresh_if_recovered() is True
-    assert router._health["primary"].status == HealthStatus.HEALTHY
+    health = router._health["primary"]
+    assert health.status == HealthStatus.HALF_OPEN
+    assert health.half_open_allowance == health.HALF_OPEN_MAX_PROBES
+
+    # Probe tickets are limited
+    assert router._provider_available("primary") is True
+    assert router._provider_available("primary") is True
+    assert router._provider_available("primary") is False
+
+    # A successful probe promotes to HEALTHY
+    router.mark_success("primary")
+    assert health.status == HealthStatus.HEALTHY
+
+
+def test_half_open_probe_failure_returns_to_cooldown() -> None:
+    router, _, _ = _make_router(cooldown_seconds=1)
+
+    for i in range(3):
+        router.mark_failure("primary", f"e{i}")
+    router._health["primary"].cooldown_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+    assert router._health["primary"].refresh_if_recovered() is True
+    assert router._health["primary"].status == HealthStatus.HALF_OPEN
+
+    # One failed probe is enough to re-enter cooldown — no need for 3 fresh failures.
+    router.mark_failure("primary", "probe failed")
+    assert router._health["primary"].status == HealthStatus.COOLDOWN
+    assert router._health["primary"].cooldown_until is not None
 
 
 def test_route_candidates_skips_cooldown_provider() -> None:

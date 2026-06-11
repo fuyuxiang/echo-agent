@@ -154,7 +154,19 @@ class BaseChannel(ABC):
             )
         except PermissionError:
             return None
-        await self.bus.publish_inbound(event)
+        accepted = await self.bus.publish_inbound(event)
+        if not accepted:
+            # Tell the user instead of silently dropping their message.
+            try:
+                await self.bus.publish_outbound(OutboundEvent.text_reply(
+                    channel=event.channel,
+                    chat_id=event.chat_id,
+                    text="系统繁忙，消息暂时无法处理，请稍后重试。",
+                    reply_to_id=event.reply_to_id,
+                ))
+            except Exception as e:
+                logger.warning("Failed to send busy notice on {}: {}", self.name, e)
+            return None
         return event
 
     @property

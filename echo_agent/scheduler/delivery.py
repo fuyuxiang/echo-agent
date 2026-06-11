@@ -58,6 +58,10 @@ def inbound_event_from_job(job: Any) -> InboundEvent:
 
 def build_scheduled_job_handler(bus: Any) -> Callable[[Any], Awaitable[None]]:
     async def _on_job(job: Any) -> None:
-        await bus.publish_inbound(inbound_event_from_job(job))
+        accepted = await bus.publish_inbound(inbound_event_from_job(job))
+        if not accepted:
+            raise RuntimeError(
+                f"Scheduled job {job.id} was rejected by the bus (queue full or shutting down)"
+            )
 
     return _on_job

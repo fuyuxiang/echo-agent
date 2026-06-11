@@ -1,12 +1,11 @@
 """Tests for PluginContext."""
 
 import pytest
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 from echo_agent.plugins.context import PluginContext
-from echo_agent.plugins.hooks import HookRegistry, HookResult
-from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.plugins.hooks import HookRegistry
+from echo_agent.agent.tools.base import Tool, ToolResult
 
 
 class _DummyTool(Tool):

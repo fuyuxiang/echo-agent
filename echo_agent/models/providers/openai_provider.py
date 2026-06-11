@@ -8,7 +8,6 @@ from typing import Any
 from loguru import logger
 
 from echo_agent.models.provider import (
-    GenerationParams,
     LLMProvider,
     LLMResponse,
     StreamDeltaCallback,

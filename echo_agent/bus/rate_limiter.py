@@ -44,6 +44,11 @@ class SessionRateLimiter:
             return True
 
         self._buckets[session_key] = (tokens, now)
+        # Keep rejected (actively flooding) sessions at the MRU end too —
+        # otherwise eviction pressure could drop their bucket and hand them
+        # a fresh full burst.
+        self._buckets.move_to_end(session_key)
+        self._evict()
         return False
 
     def _evict(self) -> None:

@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
 
-from loguru import logger
 
-from echo_agent.bus.events import OutboundEvent, ContentBlock, ContentType
+from echo_agent.bus.events import OutboundEvent
 from echo_agent.bus.queue import MessageBus
 
 _MIN_EDIT_INTERVAL = 0.5

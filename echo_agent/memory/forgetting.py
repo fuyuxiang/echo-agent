@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from loguru import logger
 
 if TYPE_CHECKING:
-    from echo_agent.memory.types import MemoryEntry, MemoryTier
+    from echo_agent.memory.types import MemoryEntry
 
 
 class ForgettingCurve:
@@ -33,6 +33,13 @@ class ForgettingCurve:
         self._archive_threshold = archive_threshold
         self._forget_threshold = forget_threshold
 
+    @staticmethod
+    def _days_since(iso_timestamp: str) -> float:
+        """Days elapsed since *iso_timestamp*, tolerant of tz-aware values."""
+        last = datetime.fromisoformat(iso_timestamp)
+        now = datetime.now(last.tzinfo) if last.tzinfo else datetime.now()
+        return (now - last).total_seconds() / 86400
+
     def effective_importance(self, entry: MemoryEntry) -> float:
         # Core philosophy: facts about the user (identity, preferences, family,
         # long-term goals) are the relationship core. They are durable by nature
@@ -45,14 +52,15 @@ class ForgettingCurve:
         if not entry.last_accessed or self._base_half_life <= 0:
             return entry.importance
         try:
-            last = datetime.fromisoformat(entry.last_accessed)
-            days = (datetime.now() - last).total_seconds() / 86400
+            days = self._days_since(entry.last_accessed)
             if days < 0:
                 return entry.importance
             half_life = self._base_half_life * (1 + math.log2(1 + entry.access_count))
             decay = math.pow(0.5, days / half_life)
             return entry.importance * decay
-        except (ValueError, OverflowError):
+        except (ValueError, OverflowError, TypeError):
+            # TypeError included: a single tz-aware timestamp mixed with naive
+            # ones must degrade gracefully, not blow up inside sort lambdas.
             return entry.importance
 
     def half_life_days(self, entry: MemoryEntry) -> float:
@@ -77,11 +85,10 @@ class ForgettingCurve:
             return 0.0
         days_needed = -half_life * math.log2(target_ratio)
         try:
-            last = datetime.fromisoformat(entry.last_accessed)
-            elapsed = (datetime.now() - last).total_seconds() / 86400
+            elapsed = self._days_since(entry.last_accessed)
             remaining = days_needed - elapsed
             return max(0.0, remaining)
-        except (ValueError, OverflowError):
+        except (ValueError, OverflowError, TypeError):
             return None
 
     async def run_decay_pass(

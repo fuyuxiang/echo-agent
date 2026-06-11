@@ -152,7 +152,7 @@ def anthropic_response_to_llm_fields(
     usage: dict[str, Any] | None = None,
     model: str = "",
 ) -> dict[str, Any]:
-    from echo_agent.models.provider import LLMResponse, ToolCallRequest
+    from echo_agent.models.provider import ToolCallRequest
 
     text_parts: list[str] = []
     tool_calls: list[ToolCallRequest] = []

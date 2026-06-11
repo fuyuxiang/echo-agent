@@ -1,9 +1,8 @@
 """Tests for evolution configuration validation."""
 
-import pytest
 
 from echo_agent.config.schema import EvolutionConfig
-from echo_agent.evolution.validation import validate_evolution_config, ConfigWarning
+from echo_agent.evolution.validation import validate_evolution_config
 
 
 class TestValidateEvolutionConfig:

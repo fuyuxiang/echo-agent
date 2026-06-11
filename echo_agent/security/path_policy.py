@@ -127,6 +127,24 @@ def _build_read_denied_patterns() -> list[str]:
     return [".env", "credentials.json", "service-account.json", "secrets.yaml", "secrets.yml"]
 
 
+def _build_read_denied_prefixes() -> list[str]:
+    """Directories whose entire contents are read-denied — they hold private
+    keys under arbitrary names, so a file-level denylist cannot cover them."""
+    home = _home()
+    return [
+        os.path.realpath(p) + os.sep
+        for p in [
+            os.path.join(home, ".ssh"),
+            os.path.join(home, ".gnupg"),
+            os.path.join(home, ".aws"),
+            os.path.join(home, ".kube"),
+            os.path.join(home, ".docker"),
+            os.path.join(home, ".azure"),
+            os.path.join(home, ".config", "gh"),
+        ]
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Read denylist — internal cache dirs (prevent prompt injection)
 # ---------------------------------------------------------------------------
@@ -173,20 +191,31 @@ def resolve_path(path: str, workspace: str) -> Path:
 def check_read(path: str, workspace: str) -> Optional[str]:
     """Return an error message if reading this path should be denied, else None."""
     normalized = os.path.expanduser(path)
+    resolved = resolve_path(path, workspace)
+    resolved_str = str(resolved)
+    # realpath of the *resolved* path so a symlink pointing at a device file
+    # or credential cannot dodge the checks below.
+    real = os.path.realpath(resolved_str)
 
-    # Block device files
-    if normalized in BLOCKED_DEVICE_PATHS:
+    # Block device files (check both the literal path and the symlink target)
+    if normalized in BLOCKED_DEVICE_PATHS or real in BLOCKED_DEVICE_PATHS:
         return f"Cannot read '{path}': device file that would block or produce infinite output"
 
     # Block /proc stdio aliases
-    if normalized.startswith("/proc/") and normalized.endswith(("/fd/0", "/fd/1", "/fd/2")):
-        return f"Cannot read '{path}': stdio device alias"
+    for candidate in (normalized, real):
+        if candidate.startswith("/proc/") and candidate.endswith(("/fd/0", "/fd/1", "/fd/2")):
+            return f"Cannot read '{path}': stdio device alias"
 
     # Block credential files
-    resolved = resolve_path(path, workspace)
-    resolved_str = str(resolved)
-    if resolved_str in _build_read_denied_credential_paths():
+    denied_credentials = _build_read_denied_credential_paths()
+    if resolved_str in denied_credentials or real in denied_credentials:
         return f"Read denied: {path} is a credential file"
+
+    # Block credential directories wholesale (private keys live under
+    # arbitrary names — a file denylist can't enumerate them)
+    for prefix in _build_read_denied_prefixes():
+        if resolved_str.startswith(prefix) or real.startswith(prefix):
+            return f"Read denied: {path} is inside a protected credential directory"
 
     # Block credential-like filenames
     filename = resolved.name

@@ -180,7 +180,8 @@ class EvolutionEngine:
                     return False, f"delete failed: {err}"
             elif candidate.operation == "patch":
                 # Re-apply the inverse patch. If the new text is no longer present
-                # the skill must have changed since promotion — abort safely.
+                # the skill must have changed since promotion — fall back to the
+                # retained pre-promotion snapshot before giving up.
                 if candidate.proposed_patch_new and candidate.proposed_patch_old is not None:
                     err = self._skill_store.patch_skill(
                         skill_name,
@@ -188,13 +189,18 @@ class EvolutionEngine:
                         candidate.proposed_patch_old,
                     )
                     if err:
-                        return False, f"inverse patch failed: {err}"
+                        restored = self._restore_skill_from_snapshot(candidate, skill_name)
+                        if not restored:
+                            return False, f"inverse patch failed: {err}"
                 else:
                     return False, "no patch payload recorded; cannot invert"
             elif candidate.operation == "disable":
-                disabled = getattr(self._skill_store, "_disabled", None)
-                if disabled is not None and skill_name in disabled:
-                    disabled.discard(skill_name)
+                if hasattr(self._skill_store, "persist_enable"):
+                    self._skill_store.persist_enable(skill_name)
+                else:
+                    disabled = getattr(self._skill_store, "_disabled", None)
+                    if disabled is not None and skill_name in disabled:
+                        disabled.discard(skill_name)
             else:
                 return False, f"unknown operation '{candidate.operation}'"
         except Exception as e:
@@ -204,6 +210,30 @@ class EvolutionEngine:
         await self._store.update_candidate(candidate)
         logger.info("Rolled back skill '{}' (candidate id={})", skill_name, candidate.id)
         return True, f"skill '{skill_name}' rolled back"
+
+    def _restore_skill_from_snapshot(self, candidate: SkillCandidate, skill_name: str) -> bool:
+        """Restore one skill's directory from the snapshot retained at promotion."""
+        import shutil
+
+        snapshot = (
+            self._skill_store.user_dir.parent
+            / ".evolution_backups" / candidate.id / "user_dir"
+        )
+        if not snapshot.is_dir():
+            return False
+        source = snapshot / skill_name
+        if not (source / "SKILL.md").exists():
+            return False
+        target = self._skill_store.user_dir / skill_name
+        try:
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(source, target)
+            logger.info("Restored skill '{}' from promotion snapshot {}", skill_name, candidate.id)
+            return True
+        except Exception as e:
+            logger.warning("Snapshot restore for '{}' failed: {}", skill_name, e)
+            return False
 
     async def status_summary(self) -> dict[str, Any]:
         latest_run = await self._store.latest_run()
@@ -286,6 +316,11 @@ class EvolutionEngine:
                 else:
                     run.candidates_rejected += 1
 
+            # Mark ALL fetched trajectories consumed, not just the ones cited
+            # by accepted candidates: the evolver saw the full briefing, so
+            # "examined and yielded nothing" still counts as consumed —
+            # re-feeding unproductive trajectories every run would burn LLM
+            # spend forever in threshold mode.
             all_fetched_ids = [t.id for t in trajectories]
             await self._store.mark_consumed(all_fetched_ids, run.id)
         except Exception as e:
