@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
 
 _DEFAULT_COOLDOWN_SECONDS = 300.0

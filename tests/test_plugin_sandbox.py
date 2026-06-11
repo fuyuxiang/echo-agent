@@ -1,6 +1,5 @@
 """Tests for plugin sandbox permission enforcement."""
 
-import pytest
 
 from echo_agent.plugins.manifest import PluginManifest
 from echo_agent.plugins.sandbox import PluginSandbox

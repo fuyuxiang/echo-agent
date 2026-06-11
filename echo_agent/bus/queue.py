@@ -28,6 +28,7 @@ class MessageBus:
         self._global_outbound_handlers: list[OutboundHandler] = []
         self._inbound_subscribers: list[InboundHandler] = []
         self._running = False
+        self._accepting = True
         self._dispatch_task: asyncio.Task | None = None
         self._inflight_inbound: set[asyncio.Task] = set()
         self._lifecycle_lock = asyncio.Lock()
@@ -38,6 +39,9 @@ class MessageBus:
         self._rate_limiter = limiter
 
     async def publish_inbound(self, event: InboundEvent) -> bool:
+        if not self._accepting:
+            logger.warning("Bus is shutting down, rejecting event from {}:{}", event.channel, event.chat_id)
+            return False
         try:
             await asyncio.wait_for(self._inbound_queue.put(event), timeout=5.0)
             return True
@@ -112,11 +116,13 @@ class MessageBus:
             if self._running:
                 return
             self._running = True
+            self._accepting = True
             self._dispatch_task = asyncio.create_task(self._dispatch_loop())
         logger.info("MessageBus started")
 
-    async def stop(self) -> None:
+    async def stop(self, drain_timeout: float = 10.0) -> None:
         async with self._lifecycle_lock:
+            self._accepting = False
             self._running = False
             if self._dispatch_task:
                 self._dispatch_task.cancel()
@@ -125,12 +131,23 @@ class MessageBus:
                 except asyncio.CancelledError:
                     pass
                 self._dispatch_task = None
+            # Give in-flight turns a chance to finish (and persist their
+            # sessions) before hard-cancelling them.
             if self._inflight_inbound:
                 tasks = list(self._inflight_inbound)
-                for task in tasks:
-                    task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
+                done, pending = await asyncio.wait(tasks, timeout=drain_timeout)
+                if pending:
+                    logger.warning(
+                        "{} in-flight event(s) did not finish within {}s, cancelling",
+                        len(pending), drain_timeout,
+                    )
+                    for task in pending:
+                        task.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
                 self._inflight_inbound.clear()
+            if not self._inbound_queue.empty():
+                dropped = self._inbound_queue.qsize()
+                logger.warning("Discarding {} queued inbound event(s) on shutdown", dropped)
         logger.info("MessageBus stopped")
 
     async def _dispatch_loop(self) -> None:
@@ -150,7 +167,11 @@ class MessageBus:
                     text="请求过于频繁，请稍后再试。",
                     reply_to_id=event.reply_to_id,
                 )
-                await self.publish_outbound(rate_limit_reply)
+                # Send the reply off-loop: a slow outbound handler must not
+                # stall inbound dispatch for every other session.
+                reply_task = asyncio.create_task(self._publish_outbound_logged(rate_limit_reply))
+                self._inflight_inbound.add(reply_task)
+                reply_task.add_done_callback(self._inflight_inbound.discard)
                 continue
 
             await self._concurrency_sem.acquire()
@@ -163,6 +184,12 @@ class MessageBus:
             await self._dispatch_inbound_event(event)
         finally:
             self._concurrency_sem.release()
+
+    async def _publish_outbound_logged(self, event: OutboundEvent) -> None:
+        try:
+            await self.publish_outbound(event)
+        except Exception as e:
+            logger.error("Failed to publish outbound event for {}: {}", event.channel, e)
 
     async def _dispatch_inbound_event(self, event: InboundEvent) -> None:
         # Snapshot subscribers list to be safe against concurrent (un)subscriptions.

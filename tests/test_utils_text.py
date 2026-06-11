@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from echo_agent.utils.text import (
     estimate_tokens,

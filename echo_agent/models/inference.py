@@ -11,7 +11,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from loguru import logger
 
 from echo_agent.models.provider import LLMResponse
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
 from pathlib import Path
@@ -146,6 +147,11 @@ class SQLiteBackend(StorageBackend):
     def __init__(self, db_path: Path):
         self._db_path = db_path
         self._db: aiosqlite.Connection | None = None
+        self._connect_lock = asyncio.Lock()
+
+    @property
+    def is_connected(self) -> bool:
+        return self._db is not None
 
     async def initialize(self) -> None:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -161,21 +167,25 @@ class SQLiteBackend(StorageBackend):
         await self._run_migrations()
 
     async def _ensure_connection(self) -> aiosqlite.Connection:
-        if self._db is None:
-            await self._connect()
-        try:
-            await self._db.execute("SELECT 1")  # type: ignore[union-attr]
-        except Exception:
-            logger.warning("SQLite connection lost, reconnecting")
-            old_db = self._db
-            self._db = None
-            if old_db is not None:
-                try:
-                    await old_db.close()
-                except Exception:
-                    pass
-            await self._connect()
-        return self._db  # type: ignore[return-value]
+        # Serialize the probe/reconnect path: without the lock, two tasks can
+        # both see a dead connection and reconnect concurrently — leaking one
+        # connection, or closing the one the other task just received.
+        async with self._connect_lock:
+            if self._db is None:
+                await self._connect()
+            try:
+                await self._db.execute("SELECT 1")  # type: ignore[union-attr]
+            except Exception:
+                logger.warning("SQLite connection lost, reconnecting")
+                old_db = self._db
+                self._db = None
+                if old_db is not None:
+                    try:
+                        await old_db.close()
+                    except Exception:
+                        pass
+                await self._connect()
+            return self._db  # type: ignore[return-value]
 
     async def _run_migrations(self) -> None:
         db = self._db

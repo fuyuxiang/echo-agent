@@ -10,7 +10,7 @@ from loguru import logger
 from echo_agent.security.capabilities import tool_capabilities, tool_name as resolve_tool_name
 
 if TYPE_CHECKING:
-    from echo_agent.agent.tools.base import Tool
+    from echo_agent.tools.base import Tool
     from echo_agent.config.schema import Config
 
 

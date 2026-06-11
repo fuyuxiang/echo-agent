@@ -1,199 +1,62 @@
-# Echo Agent default configuration
-# Override via echo-agent.yaml or ECHO_AGENT_ env vars
-
-workspace: "~/.echo-agent"
-
-security:
-  profile: "personal_cli"
-
-channels:
-  cli:
-    enabled: true
-  streamChannels:
-    - "telegram"
-    - "discord"
-    - "slack"
-  streamFlushChars: 180
-  streamFlushIntervalMs: 1500
-  webhook:
-    enabled: false
-    host: "0.0.0.0"
-    port: 8080
-    path: "/webhook"
-  telegram:
-    enabled: false
-  discord:
-    enabled: false
-  cron:
-    enabled: false
-
-models:
-  defaultModel: ""
-  providers: []
-  routes: []
+# Echo Agent packaged defaults — ONLY values that intentionally differ from
+# the schema defaults in echo_agent/config/schema.py.
+#
+# schema.py is the single source of truth for defaults. Do NOT restate schema
+# defaults here: this file is deep-merged over the schema, so a duplicated
+# value silently wins and the two drift apart.
+# User overrides go in echo-agent.yaml or ECHO_AGENT_ env vars.
 
 tools:
-  profile: "full"
-  allow: []
-  alsoAllow: []
-  deny: []
-  restrictToWorkspace: false
-  safeWriteRoot: ""
-  exec:
-    enabled: true
-    host: "sandbox"
-    security: "allowlist"
-    ask: "on_miss"
-    timeoutSeconds: 30
-    safeBins:
-      - "awk"
-      - "cat"
-      - "date"
-      - "echo"
-      - "find"
-      - "grep"
-      - "head"
-      - "ls"
-      - "pwd"
-      - "rg"
-      - "sed"
-      - "sort"
-      - "tail"
-      - "tr"
-      - "uniq"
-      - "wc"
-    allowedCommands: []
-    blockedCommands: []
   web:
     enabled: true
-    searchProvider: "brave"
-    searchApiBase: ""
-    searchApiKey: ""
-  codeExec:
-    enabled: true
-  mcpSecurityPolicy: "block"
-
 execution:
-  defaultExecutor: "local"
-  networkPolicy: "allow"
-
+  defaultExecutor: local
+  networkPolicy: allow
 permissions:
-  adminUsers: []
   approval:
     requireApproval:
-      - "cronjob"
-      - "skill_install"
-      - "skill_manage"
-    defaultPolicy: "approve"
-    waitTimeoutSeconds: 300
-    cliAutoApprove: true
-    trustedChannels: []
-    mode: "smart"
-    smartModel: ""
-    unattendedPolicy: "deny"
-  elevated:
-    enabled: false
-    allowFrom: {}
-
-credentials:
-  encryptionKeyEnv: "ECHO_AGENT_CREDENTIAL_KEY"
-  requireEncryption: true
-
-session:
-  maxHistoryMessages: 500
-  expiryHours: 72
-  contextWindowTokens: 65536
-  introductionEnabled: true
-  introductionTemplate: ""
-
+    - cronjob
+    - skill_install
+    - skill_manage
 memory:
-  enabled: true
-  scopePolicy: "session"
   consolidationThreshold: 15
-  vectorEnabled: true
-
-knowledge:
-  enabled: true
-  docsDir: "data/knowledge"
-  indexPath: "data/knowledge_index.json"
-  autoIndex: true
-  chunkSize: 1200
-  chunkOverlap: 120
-  maxResults: 5
-  requireCitations: true
-
 multiAgent:
-  enabled: true
-  maxDepth: 3
-  maxParallelWorkers: 4
-  maxIterations: 12
-  auditPath: "data/delegation_audit.jsonl"
   workerProfiles:
-    - id: "coder"
-      name: "Coding Worker"
-      description: "Code implementation, debugging, and testing."
-      instructions: "Focus on writing correct, tested code. Use exec to verify results."
-      defaultTools: ["read_file", "write_file", "edit_file", "list_dir", "search_files", "patch", "exec", "execute_code", "process"]
-      temperature: 0.3
-    - id: "researcher"
-      name: "Research Worker"
-      description: "Web research, source comparison, and evidence synthesis."
-      instructions: "Search multiple sources, compare findings, cite evidence clearly."
-      defaultTools: ["web_search", "web_fetch", "read_file", "search_files", "knowledge_search"]
-      temperature: 0.4
-    - id: "operator"
-      name: "Operations Worker"
-      description: "System operations, file management, process execution."
-      instructions: "Execute commands carefully, verify results before reporting."
-      defaultTools: ["exec", "process", "read_file", "write_file", "list_dir", "search_files"]
-      temperature: 0.2
-
-compression:
-  enabled: true
-  triggerRatio: 0.7
-  tailBudgetRatio: 0.4
-  headProtectCount: 3
-  summaryTargetRatio: 0.20
-  summaryMinTokens: 2000
-  summaryMaxTokens: 12000
-  summaryModel: ""
-  summaryCooldownSeconds: 600
-  toolPruningEnabled: true
-  toolPruningTailBudgetRatio: 0.3
-  maxCompressionCount: 10
-
-gateway:
-  enabled: false
-  host: "0.0.0.0"
-  port: 9000
-  apiPrefix: "/api/v1"
-  wsPath: "/ws"
-  sessionPolicy:
-    mode: "idle"
-    dailyResetHour: 4
-    idleTimeoutMinutes: 1440
-  auth:
-    mode: "allowlist"
-    allowedUsers: []
-    adminUsers: []
-    apiTokens: []
-    tokenHeader: "X-Echo-Agent-Token"
-    pairingTtlSeconds: 300
-  platforms: {}
-  mediaCacheDir: "data/media_cache"
-  mediaCacheMaxMb: 500
-  maxAgentCacheSize: 50
-  enableProgressiveEdit: true
-  hooksDir: ""
-
-scheduler:
-  enabled: true
-  maxConcurrentJobs: 10
-
-storage:
-  backend: "sqlite"
-  databasePath: "data/echo_agent.db"
-
-observability:
-  logLevel: "INFO"
-  traceEnabled: true
+  - id: coder
+    name: Coding Worker
+    description: Code implementation, debugging, and testing.
+    instructions: Focus on writing correct, tested code. Use exec to verify results.
+    defaultTools:
+    - read_file
+    - write_file
+    - edit_file
+    - list_dir
+    - search_files
+    - patch
+    - exec
+    - execute_code
+    - process
+    temperature: 0.3
+  - id: researcher
+    name: Research Worker
+    description: Web research, source comparison, and evidence synthesis.
+    instructions: Search multiple sources, compare findings, cite evidence clearly.
+    defaultTools:
+    - web_search
+    - web_fetch
+    - read_file
+    - search_files
+    - knowledge_search
+    temperature: 0.4
+  - id: operator
+    name: Operations Worker
+    description: System operations, file management, process execution.
+    instructions: Execute commands carefully, verify results before reporting.
+    defaultTools:
+    - exec
+    - process
+    - read_file
+    - write_file
+    - list_dir
+    - search_files
+    temperature: 0.2

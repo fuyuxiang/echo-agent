@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 import sys
 from pathlib import Path
 from typing import Any
 
-from loguru import logger
 
 
 def run_plugin_command(
@@ -66,9 +64,9 @@ def _list_plugins(config_path: str | None, workspace: str | None) -> None:
 
     if not records:
         print("No plugins discovered.")
-        print(f"\nSearch locations:")
-        print(f"  pip entry_points: echo_agent.plugins group")
-        print(f"  User dir: ~/.echo-agent/plugins/")
+        print("\nSearch locations:")
+        print("  pip entry_points: echo_agent.plugins group")
+        print("  User dir: ~/.echo-agent/plugins/")
         print(f"  Project dir: {ws}/plugins/")
         return
 

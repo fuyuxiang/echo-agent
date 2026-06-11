@@ -83,15 +83,21 @@ class MemoryEntry:
         )
 
     def effective_importance(self, decay_half_life_days: float = 30.0) -> float:
+        """Raw Ebbinghaus curve without policy (no USER pin, no archive
+        thresholds). The policy-aware version used by the store and decay pass
+        is ``ForgettingCurve.effective_importance`` — prefer that one."""
         if not self.last_accessed or decay_half_life_days <= 0:
             return self.importance
         try:
             last = datetime.fromisoformat(self.last_accessed)
-            days = (datetime.now() - last).total_seconds() / 86400
+            now = datetime.now(last.tzinfo) if last.tzinfo else datetime.now()
+            days = (now - last).total_seconds() / 86400
+            if days < 0:
+                return self.importance
             half_life = decay_half_life_days * (1 + math.log2(1 + self.access_count))
             decay = math.pow(0.5, days / half_life)
             return self.importance * decay
-        except (ValueError, OverflowError):
+        except (ValueError, OverflowError, TypeError):
             return self.importance
 
     def touch(self) -> None:

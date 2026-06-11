@@ -1,16 +1,13 @@
 """Tests for the pipeline stages (context, inference, response)."""
 
-import asyncio
 from collections import OrderedDict
-from dataclasses import dataclass
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from echo_agent.agent.pipeline.types import PipelineContext, InferenceResult
 from echo_agent.agent.pipeline.context_stage import ContextStage
-from echo_agent.agent.pipeline.response_stage import ResponseStage, ProcessResult
-from echo_agent.agent.tools.circuit_breaker import ToolCircuitBreaker
+from echo_agent.agent.pipeline.response_stage import ResponseStage
 from echo_agent.bus.events import InboundEvent
 from echo_agent.session.manager import Session
 

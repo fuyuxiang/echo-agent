@@ -14,7 +14,7 @@ from typing import Any
 
 from loguru import logger
 
-from echo_agent.agent.approval_gate import ApprovalCheck, ApprovalGate
+from echo_agent.agent.approval_gate import ApprovalGate
 from echo_agent.agent.consolidation import ConsolidationWorker
 from echo_agent.agent.context import ContextBuilder
 from echo_agent.permissions.allowlist import ApprovalAllowlist
@@ -102,7 +102,9 @@ class AgentLoop:
             scope_policy=config.memory.scope_policy,
             contradiction_scan_on_store=config.memory.contradiction_scan_on_store,
         )
-        self.tools = ToolRegistry()
+        self.tools = ToolRegistry(
+            audit_log_path=workspace / config.storage.logs_dir / "tool_audit.jsonl",
+        )
         from echo_agent.gateway.media import MediaCache
         media_cache = MediaCache(
             cache_dir=workspace / config.gateway.media_cache_dir,
@@ -227,7 +229,6 @@ class AgentLoop:
         self._background_tasks: set[asyncio.Task[Any]] = set()
         self._pending_consolidations: set[str] = set()
         self._state_lock = asyncio.Lock()
-        self._working_memories: OrderedDict[str, Any] = OrderedDict()
         self._plugin_manager: Any = None
         self._register_tools(scheduler=scheduler, task_manager=task_manager, workflow_engine=workflow_engine)
         self._setup_delegation()
@@ -320,7 +321,7 @@ class AgentLoop:
 
         episodic = EpisodicManager(storage) if storage else None
         semantic = SemanticManager(self.memory)
-        archival = ArchivalManager(storage) if storage else None
+        archival = ArchivalManager(storage, store=self.memory) if storage else None
 
         self.consolidator.set_episodic_manager(episodic)
         self.consolidator.set_semantic_manager(semantic)
@@ -349,7 +350,7 @@ class AgentLoop:
 
         if config.memory.contradiction_detection and storage:
             from echo_agent.memory.contradiction import ContradictionDetector
-            detector = ContradictionDetector(storage, vector_index)
+            detector = ContradictionDetector(storage, vector_index, store=self.memory)
             self.consolidator.set_contradiction_detector(detector)
 
         def entries_fn() -> list:
@@ -393,7 +394,7 @@ class AgentLoop:
     def set_plugin_manager(self, manager: Any) -> None:
         """Attach the plugin manager after bootstrap. Passes hook_registry to InferenceStage."""
         self._plugin_manager = manager
-        self._inference_stage._hook_registry = manager.hooks
+        self._inference_stage.set_hook_registry(manager.hooks)
 
     def set_evolution_engine(self, engine: Any) -> None:
         """Attach the evolution engine after bootstrap. Registers its tools and shares hooks."""
@@ -407,6 +408,10 @@ class AgentLoop:
                 self.tools.register(tool)
         except Exception as e:
             logger.warning("Failed to register evolution tools: {}", e)
+
+    @property
+    def is_running(self) -> bool:
+        return self._running
 
     async def start(self) -> None:
         self._running = True
@@ -440,10 +445,16 @@ class AgentLoop:
         for task in tasks:
             task.cancel()
         if tasks:
-            await asyncio.wait_for(
-                asyncio.gather(*tasks, return_exceptions=True),
-                timeout=10.0,
-            )
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*tasks, return_exceptions=True),
+                    timeout=10.0,
+                )
+            except (TimeoutError, asyncio.TimeoutError):
+                logger.warning(
+                    "{} background task(s) did not finish within 10s during shutdown; abandoning",
+                    len(tasks),
+                )
         async with self._state_lock:
             self._background_tasks.clear()
         logger.info("Agent loop stopped")
@@ -641,19 +652,6 @@ class AgentLoop:
                     logger.debug("Recorder end_turn failed: {}", e)
 
         return _ProcessResult(response_text=result.response_text, outbound_sent=result.outbound_sent)
-
-    async def _check_permission_and_approval(
-        self, tool_name: str, arguments: dict[str, Any], sender_id: str,
-        *, channel: str = "", event: InboundEvent | None = None,
-    ) -> ApprovalCheck:
-        return await self.approval_gate.check(
-            tool_name,
-            arguments,
-            sender_id,
-            channel=channel,
-            event=event,
-            running=self._running,
-        )
 
     async def _handle_approval_command(self, event: InboundEvent) -> str | None:
         text = event.text.strip()

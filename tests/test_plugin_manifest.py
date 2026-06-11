@@ -1,11 +1,9 @@
 """Tests for plugin manifest parsing."""
 
 import pytest
-from pathlib import Path
 
 from echo_agent.plugins.manifest import (
     PluginManifest,
-    PluginProvides,
     PluginRecord,
     check_required_env,
     parse_manifest,

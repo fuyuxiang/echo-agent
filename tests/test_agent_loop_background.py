@@ -3,16 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections import OrderedDict
-from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import pytest_asyncio
 
-from echo_agent.bus.events import InboundEvent, OutboundEvent, ContentBlock, ContentType
-from echo_agent.bus.queue import MessageBus
 
 
 class _FakeAgentLoop:

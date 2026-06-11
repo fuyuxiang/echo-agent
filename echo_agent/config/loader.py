@@ -60,11 +60,22 @@ def resolve_config_file(config_path: str | Path | None = None, search_dir: str |
     return found.resolve() if found else None
 
 
+class ConfigError(Exception):
+    """User-facing configuration error with a readable message."""
+
+
 def _load_yaml_file(path: Path | None) -> dict[str, Any]:
     if not path or not path.exists():
         return {}
     with open(path, encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+        try:
+            return yaml.safe_load(f) or {}
+        except yaml.YAMLError as e:
+            mark = getattr(e, "problem_mark", None)
+            location = f" (line {mark.line + 1}, column {mark.column + 1})" if mark else ""
+            raise ConfigError(
+                f"Invalid YAML in {path}{location}: {getattr(e, 'problem', e)}"
+            ) from e
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -110,7 +121,18 @@ def load_config(
     if overrides:
         data = _deep_merge(data, overrides)
 
-    return Config(**data)
+    try:
+        return Config(**data)
+    except Exception as e:
+        # Translate pydantic validation errors into something a user editing
+        # YAML can act on, instead of a raw traceback.
+        details = []
+        for err in getattr(e, "errors", lambda: [])():
+            loc = ".".join(str(part) for part in err.get("loc", ()))
+            details.append(f"  - {loc}: {err.get('msg', 'invalid value')}")
+        summary = "\n".join(details) if details else f"  - {e}"
+        source = f" loaded from {path}" if path else ""
+        raise ConfigError(f"Invalid configuration{source}:\n{summary}") from e
 
 
 def save_config(data: dict[str, Any], path: str | Path | None = None) -> Path:

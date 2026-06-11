@@ -8,7 +8,6 @@ from typing import Any, Awaitable, Callable
 from loguru import logger
 
 from echo_agent.memory.store import MemoryStore
-from echo_agent.memory.types import MemoryTier
 
 _SAVE_MEMORY_TOOL = [
     {
@@ -39,6 +38,7 @@ class MemoryConsolidator:
     """Consolidates conversation history into MEMORY.md + HISTORY.md via LLM."""
 
     _MAX_ROUNDS = 3
+    _EPISODE_RETENTION_DAYS = 90
 
     def __init__(
         self,
@@ -46,11 +46,15 @@ class MemoryConsolidator:
         llm_call: Callable[..., Awaitable[Any]],
         context_window_tokens: int = 65536,
         consolidation_threshold: int = 50,
+        episode_retention_days: int | None = None,
     ):
         self.store = memory_store
         self._llm_call = llm_call
         self.context_window_tokens = context_window_tokens
         self._consolidation_threshold = consolidation_threshold
+        self._episode_retention_days = (
+            episode_retention_days if episode_retention_days is not None else self._EPISODE_RETENTION_DAYS
+        )
         self._episodic_manager = None  # set via set_episodic_manager()
         self._semantic_manager = None
         self._forgetting_curve = None
@@ -217,6 +221,18 @@ class MemoryConsolidator:
                 stats["archived"] = await self._archival_manager.archive(to_archive)
             if to_forget and self._archival_manager:
                 stats["forgotten"] = await self._archival_manager.delete_forgotten(to_forget)
+
+        # Step 5: Purge expired episodes — the episodes table is otherwise
+        # append-only and grows without bound.
+        if self._episodic_manager and self._episode_retention_days > 0:
+            try:
+                from datetime import datetime, timedelta
+                cutoff = (datetime.now() - timedelta(days=self._episode_retention_days)).isoformat()
+                await self._episodic_manager._storage.execute_sql(
+                    "DELETE FROM memory_episodes WHERE created_at < ?", (cutoff,),
+                )
+            except Exception as e:
+                logger.debug("Episode retention purge failed: {}", e)
 
         logger.info("Sleep consolidation complete: {}", stats)
         return stats

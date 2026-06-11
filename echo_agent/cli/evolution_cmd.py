@@ -68,7 +68,7 @@ def _format_run(run: Any) -> str:
 
 
 async def _status(config_path: str | None, workspace: str | None) -> None:
-    from echo_agent.__main__ import _bootstrap
+    from echo_agent.app import bootstrap as _bootstrap
 
     overrides = {"workspace": workspace} if workspace else None
     ctx = await _bootstrap(config_path=config_path, overrides=overrides)
@@ -103,7 +103,7 @@ async def _status(config_path: str | None, workspace: str | None) -> None:
 
 
 async def _run_once(config_path: str | None, workspace: str | None) -> None:
-    from echo_agent.__main__ import _bootstrap
+    from echo_agent.app import bootstrap as _bootstrap
 
     overrides = {"workspace": workspace} if workspace else None
     ctx = await _bootstrap(config_path=config_path, overrides=overrides)
@@ -131,7 +131,7 @@ async def _list_candidates(
     workspace: str | None,
     status_filter: str,
 ) -> None:
-    from echo_agent.__main__ import _bootstrap
+    from echo_agent.app import bootstrap as _bootstrap
 
     overrides = {"workspace": workspace} if workspace else None
     ctx = await _bootstrap(config_path=config_path, overrides=overrides)
@@ -160,7 +160,7 @@ async def _list_candidates(
 
 
 async def _show_candidate(candidate_id: str, config_path: str | None, workspace: str | None) -> None:
-    from echo_agent.__main__ import _bootstrap
+    from echo_agent.app import bootstrap as _bootstrap
 
     overrides = {"workspace": workspace} if workspace else None
     ctx = await _bootstrap(config_path=config_path, overrides=overrides)
@@ -184,7 +184,7 @@ async def _show_candidate(candidate_id: str, config_path: str | None, workspace:
 
 async def _promote_candidate(candidate_id: str, config_path: str | None, workspace: str | None) -> None:
     """Manually promote a candidate held in `needs_review` after re-running its eval."""
-    from echo_agent.__main__ import _bootstrap
+    from echo_agent.app import bootstrap as _bootstrap
 
     overrides = {"workspace": workspace} if workspace else None
     ctx = await _bootstrap(config_path=config_path, overrides=overrides)
@@ -221,7 +221,7 @@ async def _promote_candidate(candidate_id: str, config_path: str | None, workspa
 
 
 async def _rollback(skill: str, config_path: str | None, workspace: str | None) -> None:
-    from echo_agent.__main__ import _bootstrap
+    from echo_agent.app import bootstrap as _bootstrap
 
     overrides = {"workspace": workspace} if workspace else None
     ctx = await _bootstrap(config_path=config_path, overrides=overrides)

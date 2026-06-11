@@ -90,7 +90,6 @@ class ResponseStage:
         ephemeral = _is_ephemeral_session(session.key, event.channel)
 
         # Schedule consolidation (safe — acquires its own lock)
-        from echo_agent.memory.consolidator import MemoryConsolidator
         if not ephemeral and hasattr(self._consolidation, '_consolidator'):
             consolidator = self._consolidation._consolidator
             if consolidator.should_consolidate(session.message_count, session.last_consolidated):

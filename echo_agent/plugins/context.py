@@ -7,10 +7,10 @@ from typing import Any, Callable, Coroutine, TYPE_CHECKING
 
 from loguru import logger
 
-from echo_agent.plugins.hooks import HookCallback, HookRegistry, VALID_HOOKS
+from echo_agent.plugins.hooks import HookCallback, HookRegistry
 
 if TYPE_CHECKING:
-    from echo_agent.agent.tools.base import Tool
+    from echo_agent.tools.base import Tool
     from echo_agent.agent.tools.registry import ToolRegistry
     from echo_agent.bus.events import InboundEvent, OutboundEvent
     from echo_agent.bus.queue import MessageBus
@@ -59,12 +59,12 @@ class PluginContext:
 
         The tool goes through the normal ApprovalGate and security flow.
         """
-        from echo_agent.agent.tools.base import Tool as ToolBase
+        from echo_agent.tools.base import Tool as ToolBase
 
         if not isinstance(tool, ToolBase):
             raise TypeError(
                 f"Expected a Tool instance, got {type(tool).__name__}. "
-                "Plugin tools must inherit from echo_agent.agent.tools.base.Tool."
+                "Plugin tools must inherit from echo_agent.tools.Tool."
             )
         self._tool_registry.register(tool)
         self._registered_tools.append(tool.name)

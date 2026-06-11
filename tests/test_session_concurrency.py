@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from echo_agent.session.manager import Session, SessionManager
+from echo_agent.session.manager import SessionManager
 
 
 @pytest.fixture

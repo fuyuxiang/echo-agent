@@ -7,7 +7,7 @@ from typing import Any
 
 from loguru import logger
 
-from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
 from echo_agent.mcp.client import MCPClient
 
 

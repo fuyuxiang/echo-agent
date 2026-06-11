@@ -16,12 +16,11 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
 import aiohttp
 from loguru import logger
 
-from echo_agent.bus.events import ContentBlock, ContentType, OutboundEvent
+from echo_agent.bus.events import OutboundEvent
 from echo_agent.bus.queue import MessageBus
 from echo_agent.channels.base import BaseChannel, SendResult
 from echo_agent.config.schema import WeixinChannelConfig
@@ -317,6 +316,18 @@ class WeixinChannel(BaseChannel):
         self._poll_session: aiohttp.ClientSession | None = None
         self._send_session: aiohttp.ClientSession | None = None
         self._poll_task: asyncio.Task | None = None
+        # Strong refs for per-message tasks (see asyncio.create_task docs).
+        self._msg_tasks: set[asyncio.Task] = set()
+
+    def _spawn_msg_task(self, coro: Any) -> None:
+        task = asyncio.create_task(coro)
+        self._msg_tasks.add(task)
+        task.add_done_callback(self._on_msg_task_done)
+
+    def _on_msg_task_done(self, task: asyncio.Task) -> None:
+        self._msg_tasks.discard(task)
+        if not task.cancelled() and task.exception():
+            logger.warning("weixin message task failed: {}", task.exception())
 
     async def start(self) -> None:
         if not self._token or not self._account_id:
@@ -339,6 +350,12 @@ class WeixinChannel(BaseChannel):
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
         self._poll_task = None
+        if self._msg_tasks:
+            tasks = list(self._msg_tasks)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            self._msg_tasks.clear()
         if self._poll_session and not self._poll_session.closed:
             await self._poll_session.close()
         self._poll_session = None
@@ -429,7 +446,7 @@ class WeixinChannel(BaseChannel):
                 if msgs:
                     last_message_time = time.monotonic()
                 for message in msgs:
-                    asyncio.create_task(self._process_message_safe(message))
+                    self._spawn_msg_task(self._process_message_safe(message))
 
                 # 活性检测：长时间无消息时重建连接
                 if time.monotonic() - last_message_time > _LIVENESS_TIMEOUT:

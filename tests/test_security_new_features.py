@@ -24,7 +24,6 @@ from echo_agent.security.guards import (
     scan_shell_command,
 )
 from echo_agent.security.path_policy import check_read
-from echo_agent.security.smart_approval import _sanitize_for_prompt
 from echo_agent.config.schema import Config, ExecToolConfig, ToolsConfig
 
 

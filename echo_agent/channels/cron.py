@@ -41,4 +41,6 @@ class CronChannel(BaseChannel):
             session_key_override=f"cron:{job_id}",
             metadata={"job_id": job_id, "deliver_channel": deliver_channel},
         )
-        await self.bus.publish_inbound(event)
+        accepted = await self.bus.publish_inbound(event)
+        if not accepted:
+            raise RuntimeError(f"Cron event for job {job_id} was rejected by the bus")

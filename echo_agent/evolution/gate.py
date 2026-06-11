@@ -194,6 +194,10 @@ class PromotionGate:
             applied = self._apply_candidate(candidate, user_dir)
             if applied is not True:
                 reason = applied or "could not apply candidate"
+                # A failed apply may have left partial changes on disk —
+                # restore (which also cleans up the backup dir and any pending
+                # disable bookkeeping) instead of leaking both.
+                self._restore_backup(user_dir, backup_dir)
                 candidate.status = "rejected"
                 candidate.rejected_reason = reason
                 candidate.eval_with_candidate = None
@@ -236,8 +240,15 @@ class PromotionGate:
             self._metrics["promoted"] += 1
             candidate.status = "promoted"
             candidate.promoted_at = datetime.now().isoformat()
+            if candidate.operation == "disable" and hasattr(self._skill_store, "persist_disable"):
+                # The in-memory disable applied during eval evaporates on
+                # restart — make the promoted decision durable.
+                self._skill_store.persist_disable(candidate.skill_name)
             self._refresh_skill_manager_after_promote(candidate, backup_dir, backup_token)
-            self._cleanup_backup(backup_dir)
+            # Keep the pre-change snapshot for rollback instead of deleting it:
+            # the inverse-patch rollback is best-effort and create-rollback
+            # otherwise has nothing to restore supporting files from.
+            self._retain_backup(backup_dir, candidate, backup_token)
             self._pending_disable_skill = None
             self._disable_was_present = False
             await self._store.update_candidate(candidate)
@@ -270,7 +281,28 @@ class PromotionGate:
 
     # ── Candidate application ────────────────────────────────────────────────
 
+    _MAX_RETAINED_BACKUPS = 10
+
+    def _content_threat_scan(self, candidate: SkillCandidate) -> str | None:
+        """Vet candidate content with the same injection/exfiltration scan
+        memory writes get — promoted SKILL.md text is injected into prompts."""
+        from echo_agent.memory.store import scan_text_for_threats
+
+        for label, text in (
+            ("proposed_content", candidate.proposed_content),
+            ("proposed_patch_new", candidate.proposed_patch_new),
+        ):
+            if not text:
+                continue
+            error = scan_text_for_threats(text)
+            if error:
+                return f"content scan rejected {label}: {error}"
+        return None
+
     def _apply_candidate(self, candidate: SkillCandidate, user_dir: Path) -> bool | str:
+        scan_error = self._content_threat_scan(candidate)
+        if scan_error:
+            return scan_error
         try:
             if candidate.operation == "create":
                 err = self._skill_store.create_skill(
@@ -356,6 +388,41 @@ class PromotionGate:
             parent = backup_dir.parent
             if parent.exists() and parent.name.startswith("evolution-skills-backup-"):
                 shutil.rmtree(parent, ignore_errors=True)
+        except Exception:
+            pass
+
+    def _retain_backup(self, backup_dir: Path, candidate: SkillCandidate, token: str) -> Path | None:
+        """Move the pre-change snapshot into a retained rollback area.
+
+        Layout: <user_dir>/../.evolution_backups/<candidate_id>/user_dir/...
+        Pruned to the newest _MAX_RETAINED_BACKUPS entries.
+        """
+        try:
+            retain_root = self._skill_store.user_dir.parent / ".evolution_backups"
+            retain_root.mkdir(parents=True, exist_ok=True)
+            target = retain_root / candidate.id
+            if target.exists():
+                shutil.rmtree(target, ignore_errors=True)
+            target.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(backup_dir), str(target / "user_dir"))
+            (target / "token.txt").write_text(token, encoding="utf-8")
+            self._cleanup_backup(backup_dir)  # remove the now-empty temp parent
+            self._prune_retained_backups(retain_root)
+            return target
+        except Exception as e:
+            logger.warning("Failed to retain promotion backup for {}: {}", candidate.id, e)
+            self._cleanup_backup(backup_dir)
+            return None
+
+    def _prune_retained_backups(self, retain_root: Path) -> None:
+        try:
+            entries = sorted(
+                (p for p in retain_root.iterdir() if p.is_dir()),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            for stale in entries[self._MAX_RETAINED_BACKUPS:]:
+                shutil.rmtree(stale, ignore_errors=True)
         except Exception:
             pass
 

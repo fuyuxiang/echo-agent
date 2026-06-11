@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-import pytest
 
 from echo_agent.skills.store import SkillStore, parse_frontmatter
 from echo_agent.skills.manager import SkillManager, SkillManifest, SkillStatus

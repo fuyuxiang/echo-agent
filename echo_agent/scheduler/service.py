@@ -126,7 +126,9 @@ def _compute_next_run(job: ScheduledJob, now_ms: int) -> int | None:
             cron = croniter(job.cron_expr, base)
             return int(cron.get_next(datetime).timestamp() * 1000)
         except Exception as e:
-            logger.debug("Failed to compute next cron run: {}", e)
+            # A bad cron expression means this job will never fire again —
+            # that must be visible, not a debug whisper.
+            logger.warning("Job {} ('{}'): failed to compute next cron run, job will not fire: {}", job.id, job.name, e)
             return None
     return None
 
@@ -169,9 +171,21 @@ class Scheduler:
             logger.warning("Failed to load scheduler state: {}", e)
 
     def _save(self) -> None:
-        self._store_path.parent.mkdir(parents=True, exist_ok=True)
+        self._write_payload(self._build_payload())
+
+    def _build_payload(self) -> str:
         data = {"jobs": [j.to_dict() for j in self._jobs.values()]}
-        payload = json.dumps(data, ensure_ascii=False, indent=2)
+        return json.dumps(data, ensure_ascii=False, indent=2)
+
+    async def _save_async(self) -> None:
+        # Build the payload on the event loop (where _jobs is mutated), then
+        # do the fsync'd write in a thread so frequent job runs don't stall
+        # the loop on disk I/O.
+        payload = self._build_payload()
+        await asyncio.to_thread(self._write_payload, payload)
+
+    def _write_payload(self, payload: str) -> None:
+        self._store_path.parent.mkdir(parents=True, exist_ok=True)
         # Atomic write: tempfile in the same directory + os.replace.
         # A crash mid-write must never leave the JSON truncated, otherwise
         # _load on next startup loses every scheduled job.
@@ -197,10 +211,28 @@ class Scheduler:
     async def start(self) -> None:
         self._running = True
         self._concurrency_sem = asyncio.Semaphore(self._max_concurrent)
+        now = _now_ms()
         for job in self._jobs.values():
-            if job.enabled and job.status == JobStatus.ACTIVE:
-                job.next_run_ms = _compute_next_run(job, _now_ms())
-        self._save()
+            if not (job.enabled and job.status == JobStatus.ACTIVE):
+                continue
+            if job.trigger == TriggerKind.ONCE and job.at_ms and job.at_ms <= now:
+                # Due during downtime — fire on the first tick instead of
+                # silently never firing while staying ACTIVE forever.
+                job.next_run_ms = now
+                logger.warning("Job {} ('{}') was due during downtime; firing now", job.id, job.name)
+                continue
+            if (
+                job.trigger == TriggerKind.CRON
+                and job.last_run_ms
+                and job.next_run_ms
+                and job.next_run_ms <= now
+            ):
+                logger.warning(
+                    "Job {} ('{}'): cron occurrence(s) between {} and now were missed during downtime and are skipped",
+                    job.id, job.name, datetime.fromtimestamp(job.next_run_ms / 1000).isoformat(),
+                )
+            job.next_run_ms = _compute_next_run(job, now)
+        await self._save_async()
         self._timer_task = asyncio.create_task(self._tick_loop())
         logger.info("Scheduler started with {} jobs", len(self._jobs))
 
@@ -352,8 +384,11 @@ class Scheduler:
             job.status = JobStatus.COMPLETED
         else:
             job.next_run_ms = _compute_next_run(job, _now_ms())
+            if job.next_run_ms is None:
+                job.status = JobStatus.COMPLETED
+                logger.warning("Job {} ('{}') has no computable next run; marking completed", job.id, job.name)
 
-        self._save()
+        await self._save_async()
 
     def _try_acquire_lock(self, job_id: str) -> Any:
         if not _HAS_FCNTL:

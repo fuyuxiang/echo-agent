@@ -8,7 +8,6 @@ multiple messages concurrently.
 from __future__ import annotations
 
 from contextvars import ContextVar, Token
-from typing import Any
 
 _SESSION_PLATFORM: ContextVar[str] = ContextVar("session_platform", default="")
 _SESSION_CHAT_ID: ContextVar[str] = ContextVar("session_chat_id", default="")
