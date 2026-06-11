@@ -134,9 +134,7 @@ PR 前请确保 lint 和测试通过（CI 会在 PR 上自动运行同样的检�
 **参与方向：** 通道适配器 · 内置工具 · MCP 集成 · 技能示例 · 评测数据集 · 文档完善 · 部署模板
 
 **社区：**
-- [GitHub Discussions](https://github.com/fuyuxiang/echo-agent/discussions) — 设计讨论、用法咨询
-- [GitHub Issues](https://github.com/fuyuxiang/echo-agent/issues) — Bug 与新特性
-- [QQ 群 47572014](https://qm.qq.com/q/JWOPDBNssw)
+- QQ群：[47572014](https://qm.qq.com/q/JWOPDBNssw)
 
 ---
 
