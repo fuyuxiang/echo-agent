@@ -1,10 +1,8 @@
 """Tests for gateway modules: editor, health, media, session_policy."""
 from __future__ import annotations
 
-import asyncio
 import time
 from datetime import datetime, timedelta
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -358,9 +356,7 @@ class TestSessionResetPolicy:
         return config
 
     def _make_session(self, updated_at=None):
-        from dataclasses import dataclass, field
         from datetime import datetime
-        from typing import Any
 
         session = MagicMock()
         session.updated_at = updated_at or datetime.now()

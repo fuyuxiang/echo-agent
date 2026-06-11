@@ -178,7 +178,6 @@ class FeishuChannel(BaseChannel):
     async def _on_message_v1(self, event: dict[str, Any]) -> None:
         sender_id = event.get("open_id", "")
         chat_id = event.get("open_chat_id", "")
-        msg_type = event.get("msg_type", "")
         text = event.get("text_without_at_bot", "") or event.get("text", "")
         if not text:
             return

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import patch, MagicMock
 
-import pytest
 
 from echo_agent.cli.colors import Colors, color, print_header, print_success, print_info, print_warning, print_error
 

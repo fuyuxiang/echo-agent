@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -271,8 +270,6 @@ class TestTokenBucketLimiter:
 
         # Patch asyncio.sleep to simulate waiting, and advance _last_refill
         # so _refill() adds tokens on the next loop iteration.
-        original_sleep = asyncio.sleep
-
         async def fake_sleep(duration):
             # Simulate time passing by backdating _last_refill
             limiter._last_refill -= 2.0

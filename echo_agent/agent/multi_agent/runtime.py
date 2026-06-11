@@ -65,9 +65,6 @@ class WorkerExecutor:
             {"role": "user", "content": goal},
         ]
 
-        iterations = 0
-        tool_call_count = 0
-        last_content = ""
         state = {"iterations": 0, "tool_calls": 0, "last_content": ""}
 
         try:

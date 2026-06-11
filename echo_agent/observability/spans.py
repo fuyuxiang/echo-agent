@@ -6,7 +6,6 @@ from typing import Any
 
 
 try:
-    from opentelemetry import trace
     from opentelemetry.trace import StatusCode
     _HAS_OTEL = True
 except ImportError:

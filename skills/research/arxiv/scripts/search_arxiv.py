@@ -97,17 +97,23 @@ if __name__ == "__main__":
     positional = []
     while i < len(args):
         if args[i] == "--max" and i + 1 < len(args):
-            max_results = int(args[i + 1]); i += 2
+            max_results = int(args[i + 1])
+            i += 2
         elif args[i] == "--sort" and i + 1 < len(args):
-            sort = args[i + 1]; i += 2
+            sort = args[i + 1]
+            i += 2
         elif args[i] == "--author" and i + 1 < len(args):
-            author = args[i + 1]; i += 2
+            author = args[i + 1]
+            i += 2
         elif args[i] == "--category" and i + 1 < len(args):
-            category = args[i + 1]; i += 2
+            category = args[i + 1]
+            i += 2
         elif args[i] == "--id" and i + 1 < len(args):
-            ids = args[i + 1]; i += 2
+            ids = args[i + 1]
+            i += 2
         else:
-            positional.append(args[i]); i += 1
+            positional.append(args[i])
+            i += 1
 
     if positional:
         query = " ".join(positional)

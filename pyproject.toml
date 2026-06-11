@@ -59,6 +59,7 @@ include = [
     "skills/**/*.py",
     "skills/**/*.sh",
     "README.md",
+    "LICENSE",
     "scripts/install.sh",
 ]
 
@@ -77,6 +78,7 @@ include = [
     "skills/",
     "scripts/install.sh",
     "README.md",
+    "LICENSE",
     "pyproject.toml",
 ]
 

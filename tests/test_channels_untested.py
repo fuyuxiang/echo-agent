@@ -9,12 +9,10 @@ import hashlib
 import hmac
 import json
 import time
-from email.message import EmailMessage
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from echo_agent.channels.base import SendResult
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -196,7 +194,6 @@ class TestDingTalkChannel:
 
     @pytest.mark.asyncio
     async def test_on_message_text(self):
-        from echo_agent.channels.dingtalk import DingTalkChannel
 
         ch, bus = self._make()
         ch._running = True
@@ -401,8 +398,6 @@ class TestFeishuChannel:
 
     @pytest.mark.asyncio
     async def test_webhook_url_verification(self):
-        from aiohttp.test_utils import make_mocked_request
-        from aiohttp import web
 
         ch, _ = self._make()
         ch._running = True
