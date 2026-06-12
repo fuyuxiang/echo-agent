@@ -87,6 +87,14 @@ class ConversationCompressor(ContextEngine):
         tokens_before = self.estimate_tokens(messages)
         working = list(messages)
 
+        # Phase 0: Strip media_refs — they are lightweight session pointers
+        # that the summarizer/boundary stages should not see.  The text
+        # content stays, so the LLM summary naturally captures "user sent
+        # an image" without carrying the ref metadata forward.
+        for msg in working:
+            if "media_refs" in msg:
+                del msg["media_refs"]
+
         # Phase 1: Tool output pruning
         pruned_count = 0
         if self._pruner:

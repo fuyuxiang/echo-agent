@@ -250,16 +250,20 @@ class SlackChannel(BaseChannel):
         text = event.get("text", "")
         thread_ts = event.get("thread_ts") or event.get("ts", "")
 
-        if not text:
-            return
-
         media: list[dict[str, str]] = []
         for f in event.get("files", []):
             url = f.get("url_private", "")
             if url:
                 mimetype = f.get("mimetype", "")
                 kind = "image" if mimetype.startswith("image") else "file"
-                media.append({"type": kind, "url": url})
+                local_path = await self._download_slack_file(url)
+                if local_path:
+                    media.append({"type": kind, "url": local_path})
+                else:
+                    media.append({"type": kind, "url": url})
+
+        if not text and not media:
+            return
 
         await self._handle_message(
             sender_id=sender_id,
@@ -268,6 +272,22 @@ class SlackChannel(BaseChannel):
             media=media if media else None,
             metadata={"thread_ts": thread_ts},
         )
+
+    async def _download_slack_file(self, url: str) -> str | None:
+        """Download a Slack file using the bot token for authentication."""
+        async def fetch() -> bytes:
+            if not self._session:
+                raise RuntimeError("no session")
+            headers = {"Authorization": f"Bearer {self._bot_token}"}
+            async with self._session.get(url, headers=headers) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"Slack file download failed ({resp.status})")
+                ct = resp.headers.get("Content-Type", "")
+                if "text/html" in ct:
+                    raise RuntimeError("Slack returned HTML login page instead of file")
+                return await resp.read()
+
+        return await self._resolve_media_to_cache(url, "slack", fetch)
 
     async def _get_ws_url(self) -> str | None:
         result = await self._api("apps.connections.open", token=self._app_token)

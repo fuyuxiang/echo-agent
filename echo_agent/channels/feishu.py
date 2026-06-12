@@ -157,7 +157,11 @@ class FeishuChannel(BaseChannel):
                 content = json.loads(message.get("content", "{}"))
                 image_key = content.get("image_key", "")
                 if image_key:
-                    media.append({"type": "image", "url": image_key})
+                    local_path = await self._download_feishu_image(image_key, msg_id)
+                    if local_path:
+                        media.append({"type": "image", "url": local_path})
+                    else:
+                        logger.warning("Feishu image download failed, skipping: {}", image_key[:30])
             except json.JSONDecodeError:
                 pass
 
@@ -187,6 +191,24 @@ class FeishuChannel(BaseChannel):
             text=text,
             metadata={"chat_type": event.get("chat_type", ""), "receive_id_type": "chat_id"},
         )
+
+    async def _download_feishu_image(self, image_key: str, msg_id: str) -> str | None:
+        """Download a Feishu image by image_key via the message resource API."""
+        async def fetch() -> bytes:
+            await self._ensure_tenant_token()
+            url = (
+                f"{_API_BASE}/im/v1/messages/{msg_id}"
+                f"/resources/{image_key}?type=image"
+            )
+            headers = {"Authorization": f"Bearer {self._tenant_token}"}
+            if not self._session:
+                raise RuntimeError("no session")
+            async with self._session.get(url, headers=headers) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"Feishu resource download failed ({resp.status})")
+                return await resp.read()
+
+        return await self._resolve_media_to_cache(image_key, "feishu", fetch, suffix=".jpg")
 
     # ── Encryption ───────────────────────────────────────────────────────────
 
