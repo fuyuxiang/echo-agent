@@ -107,7 +107,6 @@ class GeminiProvider(LLMProvider):
                                     mime, _, raw = url.partition(";")
                                     mime = mime.replace("data:", "")
                                     _, _, b64 = raw.partition(",")
-                                    import base64 as b64mod
                                     parts.append({"inline_data": {"mime_type": mime, "data": b64}})
                         else:
                             parts.append({"text": str(block)})
