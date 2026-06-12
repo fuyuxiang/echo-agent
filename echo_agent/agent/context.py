@@ -211,12 +211,17 @@ class ContextBuilder:
         expiry-prone CDN URLs; on failure we fall back to the original URL so the
         message is never dropped. Non-image attachments (file/video/audio) are not
         downloaded — the model cannot consume their bytes, so we only reference them
-        by name/URL and skip the wasted I/O."""
+        by name/URL and skip the wasted I/O.
+
+        If the media carries an AES key (WeChat CDN encryption), the downloaded bytes
+        are decrypted in-place before being handed to the model."""
         resolved: list[dict[str, str]] = []
-        download_targets: list[tuple[int, str]] = []
+        download_targets: list[tuple[int, str, str]] = []
         for idx, block in enumerate(items):
             btype = getattr(block.type, "value", str(block.type))
             url = block.url
+            meta = getattr(block, "metadata", None) or {}
+            aes_key = meta.get("aes_key", "")
             entry = {
                 "type": btype,
                 "url": url,
@@ -225,20 +230,37 @@ class ContextBuilder:
             }
             resolved.append(entry)
             if btype == "image" and url.startswith(("http://", "https://")):
-                download_targets.append((idx, url))
+                download_targets.append((idx, url, aes_key))
 
         if download_targets:
             cache = self._get_media_cache()
             results = await asyncio.gather(
-                *(cache.download(url, channel or "inbound") for _, url in download_targets),
+                *(cache.download(url, channel or "inbound") for _, url, _ in download_targets),
                 return_exceptions=True,
             )
-            for (idx, url), result in zip(download_targets, results):
+            for (idx, url, aes_key), result in zip(download_targets, results):
                 if isinstance(result, Exception):
                     logger.warning("Inbound media download failed, using original URL: {}", result)
                 elif result:
+                    if aes_key:
+                        result = self._decrypt_media_file(result, aes_key)
                     resolved[idx]["url"] = str(result)
         return resolved
+
+    @staticmethod
+    def _decrypt_media_file(path: Path, aes_key_b64: str) -> Path:
+        """Decrypt an AES-128-ECB encrypted media file in-place."""
+        from echo_agent.channels.weixin import _aes128_ecb_decrypt, _parse_aes_key
+
+        try:
+            key = _parse_aes_key(aes_key_b64)
+            ciphertext = path.read_bytes()
+            plaintext = _aes128_ecb_decrypt(ciphertext, key)
+            path.write_bytes(plaintext)
+            logger.debug("Decrypted media file: {}", path.name)
+        except Exception as e:
+            logger.warning("Media decryption failed for {}: {}", path.name, e)
+        return path
 
     def build_system_prompt(
         self,
