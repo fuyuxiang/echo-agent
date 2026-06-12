@@ -262,12 +262,16 @@ class MatrixChannel(BaseChannel):
         elif msgtype == "m.image":
             mxc = content.get("url", "")
             if mxc:
-                media.append({"type": "image", "url": mxc})
+                local_path = await self._download_matrix_media(mxc)
+                if local_path:
+                    media.append({"type": "image", "url": local_path})
             text = content.get("body", "")
         elif msgtype == "m.file":
             mxc = content.get("url", "")
             if mxc:
-                media.append({"type": "file", "url": mxc})
+                local_path = await self._download_matrix_media(mxc)
+                if local_path:
+                    media.append({"type": "file", "url": local_path})
             text = content.get("body", "")
 
         if not text and not media:
@@ -279,3 +283,26 @@ class MatrixChannel(BaseChannel):
             reply_to_id=evt.get("event_id"),
             metadata={"msgtype": msgtype},
         )
+
+    async def _download_matrix_media(self, mxc_url: str) -> str | None:
+        """Download a Matrix media file by converting mxc:// to an authenticated HTTP URL."""
+        parts = mxc_url.removeprefix("mxc://").split("/", 1)
+        if len(parts) != 2:
+            logger.warning("Invalid mxc URL: {}", mxc_url[:60])
+            return None
+
+        server_name, media_id = parts
+
+        async def fetch() -> bytes:
+            download_url = (
+                f"{self._homeserver}/_matrix/client/v1/media/download"
+                f"/{server_name}/{media_id}"
+            )
+            if not self._session:
+                raise RuntimeError("no session")
+            async with self._session.get(download_url) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"Matrix media download failed ({resp.status})")
+                return await resp.read()
+
+        return await self._resolve_media_to_cache(mxc_url, "matrix", fetch)

@@ -283,7 +283,20 @@ class MemoryConsolidator:
             content = msg.get("content", "")
             if not content:
                 continue
-            ts = msg.get("timestamp", "?")[:16]
+            if isinstance(content, list):
+                parts = []
+                for block in content:
+                    if isinstance(block, dict):
+                        if block.get("type") == "text":
+                            parts.append(block.get("text", ""))
+                        elif block.get("type") in ("image_url", "image"):
+                            parts.append("[image]")
+                    else:
+                        parts.append(str(block))
+                content = " ".join(parts)
+                if not content.strip():
+                    continue
+            ts = str(msg.get("timestamp", "?"))[:16]
             role = msg.get("role", "?").upper()
             lines.append(f"[{ts}] {role}: {content}")
         return "\n".join(lines)

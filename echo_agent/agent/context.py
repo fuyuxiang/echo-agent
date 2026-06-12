@@ -227,6 +227,8 @@ class ContextBuilder:
                 "url": url,
                 "mime_type": getattr(block, "mime_type", "") or "",
                 "name": self._block_name(block),
+                "aes_key": aes_key,
+                "original_url": url,
             }
             resolved.append(entry)
             if btype == "image" and url.startswith(("http://", "https://")):
@@ -309,6 +311,9 @@ class ContextBuilder:
         chat_id: str | None = None,
         system_prompt: str = "",
         retrieval_context: str = "",
+        history_image_ttl_minutes: int = 30,
+        history_image_limit: int = 4,
+        history_image_skip_if_current: bool = True,
     ) -> list[dict[str, Any]]:
         runtime = self._runtime_context(channel, chat_id)
         user_content = current_message
@@ -321,9 +326,18 @@ class ContextBuilder:
         messages: list[dict[str, Any]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
-        messages.extend(history)
 
         normalized = self._normalize_media(media)
+        has_current_image = any(item.get("type") == "image" for item in normalized)
+
+        enriched_history = self._inject_history_images(
+            history,
+            ttl_minutes=history_image_ttl_minutes,
+            limit=history_image_limit,
+            skip=has_current_image and history_image_skip_if_current,
+        )
+        messages.extend(enriched_history)
+
         if normalized:
             content_parts: list[dict[str, Any]] = [{"type": "text", "text": merged_user}]
             file_notes: list[str] = []
@@ -338,12 +352,8 @@ class ContextBuilder:
                     if image_url:
                         content_parts.append({"type": "image_url", "image_url": {"url": image_url}})
                     else:
-                        # 图片本地缓存已失效/不可读：不要静默丢弃，降级为文本引用，
-                        # 让模型至少知道用户发过一张图。
                         file_notes.append(f"[附件] 类型=image 名称={name} 路径={url}")
                 else:
-                    # 非图片附件（文件/视频/音频）模型无法直接看图，改为文本引用，
-                    # 给出类型、名称和本地路径，避免被误当成图片塞进 image_url。
                     file_notes.append(f"[附件] 类型={mtype} 名称={name} 路径={url}")
             if file_notes:
                 content_parts[0]["text"] = merged_user + "\n\n" + "\n".join(file_notes)
@@ -351,6 +361,113 @@ class ContextBuilder:
         else:
             messages.append({"role": "user", "content": merged_user})
         return messages
+
+    def _inject_history_images(
+        self,
+        history: list[dict[str, Any]],
+        ttl_minutes: int = 30,
+        limit: int = 4,
+        skip: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Enrich history messages that carry ``media_refs`` with image content.
+
+        Returns a shallow copy of *history* where qualifying user messages have
+        their ``content`` replaced by a multimodal list.  The original dicts are
+        not mutated.  When a cached file is missing, attempts to re-download from
+        the original URL (and decrypt if an AES key is stored).  Expired or
+        unrecoverable images degrade to a text placeholder."""
+        if skip or limit <= 0:
+            if skip:
+                logger.debug("Skipping history image injection (current turn has images)")
+            return history
+
+        import time
+
+        now = time.time()
+        cutoff = now - ttl_minutes * 60
+
+        collected: list[tuple[int, list[dict[str, Any]]]] = []
+        total = 0
+        for idx in range(len(history) - 1, -1, -1):
+            if total >= limit:
+                break
+            msg = history[idx]
+            if msg.get("role") != "user":
+                continue
+            refs = msg.get("media_refs")
+            if not refs:
+                continue
+            parts: list[dict[str, Any]] = []
+            for ref in refs:
+                ts = ref.get("timestamp", 0)
+                if ts < cutoff:
+                    age_min = (now - ts) / 60
+                    logger.debug(
+                        "History image expired ({:.0f}m old, TTL={}m): {}",
+                        age_min, ttl_minutes, ref.get("cache_path", "?"),
+                    )
+                    continue
+                data_url = self._resolve_history_image(ref)
+                age_min = int((now - ts) / 60)
+                if data_url:
+                    parts.append({"type": "image_url", "image_url": {"url": data_url}})
+                    parts.append({
+                        "type": "text",
+                        "text": f"[历史图片，来自{age_min}分钟前]",
+                    })
+                    logger.debug("Injected history image ({} min old)", age_min)
+                else:
+                    parts.append({"type": "text", "text": "[该图片已过期，无法显示]"})
+                    logger.info(
+                        "History image unavailable (cache={}, url={})",
+                        ref.get("cache_path", ""), ref.get("original_url", ""),
+                    )
+                total += 1
+                if total >= limit:
+                    break
+            if parts:
+                collected.append((idx, parts))
+
+        if not collected:
+            return history
+
+        logger.debug("Injecting {} history image(s) into {} message(s)", total, len(collected))
+        enriched = list(history)
+        for idx, image_parts in collected:
+            orig = enriched[idx]
+            text = orig.get("content", "")
+            if isinstance(text, list):
+                continue
+            enriched[idx] = {
+                **orig,
+                "content": [{"type": "text", "text": text}] + image_parts,
+            }
+        return enriched
+
+    def _resolve_history_image(self, ref: dict[str, Any]) -> str | None:
+        """Try to load a history image: cache first, then fallback re-download."""
+        cache_path = ref.get("cache_path", "")
+        if cache_path:
+            data_url = self._local_image_to_data_url(cache_path)
+            if data_url:
+                return data_url
+
+        original_url = ref.get("original_url", "")
+        if not original_url:
+            return None
+
+        cache = self._get_media_cache()
+        cached = cache.get_cached(original_url)
+        if cached and cached.exists():
+            aes_key = ref.get("aes_key", "")
+            if aes_key:
+                self._decrypt_media_file(cached, aes_key)
+            data_url = self._local_image_to_data_url(str(cached))
+            if data_url:
+                logger.debug("Recovered history image from cache lookup: {}", cached.name)
+                return data_url
+
+        return None
 
     @staticmethod
     def _normalize_media(media: Any) -> list[dict[str, str]]:

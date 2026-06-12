@@ -82,14 +82,37 @@ class GeminiProvider(LLMProvider):
             content = msg.get("content", "")
 
             if role == "system":
-                system_parts.append(content or "")
+                if isinstance(content, list):
+                    text = " ".join(
+                        b.get("text", "") for b in content
+                        if isinstance(b, dict) and b.get("type") == "text"
+                    )
+                else:
+                    text = content or ""
+                system_parts.append(text)
                 continue
 
             gemini_role = "model" if role == "assistant" else "user"
             parts: list[dict[str, Any]] = []
 
             if content:
-                parts.append({"text": content})
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict):
+                            if block.get("type") == "text":
+                                parts.append({"text": block.get("text", "")})
+                            elif block.get("type") == "image_url":
+                                url = (block.get("image_url") or {}).get("url", "")
+                                if url.startswith("data:"):
+                                    mime, _, raw = url.partition(";")
+                                    mime = mime.replace("data:", "")
+                                    _, _, b64 = raw.partition(",")
+                                    import base64 as b64mod
+                                    parts.append({"inline_data": {"mime_type": mime, "data": b64}})
+                        else:
+                            parts.append({"text": str(block)})
+                else:
+                    parts.append({"text": content})
 
             for tc in msg.get("tool_calls", []):
                 fn = tc.get("function", {})

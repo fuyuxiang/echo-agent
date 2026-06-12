@@ -358,6 +358,9 @@ class SessionConfig(_Base):
     context_window_tokens: int = 65536
     introduction_enabled: bool = True
     introduction_template: str = ""
+    history_image_ttl_minutes: int = 30
+    history_image_limit: int = 4
+    history_image_skip_if_current: bool = True
 
 
 # ── Memory configs ───────────────────────────────────────────────────────────
