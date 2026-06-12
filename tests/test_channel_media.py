@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -295,7 +295,7 @@ class TestHistoryImageInjection:
             {"role": "assistant", "content": "nice image"},
         ]
         msgs = cb.build_messages(history=history, current_message="what is in the image?")
-        user_with_image = msgs[1]
+        user_with_image = msgs[0]
         assert isinstance(user_with_image["content"], list)
         assert any(p.get("type") == "image_url" for p in user_with_image["content"])
 
@@ -352,7 +352,7 @@ class TestHistoryImageInjection:
             media=[{"type": "image", "url": str(cur_img)}],
             history_image_skip_if_current=True,
         )
-        hist_msg = msgs[1]
+        hist_msg = msgs[0]
         assert isinstance(hist_msg["content"], str)
 
     def test_cache_file_gone_degrades_to_text(self, tmp_path: Path):
@@ -364,7 +364,7 @@ class TestHistoryImageInjection:
             ]},
         ]
         msgs = cb.build_messages(history=history, current_message="what?")
-        enriched = msgs[1]
+        enriched = msgs[0]
         assert isinstance(enriched["content"], list)
         assert any("过期" in p.get("text", "") for p in enriched["content"])
 
@@ -375,8 +375,8 @@ class TestHistoryImageInjection:
             {"role": "assistant", "content": "hi"},
         ]
         msgs = cb.build_messages(history=history, current_message="how are you?")
-        assert isinstance(msgs[1]["content"], str)
-        assert msgs[1]["content"] == "hello"
+        assert isinstance(msgs[0]["content"], str)
+        assert msgs[0]["content"] == "hello"
 
     def test_history_image_has_text_annotation(self, tmp_path: Path):
         img = _make_image(tmp_path)
@@ -388,7 +388,7 @@ class TestHistoryImageInjection:
             ]},
         ]
         msgs = cb.build_messages(history=history, current_message="what?")
-        parts = msgs[1]["content"]
+        parts = msgs[0]["content"]
         text_parts = [p.get("text", "") for p in parts if p.get("type") == "text"]
         assert any("历史图片" in t for t in text_parts)
 
@@ -501,8 +501,6 @@ class TestCompressionMediaRefs:
             ]},
             {"role": "assistant", "content": "nice"},
         ]
-        from echo_agent.agent.compression.engine import ContextEngine
-        engine = ContextEngine(context_window_tokens=100000, trigger_ratio=0.7)
         working = list(messages)
         for msg in working:
             if "media_refs" in msg:
@@ -612,9 +610,11 @@ class TestTelegramMediaDownload:
         mock_resp = AsyncMock()
         mock_resp.status = 200
         mock_resp.read = AsyncMock(return_value=b"\xff\xd8JPEG_DATA")
-        mock_session = AsyncMock()
-        mock_session.get.return_value.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_session.get.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_session = MagicMock()
+        mock_session.get.return_value = mock_ctx
         ch._session = mock_session
 
         result = await ch._download_telegram_file("AgACAgIAA_FILE_ID")
@@ -638,9 +638,11 @@ class TestFeishuMediaDownload:
         mock_resp = AsyncMock()
         mock_resp.status = 200
         mock_resp.read = AsyncMock(return_value=b"\x89PNG_IMAGE_DATA")
-        mock_session = AsyncMock()
-        mock_session.get.return_value.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_session.get.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_session = MagicMock()
+        mock_session.get.return_value = mock_ctx
         ch._session = mock_session
 
         result = await ch._download_feishu_image("img_v2_abc123", "om_msg_001")
@@ -661,7 +663,7 @@ class TestWhatsAppMediaDownload:
         ch._media_cache_root = tmp_path
 
         call_count = 0
-        async def mock_get(url, **kwargs):
+        def mock_get(url, **kwargs):
             nonlocal call_count
             call_count += 1
             resp = AsyncMock()
@@ -670,10 +672,13 @@ class TestWhatsAppMediaDownload:
                 resp.json = AsyncMock(return_value={"url": "https://cdn.whatsapp.net/file.enc"})
             else:
                 resp.read = AsyncMock(return_value=b"IMAGE_BYTES")
-            return resp
+            ctx = MagicMock()
+            ctx.__aenter__ = AsyncMock(return_value=resp)
+            ctx.__aexit__ = AsyncMock(return_value=False)
+            return ctx
 
-        mock_session = AsyncMock()
-        mock_session.get = AsyncMock(side_effect=lambda url, **kw: mock_get(url, **kw))
+        mock_session = MagicMock()
+        mock_session.get = mock_get
         ch._session = mock_session
 
         result = await ch._download_whatsapp_media("1234567890")
@@ -698,9 +703,11 @@ class TestMatrixMediaDownload:
         mock_resp = AsyncMock()
         mock_resp.status = 200
         mock_resp.read = AsyncMock(return_value=b"MATRIX_IMAGE")
-        mock_session = AsyncMock()
-        mock_session.get.return_value.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_session.get.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_session = MagicMock()
+        mock_session.get.return_value = mock_ctx
         ch._session = mock_session
 
         result = await ch._download_matrix_media("mxc://example.com/AbCdEfGhIjK")
@@ -738,9 +745,11 @@ class TestSlackMediaDownload:
         mock_resp.status = 200
         mock_resp.headers = {"Content-Type": "image/png"}
         mock_resp.read = AsyncMock(return_value=b"SLACK_IMAGE")
-        mock_session = AsyncMock()
-        mock_session.get.return_value.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_session.get.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_session = MagicMock()
+        mock_session.get.return_value = mock_ctx
         ch._session = mock_session
 
         result = await ch._download_slack_file("https://files.slack.com/files-pri/T0/F0/image.png")
@@ -760,9 +769,11 @@ class TestSlackMediaDownload:
         mock_resp.status = 200
         mock_resp.headers = {"Content-Type": "text/html"}
         mock_resp.read = AsyncMock(return_value=b"<html>login</html>")
-        mock_session = AsyncMock()
-        mock_session.get.return_value.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_session.get.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_session = MagicMock()
+        mock_session.get.return_value = mock_ctx
         ch._session = mock_session
 
         result = await ch._download_slack_file("https://files.slack.com/files-pri/T0/F0/image.png")
