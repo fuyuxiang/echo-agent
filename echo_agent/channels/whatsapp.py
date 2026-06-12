@@ -109,18 +109,24 @@ class WhatsAppChannel(BaseChannel):
             text = img.get("caption", "")
             media_id = img.get("id", "")
             if media_id:
-                media.append({"type": "image", "url": media_id})
+                local_path = await self._download_whatsapp_media(media_id)
+                if local_path:
+                    media.append({"type": "image", "url": local_path})
         elif msg_type == "document":
             doc = msg.get("document", {})
             text = doc.get("caption", "")
             media_id = doc.get("id", "")
             if media_id:
-                media.append({"type": "file", "url": media_id})
+                local_path = await self._download_whatsapp_media(media_id)
+                if local_path:
+                    media.append({"type": "file", "url": local_path})
         elif msg_type == "audio":
             audio = msg.get("audio", {})
             media_id = audio.get("id", "")
             if media_id:
-                media.append({"type": "audio", "url": media_id})
+                local_path = await self._download_whatsapp_media(media_id)
+                if local_path:
+                    media.append({"type": "audio", "url": local_path})
 
         if not text and not media:
             return
@@ -132,6 +138,26 @@ class WhatsAppChannel(BaseChannel):
             media=media if media else None,
             metadata={"message_type": msg_type},
         )
+
+    async def _download_whatsapp_media(self, media_id: str) -> str | None:
+        """Download a WhatsApp media file via the two-step Graph API flow."""
+        async def fetch() -> bytes:
+            if not self._session:
+                raise RuntimeError("no session")
+            meta_url = f"{_GRAPH_API}/{media_id}"
+            async with self._session.get(meta_url) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"Graph API media info failed ({resp.status})")
+                info = await resp.json()
+            download_url = info.get("url", "")
+            if not download_url:
+                raise RuntimeError("Graph API returned no download URL")
+            async with self._session.get(download_url) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"media download failed ({resp.status})")
+                return await resp.read()
+
+        return await self._resolve_media_to_cache(media_id, "whatsapp", fetch)
 
     async def _health(self, request: web.Request) -> web.Response:
         return web.json_response({"status": "ok", "channel": self.name})

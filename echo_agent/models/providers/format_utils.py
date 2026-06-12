@@ -19,7 +19,13 @@ def openai_to_anthropic_messages(
         content = msg.get("content", "")
 
         if role == "system":
-            block: dict[str, Any] = {"type": "text", "text": content or "(empty)"}
+            if isinstance(content, list):
+                text = " ".join(
+                    b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
+                ) or "(empty)"
+            else:
+                text = content or "(empty)"
+            block: dict[str, Any] = {"type": "text", "text": text}
             system_blocks.append(block)
             continue
 
@@ -44,7 +50,10 @@ def _convert_assistant_msg(msg: dict[str, Any]) -> dict[str, Any]:
     blocks: list[dict[str, Any]] = []
     content = msg.get("content")
     if content:
-        blocks.append({"type": "text", "text": content})
+        if isinstance(content, list):
+            blocks.extend(_convert_block(b) for b in content)
+        else:
+            blocks.append({"type": "text", "text": content})
 
     for tc in msg.get("tool_calls", []):
         fn = tc.get("function", {})
@@ -80,9 +89,30 @@ def _append_tool_result(converted: list[dict[str, Any]], msg: dict[str, Any]) ->
 
 def _ensure_content_blocks(content: Any) -> list[dict[str, Any]]:
     if isinstance(content, list):
-        return content
+        return [_convert_block(b) for b in content]
     text = str(content) if content else "(empty)"
     return [{"type": "text", "text": text}]
+
+
+def _convert_block(block: Any) -> dict[str, Any]:
+    """Convert an OpenAI-format content block to Anthropic format if needed."""
+    if not isinstance(block, dict):
+        return {"type": "text", "text": str(block)}
+    if block.get("type") == "image_url":
+        url = (block.get("image_url") or {}).get("url", "")
+        if url.startswith("data:"):
+            media_type, _, raw = url.partition(";")
+            media_type = media_type.replace("data:", "")
+            _, _, b64_data = raw.partition(",")
+            return {
+                "type": "image",
+                "source": {"type": "base64", "media_type": media_type, "data": b64_data},
+            }
+        return {
+            "type": "image",
+            "source": {"type": "url", "url": url},
+        }
+    return block
 
 
 def _sanitize_tool_id(tool_id: str) -> str:

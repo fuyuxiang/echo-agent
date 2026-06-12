@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -177,6 +179,40 @@ class BaseChannel(ABC):
     @property
     def is_running(self) -> bool:
         return self._running
+
+    _media_cache_root: Path | None = None
+
+    async def _resolve_media_to_cache(
+        self,
+        source_id: str,
+        platform: str,
+        fetch: Callable[[], Awaitable[bytes]],
+        suffix: str = ".jpg",
+    ) -> str | None:
+        """Download media via a channel-provided *fetch* callback and cache locally.
+
+        Returns the absolute path string on success, ``None`` on any failure.
+        The caller decides how to degrade (skip the image, insert a placeholder, etc.).
+        """
+        root = self._media_cache_root or (Path.home() / ".echo-agent" / "data" / "media_cache")
+        cache_dir = root / platform
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        url_hash = hashlib.sha256(source_id.encode()).hexdigest()[:16]
+        target = cache_dir / f"{url_hash}{suffix}"
+        if target.exists():
+            target.touch()
+            return str(target)
+        try:
+            data = await fetch()
+            if not data:
+                logger.warning("Empty media response for {} on {}", source_id[:60], platform)
+                return None
+            target.write_bytes(data)
+            logger.debug("Cached channel media: {} → {}", source_id[:60], target.name)
+            return str(target)
+        except Exception as e:
+            logger.warning("Channel media download failed for {} on {}: {}", source_id[:60], platform, e)
+            return None
 
     async def transcribe_audio(self, file_path: str | Path) -> str:
         """Transcribe audio file via Groq Whisper API."""

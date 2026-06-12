@@ -207,8 +207,14 @@ class TelegramChannel(BaseChannel):
             if kind in msg:
                 file_obj = msg[kind][-1] if kind == "photo" else msg[kind]
                 file_id = file_obj.get("file_id", "")
-                if file_id:
-                    media.append({"type": "image" if kind == "photo" else kind, "url": file_id})
+                if not file_id:
+                    continue
+                media_type = "image" if kind == "photo" else kind
+                local_path = await self._download_telegram_file(file_id)
+                if local_path:
+                    media.append({"type": media_type, "url": local_path})
+                else:
+                    logger.warning("Telegram file download failed, skipping: {}", file_id[:30])
 
         if not text and not media:
             return
@@ -237,6 +243,26 @@ class TelegramChannel(BaseChannel):
         if reply and str(reply.get("from", {}).get("id", "")) == self._bot_id:
             return True
         return False
+
+    async def _download_telegram_file(self, file_id: str) -> str | None:
+        """Resolve a Telegram file_id to a local cached path via getFile + download."""
+        async def fetch() -> bytes:
+            result = await self._api("getFile", json={"file_id": file_id})
+            if not result:
+                raise RuntimeError("getFile returned no result")
+            file_path = result.get("file_path", "")
+            if not file_path:
+                raise RuntimeError("getFile returned empty file_path")
+            download_url = f"https://api.telegram.org/file/bot{self._token}/{file_path}"
+            if not self._session:
+                raise RuntimeError("no session")
+            async with self._session.get(download_url) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"download failed ({resp.status})")
+                return await resp.read()
+
+        ext = ".jpg"
+        return await self._resolve_media_to_cache(file_id, "telegram", fetch, suffix=ext)
 
     async def _api(self, method: str, **kwargs: Any) -> Any:
         if not self._session:

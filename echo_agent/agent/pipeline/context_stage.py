@@ -127,7 +127,18 @@ class ContextStage:
                 session.messages = session.messages[:session.last_consolidated] + result.messages
                 await self._sessions.save(session)
 
-        session.add_message("user", event.text)
+        media_items = event.media_items
+        resolved_media = (
+            await self._context_builder.resolve_inbound_media(media_items, event.channel)
+            if media_items
+            else None
+        )
+
+        media_refs = self._build_media_refs(resolved_media) if resolved_media else None
+        if media_refs:
+            session.add_message("user", event.text, media_refs=media_refs)
+        else:
+            session.add_message("user", event.text)
 
         retrieval_parts: list[str] = []
         if self._config.memory.enabled:
@@ -159,13 +170,7 @@ class ContextStage:
 
         retrieval = "\n\n".join(retrieval_parts)
 
-        media_items = event.media_items
-        resolved_media = (
-            await self._context_builder.resolve_inbound_media(media_items, event.channel)
-            if media_items
-            else None
-        )
-
+        session_cfg = self._config.session
         messages = self._context_builder.build_messages(
             history=history,
             current_message=event.text,
@@ -174,6 +179,9 @@ class ContextStage:
             chat_id=event.chat_id,
             system_prompt=system_prompt,
             retrieval_context=retrieval,
+            history_image_ttl_minutes=session_cfg.history_image_ttl_minutes,
+            history_image_limit=session_cfg.history_image_limit,
+            history_image_skip_if_current=session_cfg.history_image_skip_if_current,
         )
 
         # tool_defs already computed above for capability derivation.
@@ -192,9 +200,13 @@ class ContextStage:
                 # information — injecting it just burns prompt tokens.
                 if execution_plan and len(execution_plan.steps) > 1:
                     plan_context = execution_plan.to_prompt()
-                    messages[-1]["content"] = (
-                        messages[-1]["content"] + f"\n\n[Plan]\n{plan_context}"
-                    )
+                    last_content = messages[-1]["content"]
+                    if isinstance(last_content, list):
+                        last_content[0]["text"] += f"\n\n[Plan]\n{plan_context}"
+                    else:
+                        messages[-1]["content"] = (
+                            last_content + f"\n\n[Plan]\n{plan_context}"
+                        )
             except Exception as e:
                 logger.debug("Planning failed, proceeding without plan: {}", e)
 
@@ -212,6 +224,31 @@ class ContextStage:
             intro_text=intro_text,
             stream_publisher=stream_publisher,
         )
+
+    @staticmethod
+    def _build_media_refs(resolved_media: list[dict[str, str]]) -> list[dict[str, Any]]:
+        """Extract lightweight image references from resolved media for session storage."""
+        import time
+
+        from echo_agent.session.media_ref import MediaRef
+
+        refs: list[dict[str, Any]] = []
+        now = time.time()
+        for item in resolved_media:
+            if item.get("type") != "image":
+                continue
+            url = item.get("url", "")
+            if not url:
+                continue
+            is_local = not url.startswith(("http://", "https://", "data:"))
+            refs.append(MediaRef(
+                cache_path=url if is_local else "",
+                original_url=item.get("original_url", "") or (url if not is_local else ""),
+                mime_type=item.get("mime_type", ""),
+                timestamp=now,
+                aes_key=item.get("aes_key", ""),
+            ).to_dict())
+        return refs
 
     def _infer_task_type(self, text: str) -> str:
         lower = text.lower()

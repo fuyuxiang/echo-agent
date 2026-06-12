@@ -163,7 +163,15 @@ class BedrockProvider(LLMProvider):
         parts = []
         for msg in messages:
             if msg.get("role") == "system":
-                parts.append({"text": msg.get("content", "")})
+                content = msg.get("content", "")
+                if isinstance(content, list):
+                    text = " ".join(
+                        b.get("text", "") for b in content
+                        if isinstance(b, dict) and b.get("type") == "text"
+                    )
+                else:
+                    text = content or ""
+                parts.append({"text": text})
         return parts
 
     def _to_converse_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -181,7 +189,25 @@ class BedrockProvider(LLMProvider):
 
             text = msg.get("content")
             if text:
-                content_parts.append({"text": text})
+                if isinstance(text, list):
+                    for block in text:
+                        if isinstance(block, dict):
+                            if block.get("type") == "text":
+                                content_parts.append({"text": block.get("text", "")})
+                            elif block.get("type") == "image_url":
+                                url = (block.get("image_url") or {}).get("url", "")
+                                if url.startswith("data:"):
+                                    import base64 as b64mod
+                                    mime, _, raw = url.partition(";")
+                                    mime = mime.replace("data:", "")
+                                    _, _, b64_data = raw.partition(",")
+                                    content_parts.append({
+                                        "image": {"format": mime.split("/")[-1], "source": {"bytes": b64mod.b64decode(b64_data)}}
+                                    })
+                        else:
+                            content_parts.append({"text": str(block)})
+                else:
+                    content_parts.append({"text": text})
 
             for tc in msg.get("tool_calls", []):
                 fn = tc.get("function", {})
