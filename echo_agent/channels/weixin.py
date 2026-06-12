@@ -540,20 +540,35 @@ class WeixinChannel(BaseChannel):
     def _extract_media_info(self, item: dict[str, Any]) -> dict[str, str] | None:
         item_type = item.get("type")
         if item_type == _ITEM_IMAGE:
-            url = self._resolve_media_url(_media_reference(item, "image_item").get("full_url") or "")
+            ref = _media_reference(item, "image_item")
+            url = self._resolve_media_url(ref.get("full_url") or "")
             if url:
-                return {"type": "image", "url": url}
+                result: dict[str, str] = {"type": "image", "url": url}
+                aes_key = ref.get("aes_key") or ref.get("decode_key") or ""
+                if aes_key:
+                    result["aes_key"] = aes_key
+                return result
             return {"type": "image", "label": "[收到图片]"}
         if item_type == _ITEM_FILE:
             name = (item.get("file_item") or {}).get("file_name") or "file"
-            url = self._resolve_media_url(_media_reference(item, "file_item").get("full_url") or "")
+            ref = _media_reference(item, "file_item")
+            url = self._resolve_media_url(ref.get("full_url") or "")
             if url:
-                return {"type": "file", "url": url, "name": name}
+                result = {"type": "file", "url": url, "name": name}
+                aes_key = ref.get("aes_key") or ref.get("decode_key") or ""
+                if aes_key:
+                    result["aes_key"] = aes_key
+                return result
             return {"type": "file", "label": f"[收到文件: {name}]"}
         if item_type == _ITEM_VIDEO:
-            url = self._resolve_media_url(_media_reference(item, "video_item").get("full_url") or "")
+            ref = _media_reference(item, "video_item")
+            url = self._resolve_media_url(ref.get("full_url") or "")
             if url:
-                return {"type": "video", "url": url}
+                result = {"type": "video", "url": url}
+                aes_key = ref.get("aes_key") or ref.get("decode_key") or ""
+                if aes_key:
+                    result["aes_key"] = aes_key
+                return result
             return {"type": "video", "label": "[收到视频]"}
         # 语音消息的转写文本已由 _extract_text 处理，无需作为附件重复采集。
         return None
