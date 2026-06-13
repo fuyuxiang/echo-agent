@@ -191,6 +191,8 @@ class QQBotChannel(BaseChannel):
     # ── Send ─────────────────────────────────────────────────────────────────
 
     async def send(self, event: OutboundEvent) -> SendResult | None:
+        if not self.should_deliver(event):
+            return SendResult(success=True, skipped=True)
         if not self._session:
             return SendResult(success=False, error="session not initialized")
         await self._ensure_token()

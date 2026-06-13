@@ -21,6 +21,7 @@ class SendResult:
     success: bool
     message_id: str = ""
     error: str = ""
+    skipped: bool = False
 
 
 class BaseChannel(ABC):
@@ -51,6 +52,20 @@ class BaseChannel(ABC):
     @abstractmethod
     async def send(self, event: OutboundEvent) -> SendResult | None:
         """Send a message through this channel."""
+
+    def should_deliver(self, event: OutboundEvent) -> bool:
+        """Return False to silently skip non-final messages on channels that cannot edit.
+
+        Channels that support message editing (Telegram, Discord) can show progress
+        then overwrite it with the final response. Channels without edit support would
+        deliver every intermediate chunk as a separate, irrevocable message — confusing
+        the user with duplicates. This guard prevents that at the base layer.
+        """
+        if self.supports_edit:
+            return True
+        if event.is_final:
+            return True
+        return False
 
     async def edit_message(
         self,
