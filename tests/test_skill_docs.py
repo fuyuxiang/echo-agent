@@ -10,7 +10,6 @@ For each SKILL.md that contains `python3 scripts/...` examples, this test:
 Run: pytest tests/test_skill_docs.py -v
 """
 
-import os
 import re
 import subprocess
 import sys
