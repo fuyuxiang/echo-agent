@@ -115,8 +115,8 @@ def discover_tools(
         from echo_agent.agent.tools.vision import VisionTool
         tools.append(VisionTool(provider=provider, workspace=ws))
 
-    _try_register_image_gen(tools, config)
-    _try_register_tts(tools, config, ws)
+    _try_register_image_gen(tools, config, provider)
+    _try_register_tts(tools, config, ws, provider)
 
     if session_manager:
         from echo_agent.agent.tools.session_search import SessionSearchTool
@@ -148,20 +148,98 @@ def discover_tools(
     return tools
 
 
-def _try_register_image_gen(tools: list[Tool], config: Config) -> None:
+def _unwrap_provider(provider: LLMProvider | None) -> LLMProvider | None:
+    """Unwrap decorator layers (RateLimitedProvider, _PooledProvider) to get the real provider."""
+    if provider is None:
+        return None
+    inner = provider
+    while hasattr(inner, "_inner"):
+        inner = inner._inner
+    return inner
+
+
+def _is_openai_compatible_provider(provider: LLMProvider | None) -> bool:
+    """Check if provider uses the OpenAI-compatible API (images/audio endpoints available)."""
+    from echo_agent.models.providers.openai_provider import OpenAIProvider
+    inner = _unwrap_provider(provider)
+    return isinstance(inner, OpenAIProvider)
+
+
+def _infer_image_model(api_base: str) -> str:
+    """Infer image generation model name from API base URL."""
+    base = (api_base or "").lower()
+    if "minimax" in base:
+        return "image-01"
+    if "dashscope" in base or "aliyun" in base:
+        return "wanx-v1"
+    if "zhipu" in base or "bigmodel" in base:
+        return "cogview-3"
+    return "dall-e-3"
+
+
+def _infer_tts_model(api_base: str) -> str:
+    """Infer TTS model name from API base URL."""
+    base = (api_base or "").lower()
+    if "minimax" in base:
+        return "speech-02"
+    if "dashscope" in base or "aliyun" in base:
+        return "cosyvoice-v1"
+    return "tts-1"
+
+
+def _try_register_image_gen(tools: list[Tool], config: Config, provider: LLMProvider | None = None) -> None:
     ig = getattr(config.tools, "image_gen", None)
-    if not ig or not getattr(ig, "api_key", ""):
+    explicit_key = getattr(ig, "api_key", "") if ig else ""
+    api_base = getattr(ig, "api_base", "") if ig else ""
+    model = getattr(ig, "model", "") if ig else ""
+
+    if explicit_key:
+        # User explicitly configured image_gen — use their settings as-is
+        api_key = explicit_key
+    elif _is_openai_compatible_provider(provider):
+        # Fallback only for OpenAI-compatible providers — use unwrapped to get real key/base
+        real = _unwrap_provider(provider)
+        api_key = getattr(real, "api_key", "")
+        if not api_base:
+            api_base = getattr(real, "api_base", "")
+        # Reset default model so we infer from api_base
+        model = ""
+    else:
         return
+
+    if not api_key:
+        return
+
+    # Infer model from api_base if not explicitly set by user
+    if not model or (not explicit_key and model == "dall-e-3"):
+        model = _infer_image_model(api_base)
+
     from echo_agent.agent.tools.image_gen import ImageGenTool
-    tools.append(ImageGenTool(
-        api_key=ig.api_key,
-        api_base=getattr(ig, "api_base", ""),
-        model=getattr(ig, "model", "dall-e-3"),
-    ))
+    tools.append(ImageGenTool(api_key=api_key, api_base=api_base, model=model))
 
 
-def _try_register_tts(tools: list[Tool], config: Config, ws: str) -> None:
+def _try_register_tts(tools: list[Tool], config: Config, ws: str, provider: LLMProvider | None = None) -> None:
     from echo_agent.agent.tools.tts import TTSTool
     tts_cfg = getattr(config.tools, "tts", None)
     openai_key = getattr(tts_cfg, "openai_api_key", "") if tts_cfg else ""
-    tools.append(TTSTool(workspace=ws, openai_api_key=openai_key))
+    openai_base = ""
+    default_backend = getattr(tts_cfg, "default_backend", "edge") if tts_cfg else "edge"
+    default_voice = getattr(tts_cfg, "default_voice", "") if tts_cfg else ""
+
+    # Fallback only for OpenAI-compatible providers
+    if not openai_key and _is_openai_compatible_provider(provider):
+        real = _unwrap_provider(provider)
+        openai_key = getattr(real, "api_key", "")
+        openai_base = getattr(real, "api_base", "")
+
+    # Infer TTS model from api_base
+    tts_model = _infer_tts_model(openai_base)
+
+    tools.append(TTSTool(
+        workspace=ws,
+        openai_api_key=openai_key,
+        openai_api_base=openai_base,
+        tts_model=tts_model,
+        default_backend=default_backend,
+        default_voice=default_voice,
+    ))

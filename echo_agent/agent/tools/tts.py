@@ -23,14 +23,18 @@ class TTSTool(Tool):
     }
     timeout_seconds = 60
 
-    def __init__(self, workspace: str, openai_api_key: str = ""):
+    def __init__(self, workspace: str, openai_api_key: str = "", openai_api_base: str = "", tts_model: str = "tts-1", default_backend: str = "", default_voice: str = ""):
         self._workspace = Path(workspace)
         self._openai_key = openai_api_key
+        self._openai_base = (openai_api_base or "https://api.openai.com/v1").rstrip("/")
+        self._tts_model = tts_model
+        self._default_backend = default_backend or "edge"
+        self._default_voice = default_voice
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         text = params["text"]
-        backend = params.get("backend", "edge" if not self._openai_key else "openai")
-        voice = params.get("voice", "")
+        backend = params.get("backend", self._default_backend)
+        voice = params.get("voice", self._default_voice or "")
         output_path = params.get("output_path", "")
 
         if not output_path:
@@ -59,9 +63,9 @@ class TTSTool(Tool):
             return ToolResult(success=False, error="OpenAI API key not configured for TTS")
 
         import aiohttp
-        url = "https://api.openai.com/v1/audio/speech"
+        url = f"{self._openai_base}/audio/speech"
         headers = {"Authorization": f"Bearer {self._openai_key}", "Content-Type": "application/json"}
-        body = {"model": "tts-1", "input": text, "voice": voice, "response_format": "mp3"}
+        body = {"model": self._tts_model, "input": text, "voice": voice, "response_format": "mp3"}
 
         try:
             async with aiohttp.ClientSession() as session:
