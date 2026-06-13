@@ -43,6 +43,8 @@ class WebhookChannel(BaseChannel):
             await self._runner.cleanup()
 
     async def send(self, event: OutboundEvent) -> SendResult | None:
+        if not self.should_deliver(event):
+            return SendResult(success=True, skipped=True)
         future = self._pending_responses.pop(event.reply_to_id or "", None)
         if future and not future.done():
             future.set_result(event.text)
