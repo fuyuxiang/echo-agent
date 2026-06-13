@@ -533,6 +533,7 @@ class SkillsConfig(_Base):
     disabled: list[str] = Field(default_factory=list)
     platform_disabled: dict[str, list[str]] = Field(default_factory=dict)
     external_dirs: list[str] = Field(default_factory=list)
+    allow_lazy_installs: bool = True
 
 
 # ── Bus configs ─────────────────────────────────────────────────────────────
