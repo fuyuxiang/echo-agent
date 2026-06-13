@@ -56,6 +56,8 @@ class FeishuChannel(BaseChannel):
             await self._session.close()
 
     async def send(self, event: OutboundEvent) -> SendResult | None:
+        if not self.should_deliver(event):
+            return SendResult(success=True, skipped=True)
         text = event.text or ""
         if not text or not self._session:
             return SendResult(success=False, error="no text or no session")

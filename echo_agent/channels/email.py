@@ -44,6 +44,8 @@ class EmailChannel(BaseChannel):
                 pass
 
     async def send(self, event: OutboundEvent) -> SendResult | None:
+        if not self.should_deliver(event):
+            return SendResult(success=True, skipped=True)
         text = event.text or ""
         if not text:
             return SendResult(success=False, error="no text")
