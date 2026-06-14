@@ -20,12 +20,14 @@ def register_management_routes(app: web.Application, prefix: str, server: Gatewa
     from echo_agent.gateway.api.channels import ChannelsAPI
     from echo_agent.gateway.api.knowledge import KnowledgeAPI
     from echo_agent.gateway.api.config import ConfigAPI
+    from echo_agent.gateway.api.lifecycle import LifecycleAPI
 
     memory_api = MemoryAPI(server)
     skills_api = SkillsAPI(server)
     channels_api = ChannelsAPI(server)
     knowledge_api = KnowledgeAPI(server)
     config_api = ConfigAPI(server)
+    lifecycle_api = LifecycleAPI(server)
 
     app.router.add_get(f"{prefix}/memory", memory_api.list_entries)
     app.router.add_get(f"{prefix}/memory/stats", memory_api.stats)
@@ -48,3 +50,5 @@ def register_management_routes(app: web.Application, prefix: str, server: Gatewa
 
     app.router.add_get(f"{prefix}/config", config_api.get_config)
     app.router.add_get(f"{prefix}/config/models", config_api.get_models)
+
+    app.router.add_post(f"{prefix}/shutdown", lifecycle_api.shutdown)

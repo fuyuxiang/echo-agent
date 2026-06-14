@@ -70,6 +70,8 @@ class GatewayServer:
         self._pending_http: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._MAX_PENDING_HTTP = 500
         self._running = False
+        self._actual_port: int | None = None
+        self._shutdown_event: asyncio.Event | None = None
 
         data_dir = workspace / "data"
         self.auth = GatewayAuth(config.auth, data_dir)
@@ -98,6 +100,20 @@ class GatewayServer:
     def is_running(self) -> bool:
         return self._running
 
+    @property
+    def actual_port(self) -> int:
+        """Return the actual bound port (useful when configured port is 0)."""
+        if self._actual_port is not None:
+            return self._actual_port
+        return self._config.port
+
+    def set_shutdown_event(self, event: asyncio.Event) -> None:
+        self._shutdown_event = event
+
+    def request_shutdown(self) -> None:
+        if self._shutdown_event:
+            self._shutdown_event.set()
+
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
     async def start(self) -> None:
@@ -113,12 +129,25 @@ class GatewayServer:
             self._config.port,
         )
         await self._site.start()
+
+        actual_port = self._config.port
+        if self._runner.addresses:
+            actual_port = self._runner.addresses[0][1]
+        self._actual_port = actual_port
+
         self._running = True
+
+        import sys
+        print(
+            f"ECHO_AGENT_READY port={actual_port} ws={self._config.ws_path} health={self._config.api_prefix}/health",
+            flush=True,
+            file=sys.stdout,
+        )
 
         await self.hooks.emit("gateway_start")
         logger.info(
             "Gateway listening on {}:{}",
-            self._config.host, self._config.port,
+            self._config.host, actual_port,
         )
 
     def _check_bind_safety(self) -> None:

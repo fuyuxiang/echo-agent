@@ -15,7 +15,7 @@ from echo_agent.agent.context import (
     build_skills_context,
 )
 from echo_agent.agent.pipeline.types import PipelineContext
-from echo_agent.bus.events import InboundEvent
+from echo_agent.bus.events import InboundEvent, OutboundEvent
 from echo_agent.session.manager import Session
 
 if TYPE_CHECKING:
@@ -56,6 +56,7 @@ class ContextStage:
         memory_snapshots: OrderedDict,
         snapshot_enabled: bool,
         tool_definitions_fn: Any,
+        bus: Any = None,
     ):
         self._config = config
         self._sessions = sessions
@@ -71,6 +72,19 @@ class ContextStage:
         self._memory_snapshots = memory_snapshots
         self._snapshot_enabled = snapshot_enabled
         self._tool_definitions_fn = tool_definitions_fn
+        self._bus = bus
+
+    async def _emit_progress(self, event: InboundEvent, metadata: dict[str, Any]) -> None:
+        if not getattr(self._config.gateway, 'emit_progress_events', True):
+            return
+        out = OutboundEvent.text_reply(
+            channel=event.channel, chat_id=event.chat_id, text="", reply_to_id=event.reply_to_id,
+        )
+        out.is_final = False
+        out.message_kind = "progress"
+        out.metadata = {"_progress": True, "_inbound_event_id": event.event_id}
+        out.metadata.update(metadata)
+        await self._bus.publish_outbound(out)
 
     async def build(
         self,
@@ -155,6 +169,18 @@ class ContextStage:
                     "Relevant memory:\n"
                     + "\n".join(f"- {r.key}: {r.content}" for r, _ in scored)
                 )
+                if publish_response and self._bus:
+                    _debug = getattr(self._config.gateway, 'progress_debug', False)
+                    _mem_meta: dict[str, Any] = {
+                        "progress_type": "memory_retrieved",
+                        "count": len(scored),
+                    }
+                    if _debug:
+                        _mem_meta["entries"] = [
+                            {"key": r.key, "content_preview": r.content[:100]}
+                            for r, _ in scored[:5]
+                        ]
+                    await self._emit_progress(event, _mem_meta)
 
         if self._knowledge:
             knowledge_results = self._knowledge.search(
@@ -165,6 +191,18 @@ class ContextStage:
             knowledge_context = self._knowledge.format_results(knowledge_results)
             if knowledge_context:
                 retrieval_parts.append(knowledge_context)
+                if publish_response and self._bus:
+                    _debug = getattr(self._config.gateway, 'progress_debug', False)
+                    _know_meta: dict[str, Any] = {
+                        "progress_type": "knowledge_cited",
+                        "count": len(knowledge_results) if knowledge_results else 0,
+                    }
+                    if _debug:
+                        _know_meta["citations"] = [
+                            {"path": getattr(r, 'path', ''), "chunk_preview": getattr(r, 'text', '')[:200], "score": getattr(r, 'score', 0.0)}
+                            for r in (knowledge_results[:5] if knowledge_results else [])
+                        ]
+                    await self._emit_progress(event, _know_meta)
 
         task_type = self._infer_task_type(event.text)
 

@@ -39,10 +39,18 @@ class GatewayHealthProvider:
         if is_running and not channel_status:
             status = "degraded"
 
+        provider_status = "ok"
+        if self._gw._agent_loop:
+            provider = getattr(self._gw._agent_loop, 'provider', None)
+            if provider and getattr(provider, 'is_stub', False) is True:
+                status = "degraded"
+                provider_status = "stub"
+
         return {
             "status": status,
             "server_running": is_running,
             "active_channels": channel_status,
+            "provider": provider_status,
             "rate_limiter": rate_stats,
             "media_cache_mb": round(media_size, 1),
             "active_sessions": session_count,

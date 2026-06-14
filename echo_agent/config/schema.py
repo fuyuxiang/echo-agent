@@ -159,7 +159,7 @@ class ChannelsConfig(_Base):
     matrix: MatrixChannelConfig = Field(default_factory=MatrixChannelConfig)
     send_progress: bool = True
     send_tool_hints: bool = True
-    stream_channels: list[str] = Field(default_factory=lambda: ["cli", "telegram", "discord", "slack"])
+    stream_channels: list[str] = Field(default_factory=lambda: ["cli", "telegram", "discord", "slack", "gateway:*"])
     stream_flush_chars: int = 180
     stream_flush_interval_ms: int = 1500
     stream_paragraph_mode: bool = True
@@ -528,6 +528,8 @@ class GatewayConfig(_Base):
     media_cache_max_mb: int = 500
     max_agent_cache_size: int = 50
     enable_progressive_edit: bool = True
+    emit_progress_events: bool = True
+    progress_debug: bool = False
     hooks_dir: str = ""
 
 
