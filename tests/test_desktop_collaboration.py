@@ -10,12 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import io
-import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from echo_agent.bus.events import OutboundEvent, ContentBlock, ContentType
 from echo_agent.bus.queue import MessageBus
 
 
