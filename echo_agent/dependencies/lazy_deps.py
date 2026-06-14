@@ -75,6 +75,7 @@ SKILL_DEPS: dict[str, tuple[str, ...]] = {
 
     # ─── Creative skills ──────────────────────────────────────────────────
     "skill.image-gen": (),  # uses API via urllib, no extra deps
+    "tool.image-gen-fal": ("fal-client>=0.5",),
     "skill.meme-gen": ("Pillow>=10.0",),
     "skill.ppt-author": ("python-pptx>=1.0",),
     "skill.excel-author": ("openpyxl>=3.1",),

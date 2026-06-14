@@ -47,13 +47,17 @@ class FakeAnthropicProvider(LLMProvider):
         return ""
 
 
-def _make_config(image_gen_key="", image_gen_base="", image_gen_model="dall-e-3",
-                 tts_key="", tts_backend="edge", tts_voice="") -> Config:
+def _make_config(image_gen_key="", image_gen_base="", image_gen_model="",
+                 image_gen_backend="openai", image_gen_fal_key="", image_gen_fal_model="",
+                 tts_key="", tts_base="", tts_model="", tts_backend="edge", tts_voice="") -> Config:
     """Build a minimal Config with tools section."""
     config = Config()
     config.tools = ToolsConfig()
-    config.tools.image_gen = ImageGenConfig(api_key=image_gen_key, api_base=image_gen_base, model=image_gen_model)
-    config.tools.tts = TTSConfig(openai_api_key=tts_key, default_backend=tts_backend, default_voice=tts_voice)
+    config.tools.image_gen = ImageGenConfig(
+        backend=image_gen_backend, api_key=image_gen_key, api_base=image_gen_base, model=image_gen_model,
+        fal_key=image_gen_fal_key, fal_model=image_gen_fal_model,
+    )
+    config.tools.tts = TTSConfig(openai_api_key=tts_key, openai_api_base=tts_base, model=tts_model, default_backend=tts_backend, default_voice=tts_voice)
     return config
 
 
@@ -117,25 +121,21 @@ class TestImageGenRegistration:
         _try_register_image_gen(tools, config, provider=provider)
         assert not any(t.name == "image_generate" for t in tools)
 
-    def test_openai_provider_fallback_registers(self):
+    def test_openai_provider_without_explicit_config_does_not_register(self):
         from echo_agent.models.providers.openai_provider import OpenAIProvider
         tools: list[Tool] = []
         config = _make_config()
         provider = OpenAIProvider(api_key="sk-test", api_base="https://api.openai.com/v1")
         _try_register_image_gen(tools, config, provider=provider)
-        img_tools = [t for t in tools if t.name == "image_generate"]
-        assert len(img_tools) == 1
-        assert img_tools[0]._model == "dall-e-3"
+        assert not any(t.name == "image_generate" for t in tools)
 
-    def test_minimax_provider_infers_model(self):
+    def test_minimax_provider_without_explicit_config_does_not_register(self):
         from echo_agent.models.providers.openai_provider import OpenAIProvider
         tools: list[Tool] = []
         config = _make_config()
         provider = OpenAIProvider(api_key="mm-key", api_base="https://api.minimax.chat/v1")
         _try_register_image_gen(tools, config, provider=provider)
-        img_tools = [t for t in tools if t.name == "image_generate"]
-        assert len(img_tools) == 1
-        assert img_tools[0]._model == "image-01"
+        assert not any(t.name == "image_generate" for t in tools)
 
     def test_explicit_config_takes_priority(self):
         from echo_agent.models.providers.openai_provider import OpenAIProvider
@@ -149,8 +149,8 @@ class TestImageGenRegistration:
         assert img_tools[0]._api_base == "https://custom.api/v1"
         assert img_tools[0]._model == "my-model"
 
-    def test_pooled_provider_fallback_works(self):
-        """credential_pool wrapped provider should still provide key/base."""
+    def test_pooled_provider_without_explicit_config_does_not_register(self):
+        """credential_pool wrapped provider should NOT auto-register without explicit config."""
         from echo_agent.models.providers.openai_provider import OpenAIProvider
         from echo_agent.models.rate_limiter import RateLimitedProvider, TokenBucketLimiter
         from echo_agent.models.providers import _PooledProvider
@@ -166,10 +166,30 @@ class TestImageGenRegistration:
         tools: list[Tool] = []
         config = _make_config()
         _try_register_image_gen(tools, config, provider=wrapped)
+        assert not any(t.name == "image_generate" for t in tools)
+
+    def test_fal_backend_no_key_skips(self):
+        tools: list[Tool] = []
+        config = _make_config(image_gen_backend="fal")
+        _try_register_image_gen(tools, config, provider=None)
+        assert not any(t.name == "image_generate" for t in tools)
+
+    def test_fal_backend_with_key_registers(self):
+        tools: list[Tool] = []
+        config = _make_config(image_gen_backend="fal", image_gen_fal_key="fal-key-123", image_gen_fal_model="fal-ai/flux/schnell")
+        _try_register_image_gen(tools, config, provider=None)
         img_tools = [t for t in tools if t.name == "image_generate"]
         assert len(img_tools) == 1
-        assert img_tools[0]._api_key == "pool-key-1"
-        assert img_tools[0]._model == "image-01"
+        assert img_tools[0]._fal_key == "fal-key-123"
+        assert img_tools[0]._model == "fal-ai/flux/schnell"
+
+    def test_fal_backend_default_model(self):
+        tools: list[Tool] = []
+        config = _make_config(image_gen_backend="fal", image_gen_fal_key="fal-key-123")
+        _try_register_image_gen(tools, config, provider=None)
+        img_tools = [t for t in tools if t.name == "image_generate"]
+        assert len(img_tools) == 1
+        assert img_tools[0]._model == "fal-ai/flux/schnell"
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +199,7 @@ class TestImageGenRegistration:
 
 class TestTTSRegistration:
 
-    def test_default_backend_respected_with_provider_fallback(self):
+    def test_default_backend_respected_without_key(self):
         from echo_agent.models.providers.openai_provider import OpenAIProvider
         tools: list[Tool] = []
         config = _make_config(tts_backend="edge")
@@ -188,6 +208,7 @@ class TestTTSRegistration:
         tts_tools = [t for t in tools if t.name == "text_to_speech"]
         assert len(tts_tools) == 1
         assert tts_tools[0]._default_backend == "edge"
+        assert tts_tools[0]._openai_key == ""
 
     def test_anthropic_provider_does_not_inject_key(self):
         from echo_agent.models.providers.anthropic_provider import AnthropicProvider
@@ -199,7 +220,7 @@ class TestTTSRegistration:
         assert len(tts_tools) == 1
         assert tts_tools[0]._openai_key == ""
 
-    def test_openai_provider_fallback_injects_key(self):
+    def test_openai_provider_without_explicit_key_does_not_inject(self):
         from echo_agent.models.providers.openai_provider import OpenAIProvider
         tools: list[Tool] = []
         config = _make_config(tts_backend="edge")
@@ -207,14 +228,13 @@ class TestTTSRegistration:
         _try_register_tts(tools, config, "/tmp", provider=provider)
         tts_tools = [t for t in tools if t.name == "text_to_speech"]
         assert len(tts_tools) == 1
-        assert tts_tools[0]._openai_key == "sk-test"
-        # Default backend still respected
+        assert tts_tools[0]._openai_key == ""
         assert tts_tools[0]._default_backend == "edge"
 
     def test_explicit_tts_key_takes_priority(self):
         from echo_agent.models.providers.openai_provider import OpenAIProvider
         tools: list[Tool] = []
-        config = _make_config(tts_key="explicit-key", tts_backend="openai")
+        config = _make_config(tts_key="explicit-key", tts_base="https://api.openai.com/v1", tts_model="tts-1", tts_backend="openai")
         provider = OpenAIProvider(api_key="provider-key", api_base="https://api.openai.com/v1")
         _try_register_tts(tools, config, "/tmp", provider=provider)
         tts_tools = [t for t in tools if t.name == "text_to_speech"]

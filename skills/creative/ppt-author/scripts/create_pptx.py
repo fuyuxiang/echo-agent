@@ -5,20 +5,23 @@ import argparse
 import sys
 from pathlib import Path
 
-try:
-    from echo_agent.dependencies import require
-    require("skill.ppt-author")
-except ImportError:
-    pass
 
-try:
-    from pptx import Presentation
-    from pptx.util import Inches, Pt  # noqa: F401
-except ImportError:
-    sys.exit("Install: pip install python-pptx")
+def _ensure_deps():
+    try:
+        from echo_agent.dependencies import require
+        require("skill.ppt-author")
+    except ImportError:
+        pass
+    try:
+        from pptx import Presentation  # noqa: F401
+    except ImportError:
+        sys.exit("Install: pip install python-pptx")
 
 
 def create_pptx(title, slides_data, output="output.pptx", template=None):
+    from pptx import Presentation
+    from pptx.util import Inches, Pt  # noqa: F401
+
     prs = Presentation(template) if template else Presentation()
 
     title_slide = prs.slides.add_slide(prs.slide_layouts[0])
@@ -77,8 +80,10 @@ def main():
     args = parser.parse_args()
 
     if args.cmd == "from-md":
+        _ensure_deps()
         from_markdown(args.input, args.output)
     elif args.cmd == "quick":
+        _ensure_deps()
         slides = [{"title": s, "bullets": []} for s in (args.slides or [])]
         create_pptx(args.title, slides, args.output)
     else:
