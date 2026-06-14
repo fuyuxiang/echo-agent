@@ -188,6 +188,10 @@ class GatewayServer:
             a2a = A2AServer(self._agent_loop, card)
             a2a.register_routes(app)
 
+        if self._agent_loop:
+            from echo_agent.gateway.api import register_management_routes
+            register_management_routes(app, prefix, self)
+
     # ── HTTP handlers ────────────────────────────────────────────────────────
 
     PLACEHOLDER_CONTINUE = "<!-- more -->"
