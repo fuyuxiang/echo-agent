@@ -243,13 +243,20 @@ class WebToolConfig(_Base):
 
 
 class ImageGenConfig(_Base):
+    backend: str = "openai"
+    # OpenAI-compatible backend
     api_key: str = ""
     api_base: str = ""
-    model: str = "dall-e-3"
+    model: str = ""
+    # FAL.ai backend
+    fal_key: str = ""
+    fal_model: str = ""
 
 
 class TTSConfig(_Base):
     openai_api_key: str = ""
+    openai_api_base: str = ""
+    model: str = ""
     default_backend: str = "edge"
     default_voice: str = ""
 
