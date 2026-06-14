@@ -230,10 +230,11 @@ class AppRuntime:
     the storage close — from running.
     """
 
-    def __init__(self, ctx: BootstrapResult):
+    def __init__(self, ctx: BootstrapResult, shutdown_event: asyncio.Event | None = None):
         self._ctx = ctx
         self._gateway: Any = None
         self._started = False
+        self._shutdown_event = shutdown_event
 
     @property
     def gateway(self) -> Any:
@@ -271,6 +272,8 @@ class AppRuntime:
                 agent_loop=ctx.agent,
                 a2a_config=ctx.config.a2a,
             )
+            if self._shutdown_event:
+                self._gateway.set_shutdown_event(self._shutdown_event)
             await self._gateway.start()
             logger.info("Gateway started on {}:{}", ctx.config.gateway.host, ctx.config.gateway.port)
         return True
@@ -313,7 +316,7 @@ async def run(config_path: str | None = None, workspace: str | None = None) -> N
     logger.info("Echo Agent starting — workspace: {}", ctx.workspace)
 
     install_signal_handler(shutdown)
-    runtime = AppRuntime(ctx)
+    runtime = AppRuntime(ctx, shutdown_event=shutdown)
     try:
         if not await runtime.start():
             return
@@ -347,7 +350,7 @@ async def run_gateway(
         ctx.config.gateway.port = port
 
     install_signal_handler(shutdown)
-    runtime = AppRuntime(ctx)
+    runtime = AppRuntime(ctx, shutdown_event=shutdown)
     try:
         if not await runtime.start():
             return
