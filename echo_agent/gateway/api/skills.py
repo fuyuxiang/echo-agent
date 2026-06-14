@@ -18,16 +18,31 @@ class SkillsAPI:
     def _guard(self, request: web.Request, action: str) -> web.Response | None:
         return self._server._require_api_token(request, action=action)
 
+    def _list_all_with_status(self) -> list[dict]:
+        """Return all skills (including disabled) with their enabled status."""
+        store = self._store()
+        results: list[dict] = []
+        seen: set[str] = set()
+        for root, _ in store._all_roots():
+            if not root.exists():
+                continue
+            for skill_md in root.rglob("SKILL.md"):
+                meta = store._read_meta(skill_md.parent)
+                if meta and meta.name not in seen:
+                    seen.add(meta.name)
+                    d = meta.to_dict()
+                    d["enabled"] = meta.name not in store._disabled
+                    results.append(d)
+        results.sort(key=lambda m: m["name"])
+        return results
+
     async def list_skills(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "skills_list")
         if guard:
             return guard
 
-        store = self._store()
-        skills = store.list_all()
-        return web.json_response({
-            "skills": [s.to_dict() for s in skills],
-        })
+        skills = self._list_all_with_status()
+        return web.json_response({"skills": skills})
 
     async def get_skill(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "skills_get")
@@ -55,12 +70,74 @@ class SkillsAPI:
         name = request.match_info["name"]
         store = self._store()
 
-        all_skills = store.list_all()
-        is_currently_active = any(s.name == name for s in all_skills)
+        is_currently_disabled = name in store._disabled
 
-        if is_currently_active:
-            store.persist_disable(name)
-            return web.json_response({"name": name, "enabled": False})
-        else:
+        if is_currently_disabled:
             store.persist_enable(name)
-            return web.json_response({"name": name, "enabled": True})
+            enabled = True
+        else:
+            store.persist_disable(name)
+            enabled = False
+
+        return web.json_response({
+            "success": True,
+            "skill": {"name": name, "enabled": enabled},
+        })
+
+    async def delete_skill(self, request: web.Request) -> web.Response:
+        guard = self._guard(request, "skills_delete")
+        if guard:
+            return guard
+
+        name = request.match_info["name"]
+        store = self._store()
+        error = store.delete_skill(name)
+        if error:
+            return web.json_response({"error": error}, status=400)
+
+        store._disabled.discard(name)
+        store._persisted_disabled.discard(name)
+        store._save_persisted_disabled()
+
+        return web.json_response({"success": True})
+
+    async def import_skill(self, request: web.Request) -> web.Response:
+        guard = self._guard(request, "skills_import")
+        if guard:
+            return guard
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+
+        path = body.get("path")
+        if not path:
+            return web.json_response({"error": "path is required"}, status=400)
+
+        from pathlib import Path as P
+        source = P(path)
+        if not source.exists() or not (source / "SKILL.md").exists():
+            return web.json_response(
+                {"error": f"no SKILL.md found at '{path}'"}, status=400
+            )
+
+        store = self._store()
+        meta = store._read_meta(source)
+        if not meta:
+            return web.json_response(
+                {"error": "failed to parse SKILL.md"}, status=400
+            )
+
+        import shutil
+        target = store._user_dir / (meta.category or "general") / meta.name
+        if target.exists():
+            return web.json_response(
+                {"error": f"skill '{meta.name}' already exists"}, status=409
+            )
+        target.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, target, dirs_exist_ok=True)
+
+        d = meta.to_dict()
+        d["enabled"] = False
+        return web.json_response({"success": True, "skill": d})
