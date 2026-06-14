@@ -92,6 +92,20 @@ class InferenceStage:
             out.metadata.update({"_progress": True, "_tool_hint": tool_hint, "_inbound_event_id": event.event_id})
             await self._bus.publish_outbound(out)
 
+        async def _emit_tool_event(metadata: dict[str, Any]) -> None:
+            if not ctx.publish_response:
+                return
+            if not getattr(self._config.gateway, 'emit_progress_events', True):
+                return
+            out = OutboundEvent.text_reply(
+                channel=event.channel, chat_id=event.chat_id, text="", reply_to_id=event.reply_to_id,
+            )
+            out.is_final = False
+            out.message_kind = "progress"
+            out.metadata = {"_progress": True, "_inbound_event_id": event.event_id}
+            out.metadata.update(metadata)
+            await self._bus.publish_outbound(out)
+
         # Standard inference loop
         response_text = ""
         should_review_skills = False
@@ -272,6 +286,19 @@ class InferenceStage:
                         if _hook_cancelled:
                             continue
 
+                    import time as _time
+                    _tool_start_ts = _time.monotonic()
+
+                    _debug_progress = getattr(self._config.gateway, 'progress_debug', False)
+                    _tool_start_meta: dict[str, Any] = {
+                        "progress_type": "tool_call",
+                        "tool": tool_call.name,
+                        "status": "started",
+                    }
+                    if _debug_progress:
+                        _tool_start_meta["args"] = str(tool_call.arguments)[:500]
+                    await _emit_tool_event(_tool_start_meta)
+
                     result = await self._tools.execute(tool_call.name, tool_call.arguments, tool_exec_ctx)
 
                     # post_tool_call hook
@@ -279,6 +306,17 @@ class InferenceStage:
                         result = await self._hook_registry.dispatch_modify(
                             "post_tool_call", result, tool_call.name, tool_call.arguments, tool_exec_ctx,
                         )
+
+                    _tool_duration_ms = int((_time.monotonic() - _tool_start_ts) * 1000)
+                    _tool_result_meta: dict[str, Any] = {
+                        "progress_type": "tool_result",
+                        "tool": tool_call.name,
+                        "duration_ms": _tool_duration_ms,
+                        "status": "done" if result.success else "error",
+                    }
+                    if _debug_progress:
+                        _tool_result_meta["result_preview"] = result.text[:500]
+                    await _emit_tool_event(_tool_result_meta)
 
                     result_text = result.text
                     if len(result_text) > self._MAX_TOOL_RESULT_CHARS:

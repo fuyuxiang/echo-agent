@@ -259,6 +259,7 @@ class AgentLoop:
             memory_snapshots=self._memory_snapshots,
             snapshot_enabled=self._snapshot_enabled,
             tool_definitions_fn=self.tools.get_definitions,
+            bus=bus,
         )
         self._inference_stage = InferenceStage(
             config=config,
@@ -730,9 +731,13 @@ class AgentLoop:
             return template
 
     def _should_stream_channel(self, channel: str) -> bool:
-        if channel.startswith("gateway:"):
-            return False
-        return channel in set(self.config.channels.stream_channels)
+        channels = set(self.config.channels.stream_channels)
+        if channel in channels:
+            return True
+        for pattern in channels:
+            if pattern.endswith(":*") and channel.startswith(pattern[:-1]):
+                return True
+        return False
 
     async def process_direct(self, content: str, session_key: str = "cli:direct") -> str:
         """Process a message directly (for CLI or testing)."""
