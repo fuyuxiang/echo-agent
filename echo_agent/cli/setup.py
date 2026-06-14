@@ -389,7 +389,7 @@ def setup_tools(config: dict) -> None:
     if (tools.get("web", {}) or {}).get("enabled"):
         pre_selected.append(TOOL_OPTIONS.index("web"))
     image_block = tools.get("image_gen") or tools.get("imageGen") or {}
-    if image_block.get("api_key") or image_block.get("apiKey"):
+    if image_block.get("api_key") or image_block.get("apiKey") or image_block.get("fal_key") or image_block.get("falKey"):
         pre_selected.append(TOOL_OPTIONS.index("image_gen"))
     tts_block = tools.get("tts", {}) or {}
     if tts_block.get("openai_api_key") or tts_block.get("openaiApiKey") or tts_block.get("default_backend"):
@@ -436,16 +436,36 @@ def setup_tools(config: dict) -> None:
 
     if "image_gen" in chosen:
         ig = _ensure_dict(tools, "image_gen")
-        existing = ig.get("api_key") or ig.get("apiKey") or ""
-        if existing:
-            new_key = prompt(f"  {t('tools.image_api_key')} [****{t('common.saved')}]", password=True)
-            if new_key:
-                ig["api_key"] = new_key
+        backend_options = [t("tools.image_backend_openai"), t("tools.image_backend_fal")]
+        backend_values = ["openai", "fal"]
+        cur_backend = ig.get("backend", "openai")
+        b_idx = prompt_choice(t("tools.image_backend"), backend_options,
+                              default=backend_values.index(cur_backend) if cur_backend in backend_values else 0)
+        ig["backend"] = backend_values[b_idx]
+
+        if backend_values[b_idx] == "fal":
+            existing = ig.get("fal_key") or ig.get("falKey") or ""
+            if existing:
+                new_key = prompt(f"  {t('tools.image_fal_key')} [****{t('common.saved')}]", password=True)
+                if new_key:
+                    ig["fal_key"] = new_key
+            else:
+                new_key = prompt(f"  {t('tools.image_fal_key')}", password=True)
+                if new_key:
+                    ig["fal_key"] = new_key
+            ig["fal_model"] = prompt(f"  {t('tools.image_fal_model')}", default=ig.get("fal_model") or ig.get("falModel") or "fal-ai/flux/schnell")
         else:
-            new_key = prompt(f"  {t('tools.image_api_key')}", password=True)
-            if new_key:
-                ig["api_key"] = new_key
-        ig["model"] = prompt(f"  {t('tools.image_model')}", default=ig.get("model", "dall-e-3"))
+            existing = ig.get("api_key") or ig.get("apiKey") or ""
+            if existing:
+                new_key = prompt(f"  {t('tools.image_api_key')} [****{t('common.saved')}]", password=True)
+                if new_key:
+                    ig["api_key"] = new_key
+            else:
+                new_key = prompt(f"  {t('tools.image_api_key')}", password=True)
+                if new_key:
+                    ig["api_key"] = new_key
+            ig["api_base"] = prompt(f"  {t('tools.image_api_base')}", default=ig.get("api_base") or ig.get("apiBase") or "https://api.openai.com/v1")
+            ig["model"] = prompt(f"  {t('tools.image_model')}", default=ig.get("model", "dall-e-3"))
 
     if "tts" in chosen:
         tts = _ensure_dict(tools, "tts")
@@ -462,6 +482,8 @@ def setup_tools(config: dict) -> None:
                     tts["openai_api_key"] = new_key
             else:
                 tts["openai_api_key"] = prompt(f"  {t('tools.tts_openai_key')}", password=True)
+            tts["openai_api_base"] = prompt(f"  {t('tools.tts_openai_base')}", default=tts.get("openai_api_base", "https://api.openai.com/v1"))
+            tts["model"] = prompt(f"  {t('tools.tts_model')}", default=tts.get("model", "tts-1"))
 
     code_exec = _ensure_dict(tools, "code_exec")
     code_exec["enabled"] = "code_exec" in chosen

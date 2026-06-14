@@ -189,30 +189,42 @@ def _infer_tts_model(api_base: str) -> str:
 
 def _try_register_image_gen(tools: list[Tool], config: Config, provider: LLMProvider | None = None) -> None:
     ig = getattr(config.tools, "image_gen", None)
-    explicit_key = getattr(ig, "api_key", "") if ig else ""
+    backend = getattr(ig, "backend", "openai") if ig else "openai"
+
+    if backend == "fal":
+        fal_key = getattr(ig, "fal_key", "") if ig else ""
+        fal_model = getattr(ig, "fal_model", "") if ig else ""
+        if not fal_key:
+            logger.info(
+                "image_generate tool not registered: no fal_key configured. "
+                "Set tools.image_gen.fal_key and tools.image_gen.fal_model in config to enable."
+            )
+            return
+        from echo_agent.agent.tools.image_gen_fal import FalImageGenTool, FAL_MODELS
+        if fal_model and fal_model not in FAL_MODELS:
+            logger.warning(
+                "image_generate: configured fal_model '{}' is not in the built-in catalog. "
+                "Supported: {}. The tool will error at execution time.",
+                fal_model, ", ".join(sorted(FAL_MODELS.keys())),
+            )
+        tools.append(FalImageGenTool(fal_key=fal_key, model=fal_model))
+        return
+
+    api_key = getattr(ig, "api_key", "") if ig else ""
     api_base = getattr(ig, "api_base", "") if ig else ""
     model = getattr(ig, "model", "") if ig else ""
 
-    if explicit_key:
-        # User explicitly configured image_gen — use their settings as-is
-        api_key = explicit_key
-    elif _is_openai_compatible_provider(provider):
-        # Fallback only for OpenAI-compatible providers — use unwrapped to get real key/base
-        real = _unwrap_provider(provider)
-        api_key = getattr(real, "api_key", "")
-        if not api_base:
-            api_base = getattr(real, "api_base", "")
-        # Reset default model so we infer from api_base
-        model = ""
-    else:
-        return
-
     if not api_key:
+        if _is_openai_compatible_provider(provider):
+            logger.info(
+                "image_generate tool not registered: no explicit image_gen.api_key configured. "
+                "Set tools.image_gen.api_key, tools.image_gen.api_base, and tools.image_gen.model in config to enable."
+            )
         return
 
-    # Infer model from api_base if not explicitly set by user
-    if not model or (not explicit_key and model == "dall-e-3"):
+    if not model:
         model = _infer_image_model(api_base)
+        logger.debug("image_generate: model not configured, inferred '{}' from api_base", model)
 
     from echo_agent.agent.tools.image_gen import ImageGenTool
     tools.append(ImageGenTool(api_key=api_key, api_base=api_base, model=model))
@@ -222,18 +234,23 @@ def _try_register_tts(tools: list[Tool], config: Config, ws: str, provider: LLMP
     from echo_agent.agent.tools.tts import TTSTool
     tts_cfg = getattr(config.tools, "tts", None)
     openai_key = getattr(tts_cfg, "openai_api_key", "") if tts_cfg else ""
-    openai_base = ""
+    openai_base = getattr(tts_cfg, "openai_api_base", "") if tts_cfg else ""
+    tts_model = getattr(tts_cfg, "model", "") if tts_cfg else ""
     default_backend = getattr(tts_cfg, "default_backend", "edge") if tts_cfg else "edge"
     default_voice = getattr(tts_cfg, "default_voice", "") if tts_cfg else ""
 
-    # Fallback only for OpenAI-compatible providers
     if not openai_key and _is_openai_compatible_provider(provider):
-        real = _unwrap_provider(provider)
-        openai_key = getattr(real, "api_key", "")
-        openai_base = getattr(real, "api_base", "")
+        logger.info(
+            "TTS openai backend not available: no explicit tts.openai_api_key configured. "
+            "Set tools.tts.openai_api_key, tools.tts.openai_api_base, and tools.tts.model in config to enable. "
+            "edge backend remains available without configuration."
+        )
 
-    # Infer TTS model from api_base
-    tts_model = _infer_tts_model(openai_base)
+    if not tts_model and openai_key:
+        tts_model = _infer_tts_model(openai_base)
+        logger.debug("TTS: model not configured, inferred '{}' from openai_api_base", tts_model)
+    if not tts_model:
+        tts_model = "tts-1"
 
     tools.append(TTSTool(
         workspace=ws,
