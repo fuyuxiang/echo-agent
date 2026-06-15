@@ -55,7 +55,7 @@ def _make_ctx(event=None, session=None, messages=None, tool_defs=None, publish_r
     return ctx
 
 
-def _make_stage(provider=None, tools=None, approval_gate=None, max_iterations=10):
+def _make_stage(provider=None, tools=None, approval_gate=None, max_iterations=10, planner=None):
     config = _make_config()
     bus = AsyncMock()
     bus.publish_outbound = AsyncMock()
@@ -106,6 +106,7 @@ def _make_stage(provider=None, tools=None, approval_gate=None, max_iterations=10
         circuit_breaker=circuit_breaker,
         default_model="test-model",
         max_iterations=max_iterations,
+        planner=planner,
     )
     return stage, bus
 
@@ -229,3 +230,114 @@ class TestInferenceStageMaxIterations:
 
         # Loop exhausted, fallback text should mention issue/try again
         assert "issue" in result.response_text.lower() or "try again" in result.response_text.lower()
+
+
+class TestInferenceStageReflection:
+    """反思闭环：多步 plan 上触发 reflect，should_replan=True 时重跑一次。"""
+
+    def _make_multistep_plan(self):
+        from echo_agent.agent.planning.models import Plan, PlanStep, StrategyType
+        return Plan(
+            strategy=StrategyType.PLAN_EXECUTE,
+            steps=[PlanStep(index=0, description="a"), PlanStep(index=1, description="b")],
+            goal="multi",
+        )
+
+    def _make_feedback(self, *, should_replan: bool, critique: str = "", suggestions: list | None = None):
+        from echo_agent.agent.planning.models import Feedback
+        return Feedback(
+            should_replan=should_replan,
+            critique=critique,
+            suggestions=suggestions or [],
+        )
+
+    @pytest.mark.asyncio
+    async def test_reflection_triggers_rerun_when_should_replan(self):
+        """planner.reflect 返回 should_replan=True 时应触发第二轮推理。"""
+        provider = AsyncMock()
+        provider.chat_stream_with_retry = AsyncMock(side_effect=[
+            LLMResponse(content="partial", finish_reason="stop"),
+            LLMResponse(content="final", finish_reason="stop"),
+        ])
+
+        planner = AsyncMock()
+        planner.reflect = AsyncMock(
+            return_value=self._make_feedback(should_replan=True, critique="incomplete", suggestions=["do x"])
+        )
+
+        stage, _ = _make_stage(provider=provider, planner=planner)
+        ctx = _make_ctx()
+        ctx.execution_plan = self._make_multistep_plan()
+
+        result = await stage.run(ctx)
+
+        assert result.response_text == "final"
+        planner.reflect.assert_called_once()
+        assert provider.chat_stream_with_retry.call_count == 2
+        # 验证反思引导消息已追加进 messages
+        reflection_msgs = [m for m in ctx.messages if m.get("role") == "user" and "[Reflection]" in m.get("content", "")]
+        assert len(reflection_msgs) == 1
+
+    @pytest.mark.asyncio
+    async def test_reflection_no_rerun_when_satisfied(self):
+        """planner.reflect 返回 should_replan=False 时不应重跑。"""
+        provider = AsyncMock()
+        provider.chat_stream_with_retry = AsyncMock(
+            return_value=LLMResponse(content="first", finish_reason="stop")
+        )
+
+        planner = AsyncMock()
+        planner.reflect = AsyncMock(
+            return_value=self._make_feedback(should_replan=False)
+        )
+
+        stage, _ = _make_stage(provider=provider, planner=planner)
+        ctx = _make_ctx()
+        ctx.execution_plan = self._make_multistep_plan()
+
+        result = await stage.run(ctx)
+
+        assert result.response_text == "first"
+        assert provider.chat_stream_with_retry.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_reflection_skipped_for_single_step_plan(self):
+        """单步 plan 不应触发 reflect。"""
+        from echo_agent.agent.planning.models import Plan, PlanStep, StrategyType
+
+        provider = AsyncMock()
+        provider.chat_stream_with_retry = AsyncMock(
+            return_value=LLMResponse(content="done", finish_reason="stop")
+        )
+
+        planner = AsyncMock()
+        planner.reflect = AsyncMock()
+
+        stage, _ = _make_stage(provider=provider, planner=planner)
+        ctx = _make_ctx()
+        ctx.execution_plan = Plan(
+            strategy=StrategyType.PLAN_EXECUTE,
+            steps=[PlanStep(index=0, description="only step")],
+            goal="single",
+        )
+
+        await stage.run(ctx)
+
+        assert not planner.reflect.called
+
+    @pytest.mark.asyncio
+    async def test_reflection_skipped_when_no_planner(self):
+        """不传 planner 时，即使有多步 plan 也不反思。"""
+        provider = AsyncMock()
+        provider.chat_stream_with_retry = AsyncMock(
+            return_value=LLMResponse(content="done", finish_reason="stop")
+        )
+
+        stage, _ = _make_stage(provider=provider)  # planner=None
+        ctx = _make_ctx()
+        ctx.execution_plan = self._make_multistep_plan()
+
+        result = await stage.run(ctx)
+
+        assert provider.chat_stream_with_retry.call_count == 1
+        assert result.response_text == "done"
