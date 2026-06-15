@@ -161,8 +161,8 @@ class PluginManager:
         # compat 模式越权仅 warning 并继续，靠事后核验裁剪；legacy 插件按默认权限集放行。
         # 权限判定在 sandbox 内不随时间变化，只调一次并缓存，事后核验复用，
         # 避免重复 append violations 与重复打印 warning。
-        tool_ok = sandbox.check_tool_register()
-        hook_ok = sandbox.check_hook_register()
+        tool_ok = sandbox.check_tool_register() if record.manifest.provides.tools else True
+        hook_ok = sandbox.check_hook_register() if record.manifest.provides.hooks else True
         denied: list[str] = []
         if record.manifest.provides.tools and not tool_ok:
             denied.append("tool.register")
