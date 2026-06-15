@@ -326,6 +326,43 @@ class TestInferenceStageReflection:
         assert not planner.reflect.called
 
     @pytest.mark.asyncio
+    async def test_reflection_rerun_accumulates_nudge_counters(self):
+        """重跑时两轮的工具调用计数应完整累计写回 session，不丢第一轮。"""
+        tc = ToolCallRequest(id="c", name="search", arguments={"q": "x"})
+        provider = AsyncMock()
+        # 第一轮：1 次工具调用后 stop；第二轮：1 次工具调用后 stop
+        provider.chat_stream_with_retry = AsyncMock(side_effect=[
+            LLMResponse(content="", tool_calls=[tc], finish_reason="tool_calls"),
+            LLMResponse(content="r1", finish_reason="stop"),
+            LLMResponse(content="", tool_calls=[tc], finish_reason="tool_calls"),
+            LLMResponse(content="r2", finish_reason="stop"),
+        ])
+
+        tools_reg = MagicMock()
+        tools_reg.execute = AsyncMock(return_value=MagicMock(success=True, text="ok", error=None, metadata={}))
+        tools_reg.has = MagicMock(return_value=False)
+
+        planner = AsyncMock()
+        planner.reflect = AsyncMock(
+            return_value=self._make_feedback(should_replan=True, critique="more")
+        )
+
+        # 真 dict metadata，才能验证计数累计
+        session = MagicMock()
+        session.add_message = MagicMock()
+        session.metadata = {}
+
+        stage, _ = _make_stage(provider=provider, tools=tools_reg, planner=planner)
+        ctx = _make_ctx(session=session)
+        ctx.execution_plan = self._make_multistep_plan()
+
+        await stage.run(ctx)
+
+        # 整 turn 共 2 次工具调用，计数器应为 2（而非只数第二轮的 1）
+        assert session.metadata["_nudge_tool_iters_skill"] == 2
+        assert session.metadata["_nudge_tool_iters_memory"] == 2
+
+    @pytest.mark.asyncio
     async def test_reflection_skipped_when_no_planner(self):
         """不传 planner 时，即使有多步 plan 也不反思。"""
         provider = AsyncMock()
@@ -341,3 +378,69 @@ class TestInferenceStageReflection:
 
         assert provider.chat_stream_with_retry.call_count == 1
         assert result.response_text == "done"
+
+    @pytest.mark.asyncio
+    async def test_reflection_rerun_hard_capped_at_one(self):
+        """should_replan 恒为 True 也最多重跑 1 轮——硬上限不可被绕过。"""
+        provider = AsyncMock()
+        provider.chat_stream_with_retry = AsyncMock(side_effect=[
+            LLMResponse(content="r1", finish_reason="stop"),
+            LLMResponse(content="r2", finish_reason="stop"),
+            # 第三次不应被调用；若被调用会 StopIteration 暴露回归
+        ])
+
+        planner = AsyncMock()
+        planner.reflect = AsyncMock(
+            return_value=self._make_feedback(should_replan=True, critique="still bad")
+        )
+
+        stage, _ = _make_stage(provider=provider, planner=planner)
+        ctx = _make_ctx()
+        ctx.execution_plan = self._make_multistep_plan()
+
+        result = await stage.run(ctx)
+
+        # 两轮工具循环，reflect 只在第一轮后调一次，第二轮后不再反思
+        assert provider.chat_stream_with_retry.call_count == 2
+        assert planner.reflect.call_count == 1
+        assert result.response_text == "r2"
+
+    @pytest.mark.asyncio
+    async def test_reflection_exception_falls_back_to_first_pass(self):
+        """reflect 抛异常时不崩溃、不重跑，返回第一轮结果。"""
+        provider = AsyncMock()
+        provider.chat_stream_with_retry = AsyncMock(
+            return_value=LLMResponse(content="first only", finish_reason="stop")
+        )
+
+        planner = AsyncMock()
+        planner.reflect = AsyncMock(side_effect=RuntimeError("reflect boom"))
+
+        stage, _ = _make_stage(provider=provider, planner=planner)
+        ctx = _make_ctx()
+        ctx.execution_plan = self._make_multistep_plan()
+
+        result = await stage.run(ctx)
+
+        assert result.response_text == "first only"
+        assert provider.chat_stream_with_retry.call_count == 1
+        planner.reflect.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_reflection_skipped_when_plan_is_none(self):
+        """execution_plan 为 None 时不反思（即便注入了 planner）。"""
+        provider = AsyncMock()
+        provider.chat_stream_with_retry = AsyncMock(
+            return_value=LLMResponse(content="done", finish_reason="stop")
+        )
+
+        planner = AsyncMock()
+        planner.reflect = AsyncMock()
+
+        stage, _ = _make_stage(provider=provider, planner=planner)
+        ctx = _make_ctx()
+        ctx.execution_plan = None
+
+        await stage.run(ctx)
+
+        assert not planner.reflect.called
