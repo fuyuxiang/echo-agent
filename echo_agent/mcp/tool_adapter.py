@@ -43,7 +43,7 @@ class MCPToolAdapter(Tool):
         """按 MCP annotations 保守分级：降级受限、升级顺从。
 
         destructiveHint → EXEC；readOnlyHint 且非 destructive → READ_ONLY；
-        无 hint / 字段矛盾 / 解析异常 → WRITE（绝不因外部输入放松）。
+        非 dict / 无 hint / 字段矛盾 / 字段非严格 True → WRITE（绝不因外部输入放松）。
         """
         annotations = mcp_tool.get("annotations")
         if not isinstance(annotations, dict):
@@ -54,7 +54,8 @@ class MCPToolAdapter(Tool):
 
         if destructive:
             return RiskLevel.EXEC
-        if read_only and not destructive:
+        # 走到这里 destructive 必为 False（上面已返回）
+        if read_only:
             return RiskLevel.READ_ONLY
         return RiskLevel.WRITE
 
@@ -92,4 +93,4 @@ class MCPToolAdapter(Tool):
         )
 
     def execution_mode(self, params: dict[str, Any]) -> str:
-        return "read_only" if self.risk_level == "read_only" else "side_effect"
+        return "read_only" if self.risk_level == RiskLevel.READ_ONLY.value else "side_effect"
