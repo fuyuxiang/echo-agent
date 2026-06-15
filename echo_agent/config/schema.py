@@ -593,6 +593,7 @@ class PluginsConfig(_Base):
     extra_dirs: list[str] = Field(default_factory=list)
     config: dict[str, dict[str, Any]] = Field(default_factory=dict)
     trusted_plugins: list[str] = Field(default_factory=list)
+    permission_mode: Literal["compat", "strict"] = "compat"
 
 
 class EvalConfig(_Base):
