@@ -9,6 +9,7 @@ from loguru import logger
 
 from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
 from echo_agent.mcp.client import MCPClient
+from echo_agent.security.risk_classifier import RiskLevel
 
 
 def _sanitize_name(server: str, tool: str) -> str:
@@ -35,6 +36,27 @@ class MCPToolAdapter(Tool):
         self.name = _sanitize_name(server_name, self._mcp_tool_name)
         self.description = mcp_tool.get("description", f"MCP tool from {server_name}")
         self.parameters = _convert_mcp_schema(mcp_tool)
+        self.risk_level = self._classify_risk(mcp_tool).value
+
+    @staticmethod
+    def _classify_risk(mcp_tool: dict[str, Any]) -> RiskLevel:
+        """按 MCP annotations 保守分级：降级受限、升级顺从。
+
+        destructiveHint → EXEC；readOnlyHint 且非 destructive → READ_ONLY；
+        无 hint / 字段矛盾 / 解析异常 → WRITE（绝不因外部输入放松）。
+        """
+        annotations = mcp_tool.get("annotations")
+        if not isinstance(annotations, dict):
+            return RiskLevel.WRITE
+
+        destructive = annotations.get("destructiveHint") is True
+        read_only = annotations.get("readOnlyHint") is True
+
+        if destructive:
+            return RiskLevel.EXEC
+        if read_only and not destructive:
+            return RiskLevel.READ_ONLY
+        return RiskLevel.WRITE
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         try:
@@ -70,4 +92,4 @@ class MCPToolAdapter(Tool):
         )
 
     def execution_mode(self, params: dict[str, Any]) -> str:
-        return "side_effect"
+        return "read_only" if self.risk_level == "read_only" else "side_effect"
