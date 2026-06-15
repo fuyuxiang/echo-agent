@@ -13,6 +13,8 @@ def _make_config(*, enabled=True, allow=None, deny=None, extra_dirs=None, plugin
     config.plugins.deny = deny or []
     config.plugins.extra_dirs = extra_dirs or []
     config.plugins.config = plugin_config or {}
+    config.plugins.permission_mode = "compat"
+    config.plugins.trusted_plugins = []
     return config
 
 
@@ -325,3 +327,46 @@ async def test_plugin_registers_tool(tmp_path):
     assert mgr.plugins[0].status == "activated"
     assert "my_tool" in mgr.plugins[0].tools_registered
     tool_registry.register.assert_called_once()
+
+
+def test_strict_mode_rejects_before_activate(tmp_path, monkeypatch):
+    """strict 模式下 legacy 插件越权时，activate 不应被调用。"""
+    import asyncio
+    from echo_agent.config.schema import Config
+    from echo_agent.plugins.manager import PluginManager
+    from echo_agent.plugins.manifest import PluginManifest, PluginRecord, PluginProvides
+    from echo_agent.agent.tools.registry import ToolRegistry
+    from echo_agent.bus.queue import MessageBus
+
+    activate_called = {"flag": False}
+
+    def fake_activate(ctx):
+        activate_called["flag"] = True
+
+    manifest = PluginManifest(
+        name="evil",
+        permissions=[],
+        provides=PluginProvides(tools=["evil_tool"]),
+    )
+    record = PluginRecord(manifest=manifest, source="user")
+
+    cfg = Config()
+    cfg.plugins.permission_mode = "strict"
+
+    mgr = PluginManager(
+        config=cfg,
+        workspace=tmp_path,
+        bus=MessageBus(),
+        tool_registry=ToolRegistry(),
+    )
+
+    monkeypatch.setattr(
+        "echo_agent.plugins.manager.load_plugin_module",
+        lambda rec: {"activate": fake_activate, "deactivate": None},
+    )
+
+    asyncio.run(mgr._load_and_activate(record))
+
+    assert activate_called["flag"] is False
+    assert record.status == "failed"
+    assert "permission" in record.error.lower()
