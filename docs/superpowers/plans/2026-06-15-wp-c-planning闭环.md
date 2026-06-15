@@ -214,10 +214,15 @@ Task 2（纯重构，零行为变更）完成后，`tests/test_inference_stage.p
           and ctx.execution_plan is not None
           and len(ctx.execution_plan.steps) > 1
       ):
-          feedback = await self._planner.reflect(
-              ctx.execution_plan, [loop_result.response_text]
-          )
-          if feedback.should_replan:
+          # reflect 是外部注入依赖，调用处兜底：失败不重跑，返回第一轮结果
+          try:
+              feedback = await self._planner.reflect(
+                  ctx.execution_plan, [loop_result.response_text]
+              )
+          except Exception as exc:  # noqa: BLE001
+              logger.warning("Reflection raised, skipping rerun: {}", exc)
+              feedback = None
+          if feedback is not None and feedback.should_replan:
               guidance = (
                   "[Reflection] 上一轮回复可能未完全达成目标。\n"
                   f"评估意见：{feedback.critique}"
@@ -228,8 +233,12 @@ Task 2（纯重构，零行为变更）完成后，`tests/test_inference_stage.p
               guidance += "\n请据此改进并完成任务。"
               messages.append({"role": "user", "content": guidance})
 
-              # 第二轮重跑（helper 会从 session.metadata 重新读取 nudge 起始值，
-              # 而此时 session 尚未写回，故起始值与第一轮一致——计数不重复累计）
+              # 先把第一轮 nudge 计数写回 session，第二轮 helper 才能从第一轮
+              # 末尾续起，使整个 turn 的工具调用被完整累计（而非只数第二轮）。
+              session.metadata["_nudge_tool_iters_skill"] = loop_result.skill_iters
+              session.metadata["_nudge_tool_iters_memory"] = loop_result.memory_iters
+
+              # 第二轮重跑（硬上限 1，第二轮后不再反思）
               second = await self._run_tool_loop(ctx, messages)
               loop_result = _LoopResult(
                   response_text=second.response_text or loop_result.response_text,
@@ -241,7 +250,7 @@ Task 2（纯重构，零行为变更）完成后，`tests/test_inference_stage.p
                   memory_iters=second.memory_iters,
               )
   ```
-  说明：`total_tool_calls` 两轮相加（真实调用次数）；`skill_iters`/`memory_iters` 取第二轮结果（第二轮 helper 已基于同一起始值累计了两轮工具调用，因为第一轮没写回 session）；`response_text` 第二轮优先、空则回退第一轮。
+  说明：`total_tool_calls` 两轮相加（真实调用次数）；`skill_iters`/`memory_iters` 取第二轮结果——**前提是重跑前已把第一轮计数写回 session**，第二轮 helper 才会从第一轮末尾续起，最终值是两轮的真实累计（若不写回，第二轮会从 0 重新数，漏掉第一轮，是计数 bug）；`response_text` 第二轮优先、空则回退第一轮。
 
 ### 3.3 loop.py 注入 planner
 

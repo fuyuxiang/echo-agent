@@ -115,7 +115,7 @@ def _should_reflect(self, ctx) -> bool:
 
 `suggestions` 为空时只含 critique。第二轮工具循环看到引导后**仍自主决定如何补救**——反思只提供方向，不强制步骤。
 
-**边界**：reflect 调用抛异常 → `planner.reflect` 内部已兜底返回 `Feedback(score=0.5)` → 不重跑，正常返回第一轮结果。
+**边界**：reflect 调用抛异常 → inference_stage 在调用处 try/except 兜底（记 warning、按 `should_replan=False` 处理，返回第一轮结果）。这层保护放在调用边界而非依赖 `planner` 内部实现：`planner` 是注入依赖，不应假设它永不抛。`ReflectionModule.critique` 内部对 LLM 调用也有兜底，二者叠加确保"反思永不破坏已有结果"这一不变量结构上成立。
 
 ### 4.4 清理假打勾
 
