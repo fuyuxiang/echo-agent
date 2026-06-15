@@ -20,12 +20,38 @@ class TestPluginSandbox:
         assert sandbox.check_hook_register() is True
         assert sandbox.check_network() is True
 
-    def test_legacy_plugin_warns_but_allows(self):
+    def test_legacy_plugin_compat_allows_only_default_set(self):
         manifest = _make_manifest([])
-        sandbox = PluginSandbox("test", manifest, trusted=False)
+        sandbox = PluginSandbox("test", manifest, trusted=False, mode="compat")
         assert sandbox.is_legacy is True
         assert sandbox.check_tool_register() is True
+        assert sandbox.check_hook_register() is True
+        assert sandbox.check_network() is False
+        assert sandbox.check_subprocess() is False
+        assert sandbox.check_filesystem_write() is False
+
+    def test_legacy_plugin_strict_allows_nothing(self):
+        manifest = _make_manifest([])
+        sandbox = PluginSandbox("test", manifest, trusted=False, mode="strict")
+        assert sandbox.is_legacy is True
+        assert sandbox.check_tool_register() is False
+        assert sandbox.check_hook_register() is False
+        assert sandbox.check_network() is False
+
+    def test_declared_permissions_unaffected_by_mode(self):
+        manifest = _make_manifest(["network"])
+        compat = PluginSandbox("t", manifest, trusted=False, mode="compat")
+        strict = PluginSandbox("t", manifest, trusted=False, mode="strict")
+        assert compat.check_network() is True
+        assert strict.check_network() is True
+        assert compat.check_tool_register() is False
+        assert strict.check_tool_register() is False
+
+    def test_trusted_bypasses_mode(self):
+        manifest = _make_manifest([])
+        sandbox = PluginSandbox("t", manifest, trusted=True, mode="strict")
         assert sandbox.check_network() is True
+        assert sandbox.check_tool_register() is True
 
     def test_declared_permissions_allow(self):
         manifest = _make_manifest(["tool.register", "hook.register"])
