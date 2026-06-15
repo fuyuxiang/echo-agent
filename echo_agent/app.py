@@ -68,7 +68,16 @@ async def bootstrap(
     storage = SQLiteBackend(ws / config.storage.database_path)
     await storage.initialize()
 
-    bus = MessageBus()
+    bus = MessageBus(
+        max_queue_size=config.bus.max_queue_size,
+        max_concurrency=config.bus.max_concurrency,
+    )
+
+    from echo_agent.bus.rate_limiter import SessionRateLimiter
+    bus.set_rate_limiter(SessionRateLimiter(
+        rpm=config.rate_limit.session_rpm,
+        burst=config.rate_limit.session_burst,
+    ))
     router = ModelRouter(config.models)
     provider: LLMProvider | None = None
     provider_errors: list[str] = []
