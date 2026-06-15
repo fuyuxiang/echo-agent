@@ -5,18 +5,29 @@ build-backend = "hatchling.build"
 [project]
 name = "echo-agent"
 version = "0.2.3"
-description = "A modular AI agent framework with multi-channel support"
+description = "A self-hosted, long-running AI agent runtime with memory, skills, plugins, and multi-channel integrations"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Echo Agent contributors" }]
-keywords = ["ai", "agent", "assistant", "chatbot", "runtime"]
+keywords = ["ai", "agent", "runtime", "memory", "plugins", "mcp"]
 classifiers = [
     "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Framework :: AsyncIO",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Topic :: Communications :: Chat",
+    "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
 ]
 dependencies = [
     "pydantic>=2.0",
@@ -28,6 +39,12 @@ dependencies = [
     "croniter>=1.4",
     "numpy>=1.24",
 ]
+
+[project.urls]
+Homepage = "https://github.com/fuyuxiang/echo-agent"
+Repository = "https://github.com/fuyuxiang/echo-agent"
+Issues = "https://github.com/fuyuxiang/echo-agent/issues"
+Discussions = "https://github.com/fuyuxiang/echo-agent/discussions"
 
 [project.optional-dependencies]
 openai = ["openai>=1.30"]
