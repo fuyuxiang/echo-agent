@@ -19,6 +19,7 @@ from echo_agent.models.router import RouteDecision
 
 if TYPE_CHECKING:
     from echo_agent.agent.approval_gate import ApprovalGate
+    from echo_agent.agent.planning.planner import AgentPlanner
     from echo_agent.agent.tools.registry import ToolRegistry
     from echo_agent.bus.queue import MessageBus
     from echo_agent.config.schema import Config
@@ -65,6 +66,7 @@ class InferenceStage:
         circuit_breaker: ToolCircuitBreaker,
         default_model: str,
         max_iterations: int,
+        planner: AgentPlanner | None = None,
     ):
         self._config = config
         self._bus = bus
@@ -82,6 +84,7 @@ class InferenceStage:
         self._hook_registry: Any = None
         self._nudge_interval: int = config.skills.creation_nudge_interval if hasattr(config, 'skills') and hasattr(config.skills, 'creation_nudge_interval') else 0
         self._memory_nudge_interval: int = config.memory.memory_nudge_interval if hasattr(config.memory, 'memory_nudge_interval') else 0
+        self._planner = planner
 
     def set_hook_registry(self, registry: Any) -> None:
         """Inject the plugin hook registry (attached after bootstrap)."""
@@ -121,6 +124,39 @@ class InferenceStage:
         messages = ctx.messages
 
         loop_result = await self._run_tool_loop(ctx, messages)
+
+        # 反思闭环：仅在多步 plan 上触发，最多重跑 1 轮
+        if (
+            self._planner is not None
+            and ctx.execution_plan is not None
+            and len(ctx.execution_plan.steps) > 1
+        ):
+            feedback = await self._planner.reflect(
+                ctx.execution_plan, [loop_result.response_text]
+            )
+            if feedback.should_replan:
+                guidance = (
+                    "[Reflection] 上一轮回复可能未完全达成目标。\n"
+                    f"评估意见：{feedback.critique}"
+                )
+                if feedback.suggestions:
+                    sug = "\n".join(f"- {s}" for s in feedback.suggestions)
+                    guidance += f"\n建议：\n{sug}"
+                guidance += "\n请据此改进并完成任务。"
+                messages.append({"role": "user", "content": guidance})
+
+                # 第二轮重跑（helper 重新从 session.metadata 读取起始值，
+                # 此时 session 尚未写回，故起始值与第一轮一致，计数不重复累计）
+                second = await self._run_tool_loop(ctx, messages)
+                loop_result = _LoopResult(
+                    response_text=second.response_text or loop_result.response_text,
+                    total_tool_calls=loop_result.total_tool_calls + second.total_tool_calls,
+                    loop_exhausted=second.loop_exhausted,
+                    should_review_skills=loop_result.should_review_skills or second.should_review_skills,
+                    should_review_memory=loop_result.should_review_memory or second.should_review_memory,
+                    skill_iters=second.skill_iters,
+                    memory_iters=second.memory_iters,
+                )
 
         # Turn-based memory review trigger: fires even for pure chat (no tool calls).
         # The tool-iteration path only counts tool loops, so personal facts
