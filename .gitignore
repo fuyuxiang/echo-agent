@@ -35,6 +35,7 @@ botpy.log
 
 # Claude Code local session/settings
 .claude/
+CLAUDE.md
 
 # Local runtime state and generated workspace data
 /runtime/cron/jobs.json
