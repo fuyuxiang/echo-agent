@@ -57,6 +57,7 @@ class ResponseStage:
         default_model: str,
         spawn_fn: Callable[[Any], None],
         clear_memory_snapshot_fn: Callable[[str], Coroutine[Any, Any, None]],
+        skill_store: Any = None,
     ):
         self._config = config
         self._sessions = sessions
@@ -66,6 +67,7 @@ class ResponseStage:
         self._default_model = default_model
         self._spawn_fn = spawn_fn
         self._clear_memory_snapshot = clear_memory_snapshot_fn
+        self._skill_store = skill_store
 
     async def finalize(self, ctx: PipelineContext, result: InferenceResult) -> ProcessResult:
         """Post-process inference result, save session, schedule background tasks."""
@@ -118,8 +120,12 @@ class ResponseStage:
     async def _background_skill_review(self, messages: list[dict[str, Any]]) -> None:
         try:
             from echo_agent.skills.reviewer import SkillReviewer
+            if self._skill_store is None:
+                logger.warning("Skill review skipped: no skill store configured")
+                return
             reviewer = SkillReviewer(
                 provider=self._provider,
+                store=self._skill_store,
                 model=self._default_model,
             )
             actions = await reviewer.review(messages)

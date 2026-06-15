@@ -285,6 +285,7 @@ class AgentLoop:
             default_model=self._default_model,
             spawn_fn=self._spawn_background,
             clear_memory_snapshot_fn=self._clear_memory_snapshot,
+            skill_store=self.skill_store,
         )
 
     def _register_tools(self, scheduler: Any = None, task_manager: Any = None, workflow_engine: Any = None) -> None:
@@ -739,10 +740,10 @@ class AgentLoop:
                 return True
         return False
 
-    async def process_direct(self, content: str, session_key: str = "cli:direct") -> str:
+    async def process_direct(self, content: str, session_key: str = "cli:direct", channel: str = "cli") -> str:
         """Process a message directly (for CLI or testing)."""
         event = InboundEvent.text_message(
-            channel="cli", sender_id="user", chat_id="direct", text=content,
+            channel=channel, sender_id="user", chat_id="direct", text=content,
             session_key_override=session_key,
         )
         # Hold the same per-session lock the inbound dispatcher uses so two

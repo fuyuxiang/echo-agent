@@ -115,6 +115,11 @@ class InferenceStage:
         _REPEAT_BLOCK_THRESHOLD = 4
         loop_exhausted = True
 
+        # Load nudge counters from session (persisted across turns)
+        _skill_iters = session.metadata.get("_nudge_tool_iters_skill", 0)
+        _memory_iters = session.metadata.get("_nudge_tool_iters_memory", 0)
+        _memory_turns = session.metadata.get("_nudge_turns_memory", 0)
+
         on_delta = stream_publisher.on_delta if ctx.publish_response else None
 
         for iteration in range(self._max_iterations):
@@ -337,8 +342,8 @@ class InferenceStage:
                     session.add_message("tool", result_text, tool_call_id=tool_call.id, name=tool_call.name)
 
                     total_tool_calls += 1
-                    ctx.tool_iters_since_skill_check += 1
-                    ctx.tool_iters_since_memory_check += 1
+                    _skill_iters += 1
+                    _memory_iters += 1
 
                     # Per-tool circuit breaker
                     if result.success:
@@ -348,18 +353,18 @@ class InferenceStage:
 
                     if (
                         self._nudge_interval > 0
-                        and ctx.tool_iters_since_skill_check >= self._nudge_interval
+                        and _skill_iters >= self._nudge_interval
                         and self._tools.has("skill_manage")
                     ):
                         should_review_skills = True
-                        ctx.tool_iters_since_skill_check = 0
+                        _skill_iters = 0
                     if (
                         self._memory_nudge_interval > 0
-                        and ctx.tool_iters_since_memory_check >= self._memory_nudge_interval
+                        and _memory_iters >= self._memory_nudge_interval
                         and self._tools.has("memory")
                     ):
                         should_review_memory = True
-                        ctx.tool_iters_since_memory_check = 0
+                        _memory_iters = 0
                 except BaseException:
                     # Ensure every announced tool_call gets a paired tool message,
                     # otherwise the next LLM turn will reject the conversation
@@ -399,10 +404,15 @@ class InferenceStage:
         # The tool-iteration path above only counts tool loops, so personal facts
         # shared in plain conversation would never be reviewed without this.
         if self._memory_nudge_interval > 0 and self._tools.has("memory"):
-            ctx.turns_since_memory_check += 1
-            if ctx.turns_since_memory_check >= self._memory_nudge_interval:
+            _memory_turns += 1
+            if _memory_turns >= self._memory_nudge_interval:
                 should_review_memory = True
-                ctx.turns_since_memory_check = 0
+                _memory_turns = 0
+
+        # Persist nudge counters back to session metadata
+        session.metadata["_nudge_tool_iters_skill"] = _skill_iters
+        session.metadata["_nudge_tool_iters_memory"] = _memory_iters
+        session.metadata["_nudge_turns_memory"] = _memory_turns
 
         return InferenceResult(
             response_text=response_text,

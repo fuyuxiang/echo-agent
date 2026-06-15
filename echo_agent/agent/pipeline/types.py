@@ -29,11 +29,6 @@ class PipelineContext:
     intro_text: str = ""
     stream_publisher: Any = None
 
-    # Per-request counters for nudge tracking (not shared across sessions)
-    tool_iters_since_skill_check: int = 0
-    tool_iters_since_memory_check: int = 0
-    turns_since_memory_check: int = 0
-
 
 @dataclass
 class InferenceResult:
