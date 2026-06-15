@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import uuid
+from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
 from loguru import logger
@@ -26,6 +27,21 @@ if TYPE_CHECKING:
     from echo_agent.models.router import ModelRouter
     from echo_agent.observability.monitor import TraceLogger
     from echo_agent.permissions.manager import CredentialManager
+
+
+@dataclass
+class _LoopResult:
+    """Output of one tool loop pass, used by run() to orchestrate reflection/rerun."""
+
+    response_text: str = ""
+    total_tool_calls: int = 0
+    loop_exhausted: bool = True
+    should_review_skills: bool = False
+    should_review_memory: bool = False
+    skill_iters: int = 0
+    memory_iters: int = 0
+    # NOTE: memory_turns is intentionally absent — it's a turn-level counter
+    # managed by run(), not the per-pass tool loop.
 
 
 class InferenceStage:
@@ -71,40 +87,75 @@ class InferenceStage:
         """Inject the plugin hook registry (attached after bootstrap)."""
         self._hook_registry = registry
 
+    async def _emit_progress(self, ctx: PipelineContext, text: str, *, tool_hint: bool = False) -> None:
+        if not ctx.publish_response:
+            return
+        event = ctx.event
+        out = OutboundEvent.text_reply(
+            channel=event.channel, chat_id=event.chat_id, text=text, reply_to_id=event.reply_to_id,
+        )
+        out.is_final = False
+        out.message_kind = "tool" if tool_hint else "progress"
+        out.metadata = dict(event.metadata)
+        out.metadata.update({"_progress": True, "_tool_hint": tool_hint, "_inbound_event_id": event.event_id})
+        await self._bus.publish_outbound(out)
+
+    async def _emit_tool_event(self, ctx: PipelineContext, metadata: dict[str, Any]) -> None:
+        if not ctx.publish_response:
+            return
+        if not getattr(self._config.gateway, 'emit_progress_events', True):
+            return
+        event = ctx.event
+        out = OutboundEvent.text_reply(
+            channel=event.channel, chat_id=event.chat_id, text="", reply_to_id=event.reply_to_id,
+        )
+        out.is_final = False
+        out.message_kind = "progress"
+        out.metadata = {"_progress": True, "_inbound_event_id": event.event_id}
+        out.metadata.update(metadata)
+        await self._bus.publish_outbound(out)
+
     async def run(self, ctx: PipelineContext) -> InferenceResult:
         """Execute the inference loop, returning the final result."""
+        session = ctx.session
+        messages = ctx.messages
+
+        loop_result = await self._run_tool_loop(ctx, messages)
+
+        # Turn-based memory review trigger: fires even for pure chat (no tool calls).
+        # The tool-iteration path only counts tool loops, so personal facts
+        # shared in plain conversation would never be reviewed without this.
+        _memory_turns = session.metadata.get("_nudge_turns_memory", 0)
+        should_review_memory = loop_result.should_review_memory
+        if self._memory_nudge_interval > 0 and self._tools.has("memory"):
+            _memory_turns += 1
+            if _memory_turns >= self._memory_nudge_interval:
+                should_review_memory = True
+                _memory_turns = 0
+
+        # Persist nudge counters back to session metadata
+        session.metadata["_nudge_tool_iters_skill"] = loop_result.skill_iters
+        session.metadata["_nudge_tool_iters_memory"] = loop_result.memory_iters
+        session.metadata["_nudge_turns_memory"] = _memory_turns
+
+        return InferenceResult(
+            response_text=loop_result.response_text,
+            total_tool_calls=loop_result.total_tool_calls,
+            should_review_skills=loop_result.should_review_skills,
+            should_review_memory=should_review_memory,
+        )
+
+    async def _run_tool_loop(self, ctx: PipelineContext, messages: list[dict[str, Any]]) -> _LoopResult:
+        """Run one pass of the tool loop and return a _LoopResult.
+
+        Nudge counters are read from session.metadata but NOT written back —
+        run() is responsible for persisting them after all passes complete.
+        """
         event = ctx.event
         session = ctx.session
         trace_id = ctx.trace_id
-        messages = ctx.messages
         tool_defs = ctx.tool_defs
         stream_publisher = ctx.stream_publisher
-
-        async def _emit_progress(text: str, *, tool_hint: bool = False) -> None:
-            if not ctx.publish_response:
-                return
-            out = OutboundEvent.text_reply(
-                channel=event.channel, chat_id=event.chat_id, text=text, reply_to_id=event.reply_to_id,
-            )
-            out.is_final = False
-            out.message_kind = "tool" if tool_hint else "progress"
-            out.metadata = dict(event.metadata)
-            out.metadata.update({"_progress": True, "_tool_hint": tool_hint, "_inbound_event_id": event.event_id})
-            await self._bus.publish_outbound(out)
-
-        async def _emit_tool_event(metadata: dict[str, Any]) -> None:
-            if not ctx.publish_response:
-                return
-            if not getattr(self._config.gateway, 'emit_progress_events', True):
-                return
-            out = OutboundEvent.text_reply(
-                channel=event.channel, chat_id=event.chat_id, text="", reply_to_id=event.reply_to_id,
-            )
-            out.is_final = False
-            out.message_kind = "progress"
-            out.metadata = {"_progress": True, "_inbound_event_id": event.event_id}
-            out.metadata.update(metadata)
-            await self._bus.publish_outbound(out)
 
         # Standard inference loop
         response_text = ""
@@ -115,10 +166,9 @@ class InferenceStage:
         _REPEAT_BLOCK_THRESHOLD = 4
         loop_exhausted = True
 
-        # Load nudge counters from session (persisted across turns)
+        # Read nudge counters from session (do NOT write back — run() owns that)
         _skill_iters = session.metadata.get("_nudge_tool_iters_skill", 0)
         _memory_iters = session.metadata.get("_nudge_tool_iters_memory", 0)
-        _memory_turns = session.metadata.get("_nudge_turns_memory", 0)
 
         on_delta = stream_publisher.on_delta if ctx.publish_response else None
 
@@ -188,11 +238,8 @@ class InferenceStage:
                 loop_exhausted = False
                 break
 
-            if ctx.execution_plan and iteration < len(ctx.execution_plan.steps):
-                ctx.execution_plan.mark_step_complete(iteration, response.content or "")
-
             if response.content:
-                await _emit_progress(response.content)
+                await self._emit_progress(ctx, response.content)
 
             assistant_msg: dict[str, Any] = {"role": "assistant", "content": response.content}
             assistant_msg["tool_calls"] = [tc.to_openai_format() for tc in response.tool_calls]
@@ -207,7 +254,7 @@ class InferenceStage:
                 )
                 tool_message_appended = False
                 try:
-                    await _emit_progress(f"Using tool: {tool_call.name}", tool_hint=True)
+                    await self._emit_progress(ctx, f"Using tool: {tool_call.name}", tool_hint=True)
 
                     approval_check = await self._approval_gate.check(
                         tool_call.name,
@@ -302,7 +349,7 @@ class InferenceStage:
                     }
                     if _debug_progress:
                         _tool_start_meta["args"] = str(tool_call.arguments)[:500]
-                    await _emit_tool_event(_tool_start_meta)
+                    await self._emit_tool_event(ctx, _tool_start_meta)
 
                     result = await self._tools.execute(tool_call.name, tool_call.arguments, tool_exec_ctx)
 
@@ -321,7 +368,7 @@ class InferenceStage:
                     }
                     if _debug_progress:
                         _tool_result_meta["result_preview"] = result.text[:500]
-                    await _emit_tool_event(_tool_result_meta)
+                    await self._emit_tool_event(ctx, _tool_result_meta)
 
                     result_text = result.text
                     if len(result_text) > self._MAX_TOOL_RESULT_CHARS:
@@ -400,25 +447,14 @@ class InferenceStage:
             if not response_text:
                 response_text = "I encountered an issue processing your request. Please try again or rephrase your question."
 
-        # Turn-based memory review trigger: fires even for pure chat (no tool calls).
-        # The tool-iteration path above only counts tool loops, so personal facts
-        # shared in plain conversation would never be reviewed without this.
-        if self._memory_nudge_interval > 0 and self._tools.has("memory"):
-            _memory_turns += 1
-            if _memory_turns >= self._memory_nudge_interval:
-                should_review_memory = True
-                _memory_turns = 0
-
-        # Persist nudge counters back to session metadata
-        session.metadata["_nudge_tool_iters_skill"] = _skill_iters
-        session.metadata["_nudge_tool_iters_memory"] = _memory_iters
-        session.metadata["_nudge_turns_memory"] = _memory_turns
-
-        return InferenceResult(
+        return _LoopResult(
             response_text=response_text,
             total_tool_calls=total_tool_calls,
+            loop_exhausted=loop_exhausted,
             should_review_skills=should_review_skills,
             should_review_memory=should_review_memory,
+            skill_iters=_skill_iters,
+            memory_iters=_memory_iters,
         )
 
     async def _chat_stream_with_routing(
