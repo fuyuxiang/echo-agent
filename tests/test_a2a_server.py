@@ -122,7 +122,7 @@ class TestProcessTaskNormal:
 
         assert result.state == TaskState.COMPLETED
         processor.process_direct.assert_called_once_with(
-            "What is 2+2?", session_key="a2a:task_002"
+            "What is 2+2?", session_key="a2a:task_002", channel="a2a"
         )
         # Last message should contain the response
         last_msg = result.messages[-1]
