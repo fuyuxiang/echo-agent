@@ -143,7 +143,8 @@ class PluginManager:
 
         trusted_list = getattr(self._config.plugins, "trusted_plugins", []) or []
         is_trusted = name in trusted_list
-        sandbox = PluginSandbox(name, record.manifest, trusted=is_trusted)
+        mode = getattr(self._config.plugins, "permission_mode", "compat")
+        sandbox = PluginSandbox(name, record.manifest, trusted=is_trusted, mode=mode)
 
         ctx = PluginContext(
             plugin_name=name,
@@ -155,6 +156,25 @@ class PluginManager:
             provider=self._provider,
             plugin_config=plugin_config,
         )
+
+        # activate 前权限预检：插件 manifest 声明的 provides 须在授权范围内。
+        # 越权时 strict 拒绝加载（不调 activate），compat 记 warning 并继续
+        # （事后核验仍会裁剪实际越权注册）。
+        denied: list[str] = []
+        if record.manifest.provides.tools and not sandbox.check_tool_register():
+            denied.append("tool.register")
+        if record.manifest.provides.hooks and not sandbox.check_hook_register():
+            denied.append("hook.register")
+
+        if denied and mode == "strict":
+            record.status = "failed"
+            record.error = f"permission denied for: {', '.join(denied)}"
+            logger.warning(
+                "Plugin '{}' rejected before activate — missing permissions: {}",
+                name,
+                ", ".join(denied),
+            )
+            return
 
         activate_fn = interface["activate"]
         deactivate_fn = interface.get("deactivate")
