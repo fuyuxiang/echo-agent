@@ -55,3 +55,17 @@ class TestPluginSandbox:
         sandbox = PluginSandbox("test", manifest, trusted=False)
         assert sandbox.check_filesystem_read() is True
         assert sandbox.check_filesystem_write() is False
+
+
+def test_plugins_config_default_permission_mode():
+    from echo_agent.config.schema import PluginsConfig
+
+    cfg = PluginsConfig()
+    assert cfg.permission_mode == "compat"
+
+
+def test_plugins_config_accepts_strict_mode():
+    from echo_agent.config.schema import PluginsConfig
+
+    cfg = PluginsConfig(permission_mode="strict")
+    assert cfg.permission_mode == "strict"
