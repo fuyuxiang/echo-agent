@@ -6,6 +6,7 @@ async/LLM dependencies do not leak into the pure-function module.
 from __future__ import annotations
 
 import json
+import math
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -36,9 +37,15 @@ def _build_user_prompt(expected: str, actual: str) -> str:
 
 
 def _parse_score(content: str) -> float:
-    """Extract a float score from the model's JSON reply. Raises on failure."""
-    data = json.loads(content)
-    return float(data["score"])
+    """Extract a finite float score from the model's JSON reply. Raises on failure."""
+    cleaned = content.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    data = json.loads(cleaned)
+    score = float(data["score"])
+    if not math.isfinite(score):
+        raise ValueError(f"non-finite score: {score}")
+    return score
 
 
 async def semantic_quality(
@@ -59,13 +66,21 @@ async def semantic_quality(
     ]
     try:
         resp = await provider.chat_with_retry(messages=messages, model=model)
-        content = resp.content or ""
-    except Exception as e:  # judge is best-effort; never break the eval run
+    except Exception as e:  # defensive; chat_with_retry normally wraps errors itself
         logger.warning("semantic_quality judge call failed: {}", e)
         return MetricResult(
             name="semantic_quality", score=_NEUTRAL_SCORE, passed=False,
             details={"error": str(e)},
         )
+
+    if getattr(resp, "finish_reason", None) == "error":
+        logger.warning("semantic_quality judge returned error response: {}", resp.content)
+        return MetricResult(
+            name="semantic_quality", score=_NEUTRAL_SCORE, passed=False,
+            details={"error": resp.content or "judge error"},
+        )
+
+    content = resp.content or ""
 
     try:
         raw_score = _parse_score(content)
