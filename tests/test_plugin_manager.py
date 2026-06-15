@@ -370,3 +370,64 @@ def test_strict_mode_rejects_before_activate(tmp_path, monkeypatch):
     assert activate_called["flag"] is False
     assert record.status == "failed"
     assert "permission" in record.error.lower()
+
+
+@pytest.mark.asyncio
+async def test_compat_mode_strips_tool_registered_without_permission(tmp_path, monkeypatch):
+    """compat 模式下，插件注册了没有权限的工具，事后裁剪应调用 unregister。"""
+    import asyncio
+    from echo_agent.config.schema import Config
+    from echo_agent.plugins.manager import PluginManager
+    from echo_agent.plugins.manifest import PluginManifest, PluginRecord, PluginProvides
+    from echo_agent.agent.tools.registry import ToolRegistry
+    from echo_agent.bus.queue import MessageBus
+    from unittest.mock import MagicMock
+    from echo_agent.agent.tools.base import Tool, ToolResult
+
+    # 构造一个最小 Tool 实例供 activate 注册
+    class FakeTool(Tool):
+        name = "test_tool"
+        description = "test"
+        parameters = {"type": "object", "properties": {}}
+
+        async def execute(self, params, ctx=None):
+            return ToolResult(success=True)
+
+    fake_tool = FakeTool()
+
+    def fake_activate(ctx):
+        ctx.register_tool(fake_tool)
+
+    # 插件声明了 hook.register 权限，但 provides.tools=["test_tool"]，没有 tool.register
+    # => check_tool_register() 会因缺少 tool.register 权限返回 False
+    # => tool_ok=False，事后裁剪触发
+    manifest = PluginManifest(
+        name="compat-strip-plugin",
+        permissions=["hook.register"],
+        provides=PluginProvides(tools=["test_tool"]),
+    )
+    record = PluginRecord(manifest=manifest, source="user")
+
+    cfg = Config()
+    cfg.plugins.permission_mode = "compat"
+
+    tool_registry = MagicMock(spec=ToolRegistry)
+
+    mgr = PluginManager(
+        config=cfg,
+        workspace=tmp_path,
+        bus=MessageBus(),
+        tool_registry=tool_registry,
+    )
+
+    monkeypatch.setattr(
+        "echo_agent.plugins.manager.load_plugin_module",
+        lambda rec: {"activate": fake_activate},
+    )
+
+    await mgr._load_and_activate(record)
+
+    # compat 不拒绝激活
+    assert record.status == "activated"
+    # 事后裁剪：unregister 应被调用
+    tool_registry.unregister.assert_called_once_with("test_tool")
