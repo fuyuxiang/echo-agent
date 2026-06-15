@@ -92,3 +92,19 @@ async def test_semantic_quality_strips_markdown_fence():
     result = await semantic_quality("exp", "act", provider)
     assert result.score == 0.85
     assert result.passed is True
+
+
+@pytest.mark.asyncio
+async def test_semantic_quality_negative_score_clamped_to_zero():
+    provider = _FakeProvider(content='{"score": -0.5, "reasoning": "wrong"}')
+    result = await semantic_quality("exp", "act", provider)
+    assert result.score == 0.0
+    assert result.passed is False
+
+
+@pytest.mark.asyncio
+async def test_semantic_quality_infinity_is_neutral():
+    provider = _FakeProvider(content='{"score": Infinity, "reasoning": "x"}')
+    result = await semantic_quality("exp", "act", provider)
+    assert result.score == 0.5
+    assert result.passed is False

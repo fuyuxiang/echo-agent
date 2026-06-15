@@ -65,7 +65,9 @@ async def semantic_quality(
         {"role": "user", "content": _build_user_prompt(expected, actual)},
     ]
     try:
-        resp = await provider.chat_with_retry(messages=messages, model=model)
+        # temperature=0: judging must be reproducible — the same (expected, actual)
+        # pair should score identically across baseline/candidate eval passes.
+        resp = await provider.chat_with_retry(messages=messages, model=model, temperature=0)
     except Exception as e:  # defensive; chat_with_retry normally wraps errors itself
         logger.warning("semantic_quality judge call failed: {}", e)
         return MetricResult(
