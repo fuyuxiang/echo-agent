@@ -20,6 +20,7 @@ cases:
   - id: explain_evolution
     input: "Briefly explain what a self-evolving agent is, in one sentence."
     expected_contains: ["agent"]
+    expected_output: "A self-evolving agent is an AI system that improves its own skills or behavior over time based on experience or feedback."
     max_iterations: 3
     tags: [chat]
 
@@ -44,11 +45,13 @@ cases:
   - id: ask_for_help
     input: "How can I check the agent's current status from the CLI?"
     expected_contains: ["status"]
+    expected_output: "You can check the agent's current status by running the echo-agent status command in the CLI."
     max_iterations: 4
     tags: [chat, docs]
 
   - id: tool_choice_reasoning
     input: "I want to summarize this text: 'Echo Agent is a modular AI agent framework.' What's the most efficient way to handle a single short sentence?"
     expected_contains: []
+    expected_output: "For a single short sentence, no summarization tool is needed — the text is already concise and can be used as-is."
     max_iterations: 4
     tags: [reasoning, tool_use]

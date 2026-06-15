@@ -163,6 +163,7 @@ async def bootstrap(
                     agent,
                     parallel=config.evolution.eval_parallel,
                     timeout=config.evolution.eval_timeout_seconds,
+                    provider=provider,
                 )
 
             reflection_module = None
