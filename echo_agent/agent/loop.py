@@ -275,6 +275,7 @@ class AgentLoop:
             circuit_breaker=self._circuit_breaker,
             default_model=self._default_model,
             max_iterations=self._max_iterations,
+            planner=self.planner,
         )
         self._response_stage = ResponseStage(
             config=config,
