@@ -157,22 +157,23 @@ class PluginManager:
             plugin_config=plugin_config,
         )
 
-        # activate 前权限预检：插件 manifest 声明的 provides 须在授权范围内。
-        # 越权时 strict 拒绝加载（不调 activate），compat 记 warning 并继续
-        # （事后核验仍会裁剪实际越权注册）。
+        # activate 前权限预检：strict 模式下越权拒绝加载（不调 activate）；
+        # compat 模式越权仅 warning 并继续，靠事后核验裁剪；legacy 插件按默认权限集放行。
+        # 权限判定在 sandbox 内不随时间变化，只调一次并缓存，事后核验复用，
+        # 避免重复 append violations 与重复打印 warning。
+        tool_ok = sandbox.check_tool_register()
+        hook_ok = sandbox.check_hook_register()
         denied: list[str] = []
-        if record.manifest.provides.tools and not sandbox.check_tool_register():
+        if record.manifest.provides.tools and not tool_ok:
             denied.append("tool.register")
-        if record.manifest.provides.hooks and not sandbox.check_hook_register():
+        if record.manifest.provides.hooks and not hook_ok:
             denied.append("hook.register")
 
         if denied and mode == "strict":
             record.status = "failed"
             record.error = f"permission denied for: {', '.join(denied)}"
             logger.warning(
-                "Plugin '{}' rejected before activate — missing permissions: {}",
-                name,
-                ", ".join(denied),
+                "Plugin '{}' rejected before activate: {}", name, record.error
             )
             return
 
@@ -191,13 +192,13 @@ class PluginManager:
             self._hooks.unregister_plugin(name)
             return
 
-        if ctx.registered_tools and not sandbox.check_tool_register():
+        if ctx.registered_tools and not tool_ok:
             logger.warning("Plugin '{}' registered tools without permission — unregistering", name)
             for tool_name in ctx.registered_tools:
                 self._tool_registry.unregister(tool_name)
             ctx._registered_tools.clear()
 
-        if ctx.registered_hooks and not sandbox.check_hook_register():
+        if ctx.registered_hooks and not hook_ok:
             logger.warning("Plugin '{}' registered hooks without permission — unregistering", name)
             self._hooks.unregister_plugin(name)
             ctx._registered_hooks.clear()
