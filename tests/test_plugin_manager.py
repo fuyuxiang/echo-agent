@@ -375,7 +375,6 @@ def test_strict_mode_rejects_before_activate(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_compat_mode_strips_tool_registered_without_permission(tmp_path, monkeypatch):
     """compat 模式下，插件注册了没有权限的工具，事后裁剪应调用 unregister。"""
-    import asyncio
     from echo_agent.config.schema import Config
     from echo_agent.plugins.manager import PluginManager
     from echo_agent.plugins.manifest import PluginManifest, PluginRecord, PluginProvides
