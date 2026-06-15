@@ -62,3 +62,33 @@ async def test_semantic_quality_clamps_out_of_range():
     provider = _FakeProvider(content='{"score": 1.5, "reasoning": "x"}')
     result = await semantic_quality("exp", "act", provider)
     assert result.score == 1.0
+
+
+@pytest.mark.asyncio
+async def test_semantic_quality_nan_is_neutral():
+    provider = _FakeProvider(content='{"score": NaN, "reasoning": "x"}')
+    result = await semantic_quality("exp", "act", provider)
+    assert result.score == 0.5
+    assert result.passed is False
+
+
+@pytest.mark.asyncio
+async def test_semantic_quality_error_finish_reason_is_neutral():
+    class _ErrResp:
+        content = "Error: timed out"
+        finish_reason = "error"
+    class _ErrProvider:
+        async def chat_with_retry(self, **kwargs):
+            return _ErrResp()
+    result = await semantic_quality("exp", "act", _ErrProvider())
+    assert result.score == 0.5
+    assert result.passed is False
+    assert "error" in result.details
+
+
+@pytest.mark.asyncio
+async def test_semantic_quality_strips_markdown_fence():
+    provider = _FakeProvider(content='```json\n{"score": 0.85, "reasoning": "ok"}\n```')
+    result = await semantic_quality("exp", "act", provider)
+    assert result.score == 0.85
+    assert result.passed is True
