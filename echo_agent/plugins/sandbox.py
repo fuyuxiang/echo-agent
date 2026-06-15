@@ -7,7 +7,7 @@ operations get logged and blocked.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from loguru import logger
 
@@ -40,17 +40,18 @@ class PluginSandbox:
         manifest: "PluginManifest",
         *,
         trusted: bool = False,
-        mode: str = "compat",
+        mode: Literal["compat", "strict"] = "compat",
     ):
         self._plugin_name = plugin_name
         self._trusted = trusted
         self._mode = mode
         self._is_legacy = len(manifest.permissions) == 0
         self._violations: list[str] = []
+        self._effective_permissions: set[str]
 
         if self._is_legacy:
             self._effective_permissions = (
-                set(DEFAULT_LEGACY_PERMISSIONS) if mode == "compat" else set()
+                set(DEFAULT_LEGACY_PERMISSIONS) if self._mode == "compat" else set()
             )
         else:
             self._effective_permissions = set(manifest.permissions)
@@ -61,7 +62,7 @@ class PluginSandbox:
                 "permission_mode={}) — consider adding a 'permissions' field "
                 "to its manifest",
                 plugin_name,
-                mode,
+                self._mode,
             )
 
     @property
