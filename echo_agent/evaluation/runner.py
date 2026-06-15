@@ -138,13 +138,16 @@ class EvalRunner:
         ]
         if case.expected_output:
             metrics.append(response_quality(case.expected_output, response))
-        if case.expected_output and self._provider is not None:
-            metrics.append(
-                await semantic_quality(
-                    case.expected_output, response,
-                    self._provider, model=self._judge_model,
+            # Semantic judging costs a real LLM call — skip it when the case
+            # produced no response (error/timeout) to avoid wasted spend and a
+            # meaningless score in the average.
+            if self._provider is not None and response:
+                metrics.append(
+                    await semantic_quality(
+                        case.expected_output, response,
+                        self._provider, model=self._judge_model,
+                    )
                 )
-            )
         return metrics
 
     async def run_dataset(self, dataset: EvalDataset) -> EvalReport:
