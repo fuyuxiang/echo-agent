@@ -14,9 +14,11 @@ from echo_agent.evaluation.metrics import (
     MetricResult, contains_all, tool_usage_correctness,
     iteration_efficiency, response_quality,
 )
+from echo_agent.evaluation.semantic_metrics import semantic_quality
 
 if TYPE_CHECKING:
     from echo_agent.agent.loop import AgentLoop
+    from echo_agent.models.provider import LLMProvider
 
 
 @dataclass
@@ -65,10 +67,19 @@ class EvalReport:
 
 
 class EvalRunner:
-    def __init__(self, agent_loop: AgentLoop, parallel: int = 3, timeout: int = 120):
+    def __init__(
+        self,
+        agent_loop: AgentLoop,
+        parallel: int = 3,
+        timeout: int = 120,
+        provider: "LLMProvider | None" = None,
+        judge_model: str | None = None,
+    ):
         self._loop = agent_loop
         self._parallel = parallel
         self._timeout = timeout
+        self._provider = provider
+        self._judge_model = judge_model
 
     async def run_case(self, case: EvalCase) -> CaseResult:
         start = time.monotonic()
@@ -111,13 +122,30 @@ class EvalRunner:
         result.duration_ms = (time.monotonic() - start) * 1000
 
         # Score
-        result.metrics.append(contains_all(case.expected_contains, result.response))
-        result.metrics.append(tool_usage_correctness(case.expected_tools, result.tools_used))
-        result.metrics.append(iteration_efficiency(result.iterations, case.max_iterations))
-        if case.expected_output:
-            result.metrics.append(response_quality(case.expected_output, result.response))
+        result.metrics = await self._score_response(
+            case, result.response, result.tools_used, result.iterations,
+        )
         result.passed = all(m.passed for m in result.metrics) and not result.error
         return result
+
+    async def _score_response(
+        self, case: EvalCase, response: str, tools_used: list[str], iterations: int,
+    ) -> list[MetricResult]:
+        metrics: list[MetricResult] = [
+            contains_all(case.expected_contains, response),
+            tool_usage_correctness(case.expected_tools, tools_used),
+            iteration_efficiency(iterations, case.max_iterations),
+        ]
+        if case.expected_output:
+            metrics.append(response_quality(case.expected_output, response))
+        if case.expected_output and self._provider is not None:
+            metrics.append(
+                await semantic_quality(
+                    case.expected_output, response,
+                    self._provider, model=self._judge_model,
+                )
+            )
+        return metrics
 
     async def run_dataset(self, dataset: EvalDataset) -> EvalReport:
         start = time.monotonic()
