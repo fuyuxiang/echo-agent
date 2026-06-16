@@ -13,6 +13,7 @@ from echo_agent.evaluation.dataset import EvalCase, EvalDataset
 from echo_agent.evaluation.metrics import (
     MetricResult, contains_all, tool_usage_correctness,
     iteration_efficiency, response_quality,
+    not_contains, forbidden_tools_check,
 )
 from echo_agent.evaluation.semantic_metrics import semantic_quality
 
@@ -94,7 +95,7 @@ class EvalRunner:
 
     async def run_case(self, case: EvalCase) -> CaseResult:
         start = time.monotonic()
-        result = CaseResult(case_id=case.id)
+        result = CaseResult(case_id=case.id, category=case.category)
         try:
             from echo_agent.bus.events import InboundEvent
             import uuid
@@ -146,6 +147,8 @@ class EvalRunner:
             contains_all(case.expected_contains, response),
             tool_usage_correctness(case.expected_tools, tools_used),
             iteration_efficiency(iterations, case.max_iterations),
+            not_contains(case.expected_not_contains, response),
+            forbidden_tools_check(case.forbidden_tools, tools_used),
         ]
         if case.expected_output:
             metrics.append(response_quality(case.expected_output, response))
