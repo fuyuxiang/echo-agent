@@ -37,6 +37,7 @@ class WebhookChannelConfig(_Base):
     port: int = 8080
     secret: str = ""
     path: str = "/webhook"
+    max_pending: int = 1000
 
 
 class CLIChannelConfig(_Base):

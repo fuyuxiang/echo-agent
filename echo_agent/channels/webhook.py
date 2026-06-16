@@ -90,6 +90,10 @@ class WebhookChannel(BaseChannel):
 
         future: asyncio.Future[str] | None = None
         if wait:
+            if len(self._pending_responses) >= self.config.max_pending:
+                return web.json_response(
+                    {"error": "too many pending requests"}, status=503,
+                )
             future = asyncio.get_running_loop().create_future()
             self._pending_responses[event.event_id] = future
 

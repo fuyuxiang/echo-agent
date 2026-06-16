@@ -539,6 +539,27 @@ class TestWebhookChannel:
         assert result.success is True
         assert not other.done()
 
+    @pytest.mark.asyncio
+    async def test_webhook_rejects_when_pending_full(self):
+        """P0-5: pending 达上限时新的 wait=true 请求返回 503，不无限堆积。"""
+        import json as _json
+        from aiohttp import streams
+        from aiohttp.test_utils import make_mocked_request
+
+        ch, _ = self._make()
+        ch.config.max_pending = 1
+        ch._pending_responses["existing"] = asyncio.get_running_loop().create_future()
+
+        body = _json.dumps({"text": "hi", "wait": True}).encode()
+        reader = streams.StreamReader(
+            MagicMock(_reading_paused=False), limit=2**16, loop=asyncio.get_running_loop()
+        )
+        reader.feed_data(body)
+        reader.feed_eof()
+        req = make_mocked_request("POST", "/webhook", payload=reader)
+        resp = await ch._handle_webhook(req)
+        assert resp.status == 503
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 6. WeComChannel
