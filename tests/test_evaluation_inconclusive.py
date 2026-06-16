@@ -1,11 +1,14 @@
 """inconclusive 信号在 metric/result/report 间的传播。"""
 from __future__ import annotations
 
+import pytest
+
 from echo_agent.evaluation.metrics import (
     MetricResult,
     not_contains,
     forbidden_tools_check,
 )
+from echo_agent.evaluation.semantic_metrics import semantic_quality
 
 
 def test_metric_result_inconclusive_defaults_false():
@@ -58,10 +61,6 @@ def test_not_contains_ignores_empty_string():
 def test_not_contains_dedups_violations():
     r = not_contains(["pw", "pw"], "my pw here")
     assert r.details["violations"] == ["pw"]
-
-
-import pytest
-from echo_agent.evaluation.semantic_metrics import semantic_quality
 
 
 class _RaisingProvider:
