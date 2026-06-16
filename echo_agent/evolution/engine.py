@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -104,6 +105,7 @@ class EvolutionEngine:
         self._run_lock = asyncio.Lock()
         self._started = False
         self._cooldowns: dict[str, _Cooldown] = {}
+        self._load_cooldowns()
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -355,6 +357,42 @@ class EvolutionEngine:
 
     # ── Cooldowns ────────────────────────────────────────────────────────────
 
+    @property
+    def _cooldowns_path(self) -> Path:
+        return self._skill_store.user_dir / ".evolution_cooldowns.json"
+
+    def _load_cooldowns(self) -> None:
+        """Restore cooldowns from disk, dropping any that have already expired.
+        A missing or corrupt file degrades to an empty set with a warning —
+        never blocks startup."""
+        path = self._cooldowns_path
+        if not path.exists():
+            return
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning("Failed to load evolution cooldowns from {}: {}", path, e)
+            return
+        now = time.time()
+        if not isinstance(raw, dict):
+            return
+        for name, until_ts in raw.items():
+            try:
+                until = float(until_ts)
+            except (TypeError, ValueError):
+                continue
+            if until > now:
+                self._cooldowns[name] = _Cooldown(skill_name=name, until_ts=until)
+
+    def _save_cooldowns(self) -> None:
+        path = self._cooldowns_path
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {cd.skill_name: cd.until_ts for cd in self._cooldowns.values()}
+            path.write_text(json.dumps(payload), encoding="utf-8")
+        except Exception as e:
+            logger.warning("Failed to persist evolution cooldowns to {}: {}", path, e)
+
     def _activate_cooldown(self, skill_name: str) -> None:
         seconds = max(0, int(self._config.cooldown_seconds_after_promote))
         if seconds <= 0 or not skill_name:
@@ -363,6 +401,7 @@ class EvolutionEngine:
             skill_name=skill_name,
             until_ts=time.time() + seconds,
         )
+        self._save_cooldowns()
 
     def _is_in_cooldown(self, skill_name: str) -> bool:
         cd = self._cooldowns.get(skill_name)
@@ -370,5 +409,6 @@ class EvolutionEngine:
             return False
         if time.time() >= cd.until_ts:
             self._cooldowns.pop(skill_name, None)
+            self._save_cooldowns()
             return False
         return True
