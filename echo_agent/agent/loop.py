@@ -27,6 +27,7 @@ from echo_agent.agent.tools.registry import ToolRegistry
 from echo_agent.bus.events import InboundEvent, OutboundEvent
 from echo_agent.bus.queue import MessageBus
 from echo_agent.config.schema import Config
+from echo_agent.cost.budget import CostTracker
 from echo_agent.memory.consolidator import MemoryConsolidator
 from echo_agent.memory.store import MemoryStore
 from echo_agent.models.inference import InferenceController
@@ -272,6 +273,13 @@ class AgentLoop:
             plan_run_store=self._plan_run_store,
             bus=bus,
         )
+        self._cost_tracker = CostTracker(
+            storage=storage,
+            enabled=config.cost.enabled,
+            daily_budget_usd=config.cost.daily_budget_usd,
+            soft_ratio=config.cost.soft_threshold_ratio,
+            pricing_overrides=config.cost.pricing_overrides,
+        )
         self._inference_stage = InferenceStage(
             config=config,
             bus=bus,
@@ -288,6 +296,7 @@ class AgentLoop:
             max_iterations=self._max_iterations,
             planner=self.planner,
             plan_run_store=self._plan_run_store,
+            cost_tracker=self._cost_tracker,
         )
         self._response_stage = ResponseStage(
             config=config,
@@ -459,6 +468,7 @@ class AgentLoop:
         self._running = True
         if self._vector_index is not None:
             await self._vector_index.initialize()
+        await self._cost_tracker.load()
         self._spawn_background(self._start_mcp_background())
         self.bus.subscribe_inbound(self._on_inbound)
         if self._plugin_manager:
