@@ -767,10 +767,7 @@ def setup_evolution(config: dict) -> None:
     # Ensure the baseline dataset exists — otherwise PromotionGate will
     # reject every candidate. Resolve workspace from config (it may be
     # relative; in that case we anchor at cwd).
-    workspace_raw = config.get("workspace") or "~/.echo-agent"
-    ws = Path(str(workspace_raw)).expanduser()
-    if not ws.is_absolute():
-        ws = (Path.cwd() / ws).resolve()
+    ws = _resolve_workspace(config)
     dataset_path = ws / evo["eval_dataset_path"]
     if not dataset_path.exists():
         try:
@@ -912,6 +909,19 @@ def setup_doctor(config: dict) -> None:
 
 
 # ── Credential key ──────────────────────────────────────────────────────────
+
+def _resolve_workspace(config: dict) -> Path:
+    """Resolve the workspace dir from config, anchoring relative paths at cwd.
+
+    Mirrors the runtime's relative-path handling so setup writes artifacts
+    (e.g. the credential key) to the same place the agent later reads them.
+    """
+    workspace_raw = config.get("workspace") or "~/.echo-agent"
+    ws = Path(str(workspace_raw)).expanduser()
+    if not ws.is_absolute():
+        ws = (Path.cwd() / ws).resolve()
+    return ws
+
 
 def _ensure_credential_key(workspace: Path) -> None:
     """Generate the credential encryption key on first setup if absent.
@@ -1101,8 +1111,7 @@ def run_setup_wizard(
         if prompt_yes_no(t("channels.configure_now"), default=False):
             setup_channels(config)
         path = save_config(config, config_target)
-        workspace_raw = config.get("workspace") or "~/.echo-agent"
-        _ensure_credential_key(Path(str(workspace_raw)).expanduser())
+        _ensure_credential_key(_resolve_workspace(config))
         setup_doctor(config)
         _print_summary(config, path)
         print_success(t("summary.complete"))
@@ -1112,8 +1121,7 @@ def run_setup_wizard(
         func(config)
 
     path = save_config(config, config_target)
-    workspace_raw = config.get("workspace") or "~/.echo-agent"
-    _ensure_credential_key(Path(str(workspace_raw)).expanduser())
+    _ensure_credential_key(_resolve_workspace(config))
     setup_doctor(config)
     _print_summary(config, path)
     print_success(t("summary.complete"))
