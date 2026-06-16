@@ -81,8 +81,15 @@ class ApprovalGate:
                 metadata={"requires_elevated": True},
             ))
 
-        # Step 3: Risk classification
-        risk = classify_risk(tool_name, arguments)
+        # Step 3: Risk classification — fall back to a dynamic tool's *declared*
+        # risk_level (e.g. MCP destructiveHint→EXEC) when it isn't in the static
+        # map, so dynamic tools no longer slip through as the WRITE default.
+        declared_risk = ""
+        if self._registry is not None:
+            tool = self._registry.get(tool_name)
+            if tool is not None:
+                declared_risk = getattr(tool, "risk_level", "") or ""
+        risk = classify_risk(tool_name, arguments, tool_risk_level=declared_risk)
 
         # Approved-pass: any path that lets the call through must tell the tool
         # which actions were approved. The tool's own guard (e.g. CodeExecTool)
@@ -258,7 +265,7 @@ class ApprovalGate:
             return True
         if tool_name in approval_cfg.require_approval:
             return True
-        if risk == RiskLevel.DANGEROUS:
+        if risk in (RiskLevel.EXEC, RiskLevel.DANGEROUS):
             return True
         return False
 
