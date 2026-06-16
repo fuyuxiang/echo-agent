@@ -8,6 +8,7 @@ from echo_agent.evaluation.metrics import (
     not_contains,
     forbidden_tools_check,
 )
+from echo_agent.evaluation.runner import CaseResult, EvalReport
 from echo_agent.evaluation.semantic_metrics import semantic_quality
 
 
@@ -105,3 +106,37 @@ async def test_semantic_quality_error_response_is_inconclusive():
 async def test_semantic_quality_unparseable_is_inconclusive():
     r = await semantic_quality("ref", "act", _BadJsonProvider())
     assert r.inconclusive is True
+
+
+def _case(score, inconclusive=False, category="", passed=True):
+    m = MetricResult(name="x", score=score, passed=passed, inconclusive=inconclusive)
+    return CaseResult(case_id="c", passed=passed, category=category, metrics=[m])
+
+
+def test_case_result_inconclusive_derived_from_metrics():
+    assert _case(0.5, inconclusive=True).inconclusive is True
+    assert _case(1.0, inconclusive=False).inconclusive is False
+
+
+def test_report_counts_inconclusive_cases():
+    rep = EvalReport(
+        results=[_case(1.0), _case(0.5, inconclusive=True), _case(1.0)],
+        total_cases=3, passed_cases=2,
+    )
+    assert rep.inconclusive_cases == 1
+
+
+def test_avg_score_excludes_inconclusive():
+    rep = EvalReport(
+        results=[_case(1.0), _case(1.0), _case(0.5, inconclusive=True)],
+        total_cases=3, passed_cases=2,
+    )
+    assert rep.avg_score == 1.0
+
+
+def test_avg_score_all_inconclusive_is_zero():
+    rep = EvalReport(
+        results=[_case(0.5, inconclusive=True)],
+        total_cases=1, passed_cases=0,
+    )
+    assert rep.avg_score == 0.0
