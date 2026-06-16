@@ -66,6 +66,7 @@ MESSAGES = {
         "gateway": "网关与网络",
         "observability": "可观测性",
         "evolution": "自进化技能",
+        "cost": "成本预算",
         "doctor": "能力体检",
     },
     "model": {
@@ -241,6 +242,15 @@ MESSAGES = {
         "dataset_seed_failed": "生成 baseline 评测集失败：{error}",
         "saved_disabled": "自进化未启用。",
         "saved_enabled": "自进化已启用，触发模式：{trigger}，评测集：{dataset}",
+    },
+    "cost": {
+        "header": "成本预算",
+        "intro": "按每日预算上限对模型调用做成本计量与硬拦截；默认关闭。",
+        "enable": "启用成本预算？（默认关闭）",
+        "daily_budget": "每日预算上限（美元）",
+        "budget_zero_hint": "预算为 0，仅计量不拦截；如需硬上限请填正数。",
+        "saved": "成本预算已启用，每日上限 ${budget:.2f}。",
+        "saved_disabled": "成本预算未启用。",
     },
     "doctor": {
         "header": "能力体检",
