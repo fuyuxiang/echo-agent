@@ -151,6 +151,15 @@ _MIGRATIONS: list[tuple[int, str]] = [
         updated_at TEXT NOT NULL
     )"""),
     (19, "CREATE INDEX IF NOT EXISTS idx_plan_runs_session ON plan_runs(session_key)"),
+    (20, """CREATE TABLE IF NOT EXISTS cost_ledger (
+        window_date TEXT PRIMARY KEY,
+        spent_usd REAL NOT NULL DEFAULT 0,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT ''
+    )"""),
 ]
 
 
