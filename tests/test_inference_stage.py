@@ -444,3 +444,56 @@ class TestInferenceStageReflection:
         await stage.run(ctx)
 
         assert not planner.reflect.called
+
+
+class TestInferenceStageBudgetHalt:
+    """Daily cost budget halts the loop mid-task — the plan must NOT be marked complete."""
+
+    def _make_multistep_plan(self):
+        from echo_agent.agent.planning.models import Plan, PlanStep, StrategyType
+        return Plan(
+            strategy=StrategyType.PLAN_EXECUTE,
+            steps=[PlanStep(index=0, description="a"), PlanStep(index=1, description="b")],
+            goal="multi",
+        )
+
+    @pytest.mark.asyncio
+    async def test_budget_halt_marks_plan_exhausted_not_complete(self):
+        from echo_agent.agent.planning.models import StepStatus
+        from echo_agent.cost.budget import CostTracker
+
+        provider = AsyncMock()
+        provider.chat_stream_with_retry = AsyncMock(
+            return_value=LLMResponse(content="should not be reached", finish_reason="stop")
+        )
+        stage, _ = _make_stage(provider=provider)
+
+        # Tracker already over the daily hard cap -> enforce() raises before any call.
+        tracker = CostTracker(storage=None, enabled=True, daily_budget_usd=1.0)
+        tracker._spent_usd = 5.0
+        stage._cost_tracker = tracker
+
+        captured = {}
+
+        async def _capture_update(run_id, plan, status=None):
+            captured["status"] = status
+            captured["plan"] = plan
+
+        plan_run_store = MagicMock()
+        plan_run_store.update = AsyncMock(side_effect=_capture_update)
+        stage._plan_run_store = plan_run_store
+
+        ctx = _make_ctx()
+        ctx.execution_plan = self._make_multistep_plan()
+        ctx.plan_run_id = "run_001"
+
+        result = await stage.run(ctx)
+
+        # Budget message surfaced to the user, loop did not exhaust iterations.
+        assert "预算" in result.response_text
+        # Plan persisted as exhausted, and pending steps were NOT force-completed.
+        assert captured["status"] == "exhausted"
+        assert all(s.status == StepStatus.PENDING for s in captured["plan"].steps)
+        # The hard gate fired before any LLM call was made.
+        assert provider.chat_stream_with_retry.call_count == 0
+
