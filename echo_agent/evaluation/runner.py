@@ -31,12 +31,17 @@ class CaseResult:
     duration_ms: float = 0.0
     metrics: list[MetricResult] = field(default_factory=list)
     error: str = ""
+    category: str = ""
 
     @property
     def score(self) -> float:
         if not self.metrics:
             return 0.0
         return sum(m.score for m in self.metrics) / len(self.metrics)
+
+    @property
+    def inconclusive(self) -> bool:
+        return any(m.inconclusive for m in self.metrics)
 
 
 @dataclass
@@ -51,10 +56,15 @@ class EvalReport:
         return self.passed_cases / max(self.total_cases, 1)
 
     @property
+    def inconclusive_cases(self) -> int:
+        return sum(1 for r in self.results if r.inconclusive)
+
+    @property
     def avg_score(self) -> float:
-        if not self.results:
+        conclusive = [r for r in self.results if not r.inconclusive]
+        if not conclusive:
             return 0.0
-        return sum(r.score for r in self.results) / len(self.results)
+        return sum(r.score for r in conclusive) / len(conclusive)
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -62,6 +72,7 @@ class EvalReport:
             "passed": self.passed_cases,
             "pass_rate": round(self.pass_rate, 3),
             "avg_score": round(self.avg_score, 3),
+            "inconclusive": self.inconclusive_cases,
             "duration_ms": round(self.duration_ms, 1),
         }
 
