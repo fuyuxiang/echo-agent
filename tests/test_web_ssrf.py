@@ -127,7 +127,7 @@ async def test_web_search_blocks_internal_api_base():
 
 @pytest.mark.asyncio
 async def test_web_search_blocks_internal_api_base_even_with_proxy():
-    # 配了 proxy 时，api_base 仍可能指向内网，必须照常校验（不得旁路）。
+    # A configured proxy must not bypass api_base SSRF validation: the base could still point at an internal address.
     tool = WebSearchTool(
         provider="searxng",
         api_base="http://internal.test/",
