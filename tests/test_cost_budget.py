@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from echo_agent.config.schema import Config, CostConfig
 from echo_agent.cost.budget import CostTracker, BudgetStatus, BudgetExceeded
 from echo_agent.storage.sqlite import SQLiteBackend
 
@@ -92,3 +93,17 @@ async def test_persistence_round_trip(tmp_path):
         assert abs(t2.spent_usd - spent) < 1e-9
     finally:
         await backend.close()
+
+
+def test_cost_config_defaults():
+    c = Config()
+    assert c.cost.enabled is False
+    assert c.cost.daily_budget_usd == 0.0
+    assert c.cost.soft_threshold_ratio == 0.8
+    assert c.cost.pricing_overrides == {}
+
+
+def test_cost_config_camel_alias():
+    c = CostConfig(dailyBudgetUsd=5.0, softThresholdRatio=0.9)
+    assert c.daily_budget_usd == 5.0
+    assert c.soft_threshold_ratio == 0.9

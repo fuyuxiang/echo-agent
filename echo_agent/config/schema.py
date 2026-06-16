@@ -647,6 +647,13 @@ class AgentBehaviorConfig(_Base):
     reasoning_effort: Literal["low", "medium", "high", "auto"] = "auto"
 
 
+class CostConfig(_Base):
+    enabled: bool = False
+    daily_budget_usd: float = 0.0
+    soft_threshold_ratio: float = 0.8
+    pricing_overrides: dict = Field(default_factory=dict)
+
+
 class Config(_Base):
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
@@ -675,4 +682,5 @@ class Config(_Base):
     ui: UIConfig = Field(default_factory=UIConfig)
     agent: AgentBehaviorConfig = Field(default_factory=AgentBehaviorConfig)
     evolution: EvolutionConfig = Field(default_factory=EvolutionConfig)
+    cost: CostConfig = Field(default_factory=CostConfig)
     workspace: str = "~/.echo-agent"
