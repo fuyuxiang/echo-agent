@@ -149,6 +149,7 @@ class AgentLoop:
             inference=self.inference,
             bus=bus,
             provider=provider,
+            registry=self.tools,
             allowlist=ApprovalAllowlist(
                 store_path=self.workspace / "data" / "approval_allowlist.json",
             ),
