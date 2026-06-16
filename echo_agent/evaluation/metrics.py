@@ -76,7 +76,12 @@ def not_contains(forbidden_substrings: list[str], actual: str) -> MetricResult:
     if not forbidden_substrings:
         return MetricResult(name="not_contains", score=1.0, passed=True)
     lower = actual.lower()
-    hits = [s for s in forbidden_substrings if s.lower() in lower]
+    seen = set()
+    hits = []
+    for s in forbidden_substrings:
+        if s and s.lower() in lower and s not in seen:
+            seen.add(s)
+            hits.append(s)
     passed = not hits
     return MetricResult(
         name="not_contains", score=1.0 if passed else 0.0, passed=passed,
@@ -89,7 +94,12 @@ def forbidden_tools_check(forbidden_tools: list[str], actual_tools: list[str]) -
     if not forbidden_tools:
         return MetricResult(name="forbidden_tools", score=1.0, passed=True)
     used = set(actual_tools)
-    hits = [t for t in forbidden_tools if t in used]
+    seen = set()
+    hits = []
+    for t in forbidden_tools:
+        if t and t in used and t not in seen:
+            seen.add(t)
+            hits.append(t)
     passed = not hits
     return MetricResult(
         name="forbidden_tools", score=1.0 if passed else 0.0, passed=passed,
