@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 MESSAGES = {
+    "credentials": {
+        "key_generated": "Generated credential encryption key at {path} (mode 0600)",
+        "key_warning": "Do not delete this file or commit it to version control; deleting it makes stored credentials undecryptable",
+    },
     "common": {
         "yes": "Yes",
         "no": "No",

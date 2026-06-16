@@ -156,3 +156,15 @@ class TestPromptYesNo:
         from echo_agent.cli.prompt import prompt_yes_no
         with patch("builtins.input", return_value="no"):
             assert prompt_yes_no("Continue?") is False
+
+
+def test_setup_ensures_credential_key(tmp_path, monkeypatch):
+    """setup finalize 应在工作区生成 .credential_key（env 未设时）。"""
+    monkeypatch.delenv("ECHO_AGENT_CREDENTIAL_KEY", raising=False)
+    from echo_agent.cli.setup import _ensure_credential_key
+
+    _ensure_credential_key(tmp_path)
+    key_file = tmp_path / ".credential_key"
+    assert key_file.exists()
+    import stat as _stat
+    assert _stat.S_IMODE(key_file.stat().st_mode) == 0o600
