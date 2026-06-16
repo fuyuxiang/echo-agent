@@ -2,7 +2,7 @@
 
 Single responsibility: hand back a usable Fernet key. Resolution order:
   1. ``env_name`` env var (validated as a real Fernet key)
-  2. ``<workspace>/.credential_key`` file (validated)
+  2. ``key_path`` file (validated)
   3. otherwise generate one and persist it with 0600 perms
 
 This replaces the previous weak ``sha256(secret)`` KDF: we store a proper
@@ -35,14 +35,14 @@ def _validate(raw: bytes, *, source: str) -> bytes:
 
 
 def resolve_or_create_key(
-    workspace: Path,
+    key_path: Path,
     env_name: str = "ECHO_AGENT_CREDENTIAL_KEY",
 ) -> bytes:
     env_value = os.environ.get(env_name, "")
     if env_value:
         return _validate(env_value.encode(), source=env_name)
 
-    key_file = Path(workspace) / KEY_FILENAME
+    key_file = Path(key_path)
     if key_file.exists():
         return _validate(key_file.read_bytes(), source=str(key_file))
 
