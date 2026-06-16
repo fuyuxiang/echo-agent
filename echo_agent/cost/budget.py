@@ -26,7 +26,15 @@ def _today_key() -> str:
 
 
 class CostTracker:
-    """Global daily-rolling cost accumulation + tiered enforcement gate."""
+    """Global daily-rolling cost accumulation + tiered enforcement gate.
+
+    State is in-memory and persisted best-effort to cost_ledger. Designed for a
+    single-process agent: accumulation is correct under asyncio concurrency
+    (no await between read and += on _spent_usd), but multi-process deployments
+    would need increment-based SQL or a shared lock since each process keeps its
+    own in-memory total. If a persist fails it is swallowed, so a restart may
+    reload a slightly under-counted total (budget under-estimated, never over).
+    """
 
     def __init__(
         self, *, storage: Any = None, enabled: bool = False,
@@ -118,6 +126,7 @@ class CostTracker:
             logger.warning("cost_ledger persist failed; kept in memory")
 
     def check(self) -> BudgetStatus:
+        self._roll_window()
         if not self._enabled or self._daily_budget_usd <= 0:
             return BudgetStatus.OK
         if self._spent_usd >= self._daily_budget_usd:

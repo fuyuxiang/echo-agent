@@ -61,3 +61,14 @@ async def test_enforce_raises_on_hard():
     t._spent_usd = 2.0
     with pytest.raises(BudgetExceeded):
         t.enforce()
+
+
+@pytest.mark.asyncio
+async def test_check_rolls_window_on_new_day():
+    # A long-lived process that exceeded budget yesterday must not keep
+    # reporting HARD today when check() is called directly (no record/enforce).
+    t = _tracker(daily_budget_usd=1.0)
+    t._spent_usd = 5.0
+    t._window_date = "2000-01-01"  # stale window from a previous day
+    assert t.check() == BudgetStatus.OK  # new day -> rolled to zero -> OK
+    assert t.spent_usd == 0.0
