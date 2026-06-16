@@ -494,6 +494,22 @@ class TestWebhookChannel:
         result = await ch.send(event)
         assert result.success is True
 
+    @pytest.mark.asyncio
+    async def test_send_resolves_future_by_inbound_event_id(self):
+        """P0-5: outbound 用 metadata._inbound_event_id 关联 pending future。"""
+        from echo_agent.bus.events import OutboundEvent
+
+        ch, _ = self._make()
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        ch._pending_responses["evt-42"] = future
+
+        event = OutboundEvent.text_reply(channel="webhook", chat_id="wh", text="done")
+        event.metadata = {"_inbound_event_id": "evt-42"}
+        result = await ch.send(event)
+        assert result.success is True
+        assert future.result() == "done"
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 6. WeComChannel
