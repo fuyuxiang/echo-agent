@@ -103,6 +103,21 @@ def _env_overrides() -> dict[str, Any]:
     return result
 
 
+def profile_explicitly_set(config_path: str | Path | None = None) -> bool:
+    """Whether the user explicitly set ``security.profile``.
+
+    Looks only at *user* sources — the resolved user YAML file and
+    ``ECHO_AGENT_*`` env vars — never the packaged default.yaml or schema
+    defaults. Pure: reads inputs, mutates nothing.
+    """
+    path = resolve_config_file(config_path)
+    user_yaml = _load_yaml_file(path if path and path.exists() else None)
+    if isinstance(user_yaml.get("security"), dict) and "profile" in user_yaml["security"]:
+        return True
+    env = _env_overrides()
+    return isinstance(env.get("security"), dict) and "profile" in env["security"]
+
+
 def load_config(
     config_path: str | Path | None = None,
     overrides: dict[str, Any] | None = None,
