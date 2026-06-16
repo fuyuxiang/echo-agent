@@ -785,6 +785,42 @@ def setup_evolution(config: dict) -> None:
     ))
 
 
+# ── Section 11: Cost budget ───────────────────────────────────────────────────
+
+def setup_cost(config: dict) -> None:
+    """Configure the daily cost budget gate.
+
+    Disabled by default. When enabled, asks for a daily cap in USD. A cap of
+    0 (or blank/negative) means metering-only with no hard stop — see
+    echo_agent/cost/budget.py — so we print an explicit hint in that case.
+    """
+    _print_section_header("cost")
+    print_info(t("cost.intro"))
+    print()
+
+    cost = _ensure_dict(config, "cost")
+    enabled = prompt_yes_no(t("cost.enable"), default=bool(cost.get("enabled", False)))
+    cost["enabled"] = enabled
+    if not enabled:
+        print_success(t("cost.saved_disabled"))
+        return
+
+    cur_budget = float(cost.get("daily_budget_usd") or cost.get("dailyBudgetUsd") or 0.0)
+    raw = prompt(f"  {t('cost.daily_budget')}", default=f"{cur_budget:.2f}")
+    try:
+        budget = float(raw)
+    except ValueError:
+        print_warning(t("common.invalid"))
+        budget = cur_budget
+    if budget < 0:
+        budget = 0.0
+    cost["daily_budget_usd"] = budget
+    if budget <= 0:
+        print_info(t("cost.budget_zero_hint"))
+
+    print_success(t("cost.saved", budget=budget))
+
+
 # ── Section registry ──────────────────────────────────────────────────────────
 
 SETUP_SECTIONS: list[tuple[str, Callable[[dict], None]]] = [
@@ -798,6 +834,7 @@ SETUP_SECTIONS: list[tuple[str, Callable[[dict], None]]] = [
     ("gateway", setup_gateway),
     ("observability", setup_observability),
     ("evolution", setup_evolution),
+    ("cost", setup_cost),
 ]
 
 # Aliases so users can pass any reasonable section name from the CLI.
@@ -826,6 +863,8 @@ SECTION_ALIASES: dict[str, str] = {
     "evolve": "evolution",
     "self-evolve": "evolution",
     "self_evolve": "evolution",
+    "cost": "cost",
+    "budget": "cost",
     "doctor": "doctor",
     "check": "doctor",
 }
