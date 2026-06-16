@@ -13,7 +13,10 @@ import signal
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from echo_agent.config.schema import Config
 
 from loguru import logger
 
