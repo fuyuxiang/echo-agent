@@ -123,3 +123,17 @@ async def test_web_search_blocks_internal_api_base():
         result = await tool.execute({"query": "hi"}, None)
     assert result.success is False
     assert "non-public" in result.error
+
+
+@pytest.mark.asyncio
+async def test_web_search_blocks_internal_api_base_even_with_proxy():
+    # 配了 proxy 时，api_base 仍可能指向内网，必须照常校验（不得旁路）。
+    tool = WebSearchTool(
+        provider="searxng",
+        api_base="http://internal.test/",
+        proxy="http://proxy.local:8080",
+    )
+    with patch("socket.getaddrinfo", return_value=_addrinfo("10.0.0.5")):
+        result = await tool.execute({"query": "hi"}, None)
+    assert result.success is False
+    assert "non-public" in result.error
