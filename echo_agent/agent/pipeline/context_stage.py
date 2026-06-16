@@ -57,6 +57,7 @@ class ContextStage:
         snapshot_enabled: bool,
         tool_definitions_fn: Any,
         episodic: Any = None,
+        plan_run_store: Any = None,
         bus: Any = None,
     ):
         self._config = config
@@ -74,6 +75,7 @@ class ContextStage:
         self._snapshot_enabled = snapshot_enabled
         self._tool_definitions_fn = tool_definitions_fn
         self._episodic = episodic
+        self._plan_run_store = plan_run_store
         self._bus = bus
 
     async def _emit_progress(self, event: InboundEvent, metadata: dict[str, Any]) -> None:
@@ -248,6 +250,7 @@ class ContextStage:
         # tool_defs already computed above for capability derivation.
 
         execution_plan = None
+        plan_run_id = ""
         if self._planner and tool_defs:
             try:
                 token_est = len(event.text) // 4
@@ -268,6 +271,15 @@ class ContextStage:
                         messages[-1]["content"] = (
                             last_content + f"\n\n[Plan]\n{plan_context}"
                         )
+                    # Persist the multi-step plan so step progress is queryable
+                    # and an interrupted long task can be resumed.
+                    if self._plan_run_store is not None:
+                        try:
+                            plan_run_id = await self._plan_run_store.create(
+                                event.session_key, trace_id, execution_plan
+                            )
+                        except Exception as e:
+                            logger.debug("Plan run persistence failed: {}", e)
             except Exception as e:
                 logger.debug("Planning failed, proceeding without plan: {}", e)
 
@@ -282,6 +294,7 @@ class ContextStage:
             retrieval=retrieval,
             task_type=task_type,
             execution_plan=execution_plan,
+            plan_run_id=plan_run_id,
             intro_text=intro_text,
             stream_publisher=stream_publisher,
         )

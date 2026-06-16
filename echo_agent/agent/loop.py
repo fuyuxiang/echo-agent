@@ -179,6 +179,7 @@ class AgentLoop:
             self._init_advanced_memory(config, storage)
 
         self.planner = None
+        self._plan_run_store = None
         if config.planning.enabled:
             from echo_agent.agent.planning import AgentPlanner
             self.planner = AgentPlanner(
@@ -187,6 +188,9 @@ class AgentLoop:
                 max_tree_depth=config.planning.max_tree_depth,
                 reflection_enabled=config.planning.reflection_enabled,
             )
+            if storage is not None:
+                from echo_agent.agent.planning.plan_run_store import PlanRunStore
+                self._plan_run_store = PlanRunStore(storage)
 
         self._telemetry = None
         if config.observability.otel_enabled:
@@ -265,6 +269,7 @@ class AgentLoop:
             snapshot_enabled=self._snapshot_enabled,
             tool_definitions_fn=self.tools.get_definitions,
             episodic=self._episodic,
+            plan_run_store=self._plan_run_store,
             bus=bus,
         )
         self._inference_stage = InferenceStage(
@@ -282,6 +287,7 @@ class AgentLoop:
             default_model=self._default_model,
             max_iterations=self._max_iterations,
             planner=self.planner,
+            plan_run_store=self._plan_run_store,
         )
         self._response_stage = ResponseStage(
             config=config,

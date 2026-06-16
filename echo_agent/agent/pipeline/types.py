@@ -26,6 +26,7 @@ class PipelineContext:
     retrieval: str = ""
     task_type: str = "chat"
     execution_plan: Plan | None = None
+    plan_run_id: str = ""
     intro_text: str = ""
     stream_publisher: Any = None
 
