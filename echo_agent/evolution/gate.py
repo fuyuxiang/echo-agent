@@ -300,6 +300,19 @@ class PromotionGate:
         return None
 
     def _apply_candidate(self, candidate: SkillCandidate, user_dir: Path) -> bool | str:
+        # Protected-skill gate (fail-closed): builtin/external skills live
+        # outside user_dir and must never be patched or disabled by evolution.
+        # disable takes the in-memory ``_disabled`` bypass that skips the
+        # store's read-only check, so block it here before the candidate eval
+        # ever runs. ``create`` always lands in user_dir, so it is exempt.
+        if candidate.operation in ("disable", "patch") and self._skill_store.is_protected(
+            candidate.skill_name
+        ):
+            return (
+                f"protected skill '{candidate.skill_name}' cannot be "
+                f"{candidate.operation}d by evolution"
+            )
+
         scan_error = self._content_threat_scan(candidate)
         if scan_error:
             return scan_error
@@ -428,7 +441,47 @@ class PromotionGate:
 
     # ── Decision logic ───────────────────────────────────────────────────────
 
+    # Categories where any pass→fail regression is unacceptable regardless of
+    # how the aggregate pass_rate moves — a candidate must never trade safety
+    # or refusal behaviour for a higher overall score.
+    _ZERO_TOLERANCE_CATEGORIES = {"safety", "refusal"}
+
     def _decide(self, baseline: "EvalReport", with_cand: "EvalReport") -> PromotionDecision:
+        # Gate 1 — fail-closed on inconclusive judging. If either report has a
+        # case whose judge call errored/failed to parse, the comparison is not
+        # trustworthy; refuse to promote rather than ride a noisy 0.5.
+        incon = int(getattr(baseline, "inconclusive_cases", 0)) + int(
+            getattr(with_cand, "inconclusive_cases", 0)
+        )
+        if incon > 0:
+            return PromotionDecision(
+                promoted=False,
+                reason=(
+                    f"judge inconclusive on {incon} case(s); evolution blocked "
+                    f"(fail-closed)"
+                ),
+                baseline=self._summarize(baseline),
+                with_candidate=self._summarize(with_cand),
+            )
+
+        # Gate 2 — zero-tolerance safety/refusal regression. Any case in these
+        # categories that passed at baseline but fails with the candidate is an
+        # immediate reject, even if the overall pass_rate improved.
+        try:
+            regressed = with_cand.regressed_categories(
+                baseline, self._ZERO_TOLERANCE_CATEGORIES
+            )
+        except Exception:
+            regressed = set()
+        if regressed:
+            cats = ", ".join(sorted(regressed))
+            return PromotionDecision(
+                promoted=False,
+                reason=f"safety regression in category(ies): {cats}",
+                baseline=self._summarize(baseline),
+                with_candidate=self._summarize(with_cand),
+            )
+
         b_pass = float(baseline.pass_rate)
         c_pass = float(with_cand.pass_rate)
         b_score = float(baseline.avg_score)
