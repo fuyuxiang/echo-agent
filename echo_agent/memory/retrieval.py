@@ -181,7 +181,9 @@ class HybridRetriever:
     @staticmethod
     def _query_entropy(query: str) -> float:
         """Shannon entropy of token freq distribution, normalized to [0, 1]."""
-        tokens = [t for t in _TOKEN_RE.findall(query.lower()) if t not in _STOP_WORDS]
+        lower = query.lower()
+        tokens = [t for t in _TOKEN_RE.findall(lower) if t not in _STOP_WORDS]
+        tokens.extend(cjk_tokens(lower))
         if not tokens:
             return 0.5
         freq = Counter(tokens)
