@@ -228,7 +228,7 @@ class WebSearchTool(Tool):
 
         # A configurable api_base (notably searxng) is operator-controlled but
         # could point at an internal address — validate it like web_fetch.
-        if self._api_base and not self._proxy:
+        if self._api_base:
             ssrf_error = await check_url_ssrf(self._api_base)
             if ssrf_error:
                 return ToolResult(success=False, error=ssrf_error, metadata={"provider": self._provider})
