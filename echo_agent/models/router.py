@@ -190,6 +190,61 @@ class ModelRouter:
             )))
         return candidates
 
+    def resolve(
+        self,
+        task_type: str,
+        *,
+        fallback_provider: LLMProvider | None = None,
+        fallback_model: str = "",
+    ) -> tuple[LLMProvider | None, str]:
+        """Resolve a non-inference subsystem (compression, approval, evolution)
+        to a (provider, model) pair by task_type.
+
+        If a configured route matches ``task_type`` and its provider is
+        registered + healthy, use it. Otherwise fall back to
+        ``fallback_provider``/``fallback_model`` (the subsystem's current
+        main-provider behaviour) so an unconfigured deployment is unaffected."""
+        for route in self._config.routes:
+            if not self._matches_task(route, task_type):
+                continue
+            entry = self._find_healthy_provider_entry(
+                route.model, preferred_provider=route.provider
+            )
+            if entry:
+                _, provider = entry
+                return provider, (route.model or fallback_model)
+        return fallback_provider, fallback_model
+
+    def find_embed_provider(
+        self, preferred_model: str = ""
+    ) -> tuple[LLMProvider | None, str]:
+        """Find a registered provider that actually implements ``embed``.
+
+        Fixes the silent-None embedding gap: when the main provider does not
+        support embeddings (e.g. Anthropic), route embedding to any registered
+        provider that overrides ``embed`` (e.g. an OpenAI-compatible one). A
+        route tagged with task_type ``embedding`` takes precedence so operators
+        can pin the embedding model/provider explicitly."""
+        # 1. Explicit embedding route wins.
+        for route in self._config.routes:
+            if not self._matches_task(route, "embedding"):
+                continue
+            provider = self._providers.get(route.provider)
+            if provider is not None and self._supports_embed(provider):
+                return provider, (route.model or preferred_model)
+        # 2. Any registered embed-capable provider.
+        for name, provider in self._providers.items():
+            if self._supports_embed(provider) and self._provider_available(name):
+                return provider, preferred_model
+        return None, preferred_model
+
+    @staticmethod
+    def _supports_embed(provider: LLMProvider) -> bool:
+        return (
+            hasattr(provider, "embed")
+            and type(provider).embed is not LLMProvider.embed
+        )
+
     def mark_failure(self, provider_name: str, error: str = "") -> None:
         health = self._health.get(provider_name)
         if not health:
