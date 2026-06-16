@@ -16,10 +16,12 @@ import pytest
 from echo_agent.agent.approval_gate import ApprovalGate
 from echo_agent.agent.tools.base import ToolExecutionContext
 from echo_agent.agent.tools.code_exec import CodeExecTool
+from echo_agent.agent.tools.registry import ToolRegistry
 from echo_agent.bus.events import ContentBlock, ContentType, InboundEvent
 from echo_agent.bus.queue import MessageBus
 from echo_agent.config.loader import load_config
 from echo_agent.permissions.manager import ApprovalManager
+from echo_agent.tools.base import Tool, ToolResult as _TR
 
 
 class _FakeInference:
@@ -120,3 +122,51 @@ async def test_mode_off_lets_exec_run():
     # Use a non-CLI channel so we exercise Step 8 rather than the CLI shortcut.
     result = await _run_through_gate(cfg, "weixin")
     assert result.success is True, f"expected success, got error: {result.error}"
+
+
+class _FakeExecTool(Tool):
+    """模拟 MCP destructiveHint→EXEC 的动态工具：不在静态风险表里，自报 exec。"""
+
+    name = "mcp_x_destructive"
+    description = "fake destructive mcp tool"
+    parameters: dict = {"type": "object", "properties": {}}
+    risk_level = "exec"
+
+    async def execute(self, params, ctx=None):
+        return _TR(success=True, output="ran")
+
+
+def _make_gate_with_registry(cfg, bus, registry):
+    appr = ApprovalManager(
+        require_approval=cfg.permissions.approval.require_approval,
+        auto_approve=cfg.permissions.approval.auto_approve,
+    )
+    return ApprovalGate(
+        config=cfg, approval=appr, inference=_FakeInference(),
+        bus=bus, provider=None, registry=registry,
+    )
+
+
+@pytest.mark.asyncio
+async def test_dynamic_exec_tool_requires_approval_when_unattended():
+    """P0-1: 自报 exec 的动态工具在无人值守下必须被拦截，而非按 WRITE 放行。"""
+    cfg = load_config()
+    cfg.permissions.approval.mode = "manual"
+    cfg.permissions.approval.unattended_policy = "deny"
+    bus = MessageBus()
+    registry = ToolRegistry()
+    registry.register(_FakeExecTool())
+    gate = _make_gate_with_registry(cfg, bus, registry)
+
+    event = InboundEvent(
+        channel="cron",
+        sender_id="u1",
+        chat_id="c1",
+        content=[ContentBlock(type=ContentType.TEXT, text="go")],
+        metadata={"_unattended": True},
+    )
+    check = await gate.check(
+        "mcp_x_destructive", {}, "u1", channel="cron", event=event, running=True,
+    )
+    assert check.denial is not None
+    assert "unattended" in (check.denial.error or "").lower()
