@@ -71,7 +71,7 @@ def test_setup_cost_enabled_zero(tmp_path: Path):
 
 
 def test_setup_cost_enabled_invalid_falls_back(tmp_path: Path):
-    config: dict = {"workspace": str(tmp_path)}
+    config: dict = {"workspace": str(tmp_path), "cost": {"daily_budget_usd": 3.5}}
     p, yn = _patch_prompts(
         answers={"Daily budget cap": "abc"},
         yes_no={"Enable cost budget": True},
@@ -79,4 +79,30 @@ def test_setup_cost_enabled_invalid_falls_back(tmp_path: Path):
     with patch(f"{_TARGET}.prompt", p), patch(f"{_TARGET}.prompt_yes_no", yn):
         run_setup_cost(config)
     assert config["cost"]["enabled"] is True
+    # Invalid input must preserve the prior budget, not silently zero it.
+    assert config["cost"]["daily_budget_usd"] == 3.5
+
+
+def test_setup_cost_enabled_negative_clamped_to_zero(tmp_path: Path):
+    config: dict = {"workspace": str(tmp_path)}
+    p, yn = _patch_prompts(
+        answers={"Daily budget cap": "-2"},
+        yes_no={"Enable cost budget": True},
+    )
+    with patch(f"{_TARGET}.prompt", p), patch(f"{_TARGET}.prompt_yes_no", yn):
+        run_setup_cost(config)
+    assert config["cost"]["enabled"] is True
     assert config["cost"]["daily_budget_usd"] == 0.0
+
+
+def test_setup_cost_enabled_nonfinite_falls_back(tmp_path: Path):
+    for bad in ("nan", "inf"):
+        config: dict = {"workspace": str(tmp_path), "cost": {"daily_budget_usd": 4.0}}
+        p, yn = _patch_prompts(
+            answers={"Daily budget cap": bad},
+            yes_no={"Enable cost budget": True},
+        )
+        with patch(f"{_TARGET}.prompt", p), patch(f"{_TARGET}.prompt_yes_no", yn):
+            run_setup_cost(config)
+        # Non-finite input is rejected and the prior finite budget is kept.
+        assert config["cost"]["daily_budget_usd"] == 4.0
