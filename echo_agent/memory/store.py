@@ -27,6 +27,7 @@ from typing import Any, Iterable
 from loguru import logger
 
 from echo_agent.memory.types import MemoryEntry, MemoryTier, MemoryType
+from echo_agent.memory.text import cjk_tokens
 from echo_agent.memory.forgetting import ForgettingCurve
 
 msvcrt = None
@@ -46,6 +47,7 @@ _STOP_WORDS = frozenset({
     "on", "with", "at", "by", "from", "as", "into", "about", "it", "its",
     "this", "that", "and", "or", "but", "not", "no", "if", "so", "than",
 })
+
 
 _MEMORY_THREAT_PATTERNS = [
     (r"ignore\s+(previous|all|above|prior)\s+instructions", "prompt_injection"),
@@ -746,6 +748,10 @@ class MemoryStore:
             word.lower() for word in re.findall(r"\w+", query)
             if len(word) > 1 and word.lower() not in _STOP_WORDS
         ]
+        # Chinese has no whitespace word boundaries, so \w+ groups a whole run
+        # into one token and matching degrades to "the entire phrase must appear
+        # verbatim". Add CJK single chars + bigrams so partial overlap scores.
+        words.extend(cjk_tokens(query.lower()))
         if not words:
             return [
                 (entry, self._forgetting.effective_importance(entry))
