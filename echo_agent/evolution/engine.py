@@ -56,6 +56,7 @@ class EvolutionEngine:
         eval_dataset_loader: Callable[[], Awaitable["EvalDataset"]] | Callable[[], "EvalDataset"],
         hooks: "HookRegistry | None" = None,
         reflection: Any = None,
+        router: Any = None,
     ):
         self._config = config
         self._workspace = workspace
@@ -79,6 +80,7 @@ class EvolutionEngine:
             model=config.evolver_model,
             max_candidates=config.max_candidates_per_run,
             skill_size_limit_bytes=config.skill_size_limit_bytes,
+            router=router,
         )
         self._gate = PromotionGate(
             eval_runner_factory=eval_runner_factory,

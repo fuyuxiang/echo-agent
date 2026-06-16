@@ -58,6 +58,7 @@ class LLMSummarizer:
         summary_min_tokens: int,
         summary_max_tokens: int,
         cooldown_seconds: int,
+        router: Any = None,
     ):
         self._provider = provider
         self._model = summary_model or default_model
@@ -65,6 +66,20 @@ class LLMSummarizer:
         self._min_tokens = summary_min_tokens
         self._max_tokens = summary_max_tokens
         self._cooldown = cooldown_seconds
+        self._router = router
+
+    def _resolve_provider(self) -> tuple[LLMProvider, str]:
+        """Route the summary call by task_type 'compression' when a router is
+        wired, else use the configured provider+model unchanged."""
+        if self._router is not None:
+            provider, model = self._router.resolve(
+                "compression",
+                fallback_provider=self._provider,
+                fallback_model=self._model,
+            )
+            if provider is not None:
+                return provider, (model or self._model)
+        return self._provider, self._model
 
     async def summarize(
         self,
@@ -100,9 +115,10 @@ class LLMSummarizer:
         )
 
         try:
-            response = await self._provider.chat_with_retry(
+            provider, model = self._resolve_provider()
+            response = await provider.chat_with_retry(
                 messages=[{"role": "user", "content": prompt}],
-                model=self._model,
+                model=model,
                 max_tokens=budget + 500,
             )
             if response.finish_reason == "error" or not response.content:
