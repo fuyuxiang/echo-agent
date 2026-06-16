@@ -42,6 +42,7 @@ class ToolCircuitBreaker:
         self._recovery_seconds = recovery_seconds
         self._half_open_max = half_open_max
 
+    # 放行判断条件须与 peek_available() 保持一致（本方法多了 acquire 副作用）。
     def is_available(self, tool_name: str) -> bool:
         circuit = self._circuits.get(tool_name)
         if not circuit or circuit.state == CircuitState.CLOSED:
@@ -91,6 +92,7 @@ class ToolCircuitBreaker:
         并消耗探测预算（acquire-a-probe 语义），仅供真实调用路径使用；监控/过滤
         类查询必须用 peek，否则会偷走探测预算、甚至触发状态跃迁。
         """
+        # 放行判断条件须与 is_available() 保持一致。
         circuit = self._circuits.get(tool_name)
         if not circuit or circuit.state == CircuitState.CLOSED:
             return True
