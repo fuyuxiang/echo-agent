@@ -39,6 +39,9 @@ class _LoopResult:
     response_text: str = ""
     total_tool_calls: int = 0
     loop_exhausted: bool = True
+    # True when the daily cost budget halted the loop mid-task. The task is
+    # NOT complete, so run() must not mark pending plan steps done.
+    budget_halted: bool = False
     should_review_skills: bool = False
     should_review_memory: bool = False
     skill_iters: int = 0
@@ -168,6 +171,7 @@ class InferenceStage:
                     response_text=second.response_text or loop_result.response_text,
                     total_tool_calls=loop_result.total_tool_calls + second.total_tool_calls,
                     loop_exhausted=second.loop_exhausted,
+                    budget_halted=second.budget_halted,
                     should_review_skills=loop_result.should_review_skills or second.should_review_skills,
                     should_review_memory=loop_result.should_review_memory or second.should_review_memory,
                     skill_iters=second.skill_iters,
@@ -202,12 +206,16 @@ class InferenceStage:
         ):
             try:
                 plan = ctx.execution_plan
-                if loop_result.response_text and not loop_result.loop_exhausted:
+                if (
+                    loop_result.response_text
+                    and not loop_result.loop_exhausted
+                    and not loop_result.budget_halted
+                ):
                     for step in plan.steps:
                         if step.status == StepStatus.PENDING:
                             plan.mark_step_complete(step.index, "")
                 status = "complete" if plan.is_complete else "running"
-                if loop_result.loop_exhausted:
+                if loop_result.loop_exhausted or loop_result.budget_halted:
                     status = "exhausted"
                 await self._plan_run_store.update(ctx.plan_run_id, plan, status=status)
             except Exception as e:
@@ -240,6 +248,7 @@ class InferenceStage:
         _repeat_tracker: dict[str, int] = {}
         _REPEAT_BLOCK_THRESHOLD = 4
         loop_exhausted = True
+        budget_halted = False
 
         # Read nudge counters from session (do NOT write back — run() owns that)
         _skill_iters = session.metadata.get("_nudge_tool_iters_skill", 0)
@@ -272,6 +281,7 @@ class InferenceStage:
                     self._tracer.end_span(llm_span, metadata={"budget_exceeded": True})
                     response_text = str(e)
                     loop_exhausted = False
+                    budget_halted = True
                     break
 
             response, route_decision = await self._chat_stream_with_routing(
@@ -542,6 +552,7 @@ class InferenceStage:
             response_text=response_text,
             total_tool_calls=total_tool_calls,
             loop_exhausted=loop_exhausted,
+            budget_halted=budget_halted,
             should_review_skills=should_review_skills,
             should_review_memory=should_review_memory,
             skill_iters=_skill_iters,
