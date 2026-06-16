@@ -83,10 +83,11 @@ def _resolve_price(model: str, overrides: dict) -> ModelPrice | None:
         )
     if model in _PRICING_SNAPSHOT:
         return _PRICING_SNAPSHOT[model]
-    # Prefix match so "gpt-4o-2024-..." resolves to "gpt-4o".
-    for key, price in _PRICING_SNAPSHOT.items():
+    # Longest-prefix match so "gpt-4o-mini-2024-..." resolves to "gpt-4o-mini",
+    # not the shorter "gpt-4o". OpenAI/Anthropic ship dated model ids.
+    for key in sorted(_PRICING_SNAPSHOT, key=len, reverse=True):
         if model.startswith(key):
-            return price
+            return _PRICING_SNAPSHOT[key]
     return None
 
 
