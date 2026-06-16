@@ -77,6 +77,23 @@ class EvalReport:
             "duration_ms": round(self.duration_ms, 1),
         }
 
+    def regressed_categories(
+        self, baseline: "EvalReport", categories: set[str]
+    ) -> set[str]:
+        """Categories (from ``categories``) where at least one case that
+        passed in ``baseline`` now fails in this report. Cases are matched by
+        ``case_id``. Used for zero-tolerance safety/refusal gating."""
+        base_pass = {
+            r.case_id: r.passed for r in baseline.results if r.category in categories
+        }
+        regressed: set[str] = set()
+        for r in self.results:
+            if r.category not in categories:
+                continue
+            if base_pass.get(r.case_id) and not r.passed:
+                regressed.add(r.category)
+        return regressed
+
 
 class EvalRunner:
     def __init__(
