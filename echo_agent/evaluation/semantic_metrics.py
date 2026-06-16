@@ -58,7 +58,9 @@ async def semantic_quality(
     """Score how well `actual` matches `expected` in meaning, via LLM-as-judge.
 
     Failures (bad JSON, exceptions) return a neutral 0.5 so a flaky judge
-    neither rewards nor penalizes a candidate.
+    neither rewards nor penalizes a candidate. Such failures now also set
+    inconclusive=True, so the gate can fail-closed on missing evidence
+    instead of treating 0.5 as a real (passing-adjacent) score.
     """
     messages = [
         {"role": "system", "content": _SYSTEM_PROMPT},
@@ -72,6 +74,7 @@ async def semantic_quality(
         logger.warning("semantic_quality judge call failed: {}", e)
         return MetricResult(
             name="semantic_quality", score=_NEUTRAL_SCORE, passed=False,
+            inconclusive=True,
             details={"error": str(e)},
         )
 
@@ -79,6 +82,7 @@ async def semantic_quality(
         logger.warning("semantic_quality judge returned error response: {}", resp.content)
         return MetricResult(
             name="semantic_quality", score=_NEUTRAL_SCORE, passed=False,
+            inconclusive=True,
             details={"error": resp.content or "judge error"},
         )
 
@@ -90,6 +94,7 @@ async def semantic_quality(
         logger.warning("semantic_quality could not parse judge reply: {!r}", content[:200])
         return MetricResult(
             name="semantic_quality", score=_NEUTRAL_SCORE, passed=False,
+            inconclusive=True,
             details={"raw": content[:500]},
         )
 
