@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
 from echo_agent.memory.types import MemoryEntry, MemoryType
 from echo_agent.memory.forgetting import ForgettingCurve
+from echo_agent.memory.text import cjk_tokens
 
 
 _STOP_WORDS = frozenset({
@@ -110,7 +111,10 @@ class HybridRetriever:
 
     @staticmethod
     def _tokenize(text: str) -> list[str]:
-        return [t for t in _TOKEN_RE.findall(text.lower()) if t not in _STOP_WORDS]
+        lower = text.lower()
+        tokens = [t for t in _TOKEN_RE.findall(lower) if t not in _STOP_WORDS]
+        tokens.extend(cjk_tokens(lower))
+        return tokens
 
     # -- BM25 ----------------------------------------------------------------
 
