@@ -58,6 +58,7 @@ class ResponseStage:
         spawn_fn: Callable[[Any], None],
         clear_memory_snapshot_fn: Callable[[str], Coroutine[Any, Any, None]],
         skill_store: Any = None,
+        working_memories: Any = None,
     ):
         self._config = config
         self._sessions = sessions
@@ -68,6 +69,7 @@ class ResponseStage:
         self._spawn_fn = spawn_fn
         self._clear_memory_snapshot = clear_memory_snapshot_fn
         self._skill_store = skill_store
+        self._working_memories = working_memories
 
     async def finalize(self, ctx: PipelineContext, result: InferenceResult) -> ProcessResult:
         """Post-process inference result, save session, schedule background tasks."""
@@ -82,6 +84,12 @@ class ResponseStage:
 
         session.add_message("assistant", response_text)
         await self._sessions.save(session)
+
+        # Working-memory write-back: record this turn so the *next* turn's
+        # context injection ("## Active Context") is non-empty. Previously
+        # WorkingMemory had a reader (context_stage) but no writer, so the
+        # injection was always blank. Skip ephemeral eval/test traffic.
+        self._update_working_memory(session.key, event, response_text)
 
         # Flush pending memory embeddings
         if self._memory.has_pending_embeds():
@@ -116,6 +124,35 @@ class ResponseStage:
             outbound_sent = await ctx.stream_publisher.finalize(response_text)
 
         return ProcessResult(response_text=response_text or "", outbound_sent=outbound_sent)
+
+    def _update_working_memory(self, session_key: str, event: Any, response_text: str) -> None:
+        """Record the latest exchange into WorkingMemory so the next turn can
+        inject it as Active Context. No-op when working memory is unwired or the
+        session is ephemeral."""
+        if self._working_memories is None:
+            return
+        if _is_ephemeral_session(session_key, getattr(event, "channel", "")):
+            return
+        wm = self._working_memories.get(session_key)
+        if wm is None:
+            return
+        try:
+            from echo_agent.memory.types import MemoryEntry, MemoryTier, MemoryType
+
+            user_text = (getattr(event, "text", "") or "").strip()
+            if user_text:
+                wm.add(MemoryEntry(
+                    type=MemoryType.USER, tier=MemoryTier.WORKING,
+                    key="user", content=user_text[:500], source_session=session_key,
+                ))
+            reply = (response_text or "").strip()
+            if reply:
+                wm.add(MemoryEntry(
+                    type=MemoryType.USER, tier=MemoryTier.WORKING,
+                    key="assistant", content=reply[:500], source_session=session_key,
+                ))
+        except Exception as e:
+            logger.debug("Working memory update failed: {}", e)
 
     async def _background_skill_review(self, messages: list[dict[str, Any]]) -> None:
         try:
