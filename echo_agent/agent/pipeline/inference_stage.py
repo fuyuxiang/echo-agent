@@ -13,6 +13,7 @@ from loguru import logger
 from echo_agent.agent.pipeline.types import InferenceResult, PipelineContext
 from echo_agent.agent.tools.base import ToolExecutionContext, build_idempotency_key
 from echo_agent.agent.tools.circuit_breaker import ToolCircuitBreaker
+from echo_agent.agent.planning.models import StepStatus
 from echo_agent.bus.events import OutboundEvent
 from echo_agent.models.provider import LLMResponse
 from echo_agent.models.router import RouteDecision
@@ -67,6 +68,7 @@ class InferenceStage:
         default_model: str,
         max_iterations: int,
         planner: AgentPlanner | None = None,
+        plan_run_store: Any = None,
     ):
         self._config = config
         self._bus = bus
@@ -85,6 +87,7 @@ class InferenceStage:
         self._nudge_interval: int = config.skills.creation_nudge_interval if hasattr(config, 'skills') and hasattr(config.skills, 'creation_nudge_interval') else 0
         self._memory_nudge_interval: int = config.memory.memory_nudge_interval if hasattr(config.memory, 'memory_nudge_interval') else 0
         self._planner = planner
+        self._plan_run_store = plan_run_store
 
     def set_hook_registry(self, registry: Any) -> None:
         """Inject the plugin hook registry (attached after bootstrap)."""
@@ -183,6 +186,29 @@ class InferenceStage:
         session.metadata["_nudge_tool_iters_skill"] = loop_result.skill_iters
         session.metadata["_nudge_tool_iters_memory"] = loop_result.memory_iters
         session.metadata["_nudge_turns_memory"] = _memory_turns
+
+        # Persist plan execution state so progress is queryable and an
+        # interrupted long task can be resumed. The reflect loop above is the
+        # only execution feedback we have at turn granularity, so completing a
+        # turn without a replan request marks the plan's steps done; a
+        # should_replan turn leaves the plan running for the next turn.
+        if (
+            self._plan_run_store is not None
+            and ctx.plan_run_id
+            and ctx.execution_plan is not None
+        ):
+            try:
+                plan = ctx.execution_plan
+                if loop_result.response_text and not loop_result.loop_exhausted:
+                    for step in plan.steps:
+                        if step.status == StepStatus.PENDING:
+                            plan.mark_step_complete(step.index, "")
+                status = "complete" if plan.is_complete else "running"
+                if loop_result.loop_exhausted:
+                    status = "exhausted"
+                await self._plan_run_store.update(ctx.plan_run_id, plan, status=status)
+            except Exception as e:
+                logger.debug("Plan run update failed: {}", e)
 
         return InferenceResult(
             response_text=loop_result.response_text,
