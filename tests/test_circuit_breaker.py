@@ -90,3 +90,29 @@ class TestToolCircuitBreaker:
         cb.record_failure("b")
         cb.reset_all()
         assert cb.get_unavailable_tools() == set()
+
+    def test_get_unavailable_tools_has_no_side_effects(self):
+        """P2-1: 查询不得消耗探测预算或触发状态跃迁。"""
+        cb = ToolCircuitBreaker(failure_threshold=2, recovery_seconds=0.1)
+        cb.record_failure("tool_a")
+        cb.record_failure("tool_a")
+        circuit = cb._circuits["tool_a"]
+        assert circuit.state == CircuitState.OPEN
+        time.sleep(0.15)  # 恢复期已过
+
+        for _ in range(5):
+            cb.get_unavailable_tools()
+
+        assert circuit.state == CircuitState.OPEN
+        assert circuit.half_open_probes == 0
+
+    def test_peek_available_does_not_mutate(self):
+        """P2-1: peek 在 OPEN 且恢复期已过时报告可用，但不改任何字段。"""
+        cb = ToolCircuitBreaker(failure_threshold=2, recovery_seconds=0.1)
+        cb.record_failure("tool_a")
+        cb.record_failure("tool_a")
+        time.sleep(0.15)
+        circuit = cb._circuits["tool_a"]
+        assert cb.peek_available("tool_a") is True
+        assert circuit.state == CircuitState.OPEN
+        assert circuit.half_open_probes == 0

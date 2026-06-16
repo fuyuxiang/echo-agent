@@ -84,8 +84,23 @@ class ToolCircuitBreaker:
         elif circuit.failure_count >= self._failure_threshold:
             circuit.state = CircuitState.OPEN
 
+    def peek_available(self, tool_name: str) -> bool:
+        """只读判断工具当前是否会被放行 —— 绝不修改任何状态。
+
+        与 is_available() 的区别：is_available 会把到期的 OPEN 翻成 HALF_OPEN
+        并消耗探测预算（acquire-a-probe 语义），仅供真实调用路径使用；监控/过滤
+        类查询必须用 peek，否则会偷走探测预算、甚至触发状态跃迁。
+        """
+        circuit = self._circuits.get(tool_name)
+        if not circuit or circuit.state == CircuitState.CLOSED:
+            return True
+        if circuit.state == CircuitState.OPEN:
+            return time.monotonic() - circuit.last_failure >= self._recovery_seconds
+        # HALF_OPEN: 是否还有探测名额（不占用）
+        return circuit.half_open_probes < self._half_open_max
+
     def get_unavailable_tools(self) -> set[str]:
-        return {name for name in self._circuits if not self.is_available(name)}
+        return {name for name in self._circuits if not self.peek_available(name)}
 
     def reset(self, tool_name: str) -> None:
         self._circuits.pop(tool_name, None)
