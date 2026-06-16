@@ -66,6 +66,7 @@ MESSAGES = {
         "gateway": "Gateway & Network",
         "observability": "Observability",
         "evolution": "Self-Evolution",
+        "cost": "Cost Budget",
         "doctor": "Capability Check",
     },
     "model": {
@@ -241,6 +242,15 @@ MESSAGES = {
         "dataset_seed_failed": "Failed to seed baseline eval dataset: {error}",
         "saved_disabled": "Self-evolution left disabled.",
         "saved_enabled": "Self-evolution enabled — trigger: {trigger}, dataset: {dataset}",
+    },
+    "cost": {
+        "header": "Cost Budget",
+        "intro": "Meter model-call spend and hard-stop on a daily budget; off by default.",
+        "enable": "Enable cost budget? (off by default)",
+        "daily_budget": "Daily budget cap (USD)",
+        "budget_zero_hint": "Budget is 0 — metering only, no hard stop; enter a positive number for a hard cap.",
+        "saved": "Cost budget enabled, daily cap ${budget:.2f}.",
+        "saved_disabled": "Cost budget left disabled.",
     },
     "doctor": {
         "header": "Capability Check",
