@@ -13,6 +13,49 @@ import aiohttp
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
 
 
+def _ip_is_blocked(ip: ipaddress._BaseAddress) -> bool:
+    return bool(
+        ip.is_private or ip.is_loopback or ip.is_link_local
+        or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+    )
+
+
+async def resolve_and_validate(url: str) -> tuple[list[str], str | None]:
+    """Resolve *url*'s host and validate every resolved IP.
+
+    Returns ``(ips, error)``. ``ips`` is the list of validated address
+    strings (safe to pin a connection to); ``error`` is non-None when the
+    URL must be blocked. Pinning the returned IPs for the actual connection
+    closes the DNS-rebinding window between validation and connect.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return [], f"Blocked: unsupported URL scheme '{parsed.scheme}'"
+    host = parsed.hostname
+    if not host:
+        return [], "Blocked: URL has no host"
+    try:
+        infos = await asyncio.to_thread(socket.getaddrinfo, host, None)
+    except OSError as e:
+        return [], f"Blocked: cannot resolve host '{host}': {e}"
+    ips: list[str] = []
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            continue
+        if _ip_is_blocked(ip):
+            return [], (
+                f"Blocked: '{host}' resolves to non-public address {ip}. "
+                "Set tools.web.allowPrivateAddresses to true to permit internal targets."
+            )
+        ips.append(addr)
+    if not ips:
+        return [], f"Blocked: cannot resolve host '{host}' to a usable address"
+    return ips, None
+
+
 async def check_url_ssrf(url: str) -> str | None:
     """Return an error message when *url* points at a non-public address.
 
@@ -20,30 +63,42 @@ async def check_url_ssrf(url: str) -> str | None:
     multicast targets — web_fetch takes model-controlled URLs, so without
     this it is a free proxy into the host's internal network.
     """
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        return f"Blocked: unsupported URL scheme '{parsed.scheme}'"
-    host = parsed.hostname
-    if not host:
-        return "Blocked: URL has no host"
-    try:
-        infos = await asyncio.to_thread(socket.getaddrinfo, host, None)
-    except OSError as e:
-        return f"Blocked: cannot resolve host '{host}': {e}"
-    for info in infos:
-        try:
-            ip = ipaddress.ip_address(info[4][0])
-        except ValueError:
-            continue
-        if (
-            ip.is_private or ip.is_loopback or ip.is_link_local
-            or ip.is_reserved or ip.is_multicast or ip.is_unspecified
-        ):
-            return (
-                f"Blocked: '{host}' resolves to non-public address {ip}. "
-                "Set tools.web.allowPrivateAddresses to true to permit internal targets."
-            )
-    return None
+    _, error = await resolve_and_validate(url)
+    return error
+
+
+class _PinnedResolver(aiohttp.abc.AbstractResolver):
+    """aiohttp resolver that hands back a pre-validated IP for a host.
+
+    Pins DNS so the address aiohttp connects to is exactly the one SSRF
+    validation approved, defeating rebinding (validate IP_a, connect IP_b)."""
+
+    def __init__(self, host_to_ips: dict[str, list[str]]):
+        self._map = host_to_ips
+
+    async def resolve(self, host: str, port: int = 0, family: int = socket.AF_INET) -> list[dict[str, Any]]:
+        ips = self._map.get(host)
+        if not ips:
+            raise OSError(f"host '{host}' not in pinned set")
+        results: list[dict[str, Any]] = []
+        for addr in ips:
+            try:
+                fam = socket.AF_INET6 if ipaddress.ip_address(addr).version == 6 else socket.AF_INET
+            except ValueError:
+                continue
+            if family not in (socket.AF_UNSPEC, fam):
+                continue
+            results.append({
+                "hostname": host, "host": addr, "port": port,
+                "family": fam, "proto": 0, "flags": socket.AI_NUMERICHOST,
+            })
+        if not results:
+            raise OSError(f"no pinned address for '{host}' in family {family}")
+        return results
+
+    async def close(self) -> None:
+        return None
+
 
 
 class WebFetchTool(Tool):
@@ -59,6 +114,7 @@ class WebFetchTool(Tool):
         "required": ["url"],
     }
     timeout_seconds = 30
+    _MAX_REDIRECTS = 5
 
     def __init__(self, proxy: str | None = None, allow_private: bool = False):
         self._proxy = proxy
@@ -67,13 +123,40 @@ class WebFetchTool(Tool):
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         url = params["url"]
         max_chars = params.get("max_chars", 16000)
-        if not self._allow_private and not self._proxy:
-            ssrf_error = await check_url_ssrf(url)
-            if ssrf_error:
-                return ToolResult(success=False, error=ssrf_error)
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, proxy=self._proxy, timeout=aiohttp.ClientTimeout(total=self.timeout_seconds)) as resp:
+            return await self._fetch_with_redirect_guard(url, max_chars)
+        except Exception as e:
+            return ToolResult(success=False, error=str(e))
+
+    async def _fetch_with_redirect_guard(self, url: str, max_chars: int) -> ToolResult:
+        """Fetch with redirects followed manually so every hop is SSRF-checked
+        and connected over a pinned IP. aiohttp's automatic redirect handling
+        would re-resolve and follow 30x to internal targets unchecked."""
+        current = url
+        for _hop in range(self._MAX_REDIRECTS + 1):
+            connector = None
+            if not self._allow_private:
+                ips, ssrf_error = await resolve_and_validate(current)
+                if ssrf_error:
+                    return ToolResult(success=False, error=ssrf_error)
+                host = urlparse(current).hostname or ""
+                # Pin the validated IPs for the actual connection (anti-rebinding).
+                connector = aiohttp.TCPConnector(resolver=_PinnedResolver({host: ips}))
+            async with aiohttp.ClientSession(connector=connector) as session:
+                async with session.get(
+                    current,
+                    proxy=self._proxy,
+                    allow_redirects=False,
+                    timeout=aiohttp.ClientTimeout(total=self.timeout_seconds),
+                ) as resp:
+                    if resp.status in (301, 302, 303, 307, 308):
+                        location = resp.headers.get("Location")
+                        if not location:
+                            return ToolResult(success=False, error=f"HTTP {resp.status} redirect without Location")
+                        # Resolve relative redirects against the current URL,
+                        # then re-validate on the next loop iteration.
+                        current = urljoin(current, location)
+                        continue
                     text = await resp.text()
                     original_len = len(text)
                     if len(text) > max_chars:
@@ -88,8 +171,7 @@ class WebFetchTool(Tool):
                     if resp.status >= 400:
                         return ToolResult(success=False, error=header + text, metadata=metadata)
                     return ToolResult(output=header + text, metadata=metadata)
-        except Exception as e:
-            return ToolResult(success=False, error=str(e))
+        return ToolResult(success=False, error=f"Blocked: exceeded {self._MAX_REDIRECTS} redirects")
 
     def execution_mode(self, params: dict[str, Any]) -> str:
         return "read_only"
@@ -143,6 +225,13 @@ class WebSearchTool(Tool):
             return ToolResult(success=False, error="query is required")
         if self._provider != "searxng" and not self._api_key:
             return ToolResult(success=False, error=f"{self._provider} search API key not configured")
+
+        # A configurable api_base (notably searxng) is operator-controlled but
+        # could point at an internal address — validate it like web_fetch.
+        if self._api_base and not self._proxy:
+            ssrf_error = await check_url_ssrf(self._api_base)
+            if ssrf_error:
+                return ToolResult(success=False, error=ssrf_error, metadata={"provider": self._provider})
 
         try:
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout_seconds)) as session:
