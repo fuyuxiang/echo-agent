@@ -45,7 +45,7 @@ class WebhookChannel(BaseChannel):
     async def send(self, event: OutboundEvent) -> SendResult | None:
         if not self.should_deliver(event):
             return SendResult(success=True, skipped=True)
-        correlation_id = event.metadata.get("_inbound_event_id") or event.reply_to_id or ""
+        correlation_id = str(event.metadata.get("_inbound_event_id") or event.reply_to_id or "")
         future = self._pending_responses.pop(correlation_id, None)
         if future and not future.done():
             future.set_result(event.text)

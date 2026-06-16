@@ -510,6 +510,35 @@ class TestWebhookChannel:
         assert result.success is True
         assert future.result() == "done"
 
+    @pytest.mark.asyncio
+    async def test_send_falls_back_to_reply_to_id(self):
+        """P0-5: metadata 无 _inbound_event_id 时回退用 reply_to_id 关联 future。"""
+        from echo_agent.bus.events import OutboundEvent
+
+        ch, _ = self._make()
+        future = asyncio.get_running_loop().create_future()
+        ch._pending_responses["evt-7"] = future
+
+        event = OutboundEvent.text_reply(channel="webhook", chat_id="wh", text="ok")
+        event.reply_to_id = "evt-7"
+        result = await ch.send(event)
+        assert result.success is True
+        assert future.result() == "ok"
+
+    @pytest.mark.asyncio
+    async def test_send_no_match_does_not_error(self):
+        """P0-5: 无任何匹配 key 时 send 不报错、不误 resolve 其他 future。"""
+        from echo_agent.bus.events import OutboundEvent
+
+        ch, _ = self._make()
+        other = asyncio.get_running_loop().create_future()
+        ch._pending_responses["evt-keep"] = other
+
+        event = OutboundEvent.text_reply(channel="webhook", chat_id="wh", text="x")
+        result = await ch.send(event)
+        assert result.success is True
+        assert not other.done()
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 6. WeComChannel
