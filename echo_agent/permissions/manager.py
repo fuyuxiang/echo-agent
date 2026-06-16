@@ -317,28 +317,36 @@ class CredentialManager:
         store_path: Path,
         encryption_key_env: str = "ECHO_AGENT_CREDENTIAL_KEY",
         require_encryption: bool = False,
+        key_path: Path | None = None,
     ):
         self._store_path = store_path
         self._encryption_key_env = encryption_key_env
         self._require_encryption = require_encryption
+        # Where to persist an auto-generated Fernet key when the env var is
+        # unset. Defaults next to the credential store's parent (the workspace).
+        self._key_path = key_path or (store_path.parent.parent / ".credential_key")
         self._credentials: dict[str, Credential] = {}
         self._audit: list[dict[str, Any]] = []
         self._load()
 
     def _fernet(self) -> Any | None:
-        secret = os.environ.get(self._encryption_key_env, "")
-        if not secret:
-            if self._require_encryption:
-                raise RuntimeError(
-                    f"Credential encryption required but {self._encryption_key_env} is not set"
-                )
-            return None
         try:
-            import base64
             from cryptography.fernet import Fernet
+
+            from echo_agent.permissions.credential_key import resolve_or_create_key
         except ImportError as exc:
             raise RuntimeError("cryptography is required for encrypted credential storage") from exc
-        key = base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest())
+        try:
+            key = resolve_or_create_key(
+                self._key_path.parent, env_name=self._encryption_key_env
+            )
+        except OSError as exc:
+            if self._require_encryption:
+                raise RuntimeError(
+                    f"Credential encryption required but no key is available and one "
+                    f"could not be created at {self._key_path}: {exc}"
+                ) from exc
+            return None
         return Fernet(key)
 
     def _encode_secret(self, value: str) -> tuple[str, str]:
@@ -360,7 +368,13 @@ class CredentialManager:
                 raise RuntimeError(
                     f"Credential file is encrypted but {self._encryption_key_env} is not set"
                 )
-            return fernet.decrypt(item.get("value_enc", "").encode()).decode()
+            from cryptography.fernet import InvalidToken
+            try:
+                return fernet.decrypt(item.get("value_enc", "").encode()).decode()
+            except InvalidToken as exc:
+                raise RuntimeError(
+                    "凭证密钥已变更或损坏，无法解密现有凭证，请重新录入凭证"
+                ) from exc
         raise RuntimeError(f"Unsupported credential encoding: {encoding}")
 
     def _load(self) -> None:
@@ -379,6 +393,8 @@ class CredentialManager:
                     _value=value,
                 )
                 self._credentials[cred.id] = cred
+        except RuntimeError:
+            raise  # 解密失败属确定性错误，必须显式暴露
         except Exception as e:
             logger.warning("Failed to load credentials: {}", e)
 
