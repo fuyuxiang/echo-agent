@@ -19,6 +19,9 @@ class EvalCase:
     expected_output: str = ""
     max_iterations: int = 10
     tags: list[str] = field(default_factory=list)
+    expected_not_contains: list[str] = field(default_factory=list)
+    forbidden_tools: list[str] = field(default_factory=list)
+    category: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -31,6 +34,9 @@ class EvalCase:
             expected_output=data.get("expected_output", ""),
             max_iterations=data.get("max_iterations", 10),
             tags=data.get("tags", []),
+            expected_not_contains=data.get("expected_not_contains", []),
+            forbidden_tools=data.get("forbidden_tools", []),
+            category=data.get("category", ""),
             metadata=data.get("metadata", {}),
         )
 
