@@ -22,6 +22,7 @@ consistent.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any, Callable
 
@@ -791,8 +792,9 @@ def setup_cost(config: dict) -> None:
     """Configure the daily cost budget gate.
 
     Disabled by default. When enabled, asks for a daily cap in USD. A cap of
-    0 (or blank/negative) means metering-only with no hard stop — see
-    echo_agent/cost/budget.py — so we print an explicit hint in that case.
+    0 (or a negative value, which is clamped to 0) means metering-only with no
+    hard stop — see echo_agent/cost/budget.py. Leaving the prompt blank keeps
+    the current value.
     """
     _print_section_header("cost")
     print_info(t("cost.intro"))
@@ -809,6 +811,8 @@ def setup_cost(config: dict) -> None:
     raw = prompt(f"  {t('cost.daily_budget')}", default=f"{cur_budget:.2f}")
     try:
         budget = float(raw)
+        if not math.isfinite(budget):
+            raise ValueError
     except ValueError:
         print_warning(t("common.invalid"))
         budget = cur_budget
