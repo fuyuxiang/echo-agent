@@ -168,3 +168,23 @@ def test_setup_ensures_credential_key(tmp_path, monkeypatch):
     assert key_file.exists()
     import stat as _stat
     assert _stat.S_IMODE(key_file.stat().st_mode) == 0o600
+
+
+def test_ensure_credential_key_noop_when_env_set(tmp_path, monkeypatch):
+    """env 已设时不落盘、不提示。"""
+    from cryptography.fernet import Fernet
+    from echo_agent.cli.setup import _ensure_credential_key
+    monkeypatch.setenv("ECHO_AGENT_CREDENTIAL_KEY", Fernet.generate_key().decode())
+    _ensure_credential_key(tmp_path)
+    assert not (tmp_path / ".credential_key").exists()
+
+
+def test_ensure_credential_key_no_reprompt_when_exists(tmp_path, monkeypatch, capsys):
+    """key 文件已存在时不重复打印生成提示。"""
+    from echo_agent.cli.setup import _ensure_credential_key
+    monkeypatch.delenv("ECHO_AGENT_CREDENTIAL_KEY", raising=False)
+    _ensure_credential_key(tmp_path)       # 首次生成
+    capsys.readouterr()                    # 清空已捕获输出
+    _ensure_credential_key(tmp_path)        # 第二次：已存在
+    out = capsys.readouterr().out
+    assert "0600" not in out and "credential" not in out.lower()
