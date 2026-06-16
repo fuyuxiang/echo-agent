@@ -35,6 +35,7 @@ class ApprovalGate:
         bus: MessageBus,
         provider: Any = None,
         allowlist: ApprovalAllowlist | None = None,
+        registry: Any = None,
     ):
         self._config = config
         self._approval = approval
@@ -42,6 +43,11 @@ class ApprovalGate:
         self._bus = bus
         self._provider = provider
         self._allowlist = allowlist or ApprovalAllowlist()
+        # The registry lets the gate read a tool's *declared* risk_level (e.g.
+        # MCP tools classify destructiveHint → EXEC at adapter construction).
+        # Without it, dynamic tools fall through to the WRITE default and skip
+        # approval entirely.
+        self._registry = registry
 
     async def check(
         self,
