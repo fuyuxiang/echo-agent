@@ -4,6 +4,7 @@ import pytest
 from cryptography.fernet import Fernet
 
 from echo_agent.permissions.credential_key import resolve_or_create_key
+from echo_agent.permissions.manager import CredentialManager
 
 ENV = "ECHO_AGENT_CREDENTIAL_KEY"
 
@@ -51,3 +52,37 @@ def test_empty_env_falls_back_to_file(tmp_path, monkeypatch):
     key = resolve_or_create_key(tmp_path)
     Fernet(key)  # 不抛即合法
     assert (tmp_path / ".credential_key").exists()
+
+
+def test_manager_roundtrip_fernet(tmp_path, monkeypatch):
+    monkeypatch.delenv(ENV, raising=False)
+    store = tmp_path / "data" / "credentials.json"
+    key_path = tmp_path / ".credential_key"
+    mgr = CredentialManager(store_path=store, key_path=key_path)
+    mgr.store("openai", "sk-secret-123")
+
+    raw = store.read_text(encoding="utf-8")
+    assert '"encoding": "fernet"' in raw
+    assert "sk-secret-123" not in raw
+
+    mgr2 = CredentialManager(store_path=store, key_path=key_path)
+    assert mgr2.get("openai") == "sk-secret-123"
+
+
+def test_manager_rejects_undecryptable_legacy(tmp_path, monkeypatch):
+    """旧 sha256-KDF 密文与新 key 不兼容时，必须清晰报错而非静默吞。"""
+    monkeypatch.delenv(ENV, raising=False)
+    import json
+    store = tmp_path / "data" / "credentials.json"
+    store.parent.mkdir(parents=True, exist_ok=True)
+    other = Fernet(Fernet.generate_key())
+    store.write_text(json.dumps({
+        "format": "echo-agent-credentials-v2",
+        "credentials": [{
+            "id": "x1", "name": "legacy", "tool_scope": "*",
+            "value_hash": "", "created_at": "", "rotated_at": "",
+            "encoding": "fernet", "value_enc": other.encrypt(b"old").decode(),
+        }],
+    }), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="凭证密钥"):
+        CredentialManager(store_path=store, key_path=tmp_path / ".credential_key")
