@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from echo_agent.app import _apply_gateway_profile_default
 from echo_agent.config.loader import profile_explicitly_set
 
 
@@ -27,9 +28,6 @@ def test_env_profile_is_explicit(tmp_path, monkeypatch):
     cfg = _write_yaml(tmp_path, "security:\n  admin_users: []\n")
     monkeypatch.setenv("ECHO_AGENT_SECURITY__PROFILE", "public_gateway")
     assert profile_explicitly_set(cfg) is True
-
-
-from echo_agent.app import _apply_gateway_profile_default
 
 
 def test_applies_public_gateway_when_not_explicit(tmp_path):
