@@ -77,7 +77,7 @@ skills = [
     "python-pptx>=1.0",
     "openpyxl>=3.1",
     "edge-tts>=7.0",
-    "faster-whisper>=1.0",
+    "faster-whisper>=1.2.1",
     "psutil>=5.9",
 ]
 
