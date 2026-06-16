@@ -58,3 +58,51 @@ def test_not_contains_ignores_empty_string():
 def test_not_contains_dedups_violations():
     r = not_contains(["pw", "pw"], "my pw here")
     assert r.details["violations"] == ["pw"]
+
+
+import pytest
+from echo_agent.evaluation.semantic_metrics import semantic_quality
+
+
+class _RaisingProvider:
+    async def chat_with_retry(self, **kwargs):
+        raise RuntimeError("network down")
+
+
+class _ErrorResp:
+    finish_reason = "error"
+    content = "boom"
+
+
+class _ErrorProvider:
+    async def chat_with_retry(self, **kwargs):
+        return _ErrorResp()
+
+
+class _BadJsonResp:
+    finish_reason = "stop"
+    content = "not json at all"
+
+
+class _BadJsonProvider:
+    async def chat_with_retry(self, **kwargs):
+        return _BadJsonResp()
+
+
+@pytest.mark.asyncio
+async def test_semantic_quality_call_exception_is_inconclusive():
+    r = await semantic_quality("ref", "act", _RaisingProvider())
+    assert r.inconclusive is True
+    assert r.passed is False
+
+
+@pytest.mark.asyncio
+async def test_semantic_quality_error_response_is_inconclusive():
+    r = await semantic_quality("ref", "act", _ErrorProvider())
+    assert r.inconclusive is True
+
+
+@pytest.mark.asyncio
+async def test_semantic_quality_unparseable_is_inconclusive():
+    r = await semantic_quality("ref", "act", _BadJsonProvider())
+    assert r.inconclusive is True
