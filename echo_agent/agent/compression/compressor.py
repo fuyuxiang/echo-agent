@@ -39,6 +39,7 @@ class ConversationCompressor(ContextEngine):
         provider: LLMProvider,
         default_model: str,
         storage: StorageBackend | None = None,
+        router: Any = None,
     ):
         super().__init__(
             context_window_tokens=context_window_tokens,
@@ -69,6 +70,7 @@ class ConversationCompressor(ContextEngine):
             summary_min_tokens=config.summary_min_tokens,
             summary_max_tokens=config.summary_max_tokens,
             cooldown_seconds=config.summary_cooldown_seconds,
+            router=router,
         )
 
         self._assembler = MessageAssembler()

@@ -117,6 +117,7 @@ class AgentLoop:
             provider=provider,
             default_model=self._default_model,
             storage=storage,
+            router=router,
         )
         try:
             from echo_agent.models.tokenizer import TokenCounter
@@ -150,6 +151,7 @@ class AgentLoop:
             bus=bus,
             provider=provider,
             registry=self.tools,
+            router=router,
             allowlist=ApprovalAllowlist(
                 store_path=self.workspace / "data" / "approval_allowlist.json",
             ),
@@ -341,12 +343,36 @@ class AgentLoop:
             self.memory.set_vector_index(vector_index)
 
             from echo_agent.models.provider import LLMProvider
+            emb_model = config.memory.embedding_model or None
+            # Prefer the main provider when it supports embeddings; otherwise
+            # route to any registered embed-capable provider so an Anthropic
+            # (or other non-embedding) main provider no longer silently
+            # disables vector search / hybrid retrieval / contradiction scan.
             if hasattr(self.provider, "embed") and type(self.provider).embed is not LLMProvider.embed:
-                emb_model = config.memory.embedding_model or None
-                async def _embed(text: str, _model=emb_model) -> list[float]:
-                    result = await self.provider.embed(text, model=_model)
+                embed_provider: Any = self.provider
+            elif self.router is not None:
+                embed_provider, routed_model = self.router.find_embed_provider(
+                    emb_model or ""
+                )
+                if embed_provider is not None:
+                    emb_model = routed_model or emb_model
+                    logger.info(
+                        "Main provider lacks embeddings; routing embedding via {}",
+                        type(embed_provider).__name__,
+                    )
+            else:
+                embed_provider = None
+
+            if embed_provider is not None:
+                async def _embed(text: str, _p=embed_provider, _model=emb_model) -> list[float]:
+                    result = await _p.embed(text, model=_model)
                     return result or []
                 embed_fn = _embed
+            else:
+                logger.warning(
+                    "No embedding-capable provider registered; vector search "
+                    "and hybrid retrieval will degrade to keyword mode"
+                )
 
         self._vector_index = vector_index
         self._embed_fn = embed_fn

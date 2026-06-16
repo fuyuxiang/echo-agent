@@ -148,11 +148,13 @@ class Evolver:
         max_iterations: int = 10,
         skill_size_limit_bytes: int = 50_000,
         forbidden_name_prefixes: tuple[str, ...] = ("evolution", "system", "internal"),
+        router: object | None = None,
     ):
         self._provider = provider
         self._store = store
         self._skill_store = skill_store
         self._model = model
+        self._router = router
         self._max_candidates = max_candidates
         self._max_iterations = max_iterations
         self._skill_size_limit = skill_size_limit_bytes
@@ -190,10 +192,19 @@ class Evolver:
 
         for _ in range(self._max_iterations):
             try:
-                response = await self._provider.chat_with_retry(
+                call_provider, call_model = self._provider, self._model
+                if self._router is not None and hasattr(self._router, "resolve"):
+                    routed_provider, routed_model = self._router.resolve(
+                        "evolution",
+                        fallback_provider=self._provider,
+                        fallback_model=self._model,
+                    )
+                    if routed_provider is not None:
+                        call_provider, call_model = routed_provider, routed_model
+                response = await call_provider.chat_with_retry(
                     messages=messages,
                     tools=_PROPOSE_TOOL,
-                    model=self._model or None,
+                    model=call_model or None,
                     max_tokens=2048,
                     temperature=0.4,
                 )

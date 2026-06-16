@@ -36,6 +36,7 @@ class ApprovalGate:
         provider: Any = None,
         allowlist: ApprovalAllowlist | None = None,
         registry: Any = None,
+        router: Any = None,
     ):
         self._config = config
         self._approval = approval
@@ -43,6 +44,7 @@ class ApprovalGate:
         self._bus = bus
         self._provider = provider
         self._allowlist = allowlist or ApprovalAllowlist()
+        self._router = router
         # The registry lets the gate read a tool's *declared* risk_level (e.g.
         # MCP tools classify destructiveHint → EXEC at adapter construction).
         # Without it, dynamic tools fall through to the WRITE default and skip
@@ -161,7 +163,7 @@ class ApprovalGate:
         command = str(arguments.get("command", "") or arguments.get("code", "") or arguments)
         description = guard.reason or f"tool '{tool_name}' requires approval"
         model = self._config.permissions.approval.smart_model
-        return await smart_approve(tool_name, command, description, self._provider, model=model)
+        return await smart_approve(tool_name, command, description, self._provider, model=model, router=self._router)
 
     async def _manual_approval_flow(
         self,

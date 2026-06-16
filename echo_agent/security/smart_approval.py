@@ -40,6 +40,7 @@ async def smart_approve(
     description: str,
     provider: "LLMProvider",
     model: str = "",
+    router: "object | None" = None,
 ) -> Literal["approve", "deny", "escalate"]:
     """Use LLM to pre-screen a flagged tool call. Returns approve/deny/escalate."""
     prompt = _PROMPT_TEMPLATE.format(
@@ -47,6 +48,14 @@ async def smart_approve(
         command=_sanitize_for_prompt(command),
         description=_sanitize_for_prompt(description, 500),
     )
+    # Route the screening call by task_type 'approval' when a router is wired,
+    # else use the passed provider+model unchanged.
+    if router is not None and hasattr(router, "resolve"):
+        routed_provider, routed_model = router.resolve(
+            "approval", fallback_provider=provider, fallback_model=model
+        )
+        if routed_provider is not None:
+            provider, model = routed_provider, routed_model
     try:
         response = await provider.chat_with_retry(
             messages=[{"role": "user", "content": prompt}],

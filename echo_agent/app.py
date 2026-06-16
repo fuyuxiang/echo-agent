@@ -187,6 +187,7 @@ async def bootstrap(
                 eval_dataset_loader=_load_eval_dataset,
                 hooks=plugin_manager.hooks,
                 reflection=reflection_module,
+                router=router,
             )
             agent.set_evolution_engine(evolution_engine)
             logger.info("Evolution engine attached (trigger={})", config.evolution.trigger_mode)
