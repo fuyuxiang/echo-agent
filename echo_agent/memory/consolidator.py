@@ -33,6 +33,36 @@ _SAVE_MEMORY_TOOL = [
     }
 ]
 
+_EXTRACT_FACTS_TOOL = [
+    {
+        "type": "function",
+        "function": {
+            "name": "save_facts",
+            "description": "Record durable facts distilled from an episode summary.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "facts": {
+                        "type": "array",
+                        "description": "Durable facts; empty when nothing is worth keeping.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": {"type": "string", "enum": ["user", "environment"]},
+                                "key": {"type": "string"},
+                                "content": {"type": "string"},
+                                "importance": {"type": "number"},
+                            },
+                            "required": ["key", "content"],
+                        },
+                    },
+                },
+                "required": ["facts"],
+            },
+        },
+    }
+]
+
 
 class MemoryConsolidator:
     """Consolidates conversation history into MEMORY.md + HISTORY.md via LLM."""
@@ -182,19 +212,16 @@ class MemoryConsolidator:
                     try:
                         response = await self._llm_call(
                             messages=[
-                                {"role": "system", "content": "Extract key facts from this episode summary. Return a JSON array of objects with keys: type (user/environment), key, content, importance (0-1)."},
+                                {"role": "system", "content": "Extract durable facts from this episode summary and call save_facts. Return an empty list when nothing is worth keeping."},
                                 {"role": "user", "content": episode.summary},
                             ],
+                            tools=_EXTRACT_FACTS_TOOL,
+                            tool_choice={"type": "function", "function": {"name": "save_facts"}},
                         )
-                        if response.content:
-                            import json as _json
-                            try:
-                                facts = _json.loads(response.content)
-                                if isinstance(facts, list):
-                                    promoted = await self._semantic_manager.promote_from_episodic(episode, facts)
-                                    stats["promoted"] = len(promoted)
-                            except _json.JSONDecodeError:
-                                pass
+                        facts = self._parse_extracted_facts(response)
+                        if facts:
+                            promoted = await self._semantic_manager.promote_from_episodic(episode, facts)
+                            stats["promoted"] = len(promoted)
                     except Exception as e:
                         logger.warning("Fact extraction failed: {}", e)
 
@@ -240,6 +267,30 @@ class MemoryConsolidator:
     def should_consolidate(self, session_message_count: int, last_consolidated: int) -> bool:
         unconsolidated = session_message_count - last_consolidated
         return unconsolidated >= self._consolidation_threshold
+
+    @staticmethod
+    def _parse_extracted_facts(response: Any) -> list:
+        """Extract the facts list from a save_facts tool call.
+
+        Replaces the old free-text ``json.loads`` + ``except: pass`` that
+        silently dropped every malformed extraction. Parsing problems are now
+        logged, not swallowed; a missing tool call yields an empty list."""
+        tool_calls = getattr(response, "tool_calls", None) or []
+        if not tool_calls:
+            logger.debug("Fact extraction: model returned no save_facts call")
+            return []
+        args = tool_calls[0].arguments
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except json.JSONDecodeError as e:
+                logger.warning("Fact extraction: could not parse tool arguments: {}", e)
+                return []
+        facts = args.get("facts", []) if isinstance(args, dict) else []
+        if not isinstance(facts, list):
+            logger.warning("Fact extraction: 'facts' was not a list (got {})", type(facts).__name__)
+            return []
+        return facts
 
     async def _generate_episode_summary(self, messages: list[dict[str, Any]]) -> str:
         """Generate a concise summary of conversation messages for episode storage."""

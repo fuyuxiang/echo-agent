@@ -56,6 +56,7 @@ class ContextStage:
         memory_snapshots: OrderedDict,
         snapshot_enabled: bool,
         tool_definitions_fn: Any,
+        episodic: Any = None,
         bus: Any = None,
     ):
         self._config = config
@@ -72,6 +73,7 @@ class ContextStage:
         self._memory_snapshots = memory_snapshots
         self._snapshot_enabled = snapshot_enabled
         self._tool_definitions_fn = tool_definitions_fn
+        self._episodic = episodic
         self._bus = bus
 
     async def _emit_progress(self, event: InboundEvent, metadata: dict[str, Any]) -> None:
@@ -181,6 +183,27 @@ class ContextStage:
                             for r, _ in scored[:5]
                         ]
                     await self._emit_progress(event, _mem_meta)
+
+            # Episodic recall — past conversation episodes for this session.
+            # Episodes are written by the consolidator but were previously never
+            # read back; surfacing the most relevant ones gives cross-session
+            # continuity beyond the distilled semantic facts above.
+            if self._episodic is not None:
+                try:
+                    episodes = await self._episodic.search_episodes(
+                        event.text, session_key=event.session_key, limit=3
+                    )
+                    if not episodes:
+                        episodes = await self._episodic.get_session_episodes(
+                            event.session_key, limit=3
+                        )
+                    if episodes:
+                        retrieval_parts.append(
+                            "Past episodes:\n"
+                            + "\n".join(f"- {ep.summary}" for ep in episodes if ep.summary)
+                        )
+                except Exception as e:
+                    logger.debug("Episodic recall failed: {}", e)
 
         if self._knowledge:
             knowledge_results = self._knowledge.search(
