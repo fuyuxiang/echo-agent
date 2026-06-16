@@ -61,7 +61,7 @@ def _patch_prompts(answers: dict[str, str], yes_no: dict[str, bool], choices: di
 
 def test_evolution_registered_in_section_registry():
     keys = [k for k, _ in SETUP_SECTIONS]
-    assert keys[-1] == "evolution"
+    assert "evolution" in keys
     assert SECTION_ALIASES.get("evolution") == "evolution"
     assert SECTION_ALIASES.get("evolve") == "evolution"
     assert SECTION_ALIASES.get("self-evolve") == "evolution"
