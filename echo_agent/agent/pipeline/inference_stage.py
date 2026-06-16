@@ -15,6 +15,7 @@ from echo_agent.agent.tools.base import ToolExecutionContext, build_idempotency_
 from echo_agent.agent.tools.circuit_breaker import ToolCircuitBreaker
 from echo_agent.agent.planning.models import StepStatus
 from echo_agent.bus.events import OutboundEvent
+from echo_agent.cost.budget import BudgetExceeded
 from echo_agent.models.provider import LLMResponse
 from echo_agent.models.router import RouteDecision
 
@@ -69,6 +70,7 @@ class InferenceStage:
         max_iterations: int,
         planner: AgentPlanner | None = None,
         plan_run_store: Any = None,
+        cost_tracker: Any = None,
     ):
         self._config = config
         self._bus = bus
@@ -88,6 +90,7 @@ class InferenceStage:
         self._memory_nudge_interval: int = config.memory.memory_nudge_interval if hasattr(config.memory, 'memory_nudge_interval') else 0
         self._planner = planner
         self._plan_run_store = plan_run_store
+        self._cost_tracker = cost_tracker
 
     def set_hook_registry(self, registry: Any) -> None:
         """Inject the plugin hook registry (attached after bootstrap)."""
@@ -260,6 +263,17 @@ class InferenceStage:
                     "pre_llm_call", messages, active_tool_defs, self._default_model,
                 )
 
+            # Hard budget gate: stop before spending more once the daily cap is hit.
+            if self._cost_tracker is not None:
+                try:
+                    self._cost_tracker.enforce()  # raises BudgetExceeded when daily hard cap hit
+                except BudgetExceeded as e:
+                    logger.warning("Budget gate stopped inference: {}", e)
+                    self._tracer.end_span(llm_span, metadata={"budget_exceeded": True})
+                    response_text = str(e)
+                    loop_exhausted = False
+                    break
+
             response, route_decision = await self._chat_stream_with_routing(
                 messages=messages,
                 tools=active_tool_defs if active_tool_defs else None,
@@ -289,6 +303,11 @@ class InferenceStage:
                 otel_span = start_llm_span(self._telemetry.get_tracer(), route_decision.model, route_decision.provider_name)
                 record_llm_usage(otel_span, response.usage, route_decision.model)
                 end_llm_span(otel_span)
+
+            if self._cost_tracker is not None and response.usage:
+                await self._cost_tracker.record(
+                    route_decision.model, response.usage, route_decision.provider_name,
+                )
 
             issues = self._inference.validate_response(response)
             if issues:
