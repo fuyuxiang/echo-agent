@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from echo_agent.memory.retrieval import HybridRetriever
+from echo_agent.memory.store import MemoryStore
 from echo_agent.memory.text import cjk_tokens
 from echo_agent.memory.types import MemoryEntry, MemoryType
 
@@ -62,3 +63,13 @@ async def test_english_query_still_works():
     results = await retriever.retrieve("tea", limit=5)
     assert results
     assert "tea" in results[0][0].content
+
+
+def test_search_scored_chinese(tmp_path):
+    store = MemoryStore(memory_dir=tmp_path / "mem")
+    store.add(MemoryEntry(type=MemoryType.USER, key="k1", content="用户喜欢喝咖啡"))
+    store.add(MemoryEntry(type=MemoryType.USER, key="k2", content="用户住在北京"))
+    results = store.search_scored("咖啡", limit=5)
+    assert results, "中文关键词应有覆盖率打分"
+    assert "咖啡" in results[0][0].content
+    assert results[0][1] > 0
