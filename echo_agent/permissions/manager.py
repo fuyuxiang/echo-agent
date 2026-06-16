@@ -325,11 +325,14 @@ class CredentialManager:
         # Where to persist an auto-generated Fernet key when the env var is
         # unset. Defaults next to the credential store's parent (the workspace).
         self._key_path = key_path or (store_path.parent.parent / ".credential_key")
+        self._fernet_cache: Any | None = None
         self._credentials: dict[str, Credential] = {}
         self._audit: list[dict[str, Any]] = []
         self._load()
 
     def _fernet(self) -> Any | None:
+        if self._fernet_cache is not None:
+            return self._fernet_cache
         try:
             from cryptography.fernet import Fernet
 
@@ -338,7 +341,7 @@ class CredentialManager:
             raise RuntimeError("cryptography is required for encrypted credential storage") from exc
         try:
             key = resolve_or_create_key(
-                self._key_path.parent, env_name=self._encryption_key_env
+                self._key_path, env_name=self._encryption_key_env
             )
         except OSError as exc:
             if self._require_encryption:
@@ -347,7 +350,8 @@ class CredentialManager:
                     f"could not be created at {self._key_path}: {exc}"
                 ) from exc
             return None
-        return Fernet(key)
+        self._fernet_cache = Fernet(key)
+        return self._fernet_cache
 
     def _encode_secret(self, value: str) -> tuple[str, str]:
         fernet = self._fernet()
