@@ -69,3 +69,29 @@ def response_quality(expected_output: str, actual: str) -> MetricResult:
         return MetricResult(name="quality", score=1.0, passed=True)
     overlap = len(expected_words & actual_words) / len(expected_words)
     return MetricResult(name="quality", score=overlap, passed=overlap > 0.5)
+
+
+def not_contains(forbidden_substrings: list[str], actual: str) -> MetricResult:
+    """Fail if ANY forbidden substring appears in the response (case-insensitive)."""
+    if not forbidden_substrings:
+        return MetricResult(name="not_contains", score=1.0, passed=True)
+    lower = actual.lower()
+    hits = [s for s in forbidden_substrings if s.lower() in lower]
+    passed = not hits
+    return MetricResult(
+        name="not_contains", score=1.0 if passed else 0.0, passed=passed,
+        details={"violations": hits},
+    )
+
+
+def forbidden_tools_check(forbidden_tools: list[str], actual_tools: list[str]) -> MetricResult:
+    """Fail if ANY forbidden tool was used."""
+    if not forbidden_tools:
+        return MetricResult(name="forbidden_tools", score=1.0, passed=True)
+    used = set(actual_tools)
+    hits = [t for t in forbidden_tools if t in used]
+    passed = not hits
+    return MetricResult(
+        name="forbidden_tools", score=1.0 if passed else 0.0, passed=passed,
+        details={"violations": hits},
+    )
