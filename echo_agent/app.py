@@ -338,6 +338,19 @@ async def run(config_path: str | None = None, workspace: str | None = None) -> N
     logger.info("Echo Agent stopped")
 
 
+def _apply_gateway_profile_default(config: "Config", config_path: str | None) -> None:
+    """Tighten the gateway entrypoint to ``public_gateway`` when the user did
+    not explicitly choose a ``security.profile``. Explicit config is respected."""
+    from echo_agent.config.loader import profile_explicitly_set
+
+    if not profile_explicitly_set(config_path):
+        config.security.profile = "public_gateway"
+        logger.warning(
+            "Gateway 入口未显式配置 security.profile，已默认切到 public_gateway 收紧档；"
+            "如需放开请在配置中显式设置 security.profile"
+        )
+
+
 async def run_gateway(
     config_path: str | None = None,
     host: str | None = None,
@@ -354,6 +367,7 @@ async def run_gateway(
     shutdown = asyncio.Event()
     ctx = await bootstrap(config_path=config_path, overrides=overrides or None, on_cli_exit=shutdown.set)
     ctx.config.gateway.enabled = True
+    _apply_gateway_profile_default(ctx.config, config_path)
     if host:
         ctx.config.gateway.host = host
     if port:
