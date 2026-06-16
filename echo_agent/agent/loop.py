@@ -174,6 +174,7 @@ class AgentLoop:
         self._hybrid_retriever = None
         self._vector_index = None
         self._embed_fn = None
+        self._episodic = None
         if config.memory.enabled:
             self._init_advanced_memory(config, storage)
 
@@ -263,6 +264,7 @@ class AgentLoop:
             memory_snapshots=self._memory_snapshots,
             snapshot_enabled=self._snapshot_enabled,
             tool_definitions_fn=self.tools.get_definitions,
+            episodic=self._episodic,
             bus=bus,
         )
         self._inference_stage = InferenceStage(
@@ -291,6 +293,7 @@ class AgentLoop:
             spawn_fn=self._spawn_background,
             clear_memory_snapshot_fn=self._clear_memory_snapshot,
             skill_store=self.skill_store,
+            working_memories=self._working_memories,
         )
 
     def _register_tools(self, scheduler: Any = None, task_manager: Any = None, workflow_engine: Any = None) -> None:
@@ -330,6 +333,7 @@ class AgentLoop:
         semantic = SemanticManager(self.memory)
         archival = ArchivalManager(storage, store=self.memory) if storage else None
 
+        self._episodic = episodic
         self.consolidator.set_episodic_manager(episodic)
         self.consolidator.set_semantic_manager(semantic)
         self.consolidator.set_forgetting_curve(forgetting)

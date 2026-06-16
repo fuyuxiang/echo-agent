@@ -927,6 +927,12 @@ class TestConsolidatorContradictionDetection:
                             "explanation": "lang changed from Java to Python",
                         })
                     ])
+                if tool_name == "save_facts":
+                    return _FakeLLMResponse(tool_calls=[
+                        _FakeToolCall("1", "save_facts", {
+                            "facts": [{"type": "user", "key": "lang", "content": "Python", "importance": 0.8}],
+                        })
+                    ])
                 return _FakeLLMResponse(tool_calls=[_FakeToolCall("1", tool_name, {})])
             return _FakeLLMResponse(
                 content='[{"type":"user","key":"lang","content":"Python","importance":0.8}]'
@@ -973,6 +979,12 @@ class TestConsolidatorContradictionDetection:
                         _FakeToolCall("1", "save_memory", {
                             "history_entry": "[2024-01-01] test",
                             "memory_update": "# Memory",
+                        })
+                    ])
+                if tool_name == "save_facts":
+                    return _FakeLLMResponse(tool_calls=[
+                        _FakeToolCall("1", "save_facts", {
+                            "facts": [{"type": "user", "key": "lang", "content": "Python", "importance": 0.8}],
                         })
                     ])
                 return _FakeLLMResponse(tool_calls=[_FakeToolCall("1", tool_name, {})])
