@@ -138,6 +138,19 @@ _MIGRATIONS: list[tuple[int, str]] = [
         created_at TEXT NOT NULL
     )"""),
     (17, "CREATE INDEX IF NOT EXISTS idx_archive_session ON message_archive(session_key)"),
+    (18, """CREATE TABLE IF NOT EXISTS plan_runs (
+        id TEXT PRIMARY KEY,
+        session_key TEXT NOT NULL,
+        trace_id TEXT NOT NULL DEFAULT '',
+        goal TEXT NOT NULL DEFAULT '',
+        strategy TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'running',
+        current_step INTEGER NOT NULL DEFAULT 0,
+        plan TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )"""),
+    (19, "CREATE INDEX IF NOT EXISTS idx_plan_runs_session ON plan_runs(session_key)"),
 ]
 
 

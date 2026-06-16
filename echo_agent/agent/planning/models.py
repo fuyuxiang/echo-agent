@@ -66,6 +66,48 @@ class Plan:
                 lines.append(f"    Result: {s.result[:200]}")
         return "\n".join(lines)
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "strategy": self.strategy.value,
+            "goal": self.goal,
+            "current_step": self.current_step,
+            "is_complete": self.is_complete,
+            "reflection": self.reflection,
+            "steps": [
+                {
+                    "index": s.index,
+                    "description": s.description,
+                    "tool_hint": s.tool_hint,
+                    "status": s.status.value,
+                    "result": s.result,
+                    "reasoning": s.reasoning,
+                }
+                for s in self.steps
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Plan":
+        steps = [
+            PlanStep(
+                index=s.get("index", i),
+                description=s.get("description", ""),
+                tool_hint=s.get("tool_hint", ""),
+                status=StepStatus(s.get("status", "pending")),
+                result=s.get("result", ""),
+                reasoning=s.get("reasoning", ""),
+            )
+            for i, s in enumerate(data.get("steps", []))
+        ]
+        return cls(
+            strategy=StrategyType(data.get("strategy", "react")),
+            steps=steps,
+            goal=data.get("goal", ""),
+            current_step=data.get("current_step", 0),
+            is_complete=data.get("is_complete", False),
+            reflection=data.get("reflection", ""),
+        )
+
 
 @dataclass
 class StepAction:
