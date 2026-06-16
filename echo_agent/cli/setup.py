@@ -911,6 +911,27 @@ def setup_doctor(config: dict) -> None:
     print()
 
 
+# ── Credential key ──────────────────────────────────────────────────────────
+
+def _ensure_credential_key(workspace: Path) -> None:
+    """Generate the credential encryption key on first setup if absent.
+
+    No-op when ECHO_AGENT_CREDENTIAL_KEY is set or the key file already exists.
+    """
+    import os
+
+    from echo_agent.permissions.credential_key import KEY_FILENAME, resolve_or_create_key
+
+    if os.environ.get("ECHO_AGENT_CREDENTIAL_KEY"):
+        return
+    key_file = Path(workspace) / KEY_FILENAME
+    existed = key_file.exists()
+    resolve_or_create_key(key_file)
+    if not existed:
+        print_success(t("credentials.key_generated", path=str(key_file)))
+        print_warning(t("credentials.key_warning"))
+
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 
 def _print_summary(config: dict, config_path: Path) -> None:
@@ -1080,6 +1101,8 @@ def run_setup_wizard(
         if prompt_yes_no(t("channels.configure_now"), default=False):
             setup_channels(config)
         path = save_config(config, config_target)
+        workspace_raw = config.get("workspace") or "~/.echo-agent"
+        _ensure_credential_key(Path(str(workspace_raw)).expanduser())
         setup_doctor(config)
         _print_summary(config, path)
         print_success(t("summary.complete"))
@@ -1089,6 +1112,8 @@ def run_setup_wizard(
         func(config)
 
     path = save_config(config, config_target)
+    workspace_raw = config.get("workspace") or "~/.echo-agent"
+    _ensure_credential_key(Path(str(workspace_raw)).expanduser())
     setup_doctor(config)
     _print_summary(config, path)
     print_success(t("summary.complete"))

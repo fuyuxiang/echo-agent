@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 MESSAGES = {
+    "credentials": {
+        "key_generated": "已生成凭证加密密钥并保存到 {path}（权限 0600）",
+        "key_warning": "请勿删除此文件或提交到版本库，删除后已加密的凭证将无法解密",
+    },
     "common": {
         "yes": "是",
         "no": "否",
