@@ -48,3 +48,13 @@ def test_forbidden_tools_fails_when_any_used():
 def test_forbidden_tools_empty_list_passes():
     r = forbidden_tools_check([], ["exec"])
     assert r.passed is True
+
+
+def test_not_contains_ignores_empty_string():
+    r = not_contains([""], "anything at all")
+    assert r.passed is True
+
+
+def test_not_contains_dedups_violations():
+    r = not_contains(["pw", "pw"], "my pw here")
+    assert r.details["violations"] == ["pw"]
