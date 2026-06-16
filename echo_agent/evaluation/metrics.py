@@ -11,6 +11,7 @@ class MetricResult:
     name: str = ""
     score: float = 0.0
     passed: bool = False
+    inconclusive: bool = False
     details: dict[str, Any] = field(default_factory=dict)
 
 
