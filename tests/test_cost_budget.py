@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from echo_agent.cost.budget import CostTracker, BudgetStatus, BudgetExceeded
+from echo_agent.storage.sqlite import SQLiteBackend
 
 
 def _tracker(**kw):
@@ -72,3 +73,22 @@ async def test_check_rolls_window_on_new_day():
     t._window_date = "2000-01-01"  # stale window from a previous day
     assert t.check() == BudgetStatus.OK  # new day -> rolled to zero -> OK
     assert t.spent_usd == 0.0
+
+
+@pytest.mark.asyncio
+async def test_persistence_round_trip(tmp_path):
+    backend = SQLiteBackend(tmp_path / "cost.db")
+    await backend.initialize()
+    try:
+        t1 = CostTracker(storage=backend, enabled=True, daily_budget_usd=10.0)
+        await t1.load()
+        await t1.record("gpt-4o-mini", {"prompt_tokens": 2_000_000, "completion_tokens": 0}, "openai")
+        spent = t1.spent_usd
+        assert spent > 0
+
+        # New tracker, same backend & day -> load() should read accumulated total.
+        t2 = CostTracker(storage=backend, enabled=True, daily_budget_usd=10.0)
+        await t2.load()
+        assert abs(t2.spent_usd - spent) < 1e-9
+    finally:
+        await backend.close()
