@@ -158,6 +158,7 @@ class AgentLoop:
             store_path=workspace / "data" / "credentials.json",
             encryption_key_env=config.credentials.encryption_key_env,
             require_encryption=config.credentials.require_encryption,
+            key_path=workspace / ".credential_key",
         )
         self.tracer = TraceLogger(logs_dir=workspace / config.storage.logs_dir)
         self.consolidator = MemoryConsolidator(
