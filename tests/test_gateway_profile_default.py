@@ -48,3 +48,13 @@ def test_respects_explicit_profile(tmp_path):
     config = Config(security={"profile": "personal_cli"})
     _apply_gateway_profile_default(config, config_path=cfg)
     assert config.security.profile == "personal_cli"  # 显式配置不覆盖
+
+
+def test_public_gateway_denies_write_allows_read():
+    from echo_agent.config.schema import Config
+    from echo_agent.security.tool_policy import is_tool_allowed
+
+    cfg = Config(security={"profile": "public_gateway"})
+    assert is_tool_allowed(cfg, "write_file") is False
+    assert is_tool_allowed(cfg, "exec") is False
+    assert is_tool_allowed(cfg, "read_file") is True
