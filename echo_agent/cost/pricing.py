@@ -46,3 +46,62 @@ def normalize_usage(usage: dict, provider: str = "") -> NormalizedUsage:
         out = int(usage.get("output_tokens") or 0)
 
     return NormalizedUsage(input=inp, output=out, cache_read=cache_read, cache_write=cache_write)
+
+
+@dataclass
+class ModelPrice:
+    """USD per 1M tokens."""
+    input_per_1m: float
+    output_per_1m: float
+    cache_read_per_1m: float = 0.0
+    cache_write_per_1m: float = 0.0
+
+
+# Snapshot pricing-2026-06 (USD per 1M tokens). Override via config cost.pricingOverrides.
+_PRICING_SNAPSHOT: dict[str, ModelPrice] = {
+    "gpt-4o": ModelPrice(2.50, 10.00, 1.25),
+    "gpt-4o-mini": ModelPrice(0.15, 0.60, 0.075),
+    "o3-mini": ModelPrice(1.10, 4.40),
+    "claude-3-5-sonnet": ModelPrice(3.00, 15.00, 0.30, 3.75),
+    "claude-3-5-haiku": ModelPrice(0.80, 4.00, 0.08, 1.00),
+    "claude-3-opus": ModelPrice(15.00, 75.00, 1.50, 18.75),
+    "gemini-1.5-pro": ModelPrice(1.25, 5.00),
+    "gemini-1.5-flash": ModelPrice(0.075, 0.30),
+}
+
+_missing_price_warned: set[str] = set()
+
+
+def _resolve_price(model: str, overrides: dict) -> ModelPrice | None:
+    ov = (overrides or {}).get(model)
+    if ov:
+        return ModelPrice(
+            input_per_1m=float(ov.get("input_per_1m", 0.0)),
+            output_per_1m=float(ov.get("output_per_1m", 0.0)),
+            cache_read_per_1m=float(ov.get("cache_read_per_1m", 0.0)),
+            cache_write_per_1m=float(ov.get("cache_write_per_1m", 0.0)),
+        )
+    if model in _PRICING_SNAPSHOT:
+        return _PRICING_SNAPSHOT[model]
+    # Prefix match so "gpt-4o-2024-..." resolves to "gpt-4o".
+    for key, price in _PRICING_SNAPSHOT.items():
+        if model.startswith(key):
+            return price
+    return None
+
+
+def estimate_cost(usage: NormalizedUsage, model: str, overrides: dict | None = None) -> float:
+    """Estimate USD cost. Unknown model -> 0.0 + one-time warning (does not block metering)."""
+    price = _resolve_price(model, overrides or {})
+    if price is None:
+        if model not in _missing_price_warned:
+            from loguru import logger
+            logger.warning("No pricing for model {!r}; cost counted as 0. Set cost.pricingOverrides.", model)
+            _missing_price_warned.add(model)
+        return 0.0
+    return (
+        usage.input * price.input_per_1m
+        + usage.output * price.output_per_1m
+        + usage.cache_read * price.cache_read_per_1m
+        + usage.cache_write * price.cache_write_per_1m
+    ) / 1_000_000

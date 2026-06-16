@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from echo_agent.cost.pricing import NormalizedUsage, normalize_usage
+from echo_agent.cost.pricing import NormalizedUsage, normalize_usage, estimate_cost
 
 
 def test_normalize_openai_fields():
@@ -41,3 +41,22 @@ def test_normalize_empty():
     n = normalize_usage({}, "openai")
     assert isinstance(n, NormalizedUsage)
     assert n.input == 0 and n.output == 0 and n.total == 0
+
+
+def test_estimate_cost_known_model():
+    # gpt-4o-mini snapshot: input 0.15 / output 0.60 per 1M.
+    n = NormalizedUsage(input=1_000_000, output=1_000_000)
+    cost = estimate_cost(n, "gpt-4o-mini", {})
+    assert abs(cost - 0.75) < 1e-9
+
+
+def test_estimate_cost_override_wins():
+    n = NormalizedUsage(input=1_000_000, output=0)
+    cost = estimate_cost(n, "my-model", {"my-model": {"input_per_1m": 2.0, "output_per_1m": 9.0}})
+    assert abs(cost - 2.0) < 1e-9
+
+
+def test_estimate_cost_unknown_model_zero():
+    n = NormalizedUsage(input=1_000_000, output=1_000_000)
+    cost = estimate_cost(n, "totally-unknown-model-xyz", {})
+    assert cost == 0.0
