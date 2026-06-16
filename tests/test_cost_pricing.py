@@ -60,3 +60,18 @@ def test_estimate_cost_unknown_model_zero():
     n = NormalizedUsage(input=1_000_000, output=1_000_000)
     cost = estimate_cost(n, "totally-unknown-model-xyz", {})
     assert cost == 0.0
+
+
+def test_estimate_cost_dated_suffix_matches_longest_prefix():
+    # OpenAI sends dated model ids like "gpt-4o-mini-2024-07-18".
+    # Must resolve to gpt-4o-mini (0.15/0.60), NOT the shorter "gpt-4o" (2.50/10.00).
+    n = NormalizedUsage(input=1_000_000, output=1_000_000)
+    cost = estimate_cost(n, "gpt-4o-mini-2024-07-18", {})
+    assert abs(cost - 0.75) < 1e-9  # 0.15 + 0.60, not 12.50
+
+
+def test_estimate_cost_dated_gpt4o_still_matches():
+    # A dated gpt-4o (not mini) should still resolve to gpt-4o.
+    n = NormalizedUsage(input=1_000_000, output=0)
+    cost = estimate_cost(n, "gpt-4o-2024-11-20", {})
+    assert abs(cost - 2.50) < 1e-9
