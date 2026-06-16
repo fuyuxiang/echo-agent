@@ -379,6 +379,16 @@ class SkillStore:
         except ValueError:
             return False
 
+    def is_protected(self, name: str) -> bool:
+        """A skill is protected from evolution if it resides outside user_dir
+        (i.e. shipped builtin or external). Unknown skills are not protected —
+        the caller's not-found handling takes over. Mirror of _is_writable,
+        exposed as the public evolution-safety predicate."""
+        skill_dir = self._find_skill_dir(name)
+        if skill_dir is None:
+            return False
+        return not self._is_writable(skill_dir)
+
     @staticmethod
     def _atomic_write(path: Path, content: str) -> None:
         fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
