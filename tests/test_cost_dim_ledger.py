@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from echo_agent.cost.budget import CostTracker
+from echo_agent.cost.budget import CostTracker, BudgetExceeded
 from echo_agent.storage.sqlite import SQLiteBackend
 
 
@@ -86,4 +86,44 @@ async def test_channel_defaults_to_empty_string(tmp_path):
     rows = await _dim_rows(storage)
     assert len(rows) == 1
     assert rows[0]["channel"] == ""
+    await storage.close()
+
+
+class _DimFailStorage:
+    """Storage that fails only on cost_ledger_dim writes; legacy writes succeed."""
+
+    def __init__(self):
+        self.legacy_writes = 0
+
+    async def execute_sql(self, sql, params=()):
+        if "cost_ledger_dim" in sql:
+            raise RuntimeError("simulated dim write failure")
+        self.legacy_writes += 1
+
+    async def fetch_sql(self, sql, params=()):
+        return []
+
+
+@pytest.mark.asyncio
+async def test_dim_failure_does_not_break_legacy_or_gate():
+    storage = _DimFailStorage()
+    t = CostTracker(storage=storage, enabled=True, daily_budget_usd=1.0)
+    await t.record("gpt-4o-mini", {"prompt_tokens": 1_000_000, "completion_tokens": 0},
+                   "openai", channel="telegram")
+    assert abs(t.spent_usd - 0.15) < 1e-9
+    assert storage.legacy_writes == 1
+    t._spent_usd = 1.5
+    with pytest.raises(BudgetExceeded):
+        t.enforce()
+
+
+@pytest.mark.asyncio
+async def test_cross_day_writes_new_window_row(tmp_path):
+    storage = await _fresh_storage(tmp_path)
+    t = _tracker(storage)
+    t._window_date = "2000-01-01"
+    await t.record("gpt-4o-mini", {"prompt_tokens": 1_000_000, "completion_tokens": 0},
+                   "openai", channel="telegram")
+    rows = await _dim_rows(storage)
+    assert all(r["window_date"] != "2000-01-01" for r in rows)
     await storage.close()
