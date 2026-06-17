@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -261,3 +261,66 @@ class TestBedrockProvider:
         assert _is_claude_model("amazon.titan-text-express-v1") is False
         assert _is_claude_model("meta.llama3-70b-instruct-v1:0") is False
         assert _is_claude_model("cohere.command-r-plus-v1:0") is False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# OpenAIProvider — reasoning_content 提升
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def _fake_openai_resp(content, reasoning=None, finish_reason="stop", tool_calls=None):
+    """Build a minimal object mimicking openai SDK chat.completion response."""
+    msg = MagicMock()
+    msg.content = content
+    msg.reasoning_content = reasoning
+    msg.tool_calls = tool_calls
+    choice = MagicMock()
+    choice.message = msg
+    choice.finish_reason = finish_reason
+    resp = MagicMock()
+    resp.choices = [choice]
+    resp.usage = None
+    resp.model = "gpt-5.5"
+    return resp
+
+
+class TestOpenAIReasoningPromotion:
+    def _provider(self):
+        from echo_agent.models.providers.openai_provider import OpenAIProvider
+        with patch.object(OpenAIProvider, "_build_client", return_value=MagicMock()):
+            return OpenAIProvider(api_key="x", default_model="gpt-5.5")
+
+    def test_promote_when_content_empty(self):
+        provider = self._provider()
+        resp = provider._parse_response(_fake_openai_resp(content="", reasoning="real answer"))
+        assert resp.content == "real answer"
+        assert resp.reasoning_content == "real answer"
+
+    def test_no_promote_when_content_present(self):
+        provider = self._provider()
+        resp = provider._parse_response(_fake_openai_resp(content="hi", reasoning="thinking..."))
+        assert resp.content == "hi"
+        assert resp.reasoning_content == "thinking..."
+
+    def test_no_promote_when_finish_not_stop(self):
+        provider = self._provider()
+        resp = provider._parse_response(
+            _fake_openai_resp(content="", reasoning="partial", finish_reason="length")
+        )
+        assert resp.content == "" or resp.content is None
+
+    def test_reasoning_field_missing_no_error(self):
+        provider = self._provider()
+        msg = MagicMock(spec=["content", "tool_calls"])
+        msg.content = "ok"
+        msg.tool_calls = None
+        choice = MagicMock()
+        choice.message = msg
+        choice.finish_reason = "stop"
+        resp_obj = MagicMock()
+        resp_obj.choices = [choice]
+        resp_obj.usage = None
+        resp_obj.model = "gpt-5.5"
+        resp = provider._parse_response(resp_obj)
+        assert resp.content == "ok"
+        assert resp.reasoning_content is None
