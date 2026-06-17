@@ -1,0 +1,118 @@
+"""Cost command — display per-dimension cost attribution from cost_ledger_dim."""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import date, timedelta
+from pathlib import Path
+from typing import Any
+
+from echo_agent.cli.colors import Colors, color, print_header, print_warning
+from echo_agent.cli.status import _effective_workspace
+from echo_agent.config.loader import load_config, resolve_config_file
+
+
+async def _table_exists(storage: Any, name: str) -> bool:
+    """Probe sqlite_master for *name*.
+
+    fetch_sql swallows exceptions and returns [] on error, so a missing table
+    cannot be detected by catching a raised exception. We probe the catalog
+    explicitly instead.
+    """
+    rows = await storage.fetch_sql(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (name,),
+    )
+    return bool(rows)
+
+
+async def _today_report(storage: Any, today: str):
+    """Return (rows, total) grouped by channel+model for *today*.
+
+    rows is None when the table is missing (legacy DB before migration 21).
+    """
+    if not await _table_exists(storage, "cost_ledger_dim"):
+        return None, 0.0
+    rows = await storage.fetch_sql(
+        "SELECT channel, model, SUM(spent_usd) AS spent, "
+        "SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens "
+        "FROM cost_ledger_dim WHERE window_date = ? "
+        "GROUP BY channel, model ORDER BY spent DESC",
+        (today,),
+    )
+    total = sum(float(r["spent"]) for r in rows)
+    return rows, total
+
+
+async def _trend_report(storage: Any, since: str):
+    """Return per-day totals from *since* (inclusive). [] when table missing."""
+    if not await _table_exists(storage, "cost_ledger_dim"):
+        return []
+    return await storage.fetch_sql(
+        "SELECT window_date, SUM(spent_usd) AS total FROM cost_ledger_dim "
+        "WHERE window_date >= ? GROUP BY window_date ORDER BY window_date",
+        (since,),
+    )
+
+
+def _fmt_int(n: int) -> str:
+    return f"{int(n):,}"
+
+
+def _render_today(rows, total) -> None:
+    today = date.today().isoformat()
+    print_header(f"今日成本（{today}）— 仅主推理计量")
+    if rows is None:
+        print_warning("当前数据库无成本归因表，请先以新版本运行一次 echo-agent。")
+        return
+    if not rows:
+        print_warning("暂无成本数据。")
+        return
+    print(f"  {'渠道':<12}{'模型':<22}{'花费($)':>10}{'输入tok':>12}{'输出tok':>12}")
+    for r in rows:
+        ch = r["channel"] or "—"
+        print(
+            f"  {ch:<12}{r['model']:<22}"
+            f"{float(r['spent']):>10.4f}"
+            f"{_fmt_int(r['input_tokens']):>12}"
+            f"{_fmt_int(r['output_tokens']):>12}"
+        )
+    print(color(f"  合计 ${total:.4f}", Colors.BOLD))
+
+
+def _render_trend(rows) -> None:
+    if not rows:
+        return
+    print_header("近期每日趋势")
+    peak = max((float(r["total"]) for r in rows), default=0.0) or 1.0
+    for r in rows:
+        amt = float(r["total"])
+        bar = "█" * int(round(amt / peak * 20))
+        print(f"  {r['window_date']}  {amt:>8.4f}  {color(bar, Colors.CYAN)}")
+
+
+def show_cost(config_path: str | Path | None = None,
+              workspace: str | Path | None = None, days: int = 7) -> None:
+    config_file = resolve_config_file(config_path=config_path, search_dir=workspace)
+    overrides = {"workspace": str(workspace)} if workspace else None
+    config = load_config(config_path=config_file, overrides=overrides)
+    effective_workspace = _effective_workspace(
+        config.workspace,
+        config_file if config_file and config_file.exists() else None,
+        str(workspace) if workspace else None,
+    )
+    db_path = effective_workspace / config.storage.database_path
+
+    async def _run() -> None:
+        from echo_agent.storage.sqlite import SQLiteBackend
+        storage = SQLiteBackend(db_path)
+        try:
+            today = date.today().isoformat()
+            rows, total = await _today_report(storage, today)
+            _render_today(rows, total)
+            since = (date.today() - timedelta(days=max(1, days) - 1)).isoformat()
+            _render_trend(await _trend_report(storage, since))
+        finally:
+            await storage.close()
+
+    asyncio.run(_run())
