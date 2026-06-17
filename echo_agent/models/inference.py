@@ -63,6 +63,9 @@ class InferenceController:
             except (json.JSONDecodeError, TypeError):
                 issues.append("Expected JSON output but got non-JSON")
 
+        if not response.content and not response.has_tool_calls:
+            issues.append("Empty content with no tool calls")
+
         return issues
 
     def check_hallucination_markers(self, content: str) -> list[str]:
