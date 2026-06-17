@@ -197,11 +197,16 @@ class OpenAIProvider(LLMProvider):
             usage["prompt_tokens"] = resp.usage.prompt_tokens or 0
             usage["completion_tokens"] = resp.usage.completion_tokens or 0
 
+        reasoning = getattr(msg, "reasoning_content", None)
+        finish_reason = choice.finish_reason or "stop"
+        content = self._promote_reasoning(msg.content, reasoning, finish_reason)
+
         return LLMResponse(
-            content=msg.content,
+            content=content,
             tool_calls=tool_calls,
-            finish_reason=choice.finish_reason or "stop",
+            finish_reason=finish_reason,
             usage=usage,
+            reasoning_content=reasoning,
             model=resp.model or "",
         )
 
@@ -218,6 +223,16 @@ class OpenAIProvider(LLMProvider):
                     parts.append(text)
             return "".join(parts)
         return ""
+
+    @staticmethod
+    def _promote_reasoning(content: str | None, reasoning: str | None, finish_reason: str) -> str | None:
+        # Some third-party proxies put the final answer into reasoning_content
+        # while leaving content empty. Recover it — but only when content is
+        # truly empty and the model finished normally, so a real reasoning
+        # model's thinking trace is never mistaken for the answer.
+        if not content and finish_reason == "stop" and reasoning:
+            return reasoning
+        return content
 
     @staticmethod
     def _merge_tool_delta(tool_parts: dict[int, dict[str, Any]], tc: Any) -> None:
