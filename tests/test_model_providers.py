@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -324,3 +324,59 @@ class TestOpenAIReasoningPromotion:
         resp = provider._parse_response(resp_obj)
         assert resp.content == "ok"
         assert resp.reasoning_content is None
+
+
+class _FakeStreamChunk:
+    def __init__(self, content=None, reasoning=None, finish_reason=None):
+        delta = MagicMock(spec=["content", "reasoning_content", "tool_calls"])
+        delta.content = content
+        delta.reasoning_content = reasoning
+        delta.tool_calls = None
+        choice = MagicMock()
+        choice.delta = delta
+        choice.finish_reason = finish_reason
+        self.choices = [choice]
+        self.model = "gpt-5.5"
+        self.usage = None
+
+
+class _FakeStream:
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    def __aiter__(self):
+        async def gen():
+            for c in self._chunks:
+                yield c
+        return gen()
+
+
+class TestOpenAIStreamReasoning:
+    def _provider(self):
+        from echo_agent.models.providers.openai_provider import OpenAIProvider
+        with patch.object(OpenAIProvider, "_build_client", return_value=MagicMock()):
+            return OpenAIProvider(api_key="x", default_model="gpt-5.5")
+
+    @pytest.mark.asyncio
+    async def test_stream_promotes_reasoning_when_content_empty(self):
+        provider = self._provider()
+        chunks = [
+            _FakeStreamChunk(reasoning="real "),
+            _FakeStreamChunk(reasoning="answer"),
+            _FakeStreamChunk(finish_reason="stop"),
+        ]
+        provider._client.chat.completions.create = AsyncMock(return_value=_FakeStream(chunks))
+        resp = await provider.chat_stream(messages=[{"role": "user", "content": "hi"}])
+        assert resp.content == "real answer"
+        assert resp.reasoning_content == "real answer"
+
+    @pytest.mark.asyncio
+    async def test_stream_keeps_content_when_present(self):
+        provider = self._provider()
+        chunks = [
+            _FakeStreamChunk(content="hi", reasoning="think"),
+            _FakeStreamChunk(finish_reason="stop"),
+        ]
+        provider._client.chat.completions.create = AsyncMock(return_value=_FakeStream(chunks))
+        resp = await provider.chat_stream(messages=[{"role": "user", "content": "hi"}])
+        assert resp.content == "hi"

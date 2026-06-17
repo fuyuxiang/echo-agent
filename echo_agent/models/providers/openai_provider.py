@@ -85,6 +85,7 @@ class OpenAIProvider(LLMProvider):
             return await self.chat(messages, tools, model, tool_choice, **kwargs)
 
         text_parts: list[str] = []
+        reasoning_parts: list[str] = []
         tool_parts: dict[int, dict[str, Any]] = {}
         finish_reason = "stop"
         usage: dict[str, int] = {}
@@ -115,6 +116,10 @@ class OpenAIProvider(LLMProvider):
                     text_parts.append(content)
                     await _invoke_stream_callback(on_delta, content)
 
+                reasoning_delta = self._delta_reasoning(delta)
+                if reasoning_delta:
+                    reasoning_parts.append(reasoning_delta)
+
                 for tc in getattr(delta, "tool_calls", None) or []:
                     self._merge_tool_delta(tool_parts, tc)
         except Exception as e:
@@ -125,11 +130,16 @@ class OpenAIProvider(LLMProvider):
         if finish_reason == "stop" and tool_calls:
             finish_reason = "tool_calls"
 
+        reasoning_text = "".join(reasoning_parts) if reasoning_parts else None
+        content_text = "".join(text_parts) if text_parts else None
+        content_text = self._promote_reasoning(content_text, reasoning_text, finish_reason)
+
         return LLMResponse(
-            content="".join(text_parts) if text_parts else None,
+            content=content_text,
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             usage=usage,
+            reasoning_content=reasoning_text,
             model=response_model or "",
         )
 
@@ -223,6 +233,11 @@ class OpenAIProvider(LLMProvider):
                     parts.append(text)
             return "".join(parts)
         return ""
+
+    @staticmethod
+    def _delta_reasoning(delta: Any) -> str:
+        reasoning = getattr(delta, "reasoning_content", None)
+        return reasoning if isinstance(reasoning, str) else ""
 
     @staticmethod
     def _promote_reasoning(content: str | None, reasoning: str | None, finish_reason: str) -> str | None:
