@@ -208,6 +208,18 @@ class TestInferenceController:
         issues = ctrl.validate_response(resp)
         assert issues == []
 
+    def test_validate_response_flags_empty_content(self):
+        ctrl = InferenceController()
+        resp = _make_response(content=None)
+        issues = ctrl.validate_response(resp)
+        assert any("empty content" in i.lower() for i in issues)
+
+    def test_validate_response_ok_when_has_tool_calls(self):
+        ctrl = InferenceController()
+        resp = _make_response(content=None, tool_names=["t"])
+        issues = ctrl.validate_response(resp)
+        assert not any("empty content" in i.lower() for i in issues)
+
     # -- hallucination markers ----------------------------------------------
 
     def test_hallucination_markers_detected(self):
