@@ -7,6 +7,8 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 from echo_agent.cli.colors import Colors, color, print_header, print_warning
 from echo_agent.cli.status import _effective_workspace
 from echo_agent.config.loader import load_config, resolve_config_file
@@ -14,6 +16,14 @@ from echo_agent.config.loader import load_config, resolve_config_file
 
 async def _table_exists(storage: Any, name: str) -> bool:
     """Probe sqlite_master for *name*.
+
+    Note: SQLiteBackend runs _run_migrations() unconditionally on every
+    connect, so against the real backend cost_ledger_dim always exists by the
+    time we get here — i.e. opening a cost report on a legacy DB will itself
+    materialize the table (report-triggers-migration, accepted by design).
+    This probe therefore exists mainly to defend non-standard storage: test
+    stubs, foreign/legacy DBs surfaced through another backend, or a future
+    read-only connection that skips migrations.
 
     fetch_sql swallows exceptions and returns [] on error, so a missing table
     cannot be detected by catching a raised exception. We probe the catalog
@@ -59,10 +69,13 @@ def _fmt_int(n: int) -> str:
     return f"{int(n):,}"
 
 
-def _render_today(rows, total) -> None:
-    today = date.today().isoformat()
+def _render_today(rows, total, today: str) -> None:
     print_header(f"今日成本（{today}）— 仅主推理计量")
     if rows is None:
+        # A missing cost_ledger_dim is a genuine anomaly: the real
+        # SQLiteBackend migrates on connect, so this branch only fires for
+        # non-standard storage (stub / foreign DB / read-only connection) or
+        # when the DB file is absent/corrupt and we deliberately degrade here.
         print_warning("当前数据库无成本归因表，请先以新版本运行一次 echo-agent。")
         return
     if not rows:
@@ -104,22 +117,33 @@ def show_cost(config_path: str | Path | None = None,
     db_path = effective_workspace / config.storage.database_path
 
     async def _run() -> None:
-        # Reports are read-only and must not run initialize() (which would
-        # create the DB file and trigger schema migrations). A fresh workspace
-        # has no DB file yet; connecting to a non-existent path makes sqlite
-        # raise OperationalError. Treat absence as the missing-table case and
-        # degrade gracefully instead of crashing.
+        # Reports are read-only in intent but NOT in effect: SQLiteBackend
+        # connects by running migrations, so opening a legacy DB here will
+        # create cost_ledger_dim (accepted by design). A fresh workspace has
+        # no DB file yet; connecting to a non-existent path makes sqlite raise
+        # OperationalError. Treat absence as the missing-table case and degrade
+        # gracefully instead of crashing.
+        today = date.today().isoformat()
         if not db_path.exists():
-            _render_today(None, 0.0)
+            _render_today(None, 0.0, today)
             return
         from echo_agent.storage.sqlite import SQLiteBackend
         storage = SQLiteBackend(db_path)
         try:
-            today = date.today().isoformat()
-            rows, total = await _today_report(storage, today)
-            _render_today(rows, total)
-            since = (date.today() - timedelta(days=max(1, days) - 1)).isoformat()
-            _render_trend(await _trend_report(storage, since))
+            # Guard only the connect/query phase: a present-but-invalid DB file
+            # (not a real sqlite DB) makes the first statement raise. Degrade to
+            # the missing-table path rather than crashing. Kept narrow so real
+            # logic bugs still surface.
+            try:
+                rows, total = await _today_report(storage, today)
+                since = (date.today() - timedelta(days=max(1, days) - 1)).isoformat()
+                trend = await _trend_report(storage, since)
+            except Exception as exc:  # noqa: BLE001 - degrade on unreadable DB
+                logger.warning("cost report: failed to read DB at {}: {}", db_path, exc)
+                _render_today(None, 0.0, today)
+                return
+            _render_today(rows, total, today)
+            _render_trend(trend)
         finally:
             await storage.close()
 

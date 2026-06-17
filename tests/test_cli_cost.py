@@ -8,6 +8,12 @@ from echo_agent.cli.cost import _today_report, _trend_report
 from echo_agent.storage.sqlite import SQLiteBackend
 
 
+def _date_offset(days: int) -> str:
+    import datetime
+
+    return (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
+
+
 async def _seed(tmp_path, rows):
     storage = SQLiteBackend(tmp_path / "db.sqlite")
     await storage.initialize()
@@ -88,6 +94,41 @@ def test_show_cost_missing_db_does_not_crash(tmp_path, capsys):
     show_cost(config_path=None, workspace=str(missing_ws), days=7)
     out = capsys.readouterr().out
     assert "成本" in out  # 至少打印了今日成本标题，未崩溃
+
+
+@pytest.mark.asyncio
+async def test_today_report_filters_to_today(tmp_path):
+    today = __import__("datetime").date.today().isoformat()
+    yesterday = _date_offset(1)
+    storage = await _seed(tmp_path, [
+        (today, "openai", "gpt-4o", "telegram", 0.40, 100, 10, 0, 0, "x"),
+        (yesterday, "openai", "gpt-4o", "telegram", 0.99, 100, 10, 0, 0, "x"),
+    ])
+    rows, total = await _today_report(storage, today)
+    assert len(rows) == 1
+    assert abs(total - 0.40) < 1e-9
+    await storage.close()
+
+
+def test_render_trend_empty_no_output(capsys):
+    from echo_agent.cli.cost import _render_trend
+
+    _render_trend([])
+    out = capsys.readouterr().out
+    assert out == ""
+
+
+def test_show_cost_corrupt_db_does_not_crash(tmp_path, capsys):
+    # 文件存在但不是合法 sqlite 库，show_cost 应兜底退化而非崩溃
+    from echo_agent.cli.cost import show_cost
+
+    ws = tmp_path / "ws"
+    db = ws / "data" / "echo_agent.db"
+    db.parent.mkdir(parents=True)
+    db.write_bytes(b"this is not a sqlite database \x00\x01\x02 garbage")
+    show_cost(config_path=None, workspace=str(ws), days=7)
+    out = capsys.readouterr().out
+    assert "成本" in out  # 打印了今日成本标题，未崩溃
 
 
 def test_cost_subcommand_registered():
