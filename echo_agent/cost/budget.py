@@ -86,7 +86,7 @@ class CostTracker:
             self._input = self._output = self._cache_read = self._cache_write = 0
             self._soft_warned = False
 
-    async def record(self, model: str, usage: dict, provider: str = "") -> None:
+    async def record(self, model: str, usage: dict, provider: str = "", channel: str = "") -> None:
         """Normalize -> cost -> accumulate -> persist. Never raises."""
         try:
             self._roll_window()
@@ -98,6 +98,7 @@ class CostTracker:
             self._cache_read += norm.cache_read
             self._cache_write += norm.cache_write
             await self._persist()
+            await self._persist_dim(model, provider, channel, cost, norm)
             if self.check() == BudgetStatus.SOFT_EXCEEDED and not self._soft_warned:
                 self._soft_warned = True
                 logger.warning(
@@ -124,6 +125,34 @@ class CostTracker:
             )
         except Exception:
             logger.warning("cost_ledger persist failed; kept in memory")
+
+    async def _persist_dim(self, model: str, provider: str, channel: str, cost: float, norm) -> None:
+        """Incremental per-dimension write for attribution/reporting.
+
+        Independent best-effort: a failure here must never affect the legacy
+        cost_ledger write or the budget gate. Reporting may miss data; the gate
+        must not go blind.
+        """
+        if self._storage is None:
+            return
+        try:
+            await self._storage.execute_sql(
+                "INSERT INTO cost_ledger_dim (window_date, provider, model, channel, "
+                "spent_usd, input_tokens, output_tokens, cache_read_tokens, "
+                "cache_write_tokens, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(window_date, provider, model, channel) DO UPDATE SET "
+                "spent_usd = spent_usd + excluded.spent_usd, "
+                "input_tokens = input_tokens + excluded.input_tokens, "
+                "output_tokens = output_tokens + excluded.output_tokens, "
+                "cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens, "
+                "cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens, "
+                "updated_at = excluded.updated_at",
+                (self._window_date, (provider or "").strip(), (model or "").strip(),
+                 (channel or "").strip(), cost, norm.input, norm.output,
+                 norm.cache_read, norm.cache_write, datetime.now().isoformat()),
+            )
+        except Exception:
+            logger.warning("cost_ledger_dim persist failed; attribution skipped for this call")
 
     def check(self) -> BudgetStatus:
         self._roll_window()
