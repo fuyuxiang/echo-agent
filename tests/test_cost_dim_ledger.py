@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from echo_agent.cost.budget import CostTracker, BudgetExceeded
@@ -127,3 +129,9 @@ async def test_cross_day_writes_new_window_row(tmp_path):
     rows = await _dim_rows(storage)
     assert all(r["window_date"] != "2000-01-01" for r in rows)
     await storage.close()
+
+
+def test_record_accepts_channel_kwarg():
+    sig = inspect.signature(CostTracker.record)
+    assert "channel" in sig.parameters
+    assert sig.parameters["channel"].default == ""

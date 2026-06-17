@@ -317,6 +317,7 @@ class InferenceStage:
             if self._cost_tracker is not None and response.usage:
                 await self._cost_tracker.record(
                     route_decision.model, response.usage, route_decision.provider_name,
+                    channel=event.channel,
                 )
 
             issues = self._inference.validate_response(response)
