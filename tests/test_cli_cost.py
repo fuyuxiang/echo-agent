@@ -79,3 +79,19 @@ async def test_report_missing_table_returns_sentinel(tmp_path):
     rows, total = await _today_report(storage, "2026-06-17")
     assert rows is None
     await storage.close()
+
+
+def test_cost_subcommand_registered():
+    from echo_agent.__main__ import _build_parser
+    parser = _build_parser()
+    ns = parser.parse_args(["cost", "--days", "14"])
+    assert ns.command == "cost"
+    assert ns.days == 14
+
+
+def test_cost_subcommand_days_default():
+    from echo_agent.__main__ import _build_parser
+    parser = _build_parser()
+    ns = parser.parse_args(["cost"])
+    assert ns.command == "cost"
+    assert ns.days == 7
