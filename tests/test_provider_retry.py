@@ -171,3 +171,41 @@ async def test_chat_stream_with_retry_permanent_no_retry() -> None:
 
     assert result.finish_reason == "error"
     assert provider.chat_stream.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_empty_stop_retries_once_then_succeeds() -> None:
+    provider = _TestProvider()
+    provider.chat_mock.side_effect = [
+        LLMResponse(content=None, finish_reason="stop"),
+        LLMResponse(content="recovered", finish_reason="stop"),
+    ]
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        result = await provider.chat_with_retry(messages=[{"role": "user", "content": "hi"}])
+    assert result.content == "recovered"
+    assert provider.chat_mock.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_empty_stop_retries_only_once() -> None:
+    provider = _TestProvider()
+    provider.chat_mock.return_value = LLMResponse(content=None, finish_reason="stop")
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        result = await provider.chat_with_retry(messages=[{"role": "user", "content": "hi"}])
+    # 1 initial + 1 retry, no more
+    assert provider.chat_mock.call_count == 2
+    assert not result.content
+
+
+@pytest.mark.asyncio
+async def test_stop_with_tool_calls_not_empty() -> None:
+    from echo_agent.models.provider import ToolCallRequest
+    provider = _TestProvider()
+    provider.chat_mock.return_value = LLMResponse(
+        content=None,
+        tool_calls=[ToolCallRequest(id="c1", name="t", arguments={})],
+        finish_reason="stop",
+    )
+    result = await provider.chat_with_retry(messages=[{"role": "user", "content": "hi"}])
+    assert provider.chat_mock.call_count == 1
+    assert result.has_tool_calls
