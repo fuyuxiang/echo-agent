@@ -250,6 +250,6 @@ async def test_stream_no_retry_after_emit() -> None:
 
     provider.stream_mock.side_effect = _emit_then_empty
     with patch("asyncio.sleep", new_callable=AsyncMock):
-        result = await provider.chat_stream_with_retry(messages=[{"role": "user", "content": "hi"}])
+        await provider.chat_stream_with_retry(messages=[{"role": "user", "content": "hi"}])
     # emitted → never retried
     assert provider.stream_mock.call_count == 1
