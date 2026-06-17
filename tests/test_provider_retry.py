@@ -209,3 +209,47 @@ async def test_stop_with_tool_calls_not_empty() -> None:
     result = await provider.chat_with_retry(messages=[{"role": "user", "content": "hi"}])
     assert provider.chat_mock.call_count == 1
     assert result.has_tool_calls
+
+
+class _StreamProvider(LLMProvider):
+    def __init__(self):
+        super().__init__()
+        self.stream_mock = AsyncMock()
+
+    async def chat(self, messages, tools=None, model=None, tool_choice=None, **kwargs):
+        raise NotImplementedError
+
+    async def chat_stream(self, messages, tools=None, model=None, tool_choice=None, on_delta=None, **kwargs):
+        return await self.stream_mock(messages, tools, model, tool_choice, on_delta=on_delta, **kwargs)
+
+    def get_default_model(self):
+        return "test-model"
+
+
+@pytest.mark.asyncio
+async def test_stream_empty_stop_retries_once() -> None:
+    provider = _StreamProvider()
+    provider.stream_mock.side_effect = [
+        LLMResponse(content=None, finish_reason="stop"),
+        LLMResponse(content="recovered", finish_reason="stop"),
+    ]
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        result = await provider.chat_stream_with_retry(messages=[{"role": "user", "content": "hi"}])
+    assert result.content == "recovered"
+    assert provider.stream_mock.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_stream_no_retry_after_emit() -> None:
+    provider = _StreamProvider()
+
+    async def _emit_then_empty(messages, tools, model, tool_choice, on_delta=None, **kwargs):
+        if on_delta:
+            await on_delta("partial token")
+        return LLMResponse(content=None, finish_reason="stop")
+
+    provider.stream_mock.side_effect = _emit_then_empty
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        result = await provider.chat_stream_with_retry(messages=[{"role": "user", "content": "hi"}])
+    # emitted → never retried
+    assert provider.stream_mock.call_count == 1
