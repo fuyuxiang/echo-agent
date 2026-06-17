@@ -89,7 +89,7 @@ def main() -> None:
         raise
 
 
-def _dispatch() -> None:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="echo-agent", description="Echo Agent — modular AI agent framework")
     subparsers = parser.add_subparsers(dest="command")
 
@@ -115,6 +115,13 @@ def _dispatch() -> None:
     status_parser = subparsers.add_parser("status", help="Show current configuration status")
     status_parser.add_argument("-c", "--config", help="Path to config file")
     status_parser.add_argument("-w", "--workspace", help="Workspace directory")
+
+    # cost
+    cost_parser = subparsers.add_parser("cost", help="Show cost attribution report")
+    cost_parser.add_argument("-c", "--config", help="Path to config file")
+    cost_parser.add_argument("-w", "--workspace", help="Workspace directory")
+    cost_parser.add_argument("--days", type=int, default=7,
+                             help="Trend window in days (default: 7)")
 
     # gateway
     gw_parser = subparsers.add_parser("gateway", help="Start the gateway server")
@@ -163,6 +170,11 @@ def _dispatch() -> None:
     parser.add_argument("-c", "--config", help="Path to config file", dest="top_config")
     parser.add_argument("-w", "--workspace", help="Workspace directory", dest="top_workspace")
 
+    return parser
+
+
+def _dispatch() -> None:
+    parser = _build_parser()
     args = parser.parse_args()
 
     if args.command == "setup":
@@ -182,6 +194,15 @@ def _dispatch() -> None:
     if args.command == "status":
         from echo_agent.cli.status import show_status
         show_status(config_path=args.config or args.top_config, workspace=args.workspace or args.top_workspace)
+        return
+
+    if args.command == "cost":
+        from echo_agent.cli.cost import show_cost
+        show_cost(
+            config_path=args.config or args.top_config,
+            workspace=args.workspace or args.top_workspace,
+            days=args.days,
+        )
         return
 
     if args.command == "gateway":
