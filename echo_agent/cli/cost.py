@@ -104,6 +104,14 @@ def show_cost(config_path: str | Path | None = None,
     db_path = effective_workspace / config.storage.database_path
 
     async def _run() -> None:
+        # Reports are read-only and must not run initialize() (which would
+        # create the DB file and trigger schema migrations). A fresh workspace
+        # has no DB file yet; connecting to a non-existent path makes sqlite
+        # raise OperationalError. Treat absence as the missing-table case and
+        # degrade gracefully instead of crashing.
+        if not db_path.exists():
+            _render_today(None, 0.0)
+            return
         from echo_agent.storage.sqlite import SQLiteBackend
         storage = SQLiteBackend(db_path)
         try:

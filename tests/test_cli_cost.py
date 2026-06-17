@@ -81,6 +81,15 @@ async def test_report_missing_table_returns_sentinel(tmp_path):
     await storage.close()
 
 
+def test_show_cost_missing_db_does_not_crash(tmp_path, capsys):
+    # 指向一个不存在的 workspace/db，show_cost 应优雅退化而非抛异常
+    from echo_agent.cli.cost import show_cost
+    missing_ws = tmp_path / "nonexistent_workspace"
+    show_cost(config_path=None, workspace=str(missing_ws), days=7)
+    out = capsys.readouterr().out
+    assert "成本" in out  # 至少打印了今日成本标题，未崩溃
+
+
 def test_cost_subcommand_registered():
     from echo_agent.__main__ import _build_parser
     parser = _build_parser()
