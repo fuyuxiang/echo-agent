@@ -279,6 +279,17 @@ class LLMProvider(ABC):
                 classification = self._classify_exception(e)
             else:
                 if response.finish_reason != "error":
+                    if not emitted and self._is_empty_success(response):
+                        logger.warning("LLM stream returned empty content on finish=stop, retrying once")
+                        try:
+                            retry = await asyncio.wait_for(_stream_call(), timeout=timeout)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            return response
+                        if retry.finish_reason != "error" and not self._is_empty_success(retry):
+                            return retry
+                        return response
                     return response
                 classification = self._classify_error_text(response.content or "")
 
