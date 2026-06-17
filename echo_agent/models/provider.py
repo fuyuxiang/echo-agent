@@ -169,6 +169,16 @@ class LLMProvider(ABC):
             return "transient"
         return self._classify_error_text(str(e))
 
+    @staticmethod
+    def _is_empty_success(response: LLMResponse) -> bool:
+        # finish=stop yet nothing came back: the model "succeeded" but produced
+        # no answer and no tool call. Treat as a one-shot retryable failure.
+        return (
+            response.finish_reason == "stop"
+            and not response.content
+            and not response.has_tool_calls
+        )
+
     @property
     def is_stub(self) -> bool:
         return False
@@ -194,6 +204,9 @@ class LLMProvider(ABC):
                 classification = self._classify_exception(e)
             else:
                 if response.finish_reason != "error":
+                    if self._is_empty_success(response):
+                        retried = await self._retry_empty_once(self.chat, timeout, kwargs)
+                        return retried if retried is not None else response
                     return response
                 classification = self._classify_error_text(response.content or "")
 
@@ -210,6 +223,20 @@ class LLMProvider(ABC):
             raise
         except Exception as e:
             return LLMResponse(content=f"Error: {e}", finish_reason="error")
+
+    async def _retry_empty_once(self, caller, timeout, kwargs):
+        # One extra attempt for an empty "stop". Returns the retry response if it
+        # produced something usable, else None so the caller keeps the original.
+        logger.warning("LLM returned empty content on finish=stop, retrying once")
+        try:
+            retry = await asyncio.wait_for(caller(**kwargs), timeout=timeout)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return None
+        if retry.finish_reason != "error" and not self._is_empty_success(retry):
+            return retry
+        return None
 
     async def chat_stream_with_retry(
         self,
