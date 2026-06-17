@@ -497,3 +497,19 @@ class TestInferenceStageBudgetHalt:
         # The hard gate fired before any LLM call was made.
         assert provider.chat_stream_with_retry.call_count == 0
 
+
+@pytest.mark.asyncio
+async def test_empty_content_no_tool_calls_gets_fallback():
+    # Empty content with no tool calls breaks the loop with loop_exhausted=False,
+    # so the safety net must fill a friendly fallback regardless of loop_exhausted.
+    provider = AsyncMock()
+    provider.chat_stream_with_retry = AsyncMock(
+        return_value=LLMResponse(content=None, finish_reason="stop")
+    )
+    provider.get_default_model = MagicMock(return_value="gpt-5.5")
+    stage, _bus = _make_stage(provider=provider)
+    ctx = _make_ctx()
+    result = await stage._run_tool_loop(ctx, ctx.messages)
+    assert result.response_text  # non-empty fallback text
+    assert "issue" in result.response_text.lower() or "try" in result.response_text.lower()
+

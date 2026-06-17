@@ -549,6 +549,12 @@ class InferenceStage:
             if not response_text:
                 response_text = "I encountered an issue processing your request. Please try again or rephrase your question."
 
+        # Safety net independent of loop_exhausted: empty content with no tool
+        # calls breaks the loop with loop_exhausted=False, bypassing the guard
+        # above. Ensure the user always receives a reply.
+        if not response_text:
+            response_text = "I encountered an issue processing your request. Please try again or rephrase your question."
+
         return _LoopResult(
             response_text=response_text,
             total_tool_calls=total_tool_calls,
