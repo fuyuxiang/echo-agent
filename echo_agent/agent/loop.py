@@ -638,7 +638,7 @@ class AgentLoop:
                 logger.error("Processing failed for event {}: {}", event.event_id, e)
                 self.tracer.end_span(span, error=str(e))
                 error_out = OutboundEvent.text_reply(
-                    channel=event.channel, chat_id=event.chat_id, text=f"Sorry, an error occurred: {e}", reply_to_id=event.reply_to_id,
+                    channel=event.channel, chat_id=event.chat_id, text=GENERIC_FALLBACK_TEXT, reply_to_id=event.reply_to_id,
                 )
                 error_out.metadata = dict(event.metadata)
                 error_out.metadata["_inbound_event_id"] = event.event_id

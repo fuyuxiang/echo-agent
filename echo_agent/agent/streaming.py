@@ -17,6 +17,9 @@ if TYPE_CHECKING:
     from echo_agent.bus.queue import MessageBus
 
 
+# NOTE: mirror of echo_agent.agent.pipeline.response_stage.ProcessResult;
+# loop._process_event bridges between them. Add fields to BOTH or the bridge
+# silently drops them.
 @dataclass
 class ProcessResult:
     response_text: str = ""

@@ -42,7 +42,7 @@ async def smart_approve(
     model: str = "",
     router: "object | None" = None,
 ) -> Literal["approve", "deny", "escalate", "unavailable"]:
-    """Use LLM to pre-screen a flagged tool call. Returns approve/deny/escalate."""
+    """Use LLM to pre-screen a flagged tool call. Returns approve/deny/escalate/unavailable."""
     prompt = _PROMPT_TEMPLATE.format(
         tool_name=_sanitize_for_prompt(tool_name, 100),
         command=_sanitize_for_prompt(command),

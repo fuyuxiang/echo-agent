@@ -269,7 +269,10 @@ async def test_on_inbound_error_sends_error_reply(tmp_path: Path) -> None:
 
     assert len(published) >= 1
     error_msg = published[-1].content[0].text
-    assert "error" in error_msg.lower()
+    # Hard-exception path now delivers the Chinese generic fallback (no raw
+    # exception string leaked to the user); see loop._on_inbound except block.
+    from echo_agent.agent.degraded_notice import GENERIC_FALLBACK_TEXT
+    assert error_msg == GENERIC_FALLBACK_TEXT
 
 
 @pytest.mark.asyncio

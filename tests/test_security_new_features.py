@@ -292,20 +292,6 @@ class TestSmartApprovalParsing:
         result = await smart_approve("exec", "rm -rf /", "destructive", provider)
         assert result == "deny"
 
-    @pytest.mark.asyncio
-    async def test_empty_response_escalates(self):
-        from unittest.mock import AsyncMock, MagicMock
-        from echo_agent.security.smart_approval import smart_approve
-
-        provider = MagicMock()
-        provider.chat_with_retry = AsyncMock(
-            return_value=MagicMock(content="")
-        )
-        result = await smart_approve("exec", "cmd", "reason", provider)
-        # Empty content is now treated as a provider outage signature
-        # and surfaces 'unavailable' instead of silently escalating.
-        assert result == "unavailable"
-
 
 class TestSmartApprovalUnavailable:
     """Provider outage (empty/None/exception) → 'unavailable', not silent escalate."""
