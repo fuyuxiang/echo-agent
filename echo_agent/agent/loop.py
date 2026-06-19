@@ -705,7 +705,11 @@ class AgentLoop:
                 except Exception as e:
                     logger.debug("Recorder end_turn failed: {}", e)
 
-        return _ProcessResult(response_text=result.response_text, outbound_sent=result.outbound_sent)
+        return _ProcessResult(
+            response_text=result.response_text,
+            outbound_sent=result.outbound_sent,
+            degraded_notices=result.degraded_notices,
+        )
 
     async def _handle_approval_command(self, event: InboundEvent) -> str | None:
         text = event.text.strip()

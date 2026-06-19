@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 class ProcessResult:
     response_text: str = ""
     outbound_sent: bool = False
+    degraded_notices: list[str] = field(default_factory=list)
 
 
 class TokenStreamPublisher:

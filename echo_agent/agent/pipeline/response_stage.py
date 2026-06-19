@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
 from loguru import logger
@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 class ProcessResult:
     response_text: str = ""
     outbound_sent: bool = False
+    degraded_notices: list[str] = field(default_factory=list)
 
 
 # Channels whose traffic is synthetic (evaluation/benchmark/test harnesses) and
@@ -123,7 +124,11 @@ class ResponseStage:
         if ctx.publish_response and ctx.stream_publisher:
             outbound_sent = await ctx.stream_publisher.finalize(response_text)
 
-        return ProcessResult(response_text=response_text or "", outbound_sent=outbound_sent)
+        return ProcessResult(
+            response_text=response_text or "",
+            outbound_sent=outbound_sent,
+            degraded_notices=list(result.degraded_notices),
+        )
 
     def _update_working_memory(self, session_key: str, event: Any, response_text: str) -> None:
         """Record the latest exchange into WorkingMemory so the next turn can
