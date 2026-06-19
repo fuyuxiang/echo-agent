@@ -21,7 +21,7 @@ class MemoryAPI:
 
     async def list_entries(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "memory_list")
-        if guard:
+        if guard is not None:
             return guard
 
         store = self._store()
@@ -50,7 +50,7 @@ class MemoryAPI:
 
     async def stats(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "memory_stats")
-        if guard:
+        if guard is not None:
             return guard
 
         store = self._store()
@@ -70,7 +70,7 @@ class MemoryAPI:
 
     async def get_entry(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "memory_get")
-        if guard:
+        if guard is not None:
             return guard
 
         entry_id = request.match_info["id"]
@@ -81,7 +81,7 @@ class MemoryAPI:
 
     async def update_entry(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "memory_update")
-        if guard:
+        if guard is not None:
             return guard
 
         entry_id = request.match_info["id"]
@@ -99,7 +99,7 @@ class MemoryAPI:
 
     async def delete_entry(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "memory_delete")
-        if guard:
+        if guard is not None:
             return guard
 
         entry_id = request.match_info["id"]
@@ -110,7 +110,7 @@ class MemoryAPI:
 
     async def search(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "memory_search")
-        if guard:
+        if guard is not None:
             return guard
 
         try:

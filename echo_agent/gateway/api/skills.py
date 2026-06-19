@@ -38,7 +38,7 @@ class SkillsAPI:
 
     async def list_skills(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "skills_list")
-        if guard:
+        if guard is not None:
             return guard
 
         skills = self._list_all_with_status()
@@ -46,7 +46,7 @@ class SkillsAPI:
 
     async def get_skill(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "skills_get")
-        if guard:
+        if guard is not None:
             return guard
 
         name = request.match_info["name"]
@@ -64,7 +64,7 @@ class SkillsAPI:
 
     async def toggle_skill(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "skills_toggle")
-        if guard:
+        if guard is not None:
             return guard
 
         name = request.match_info["name"]
@@ -86,7 +86,7 @@ class SkillsAPI:
 
     async def delete_skill(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "skills_delete")
-        if guard:
+        if guard is not None:
             return guard
 
         name = request.match_info["name"]
@@ -103,7 +103,7 @@ class SkillsAPI:
 
     async def import_skill(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "skills_import")
-        if guard:
+        if guard is not None:
             return guard
 
         try:

@@ -22,7 +22,7 @@ class KnowledgeAPI:
 
     async def get_status(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "knowledge_status")
-        if guard:
+        if guard is not None:
             return guard
 
         index = self._index()
@@ -32,7 +32,7 @@ class KnowledgeAPI:
 
     async def rebuild(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "knowledge_rebuild")
-        if guard:
+        if guard is not None:
             return guard
 
         index = self._index()
@@ -44,7 +44,7 @@ class KnowledgeAPI:
 
     async def upload(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "knowledge_upload")
-        if guard:
+        if guard is not None:
             return guard
 
         index = self._index()
@@ -87,7 +87,7 @@ class KnowledgeAPI:
 
     async def list_documents(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "knowledge_documents")
-        if guard:
+        if guard is not None:
             return guard
 
         index = self._index()
@@ -113,7 +113,7 @@ class KnowledgeAPI:
 
     async def delete_document(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "knowledge_delete")
-        if guard:
+        if guard is not None:
             return guard
 
         index = self._index()
