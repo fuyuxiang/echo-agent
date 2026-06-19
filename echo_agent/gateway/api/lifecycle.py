@@ -17,7 +17,7 @@ class LifecycleAPI:
 
     async def shutdown(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "shutdown")
-        if guard:
+        if guard is not None:
             return guard
 
         if not self._server._shutdown_event:

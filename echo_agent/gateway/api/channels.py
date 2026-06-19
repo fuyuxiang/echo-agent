@@ -17,7 +17,7 @@ class ChannelsAPI:
 
     async def list_channels(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "channels_list")
-        if guard:
+        if guard is not None:
             return guard
 
         manager = self._server.channel_manager

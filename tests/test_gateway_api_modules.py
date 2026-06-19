@@ -1,0 +1,826 @@
+"""Unit tests for gateway management API handlers.
+
+Covers auth guard checks, request validation, error responses (4xx/5xx),
+and success response structure for the skills/knowledge/memory/config/channels
+management routes. All collaborators (skill store, memory store, knowledge
+index, config loader, channel manager) are mocked.
+"""
+
+from __future__ import annotations
+
+import json
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from aiohttp import web
+
+
+# REGRESSION GUARD: the API modules must guard with `if guard is not None:`, not
+# `if guard:`. An aiohttp Response is falsy (its __len__ returns len(self._state)
+# == 0), so `if guard:` silently drops the 401 Response from _require_api_token
+# and bypasses token auth. The *_unauthorized tests below assert the 401 is
+# actually returned — they pin the fix so the bypass cannot regress.
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Test helpers
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def _make_server():
+    """A mock GatewayServer. _require_api_token returns None (authorized)."""
+    server = MagicMock()
+    server._require_api_token = MagicMock(return_value=None)
+    return server
+
+
+def _unauthorized_server():
+    """A mock server whose token guard rejects every request with 401."""
+    server = _make_server()
+    server._require_api_token = MagicMock(
+        return_value=web.json_response({"error": "unauthorized"}, status=401)
+    )
+    return server
+
+
+class _Request:
+    """Minimal aiohttp.Request stand-in."""
+
+    def __init__(self, *, body=None, raise_json=None, match_info=None, query=None,
+                 multipart=None):
+        self._body = body if body is not None else {}
+        self._raise_json = raise_json
+        self.match_info = match_info or {}
+        self.query = query or {}
+        self.headers = {}
+        self._multipart = multipart
+
+    async def json(self):
+        if self._raise_json is not None:
+            raise self._raise_json
+        return self._body
+
+    async def multipart(self):
+        return self._multipart
+
+
+async def _payload(response: web.Response) -> dict:
+    """Decode a json_response body into a dict."""
+    return json.loads(response.body.decode())
+
+
+class _Part:
+    """A fake multipart body part exposing read_chunk()."""
+
+    def __init__(self, *, name, filename, chunks):
+        self.name = name
+        self.filename = filename
+        self._chunks = list(chunks) + [b""]  # trailing empty signals EOF
+
+    async def read_chunk(self, size=8192):
+        return self._chunks.pop(0) if self._chunks else b""
+
+
+class _MultipartReader:
+    """A fake multipart reader yielding parts via next()."""
+
+    def __init__(self, parts):
+        self._parts = list(parts) + [None]  # trailing None signals end
+
+    async def next(self):
+        return self._parts.pop(0) if self._parts else None
+
+
+def _mem_entry(eid="m1", tier="working", mtype="user"):
+    entry = MagicMock()
+    entry.tier.value = tier
+    entry.type.value = mtype
+    entry.to_dict.return_value = {"id": eid, "tier": tier, "type": mtype}
+    return entry
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SkillsAPI
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestSkillsAPI:
+    def _make(self, server=None):
+        from echo_agent.gateway.api.skills import SkillsAPI
+
+        server = server or _make_server()
+        api = SkillsAPI(server)
+        store = MagicMock()
+        server._agent_loop.skill_store = store
+        return api, store, server
+
+    @pytest.mark.asyncio
+    async def test_list_skills_unauthorized(self):
+        from echo_agent.gateway.api.skills import SkillsAPI
+
+        server = _unauthorized_server()
+        api = SkillsAPI(server)
+        resp = await api.list_skills(_Request())
+        assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_list_skills_success(self):
+        api, store, _ = self._make()
+        meta = MagicMock()
+        meta.name = "alpha"
+        meta.to_dict.return_value = {"name": "alpha"}
+        root = MagicMock()
+        root.exists.return_value = True
+        root.rglob.return_value = [MagicMock(parent="p")]
+        store._all_roots.return_value = [(root, None)]
+        store._read_meta.return_value = meta
+        store._disabled = set()
+
+        resp = await api.list_skills(_Request())
+        assert resp.status == 200
+        data = await _payload(resp)
+        assert data["skills"][0]["name"] == "alpha"
+        assert data["skills"][0]["enabled"] is True
+
+    @pytest.mark.asyncio
+    async def test_get_skill_not_found(self):
+        api, store, _ = self._make()
+        store.read_skill.return_value = None
+        resp = await api.get_skill(_Request(match_info={"name": "ghost"}))
+        assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_get_skill_success(self):
+        api, store, _ = self._make()
+        store.read_skill.return_value = "# content"
+        store.list_files.return_value = ["a.py"]
+        resp = await api.get_skill(_Request(match_info={"name": "alpha"}))
+        assert resp.status == 200
+        data = await _payload(resp)
+        assert data["name"] == "alpha"
+        assert data["content"] == "# content"
+        assert data["files"] == ["a.py"]
+
+    @pytest.mark.asyncio
+    async def test_toggle_skill_enable(self):
+        api, store, _ = self._make()
+        store._disabled = {"alpha"}
+        resp = await api.toggle_skill(_Request(match_info={"name": "alpha"}))
+        data = await _payload(resp)
+        assert data["success"] is True
+        assert data["skill"]["enabled"] is True
+        store.persist_enable.assert_called_once_with("alpha")
+
+    @pytest.mark.asyncio
+    async def test_toggle_skill_disable(self):
+        api, store, _ = self._make()
+        store._disabled = set()
+        resp = await api.toggle_skill(_Request(match_info={"name": "alpha"}))
+        data = await _payload(resp)
+        assert data["skill"]["enabled"] is False
+        store.persist_disable.assert_called_once_with("alpha")
+
+    @pytest.mark.asyncio
+    async def test_delete_skill_error(self):
+        api, store, _ = self._make()
+        store.delete_skill.return_value = "cannot delete builtin"
+        resp = await api.delete_skill(_Request(match_info={"name": "alpha"}))
+        assert resp.status == 400
+        data = await _payload(resp)
+        assert data["error"] == "cannot delete builtin"
+
+    @pytest.mark.asyncio
+    async def test_delete_skill_success(self):
+        api, store, _ = self._make()
+        store.delete_skill.return_value = None
+        store._disabled = {"alpha"}
+        store._persisted_disabled = {"alpha"}
+        resp = await api.delete_skill(_Request(match_info={"name": "alpha"}))
+        assert resp.status == 200
+        data = await _payload(resp)
+        assert data["success"] is True
+        store._save_persisted_disabled.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_import_skill_invalid_json(self):
+        api, _, _ = self._make()
+        resp = await api.import_skill(_Request(raise_json=ValueError("bad")))
+        assert resp.status == 400
+        data = await _payload(resp)
+        assert "invalid JSON" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_import_skill_missing_path(self):
+        api, _, _ = self._make()
+        resp = await api.import_skill(_Request(body={}))
+        assert resp.status == 400
+        data = await _payload(resp)
+        assert "path is required" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_import_skill_no_skill_md(self, tmp_path):
+        api, _, _ = self._make()
+        resp = await api.import_skill(_Request(body={"path": str(tmp_path)}))
+        assert resp.status == 400
+        data = await _payload(resp)
+        assert "no SKILL.md" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_import_skill_parse_failure(self, tmp_path):
+        api, store, _ = self._make()
+        (tmp_path / "SKILL.md").write_text("x")
+        store._read_meta.return_value = None
+        resp = await api.import_skill(_Request(body={"path": str(tmp_path)}))
+        assert resp.status == 400
+        data = await _payload(resp)
+        assert "failed to parse" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_import_skill_already_exists(self, tmp_path):
+        api, store, _ = self._make()
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "SKILL.md").write_text("x")
+        meta = MagicMock()
+        meta.name = "alpha"
+        meta.category = "general"
+        store._read_meta.return_value = meta
+        existing = tmp_path / "user" / "general" / "alpha"
+        existing.mkdir(parents=True)
+        store._user_dir = tmp_path / "user"
+        resp = await api.import_skill(_Request(body={"path": str(src)}))
+        assert resp.status == 409
+        data = await _payload(resp)
+        assert "already exists" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_import_skill_success(self, tmp_path):
+        api, store, _ = self._make()
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "SKILL.md").write_text("x")
+        meta = MagicMock()
+        meta.name = "alpha"
+        meta.category = "general"
+        meta.to_dict.return_value = {"name": "alpha"}
+        store._read_meta.return_value = meta
+        store._user_dir = tmp_path / "user"
+        resp = await api.import_skill(_Request(body={"path": str(src)}))
+        assert resp.status == 200
+        data = await _payload(resp)
+        assert data["success"] is True
+        assert data["skill"]["enabled"] is False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# KnowledgeAPI
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestKnowledgeAPI:
+    def _make(self, index="__default__"):
+        from echo_agent.gateway.api.knowledge import KnowledgeAPI
+
+        server = _make_server()
+        api = KnowledgeAPI(server)
+        if index == "__default__":
+            index = MagicMock()
+        server._agent_loop.knowledge = index
+        return api, index, server
+
+    @pytest.mark.asyncio
+    async def test_get_status_unauthorized(self):
+        from echo_agent.gateway.api.knowledge import KnowledgeAPI
+
+        api = KnowledgeAPI(_unauthorized_server())
+        resp = await api.get_status(_Request())
+        assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_get_status_not_configured(self):
+        api, _, _ = self._make(index=None)
+        resp = await api.get_status(_Request())
+        assert resp.status == 404
+        data = await _payload(resp)
+        assert "not configured" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_get_status_success(self):
+        api, index, _ = self._make()
+        index.status.return_value = {"docs": 5}
+        resp = await api.get_status(_Request())
+        assert resp.status == 200
+        data = await _payload(resp)
+        assert data["docs"] == 5
+
+    @pytest.mark.asyncio
+    async def test_rebuild_not_configured(self):
+        api, _, _ = self._make(index=None)
+        resp = await api.rebuild(_Request())
+        assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_rebuild_success(self):
+        api, index, _ = self._make()
+        index.rebuild.return_value = {"indexed": 3}
+        resp = await api.rebuild(_Request())
+        assert resp.status == 200
+        data = await _payload(resp)
+        assert data["indexed"] == 3
+
+    @pytest.mark.asyncio
+    async def test_list_documents_not_configured(self):
+        api, _, _ = self._make(index=None)
+        resp = await api.list_documents(_Request())
+        assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_list_documents_no_dir(self, tmp_path):
+        api, index, _ = self._make()
+        index.status.return_value = {"docs_dir": str(tmp_path / "missing")}
+        resp = await api.list_documents(_Request())
+        assert resp.status == 200
+        data = await _payload(resp)
+        assert data["documents"] == []
+
+    @pytest.mark.asyncio
+    async def test_list_documents_success(self, tmp_path):
+        api, index, _ = self._make()
+        (tmp_path / "doc.txt").write_text("hello")
+        (tmp_path / ".hidden").write_text("x")
+        index.status.return_value = {"docs_dir": str(tmp_path)}
+        resp = await api.list_documents(_Request())
+        data = await _payload(resp)
+        names = [d["path"] for d in data["documents"]]
+        assert "doc.txt" in names
+        assert ".hidden" not in names
+
+    @pytest.mark.asyncio
+    async def test_delete_document_not_configured(self):
+        api, _, _ = self._make(index=None)
+        resp = await api.delete_document(_Request(match_info={"path": "a.txt"}))
+        assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_delete_document_invalid_path(self, tmp_path):
+        api, index, _ = self._make()
+        index.status.return_value = {"docs_dir": str(tmp_path)}
+        resp = await api.delete_document(
+            _Request(match_info={"path": "../../etc/passwd"})
+        )
+        assert resp.status == 400
+        data = await _payload(resp)
+        assert "invalid path" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_delete_document_not_found(self, tmp_path):
+        api, index, _ = self._make()
+        index.status.return_value = {"docs_dir": str(tmp_path)}
+        resp = await api.delete_document(_Request(match_info={"path": "ghost.txt"}))
+        assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_delete_document_success(self, tmp_path):
+        api, index, _ = self._make()
+        target = tmp_path / "doc.txt"
+        target.write_text("x")
+        index.status.return_value = {"docs_dir": str(tmp_path)}
+        index.rebuild.return_value = {"indexed": 0}
+        resp = await api.delete_document(_Request(match_info={"path": "doc.txt"}))
+        assert resp.status == 200
+        data = await _payload(resp)
+        assert data["status"] == "deleted"
+        assert not target.exists()
+
+    @pytest.mark.asyncio
+    async def test_upload_not_configured(self):
+        api, _, _ = self._make(index=None)
+        resp = await api.upload(_Request())
+        assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_upload_no_multipart(self):
+        api, index, _ = self._make()
+        resp = await api.upload(_Request(multipart=None))
+        assert resp.status == 400
+        data = await _payload(resp)
+        assert "multipart form required" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_upload_no_files(self, tmp_path):
+        api, index, _ = self._make()
+        index.status.return_value = {"docs_dir": str(tmp_path)}
+        reader = _MultipartReader([])
+        resp = await api.upload(_Request(multipart=reader))
+        assert resp.status == 400
+        data = await _payload(resp)
+        assert "no files uploaded" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_upload_success(self, tmp_path):
+        api, index, _ = self._make()
+        docs_dir = tmp_path / "docs"
+        index.status.return_value = {"docs_dir": str(docs_dir)}
+        index.rebuild.return_value = {"indexed": 1}
+        part = _Part(name="file", filename="note.txt", chunks=[b"hello ", b"world"])
+        reader = _MultipartReader([part])
+        resp = await api.upload(_Request(multipart=reader))
+        assert resp.status == 200
+        data = await _payload(resp)
+        assert data["uploaded"] == ["note.txt"]
+        assert data["index"]["indexed"] == 1
+        assert (docs_dir / "note.txt").read_bytes() == b"hello world"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MemoryAPI
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestMemoryAPI:
+    def _make(self):
+        from echo_agent.gateway.api.memory import MemoryAPI
+
+        server = _make_server()
+        api = MemoryAPI(server)
+        store = MagicMock()
+        server._agent_loop.memory = store
+        return api, store, server
+
+    @pytest.mark.asyncio
+    async def test_list_entries_unauthorized(self):
+        from echo_agent.gateway.api.memory import MemoryAPI
+
+        api = MemoryAPI(_unauthorized_server())
+        resp = await api.list_entries(_Request())
+        assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_list_entries_success_with_pagination(self):
+        api, store, _ = self._make()
+        store.list_all.return_value = [_mem_entry(f"m{i}") for i in range(5)]
+        resp = await api.list_entries(
+            _Request(query={"offset": "1", "limit": "2"})
+        )
+        assert resp.status == 200
+        data = await _payload(resp)
+        assert data["total"] == 5
+        assert data["offset"] == 1
+        assert data["limit"] == 2
+        assert len(data["entries"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_list_entries_tier_filter(self):
+        api, store, _ = self._make()
+        store.list_all.return_value = [
+            _mem_entry("a", tier="working"),
+            _mem_entry("b", tier="episodic"),
+        ]
+        resp = await api.list_entries(_Request(query={"tier": "episodic"}))
+        data = await _payload(resp)
+        assert data["total"] == 1
+        assert data["entries"][0]["id"] == "b"
+
+    @pytest.mark.asyncio
+    async def test_list_entries_type_filter(self):
+        api, store, _ = self._make()
+        store.list_all.return_value = [_mem_entry("a")]
+        resp = await api.list_entries(_Request(query={"type": "user"}))
+        assert resp.status == 200
+        _, kwargs = store.list_all.call_args
+        assert kwargs["mem_type"] is not None
+
+    @pytest.mark.asyncio
+    async def test_stats_success(self):
+        api, store, _ = self._make()
+        store.list_all.return_value = [
+            _mem_entry("a", tier="working", mtype="user"),
+            _mem_entry("b", tier="working", mtype="environment"),
+        ]
+        resp = await api.stats(_Request())
+        data = await _payload(resp)
+        assert data["total"] == 2
+        assert data["by_tier"]["working"] == 2
+        assert data["by_type"]["user"] == 1
+        assert data["by_type"]["environment"] == 1
+
+    @pytest.mark.asyncio
+    async def test_get_entry_not_found(self):
+        api, store, _ = self._make()
+        store.get.return_value = None
+        resp = await api.get_entry(_Request(match_info={"id": "x"}))
+        assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_get_entry_success(self):
+        api, store, _ = self._make()
+        store.get.return_value = _mem_entry("x")
+        resp = await api.get_entry(_Request(match_info={"id": "x"}))
+        assert resp.status == 200
+        data = await _payload(resp)
+        assert data["id"] == "x"
+
+    @pytest.mark.asyncio
+    async def test_update_entry_invalid_json(self):
+        api, _, _ = self._make()
+        resp = await api.update_entry(
+            _Request(match_info={"id": "x"}, raise_json=json.JSONDecodeError("e", "d", 0))
+        )
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_update_entry_not_found(self):
+        api, store, _ = self._make()
+        store.update.return_value = None
+        resp = await api.update_entry(
+            _Request(match_info={"id": "x"}, body={"content": "c"})
+        )
+        assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_update_entry_success(self):
+        api, store, _ = self._make()
+        store.update.return_value = _mem_entry("x")
+        resp = await api.update_entry(
+            _Request(match_info={"id": "x"}, body={"content": "c", "tags": ["t"]})
+        )
+        assert resp.status == 200
+        data = await _payload(resp)
+        assert data["id"] == "x"
+
+    @pytest.mark.asyncio
+    async def test_delete_entry_not_found(self):
+        api, store, _ = self._make()
+        store.delete.return_value = False
+        resp = await api.delete_entry(_Request(match_info={"id": "x"}))
+        assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_delete_entry_success(self):
+        api, store, _ = self._make()
+        store.delete.return_value = True
+        resp = await api.delete_entry(_Request(match_info={"id": "x"}))
+        assert resp.status == 200
+        data = await _payload(resp)
+        assert data["status"] == "deleted"
+
+    @pytest.mark.asyncio
+    async def test_search_invalid_json(self):
+        api, _, _ = self._make()
+        resp = await api.search(
+            _Request(raise_json=json.JSONDecodeError("e", "d", 0))
+        )
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_search_missing_query(self):
+        api, _, _ = self._make()
+        resp = await api.search(_Request(body={}))
+        assert resp.status == 400
+        data = await _payload(resp)
+        assert "query required" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_search_success(self):
+        api, store, _ = self._make()
+        store.search_scored.return_value = [(_mem_entry("x"), 0.9)]
+        resp = await api.search(_Request(body={"query": "hello"}))
+        assert resp.status == 200
+        data = await _payload(resp)
+        assert data["results"][0]["score"] == 0.9
+        assert data["results"][0]["entry"]["id"] == "x"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ConfigAPI
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestConfigAPI:
+    def _make(self, config="__default__"):
+        from echo_agent.gateway.api.config import ConfigAPI
+
+        server = _make_server()
+        api = ConfigAPI(server)
+        if config == "__default__":
+            config = MagicMock()
+        server._agent_loop.config = config
+        return api, config, server
+
+    @pytest.mark.asyncio
+    async def test_get_config_unauthorized(self):
+        from echo_agent.gateway.api.config import ConfigAPI
+
+        api = ConfigAPI(_unauthorized_server())
+        resp = await api.get_config(_Request())
+        assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_get_config_not_available(self):
+        api, _, _ = self._make(config=None)
+        resp = await api.get_config(_Request())
+        assert resp.status == 500
+        data = await _payload(resp)
+        assert "not available" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_get_config_sanitizes_secrets(self):
+        api, config, _ = self._make()
+        section = MagicMock()
+        section.to_dict.return_value = {"api_key": "supersecret", "host": "x"}
+        for f in ("models", "gateway", "session", "memory", "knowledge", "agent", "ui", "evolution"):
+            setattr(config, f, section if f == "models" else None)
+        resp = await api.get_config(_Request())
+        assert resp.status == 200
+        data = await _payload(resp)
+        assert data["models"]["api_key"] == "***"
+        assert data["models"]["host"] == "x"
+
+    @pytest.mark.asyncio
+    async def test_get_models_not_available(self):
+        api, _, _ = self._make(config=None)
+        resp = await api.get_models(_Request())
+        assert resp.status == 500
+
+    @pytest.mark.asyncio
+    async def test_get_models_success(self):
+        api, config, _ = self._make()
+        provider = MagicMock()
+        provider.name = "openai"
+        provider.type = "openai"
+        provider.default_model = "gpt-4"
+        config.models.providers = [provider]
+        config.models.default_model = "gpt-4"
+        resp = await api.get_models(_Request())
+        assert resp.status == 200
+        data = await _payload(resp)
+        assert data["default_model"] == "gpt-4"
+        assert data["providers"][0]["name"] == "openai"
+        assert data["providers"][0]["type"] == "openai"
+
+
+def test_sanitize_helpers():
+    from echo_agent.gateway.api.config import _sanitize
+
+    assert _sanitize({"password": "p"})["password"] == "***"
+    assert _sanitize({"password": ""})["password"] == ""
+    assert _sanitize({"nested": {"token": "t"}})["nested"]["token"] == "***"
+    assert _sanitize([{"secret": "s"}])[0]["secret"] == "***"
+    assert _sanitize("plain") == "plain"
+    deep = {"token": "t"}
+    assert _sanitize(deep, depth=11) == deep
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ChannelsAPI
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestChannelsAPI:
+    def _make(self):
+        from echo_agent.gateway.api.channels import ChannelsAPI
+
+        server = _make_server()
+        api = ChannelsAPI(server)
+        server.channel_manager = MagicMock()
+        return api, server
+
+    @pytest.mark.asyncio
+    async def test_list_channels_unauthorized(self):
+        from echo_agent.gateway.api.channels import ChannelsAPI
+
+        api = ChannelsAPI(_unauthorized_server())
+        resp = await api.list_channels(_Request())
+        assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_list_channels_enabled_and_running(self):
+        api, server = self._make()
+        server.channel_manager.active_channels = ["telegram"]
+        channels_cfg = MagicMock()
+        tg = MagicMock()
+        tg.enabled = True
+        dc = MagicMock()
+        dc.enabled = False
+        for name in (
+            "discord", "webhook", "cli", "cron", "slack", "whatsapp",
+            "weixin", "qqbot", "feishu", "dingtalk", "email", "wecom", "matrix",
+        ):
+            setattr(channels_cfg, name, None)
+        channels_cfg.telegram = tg
+        channels_cfg.discord = dc
+        server._agent_loop.config.channels = channels_cfg
+
+        resp = await api.list_channels(_Request())
+        assert resp.status == 200
+        data = await _payload(resp)
+        names = {c["name"]: c for c in data["channels"]}
+        assert names["telegram"]["running"] is True
+        assert names["telegram"]["enabled"] is True
+        assert "discord" not in names
+
+    @pytest.mark.asyncio
+    async def test_list_channels_active_not_in_config(self):
+        api, server = self._make()
+        server.channel_manager.active_channels = ["custom_channel"]
+        server._agent_loop.config = None
+        resp = await api.list_channels(_Request())
+        data = await _payload(resp)
+        names = {c["name"] for c in data["channels"]}
+        assert "custom_channel" in names
+
+    @pytest.mark.asyncio
+    async def test_list_channels_no_config(self):
+        api, server = self._make()
+        server.channel_manager.active_channels = []
+        server._agent_loop.config = None
+        resp = await api.list_channels(_Request())
+        assert resp.status == 200
+        data = await _payload(resp)
+        assert data["channels"] == []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LifecycleAPI — shutdown is the highest-impact endpoint; auth MUST hold.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestLifecycleAPI:
+    def _make(self, *, unauthorized=False, has_event=True):
+        from echo_agent.gateway.api.lifecycle import LifecycleAPI
+
+        server = _unauthorized_server() if unauthorized else _make_server()
+        server._shutdown_event = object() if has_event else None
+        server.request_shutdown = MagicMock()
+        return LifecycleAPI(server), server
+
+    @pytest.mark.asyncio
+    async def test_shutdown_unauthorized(self):
+        # Regression guard: an unauthorized shutdown must be rejected with 401
+        # and must NOT trigger request_shutdown.
+        api, server = self._make(unauthorized=True)
+        resp = await api.shutdown(_Request())
+        assert resp.status == 401
+        server.request_shutdown.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_authorized(self):
+        api, server = self._make()
+        resp = await api.shutdown(_Request())
+        assert resp.status == 202
+        server.request_shutdown.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_unavailable(self):
+        api, server = self._make(has_event=False)
+        resp = await api.shutdown(_Request())
+        assert resp.status == 503
+        server.request_shutdown.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_health_ok(self):
+        api, server = self._make()
+        server.health.check = AsyncMock(return_value={"status": "ok"})
+        resp = await api.health(_Request())
+        assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_health_unhealthy(self):
+        api, server = self._make()
+        server.health.check = AsyncMock(return_value={"status": "unhealthy"})
+        resp = await api.health(_Request())
+        assert resp.status == 503
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Auth regression sweep — every write/destructive handler must reject 401.
+# These pin the `if guard is not None:` fix across all guarded entry points.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "module, cls_name, method, kwargs",
+    [
+        ("skills", "SkillsAPI", "get_skill", {"match_info": {"name": "x"}}),
+        ("skills", "SkillsAPI", "toggle_skill", {"match_info": {"name": "x"}}),
+        ("skills", "SkillsAPI", "delete_skill", {"match_info": {"name": "x"}}),
+        ("skills", "SkillsAPI", "import_skill", {}),
+        ("memory", "MemoryAPI", "get_entry", {"match_info": {"id": "m1"}}),
+        ("memory", "MemoryAPI", "update_entry", {"match_info": {"id": "m1"}}),
+        ("memory", "MemoryAPI", "delete_entry", {"match_info": {"id": "m1"}}),
+        ("memory", "MemoryAPI", "search", {}),
+        ("memory", "MemoryAPI", "stats", {}),
+        ("knowledge", "KnowledgeAPI", "rebuild", {}),
+        ("knowledge", "KnowledgeAPI", "upload", {}),
+        ("knowledge", "KnowledgeAPI", "delete_document", {"match_info": {"doc_id": "d1"}}),
+        ("config", "ConfigAPI", "get_models", {}),
+    ],
+)
+async def test_write_endpoints_reject_unauthorized(module, cls_name, method, kwargs):
+    import importlib
+
+    mod = importlib.import_module(f"echo_agent.gateway.api.{module}")
+    api = getattr(mod, cls_name)(_unauthorized_server())
+    resp = await getattr(api, method)(_Request(**kwargs))
+    assert resp.status == 401

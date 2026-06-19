@@ -41,7 +41,7 @@ class ConfigAPI:
 
     async def get_config(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "config_get")
-        if guard:
+        if guard is not None:
             return guard
 
         config = self._get_config()
@@ -63,7 +63,7 @@ class ConfigAPI:
 
     async def get_models(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "config_models")
-        if guard:
+        if guard is not None:
             return guard
 
         config = self._get_config()
