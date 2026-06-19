@@ -302,4 +302,52 @@ class TestSmartApprovalParsing:
             return_value=MagicMock(content="")
         )
         result = await smart_approve("exec", "cmd", "reason", provider)
+        # Empty content is now treated as a provider outage signature
+        # and surfaces 'unavailable' instead of silently escalating.
+        assert result == "unavailable"
+
+
+class TestSmartApprovalUnavailable:
+    """Provider outage (empty/None/exception) → 'unavailable', not silent escalate."""
+
+    @pytest.mark.asyncio
+    async def test_empty_content_is_unavailable(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from echo_agent.security.smart_approval import smart_approve
+
+        provider = MagicMock()
+        provider.chat_with_retry = AsyncMock(return_value=MagicMock(content=""))
+        result = await smart_approve("exec", "curl x", "test", provider)
+        assert result == "unavailable"
+
+    @pytest.mark.asyncio
+    async def test_none_content_is_unavailable(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from echo_agent.security.smart_approval import smart_approve
+
+        provider = MagicMock()
+        provider.chat_with_retry = AsyncMock(return_value=MagicMock(content=None))
+        result = await smart_approve("exec", "curl x", "test", provider)
+        assert result == "unavailable"
+
+    @pytest.mark.asyncio
+    async def test_exception_is_unavailable(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from echo_agent.security.smart_approval import smart_approve
+
+        provider = MagicMock()
+        provider.chat_with_retry = AsyncMock(side_effect=RuntimeError("provider down"))
+        result = await smart_approve("exec", "curl x", "test", provider)
+        assert result == "unavailable"
+
+    @pytest.mark.asyncio
+    async def test_nonempty_unrecognized_still_escalates(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from echo_agent.security.smart_approval import smart_approve
+
+        provider = MagicMock()
+        provider.chat_with_retry = AsyncMock(
+            return_value=MagicMock(content="I would APPROVE this but let me think")
+        )
+        result = await smart_approve("exec", "ls", "test", provider)
         assert result == "escalate"

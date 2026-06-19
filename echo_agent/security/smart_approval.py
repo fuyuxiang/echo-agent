@@ -41,7 +41,7 @@ async def smart_approve(
     provider: "LLMProvider",
     model: str = "",
     router: "object | None" = None,
-) -> Literal["approve", "deny", "escalate"]:
+) -> Literal["approve", "deny", "escalate", "unavailable"]:
     """Use LLM to pre-screen a flagged tool call. Returns approve/deny/escalate."""
     prompt = _PROMPT_TEMPLATE.format(
         tool_name=_sanitize_for_prompt(tool_name, 100),
@@ -64,6 +64,13 @@ async def smart_approve(
             temperature=0.0,
         )
         raw_text = (response.content or "").strip()
+        if not raw_text:
+            # Empty/None content is the signature of a provider outage
+            # (e.g. "No embedding data received"). Fail closed but loud:
+            # surface 'unavailable' so the gate can notify the user instead
+            # of silently escalating into a blocking wait.
+            logger.warning("Smart approval: empty response (provider unavailable) for '{}'", tool_name)
+            return "unavailable"
         first_word = raw_text.split()[0].upper() if raw_text.split() else ""
         if first_word == "APPROVE":
             logger.info("Smart approval: APPROVE for '{}' — {}", tool_name, command[:100])
@@ -77,5 +84,5 @@ async def smart_approve(
         logger.info("Smart approval: unrecognized response (escalating) for '{}' — {}", tool_name, raw_text[:50])
         return "escalate"
     except Exception as e:
-        logger.warning("Smart approval failed (escalating): {}", e)
-        return "escalate"
+        logger.warning("Smart approval failed (provider unavailable): {}", e)
+        return "unavailable"
