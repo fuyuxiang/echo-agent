@@ -607,3 +607,9 @@ async def test_approval_denial_without_notify_collects_nothing():
     result = await stage.run(ctx)
 
     assert result.degraded_notices == []
+
+
+def test_processresult_has_degraded_notices_default():
+    from echo_agent.agent.pipeline.response_stage import ProcessResult
+    r = ProcessResult()
+    assert r.degraded_notices == []
