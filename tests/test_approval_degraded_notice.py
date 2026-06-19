@@ -60,7 +60,7 @@ async def test_empty_response_with_notice_sends_chinese(monkeypatch):
     monkeypatch.setattr(loop, "_is_approval_command", lambda t: False)
     await loop._on_inbound(_event())
     assert len(sent) == 1
-    assert "安全审批暂时不可用" in sent[0].text
+    assert notice_for(REASON_APPROVAL_UNAVAILABLE) in sent[0].text
     assert sent[0].is_final is True
 
 
@@ -92,7 +92,7 @@ async def test_generic_english_replaced_by_notice(monkeypatch):
     await loop._on_inbound(_event())
     assert len(sent) == 1
     assert english not in sent[0].text
-    assert "安全审批暂时不可用" in sent[0].text
+    assert notice_for(REASON_APPROVAL_UNAVAILABLE) in sent[0].text
 
 
 @pytest.mark.asyncio
@@ -109,7 +109,7 @@ async def test_real_answer_not_yet_sent_combines_answer_and_notice(monkeypatch):
     # answer not yet streamed; convergence point sends answer + notice in one message
     assert len(sent) == 1
     assert "真实回答" in sent[0].text
-    assert "安全审批暂时不可用" in sent[0].text
+    assert notice_for(REASON_APPROVAL_UNAVAILABLE) in sent[0].text
 
 
 @pytest.mark.asyncio
@@ -125,7 +125,7 @@ async def test_real_answer_already_sent_appends_notice(monkeypatch):
     await loop._on_inbound(_event())
     # main answer already streamed; notice delivered as a single follow-up
     assert len(sent) == 1
-    assert "安全审批暂时不可用" in sent[0].text
+    assert notice_for(REASON_APPROVAL_UNAVAILABLE) in sent[0].text
     assert "真实回答" not in sent[0].text
 
 

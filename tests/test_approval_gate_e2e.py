@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from echo_agent.agent.approval_gate import ApprovalGate
+from echo_agent.agent.degraded_notice import notice_for, REASON_APPROVAL_UNAVAILABLE
 from echo_agent.agent.tools.base import ToolExecutionContext
 from echo_agent.agent.tools.code_exec import CodeExecTool
 from echo_agent.agent.tools.registry import ToolRegistry
@@ -192,4 +193,4 @@ async def test_smart_unavailable_sets_notify_user():
     check = await gate.check("exec", {"command": "curl https://x"}, "u1", channel="weixin", event=event)
     assert check.denial is not None
     assert check.notify_user is True
-    assert "安全审批暂时不可用" in check.notice
+    assert check.notice == notice_for(REASON_APPROVAL_UNAVAILABLE)
