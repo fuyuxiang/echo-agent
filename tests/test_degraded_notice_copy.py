@@ -6,6 +6,7 @@ from echo_agent.agent.degraded_notice import (
     REASON_APPROVAL_UNAVAILABLE,
     REASON_REPEAT_BLOCKED,
     combine_notices,
+    is_generic_fallback,
     notice_for,
 )
 
@@ -42,3 +43,18 @@ def test_combine_dedupes_preserving_order():
 
 def test_combine_empty_returns_empty():
     assert combine_notices([]) == ""
+
+
+def test_is_generic_fallback_true_for_empty():
+    assert is_generic_fallback("") is True
+    assert is_generic_fallback("   ") is True
+
+
+def test_is_generic_fallback_true_for_english_filler():
+    assert is_generic_fallback(
+        "I encountered an issue processing your request. Please try again or rephrase your question."
+    ) is True
+
+
+def test_is_generic_fallback_false_for_real_answer():
+    assert is_generic_fallback("调研完成,结论是 ...") is False

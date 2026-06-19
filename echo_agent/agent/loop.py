@@ -42,6 +42,11 @@ from echo_agent.agent.streaming import (
     ProcessResult as _ProcessResult,
     TokenStreamPublisher as _TokenStreamPublisher,
 )
+from echo_agent.agent.degraded_notice import (
+    GENERIC_FALLBACK_TEXT,
+    combine_notices,
+    is_generic_fallback,
+)
 
 
 def _resolve_builtin_skills_dir(workspace: Path, configured_path: str) -> Path | None:
@@ -599,9 +604,31 @@ class AgentLoop:
             try:
                 result = await self._process_event(event, trace_id, publish_response=True)
                 response_text = result.response_text
-                if response_text and not result.outbound_sent:
+                notice = combine_notices(result.degraded_notices)
+
+                # Convergence point: the turn MUST deliver a meaningful message.
+                # 1) degraded event + no real answer  -> send the Chinese notice
+                # 2) degraded event + real answer not yet sent -> answer + notice
+                # 3) degraded event + real answer already streamed -> notice only
+                # 4) no degraded event, empty/generic answer -> generic Chinese
+                # 5) no degraded event, real answer -> unchanged behaviour
+                final_text = ""
+                if notice:
+                    if result.outbound_sent:
+                        final_text = notice
+                    elif is_generic_fallback(response_text):
+                        final_text = notice
+                    else:
+                        final_text = f"{response_text}\n\n{notice}"
+                elif not result.outbound_sent:
+                    if is_generic_fallback(response_text):
+                        final_text = GENERIC_FALLBACK_TEXT
+                    else:
+                        final_text = response_text
+
+                if final_text:
                     out = OutboundEvent.from_text_with_media(
-                        channel=event.channel, chat_id=event.chat_id, text=response_text, reply_to_id=event.reply_to_id,
+                        channel=event.channel, chat_id=event.chat_id, text=final_text, reply_to_id=event.reply_to_id,
                     )
                     out.metadata = dict(event.metadata)
                     out.metadata["_inbound_event_id"] = event.event_id
