@@ -38,6 +38,23 @@ def notice_for(reason: str, *, tool: str = "", request_id: str = "") -> str:
     return GENERIC_FALLBACK_TEXT
 
 
+# The generic English fillers inference_stage falls back to when a turn
+# produced no real text. The convergence point treats these as "no real
+# answer" so a Chinese degraded notice replaces them.
+GENERIC_ENGLISH_FALLBACKS = frozenset({
+    "I encountered an issue processing your request. Please try again.",
+    "I encountered an issue processing your request. Please try again or rephrase your question.",
+})
+
+
+def is_generic_fallback(text: str) -> bool:
+    """True if text is empty/whitespace or one of the generic English fillers."""
+    stripped = (text or "").strip()
+    if not stripped:
+        return True
+    return stripped in GENERIC_ENGLISH_FALLBACKS
+
+
 def combine_notices(notices: list[str]) -> str:
     """Dedupe (preserving first-seen order) and join notices with newlines."""
     seen: set[str] = set()
