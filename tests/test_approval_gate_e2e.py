@@ -11,6 +11,8 @@ CodeExecTool.execute, instead of hand-feeding approved_actions.
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
 from echo_agent.agent.approval_gate import ApprovalGate
@@ -170,3 +172,24 @@ async def test_dynamic_exec_tool_requires_approval_when_unattended():
     )
     assert check.denial is not None
     assert "unattended" in (check.denial.error or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_smart_unavailable_sets_notify_user():
+    cfg = load_config()
+    cfg.permissions.approval.mode = "smart"
+    bus = MessageBus()
+    appr = ApprovalManager(require_approval=cfg.permissions.approval.require_approval)
+    provider = MagicMock()
+    provider.chat_with_retry = AsyncMock(return_value=MagicMock(content=""))
+    gate = ApprovalGate(
+        config=cfg, approval=appr, inference=_FakeInference(), bus=bus, provider=provider,
+    )
+    event = InboundEvent(
+        channel="weixin", sender_id="u1", chat_id="c1",
+        content=[ContentBlock(type=ContentType.TEXT, text="research")],
+    )
+    check = await gate.check("exec", {"command": "curl https://x"}, "u1", channel="weixin", event=event)
+    assert check.denial is not None
+    assert check.notify_user is True
+    assert "安全审批暂时不可用" in check.notice
