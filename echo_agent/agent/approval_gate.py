@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from typing import Any
 
 
+from echo_agent.agent.degraded_notice import (
+    REASON_APPROVAL_TIMEOUT,
+    REASON_APPROVAL_UNAVAILABLE,
+    notice_for,
+)
 from echo_agent.agent.tools.base import ToolResult
 from echo_agent.bus.events import InboundEvent, OutboundEvent
 from echo_agent.bus.queue import MessageBus
@@ -21,6 +26,8 @@ from echo_agent.security.risk_classifier import RiskLevel, classify_risk
 class ApprovalCheck:
     denial: ToolResult | None = None
     approved_actions: frozenset[str] = frozenset()
+    notify_user: bool = False
+    notice: str = ""
 
 
 class ApprovalGate:
@@ -146,6 +153,18 @@ class ApprovalGate:
                     success=False,
                     error=f"Smart approval denied '{tool_name}': {guard.reason or 'assessed as dangerous'}",
                 ))
+            if verdict == "unavailable":
+                # Provider outage: fail closed but tell the user, instead of
+                # falling through to a blocking manual wait that times out
+                # silently. See spec 2.1.
+                return ApprovalCheck(
+                    denial=ToolResult(
+                        success=False,
+                        error=f"Approval system unavailable for '{tool_name}' (provider outage).",
+                    ),
+                    notify_user=True,
+                    notice=notice_for(REASON_APPROVAL_UNAVAILABLE),
+                )
 
         # Step 13: Manual approval flow
         approved_actions = self._approved_actions(tool_name, guard)
@@ -216,15 +235,19 @@ class ApprovalGate:
                 error=f"Tool '{tool_name}' denied: {decided.reason}",
                 metadata={"approval_request_id": approval_req.id},
             ))
-        return ApprovalCheck(ToolResult(
-            success=False,
-            error=(
-                f"Approval timed out for '{tool_name}'. "
-                f"Request id: {approval_req.id}. "
-                f"Reply `/approve {approval_req.id}` or `/deny {approval_req.id} <reason>`."
+        return ApprovalCheck(
+            denial=ToolResult(
+                success=False,
+                error=(
+                    f"Approval timed out for '{tool_name}'. "
+                    f"Request id: {approval_req.id}. "
+                    f"Reply `/approve {approval_req.id}` or `/deny {approval_req.id} <reason>`."
+                ),
+                metadata={"approval_request_id": approval_req.id},
             ),
-            metadata={"approval_request_id": approval_req.id},
-        ))
+            notify_user=True,
+            notice=notice_for(REASON_APPROVAL_TIMEOUT, tool=tool_name, request_id=approval_req.id),
+        )
 
     # PLACEHOLDER_HELPERS
 
