@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
+from echo_agent.agent.approval_gate import ApprovalGate
 from echo_agent.agent.degraded_notice import notice_for, REASON_APPROVAL_UNAVAILABLE
 from echo_agent.agent.streaming import ProcessResult
 from echo_agent.bus.events import InboundEvent, ContentBlock, ContentType
+from echo_agent.bus.queue import MessageBus
+from echo_agent.config.loader import load_config
+from echo_agent.permissions.manager import ApprovalManager
 
 
 def _make_loop():
@@ -135,3 +141,64 @@ async def test_real_answer_no_notice_unchanged(monkeypatch):
     await loop._on_inbound(_event())
     assert len(sent) == 1
     assert sent[0].text == "真实回答"
+
+
+# --- Approval-path invariants (spec 5.1) -------------------------------------
+#
+# These lock the Task 2/3 behaviour so a future change cannot silently reroute
+# smart `unavailable` back into a blocking manual wait, nor let 2.1 swallow a
+# legitimate ESCALATE before it reaches the manual approval flow.
+
+
+class _FakeInf:
+    def needs_confirmation(self, name: str) -> bool:
+        return False
+
+
+def _gate_with_provider(content):
+    cfg = load_config()
+    cfg.permissions.approval.mode = "smart"
+    # "exec" is not in the default require_approval list, and ApprovalManager's
+    # default_policy is "approve" — so without this an ESCALATE verdict would be
+    # auto-approved inside the manual flow and never publish a request. Force
+    # "exec" to require approval so the manual flow yields a PENDING request,
+    # which is exactly the path the ESCALATE invariant must exercise.
+    cfg.permissions.approval.require_approval = [*cfg.permissions.approval.require_approval, "exec"]
+    appr = ApprovalManager(require_approval=cfg.permissions.approval.require_approval)
+    provider = MagicMock()
+    provider.chat_with_retry = AsyncMock(return_value=MagicMock(content=content))
+    return ApprovalGate(config=cfg, approval=appr, inference=_FakeInf(), bus=MessageBus(), provider=provider)
+
+
+def _exec_event():
+    return InboundEvent(
+        channel="weixin", sender_id="u1", chat_id="c1",
+        content=[ContentBlock(type=ContentType.TEXT, text="research")],
+    )
+
+
+@pytest.mark.asyncio
+async def test_smart_unavailable_does_not_block_in_manual():
+    # Empty provider content -> unavailable -> immediate denial with notice,
+    # NOT a blocking manual-approval wait.
+    gate = _gate_with_provider("")
+    check = await gate.check("exec", {"command": "curl x"}, "u1", channel="weixin", event=_exec_event())
+    assert check.denial is not None
+    assert check.notify_user is True
+    assert "安全审批暂时不可用" in check.notice
+
+
+@pytest.mark.asyncio
+async def test_smart_escalate_still_enters_manual_flow(monkeypatch):
+    # Explicit ESCALATE must still reach the manual flow (publishes a request),
+    # i.e. 2.1 must not swallow legitimate escalations.
+    gate = _gate_with_provider("ESCALATE")
+    published = []
+    monkeypatch.setattr(gate._bus, "publish_outbound", AsyncMock(side_effect=lambda o: published.append(o)))
+    # wait_for_decision returns None (no decider) quickly to avoid real blocking.
+    monkeypatch.setattr(gate._approval, "wait_for_decision", AsyncMock(return_value=None))
+    check = await gate.check("exec", {"command": "ls"}, "u1", channel="weixin", event=_exec_event())
+    # an approval request was published (manual flow entered)
+    assert any(getattr(o, "metadata", {}).get("_approval_request") for o in published)
+    # and the gate returns a notify-the-user timeout denial rather than hanging
+    assert check.denial is not None
