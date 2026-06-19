@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
 from loguru import logger
 
+from echo_agent.agent.degraded_notice import REASON_REPEAT_BLOCKED, notice_for
 from echo_agent.agent.pipeline.types import InferenceResult, PipelineContext
 from echo_agent.agent.tools.base import ToolExecutionContext, build_idempotency_key
 from echo_agent.agent.tools.circuit_breaker import ToolCircuitBreaker
@@ -46,6 +47,7 @@ class _LoopResult:
     should_review_memory: bool = False
     skill_iters: int = 0
     memory_iters: int = 0
+    degraded_notices: list[str] = field(default_factory=list)
     # NOTE: memory_turns is intentionally absent — it's a turn-level counter
     # managed by run(), not the per-pass tool loop.
 
@@ -176,6 +178,7 @@ class InferenceStage:
                     should_review_memory=loop_result.should_review_memory or second.should_review_memory,
                     skill_iters=second.skill_iters,
                     memory_iters=second.memory_iters,
+                    degraded_notices=loop_result.degraded_notices + second.degraded_notices,
                 )
 
         # Turn-based memory review trigger: fires even for pure chat (no tool calls).
@@ -226,6 +229,7 @@ class InferenceStage:
             total_tool_calls=loop_result.total_tool_calls,
             should_review_skills=loop_result.should_review_skills,
             should_review_memory=should_review_memory,
+            degraded_notices=loop_result.degraded_notices,
         )
 
     async def _run_tool_loop(self, ctx: PipelineContext, messages: list[dict[str, Any]]) -> _LoopResult:
@@ -249,6 +253,7 @@ class InferenceStage:
         _REPEAT_BLOCK_THRESHOLD = 4
         loop_exhausted = True
         budget_halted = False
+        degraded_notices: list[str] = []
 
         # Read nudge counters from session (do NOT write back — run() owns that)
         _skill_iters = session.metadata.get("_nudge_tool_iters_skill", 0)
@@ -374,6 +379,8 @@ class InferenceStage:
                         })
                         tool_message_appended = True
                         session.add_message("tool", approval_check.denial.text, tool_call_id=tool_call.id, name=tool_call.name)
+                        if approval_check.notify_user and approval_check.notice:
+                            degraded_notices.append(approval_check.notice)
                         total_tool_calls += 1
                         continue
 
@@ -402,6 +409,7 @@ class InferenceStage:
                             "Blocked repeated tool call: {} ({}x)",
                             tool_call.name, _repeat_tracker[_call_key],
                         )
+                        degraded_notices.append(notice_for(REASON_REPEAT_BLOCKED))
                         total_tool_calls += 1
                         continue
 
@@ -564,6 +572,7 @@ class InferenceStage:
             should_review_memory=should_review_memory,
             skill_iters=_skill_iters,
             memory_iters=_memory_iters,
+            degraded_notices=degraded_notices,
         )
 
     async def _chat_stream_with_routing(

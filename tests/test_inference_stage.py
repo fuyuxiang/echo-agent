@@ -513,3 +513,97 @@ async def test_empty_content_no_tool_calls_gets_fallback():
     assert result.response_text  # non-empty fallback text
     assert "issue" in result.response_text.lower() or "try" in result.response_text.lower()
 
+
+
+def test_loopresult_has_degraded_notices_default():
+    from echo_agent.agent.pipeline.inference_stage import _LoopResult
+    r = _LoopResult()
+    assert r.degraded_notices == []
+
+
+def test_inferenceresult_has_degraded_notices_default():
+    from echo_agent.agent.pipeline.types import InferenceResult
+    r = InferenceResult()
+    assert r.degraded_notices == []
+
+
+@pytest.mark.asyncio
+async def test_approval_denial_with_notify_collects_notice():
+    # When an approval denial carries notify_user + notice, the loop must
+    # collect that notice into degraded_notices and bubble it to the result.
+    from echo_agent.agent.tools.base import ToolResult
+
+    tc = ToolCallRequest(id="call_1", name="exec", arguments={"command": "rm -rf /"})
+    provider = AsyncMock()
+    provider.chat_stream_with_retry = AsyncMock(side_effect=[
+        LLMResponse(content="Let me run that", tool_calls=[tc], finish_reason="tool_calls"),
+        LLMResponse(content="Understood, denied.", finish_reason="stop"),
+    ])
+
+    denial = ToolResult(success=False, error="approval unavailable")
+    gate = AsyncMock()
+    gate.check = AsyncMock(return_value=MagicMock(
+        denial=denial, approved_actions=frozenset(),
+        notify_user=True, notice="⚠️ 安全审批暂时不可用,已暂停。",
+    ))
+
+    stage, _bus = _make_stage(provider=provider, approval_gate=gate)
+    ctx = _make_ctx()
+
+    result = await stage.run(ctx)
+
+    assert result.degraded_notices == ["⚠️ 安全审批暂时不可用,已暂停。"]
+
+
+@pytest.mark.asyncio
+async def test_repeat_blocked_collects_notice():
+    # A repeat-blocked tool call must collect the repeat-blocked notice.
+    from echo_agent.agent.degraded_notice import REASON_REPEAT_BLOCKED, notice_for
+
+    tc = ToolCallRequest(id="call_1", name="search", arguments={"q": "test"})
+    provider = AsyncMock()
+    provider.chat_stream_with_retry = AsyncMock(side_effect=[
+        LLMResponse(content="", tool_calls=[tc], finish_reason="tool_calls"),
+        LLMResponse(content="", tool_calls=[tc], finish_reason="tool_calls"),
+        LLMResponse(content="", tool_calls=[tc], finish_reason="tool_calls"),
+        LLMResponse(content="", tool_calls=[tc], finish_reason="tool_calls"),
+        LLMResponse(content="Done after block", finish_reason="stop"),
+    ])
+
+    tools_reg = MagicMock()
+    tools_reg.execute = AsyncMock(return_value=MagicMock(success=True, text="result", error=None, metadata={}))
+    tools_reg.has = MagicMock(return_value=False)
+
+    stage, _bus = _make_stage(provider=provider, tools=tools_reg)
+    ctx = _make_ctx()
+
+    result = await stage.run(ctx)
+
+    assert notice_for(REASON_REPEAT_BLOCKED) in result.degraded_notices
+
+
+@pytest.mark.asyncio
+async def test_approval_denial_without_notify_collects_nothing():
+    # A denial without notify_user must NOT leak a notice (notice path gated).
+    from echo_agent.agent.tools.base import ToolResult
+
+    tc = ToolCallRequest(id="call_1", name="exec", arguments={"command": "ls"})
+    provider = AsyncMock()
+    provider.chat_stream_with_retry = AsyncMock(side_effect=[
+        LLMResponse(content="run", tool_calls=[tc], finish_reason="tool_calls"),
+        LLMResponse(content="ok", finish_reason="stop"),
+    ])
+
+    denial = ToolResult(success=False, error="denied")
+    gate = AsyncMock()
+    gate.check = AsyncMock(return_value=MagicMock(
+        denial=denial, approved_actions=frozenset(),
+        notify_user=False, notice="",
+    ))
+
+    stage, _bus = _make_stage(provider=provider, approval_gate=gate)
+    ctx = _make_ctx()
+
+    result = await stage.run(ctx)
+
+    assert result.degraded_notices == []

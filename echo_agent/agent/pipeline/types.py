@@ -39,3 +39,4 @@ class InferenceResult:
     total_tool_calls: int = 0
     should_review_skills: bool = False
     should_review_memory: bool = False
+    degraded_notices: list[str] = field(default_factory=list)
