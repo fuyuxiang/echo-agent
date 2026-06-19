@@ -90,6 +90,23 @@ async def test_generic_english_replaced_by_notice(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_real_answer_not_yet_sent_combines_answer_and_notice(monkeypatch):
+    loop, sent = _make_loop()
+    notice = notice_for(REASON_APPROVAL_UNAVAILABLE)
+
+    async def fake_process(event, trace_id, publish_response=False):
+        return ProcessResult(response_text="真实回答", outbound_sent=False, degraded_notices=[notice])
+
+    monkeypatch.setattr(loop, "_process_event", fake_process)
+    monkeypatch.setattr(loop, "_is_approval_command", lambda t: False)
+    await loop._on_inbound(_event())
+    # answer not yet streamed; convergence point sends answer + notice in one message
+    assert len(sent) == 1
+    assert "真实回答" in sent[0].text
+    assert "安全审批暂时不可用" in sent[0].text
+
+
+@pytest.mark.asyncio
 async def test_real_answer_already_sent_appends_notice(monkeypatch):
     loop, sent = _make_loop()
     notice = notice_for(REASON_APPROVAL_UNAVAILABLE)
@@ -103,6 +120,7 @@ async def test_real_answer_already_sent_appends_notice(monkeypatch):
     # main answer already streamed; notice delivered as a single follow-up
     assert len(sent) == 1
     assert "安全审批暂时不可用" in sent[0].text
+    assert "真实回答" not in sent[0].text
 
 
 @pytest.mark.asyncio
