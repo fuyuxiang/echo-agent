@@ -38,13 +38,48 @@ class GuardFinding:
     hard_block: bool = False
 
 
+# Top-level directories whose recursive deletion has no recovery path. The list
+# is deliberately small: only roots that
+# brick the host. Recoverable mounts such as /tmp, /app, /opt are intentionally
+# absent — they fall through to the recursive_delete soft-ask, where approval
+# can still pass them, instead of being dead-blocked with no human override.
+_ROOT_RM_DIRS = "home|root|etc|usr|var|bin|sbin|boot|lib|sys|proc|dev"
+
+# Matches a command-start position: string start, a shell separator, or a
+# transparent wrapper (sudo/env/exec/...). Used to anchor the shutdown family so
+# it fires on `sudo reboot` but not on data like echo "we will REBOOT at noon".
+_CMD_START = r"(?:^|[;&|\n`]|\$\(|\b(?:sudo|env|exec|nohup|setsid|time)\s+)\s*"
+
+
 SHELL_HARD_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
-    ("root_rm", re.compile(r"\brm\s+-[^\n;|&]*[rf][^\n;|&]*\s+/(?:\s|$)"), "destructive root removal"),
-    ("block_device_write", re.compile(r"\bdd\s+[^\n;|&]*\bof=/dev/"), "destructive block device write"),
-    ("mkfs", re.compile(r"\bmkfs(?:\.\w+)?\b"), "filesystem formatting"),
-    ("shutdown", re.compile(r"\b(shutdown|reboot|halt|poweroff)\b"), "system shutdown"),
-    ("sensitive_account_file", re.compile(r"/(?:private/)?etc/(passwd|shadow|sudoers|gshadow)\b"), "sensitive system account file"),
-    ("root_secret_path", re.compile(r"(/root/\.ssh|/root/\.gnupg|/etc/ssh/)"), "sensitive credential path"),
+    # Command-name patterns use re.I so case variants (RM, DD, MKFS) and
+    # absolute-path invocations (/bin/RM) cannot dodge the block on a
+    # case-insensitive filesystem (e.g. macOS, the dev platform here).
+    #
+    # root_rm enumerates the unrecoverable top-level targets (root itself plus
+    # _ROOT_RM_DIRS) rather than matching any /<segment>: recoverable dirs like
+    # /tmp or /app must stay out of the hardline and degrade to recursive_delete.
+    # The trailing (?:\s|$) anchor excludes quotes, so a data string like
+    # echo "rm -rf /" is not blocked and a quoted operand rm -rf "/" degrades to
+    # soft-ask rather than a hard block.
+    (
+        "root_rm",
+        re.compile(
+            r"\brm\s+-[^\n;|&]*[rf][^\n;|&]*\s+/(?:" + _ROOT_RM_DIRS + r")?/?\*?(?:\s|$)",
+            re.I,
+        ),
+        "destructive root removal",
+    ),
+    ("block_device_write", re.compile(r"\bdd\s+[^\n;|&]*\bof=/dev/", re.I), "destructive block device write"),
+    ("mkfs", re.compile(r"\bmkfs(?:\.\w+)?\b", re.I), "filesystem formatting"),
+    # The shutdown family is anchored to a command-start position so that common
+    # English words (REBOOT, halt) inside quoted data do not trip a hard block.
+    ("shutdown", re.compile(_CMD_START + r"(?:shutdown|reboot|halt|poweroff)\b", re.I), "system shutdown"),
+    # Sensitive-path patterns also use re.I: these guard read access where
+    # over-matching costs ~nothing, but on a case-insensitive filesystem a case
+    # variant like /etc/PASSWD would otherwise slip past a case-sensitive guard.
+    ("sensitive_account_file", re.compile(r"/(?:private/)?etc/(passwd|shadow|sudoers|gshadow)\b", re.I), "sensitive system account file"),
+    ("root_secret_path", re.compile(r"(/root/\.ssh|/root/\.gnupg|/etc/ssh/)", re.I), "sensitive credential path"),
 )
 
 SHELL_APPROVAL_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
