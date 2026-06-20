@@ -245,8 +245,10 @@ class TestA2AModels:
         d = card.to_dict()
         assert d["name"] == "test"
         assert d["capabilities"]["streaming"] is True
-        assert len(d["skills"]) == 1
-        assert d["skills"][0]["id"] == "code"
+        skill_ids = [s["id"] for s in d["skills"]]
+        # Explicit skills plus configured capability tags both surface here.
+        assert "code" in skill_ids
+        assert "chat" in skill_ids
 
     def test_a2a_task_lifecycle(self):
         task = A2ATask()
