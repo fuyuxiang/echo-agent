@@ -11,7 +11,7 @@ def test_yaml_includes_effective_excludes_dead():
     # effective 字段出现(camelCase)
     assert "triggerRatio" in out
     # dead 字段不出现
-    assert "archivalThreshold" not in out
+    assert "showToolCalls" not in out
     assert "reasoningEffort" not in out
 
 

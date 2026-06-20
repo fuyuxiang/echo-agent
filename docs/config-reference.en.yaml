@@ -405,6 +405,10 @@ memory:
   contradictionDetection: true
   # Enable idle-time (sleep) memory consolidation (default: true)
   sleepConsolidation: true
+  # Archival score threshold; entries below it move to the archival tier (default: 0.05)
+  archivalThreshold: 0.05
+  # Forget score threshold; entries below it are forgotten (default: 0.01)
+  forgetThreshold: 0.01
   # Maximum working-memory entries (default: 20)
   maxWorkingMemory: 20
   # Embedding model used for memory vectorization (default: "")
