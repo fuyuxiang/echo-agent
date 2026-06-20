@@ -63,3 +63,46 @@ def test_extract_pdf_specific_page(tmp_path: Path):
     res = extract(f, unit=2)
     assert "PAGE_BETA" in res.text
     assert "PAGE_ALPHA" not in res.text
+
+
+def test_extract_docx(tmp_path: Path):
+    docx = pytest.importorskip("docx")
+    f = tmp_path / "d.docx"
+    d = docx.Document()
+    d.add_paragraph("First paragraph here")
+    d.add_paragraph("Second paragraph here")
+    d.save(str(f))
+    res = extract(f)
+    assert "First paragraph here" in res.text
+    assert "Second paragraph here" in res.text
+    assert res.meta["format"] == "docx"
+
+
+def test_extract_xlsx_all_and_one_sheet(tmp_path: Path):
+    openpyxl = pytest.importorskip("openpyxl")
+    f = tmp_path / "s.xlsx"
+    wb = openpyxl.Workbook()
+    wb.active.title = "Alpha"
+    wb["Alpha"]["A1"] = "alpha_cell"
+    beta = wb.create_sheet("Beta")
+    beta["A1"] = "beta_cell"
+    wb.save(str(f))
+    full = extract(f)
+    assert "alpha_cell" in full.text and "beta_cell" in full.text
+    assert full.meta["format"] == "xlsx"
+    assert full.unit_count == 2
+    one = extract(f, unit="Beta")
+    assert "beta_cell" in one.text and "alpha_cell" not in one.text
+
+
+def test_extract_pptx(tmp_path: Path):
+    pptx = pytest.importorskip("pptx")
+    f = tmp_path / "p.pptx"
+    prs = pptx.Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[5])
+    slide.shapes.title.text = "SLIDE_TITLE_X"
+    prs.save(str(f))
+    res = extract(f)
+    assert "SLIDE_TITLE_X" in res.text
+    assert res.meta["format"] == "pptx"
+    assert res.unit_count == 1
