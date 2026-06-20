@@ -32,6 +32,26 @@ def _is_base_submodel(annotation: Any) -> type[BaseModel] | None:
     return None
 
 
+def _container_submodel(annotation: Any) -> tuple[type[BaseModel], str] | None:
+    """Return (element model, path marker) for a container of _Base submodels.
+
+    Recognizes ``list[_Base]`` (marker ``[]``) and ``dict[str, _Base]``
+    (marker ``{}``). Containers whose element is not a _Base subclass (e.g.
+    ``list[str]``, ``dict[str, str]``) return None and stay leaf fields.
+    """
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+    if origin is list and args:
+        elem = args[0]
+        if isinstance(elem, type) and issubclass(elem, _Base):
+            return elem, "[]"
+    elif origin is dict and len(args) == 2:
+        val = args[1]
+        if isinstance(val, type) and issubclass(val, _Base):
+            return val, "{}"
+    return None
+
+
 def _literal_choices(annotation: Any) -> list[str] | None:
     if get_origin(annotation) is Literal:
         return [str(a) for a in get_args(annotation)]
@@ -68,3 +88,11 @@ def iter_fields(
             choices=_literal_choices(annotation),
             extra=dict(extra),
         )
+        container = _container_submodel(annotation)
+        if container is not None:
+            elem_model, marker = container
+            yield from iter_fields(
+                elem_model,
+                f"{path}{marker}",
+                f"{snake_path}{marker}",
+            )

@@ -33,12 +33,14 @@ def test_literal_choices_extracted():
     assert info.choices == ["personal_cli", "daemon", "public_gateway"]
 
 
-def test_container_field_is_leaf_not_descended():
+def test_container_field_descends_into_submodel():
     paths = {f.path for f in iter_fields(Config)}
-    # tools.mcpServers 是 dict[str, MCPServerConfig],按叶子处理
     assert "tools.mcpServers" in paths
-    # 不应下钻进 MCPServerConfig 的字段
-    assert not any(p.startswith("tools.mcpServers.") for p in paths)
+    assert "tools.mcpServers{}.command" in paths
+    assert "models.providers[].apiKey" in paths
+    assert "models.routes[].model" in paths
+    assert "multiAgent.workerProfiles[].instructions" in paths
+    assert "gateway.platforms{}.rateLimitRpm" in paths
 
 
 def test_extra_defaults_to_empty_dict():
