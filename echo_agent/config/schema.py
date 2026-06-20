@@ -2248,8 +2248,9 @@ class ObservabilityConfig(_Base):
     trace_enabled: bool = Field(
         default=True,
         json_schema_extra={
-            "status": "dead", "disposition": "fix",
-            "reason": "仅向导提示用,运行时 TraceLogger 在 loop.py 无条件构造,开关不生效",
+            "status": "effective", "ref": "observability/monitor.py:55",
+            "desc_zh": "是否记录执行轨迹(关闭则不写 trace 文件)",
+            "desc_en": "Whether to record execution traces (off disables trace files)",
         },
     )
     show_tool_calls: bool = Field(

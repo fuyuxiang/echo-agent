@@ -52,9 +52,10 @@ class TraceSpan:
 class TraceLogger:
     """Records full processing chain for each agent interaction."""
 
-    def __init__(self, logs_dir: Path | None = None):
+    def __init__(self, logs_dir: Path | None = None, enabled: bool = True):
         self._logs_dir = logs_dir
-        if logs_dir:
+        self._enabled = enabled
+        if logs_dir and enabled:
             logs_dir.mkdir(parents=True, exist_ok=True)
         self._traces: dict[str, list[TraceSpan]] = {}
         self._otel_tracer = None
@@ -93,7 +94,7 @@ class TraceLogger:
 
     def flush_trace(self, trace_id: str) -> None:
         spans = self._traces.pop(trace_id, [])
-        if self._logs_dir and spans:
+        if self._enabled and self._logs_dir and spans:
             path = self._logs_dir / f"trace_{trace_id}.json"
             data = [s.to_dict() for s in spans]
             path.write_text(json.dumps(data, indent=2), encoding="utf-8")

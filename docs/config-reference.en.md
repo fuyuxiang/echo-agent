@@ -310,6 +310,7 @@
 | Field | snake | type | default | choices | description |
 |---|---|---|---|---|---|
 | `observability.logLevel` | `observability.log_level` | str | `INFO` | — | Logging level |
+| `observability.traceEnabled` | `observability.trace_enabled` | bool | `true` | — | Whether to record execution traces (off disables trace files) |
 | `observability.healthCheckIntervalSeconds` | `observability.health_check_interval_seconds` | int | `60` | — | Health check interval (seconds) |
 | `observability.otelEnabled` | `observability.otel_enabled` | bool | `true` | — | Enable OpenTelemetry metrics export |
 | `observability.otelEndpoint` | `observability.otel_endpoint` | str | `""` | — | OpenTelemetry export endpoint |
