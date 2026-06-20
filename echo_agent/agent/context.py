@@ -182,10 +182,13 @@ class ContextBuilder:
     BOOTSTRAP_FILES = ("AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md")
     _RUNTIME_TAG = "[Runtime Context]"
 
-    def __init__(self, workspace: Path, agent_name: str = "Echo", media_cache: Any = None):
+    def __init__(self, workspace: Path, agent_name: str = "Echo", media_cache: Any = None,
+                 doc_enabled: bool = True, doc_max_chars: int = 8000):
         self.workspace = workspace
         self.agent_name = agent_name
         self._media_cache = media_cache
+        self._doc_enabled = doc_enabled
+        self._doc_max_chars = doc_max_chars
 
     def _get_media_cache(self) -> Any:
         """Return the media cache, building a workspace-local fallback only when the
@@ -231,7 +234,8 @@ class ContextBuilder:
                 "original_url": url,
             }
             resolved.append(entry)
-            if btype == "image" and url.startswith(("http://", "https://")):
+            downloadable = {"image"} | ({"file"} if self._doc_enabled else set())
+            if btype in downloadable and url.startswith(("http://", "https://")):
                 download_targets.append((idx, url, aes_key))
 
         if download_targets:
@@ -243,11 +247,24 @@ class ContextBuilder:
             for (idx, url, aes_key), result in zip(download_targets, results):
                 if isinstance(result, Exception):
                     logger.warning("Inbound media download failed, using original URL: {}", result)
-                elif result:
-                    if aes_key:
-                        result = self._decrypt_media_file(result, aes_key)
-                    resolved[idx]["url"] = str(result)
+                    continue
+                if not result:
+                    continue
+                if aes_key:
+                    result = self._decrypt_media_file(result, aes_key)
+                resolved[idx]["url"] = str(result)
+                if resolved[idx]["type"] == "file":
+                    self._attach_extracted_text(resolved[idx], result)
         return resolved
+
+    def _attach_extracted_text(self, entry: dict[str, str], path: Any) -> None:
+        """Parse a downloaded document and stash text/meta on the entry for build_messages."""
+        from echo_agent.agent.media.document_extract import extract
+        res = extract(path, max_chars=self._doc_max_chars)
+        if res.text:
+            entry["extracted_text"] = res.text
+            entry["truncated"] = "1" if res.truncated else ""
+            entry["unit_count"] = str(res.unit_count)
 
     @staticmethod
     def _decrypt_media_file(path: Path, aes_key_b64: str) -> Path:
@@ -354,7 +371,17 @@ class ContextBuilder:
                     else:
                         file_notes.append(f"[附件] 类型=image 名称={name} 路径={url}")
                 else:
-                    file_notes.append(f"[附件] 类型={mtype} 名称={name} 路径={url}")
+                    extracted = item.get("extracted_text", "")
+                    if extracted and item.get("truncated"):
+                        units = item.get("unit_count", "")
+                        file_notes.append(
+                            f"[文档: {name}]\n{extracted}\n"
+                            f"(内容过长已截断, 共{units}个单元; 可用 read_document 工具读指定页/全文, 路径={url})"
+                        )
+                    elif extracted:
+                        file_notes.append(f"[文档: {name}]\n{extracted}")
+                    else:
+                        file_notes.append(f"[附件] 类型={mtype} 名称={name} 路径={url}")
             if file_notes:
                 content_parts[0]["text"] = merged_user + "\n\n" + "\n".join(file_notes)
             messages.append({"role": "user", "content": content_parts})
@@ -484,6 +511,9 @@ class ContextBuilder:
                     "url": entry.get("url", ""),
                     "mime_type": entry.get("mime_type", ""),
                     "name": entry.get("name", ""),
+                    "extracted_text": entry.get("extracted_text", ""),
+                    "truncated": entry.get("truncated", ""),
+                    "unit_count": entry.get("unit_count", ""),
                 })
         return normalized
 

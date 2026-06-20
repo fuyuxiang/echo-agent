@@ -118,7 +118,12 @@ class AgentLoop:
             cache_dir=workspace / config.gateway.media_cache_dir,
             max_size_mb=config.gateway.media_cache_max_mb,
         )
-        self.context = ContextBuilder(workspace, media_cache=media_cache)
+        self.context = ContextBuilder(
+            workspace,
+            media_cache=media_cache,
+            doc_enabled=config.tools.inbound_document_enabled,
+            doc_max_chars=config.tools.inbound_document_max_chars,
+        )
         self.compressor = ConversationCompressor(
             config=config.compression,
             context_window_tokens=config.session.context_window_tokens,
