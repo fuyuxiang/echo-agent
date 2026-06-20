@@ -53,6 +53,8 @@ echo-agent setup
 echo-agent run
 ```
 
+> 完整配置项见 [`docs/config-reference.md`](docs/config-reference.md)（全部有效配置的说明、类型、默认值与可选值）。也可用 `echo-agent config explain <配置项>` 查看单项说明、`echo-agent config dump` 查看当前生效配置（密钥自动脱敏）、`echo-agent config validate` 校验配置文件。
+
 <details>
 <summary>国内镜像 / Windows / 一键脚本</summary>
 
