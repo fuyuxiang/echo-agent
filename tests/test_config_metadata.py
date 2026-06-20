@@ -43,5 +43,32 @@ def test_container_field_is_leaf_not_descended():
 
 def test_extra_defaults_to_empty_dict():
     fields = {f.path: f for f in iter_fields(Config)}
-    # 尚未补元数据时 extra 为空 dict,不是 None
-    assert fields["workspace"].extra == {}
+    # 补元数据后 workspace 仍应有 status 字段
+    assert isinstance(fields["workspace"].extra, dict)
+
+
+def test_dead_fields_are_marked():
+    fields = {f.snake_path: f for f in iter_fields(Config)}
+    # 抽查几个已知死字段
+    assert fields["storage.backend"].extra.get("status") == "dead"
+    assert fields["agent.reasoning_effort"].extra.get("status") == "dead"
+    assert fields["memory.archival_threshold"].extra.get("disposition") == "fix"
+    assert fields["models.cost_limit_daily_usd"].extra.get("disposition") == "remove"
+
+
+def test_effective_fields_have_desc():
+    fields = {f.snake_path: f for f in iter_fields(Config)}
+    info = fields["compression.trigger_ratio"]
+    assert info.extra.get("status") == "effective"
+    assert info.extra.get("desc_zh")
+    assert info.extra.get("desc_en")
+    assert info.extra.get("ref")
+
+
+def test_all_fields_have_status():
+    bad = [
+        f.path
+        for f in iter_fields(Config)
+        if f.extra.get("status") not in ("effective", "dead")
+    ]
+    assert bad == [], f"字段缺 status: {bad}"
