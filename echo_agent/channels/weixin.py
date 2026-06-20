@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
+import mimetypes
 import os
 import secrets
 import struct
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -20,7 +23,7 @@ from typing import Any
 import aiohttp
 from loguru import logger
 
-from echo_agent.bus.events import OutboundEvent
+from echo_agent.bus.events import ContentType, OutboundEvent
 from echo_agent.bus.queue import MessageBus
 from echo_agent.channels.base import BaseChannel, SendResult
 from echo_agent.config.schema import WeixinChannelConfig
@@ -41,6 +44,7 @@ _APP_CLIENT_VERSION = (2 << 16) | (2 << 8) | 0
 
 _EP_GET_UPDATES = "ilink/bot/getupdates"
 _EP_SEND_MESSAGE = "ilink/bot/sendmessage"
+_EP_GET_UPLOAD_URL = "ilink/bot/getuploadurl"
 _EP_GET_BOT_QR = "ilink/bot/get_bot_qrcode"
 _EP_GET_QR_STATUS = "ilink/bot/get_qrcode_status"
 
@@ -61,6 +65,11 @@ _ITEM_FILE = 4
 _ITEM_VIDEO = 5
 _MSG_TYPE_BOT = 2
 _MSG_STATE_FINISH = 2
+
+# media_type values for getuploadurl (distinct from item types above)
+_MEDIA_IMAGE = 1
+_MEDIA_VIDEO = 2
+_MEDIA_FILE = 3
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -113,6 +122,19 @@ def _aes128_ecb_decrypt(ciphertext: bytes, key: bytes) -> bytes:
     if 1 <= pad_len <= 16 and padded.endswith(bytes([pad_len]) * pad_len):
         return padded[:-pad_len]
     return padded
+
+
+def _aes128_ecb_encrypt(plaintext: bytes, key: bytes) -> bytes:
+    if not _CRYPTO_AVAILABLE:
+        raise RuntimeError("cryptography package required for media encryption")
+    cipher = Cipher(algorithms.AES(key), modes.ECB(), backend=default_backend())
+    encryptor = cipher.encryptor()
+    return encryptor.update(_pkcs7_pad(plaintext)) + encryptor.finalize()
+
+
+def _aes_padded_size(size: int) -> int:
+    """Ciphertext length after PKCS#7 padding to the next 16-byte boundary."""
+    return ((size + 1 + 15) // 16) * 16
 
 
 def _parse_aes_key(aes_key_b64: str) -> bytes:
@@ -189,6 +211,79 @@ async def _send_message(
         token=token,
         timeout_ms=_API_TIMEOUT_MS,
     )
+
+
+def _cdn_upload_url(cdn_base_url: str, upload_param: str, filekey: str) -> str:
+    from urllib.parse import quote
+
+    return (
+        f"{cdn_base_url.rstrip('/')}/upload"
+        f"?encrypted_query_param={quote(upload_param, safe='')}"
+        f"&filekey={quote(filekey, safe='')}"
+    )
+
+
+async def _get_upload_url(
+    session: aiohttp.ClientSession,
+    *,
+    base_url: str,
+    token: str,
+    to_user_id: str,
+    media_type: int,
+    filekey: str,
+    rawsize: int,
+    rawfilemd5: str,
+    filesize: int,
+    aeskey_hex: str,
+) -> dict[str, Any]:
+    """Request a CDN upload URL via the iLink getuploadurl endpoint."""
+    return await _api_post(
+        session,
+        base_url=base_url,
+        endpoint=_EP_GET_UPLOAD_URL,
+        payload={
+            "filekey": filekey,
+            "media_type": media_type,
+            "to_user_id": to_user_id,
+            "rawsize": rawsize,
+            "rawfilemd5": rawfilemd5,
+            "filesize": filesize,
+            "no_need_thumb": True,
+            "aeskey": aeskey_hex,
+        },
+        token=token,
+        timeout_ms=_API_TIMEOUT_MS,
+    )
+
+
+async def _upload_ciphertext(
+    session: aiohttp.ClientSession,
+    *,
+    ciphertext: bytes,
+    upload_url: str,
+) -> str:
+    """Upload encrypted media to the CDN; return the x-encrypted-param token.
+
+    Both ``upload_full_url`` (direct CDN) and the constructed CDN URL use POST
+    with the raw ciphertext as the body. ``asyncio.wait_for`` is used instead of
+    aiohttp's ClientTimeout to avoid "Timeout context manager" errors when
+    invoked from non-task contexts.
+    """
+    async def _do_upload() -> str:
+        async with session.post(
+            upload_url, data=ciphertext, headers={"Content-Type": "application/octet-stream"}
+        ) as response:
+            if response.status == 200:
+                encrypted_param = response.headers.get("x-encrypted-param")
+                if encrypted_param:
+                    await response.read()
+                    return encrypted_param
+                raw = await response.text()
+                raise RuntimeError(f"CDN upload missing x-encrypted-param header: {raw[:200]}")
+            raw = await response.text()
+            raise RuntimeError(f"CDN upload HTTP {response.status}: {raw[:200]}")
+
+    return await asyncio.wait_for(_do_upload(), timeout=120)
 
 
 # ── Deduplicator & ContextTokenStore ─────────────────────────────────────────
@@ -369,10 +464,42 @@ class WeixinChannel(BaseChannel):
     async def send(self, event: OutboundEvent) -> SendResult | None:
         if not self.should_deliver(event):
             return SendResult(success=True, skipped=True)
-        text = event.text or ""
-        if not text or not self._send_session or not self._token:
-            return SendResult(success=False, error="no text, no session, or no token")
+        if not self._send_session or not self._token:
+            return SendResult(success=False, error="no session or no token")
         chat_id = event.chat_id
+
+        # Route each content block: text via sendmessage, image/file via CDN upload.
+        # Fall back to event.text when no structured blocks are present.
+        blocks = list(event.content) or []
+        has_media = any(
+            b.url and b.type in (ContentType.IMAGE, ContentType.FILE, ContentType.AUDIO, ContentType.VIDEO)
+            for b in blocks
+        )
+        if not has_media:
+            return await self._send_text(chat_id, event.text or "")
+
+        all_ok = True
+        last_error = ""
+        for block in blocks:
+            if block.type == ContentType.TEXT:
+                if block.text:
+                    res = await self._send_text(chat_id, block.text)
+                    if not res.success:
+                        all_ok, last_error = False, res.error
+            elif block.url and block.type in (
+                ContentType.IMAGE, ContentType.FILE, ContentType.AUDIO, ContentType.VIDEO,
+            ):
+                as_image = block.type == ContentType.IMAGE
+                res = await self.send_file(chat_id, block.url, as_image=as_image)
+                if not res.success:
+                    all_ok, last_error = False, res.error
+        return SendResult(success=all_ok, error="" if all_ok else last_error)
+
+    async def _send_text(self, chat_id: str, text: str) -> SendResult:
+        if not text:
+            return SendResult(success=True, skipped=True)
+        if not self._send_session or not self._token:
+            return SendResult(success=False, error="no session or no token")
         context_token = self._token_store.get(self._account_id, chat_id)
         chunks = self._split_text(text)
         for chunk in chunks:
@@ -399,6 +526,149 @@ class WeixinChannel(BaseChannel):
     @staticmethod
     def _split_text(text: str) -> list[str]:
         return split_message(text, _MAX_MESSAGE_LENGTH)
+
+    # ── Send file / image ──────────────────────────────────────────────────────
+
+    async def send_file(
+        self,
+        chat_id: str,
+        source: str,
+        *,
+        caption: str = "",
+        as_image: bool | None = None,
+    ) -> SendResult:
+        """Send a local-path or http(s) file/image to *chat_id*.
+
+        ``as_image`` forces image vs. file-attachment rendering; when ``None`` it
+        is inferred from the MIME type (``image/*`` → image). Remote URLs are
+        downloaded to a temp file first and cleaned up afterward.
+        """
+        if not self._send_session or not self._token:
+            return SendResult(success=False, error="no session or no token")
+        path, cleanup = await self._materialize_source(source)
+        if not path:
+            return SendResult(success=False, error=f"could not resolve media source: {source[:80]}")
+        try:
+            if as_image is None:
+                mime = mimetypes.guess_type(path)[0] or ""
+                as_image = mime.startswith("image/")
+            if caption:
+                await self._send_text(chat_id, caption)
+            return await self._send_file(chat_id, path, as_image=as_image)
+        except Exception as exc:
+            logger.error("weixin send_file failed to {}: {}", chat_id[:8] if chat_id else "?", exc)
+            return SendResult(success=False, error=str(exc))
+        finally:
+            if cleanup and path and os.path.exists(path):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
+    async def _materialize_source(self, source: str) -> tuple[str, bool]:
+        """Return (local_path, needs_cleanup). Downloads http(s) to a temp file."""
+        source = (source or "").strip()
+        if not source:
+            return "", False
+        if source.startswith(("http://", "https://")):
+            assert self._send_session is not None
+
+            async def _do_fetch() -> bytes:
+                async with self._send_session.get(source) as resp:
+                    resp.raise_for_status()
+                    return await resp.read()
+
+            data = await asyncio.wait_for(_do_fetch(), timeout=30)
+            suffix = Path(source.split("?", 1)[0]).suffix or ".bin"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
+                handle.write(data)
+                return handle.name, True
+        local = source.replace("file://", "")
+        if not os.path.isabs(local):
+            local = os.path.abspath(local)
+        if not os.path.exists(local):
+            return "", False
+        return local, False
+
+    async def _send_file(self, chat_id: str, path: str, *, as_image: bool) -> SendResult:
+        """Encrypt, upload to the CDN, and deliver one media item via sendmessage."""
+        assert self._send_session is not None and self._token is not None
+        plaintext = Path(path).read_bytes()
+        rawsize = len(plaintext)
+        rawfilemd5 = hashlib.md5(plaintext).hexdigest()  # noqa: S324 - protocol-mandated
+        filekey = secrets.token_hex(16)
+        aes_key = secrets.token_bytes(16)
+        media_type = _MEDIA_IMAGE if as_image else _MEDIA_FILE
+
+        upload_response = await _get_upload_url(
+            self._send_session,
+            base_url=self._base_url,
+            token=self._token,
+            to_user_id=chat_id,
+            media_type=media_type,
+            filekey=filekey,
+            rawsize=rawsize,
+            rawfilemd5=rawfilemd5,
+            filesize=_aes_padded_size(rawsize),
+            aeskey_hex=aes_key.hex(),
+        )
+        errcode = upload_response.get("errcode", 0)
+        if errcode and errcode != 0:
+            return SendResult(success=False, error=f"getuploadurl errcode={errcode}: {upload_response.get('errmsg', '')}")
+
+        upload_full_url = str(upload_response.get("upload_full_url") or "")
+        upload_param = str(upload_response.get("upload_param") or "")
+        if upload_full_url:
+            upload_url = upload_full_url
+        elif upload_param:
+            upload_url = _cdn_upload_url(self._cdn_base_url, upload_param, filekey)
+        else:
+            return SendResult(success=False, error=f"getuploadurl returned no upload URL: {upload_response}")
+
+        ciphertext = _aes128_ecb_encrypt(plaintext, aes_key)
+        encrypted_query_param = await _upload_ciphertext(
+            self._send_session, ciphertext=ciphertext, upload_url=upload_url,
+        )
+
+        # The iLink API expects aes_key as base64(hex_string), not base64(raw_bytes);
+        # the latter renders as grey boxes on the receiver side.
+        aes_key_for_api = base64.b64encode(aes_key.hex().encode("ascii")).decode("ascii")
+        media = {
+            "encrypt_query_param": encrypted_query_param,
+            "aes_key": aes_key_for_api,
+            "encrypt_type": 1,
+        }
+        if as_image:
+            item = {"type": _ITEM_IMAGE, "image_item": {"media": media, "mid_size": len(ciphertext)}}
+        else:
+            item = {
+                "type": _ITEM_FILE,
+                "file_item": {"media": media, "file_name": Path(path).name, "len": str(rawsize)},
+            }
+
+        context_token = self._token_store.get(self._account_id, chat_id)
+        msg: dict[str, Any] = {
+            "from_user_id": "",
+            "to_user_id": chat_id,
+            "client_id": uuid.uuid4().hex,
+            "message_type": _MSG_TYPE_BOT,
+            "message_state": _MSG_STATE_FINISH,
+            "item_list": [item],
+        }
+        if context_token:
+            msg["context_token"] = context_token
+        resp = await _api_post(
+            self._send_session,
+            base_url=self._base_url,
+            endpoint=_EP_SEND_MESSAGE,
+            payload={"msg": msg},
+            token=self._token,
+            timeout_ms=_API_TIMEOUT_MS,
+        )
+        errcode = resp.get("errcode", 0)
+        if errcode and errcode != 0:
+            return SendResult(success=False, error=f"sendmessage errcode={errcode}: {resp.get('errmsg', '')}")
+        return SendResult(success=True, message_id=str(msg["client_id"]))
 
     # ── Poll loop ────────────────────────────────────────────────────────────
 

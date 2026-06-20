@@ -67,6 +67,9 @@ def discover_tools(
             ))
     tools.append(MessageTool(publish_fn=bus.publish_outbound))
 
+    from echo_agent.agent.tools.send_file import SendFileTool
+    tools.append(SendFileTool(ws, restrict, publish_fn=bus.publish_outbound))
+
     from echo_agent.agent.tools.search import SearchFilesTool
     tools.append(SearchFilesTool(ws, restrict))
 
