@@ -89,10 +89,14 @@ class AgentCard:
     authentication: dict[str, Any] = field(default_factory=lambda: {"schemes": ["bearer"]})
 
     def to_dict(self) -> dict[str, Any]:
+        # Capability tags (e.g. chat/tool_use) are semantically skill tags; the
+        # A2A `capabilities` key is reserved for the {streaming, pushNotifications}
+        # object, so configured capability tags are surfaced via `skills`.
+        skill_tags = list(dict.fromkeys([*self.skills, *self.capabilities]))  # dedupe, keep order
         return {
             "name": self.name, "description": self.description,
             "url": self.url, "version": self.version,
             "capabilities": {"streaming": True, "pushNotifications": False},
-            "skills": [{"id": s, "name": s} for s in self.skills],
+            "skills": [{"id": s, "name": s} for s in skill_tags],
             "authentication": self.authentication,
         }
