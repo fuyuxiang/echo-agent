@@ -4,7 +4,6 @@
 
 | 字段(snake) | reason |
 |---|---|
-| `channels.wecom.encoding_aes_key` | 企业微信加密回调密钥未接线,wecom.py 仅用明文 token 做 SHA1,从不 AES 解密 |
 | `tools.exec.timeout_seconds` | shell/process 工具用类级默认值,该字段无效;仅 code_exec.timeout_seconds 生效 |
 | `tools.mcp_servers{}.transport` | _create_transport 按 url/command 隐式选择,显式 transport 被忽略 |
 | `session.archive_after_hours` | 构造 SessionManager 时未传,代码用默认 168 |

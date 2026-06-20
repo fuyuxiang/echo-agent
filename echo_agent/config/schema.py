@@ -670,8 +670,9 @@ class WeComChannelConfig(_Base):
     encoding_aes_key: str = Field(
         default="",
         json_schema_extra={
-            "status": "dead", "disposition": "fix",
-            "reason": "企业微信加密回调密钥未接线,wecom.py 仅用明文 token 做 SHA1,从不 AES 解密",
+            "status": "effective", "ref": "channels/wecom.py:87",
+            "desc_zh": "企业微信加密回调的 EncodingAESKey,留空则为明文模式",
+            "desc_en": "EncodingAESKey for WeCom encrypted callbacks; empty means plaintext mode",
         },
     )
     webhook_path: str = Field(
