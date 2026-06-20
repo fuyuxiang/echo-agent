@@ -1873,15 +1873,17 @@ class MemoryConfig(_Base):
     archival_threshold: float = Field(
         default=0.05,
         json_schema_extra={
-            "status": "dead", "disposition": "fix",
-            "reason": "store.py:174 硬编码 0.05,配置值未传入 ForgettingCurve",
+            "status": "effective", "ref": "memory/store.py:172",
+            "desc_zh": "记忆归档分数阈值,低于此值进入归档层",
+            "desc_en": "Archival score threshold; entries below it move to the archival tier",
         },
     )
     forget_threshold: float = Field(
         default=0.01,
         json_schema_extra={
-            "status": "dead", "disposition": "fix",
-            "reason": "store.py:175 硬编码 0.01,配置值未传入",
+            "status": "effective", "ref": "memory/store.py:172",
+            "desc_zh": "记忆遗忘分数阈值,低于此值被遗忘",
+            "desc_en": "Forget score threshold; entries below it are forgotten",
         },
     )
     max_working_memory: int = Field(
