@@ -87,6 +87,7 @@
 | `channels.wecom.agentId` | `channels.wecom.agent_id` | str | `""` | — | WeCom application AgentId |
 | `channels.wecom.secret` | `channels.wecom.secret` | str | `""` | — | WeCom application secret |
 | `channels.wecom.token` | `channels.wecom.token` | str | `""` | — | WeCom callback verification token |
+| `channels.wecom.encodingAesKey` | `channels.wecom.encoding_aes_key` | str | `""` | — | EncodingAESKey for WeCom encrypted callbacks; empty means plaintext mode |
 | `channels.wecom.webhookPath` | `channels.wecom.webhook_path` | str | `/wecom` | — | HTTP path on which WeCom events are received |
 | `channels.wecom.host` | `channels.wecom.host` | str | `0.0.0.0` | — | WeCom server bind address |
 | `channels.wecom.port` | `channels.wecom.port` | int | `8084` | — | WeCom server listen port |

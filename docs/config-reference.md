@@ -87,6 +87,7 @@
 | `channels.wecom.agentId` | `channels.wecom.agent_id` | str | `""` | — | 企业微信应用 AgentId |
 | `channels.wecom.secret` | `channels.wecom.secret` | str | `""` | — | 企业微信应用 Secret |
 | `channels.wecom.token` | `channels.wecom.token` | str | `""` | — | 企业微信回调校验 token |
+| `channels.wecom.encodingAesKey` | `channels.wecom.encoding_aes_key` | str | `""` | — | 企业微信加密回调的 EncodingAESKey,留空则为明文模式 |
 | `channels.wecom.webhookPath` | `channels.wecom.webhook_path` | str | `/wecom` | — | 企业微信事件接收路径 |
 | `channels.wecom.host` | `channels.wecom.host` | str | `0.0.0.0` | — | 企业微信服务监听地址 |
 | `channels.wecom.port` | `channels.wecom.port` | int | `8084` | — | 企业微信服务监听端口 |

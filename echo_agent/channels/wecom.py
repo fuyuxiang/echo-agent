@@ -13,6 +13,7 @@ from loguru import logger
 from echo_agent.bus.events import OutboundEvent
 from echo_agent.bus.queue import MessageBus
 from echo_agent.channels.base import BaseChannel, SendResult
+from echo_agent.channels.wecom_crypto import decrypt_message, verify_signature
 from echo_agent.config.schema import WeComChannelConfig
 
 _API_BASE = "https://qyapi.weixin.qq.com/cgi-bin"
@@ -27,6 +28,7 @@ class WeComChannel(BaseChannel):
         self._agent_id = config.agent_id
         self._secret = config.secret
         self._token = config.token
+        self._encoding_aes_key = config.encoding_aes_key
         self._session: aiohttp.ClientSession | None = None
         self._runner: web.AppRunner | None = None
         self._access_token: str = ""
@@ -89,12 +91,34 @@ class WeComChannel(BaseChannel):
         timestamp = request.query.get("timestamp", "")
         nonce = request.query.get("nonce", "")
         echostr = request.query.get("echostr", "")
+        if self._encoding_aes_key:
+            expected = verify_signature(self._token, timestamp, nonce, echostr)
+            if expected != signature:
+                return web.Response(status=403, text="Forbidden")
+            try:
+                plain = decrypt_message(self._encoding_aes_key, self._corp_id, echostr)
+            except ValueError:
+                return web.Response(status=403, text="Forbidden")
+            return web.Response(text=plain)
+        # plaintext mode (legacy)
         if self._check_signature(signature, timestamp, nonce):
             return web.Response(text=echostr)
         return web.Response(status=403, text="Forbidden")
 
     async def _webhook(self, request: web.Request) -> web.Response:
         body = await request.text()
+        if self._encoding_aes_key:
+            try:
+                outer = ET.fromstring(body)
+                encrypt = outer.findtext("Encrypt", "")
+                signature = request.query.get("msg_signature", "")
+                timestamp = request.query.get("timestamp", "")
+                nonce = request.query.get("nonce", "")
+                if verify_signature(self._token, timestamp, nonce, encrypt) != signature:
+                    return web.Response(status=403, text="Forbidden")
+                body = decrypt_message(self._encoding_aes_key, self._corp_id, encrypt)
+            except (ET.ParseError, ValueError):
+                return web.Response(text="success")
         try:
             root = ET.fromstring(body)
         except ET.ParseError:
