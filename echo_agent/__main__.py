@@ -176,7 +176,6 @@ def _build_parser() -> argparse.ArgumentParser:
     config_parser.add_argument("key", nargs="?", default="", help="Dotted config key (for explain)")
     config_parser.add_argument("--format", choices=["yaml", "json"], default="yaml",
                                help="Output format for dump (default: yaml)")
-    config_parser.add_argument("--source", action="store_true", help="Annotate value source layer in dump")
     config_parser.add_argument("-c", "--config", help="Path to config file")
     config_parser.add_argument("-w", "--workspace", help="Workspace directory")
 
@@ -275,7 +274,6 @@ def _dispatch() -> None:
             action=args.action,
             key=getattr(args, "key", "") or "",
             fmt=getattr(args, "format", "yaml"),
-            show_source=getattr(args, "source", False),
             config_path=args.config or args.top_config,
             workspace=args.workspace or args.top_workspace,
         )

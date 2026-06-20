@@ -17,7 +17,7 @@ from echo_agent.config.loader import ConfigError, load_config, resolve_config_fi
 from echo_agent.config.metadata import FieldInfo, iter_fields
 from echo_agent.config.schema import Config
 
-SECRET_HINTS: tuple[str, ...] = ("key", "secret", "token", "password")
+SECRET_HINTS: tuple[str, ...] = ("key", "secret", "token", "password", "cred", "auth")
 
 
 def _is_secret(key: str) -> bool:
@@ -31,6 +31,14 @@ def redact(data: Any) -> Any:
         for k, v in data.items():
             if _is_secret(k) and isinstance(v, str) and v:
                 out[k] = "****"
+            elif (
+                _is_secret(k)
+                and isinstance(v, list)
+                and any(isinstance(x, str) and x for x in v)
+            ):
+                # 凭据列表(如 credentialPool 轮换密钥池)整体打码,
+                # 仅替换非空字符串元素,空值保持原样。
+                out[k] = ["****" if isinstance(x, str) and x else x for x in v]
             else:
                 out[k] = redact(v)
         return out
@@ -95,7 +103,7 @@ def _field_by_key(key: str) -> FieldInfo | None:
     return None
 
 
-def _dump(fmt: str, show_source: bool, config_path, workspace) -> int:
+def _dump(fmt: str, config_path, workspace) -> int:
     config_file = resolve_config_file(config_path=config_path, search_dir=workspace)
     config = load_config(config_path=config_file)
     data = redact(config.model_dump(by_alias=True))
@@ -200,12 +208,11 @@ def run_config_command(
     key: str = "",
     *,
     fmt: str = "yaml",
-    show_source: bool = False,
     config_path=None,
     workspace=None,
 ) -> int:
     if action == "dump":
-        return _dump(fmt, show_source, config_path, workspace)
+        return _dump(fmt, config_path, workspace)
     if action == "explain":
         if not key:
             print("用法 / usage: config explain <key>")

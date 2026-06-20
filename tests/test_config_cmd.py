@@ -19,6 +19,42 @@ def test_redact_keeps_empty_values():
     assert out["channels"]["telegram"]["token"] == ""
 
 
+def test_redact_masks_credential_pool_list():
+    # models.providers[].credentialPool 是 list[str] 的轮换密钥池,必须打码
+    data = {"models": {"providers": [
+        {"name": "openai", "credentialPool": ["sk-a", "sk-b"]}
+    ]}}
+    out = redact(data)
+    masked = out["models"]["providers"][0]["credentialPool"]
+    assert masked == ["****"] or all(x == "****" for x in masked)
+    # 非敏感字段保留
+    assert out["models"]["providers"][0]["name"] == "openai"
+
+
+def test_redact_masks_mcp_auth_string():
+    # tools.mcpServers{}.auth 是 MCP 认证凭据(str),必须打码
+    data = {"tools": {"mcpServers": {"fs": {"auth": "bearer-secret"}}}}
+    out = redact(data)
+    assert out["tools"]["mcpServers"]["fs"]["auth"] == "****"
+
+
+def test_redact_keeps_empty_credential_pool():
+    # 空列表不打码,保持现有行为
+    out = redact({"models": {"providers": [{"credentialPool": []}]}})
+    assert out["models"]["providers"][0]["credentialPool"] == []
+
+
+def test_redact_does_not_mask_gateway_auth_block():
+    # gateway.auth 是字典块,其下 mode/allowedUsers 非凭据,不得误打码
+    data = {"gateway": {"auth": {
+        "mode": "allowlist",
+        "allowedUsers": ["alice", "bob"],
+    }}}
+    out = redact(data)
+    assert out["gateway"]["auth"]["mode"] == "allowlist"
+    assert out["gateway"]["auth"]["allowedUsers"] == ["alice", "bob"]
+
+
 def test_dump_prints_yaml(capsys):
     rc = run_config_command("dump")
     assert rc == 0
