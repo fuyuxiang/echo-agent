@@ -580,6 +580,8 @@ planning:
   defaultStrategy: auto
   # 规划树最大深度 (默认: 5)
   maxTreeDepth: 5
+  # 思维树(ToT)策略探索的候选分支数 (默认: 3)
+  maxBranches: 3
   # 是否启用规划反思 (默认: true)
   reflectionEnabled: true
 

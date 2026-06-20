@@ -2796,8 +2796,9 @@ class PlanningConfig(_Base):
     max_branches: int = Field(
         default=3,
         json_schema_extra={
-            "status": "dead", "disposition": "fix",
-            "reason": "未传入 planner 构造(loop.py 只接 default_strategy/max_tree_depth/reflection_enabled)",
+            "status": "effective", "ref": "agent/planning/strategies.py:131",
+            "desc_zh": "思维树(ToT)策略探索的候选分支数",
+            "desc_en": "Number of candidate branches the Tree-of-Thought strategy explores",
         },
     )
     reflection_enabled: bool = Field(

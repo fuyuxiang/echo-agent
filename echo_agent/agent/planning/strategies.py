@@ -127,14 +127,19 @@ class PlanExecuteStrategy(PlanningStrategy):
 class TreeOfThoughtStrategy(PlanningStrategy):
     """思维树策略：探索多条推理路径，选择最优方案。"""
 
+    def __init__(self, llm_call, max_branches: int = 3):
+        super().__init__(llm_call)
+        self._max_branches = max_branches
+
     async def plan(self, query: str, tools: list[dict], context: str) -> Plan:
-        # Generate 3 candidate plans, score them, pick best
+        # Generate N candidate plans, score them, pick best
         candidates: list[Plan] = []
-        for candidate_index in range(3):
+        n = self._max_branches
+        for candidate_index in range(n):
             try:
                 response = await self._llm_call(
                     messages=[
-                        {"role": "system", "content": f"Create approach #{candidate_index+1} (of 3 different approaches). Call create_plan."},
+                        {"role": "system", "content": f"Create approach #{candidate_index+1} (of {n} different approaches). Call create_plan."},
                         {"role": "user", "content": f"Task: {query}"},
                     ],
                     tools=_PLAN_TOOL,

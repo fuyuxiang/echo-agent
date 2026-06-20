@@ -377,6 +377,7 @@
 | `planning.enabled` | `planning.enabled` | bool | `true` | — | Enable task planning |
 | `planning.defaultStrategy` | `planning.default_strategy` | str | `auto` | — | Default planning strategy |
 | `planning.maxTreeDepth` | `planning.max_tree_depth` | int | `5` | — | Maximum planning tree depth |
+| `planning.maxBranches` | `planning.max_branches` | int | `3` | — | Number of candidate branches the Tree-of-Thought strategy explores |
 | `planning.reflectionEnabled` | `planning.reflection_enabled` | bool | `true` | — | Enable planning reflection |
 
 ## a2A
