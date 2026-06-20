@@ -248,6 +248,8 @@
 | `memory.snapshotEnabled` | `memory.snapshot_enabled` | bool | `true` | — | Inject memory snapshots into context |
 | `memory.contradictionDetection` | `memory.contradiction_detection` | bool | `true` | — | Enable memory contradiction detection |
 | `memory.sleepConsolidation` | `memory.sleep_consolidation` | bool | `true` | — | Enable idle-time (sleep) memory consolidation |
+| `memory.archivalThreshold` | `memory.archival_threshold` | float | `0.05` | — | Archival score threshold; entries below it move to the archival tier |
+| `memory.forgetThreshold` | `memory.forget_threshold` | float | `0.01` | — | Forget score threshold; entries below it are forgotten |
 | `memory.maxWorkingMemory` | `memory.max_working_memory` | int | `20` | — | Maximum working-memory entries |
 | `memory.embeddingModel` | `memory.embedding_model` | str | `""` | — | Embedding model used for memory vectorization |
 | `memory.embedTimeoutSeconds` | `memory.embed_timeout_seconds` | float | `1.5` | — | Query-embedding timeout (seconds); falls back to keyword search on timeout |

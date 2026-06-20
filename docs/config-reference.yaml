@@ -405,6 +405,10 @@ memory:
   contradictionDetection: true
   # 是否启用空闲期记忆整合 (默认: true)
   sleepConsolidation: true
+  # 记忆归档分数阈值,低于此值进入归档层 (默认: 0.05)
+  archivalThreshold: 0.05
+  # 记忆遗忘分数阈值,低于此值被遗忘 (默认: 0.01)
+  forgetThreshold: 0.01
   # 工作记忆条目上限 (默认: 20)
   maxWorkingMemory: 20
   # 记忆向量化使用的嵌入模型 (默认: "")

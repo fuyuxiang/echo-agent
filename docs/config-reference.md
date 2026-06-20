@@ -248,6 +248,8 @@
 | `memory.snapshotEnabled` | `memory.snapshot_enabled` | bool | `true` | — | 是否启用记忆快照注入上下文 |
 | `memory.contradictionDetection` | `memory.contradiction_detection` | bool | `true` | — | 是否启用记忆矛盾检测 |
 | `memory.sleepConsolidation` | `memory.sleep_consolidation` | bool | `true` | — | 是否启用空闲期记忆整合 |
+| `memory.archivalThreshold` | `memory.archival_threshold` | float | `0.05` | — | 记忆归档分数阈值,低于此值进入归档层 |
+| `memory.forgetThreshold` | `memory.forget_threshold` | float | `0.01` | — | 记忆遗忘分数阈值,低于此值被遗忘 |
 | `memory.maxWorkingMemory` | `memory.max_working_memory` | int | `20` | — | 工作记忆条目上限 |
 | `memory.embeddingModel` | `memory.embedding_model` | str | `""` | — | 记忆向量化使用的嵌入模型 |
 | `memory.embedTimeoutSeconds` | `memory.embed_timeout_seconds` | float | `1.5` | — | 查询向量化的单次超时(秒),超时降级为关键词检索 |

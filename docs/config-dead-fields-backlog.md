@@ -11,8 +11,6 @@
 | `session.archive_after_hours` | 构造 SessionManager 时未传,代码用默认 168 |
 | `memory.hybrid_retrieval` | HybridRetriever 在 loop.py:414 无条件构造,开关不控制任何分支 |
 | `memory.adaptive_forgetting` | 遗忘曲线在 store.py:172 无条件创建,开关不生效 |
-| `memory.archival_threshold` | store.py:174 硬编码 0.05,配置值未传入 ForgettingCurve |
-| `memory.forget_threshold` | store.py:175 硬编码 0.01,配置值未传入 |
 | `knowledge.require_citations` | 引用始终生成(index.py 无条件输出 citation),开关不生效 |
 | `storage.backend` | app.py:71 永远构造 SQLiteBackend,filesystem 后端不存在,此开关无效 |
 | `observability.trace_enabled` | 仅向导提示用,运行时 TraceLogger 在 loop.py 无条件构造,开关不生效 |
