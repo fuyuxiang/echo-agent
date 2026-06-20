@@ -77,3 +77,20 @@ def test_validate_warns_dead_field(tmp_path, capsys):
     out = capsys.readouterr().out
     # 用户显式设了死字段 → 警告不生效(但配置本身合法,rc 可为 0)
     assert "backend" in out and ("未生效" in out or "not in effect" in out.lower())
+
+
+def test_parser_accepts_config_subcommand():
+    from echo_agent.__main__ import _build_parser
+    parser = _build_parser()
+    args = parser.parse_args(["config", "explain", "memory.enabled"])
+    assert args.command == "config"
+    assert args.action == "explain"
+    assert args.key == "memory.enabled"
+
+
+def test_parser_config_dump_format():
+    from echo_agent.__main__ import _build_parser
+    parser = _build_parser()
+    args = parser.parse_args(["config", "dump", "--format", "json"])
+    assert args.action == "dump"
+    assert args.format == "json"

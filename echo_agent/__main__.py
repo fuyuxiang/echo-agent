@@ -166,6 +166,20 @@ def _build_parser() -> argparse.ArgumentParser:
     evo_parser.add_argument("-c", "--config", help="Path to config file")
     evo_parser.add_argument("-w", "--workspace", help="Workspace directory")
 
+    # config
+    config_parser = subparsers.add_parser("config", help="Inspect and validate configuration")
+    config_parser.add_argument(
+        "action",
+        choices=["dump", "explain", "validate", "gen-docs"],
+        help="Config action",
+    )
+    config_parser.add_argument("key", nargs="?", default="", help="Dotted config key (for explain)")
+    config_parser.add_argument("--format", choices=["yaml", "json"], default="yaml",
+                               help="Output format for dump (default: yaml)")
+    config_parser.add_argument("--source", action="store_true", help="Annotate value source layer in dump")
+    config_parser.add_argument("-c", "--config", help="Path to config file")
+    config_parser.add_argument("-w", "--workspace", help="Workspace directory")
+
     # top-level flags for backward compat
     parser.add_argument("-c", "--config", help="Path to config file", dest="top_config")
     parser.add_argument("-w", "--workspace", help="Workspace directory", dest="top_workspace")
@@ -253,6 +267,19 @@ def _dispatch() -> None:
         except KeyboardInterrupt:
             pass
         return
+
+    if args.command == "config":
+        from echo_agent.cli.config_cmd import run_config_command
+        import sys as _sys
+        rc = run_config_command(
+            action=args.action,
+            key=getattr(args, "key", "") or "",
+            fmt=getattr(args, "format", "yaml"),
+            show_source=getattr(args, "source", False),
+            config_path=args.config or args.top_config,
+            workspace=args.workspace or args.top_workspace,
+        )
+        _sys.exit(rc)
 
     # "run" command or no command (backward compat)
     config_path = getattr(args, "config", None) or args.top_config
