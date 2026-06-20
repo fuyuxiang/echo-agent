@@ -6,7 +6,7 @@ from typing import Any
 
 from echo_agent.agent.media.document_extract import extract
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
-from echo_agent.security.path_policy import check_read
+from echo_agent.security.path_policy import check_read, resolve_path
 
 
 class ReadDocumentTool(Tool):
@@ -39,6 +39,12 @@ class ReadDocumentTool(Tool):
         violation = check_read(path, self._workspace)
         if violation:
             return ToolResult(success=False, error=violation)
+        if self._restrict:
+            resolved = resolve_path(path, self._workspace)
+            try:
+                resolved.relative_to(self._workspace)
+            except ValueError:
+                return ToolResult(success=False, error=f"Path {path} is outside workspace {self._workspace}")
         res = extract(path, max_chars=params.get("max_chars"), unit=params.get("unit"))
         if not res.text:
             err = res.meta.get("error") or f"no extractable text ({res.meta.get('format')})"

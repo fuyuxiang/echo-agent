@@ -215,6 +215,19 @@ class TestInboundDownload:
         assert out[1]["url"] == "https://cdn/v.mp4"
 
     @pytest.mark.asyncio
+    async def test_file_not_downloaded_when_doc_disabled(self, tmp_path: Path):
+        # doc_enabled=False 时，file 附件不应进下载队列。
+        cb = ContextBuilder(workspace=tmp_path, doc_enabled=False)
+        fake_cache = AsyncMock()
+        fake_cache.download.return_value = tmp_path / "r.txt"
+        cb._media_cache = fake_cache
+        blocks = [
+            ContentBlock(type=ContentType.FILE, url="https://cdn/r.txt", metadata={"name": "r.txt"}),
+        ]
+        await cb.resolve_inbound_media(blocks, channel="weixin")
+        assert fake_cache.download.await_count == 0
+
+    @pytest.mark.asyncio
     async def test_small_document_text_injected(self, tmp_path: Path):
         cb = ContextBuilder(workspace=tmp_path, doc_max_chars=8000)
         local = tmp_path / "note.txt"
