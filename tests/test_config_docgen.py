@@ -44,6 +44,14 @@ def test_yaml_is_parseable():
     assert isinstance(parsed, dict)
 
 
+def test_yaml_roundtrip_preserves_none_and_bool():
+    # 往返保真:None 默认值必须解析回 None(而非字符串 "None"),
+    # 布尔默认值必须解析回真正的 bool(而非字符串 "True"/"False")。
+    parsed = yaml.safe_load(render_yaml("zh"))
+    assert parsed["channels"]["telegram"]["proxy"] is None
+    assert parsed["channels"]["telegram"]["enabled"] is False
+
+
 def test_markdown_includes_container_element_field():
     out = render_markdown("zh")
     # Markdown 渲染全部三类字段,含容器元素字段路径

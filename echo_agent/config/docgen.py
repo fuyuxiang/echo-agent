@@ -28,6 +28,11 @@ def _desc(info: FieldInfo, lang: str) -> str:
 def _fmt_default(default: object) -> str:
     if default == "":
         return '""'
+    if default is None:
+        return "null"
+    # bool 必须在任何 int 判断之前(Python 中 bool 是 int 子类)。
+    if isinstance(default, bool):
+        return "true" if default else "false"
     if isinstance(default, (list, dict)) and not default:
         return "[]" if isinstance(default, list) else "{}"
     return str(default)
