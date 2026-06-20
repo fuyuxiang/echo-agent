@@ -12,7 +12,7 @@ from typing import Any
 
 import yaml
 
-from echo_agent.config.docgen import render_markdown, render_yaml
+from echo_agent.config.docgen import render_backlog, render_markdown, render_yaml
 from echo_agent.config.loader import ConfigError, load_config, resolve_config_file
 from echo_agent.config.metadata import FieldInfo, iter_fields
 from echo_agent.config.schema import Config
@@ -185,13 +185,14 @@ def _validate(config_path, workspace) -> int:
 
 
 def gen_docs(out_dir: str = "docs") -> None:
-    """Developer command: write the four reference files."""
+    """Developer command: write the reference files and dead-field backlog."""
     base = Path(out_dir)
     base.mkdir(parents=True, exist_ok=True)
     (base / "config-reference.yaml").write_text(render_yaml("zh"), encoding="utf-8")
     (base / "config-reference.en.yaml").write_text(render_yaml("en"), encoding="utf-8")
     (base / "config-reference.md").write_text(render_markdown("zh"), encoding="utf-8")
     (base / "config-reference.en.md").write_text(render_markdown("en"), encoding="utf-8")
+    (base / "config-dead-fields-backlog.md").write_text(render_backlog(), encoding="utf-8")
 
 
 def run_config_command(
