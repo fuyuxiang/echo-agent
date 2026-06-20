@@ -66,6 +66,9 @@ SKILL_DEPS: dict[str, tuple[str, ...]] = {
     "skill.ocr-document.docx": ("python-docx>=1.1",),
     "skill.ocr-document.image": ("Pillow>=10.0", "pytesseract>=0.3"),
 
+    # ─── Inbound document parsing (read side) ─────────────────────────────
+    "media.document": ("pymupdf>=1.24", "python-docx>=1.1", "openpyxl>=3.1", "python-pptx>=1.0"),
+
     # ─── Utility skills ───────────────────────────────────────────────────
     "skill.file-convert": ("pyyaml>=6.0",),
     "skill.file-convert.md": ("markdown>=3.6",),
