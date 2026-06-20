@@ -149,6 +149,8 @@ class MemoryStore:
         storage: Any = None,
         scope_policy: str = "legacy",
         contradiction_scan_on_store: bool = False,
+        archival_threshold: float = 0.05,
+        forget_threshold: float = 0.01,
     ):
         self.memory_dir = memory_dir
         self.memory_dir.mkdir(parents=True, exist_ok=True)
@@ -171,8 +173,8 @@ class MemoryStore:
         self._load()
         self._forgetting = ForgettingCurve(
             base_half_life_days=decay_half_life_days,
-            archive_threshold=0.05,
-            forget_threshold=0.01,
+            archive_threshold=archival_threshold,
+            forget_threshold=forget_threshold,
         )
         self._vector_index = None  # set externally via set_vector_index()
         self._retriever = None  # set externally via set_retriever()

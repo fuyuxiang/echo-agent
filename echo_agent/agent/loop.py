@@ -107,6 +107,8 @@ class AgentLoop:
             storage=storage,
             scope_policy=config.memory.scope_policy,
             contradiction_scan_on_store=config.memory.contradiction_scan_on_store,
+            archival_threshold=config.memory.archival_threshold,
+            forget_threshold=config.memory.forget_threshold,
         )
         self.tools = ToolRegistry(
             audit_log_path=workspace / config.storage.logs_dir / "tool_audit.jsonl",
