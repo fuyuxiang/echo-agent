@@ -474,6 +474,8 @@ storage:
 observability:
   # Logging level (default: INFO)
   logLevel: INFO
+  # Whether to record execution traces (off disables trace files) (default: true)
+  traceEnabled: true
   # Health check interval (seconds) (default: 60)
   healthCheckIntervalSeconds: 60
   # Enable OpenTelemetry metrics export (default: true)

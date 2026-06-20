@@ -12,7 +12,6 @@
 | `memory.adaptive_forgetting` | 遗忘曲线在 store.py:172 无条件创建,开关不生效 |
 | `knowledge.require_citations` | 引用始终生成(index.py 无条件输出 citation),开关不生效 |
 | `storage.backend` | app.py:71 永远构造 SQLiteBackend,filesystem 后端不存在,此开关无效 |
-| `observability.trace_enabled` | 仅向导提示用,运行时 TraceLogger 在 loop.py 无条件构造,开关不生效 |
 | `gateway.platforms{}.enabled` | server.py:90 平台循环只读 rate_limit_rpm,enabled 从不检查,禁用平台无效 |
 | `gateway.enable_progressive_edit` | ProgressiveEditor 在 server.py:85 无条件实例化,此开关从不被读;真正开关是 emit_progress_events |
 | `planning.max_branches` | 未传入 planner 构造(loop.py 只接 default_strategy/max_tree_depth/reflection_enabled) |

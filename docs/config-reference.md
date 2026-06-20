@@ -310,6 +310,7 @@
 | 字段 | snake | type | default | choices | 说明 |
 |---|---|---|---|---|---|
 | `observability.logLevel` | `observability.log_level` | str | `INFO` | — | 日志级别 |
+| `observability.traceEnabled` | `observability.trace_enabled` | bool | `true` | — | 是否记录执行轨迹(关闭则不写 trace 文件) |
 | `observability.healthCheckIntervalSeconds` | `observability.health_check_interval_seconds` | int | `60` | — | 健康检查间隔(秒) |
 | `observability.otelEnabled` | `observability.otel_enabled` | bool | `true` | — | 是否启用 OpenTelemetry 指标导出 |
 | `observability.otelEndpoint` | `observability.otel_endpoint` | str | `""` | — | OpenTelemetry 导出端点 |

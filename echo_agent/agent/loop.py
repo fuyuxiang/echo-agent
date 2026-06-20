@@ -170,7 +170,10 @@ class AgentLoop:
             require_encryption=config.credentials.require_encryption,
             key_path=workspace / ".credential_key",
         )
-        self.tracer = TraceLogger(logs_dir=workspace / config.storage.logs_dir)
+        self.tracer = TraceLogger(
+            logs_dir=workspace / config.storage.logs_dir,
+            enabled=config.observability.trace_enabled,
+        )
         self.consolidator = MemoryConsolidator(
             memory_store=self.memory,
             llm_call=self.provider.chat_with_retry,
