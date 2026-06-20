@@ -267,6 +267,10 @@ tools:
   restrictToWorkspace: false
   # Root directory under which writes are permitted (default: "")
   safeWriteRoot: ""
+  # Auto download, decrypt and parse inbound document attachments (default: true)
+  inboundDocumentEnabled: true
+  # Char cap for auto-injecting inbound document text; beyond it, inject a summary and hint read_document (default: 8000)
+  inboundDocumentMaxChars: 8000
   # MCP server configurations keyed by name (default: {})
   mcpServers: {}
   # MCP tool security policy: warn or block (default: block) [warn|block]

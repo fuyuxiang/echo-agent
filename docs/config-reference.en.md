@@ -154,6 +154,8 @@
 | `tools.web.allowPrivateAddresses` | `tools.web.allow_private_addresses` | bool | `false` | — | Allow web_fetch to reach private/loopback addresses (SSRF risk) |
 | `tools.restrictToWorkspace` | `tools.restrict_to_workspace` | bool | `false` | — | Restrict file operations to the workspace |
 | `tools.safeWriteRoot` | `tools.safe_write_root` | str | `""` | — | Root directory under which writes are permitted |
+| `tools.inboundDocumentEnabled` | `tools.inbound_document_enabled` | bool | `true` | — | Auto download, decrypt and parse inbound document attachments |
+| `tools.inboundDocumentMaxChars` | `tools.inbound_document_max_chars` | int | `8000` | — | Char cap for auto-injecting inbound document text; beyond it, inject a summary and hint read_document |
 | `tools.mcpServers` | `tools.mcp_servers` | dict | `{}` | — | MCP server configurations keyed by name |
 | `tools.mcpServers{}.command` | `tools.mcp_servers{}.command` | str | `""` | — | Command launching the MCP server over stdio |
 | `tools.mcpServers{}.args` | `tools.mcp_servers{}.args` | list | `[]` | — | Arguments for the MCP server launch command |

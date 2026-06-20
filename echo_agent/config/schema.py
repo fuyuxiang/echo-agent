@@ -1403,6 +1403,25 @@ class ToolsConfig(_Base):
             "desc_en": "Root directory under which writes are permitted",
         },
     )
+    inbound_document_enabled: bool = Field(
+        True,
+        json_schema_extra={
+            "status": "effective",
+            "ref": "agent/context.py:resolve_inbound_media",
+            "desc_zh": "是否自动下载、解密并解析入站文档附件(docx/xlsx/pptx/pdf)",
+            "desc_en": "Auto download, decrypt and parse inbound document attachments",
+        },
+    )
+    inbound_document_max_chars: int = Field(
+        8000,
+        ge=0,
+        json_schema_extra={
+            "status": "effective",
+            "ref": "agent/context.py:build_messages",
+            "desc_zh": "入站文档自动注入正文的字符上限,超出则注入摘要并提示用 read_document 读全文",
+            "desc_en": "Char cap for auto-injecting inbound document text; beyond it, inject a summary and hint read_document",
+        },
+    )
     mcp_servers: dict[str, MCPServerConfig] = Field(
         default_factory=dict,
         json_schema_extra={
