@@ -580,6 +580,8 @@ planning:
   defaultStrategy: auto
   # Maximum planning tree depth (default: 5)
   maxTreeDepth: 5
+  # Number of candidate branches the Tree-of-Thought strategy explores (default: 3)
+  maxBranches: 3
   # Enable planning reflection (default: true)
   reflectionEnabled: true
 

@@ -16,6 +16,7 @@ class AgentPlanner:
         default_strategy: str = "auto",
         max_tree_depth: int = 5,
         reflection_enabled: bool = True,
+        max_branches: int = 3,
     ):
         self._llm_call = llm_call
         self._default_strategy = default_strategy
@@ -24,7 +25,7 @@ class AgentPlanner:
         self._strategies: dict[StrategyType, PlanningStrategy] = {
             StrategyType.REACT: ReactStrategy(llm_call),
             StrategyType.PLAN_EXECUTE: PlanExecuteStrategy(llm_call),
-            StrategyType.TREE_OF_THOUGHT: TreeOfThoughtStrategy(llm_call),
+            StrategyType.TREE_OF_THOUGHT: TreeOfThoughtStrategy(llm_call, max_branches=max_branches),
             StrategyType.LATS: LATSStrategy(llm_call),
         }
 

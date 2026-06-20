@@ -198,6 +198,7 @@ class AgentLoop:
                 default_strategy=config.planning.default_strategy,
                 max_tree_depth=config.planning.max_tree_depth,
                 reflection_enabled=config.planning.reflection_enabled,
+                max_branches=config.planning.max_branches,
             )
             if storage is not None:
                 from echo_agent.agent.planning.plan_run_store import PlanRunStore

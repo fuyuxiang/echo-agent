@@ -377,6 +377,7 @@
 | `planning.enabled` | `planning.enabled` | bool | `true` | — | 是否启用任务规划 |
 | `planning.defaultStrategy` | `planning.default_strategy` | str | `auto` | — | 默认规划策略 |
 | `planning.maxTreeDepth` | `planning.max_tree_depth` | int | `5` | — | 规划树最大深度 |
+| `planning.maxBranches` | `planning.max_branches` | int | `3` | — | 思维树(ToT)策略探索的候选分支数 |
 | `planning.reflectionEnabled` | `planning.reflection_enabled` | bool | `true` | — | 是否启用规划反思 |
 
 ## a2A
