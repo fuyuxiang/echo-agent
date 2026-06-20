@@ -2839,8 +2839,9 @@ class A2AConfig(_Base):
     capabilities: list[str] = Field(
         default_factory=lambda: ["chat", "tool_use"],
         json_schema_extra={
-            "status": "dead", "disposition": "fix",
-            "reason": "AgentCard 构造时未用,改用 a2a/models.py 默认值",
+            "status": "effective", "ref": "gateway/server.py:212",
+            "desc_zh": "A2A AgentCard 对外声明的能力标签",
+            "desc_en": "Capability tags advertised in the A2A AgentCard",
         },
     )
 

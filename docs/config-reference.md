@@ -387,6 +387,7 @@
 | `a2A.enabled` | `a2a.enabled` | bool | `true` | — | 是否启用 A2A(agent-to-agent)接口 |
 | `a2A.agentName` | `a2a.agent_name` | str | `echo-agent` | — | 对外暴露的 A2A 代理名 |
 | `a2A.agentDescription` | `a2a.agent_description` | str | `A modular AI agent framework` | — | 对外暴露的 A2A 代理描述 |
+| `a2A.capabilities` | `a2a.capabilities` | list | `['chat', 'tool_use']` | — | A2A AgentCard 对外声明的能力标签 |
 
 ## evaluation
 

@@ -593,6 +593,8 @@ a2A:
   agentName: echo-agent
   # Agent description exposed over A2A (default: A modular AI agent framework)
   agentDescription: A modular AI agent framework
+  # Capability tags advertised in the A2A AgentCard (default: ['chat', 'tool_use'])
+  capabilities: ['chat', 'tool_use']
 
 # ── evaluation ──
 evaluation:

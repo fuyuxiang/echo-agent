@@ -213,6 +213,7 @@ class GatewayServer:
                 name=self._a2a_config.agent_name,
                 description=self._a2a_config.agent_description,
                 url=f"http://{self._config.host}:{self._config.port}",
+                capabilities=self._a2a_config.capabilities,
             )
             a2a = A2AServer(
                 self._agent_loop,
