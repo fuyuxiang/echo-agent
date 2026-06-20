@@ -267,6 +267,10 @@ tools:
   restrictToWorkspace: false
   # 允许写入的根目录 (默认: "")
   safeWriteRoot: ""
+  # 是否自动下载、解密并解析入站文档附件(docx/xlsx/pptx/pdf) (默认: true)
+  inboundDocumentEnabled: true
+  # 入站文档自动注入正文的字符上限,超出则注入摘要并提示用 read_document 读全文 (默认: 8000)
+  inboundDocumentMaxChars: 8000
   # MCP 服务配置(键为服务名) (默认: {})
   mcpServers: {}
   # MCP 工具安全策略:warn 仅告警,block 拦截 (默认: block) [warn|block]

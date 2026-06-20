@@ -154,6 +154,8 @@
 | `tools.web.allowPrivateAddresses` | `tools.web.allow_private_addresses` | bool | `false` | — | 是否允许 web_fetch 访问私有/回环地址(SSRF 风险) |
 | `tools.restrictToWorkspace` | `tools.restrict_to_workspace` | bool | `false` | — | 是否将文件操作限制在工作区内 |
 | `tools.safeWriteRoot` | `tools.safe_write_root` | str | `""` | — | 允许写入的根目录 |
+| `tools.inboundDocumentEnabled` | `tools.inbound_document_enabled` | bool | `true` | — | 是否自动下载、解密并解析入站文档附件(docx/xlsx/pptx/pdf) |
+| `tools.inboundDocumentMaxChars` | `tools.inbound_document_max_chars` | int | `8000` | — | 入站文档自动注入正文的字符上限,超出则注入摘要并提示用 read_document 读全文 |
 | `tools.mcpServers` | `tools.mcp_servers` | dict | `{}` | — | MCP 服务配置(键为服务名) |
 | `tools.mcpServers{}.command` | `tools.mcp_servers{}.command` | str | `""` | — | stdio 传输方式下启动 MCP 服务的命令 |
 | `tools.mcpServers{}.args` | `tools.mcp_servers{}.args` | list | `[]` | — | 启动 MCP 服务命令的参数 |
