@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "echo-agent"
-version = "0.2.3"
+version = "0.3.0"
 description = "A self-hosted, long-running AI agent runtime with memory, skills, plugins, and multi-channel integrations"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,7 +12,7 @@ license = { text = "MIT" }
 authors = [{ name = "Echo Agent contributors" }]
 keywords = ["ai", "agent", "runtime", "memory", "plugins", "mcp"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Environment :: Web Environment",
     "Framework :: AsyncIO",
