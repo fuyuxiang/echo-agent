@@ -199,22 +199,84 @@ class TestInboundDownload:
         assert out[0]["url"] == "https://cdn/x.jpg"
 
     @pytest.mark.asyncio
-    async def test_non_image_media_not_downloaded(self, tmp_path: Path):
+    async def test_file_downloaded_video_audio_not(self, tmp_path: Path):
         cb = ContextBuilder(workspace=tmp_path)
         fake_cache = AsyncMock()
+        fake_cache.download.return_value = tmp_path / "r.txt"
+        (tmp_path / "r.txt").write_text("doc body text", encoding="utf-8")
         cb._media_cache = fake_cache
-
         blocks = [
-            ContentBlock(type=ContentType.FILE, url="https://cdn/r.pdf", metadata={"name": "r.pdf"}),
+            ContentBlock(type=ContentType.FILE, url="https://cdn/r.txt", metadata={"name": "r.txt"}),
             ContentBlock(type=ContentType.VIDEO, url="https://cdn/v.mp4"),
         ]
         out = await cb.resolve_inbound_media(blocks, channel="weixin")
-
-        # 模型无法消费文件/视频字节，不应浪费带宽下载，原始 URL 透传。
-        fake_cache.download.assert_not_called()
-        assert out[0]["url"] == "https://cdn/r.pdf"
-        assert out[0]["name"] == "r.pdf"
+        # file 进下载队列；video 不进
+        assert fake_cache.download.await_count == 1
         assert out[1]["url"] == "https://cdn/v.mp4"
+
+    @pytest.mark.asyncio
+    async def test_small_document_text_injected(self, tmp_path: Path):
+        cb = ContextBuilder(workspace=tmp_path, doc_max_chars=8000)
+        local = tmp_path / "note.txt"
+        local.write_text("MEETING_MINUTES_BODY", encoding="utf-8")
+        fake_cache = AsyncMock()
+        fake_cache.download.return_value = local
+        cb._media_cache = fake_cache
+        blocks = [ContentBlock(type=ContentType.FILE, url="https://cdn/note.txt",
+                               metadata={"name": "note.txt"})]
+        resolved = await cb.resolve_inbound_media(blocks, channel="weixin")
+        msgs = cb.build_messages(history=[], current_message="总结一下", media=resolved)
+        text = msgs[-1]["content"][0]["text"]
+        assert "MEETING_MINUTES_BODY" in text
+
+    @pytest.mark.asyncio
+    async def test_large_document_summarized_with_hint(self, tmp_path: Path):
+        cb = ContextBuilder(workspace=tmp_path, doc_max_chars=50)
+        local = tmp_path / "big.txt"
+        local.write_text("y" * 5000, encoding="utf-8")
+        fake_cache = AsyncMock()
+        fake_cache.download.return_value = local
+        cb._media_cache = fake_cache
+        blocks = [ContentBlock(type=ContentType.FILE, url="https://cdn/big.txt",
+                               metadata={"name": "big.txt"})]
+        resolved = await cb.resolve_inbound_media(blocks, channel="weixin")
+        msgs = cb.build_messages(history=[], current_message="读这个", media=resolved)
+        text = msgs[-1]["content"][0]["text"]
+        assert "read_document" in text
+        assert len([c for c in text if c == "y"]) <= 60  # 截断生效
+
+    @pytest.mark.asyncio
+    async def test_file_with_aes_key_decrypted(self, tmp_path: Path):
+        cb = ContextBuilder(workspace=tmp_path)
+        local = tmp_path / "enc.txt"
+        local.write_text("ENC", encoding="utf-8")
+        fake_cache = AsyncMock()
+        fake_cache.download.return_value = local
+        cb._media_cache = fake_cache
+        called = {}
+        def spy(path, key):
+            called["key"] = key
+            return path
+        cb._decrypt_media_file = spy
+        blocks = [ContentBlock(type=ContentType.FILE, url="https://cdn/enc.docx",
+                               metadata={"name": "enc.docx", "aes_key": "QUJDREVGR0hJSktMTU5P"})]
+        await cb.resolve_inbound_media(blocks, channel="weixin")
+        assert called.get("key") == "QUJDREVGR0hJSktMTU5P"
+
+    @pytest.mark.asyncio
+    async def test_extract_failure_falls_back_to_note(self, tmp_path: Path):
+        cb = ContextBuilder(workspace=tmp_path)
+        local = tmp_path / "broken.docx"
+        local.write_bytes(b"not a real docx")
+        fake_cache = AsyncMock()
+        fake_cache.download.return_value = local
+        cb._media_cache = fake_cache
+        blocks = [ContentBlock(type=ContentType.FILE, url="https://cdn/broken.docx",
+                               metadata={"name": "broken.docx"})]
+        resolved = await cb.resolve_inbound_media(blocks, channel="weixin")
+        msgs = cb.build_messages(history=[], current_message="x", media=resolved)
+        text = msgs[-1]["content"][0]["text"]
+        assert "[附件]" in text and "broken.docx" in text
 
     @pytest.mark.asyncio
     async def test_local_path_not_downloaded(self, tmp_path: Path):
