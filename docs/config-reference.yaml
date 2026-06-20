@@ -593,6 +593,8 @@ a2A:
   agentName: echo-agent
   # 对外暴露的 A2A 代理描述 (默认: A modular AI agent framework)
   agentDescription: A modular AI agent framework
+  # A2A AgentCard 对外声明的能力标签 (默认: ['chat', 'tool_use'])
+  capabilities: ['chat', 'tool_use']
 
 # ── evaluation ──
 evaluation:

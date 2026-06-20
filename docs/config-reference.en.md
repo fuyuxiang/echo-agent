@@ -387,6 +387,7 @@
 | `a2A.enabled` | `a2a.enabled` | bool | `true` | — | Enable the A2A (agent-to-agent) interface |
 | `a2A.agentName` | `a2a.agent_name` | str | `echo-agent` | — | Agent name exposed over A2A |
 | `a2A.agentDescription` | `a2a.agent_description` | str | `A modular AI agent framework` | — | Agent description exposed over A2A |
+| `a2A.capabilities` | `a2a.capabilities` | list | `['chat', 'tool_use']` | — | Capability tags advertised in the A2A AgentCard |
 
 ## evaluation
 
