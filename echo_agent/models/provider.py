@@ -79,7 +79,6 @@ class GenerationParams:
 class LLMProvider(ABC):
     """Abstract base for LLM providers (OpenAI, Anthropic, etc.)."""
 
-    _RETRY_DELAYS = (1, 2, 4)
     # Status codes are matched with word boundaries so a "429" inside a URL or
     # request id does not misclassify the error.
     _TRANSIENT_CODE_RE = re.compile(r"\b(429|500|502|503|504)\b")
@@ -94,6 +93,7 @@ class LLMProvider(ABC):
         # Hard cap per attempt — a stalled request must never hold the
         # per-session lock forever. Wired from ProviderConfig.timeout_seconds.
         self.request_timeout: float = 120.0
+        self.max_retries: int = 3
 
     @abstractmethod
     async def chat(
@@ -189,9 +189,13 @@ class LLMProvider(ABC):
         # so a stalled stream cannot brick the session.
         return self.request_timeout * 5 if self.request_timeout else None
 
+    def _retry_delays(self) -> list[float]:
+        # Exponential backoff base delays; length == retry attempts.
+        return [float(2 ** i) for i in range(max(1, self.max_retries))]
+
     async def chat_with_retry(self, **kwargs: Any) -> LLMResponse:
         timeout = self.request_timeout or None
-        for attempt, base_delay in enumerate(self._RETRY_DELAYS):
+        for attempt, base_delay in enumerate(self._retry_delays()):
             try:
                 response = await asyncio.wait_for(self.chat(**kwargs), timeout=timeout)
             except asyncio.CancelledError:
@@ -265,7 +269,7 @@ class LLMProvider(ABC):
                 **kwargs,
             )
 
-        for attempt, base_delay in enumerate(self._RETRY_DELAYS):
+        for attempt, base_delay in enumerate(self._retry_delays()):
             emitted = False
             try:
                 response = await asyncio.wait_for(_stream_call(), timeout=timeout)

@@ -115,6 +115,7 @@
 | `models.providers[].apiBase` | `models.providers[].api_base` | str | `""` | — | Provider API base URL |
 | `models.providers[].models` | `models.providers[].models` | list | `[]` | — | Models served by this provider |
 | `models.providers[].extraHeaders` | `models.providers[].extra_headers` | dict | `{}` | — | Extra HTTP headers attached to requests |
+| `models.providers[].maxRetries` | `models.providers[].max_retries` | int | `3` | — | Max retries on transient errors (exponential backoff) |
 | `models.providers[].timeoutSeconds` | `models.providers[].timeout_seconds` | int | `120` | — | Per-request timeout (seconds) |
 | `models.providers[].rateLimitRpm` | `models.providers[].rate_limit_rpm` | int | `0` | — | Provider request-per-minute cap (0 = unlimited) |
 | `models.providers[].credentialPool` | `models.providers[].credential_pool` | list | `[]` | — | Pool of API keys rotated for this provider |

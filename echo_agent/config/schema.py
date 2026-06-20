@@ -870,8 +870,9 @@ class ProviderConfig(_Base):
     max_retries: int = Field(
         default=3,
         json_schema_extra={
-            "status": "dead", "disposition": "fix",
-            "reason": "重试硬编码在 LLMProvider._RETRY_DELAYS,该配置无效果",
+            "status": "effective", "ref": "models/providers/__init__.py:125",
+            "desc_zh": "瞬时错误时的最大重试次数(指数退避)",
+            "desc_en": "Max retries on transient errors (exponential backoff)",
         },
     )
     timeout_seconds: int = Field(
