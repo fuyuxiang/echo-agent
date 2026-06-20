@@ -1,15 +1,5 @@
 # Changelog
 
-## [Unreleased]
-
-### 微信通道支持发送文件/图片
-
-修复 weixin 通道出站只发文本、丢弃附件的问题，移植 iLink CDN 加密上传协议。
-
-- `weixin` 通道 `send()` 现按 content block 路由：图片走 `image_item`，文件/音频/视频走 `file_item` 附件，文本不变
-- 新增 `send_file` 工具：让 agent 主动将本地文件/图片发送到指定 channel/chat（含工作区路径校验）
-- 打通"定时生成 Word 并发送到微信"链路：cron 触发 → 生成 .docx → `send_file` → 微信附件
-
 ## [0.3.0] - 2026-06-20
 
 ### 配置契约清算（破坏性变更）
