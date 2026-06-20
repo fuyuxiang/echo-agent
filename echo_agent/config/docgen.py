@@ -115,3 +115,30 @@ def render_markdown(lang: str = "zh") -> str:
             )
         blocks.append("")
     return "\n".join(blocks) + "\n"
+
+
+def render_backlog() -> str:
+    groups: dict[str, list[FieldInfo]] = {"fix": [], "remove": [], "keep": []}
+    for f in iter_fields(Config):
+        if f.extra.get("status") != "dead":
+            continue
+        disp = f.extra.get("disposition", "keep")
+        groups.setdefault(disp, []).append(f)
+    titles = {
+        "fix": "## fix —— 该接线的功能/真 bug(子项目 C 处理,安全相关走快车道)",
+        "remove": "## remove —— 纯孤儿字段,建议删除",
+        "keep": "## keep —— 有意保留",
+    }
+    lines = ["# 配置死字段处置 backlog(自动生成,请勿手改)", ""]
+    for disp in ("fix", "remove", "keep"):
+        infos = groups.get(disp) or []
+        if not infos:
+            continue
+        lines.append(titles[disp])
+        lines.append("")
+        lines.append("| 字段(snake) | reason |")
+        lines.append("|---|---|")
+        for f in infos:
+            lines.append(f"| `{f.snake_path}` | {f.extra.get('reason','')} |")
+        lines.append("")
+    return "\n".join(lines) + "\n"
