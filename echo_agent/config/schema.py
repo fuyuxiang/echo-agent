@@ -951,13 +951,6 @@ class ModelRouteConfig(_Base):
             "desc_en": "Sampling temperature for this route",
         },
     )
-    context_window: int = Field(
-        default=65536,
-        json_schema_extra={
-            "status": "dead", "disposition": "remove",
-            "reason": "仅透传进 RouteDecision,无消费方;真实窗口来自 session.context_window_tokens",
-        },
-    )
 
 
 class ModelsConfig(_Base):
@@ -985,13 +978,6 @@ class ModelsConfig(_Base):
             "desc_en": "List of task-to-model routing rules",
         },
     )
-    cost_limit_daily_usd: float = Field(
-        default=0.0,
-        json_schema_extra={
-            "status": "dead", "disposition": "remove",
-            "reason": "无读取点,成本限制由 cost.daily_budget_usd 实现,此字段为误导孤儿",
-        },
-    )
     fallback_model: str = Field(
         default="",
         json_schema_extra={
@@ -1011,13 +997,6 @@ class ExecToolConfig(_Base):
             "status": "effective", "ref": "agent/tools/__init__.py:39",
             "desc_zh": "是否启用 shell/进程执行工具",
             "desc_en": "Enable the shell/process execution tool",
-        },
-    )
-    timeout_seconds: int = Field(
-        default=30,
-        json_schema_extra={
-            "status": "dead", "disposition": "fix",
-            "reason": "shell/process 工具用类级默认值,该字段无效;仅 code_exec.timeout_seconds 生效",
         },
     )
     max_output_chars: int = Field(
@@ -1369,13 +1348,6 @@ class MCPServerConfig(_Base):
             "desc_en": "Blocklist of MCP tools to exclude",
         },
     )
-    transport: Literal["auto", "stdio", "http", "streamable-http"] = Field(
-        default="auto",
-        json_schema_extra={
-            "status": "dead", "disposition": "fix",
-            "reason": "_create_transport 按 url/command 隐式选择,显式 transport 被忽略",
-        },
-    )
 
 
 class ToolsConfig(_Base):
@@ -1702,13 +1674,6 @@ class SessionConfig(_Base):
             "desc_en": "Session expiry time (hours)",
         },
     )
-    archive_after_hours: int = Field(
-        default=168,
-        json_schema_extra={
-            "status": "dead", "disposition": "fix",
-            "reason": "构造 SessionManager 时未传,代码用默认 168",
-        },
-    )
     context_window_tokens: int = Field(
         default=65536,
         json_schema_extra={
@@ -1842,26 +1807,12 @@ class MemoryConfig(_Base):
             "desc_en": "Inject memory snapshots into context",
         },
     )
-    hybrid_retrieval: bool = Field(
-        default=True,
-        json_schema_extra={
-            "status": "dead", "disposition": "fix",
-            "reason": "HybridRetriever 在 loop.py:414 无条件构造,开关不控制任何分支",
-        },
-    )
     contradiction_detection: bool = Field(
         default=True,
         json_schema_extra={
             "status": "effective", "ref": "agent/loop.py:406",
             "desc_zh": "是否启用记忆矛盾检测",
             "desc_en": "Enable memory contradiction detection",
-        },
-    )
-    adaptive_forgetting: bool = Field(
-        default=True,
-        json_schema_extra={
-            "status": "dead", "disposition": "fix",
-            "reason": "遗忘曲线在 store.py:172 无条件创建,开关不生效",
         },
     )
     sleep_consolidation: bool = Field(
@@ -1896,26 +1847,12 @@ class MemoryConfig(_Base):
             "desc_en": "Maximum working-memory entries",
         },
     )
-    max_episodes: int = Field(
-        default=500,
-        json_schema_extra={
-            "status": "dead", "disposition": "remove",
-            "reason": "全仓无引用,episode 无数量上限控制",
-        },
-    )
     embedding_model: str = Field(
         default="",
         json_schema_extra={
             "status": "effective", "ref": "agent/loop.py:370",
             "desc_zh": "记忆向量化使用的嵌入模型",
             "desc_en": "Embedding model used for memory vectorization",
-        },
-    )
-    embedding_batch_size: int = Field(
-        default=32,
-        json_schema_extra={
-            "status": "dead", "disposition": "remove",
-            "reason": "全仓无引用",
         },
     )
     # Latency budget for the per-message query-embedding round-trip in hybrid
@@ -1928,13 +1865,6 @@ class MemoryConfig(_Base):
             "status": "effective", "ref": "agent/loop.py:419",
             "desc_zh": "查询向量化的单次超时(秒),超时降级为关键词检索",
             "desc_en": "Query-embedding timeout (seconds); falls back to keyword search on timeout",
-        },
-    )
-    consolidation_idle_seconds: int = Field(
-        default=300,
-        json_schema_extra={
-            "status": "dead", "disposition": "remove",
-            "reason": "全仓无引用",
         },
     )
     contradiction_scan_on_store: bool = Field(
@@ -2012,13 +1942,6 @@ class KnowledgeConfig(_Base):
             "desc_en": "Document extensions eligible for indexing",
         },
     )
-    require_citations: bool = Field(
-        default=True,
-        json_schema_extra={
-            "status": "dead", "disposition": "fix",
-            "reason": "引用始终生成(index.py 无条件输出 citation),开关不生效",
-        },
-    )
 
 
 # ── Multi-agent delegation configs ─────────────────────────────────────────────
@@ -2070,13 +1993,6 @@ class WorkerProfileConfig(_Base):
             "status": "effective", "ref": "agent/multi_agent/registry.py:26",
             "desc_zh": "子代理使用的模型",
             "desc_en": "Model used by the worker",
-        },
-    )
-    provider: str = Field(
-        default="",
-        json_schema_extra={
-            "status": "dead", "disposition": "remove",
-            "reason": "executor 始终用注入的 provider,profile.provider 从不被读",
         },
     )
     max_iterations: int = Field(
@@ -2175,25 +2091,11 @@ class SchedulerConfig(_Base):
             "desc_en": "Maximum concurrent scheduled jobs",
         },
     )
-    dead_task_timeout_seconds: int = Field(
-        default=3600,
-        json_schema_extra={
-            "status": "dead", "disposition": "remove",
-            "reason": "仅 schema 定义,无消费方",
-        },
-    )
 
 
 # ── Storage configs ──────────────────────────────────────────────────────────
 
 class StorageConfig(_Base):
-    backend: Literal["sqlite", "filesystem"] = Field(
-        default="sqlite",
-        json_schema_extra={
-            "status": "dead", "disposition": "fix",
-            "reason": "app.py:71 永远构造 SQLiteBackend,filesystem 后端不存在,此开关无效",
-        },
-    )
     database_path: str = Field(
         default="data/echo_agent.db",
         json_schema_extra={
@@ -2216,13 +2118,6 @@ class StorageConfig(_Base):
             "status": "effective", "ref": "agent/loop.py:103",
             "desc_zh": "记忆数据存储目录",
             "desc_en": "Directory storing memory data",
-        },
-    )
-    workspace_dir: str = Field(
-        default="data/workspace",
-        json_schema_extra={
-            "status": "dead", "disposition": "remove",
-            "reason": "无读取点,agent 直接用 self.workspace/\"data\"",
         },
     )
     logs_dir: str = Field(
@@ -2252,20 +2147,6 @@ class ObservabilityConfig(_Base):
             "status": "effective", "ref": "observability/monitor.py:55",
             "desc_zh": "是否记录执行轨迹(关闭则不写 trace 文件)",
             "desc_en": "Whether to record execution traces (off disables trace files)",
-        },
-    )
-    show_tool_calls: bool = Field(
-        default=True,
-        json_schema_extra={
-            "status": "dead", "disposition": "remove",
-            "reason": "无运行时读取点",
-        },
-    )
-    show_route_decisions: bool = Field(
-        default=False,
-        json_schema_extra={
-            "status": "dead", "disposition": "remove",
-            "reason": "无读取点,路由决策在 inference_stage 无条件记录",
         },
     )
     health_check_interval_seconds: int = Field(
@@ -2441,34 +2322,6 @@ class GatewaySessionPolicyConfig(_Base):
 
 
 class GatewayPlatformConfig(_Base):
-    enabled: bool = Field(
-        default=False,
-        json_schema_extra={
-            "status": "dead", "disposition": "fix",
-            "reason": "server.py:90 平台循环只读 rate_limit_rpm,enabled 从不检查,禁用平台无效",
-        },
-    )
-    home_channel: str = Field(
-        default="",
-        json_schema_extra={
-            "status": "dead", "disposition": "remove",
-            "reason": "全仓无读取点",
-        },
-    )
-    home_chat_id: str = Field(
-        default="",
-        json_schema_extra={
-            "status": "dead", "disposition": "remove",
-            "reason": "全仓无读取点",
-        },
-    )
-    reply_mode: Literal["off", "first", "all"] = Field(
-        default="off",
-        json_schema_extra={
-            "status": "dead", "disposition": "remove",
-            "reason": "全仓无读取点",
-        },
-    )
     rate_limit_rpm: int = Field(
         default=30,
         json_schema_extra={
@@ -2597,20 +2450,6 @@ class GatewayConfig(_Base):
             "desc_en": "Media cache size limit (MB)",
         },
     )
-    max_agent_cache_size: int = Field(
-        default=50,
-        json_schema_extra={
-            "status": "dead", "disposition": "remove",
-            "reason": "仅 schema 定义,无读取点",
-        },
-    )
-    enable_progressive_edit: bool = Field(
-        default=True,
-        json_schema_extra={
-            "status": "dead", "disposition": "fix",
-            "reason": "ProgressiveEditor 在 server.py:85 无条件实例化,此开关从不被读;真正开关是 emit_progress_events",
-        },
-    )
     emit_progress_events: bool = Field(
         default=True,
         json_schema_extra={
@@ -2648,13 +2487,6 @@ class SkillsConfig(_Base):
             "desc_en": "Skills directory",
         },
     )
-    auto_load: list[str] = Field(
-        default_factory=list,
-        json_schema_extra={
-            "status": "dead", "disposition": "remove",
-            "reason": "仅 schema 定义,无消费方",
-        },
-    )
     creation_nudge_interval: int = Field(
         default=10,
         json_schema_extra={
@@ -2669,13 +2501,6 @@ class SkillsConfig(_Base):
             "status": "effective", "ref": "agent/loop.py:232",
             "desc_zh": "禁用的技能列表",
             "desc_en": "List of disabled skills",
-        },
-    )
-    platform_disabled: dict[str, list[str]] = Field(
-        default_factory=dict,
-        json_schema_extra={
-            "status": "dead", "disposition": "remove",
-            "reason": "仅 schema 定义,无消费方",
         },
     )
     external_dirs: list[str] = Field(
@@ -2909,26 +2734,12 @@ class PluginsConfig(_Base):
 
 
 class EvalConfig(_Base):
-    enabled: bool = Field(
-        default=True,
-        json_schema_extra={
-            "status": "dead", "disposition": "fix",
-            "reason": "无读取点,eval 子命令被调用时无条件运行",
-        },
-    )
     dataset_path: str = Field(
         default="data/eval",
         json_schema_extra={
             "status": "effective", "ref": "__main__.py:31",
             "desc_zh": "评测数据集路径",
             "desc_en": "Evaluation dataset path",
-        },
-    )
-    parallel_cases: int = Field(
-        default=3,
-        json_schema_extra={
-            "status": "dead", "disposition": "fix",
-            "reason": "并发度取自 CLI --parallel(默认 3),从不读 config",
         },
     )
     timeout_per_case: int = Field(
@@ -3126,13 +2937,6 @@ class AgentBehaviorConfig(_Base):
             "status": "effective", "ref": "agent/loop.py:236",
             "desc_zh": "agent 主循环最大迭代数",
             "desc_en": "Maximum iterations of the agent main loop",
-        },
-    )
-    reasoning_effort: Literal["low", "medium", "high", "auto"] = Field(
-        default="auto",
-        json_schema_extra={
-            "status": "dead", "disposition": "fix",
-            "reason": "仅 schema 定义,从未接线到 provider 的 ChatRequest.reasoning_effort",
         },
     )
 

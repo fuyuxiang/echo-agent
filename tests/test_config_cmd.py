@@ -71,9 +71,17 @@ def test_explain_effective_field(capsys):
 
 
 def test_explain_dead_field_warns(capsys):
-    run_config_command("explain", "storage.backend")
+    # Task 7 后 schema 无 dead 字段;若将来重新引入,explain 必须提示未生效。
+    # 动态选取一个 dead 字段;没有则跳过(机制仍在 config_cmd.py 中受守护)。
+    import pytest
+
+    from echo_agent.config.metadata import iter_fields
+    from echo_agent.config.schema import Config
+    dead = [f for f in iter_fields(Config) if f.extra.get("status") == "dead"]
+    if not dead:
+        pytest.skip("no dead fields remain after Task 7")
+    run_config_command("explain", dead[0].snake_path)
     out = capsys.readouterr().out
-    # 死字段必须明确提示未生效
     assert "未生效" in out or "not in effect" in out.lower() or "dead" in out.lower()
 
 
@@ -107,12 +115,26 @@ def test_validate_reports_unknown_field(tmp_path, capsys):
 
 
 def test_validate_warns_dead_field(tmp_path, capsys):
+    # Task 7 后无 dead 字段;若将来重新引入,validate 对显式设置的死字段应警告未生效。
+    import pytest
+
+    from echo_agent.config.metadata import iter_fields
+    from echo_agent.config.schema import Config
+    dead = [f for f in iter_fields(Config) if f.extra.get("status") == "dead"]
+    if not dead:
+        pytest.skip("no dead fields remain after Task 7")
+    info = dead[0]
+    parts = info.snake_path.split(".")
     cfg = tmp_path / "echo-agent.yaml"
-    cfg.write_text("storage:\n  backend: filesystem\n", encoding="utf-8")
+    # 构造一个把该死字段写出来的最小 YAML
+    yaml_lines = []
+    for i, p in enumerate(parts[:-1]):
+        yaml_lines.append("  " * i + f"{p}:")
+    yaml_lines.append("  " * (len(parts) - 1) + f"{parts[-1]}: 0")
+    cfg.write_text("\n".join(yaml_lines) + "\n", encoding="utf-8")
     run_config_command("validate", config_path=str(cfg))
     out = capsys.readouterr().out
-    # 用户显式设了死字段 → 警告不生效(但配置本身合法,rc 可为 0)
-    assert "backend" in out and ("未生效" in out or "not in effect" in out.lower())
+    assert parts[-1] in out and ("未生效" in out or "not in effect" in out.lower())
 
 
 def test_parser_accepts_config_subcommand():

@@ -597,22 +597,17 @@ class TestConfigDefaults:
     def test_eval_config_defaults(self):
         from echo_agent.config.schema import EvalConfig
         e = EvalConfig()
-        assert e.enabled is True
-        assert e.parallel_cases == 3
         assert e.timeout_per_case == 120
 
     def test_memory_config_new_fields(self):
         from echo_agent.config.schema import MemoryConfig
         m = MemoryConfig()
-        assert m.hybrid_retrieval is True
         assert m.contradiction_detection is True
         assert m.vector_enabled is True
-        assert m.adaptive_forgetting is True
         assert m.sleep_consolidation is True
         assert m.archival_threshold == 0.05
         assert m.forget_threshold == 0.01
         assert m.max_working_memory == 20
-        assert m.max_episodes == 500
 
     def test_compression_config_defaults(self):
         from echo_agent.config.schema import CompressionConfig
@@ -624,5 +619,4 @@ class TestConfigDefaults:
     def test_mcp_server_config_transport(self):
         from echo_agent.config.schema import MCPServerConfig
         m = MCPServerConfig()
-        assert m.transport == "auto"
         assert m.connect_timeout == 60
