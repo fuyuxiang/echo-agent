@@ -24,7 +24,6 @@ class WorkerRegistry:
                 instructions=cfg.instructions,
                 default_tools=tuple(cfg.default_tools),
                 model=cfg.model,
-                provider=cfg.provider,
                 max_iterations=cfg.max_iterations,
                 max_tokens=cfg.max_tokens,
                 temperature=cfg.temperature,

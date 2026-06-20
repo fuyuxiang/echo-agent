@@ -50,13 +50,11 @@ def test_extra_defaults_to_empty_dict():
 
 
 def test_dead_fields_are_marked():
-    fields = {f.snake_path: f for f in iter_fields(Config)}
-    # 抽查几个已知死字段
-    assert fields["storage.backend"].extra.get("status") == "dead"
-    assert fields["agent.reasoning_effort"].extra.get("status") == "dead"
+    # Task 7 收敛后 schema 不应再有 status="dead" 字段;
+    # 若将来重新引入,必须带合法 disposition。这里用不依赖具体字段的不变式。
     dead_fields = [f for f in iter_fields(Config) if f.extra.get("status") == "dead"]
+    assert dead_fields == [], f"schema 不应残留 dead 字段: {[f.snake_path for f in dead_fields]}"
     assert all(f.extra.get("disposition") in ("fix", "remove", "keep") for f in dead_fields)
-    assert fields["models.cost_limit_daily_usd"].extra.get("disposition") == "remove"
 
 
 def test_effective_fields_have_desc():

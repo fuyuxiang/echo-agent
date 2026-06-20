@@ -282,7 +282,6 @@ class ModelRouter:
             provider_name=route.provider,
             model=route.model,
             fallback_chain=route.fallback_models,
-            context_window=route.context_window,
             max_tokens=route.max_tokens,
             temperature=route.temperature,
             reason="route match",
