@@ -115,6 +115,7 @@
 | `models.providers[].apiBase` | `models.providers[].api_base` | str | `""` | — | 提供商 API 基础地址 |
 | `models.providers[].models` | `models.providers[].models` | list | `[]` | — | 该提供商支持的模型列表 |
 | `models.providers[].extraHeaders` | `models.providers[].extra_headers` | dict | `{}` | — | 附加到请求的自定义 HTTP 头 |
+| `models.providers[].maxRetries` | `models.providers[].max_retries` | int | `3` | — | 瞬时错误时的最大重试次数(指数退避) |
 | `models.providers[].timeoutSeconds` | `models.providers[].timeout_seconds` | int | `120` | — | 单次请求超时(秒) |
 | `models.providers[].rateLimitRpm` | `models.providers[].rate_limit_rpm` | int | `0` | — | 该提供商每分钟请求上限(0 为不限) |
 | `models.providers[].credentialPool` | `models.providers[].credential_pool` | list | `[]` | — | 轮换使用的多个 API 密钥池 |

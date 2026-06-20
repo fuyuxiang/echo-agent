@@ -124,6 +124,7 @@ def create_provider(config: ProviderConfig, *, default_model: str = "") -> LLMPr
 
     provider = cls(api_key=api_key, api_base=config.api_base, **kwargs)
     provider.request_timeout = float(config.timeout_seconds)
+    provider.max_retries = int(config.max_retries)
 
     if pool:
         provider = _PooledProvider(provider, pool, cls, config)
@@ -135,6 +136,7 @@ def create_provider(config: ProviderConfig, *, default_model: str = "") -> LLMPr
     # The retry wrapper (chat_with_retry) runs on the outermost provider, so
     # the timeout must be visible there too.
     provider.request_timeout = float(config.timeout_seconds)
+    provider.max_retries = int(config.max_retries)
 
     return provider
 
