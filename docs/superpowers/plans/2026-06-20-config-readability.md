@@ -49,7 +49,9 @@
 - Consumes: `echo_agent.config.schema.Config`(Pydantic v2 模型)。
 - Produces:
   - `FieldInfo` dataclass:`path: str`(点路径,camelCase,如 `"memory.archivalThreshold"`)、`snake_path: str`(如 `"memory.archival_threshold"`)、`type_str: str`、`default: object`、`choices: list[str] | None`(Literal 取值,否则 None)、`extra: dict`(该字段的 `json_schema_extra`,无则 `{}`)。
-  - `iter_fields(model: type[BaseModel] = Config, prefix: str = "", snake_prefix: str = "") -> Iterator[FieldInfo]`:深度优先遍历;遇到嵌套 `_Base` 子模型则递归下钻,叶子字段产出 `FieldInfo`。`dict`/`list` 容器字段(如 `mcp_servers`、`providers`)按叶子处理(不下钻其元素)。
+  - `iter_fields(model: type[BaseModel] = Config, prefix: str = "", snake_prefix: str = "") -> Iterator[FieldInfo]`:深度优先遍历;遇到嵌套 `_Base` 子模型则递归下钻,叶子字段产出 `FieldInfo`。**容器型字段(`list[_Base]` / `dict[str, _Base]`,如 `providers`、`routes`、`mcp_servers`、`worker_profiles`、`platforms`)既产出容器字段本身作为叶子,也下钻其元素子模型**:元素字段路径加容器标记后缀——list 用 `[]`(如 `models.providers[].apiKey`),dict 用 `{}`(如 `tools.mcpServers{}.command`)。非 `_Base` 元素的容器(如 `list[str]`)仍按普通叶子处理。
+
+  > 修订说明(2026-06-20):此处由最初的"容器按叶子、不下钻"改为"下钻容器子模型"。原因:`providers`/`routes`/`mcp_servers`/`worker_profiles`/`platforms` 内部含大量用户需配置的有效字段(README 头号卖点)与 8 个死字段(含安全 bug `gateway.platforms.enabled`),不下钻则文档与 backlog 残缺。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -89,12 +91,17 @@ def test_literal_choices_extracted():
     assert info.choices == ["personal_cli", "daemon", "public_gateway"]
 
 
-def test_container_field_is_leaf_not_descended():
+def test_container_field_descends_into_submodel():
     paths = {f.path for f in iter_fields(Config)}
-    # tools.mcpServers 是 dict[str, MCPServerConfig],按叶子处理
+    # tools.mcpServers 是 dict[str, MCPServerConfig]:容器本身产出
     assert "tools.mcpServers" in paths
-    # 不应下钻进 MCPServerConfig 的字段
-    assert not any(p.startswith("tools.mcpServers.") for p in paths)
+    # 且下钻其元素子模型,dict 用 {} 标记
+    assert "tools.mcpServers{}.command" in paths
+    # list[_Base] 用 [] 标记
+    assert "models.providers[].apiKey" in paths
+    assert "models.routes[].model" in paths
+    assert "multiAgent.workerProfiles[].instructions" in paths
+    assert "gateway.platforms{}.rateLimitRpm" in paths
 
 
 def test_extra_defaults_to_empty_dict():
