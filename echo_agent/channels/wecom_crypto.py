@@ -32,12 +32,19 @@ def decrypt_message(encoding_aes_key: str, corp_id: str, encrypt_b64: str) -> st
     decryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
     raw = decryptor.update(ciphertext) + decryptor.finalize()
     # strip PKCS7 padding
+    if not raw:
+        raise ValueError("empty plaintext")
     pad = raw[-1]
     if pad < 1 or pad > 32:
         raise ValueError("invalid padding")
     raw = raw[:-pad]
     # random(16) + msg_len(4) + msg + receive_id
-    msg_len = struct.unpack(">I", raw[16:20])[0]
+    if len(raw) < 20:
+        raise ValueError("plaintext too short for header")
+    try:
+        msg_len = struct.unpack(">I", raw[16:20])[0]
+    except struct.error as e:
+        raise ValueError(f"malformed length header: {e}") from e
     msg = raw[20:20 + msg_len].decode()
     receive_id = raw[20 + msg_len:].decode()
     if receive_id != corp_id:
