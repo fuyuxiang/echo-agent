@@ -53,6 +53,8 @@ def discover_tools(
     tools.append(WriteFileTool(ws, restrict, safe_write_root))
     tools.append(EditFileTool(ws, restrict, safe_write_root))
     tools.append(ListDirTool(ws, restrict))
+    from echo_agent.agent.tools.document import ReadDocumentTool
+    tools.append(ReadDocumentTool(ws, restrict))
     if config.tools.web.enabled and config.execution.network_policy != "deny":
         tools.append(WebFetchTool(proxy=config.tools.web.proxy, allow_private=config.tools.web.allow_private_addresses))
         if config.tools.web.search_api_key or config.tools.web.search_provider == "searxng":
