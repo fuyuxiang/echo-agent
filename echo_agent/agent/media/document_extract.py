@@ -42,6 +42,12 @@ def extract(
     try:
         if ext == ".pdf":
             return _extract_pdf(p, max_chars, unit, size)
+        if ext == ".docx":
+            return _extract_docx(p, max_chars, size)
+        if ext == ".xlsx":
+            return _extract_xlsx(p, max_chars, unit, size)
+        if ext == ".pptx":
+            return _extract_pptx(p, max_chars, unit, size)
         if ext in _TEXT_EXTS:
             return _extract_text(p, max_chars, size)
     except Exception as exc:  # noqa: BLE001 — inbound path must never raise
@@ -85,3 +91,77 @@ def _extract_pdf(p: Path, max_chars: int | None, unit: int | str | None, size: i
                              truncated=truncated, unit_count=total)
     finally:
         doc.close()
+
+
+def _extract_docx(p: Path, max_chars: int | None, size: int) -> ExtractResult:
+    try:
+        import docx  # type: ignore
+    except ImportError:
+        return ExtractResult(meta={"format": "docx", "size_bytes": size,
+                                   "error": "missing_dep:python-docx>=1.1"})
+    doc = docx.Document(str(p))
+    lines = [para.text for para in doc.paragraphs if para.text]
+    for table in doc.tables:
+        for row in table.rows:
+            cells = [c.text for c in row.cells if c.text]
+            if cells:
+                lines.append("\t".join(cells))
+    text, truncated = _apply_cap("\n".join(lines), max_chars)
+    return ExtractResult(text=text, meta={"format": "docx", "size_bytes": size},
+                         truncated=truncated, unit_count=len(doc.paragraphs))
+
+
+def _extract_xlsx(p: Path, max_chars: int | None, unit: int | str | None, size: int) -> ExtractResult:
+    try:
+        import openpyxl  # type: ignore
+    except ImportError:
+        return ExtractResult(meta={"format": "xlsx", "size_bytes": size,
+                                   "error": "missing_dep:openpyxl>=3.1"})
+    wb = openpyxl.load_workbook(str(p), read_only=True, data_only=True)
+    try:
+        names = wb.sheetnames
+        if unit is not None:
+            if isinstance(unit, int) or (isinstance(unit, str) and unit.isdigit()):
+                idx = int(unit) - 1
+                targets = [names[idx]] if 0 <= idx < len(names) else []
+            else:
+                targets = [unit] if unit in names else []
+        else:
+            targets = names
+        parts: list[str] = []
+        for name in targets:
+            ws = wb[name]
+            rows: list[str] = []
+            for row in ws.iter_rows(values_only=True):
+                rows.append(",".join("" if v is None else str(v) for v in row))
+            parts.append(f"=== sheet: {name} ===\n" + "\n".join(rows))
+            if max_chars is not None and sum(len(x) for x in parts) >= max_chars:
+                break
+        text, truncated = _apply_cap("\n\n".join(parts), max_chars)
+        return ExtractResult(text=text, meta={"format": "xlsx", "size_bytes": size, "sheets": names},
+                             truncated=truncated, unit_count=len(names))
+    finally:
+        wb.close()
+
+
+def _extract_pptx(p: Path, max_chars: int | None, unit: int | str | None, size: int) -> ExtractResult:
+    try:
+        import pptx  # type: ignore
+    except ImportError:
+        return ExtractResult(meta={"format": "pptx", "size_bytes": size,
+                                   "error": "missing_dep:python-pptx>=1.0"})
+    prs = pptx.Presentation(str(p))
+    slides = list(prs.slides)
+    target = int(unit) if isinstance(unit, (int, str)) and str(unit).isdigit() else None
+    parts: list[str] = []
+    for i, slide in enumerate(slides):
+        if target is not None and (i + 1) != target:
+            continue
+        texts = [sh.text_frame.text for sh in slide.shapes
+                 if sh.has_text_frame and sh.text_frame.text]
+        parts.append(f"--- 第{i + 1}页 ---\n" + "\n".join(texts))
+        if max_chars is not None and sum(len(x) for x in parts) >= max_chars:
+            break
+    text, truncated = _apply_cap("\n".join(parts), max_chars)
+    return ExtractResult(text=text, meta={"format": "pptx", "size_bytes": size, "slides": len(slides)},
+                         truncated=truncated, unit_count=len(slides))
