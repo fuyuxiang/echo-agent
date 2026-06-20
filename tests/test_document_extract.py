@@ -106,3 +106,27 @@ def test_extract_pptx(tmp_path: Path):
     assert "SLIDE_TITLE_X" in res.text
     assert res.meta["format"] == "pptx"
     assert res.unit_count == 1
+
+
+def test_missing_pdf_dep_degrades(tmp_path: Path, monkeypatch):
+    import builtins
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "pymupdf":
+            raise ImportError("simulated missing pymupdf")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    f = tmp_path / "x.pdf"
+    f.write_bytes(b"%PDF-1.4 dummy")
+    res = extract(f)
+    assert res.text == ""
+    assert "missing_dep:pymupdf" in res.meta["error"]
+
+
+def test_media_document_dep_key_registered():
+    from echo_agent.dependencies.lazy_deps import SKILL_DEPS
+    assert "media.document" in SKILL_DEPS
+    assert any("pymupdf" in s for s in SKILL_DEPS["media.document"])
+    assert any("python-pptx" in s for s in SKILL_DEPS["media.document"])
