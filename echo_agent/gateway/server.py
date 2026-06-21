@@ -239,6 +239,40 @@ class GatewayServer:
                 return self._MEDIA_KIND_TO_CONTENT_TYPE[kind]
         return ContentType.FILE
 
+    def _build_ws_content_blocks(
+        self, text: str, attachments: list[Any]
+    ) -> list[ContentBlock]:
+        """Build inbound content blocks for a WS message frame.
+
+        With no attachments this yields a single TEXT block, identical to
+        ``InboundEvent.text_message`` — so the pure-text path is unchanged. Each
+        attachment is an id previously returned by POST /chat/attachments; we map it
+        back to the cached file (rejecting traversal) and append a typed block. The id
+        is resolved to a local path the agent reads directly, so behaviour is the same
+        whether the agent runs locally or remotely (the bytes were uploaded, not the path)."""
+        from echo_agent.gateway.api.chat_attachments import resolve_attachment_path
+
+        blocks = [ContentBlock(type=ContentType.TEXT, text=text)]
+        for item in attachments:
+            if not isinstance(item, dict):
+                continue
+            attachment_id = str(item.get("id") or "")
+            path = resolve_attachment_path(self, attachment_id)
+            if path is None:
+                logger.warning("Chat attachment id not found, skipping: {}", attachment_id)
+                continue
+            name = str(item.get("name") or path.name)
+            mime_type = str(item.get("mime_type") or "")
+            blocks.append(
+                ContentBlock(
+                    type=self._infer_media_content_type(str(path), name, mime_type=mime_type),
+                    url=str(path),
+                    mime_type=mime_type,
+                    metadata={"name": name},
+                )
+            )
+        return blocks
+
     def _request_token(self, request: web.Request) -> str:
         token = self.auth.token_from_headers(request.headers)
         if token:
@@ -545,7 +579,8 @@ class GatewayServer:
                             continue
 
                         text = data.get("text", "")
-                        if not text:
+                        attachments = data.get("attachments") or []
+                        if not text and not attachments:
                             continue
 
                         if not self.rate_limiter.acquire(platform, chat_id):
@@ -559,11 +594,12 @@ class GatewayServer:
                             session_key=session_key,
                         )
                         try:
-                            event = InboundEvent.text_message(
+                            content_blocks = self._build_ws_content_blocks(text, attachments)
+                            event = InboundEvent(
                                 channel=f"gateway:{platform}",
                                 sender_id=user_id,
                                 chat_id=chat_id,
-                                text=text,
+                                content=content_blocks,
                                 session_key_override=session_key,
                             )
                             event.metadata["gateway"] = True
