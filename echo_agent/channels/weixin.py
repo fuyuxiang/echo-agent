@@ -70,6 +70,7 @@ _MSG_STATE_FINISH = 2
 _MEDIA_IMAGE = 1
 _MEDIA_VIDEO = 2
 _MEDIA_FILE = 3
+_MEDIA_VOICE = 4
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -590,7 +591,10 @@ class WeixinChannel(BaseChannel):
             return "", False
         return local, False
 
-    async def _send_file(self, chat_id: str, path: str, *, as_image: bool) -> SendResult:
+    async def _send_file(
+        self, chat_id: str, path: str, *,
+        as_image: bool = False, as_voice: bool = False, voice_ms: int = 0,
+    ) -> SendResult:
         """Encrypt, upload to the CDN, and deliver one media item via sendmessage."""
         assert self._send_session is not None and self._token is not None
         plaintext = Path(path).read_bytes()
@@ -598,7 +602,12 @@ class WeixinChannel(BaseChannel):
         rawfilemd5 = hashlib.md5(plaintext).hexdigest()  # noqa: S324 - protocol-mandated
         filekey = secrets.token_hex(16)
         aes_key = secrets.token_bytes(16)
-        media_type = _MEDIA_IMAGE if as_image else _MEDIA_FILE
+        if as_voice:
+            media_type = _MEDIA_VOICE
+        elif as_image:
+            media_type = _MEDIA_IMAGE
+        else:
+            media_type = _MEDIA_FILE
 
         upload_response = await _get_upload_url(
             self._send_session,
@@ -638,7 +647,18 @@ class WeixinChannel(BaseChannel):
             "aes_key": aes_key_for_api,
             "encrypt_type": 1,
         }
-        if as_image:
+        if as_voice:
+            item = {
+                "type": _ITEM_VOICE,
+                "voice_item": {
+                    "media": media,
+                    "encode_type": 6,
+                    "sample_rate": 24000,
+                    "bits_per_sample": 16,
+                    "playtime": voice_ms,
+                },
+            }
+        elif as_image:
             item = {"type": _ITEM_IMAGE, "image_item": {"media": media, "mid_size": len(ciphertext)}}
         else:
             item = {

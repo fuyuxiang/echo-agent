@@ -116,6 +116,23 @@ class TestSendFileOrchestration:
         assert item["file_item"]["len"] == str(len(b"%PDF-1.7 ..."))
 
     @pytest.mark.asyncio
+    async def test_send_voice_builds_voice_item(self, tmp_path, _patched):
+        ch = _make_weixin(tmp_path)
+        f = tmp_path / "clip.silk"
+        f.write_bytes(b"\x02#!SILK_V3 fake silk bytes")
+        res = await ch._send_file("user@im", str(f), as_voice=True, voice_ms=1234)
+        assert res.success
+        assert _patched["upload_url"]["media_type"] == wx._MEDIA_VOICE
+        item = _patched["sendmessage"][-1]["payload"]["msg"]["item_list"][0]
+        assert item["type"] == wx._ITEM_VOICE
+        vi = item["voice_item"]
+        assert vi["encode_type"] == 6
+        assert vi["sample_rate"] == 24000
+        assert vi["bits_per_sample"] == 16
+        assert vi["playtime"] == 1234
+        assert vi["media"]["encrypt_type"] == 1
+
+    @pytest.mark.asyncio
     async def test_send_file_propagates_sendmessage_error(self, tmp_path, monkeypatch):
         ch = _make_weixin(tmp_path)
         f = tmp_path / "a.bin"
