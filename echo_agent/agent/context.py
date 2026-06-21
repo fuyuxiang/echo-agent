@@ -237,6 +237,18 @@ class ContextBuilder:
             downloadable = {"image"} | ({"file"} if self._doc_enabled else set())
             if btype in downloadable and url.startswith(("http://", "https://")):
                 download_targets.append((idx, url, aes_key))
+            elif (
+                btype == "file"
+                and self._doc_enabled
+                and url
+                and not url.startswith(("http://", "https://", "data:"))
+                and Path(url).is_file()
+            ):
+                # Local attachment (e.g. desktop chat upload already cached on disk):
+                # skip the download step and extract text straight from the path.
+                # Local images need no resolution here — build_messages turns a local
+                # path into a data URL via _as_image_url at render time.
+                self._attach_extracted_text(entry, Path(url))
 
         if download_targets:
             cache = self._get_media_cache()

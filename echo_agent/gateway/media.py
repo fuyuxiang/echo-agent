@@ -16,6 +16,10 @@ class MediaCache:
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._max_bytes = max_size_mb * 1024 * 1024
 
+    @property
+    def cache_dir(self) -> Path:
+        return self._cache_dir
+
     async def download(
         self,
         url: str,
