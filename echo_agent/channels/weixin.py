@@ -27,6 +27,7 @@ from echo_agent.bus.events import ContentType, OutboundEvent
 from echo_agent.bus.queue import MessageBus
 from echo_agent.channels.base import BaseChannel, SendResult
 from echo_agent.config.schema import WeixinChannelConfig
+from echo_agent.media.silk import encode_to_silk
 from echo_agent.utils.text import split_message
 
 try:
@@ -689,6 +690,44 @@ class WeixinChannel(BaseChannel):
         if errcode and errcode != 0:
             return SendResult(success=False, error=f"sendmessage errcode={errcode}: {resp.get('errmsg', '')}")
         return SendResult(success=True, message_id=str(msg["client_id"]))
+
+    async def send_voice(
+        self, chat_id: str, audio_source: str, metadata: dict[str, Any] | None = None,
+    ) -> SendResult:
+        """Send a native Weixin voice bubble; fall back to file attachment on any failure."""
+        if not self._send_session or not self._token:
+            return SendResult(success=False, error="no session or no token")
+        path, cleanup = await self._materialize_source(audio_source)
+        if not path:
+            return SendResult(success=False, error=f"could not resolve audio source: {audio_source[:80]}")
+        silk_path: str | None = None
+        try:
+            silk_path, duration_ms = await encode_to_silk(path)
+            if duration_ms > 60_000:
+                logger.warning("weixin voice >60s ({}ms), sending as file attachment", duration_ms)
+                return await self._send_file(chat_id, path, as_image=False)
+            res = await self._send_file(chat_id, silk_path, as_voice=True, voice_ms=duration_ms)
+            if not res.success:
+                logger.warning("weixin native voice failed ({}), falling back to file", res.error)
+                return await self._send_file(chat_id, path, as_image=False)
+            return res
+        except Exception as exc:
+            logger.warning("weixin voice encode/send failed, falling back to file: {}", exc)
+            try:
+                return await self._send_file(chat_id, path, as_image=False)
+            except Exception as exc2:
+                return SendResult(success=False, error=str(exc2))
+        finally:
+            if silk_path and os.path.exists(silk_path):
+                try:
+                    os.unlink(silk_path)
+                except OSError:
+                    pass
+            if cleanup and path and os.path.exists(path):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
 
     # ── Poll loop ────────────────────────────────────────────────────────────
 

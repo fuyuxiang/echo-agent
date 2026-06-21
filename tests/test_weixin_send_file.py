@@ -279,3 +279,91 @@ class TestSendFileTool:
         assert any(b.type == ContentType.IMAGE for b in published[0].content)
 
 
+class TestSendVoiceFallback:
+    @pytest.mark.asyncio
+    async def test_voice_encode_failure_falls_back_to_file(self, tmp_path, monkeypatch):
+        ch = _make_weixin(tmp_path)
+        src = tmp_path / "a.mp3"
+        src.write_bytes(b"ID3 fake mp3")
+
+        async def boom(_src):
+            raise RuntimeError("ffmpeg missing")
+        monkeypatch.setattr(wx, "encode_to_silk", boom)
+
+        captured = {}
+        async def fake_send_file(chat_id, path, *, as_image=False, as_voice=False, voice_ms=0):
+            captured.update(as_image=as_image, as_voice=as_voice, path=path)
+            return wx.SendResult(success=True, message_id="m1")
+        monkeypatch.setattr(ch, "_send_file", fake_send_file)
+
+        res = await ch.send_voice("user@im", str(src))
+        assert res.success
+        assert captured["as_voice"] is False  # fell back to file attachment
+        assert captured["path"] == str(src)
+
+    @pytest.mark.asyncio
+    async def test_voice_over_60s_falls_back_to_file(self, tmp_path, monkeypatch):
+        ch = _make_weixin(tmp_path)
+        src = tmp_path / "long.mp3"
+        src.write_bytes(b"ID3 fake mp3")
+
+        async def fake_encode(_src):
+            return (str(tmp_path / "x.silk"), 61_000)
+        monkeypatch.setattr(wx, "encode_to_silk", fake_encode)
+        (tmp_path / "x.silk").write_bytes(b"\x02#!SILK_V3")
+
+        captured = {}
+        async def fake_send_file(chat_id, path, *, as_image=False, as_voice=False, voice_ms=0):
+            captured.update(as_voice=as_voice)
+            return wx.SendResult(success=True)
+        monkeypatch.setattr(ch, "_send_file", fake_send_file)
+
+        res = await ch.send_voice("user@im", str(src))
+        assert res.success
+        assert captured["as_voice"] is False  # >60s → file
+
+    @pytest.mark.asyncio
+    async def test_voice_happy_path_sends_voice(self, tmp_path, monkeypatch):
+        ch = _make_weixin(tmp_path)
+        src = tmp_path / "ok.mp3"
+        src.write_bytes(b"ID3 fake mp3")
+        silk = tmp_path / "ok.silk"
+        silk.write_bytes(b"\x02#!SILK_V3")
+
+        async def fake_encode(_src):
+            return (str(silk), 3000)
+        monkeypatch.setattr(wx, "encode_to_silk", fake_encode)
+
+        captured = {}
+        async def fake_send_file(chat_id, path, *, as_image=False, as_voice=False, voice_ms=0):
+            captured.update(as_voice=as_voice, voice_ms=voice_ms, path=path)
+            return wx.SendResult(success=True, message_id="m2")
+        monkeypatch.setattr(ch, "_send_file", fake_send_file)
+
+        res = await ch.send_voice("user@im", str(src))
+        assert res.success
+        assert captured["as_voice"] is True
+        assert captured["voice_ms"] == 3000
+        assert captured["path"] == str(silk)
+
+    @pytest.mark.asyncio
+    async def test_voice_send_failure_reports_failure(self, tmp_path, monkeypatch):
+        ch = _make_weixin(tmp_path)
+        src = tmp_path / "f.mp3"
+        src.write_bytes(b"ID3 fake mp3")
+        silk = tmp_path / "f.silk"
+        silk.write_bytes(b"\x02#!SILK_V3")
+
+        async def fake_encode(_src):
+            return (str(silk), 2000)
+        monkeypatch.setattr(wx, "encode_to_silk", fake_encode)
+
+        # Both voice and fallback file fail → honest failure, no false-positive.
+        async def fail_send_file(chat_id, path, *, as_image=False, as_voice=False, voice_ms=0):
+            return wx.SendResult(success=False, error="ret:-1")
+        monkeypatch.setattr(ch, "_send_file", fail_send_file)
+
+        res = await ch.send_voice("user@im", str(src))
+        assert res.success is False
+
+
