@@ -279,7 +279,24 @@ class GatewayServer:
             return token
         return request.query.get("token", "").strip()
 
+    def _check_csrf(self, request: web.Request, *, action: str) -> web.Response | None:
+        """Reject cross-site browser requests to mutating endpoints.
+
+        Defends localhost deployments against CSRF-to-localhost / DNS-rebinding:
+        a malicious web page cannot drive shutdown/skills/knowledge just because
+        the user's browser can reach 127.0.0.1. Non-browser clients are
+        unaffected (they send no Origin/Sec-Fetch-Site)."""
+        origin = request.headers.get("Origin", "").strip()
+        sec_fetch_site = request.headers.get("Sec-Fetch-Site", "").strip()
+        if self.auth.is_origin_allowed(origin, sec_fetch_site):
+            return None
+        self.auth.audit(action, ok=False, reason=f"cross-site origin rejected: {origin or '?'}")
+        return web.json_response({"error": "cross-site request forbidden"}, status=403)
+
     def _require_api_token(self, request: web.Request, *, action: str) -> web.Response | None:
+        csrf = self._check_csrf(request, action=action)
+        if csrf is not None:
+            return csrf
         if not self._config.auth.api_tokens:
             return None
         token = self._request_token(request)
@@ -288,6 +305,25 @@ class GatewayServer:
             return None
         self.auth.audit(action, ok=False, reason="invalid api token")
         return web.json_response({"error": "unauthorized"}, status=401)
+
+    def _require_admin_token(self, request: web.Request, *, action: str) -> web.Response | None:
+        """Guard for high-risk admin endpoints (shutdown, skill import/install/
+        delete, knowledge upload/delete). Enforces CSRF, then an admin-scoped
+        token. The ``?token=`` query backdoor is NOT honoured here — admin
+        tokens must travel in a header so they can't leak via referrer/logs or
+        be triggered by a cross-site GET."""
+        csrf = self._check_csrf(request, action=action)
+        if csrf is not None:
+            return csrf
+        admin = self._config.auth.admin_tokens or self._config.auth.api_tokens
+        if not admin:
+            return None  # unauthenticated deployment (loopback, no tokens)
+        token = self.auth.token_from_headers(request.headers)
+        if self.auth.authenticate_admin_token(token):
+            self.auth.audit(action, ok=True)
+            return None
+        self.auth.audit(action, ok=False, reason="invalid admin token")
+        return web.json_response({"error": "admin authorization required"}, status=403)
 
     def _playground_path(self) -> Path:
         return Path(__file__).resolve().parent / "static" / "index.html"

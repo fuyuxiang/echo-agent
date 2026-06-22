@@ -21,6 +21,8 @@ class GatewayAuth:
         self._allowed = set(config.allowed_users)
         self._admins = set(config.admin_users)
         self._api_tokens = list(config.api_tokens)
+        self._admin_tokens = list(config.admin_tokens)
+        self._allowed_origins = set(config.allowed_origins)
         self.token_header = config.token_header
         self._pairing_ttl = config.pairing_ttl_seconds
         self._data_dir = data_dir / "gateway_auth"
@@ -56,6 +58,36 @@ class GatewayAuth:
         if not token:
             return False
         return any(hmac.compare_digest(token, configured) for configured in self._api_tokens)
+
+    def authenticate_admin_token(self, token: str) -> bool:
+        """Authorize a high-risk admin endpoint.
+
+        If ``admin_tokens`` is configured, only those tokens pass — this gives
+        real scope separation between chat-level and admin-level callers. When
+        ``admin_tokens`` is empty we fall back to ``api_tokens`` so existing
+        single-token deployments keep working (no silent privilege change)."""
+        admin = self._admin_tokens or self._api_tokens
+        if not admin:
+            return True  # unauthenticated deployment (loopback, no tokens)
+        if not token:
+            return False
+        return any(hmac.compare_digest(token, configured) for configured in admin)
+
+    def is_origin_allowed(self, origin: str, sec_fetch_site: str) -> bool:
+        """CSRF defense for browser clients.
+
+        Non-browser clients send neither Origin nor Sec-Fetch-Site, so they are
+        unaffected. Browsers always send Sec-Fetch-Site; a cross-site request
+        (the CSRF case) is rejected unless its Origin is explicitly allowlisted.
+        """
+        # No browser headers at all → not a browser-driven request → allow.
+        if not origin and not sec_fetch_site:
+            return True
+        # Same-origin / same-site / direct navigation are safe.
+        if sec_fetch_site in ("same-origin", "same-site", "none"):
+            return True
+        # Cross-site: only an explicitly allowlisted Origin may proceed.
+        return bool(origin) and origin in self._allowed_origins
 
     def token_from_headers(self, headers: Any) -> str:
         token = headers.get(self.token_header, "")

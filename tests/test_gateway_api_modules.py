@@ -28,18 +28,19 @@ from aiohttp import web
 
 
 def _make_server():
-    """A mock GatewayServer. _require_api_token returns None (authorized)."""
+    """A mock GatewayServer. Token guards return None (authorized)."""
     server = MagicMock()
     server._require_api_token = MagicMock(return_value=None)
+    server._require_admin_token = MagicMock(return_value=None)
     return server
 
 
 def _unauthorized_server():
-    """A mock server whose token guard rejects every request with 401."""
+    """A mock server whose token guards reject every request with 401."""
     server = _make_server()
-    server._require_api_token = MagicMock(
-        return_value=web.json_response({"error": "unauthorized"}, status=401)
-    )
+    rejection = web.json_response({"error": "unauthorized"}, status=401)
+    server._require_api_token = MagicMock(return_value=rejection)
+    server._require_admin_token = MagicMock(return_value=rejection)
     return server
 
 
@@ -282,6 +283,7 @@ class TestSkillsDeps:
         from echo_agent.gateway.api.skills import SkillsAPI
         server = MagicMock()
         server._require_api_token = MagicMock(return_value=None)
+        server._require_admin_token = MagicMock(return_value=None)
         store = MagicMock()
         server._agent_loop.skill_store = store
         return SkillsAPI(server), store, server

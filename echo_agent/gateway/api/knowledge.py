@@ -20,6 +20,9 @@ class KnowledgeAPI:
     def _guard(self, request: web.Request, action: str) -> web.Response | None:
         return self._server._require_api_token(request, action=action)
 
+    def _admin_guard(self, request: web.Request, action: str) -> web.Response | None:
+        return self._server._require_admin_token(request, action=action)
+
     async def get_status(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "knowledge_status")
         if guard is not None:
@@ -43,7 +46,7 @@ class KnowledgeAPI:
         return web.json_response(result)
 
     async def upload(self, request: web.Request) -> web.Response:
-        guard = self._guard(request, "knowledge_upload")
+        guard = self._admin_guard(request, "knowledge_upload")
         if guard is not None:
             return guard
 
@@ -112,7 +115,7 @@ class KnowledgeAPI:
         return web.json_response({"documents": documents})
 
     async def delete_document(self, request: web.Request) -> web.Response:
-        guard = self._guard(request, "knowledge_delete")
+        guard = self._admin_guard(request, "knowledge_delete")
         if guard is not None:
             return guard
 

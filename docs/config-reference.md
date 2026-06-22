@@ -352,7 +352,7 @@
 | 字段 | snake | type | default | choices | 说明 |
 |---|---|---|---|---|---|
 | `gateway.enabled` | `gateway.enabled` | bool | `false` | — | 是否启用网关服务 |
-| `gateway.host` | `gateway.host` | str | `0.0.0.0` | — | 网关监听地址 |
+| `gateway.host` | `gateway.host` | str | `127.0.0.1` | — | 网关监听地址 |
 | `gateway.port` | `gateway.port` | int | `9000` | — | 网关监听端口 |
 | `gateway.apiPrefix` | `gateway.api_prefix` | str | `/api/v1` | — | 网关 API 路径前缀 |
 | `gateway.wsPath` | `gateway.ws_path` | str | `/ws` | — | 网关 WebSocket 路径 |
@@ -363,6 +363,8 @@
 | `gateway.auth.allowedUsers` | `gateway.auth.allowed_users` | list | `[]` | — | 允许访问网关的用户白名单 |
 | `gateway.auth.adminUsers` | `gateway.auth.admin_users` | list | `[]` | — | 网关管理员用户列表 |
 | `gateway.auth.apiTokens` | `gateway.auth.api_tokens` | list | `[]` | — | 网关 API 访问令牌列表 |
+| `gateway.auth.adminTokens` | `gateway.auth.admin_tokens` | list | `[]` | — | 高危管理接口(关停/技能导入安装删除/知识库上传删除)专用令牌；为空时回退到 api_tokens |
+| `gateway.auth.allowedOrigins` | `gateway.auth.allowed_origins` | list | `[]` | — | 允许的浏览器 Origin 白名单(用于 CSRF 防护)；非浏览器客户端不受影响 |
 | `gateway.auth.tokenHeader` | `gateway.auth.token_header` | str | `X-Echo-Agent-Token` | — | 携带 API 令牌的请求头名 |
 | `gateway.auth.pairingTtlSeconds` | `gateway.auth.pairing_ttl_seconds` | int | `300` | — | 配对模式令牌有效期(秒) |
 | `gateway.platforms` | `gateway.platforms` | dict | `{}` | — | 各接入平台的网关配置(键为平台名) |

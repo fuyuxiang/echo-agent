@@ -2385,6 +2385,22 @@ class GatewayAuthConfig(_Base):
             "desc_en": "Gateway API access tokens",
         },
     )
+    admin_tokens: list[str] = Field(
+        default_factory=list,
+        json_schema_extra={
+            "status": "effective", "ref": "gateway/auth.py:23",
+            "desc_zh": "高危管理接口(关停/技能导入安装删除/知识库上传删除)专用令牌；为空时回退到 api_tokens",
+            "desc_en": "Tokens required for high-risk admin endpoints (shutdown, skills import/install/delete, knowledge upload/delete); falls back to api_tokens when empty",
+        },
+    )
+    allowed_origins: list[str] = Field(
+        default_factory=list,
+        json_schema_extra={
+            "status": "effective", "ref": "gateway/server.py:_check_csrf",
+            "desc_zh": "允许的浏览器 Origin 白名单(用于 CSRF 防护)；非浏览器客户端不受影响",
+            "desc_en": "Allowlisted browser Origins for CSRF protection; non-browser clients are unaffected",
+        },
+    )
     token_header: str = Field(
         default="X-Echo-Agent-Token",
         json_schema_extra={
@@ -2413,7 +2429,7 @@ class GatewayConfig(_Base):
         },
     )
     host: str = Field(
-        default="0.0.0.0",
+        default="127.0.0.1",
         json_schema_extra={
             "status": "effective", "ref": "gateway/server.py:128",
             "desc_zh": "网关监听地址",
