@@ -29,6 +29,7 @@ def discover_tools(
     task_manager: Any = None,
     workflow_engine: Any = None,
     knowledge_index: Any = None,
+    approval: Any = None,
 ) -> list[Tool]:
     ws = str(workspace)
     restrict = config.tools.restrict_to_workspace
@@ -135,7 +136,7 @@ def discover_tools(
         from echo_agent.agent.tools.skills import SkillsListTool, SkillViewTool, SkillManageTool
         from echo_agent.agent.tools.skill_install import SkillInstallTool
         tools.append(SkillsListTool(store=skill_store))
-        tools.append(SkillViewTool(store=skill_store))
+        tools.append(SkillViewTool(store=skill_store, approval=approval, bus=bus))
         tools.append(SkillManageTool(store=skill_store))
         tools.append(SkillInstallTool(store=skill_store))
 

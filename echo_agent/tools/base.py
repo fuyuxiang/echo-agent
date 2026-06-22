@@ -54,6 +54,9 @@ class ToolExecutionContext:
     credentials: dict[str, str] = field(default_factory=dict)
     approved_actions: frozenset[str] = field(default_factory=frozenset)
     allowed_tools: frozenset[str] = field(default_factory=frozenset)
+    channel: str = ""
+    chat_id: str = ""
+    reply_to_id: str = ""
 
 
 def build_idempotency_key(trace_id: str, tool_name: str, index: int, params: Mapping[str, Any]) -> str:
