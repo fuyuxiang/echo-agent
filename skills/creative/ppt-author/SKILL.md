@@ -13,6 +13,11 @@ metadata:
 
 Generate PowerPoint presentations from structured content.
 
+## 生成专业演示文稿前必读
+
+生成正式 PPT 前,**必须**先用 `skill_view` 读取本技能的 `references/design-guide.md`,
+并严格按其中的配色、版式、排版、页数节奏规范执行。该文件含可直接仿写的完整代码样例。
+
 ## Install
 
 ```bash
