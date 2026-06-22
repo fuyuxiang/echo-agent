@@ -9,8 +9,17 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from loguru import logger
+
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.bus.events import OutboundEvent
+from echo_agent.dependencies.lazy_deps import _is_satisfied, install_authorized
+from echo_agent.permissions.manager import ApprovalStatus
 from echo_agent.skills.store import SkillStore
+
+# How long to wait for a user's /approve|/deny decision on a dependency
+# install before giving up and returning the skill view without the deps.
+_DEP_APPROVAL_TIMEOUT_SECONDS = 300
 
 
 class SkillsListTool(Tool):
@@ -56,11 +65,92 @@ class SkillViewTool(Tool):
         "required": ["name"],
     }
 
-    def __init__(self, store: SkillStore):
+    def __init__(self, store: SkillStore, *, approval: Any = None, bus: Any = None):
         self._store = store
+        self._approval = approval
+        self._bus = bus
 
     def execution_mode(self, params: dict[str, Any]) -> str:
         return "read_only"
+
+    def _skill_pip_specs(self, name: str, content: str) -> list[str]:
+        """Read a skill's declared pip deps from SKILL.md metadata.echo.requires.pip."""
+        from echo_agent.skills.store import parse_frontmatter
+
+        try:
+            fm, _ = parse_frontmatter(content)
+        except Exception:
+            return []
+        echo_meta = (fm.get("metadata", {}) or {}).get("echo", {}) or {}
+        requires = echo_meta.get("requires", {}) or {}
+        return list(requires.get("pip", []) or [])
+
+    async def _precheck_deps(
+        self, name: str, content: str, ctx: ToolExecutionContext | None
+    ) -> str:
+        """If the skill declares pip deps that are missing, route them through the
+        approval closed-loop using the current channel's user. Returns an extra
+        text block to append to the skill view (empty when nothing to add).
+
+        Degrades to a no-op (returns "") when approval/bus are not injected or
+        there is no originating channel (worker / no-event contexts).
+        """
+        if self._approval is None or self._bus is None:
+            return ""
+        if ctx is None or not ctx.channel:
+            return ""
+
+        specs = self._skill_pip_specs(name, content)
+        if not specs:
+            return ""
+        missing = [s for s in specs if not _is_satisfied(s)]
+        if not missing:
+            return ""
+
+        req = self._approval.request_approval(
+            "dep_install",
+            tool_name="skill_view",
+            params={"skill": name, "missing": missing},
+            user_id=ctx.user_id,
+        )
+
+        spec_list = " ".join(missing)
+        prompt = (
+            f"技能「{name}」需要安装以下依赖才能运行其脚本:\n  {spec_list}\n"
+            f"回复 /approve {req.id} 授权安装,或 /deny {req.id} 拒绝。"
+        )
+        out = OutboundEvent.text_reply(
+            channel=ctx.channel,
+            chat_id=ctx.chat_id,
+            text=prompt,
+            reply_to_id=ctx.reply_to_id or None,
+        )
+        out.metadata["_dep_install_request"] = True
+        out.metadata["_skill_name"] = name
+        out.metadata["_missing"] = missing
+        out.metadata["_request_id"] = req.id
+        await self._bus.publish_outbound(out)
+
+        decided = await self._approval.wait_for_decision(
+            req.id, timeout_seconds=_DEP_APPROVAL_TIMEOUT_SECONDS
+        )
+        approved = decided is not None and getattr(decided, "status", None) == ApprovalStatus.APPROVED
+        if not approved:
+            return (
+                f"\n\n---\n注意:技能「{name}」缺少依赖 {spec_list},"
+                "用户未授权安装,需授权后才能运行该技能脚本。"
+            )
+
+        result = install_authorized(tuple(missing), source=f"skill_view:{name}")
+        if result.get("success"):
+            installed = result.get("installed") or []
+            skipped = result.get("skipped") or []
+            detail = "、".join(str(x) for x in (list(installed) + list(skipped))) or spec_list
+            return f"\n\n---\n依赖已安装:{detail}。现在可以运行该技能脚本。"
+        return (
+            f"\n\n---\n注意:技能「{name}」依赖 {spec_list} 安装失败:"
+            f"{result.get('detail', '未知错误')}。暂时无法运行该技能脚本。"
+        )
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         name = params["name"]
@@ -80,6 +170,15 @@ class SkillViewTool(Tool):
         output = content
         if files:
             output += "\n\n---\nLinked files:\n" + "\n".join(f"  - {f}" for f in files)
+
+        try:
+            dep_notice = await self._precheck_deps(name, content, ctx)
+        except Exception as e:  # never let dep precheck break a plain view
+            logger.warning("skill_view dependency precheck failed for {}: {}", name, e)
+            dep_notice = ""
+        if dep_notice:
+            output += dep_notice
+
         return ToolResult(success=True, output=output)
 
 

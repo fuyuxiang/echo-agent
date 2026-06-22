@@ -1526,6 +1526,7 @@ class ApprovalConfig(_Base):
     require_approval: list[str] = Field(
         default_factory=lambda: [
             "cronjob",
+            "dep_install",
             "exec",
             "execute_code",
             "process",

@@ -422,6 +422,9 @@ class InferenceStage:
                         idempotency_key=build_idempotency_key(trace_id, tool_call.name, tool_index, tool_call.arguments),
                         credentials=self._credentials.get_for_tool(tool_call.name),
                         approved_actions=approval_check.approved_actions,
+                        channel=event.channel,
+                        chat_id=event.chat_id,
+                        reply_to_id=event.reply_to_id or "",
                     )
 
                     # pre_tool_call hook

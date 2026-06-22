@@ -341,6 +341,7 @@ class AgentLoop:
             task_manager=task_manager,
             workflow_engine=workflow_engine,
             knowledge_index=self.knowledge,
+            approval=self.approval,
         )
         for tool in all_tools:
             self.tools.register(tool)
