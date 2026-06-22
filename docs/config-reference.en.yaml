@@ -333,8 +333,8 @@ permissions:
   # Global administrator users (default: [])
   adminUsers: []
   approval:
-    # Tools/actions that require approval before running (default: ['cronjob', 'exec', 'execute_code', 'process', 'skill_install', 'skill_manage'])
-    requireApproval: ['cronjob', 'exec', 'execute_code', 'process', 'skill_install', 'skill_manage']
+    # Tools/actions that require approval before running (default: ['cronjob', 'dep_install', 'exec', 'execute_code', 'process', 'skill_install', 'skill_manage'])
+    requireApproval: ['cronjob', 'dep_install', 'exec', 'execute_code', 'process', 'skill_install', 'skill_manage']
     # Tools/actions auto-approved without prompting (default: [])
     autoApprove: []
     # Tools/actions auto-denied (default: [])

@@ -333,8 +333,8 @@ permissions:
   # 全局管理员用户列表 (默认: [])
   adminUsers: []
   approval:
-    # 执行前必须审批的工具/动作列表 (默认: ['cronjob', 'exec', 'execute_code', 'process', 'skill_install', 'skill_manage'])
-    requireApproval: ['cronjob', 'exec', 'execute_code', 'process', 'skill_install', 'skill_manage']
+    # 执行前必须审批的工具/动作列表 (默认: ['cronjob', 'dep_install', 'exec', 'execute_code', 'process', 'skill_install', 'skill_manage'])
+    requireApproval: ['cronjob', 'dep_install', 'exec', 'execute_code', 'process', 'skill_install', 'skill_manage']
     # 自动批准的工具/动作列表 (默认: [])
     autoApprove: []
     # 自动拒绝的工具/动作列表 (默认: [])

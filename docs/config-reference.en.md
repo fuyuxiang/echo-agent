@@ -203,7 +203,7 @@
 | Field | snake | type | default | choices | description |
 |---|---|---|---|---|---|
 | `permissions.adminUsers` | `permissions.admin_users` | list | `[]` | — | Global administrator users |
-| `permissions.approval.requireApproval` | `permissions.approval.require_approval` | list | `['cronjob', 'exec', 'execute_code', 'process', 'skill_install', 'skill_manage']` | — | Tools/actions that require approval before running |
+| `permissions.approval.requireApproval` | `permissions.approval.require_approval` | list | `['cronjob', 'dep_install', 'exec', 'execute_code', 'process', 'skill_install', 'skill_manage']` | — | Tools/actions that require approval before running |
 | `permissions.approval.autoApprove` | `permissions.approval.auto_approve` | list | `[]` | — | Tools/actions auto-approved without prompting |
 | `permissions.approval.autoDeny` | `permissions.approval.auto_deny` | list | `[]` | — | Tools/actions auto-denied |
 | `permissions.approval.defaultPolicy` | `permissions.approval.default_policy` | Literal | `approve` | approve/deny/ask | Default approval policy when no rule matches |

@@ -203,7 +203,7 @@
 | 字段 | snake | type | default | choices | 说明 |
 |---|---|---|---|---|---|
 | `permissions.adminUsers` | `permissions.admin_users` | list | `[]` | — | 全局管理员用户列表 |
-| `permissions.approval.requireApproval` | `permissions.approval.require_approval` | list | `['cronjob', 'exec', 'execute_code', 'process', 'skill_install', 'skill_manage']` | — | 执行前必须审批的工具/动作列表 |
+| `permissions.approval.requireApproval` | `permissions.approval.require_approval` | list | `['cronjob', 'dep_install', 'exec', 'execute_code', 'process', 'skill_install', 'skill_manage']` | — | 执行前必须审批的工具/动作列表 |
 | `permissions.approval.autoApprove` | `permissions.approval.auto_approve` | list | `[]` | — | 自动批准的工具/动作列表 |
 | `permissions.approval.autoDeny` | `permissions.approval.auto_deny` | list | `[]` | — | 自动拒绝的工具/动作列表 |
 | `permissions.approval.defaultPolicy` | `permissions.approval.default_policy` | Literal | `approve` | approve/deny/ask | 未命中规则时的默认审批策略 |
