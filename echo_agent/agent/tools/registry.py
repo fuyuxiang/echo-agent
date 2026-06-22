@@ -43,7 +43,7 @@ class ToolRegistry:
         "code": "execute_code",
     }
 
-    def __init__(self, audit_log_path: Path | None = None):
+    def __init__(self, audit_log_path: Path | None = None, config: Any = None):
         self._tools: dict[str, Tool] = {}
         self._replay_cache: collections.OrderedDict[str, dict[str, Any]] = collections.OrderedDict()
         self._execution_log: collections.deque[dict[str, Any]] = collections.deque(maxlen=_MAX_EXECUTION_LOG)
@@ -51,6 +51,13 @@ class ToolRegistry:
         # Durable JSONL audit trail — the in-memory deque alone evaporates on
         # restart, which defeats the point of an audit log.
         self._audit_log_path = audit_log_path
+        # Defense-in-depth: registration-time filtering (filter_tools_by_policy)
+        # is the primary gate, but if the security profile is tightened *after*
+        # registration the registry would still hold high-risk tools. Re-checking
+        # the policy at execute time closes that window. When config is set, every
+        # tool that passed registration already satisfies this check under the
+        # same config, so this is a no-op unless the profile changed underneath.
+        self._config = config
 
     def set_audit_log_path(self, path: Path) -> None:
         self._audit_log_path = path
@@ -136,6 +143,16 @@ class ToolRegistry:
         tool = self._tools.get(resolved_name)
         if not tool:
             return ToolResult(success=False, error=f"Tool '{name}' not found. Available: {', '.join(self.tool_names)}")
+
+        # Defense-in-depth re-check: native tools have no other runtime policy
+        # gate (only mcp_* tools are re-checked in the loop). If the security
+        # profile was tightened after registration, refuse the call here even
+        # though the tool is still in the registry.
+        if self._config is not None:
+            from echo_agent.security.tool_policy import is_tool_allowed
+            if not is_tool_allowed(self._config, tool):
+                logger.warning("Tool '{}' blocked at execute time by security policy", resolved_name)
+                return ToolResult(success=False, error=f"Tool '{name}' is not allowed under the current security profile")
 
         errors = tool.validate_params(params)
         if errors:
