@@ -367,3 +367,45 @@ class TestSendVoiceFallback:
         assert res.success is False
 
 
+class TestSendRoutingAudio:
+    @pytest.mark.asyncio
+    async def test_audio_block_routes_to_send_voice(self, tmp_path, monkeypatch):
+        ch = _make_weixin(tmp_path)
+        calls = {}
+        async def fake_send_voice(chat_id, source, metadata=None):
+            calls["voice"] = source
+            return wx.SendResult(success=True)
+        async def fake_send_file(chat_id, source, **kw):
+            calls.setdefault("file", []).append(source)
+            return wx.SendResult(success=True)
+        monkeypatch.setattr(ch, "send_voice", fake_send_voice)
+        monkeypatch.setattr(ch, "send_file", fake_send_file)
+
+        ev = OutboundEvent(
+            chat_id="user@im", is_final=True,
+            content=[ContentBlock(type=ContentType.AUDIO, url="https://x/a.mp3")],
+        )
+        res = await ch.send(ev)
+        assert res.success
+        assert calls["voice"] == "https://x/a.mp3"
+        assert "file" not in calls  # audio must NOT go through send_file
+
+    @pytest.mark.asyncio
+    async def test_image_block_still_routes_to_send_file(self, tmp_path, monkeypatch):
+        ch = _make_weixin(tmp_path)
+        calls = {}
+        async def fake_send_file(chat_id, source, *, as_image=None, **kw):
+            calls.update(source=source, as_image=as_image)
+            return wx.SendResult(success=True)
+        monkeypatch.setattr(ch, "send_file", fake_send_file)
+
+        ev = OutboundEvent(
+            chat_id="user@im", is_final=True,
+            content=[ContentBlock(type=ContentType.IMAGE, url="https://x/p.png")],
+        )
+        res = await ch.send(ev)
+        assert res.success
+        assert calls["source"] == "https://x/p.png"
+        assert calls["as_image"] is True
+
+
