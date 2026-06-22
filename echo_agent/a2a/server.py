@@ -57,22 +57,39 @@ class A2AServer:
         return web.json_response(result)
 
     async def _process_task(self, task: A2ATask) -> A2ATask:
-        """Process an A2A task by routing through the agent loop."""
-        user_text = ""
-        for msg in task.messages:
-            if msg.role == "user":
-                user_text = msg.text_content
-                break
+        """Process an A2A task by routing through the agent loop.
+
+        Only text parts are processed. If the inbound user message carries
+        non-text parts (files, data, images) we do NOT silently drop them —
+        the agent core has no channel to receive attachments — so we tell the
+        caller plainly rather than pretending they were handled."""
+        user_msg = next((m for m in task.messages if m.role == "user"), None)
+        user_text = user_msg.text_content if user_msg else ""
+        dropped = (
+            [p.get("type", "unknown") for p in user_msg.parts if p.get("type") != "text"]
+            if user_msg else []
+        )
 
         if not user_text:
             task.state = TaskState.FAILED
-            task.messages.append(A2AMessage.text("agent", "No user message found"))
+            detail = (
+                f"No text content found. Unsupported parts were ignored: {sorted(set(dropped))}"
+                if dropped else "No user message found"
+            )
+            task.messages.append(A2AMessage.text("agent", detail))
             return task
 
         try:
             response_text = await self._loop.process_direct(
                 user_text, session_key=f"a2a:{task.id}", channel="a2a",
             )
+            if dropped:
+                # Text was processed; flag the ignored parts so the caller knows
+                # they were not consumed rather than assuming full handling.
+                response_text = (
+                    f"{response_text or ''}\n\n"
+                    f"[note] This agent processes text only; ignored parts: {sorted(set(dropped))}"
+                )
             task.state = TaskState.COMPLETED
             task.messages.append(A2AMessage.text("agent", response_text or ""))
         except Exception as e:

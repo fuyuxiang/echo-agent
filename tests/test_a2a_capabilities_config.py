@@ -16,5 +16,7 @@ def test_capabilities_reach_serialized_skills():
     skill_ids = [s["id"] for s in d["skills"]]
     assert "chat" in skill_ids
     assert "search" in skill_ids
-    # `capabilities` key stays the reserved A2A object, unchanged.
-    assert d["capabilities"] == {"streaming": True, "pushNotifications": False}
+    # `capabilities` key stays the reserved A2A object. streaming is False
+    # because the server has no SSE / tasks/sendSubscribe implementation —
+    # the card must not over-declare capabilities it cannot honour.
+    assert d["capabilities"] == {"streaming": False, "pushNotifications": False}

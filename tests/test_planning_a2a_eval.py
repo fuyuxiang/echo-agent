@@ -244,7 +244,7 @@ class TestA2AModels:
         card = AgentCard(name="test", skills=["code"])
         d = card.to_dict()
         assert d["name"] == "test"
-        assert d["capabilities"]["streaming"] is True
+        assert d["capabilities"]["streaming"] is False
         skill_ids = [s["id"] for s in d["skills"]]
         # Explicit skills plus configured capability tags both surface here.
         assert "code" in skill_ids
@@ -336,8 +336,11 @@ class TestA2AProtocol:
             "jsonrpc": "2.0", "id": "1", "method": "tasks/send",
             "params": {"id": "t3", "message": {"role": "user", "parts": [{"type": "text", "text": "x"}]}},
         })
+        # tasks/send completes synchronously, so the task is already terminal:
+        # cancelling it must be a contract error, not a silent state flip.
         resp = await proto.handle({"jsonrpc": "2.0", "id": "2", "method": "tasks/cancel", "params": {"id": "t3"}})
-        assert resp["result"]["state"] == "canceled"
+        assert "error" in resp
+        assert "cannot be canceled" in resp["error"]["message"]
 
     @pytest.mark.asyncio
     async def test_handle_unknown_method(self):
