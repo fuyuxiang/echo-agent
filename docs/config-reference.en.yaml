@@ -537,8 +537,8 @@ compression:
 gateway:
   # Enable the gateway service (default: false)
   enabled: false
-  # Gateway bind address (default: 127.0.0.1)
-  host: 127.0.0.1
+  # Gateway bind address (default: 0.0.0.0)
+  host: 0.0.0.0
   # Gateway listen port (default: 9000)
   port: 9000
   # Gateway API path prefix (default: /api/v1)
@@ -563,7 +563,7 @@ gateway:
     apiTokens: []
     # Tokens required for high-risk admin endpoints (shutdown, skills import/install/delete, knowledge upload/delete); falls back to api_tokens when empty (default: [])
     adminTokens: []
-    # Allowlisted browser Origins for CSRF protection; non-browser clients are unaffected (default: [])
+    # Allowlisted browser Origins (CSRF protection); empty disables the CSRF check (default). When set, only listed cross-site browser requests pass; non-browser clients are always unaffected (default: [])
     allowedOrigins: []
     # Request header carrying the API token (default: X-Echo-Agent-Token)
     tokenHeader: X-Echo-Agent-Token

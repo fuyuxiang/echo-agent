@@ -294,9 +294,6 @@ class GatewayServer:
         return web.json_response({"error": "cross-site request forbidden"}, status=403)
 
     def _require_api_token(self, request: web.Request, *, action: str) -> web.Response | None:
-        csrf = self._check_csrf(request, action=action)
-        if csrf is not None:
-            return csrf
         if not self._config.auth.api_tokens:
             return None
         token = self._request_token(request)
