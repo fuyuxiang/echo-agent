@@ -101,6 +101,49 @@ class SkillsAPI:
 
         return web.json_response({"success": True})
 
+    def _skill_pip_specs(self, name: str) -> list[str] | None:
+        """Read a skill's declared pip deps from SKILL.md metadata.echo.requires.pip.
+        Returns None if skill not found, [] if it declares none."""
+        store = self._store()
+        content = store.read_skill(name)
+        if content is None:
+            return None
+        from echo_agent.skills.store import parse_frontmatter
+        fm, _ = parse_frontmatter(content)
+        echo_meta = (fm.get("metadata", {}) or {}).get("echo", {}) or {}
+        requires = echo_meta.get("requires", {}) or {}
+        return list(requires.get("pip", []) or [])
+
+    async def get_skill_deps(self, request: web.Request) -> web.Response:
+        guard = self._guard(request, "skills_deps_get")
+        if guard is not None:
+            return guard
+        name = request.match_info["name"]
+        specs = self._skill_pip_specs(name)
+        if specs is None:
+            return web.json_response({"error": "not found"}, status=404)
+        from echo_agent.dependencies.lazy_deps import _is_satisfied
+        missing = [s for s in specs if not _is_satisfied(s)]
+        return web.json_response({
+            "name": name,
+            "requires": list(specs),
+            "missing": missing,
+            "satisfied": not missing,
+        })
+
+    async def install_skill_deps(self, request: web.Request) -> web.Response:
+        guard = self._guard(request, "skills_deps_install")
+        if guard is not None:
+            return guard
+        name = request.match_info["name"]
+        specs = self._skill_pip_specs(name)
+        if specs is None:
+            return web.json_response({"error": "not found"}, status=404)
+        from echo_agent.dependencies.lazy_deps import install_authorized
+        result = install_authorized(tuple(specs), source=f"http:skill:{name}")
+        status = 200 if result.get("success") else 400
+        return web.json_response(result, status=status)
+
     async def import_skill(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "skills_import")
         if guard is not None:

@@ -273,6 +273,73 @@ class TestSkillsAPI:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# SkillsAPI deps (体检 + 安装)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestSkillsDeps:
+    def _make(self):
+        from echo_agent.gateway.api.skills import SkillsAPI
+        server = MagicMock()
+        server._require_api_token = MagicMock(return_value=None)
+        store = MagicMock()
+        server._agent_loop.skill_store = store
+        return SkillsAPI(server), store, server
+
+    @pytest.mark.asyncio
+    async def test_get_deps_reads_requires_pip(self):
+        api, store, _ = self._make()
+        store.read_skill.return_value = (
+            "---\nname: ppt-author\nmetadata:\n  echo:\n"
+            "    requires:\n      pip: [python-pptx]\n---\nbody"
+        )
+        import echo_agent.dependencies.lazy_deps as ld
+        orig = ld._is_satisfied
+        ld._is_satisfied = lambda s: False
+        try:
+            resp = await api.get_skill_deps(_Request(match_info={"name": "ppt-author"}))
+        finally:
+            ld._is_satisfied = orig
+        assert resp.status == 200
+        data = await _payload(resp)
+        assert "python-pptx" in data["requires"]
+        assert "python-pptx" in data["missing"]
+        assert data["satisfied"] is False
+
+    @pytest.mark.asyncio
+    async def test_get_deps_not_found(self):
+        api, store, _ = self._make()
+        store.read_skill.return_value = None
+        resp = await api.get_skill_deps(_Request(match_info={"name": "nope"}))
+        assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_get_deps_unauthorized(self):
+        from echo_agent.gateway.api.skills import SkillsAPI
+        server = _unauthorized_server()
+        api = SkillsAPI(server)
+        resp = await api.get_skill_deps(_Request(match_info={"name": "x"}))
+        assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_install_deps_calls_install_authorized(self, monkeypatch):
+        api, store, _ = self._make()
+        store.read_skill.return_value = (
+            "---\nname: ppt-author\nmetadata:\n  echo:\n"
+            "    requires:\n      pip: [python-pptx]\n---\nbody"
+        )
+        import echo_agent.dependencies.lazy_deps as ld
+        monkeypatch.setattr(ld, "install_authorized",
+                            lambda specs, *, source: {"success": True, "installed": list(specs),
+                                                      "skipped": [], "rejected": [], "detail": "ok"})
+        resp = await api.install_skill_deps(_Request(match_info={"name": "ppt-author"}, body={}))
+        assert resp.status == 200
+        data = await _payload(resp)
+        assert data["success"] is True
+        assert "python-pptx" in data["installed"]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # KnowledgeAPI
 # ══════════════════════════════════════════════════════════════════════════════
 
