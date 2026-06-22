@@ -41,6 +41,8 @@ def register_management_routes(app: web.Application, prefix: str, server: Gatewa
     app.router.add_get(f"{prefix}/skills", skills_api.list_skills)
     app.router.add_post(f"{prefix}/skills/import", skills_api.import_skill)
     app.router.add_get(f"{prefix}/skills/{{name}}", skills_api.get_skill)
+    app.router.add_get(f"{prefix}/skills/{{name}}/deps", skills_api.get_skill_deps)
+    app.router.add_post(f"{prefix}/skills/{{name}}/deps/install", skills_api.install_skill_deps)
     app.router.add_post(f"{prefix}/skills/{{name}}/toggle", skills_api.toggle_skill)
     app.router.add_delete(f"{prefix}/skills/{{name}}", skills_api.delete_skill)
 
