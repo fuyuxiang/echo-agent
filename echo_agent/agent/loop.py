@@ -112,6 +112,7 @@ class AgentLoop:
         )
         self.tools = ToolRegistry(
             audit_log_path=workspace / config.storage.logs_dir / "tool_audit.jsonl",
+            config=config,
         )
         from echo_agent.gateway.media import MediaCache
         media_cache = MediaCache(
@@ -596,6 +597,12 @@ class AgentLoop:
         """入站事件处理入口，负责追踪、错误处理和响应发布。"""
         if not self._running:
             return
+        # Approval decisions (/approve, /deny, /approvals) are handled BEFORE
+        # acquiring the session lock — by design. A turn that is blocked waiting
+        # for approval holds the session lock while parked in wait_for_decision;
+        # routing the decision through a separate lock-free path (not _process_event)
+        # is what lets it wake the waiter without deadlocking on that same lock.
+        # Do not move this below sessions.acquire().
         if self._is_approval_command(event.text):
             response_text = await self._handle_approval_command(event)
             if response_text is not None:

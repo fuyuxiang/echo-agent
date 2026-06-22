@@ -344,7 +344,12 @@ async def run(config_path: str | None = None, workspace: str | None = None) -> N
 
 def _apply_gateway_profile_default(config: "Config", config_path: str | None) -> None:
     """Tighten the gateway entrypoint to ``public_gateway`` when the user did
-    not explicitly choose a ``security.profile``. Explicit config is respected."""
+    not explicitly choose a ``security.profile``. Explicit config is respected.
+
+    NOTE: profile tightening must be injected into ``bootstrap`` overrides
+    *before* the agent loop registers its tools — see ``run_gateway``. This
+    helper only re-asserts the field on the resolved config as a guard; on its
+    own it does not re-filter an already-built tool registry."""
     from echo_agent.config.loader import profile_explicitly_set
 
     if not profile_explicitly_set(config_path):
@@ -353,6 +358,24 @@ def _apply_gateway_profile_default(config: "Config", config_path: str | None) ->
             "Gateway 入口未显式配置 security.profile，已默认切到 public_gateway 收紧档；"
             "如需放开请在配置中显式设置 security.profile"
         )
+
+
+def _gateway_profile_override(config_path: str | None) -> dict[str, Any]:
+    """Build the bootstrap override that tightens the gateway security profile
+    when the user did not set one explicitly. Returning an override (rather than
+    mutating config post-bootstrap) is what makes registration-time tool
+    filtering see ``public_gateway`` — otherwise high-risk tools (exec,
+    write_file, patch, workflow, ...) would already be registered and would
+    remain callable, since native tools have no per-call profile gate."""
+    from echo_agent.config.loader import profile_explicitly_set
+
+    if profile_explicitly_set(config_path):
+        return {}
+    logger.warning(
+        "Gateway 入口未显式配置 security.profile，已默认切到 public_gateway 收紧档；"
+        "如需放开请在配置中显式设置 security.profile"
+    )
+    return {"security": {"profile": "public_gateway"}}
 
 
 async def run_gateway(
@@ -368,10 +391,17 @@ async def run_gateway(
         from echo_agent.config.loader import resolve_config_file
         config_path = str(resolve_config_file(search_dir=workspace) or "")
     overrides: dict[str, Any] = {"workspace": workspace} if workspace else {}
+    # Force gateway on and tighten the security profile *before* bootstrap so the
+    # agent loop registers tools under the effective gateway policy. Applying
+    # these after bootstrap would leave already-registered high-risk tools in the
+    # registry (see _gateway_profile_override).
+    overrides.setdefault("gateway", {})["enabled"] = True
+    profile_override = _gateway_profile_override(config_path)
+    if profile_override:
+        overrides["security"] = {**overrides.get("security", {}), **profile_override["security"]}
     shutdown = asyncio.Event()
     ctx = await bootstrap(config_path=config_path, overrides=overrides or None, on_cli_exit=shutdown.set)
     ctx.config.gateway.enabled = True
-    _apply_gateway_profile_default(ctx.config, config_path)
     if host:
         ctx.config.gateway.host = host
     if port:

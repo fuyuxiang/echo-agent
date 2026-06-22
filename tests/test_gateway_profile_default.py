@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from echo_agent.app import _apply_gateway_profile_default
+from echo_agent.app import _apply_gateway_profile_default, _gateway_profile_override
 from echo_agent.config.loader import profile_explicitly_set
 
 
@@ -56,3 +56,13 @@ def test_public_gateway_denies_write_allows_read():
     assert is_tool_allowed(cfg, "write_file") is False
     assert is_tool_allowed(cfg, "exec") is False
     assert is_tool_allowed(cfg, "read_file") is True
+
+
+def test_override_tightens_when_not_explicit():
+    override = _gateway_profile_override(config_path=None)
+    assert override == {"security": {"profile": "public_gateway"}}
+
+
+def test_override_empty_when_explicit(tmp_path):
+    cfg = _write_yaml(tmp_path, "security:\n  profile: personal_cli\n")
+    assert _gateway_profile_override(config_path=str(cfg)) == {}
