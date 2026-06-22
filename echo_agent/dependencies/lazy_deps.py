@@ -315,6 +315,60 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
 # =============================================================================
 
 
+def install_authorized(specs: tuple[str, ...], *, source: str) -> dict[str, object]:
+    """Install pip specs explicitly authorized by a user/operator out-of-band
+    (HTTP endpoint or consent reply).
+
+    Unlike ensure(): does NOT consult the SKILL_DEPS allowlist and does NOT
+    honor allow_lazy_installs / ECHO_AGENT_DISABLE_LAZY_INSTALLS — the
+    authorization IS the consent. Still enforces _spec_is_safe and venv scope.
+
+    Args:
+        specs:  pip specs to install (e.g. ("python-pptx",)).
+        source: provenance tag for logging/audit (e.g. "http:skill:ppt-author").
+
+    Returns a JSON-friendly dict with success/installed/skipped/rejected/detail.
+    """
+    rejected = [s for s in specs if not _spec_is_safe(s)]
+    if rejected:
+        return {"success": False, "installed": [], "skipped": [],
+                "rejected": rejected,
+                "detail": f"refusing unsafe spec(s): {', '.join(rejected)}"}
+
+    already: list[str] = []
+    to_install_list: list[str] = []
+    for s in specs:
+        (already if _is_satisfied(s) else to_install_list).append(s)
+    to_install = tuple(to_install_list)
+    if not to_install:
+        return {"success": True, "installed": [], "skipped": list(already),
+                "rejected": [], "detail": "all specs already satisfied"}
+
+    logger.info("install_authorized(source=%s): installing %s", source, " ".join(to_install))
+    result = _venv_pip_install(to_install)
+    if not result.success:
+        snippet = (result.stderr or result.stdout or "").strip()[-2000:]
+        return {"success": False, "installed": [], "skipped": list(already),
+                "rejected": [], "detail": snippet or "install failed (no output)"}
+
+    try:
+        import importlib.metadata as _md
+        if hasattr(_md, "_cache_clear"):
+            _md._cache_clear()  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+    still_missing = [s for s in to_install if not _is_satisfied(s)]
+    if still_missing:
+        return {"success": False, "installed": [], "skipped": list(already),
+                "rejected": [],
+                "detail": f"installed but still not importable (restart may be needed): {still_missing}"}
+
+    logger.info("install_authorized(source=%s): complete", source)
+    return {"success": True, "installed": list(to_install), "skipped": list(already),
+            "rejected": [], "detail": "ok"}
+
+
 def feature_specs(feature: str) -> tuple[str, ...]:
     """Return the registered specs for a feature, or raise KeyError."""
     if feature not in SKILL_DEPS:

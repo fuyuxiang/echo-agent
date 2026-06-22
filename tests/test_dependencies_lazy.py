@@ -380,3 +380,46 @@ def test_refresh_active_features_skipped(monkeypatch):
     monkeypatch.setattr(ld, "ensure", declined)
     results = ld.refresh_active_features(prompt=False)
     assert results["skill.tts-voice"].startswith("skipped")
+
+
+# ── install_authorized (out-of-band authorized installs) ─────────────────────
+
+
+class TestInstallAuthorized:
+    def test_unsafe_spec_rejected_without_install(self, monkeypatch):
+        called = {"n": 0}
+        monkeypatch.setattr(ld, "_venv_pip_install",
+                            lambda specs, **kw: called.__setitem__("n", called["n"] + 1))
+        out = ld.install_authorized(("evil; rm -rf /",), source="test")
+        assert out["success"] is False
+        assert out["rejected"] == ["evil; rm -rf /"]
+        assert called["n"] == 0  # 不安全 spec 绝不触发安装
+
+    def test_already_satisfied_skips(self, monkeypatch):
+        monkeypatch.setattr(ld, "_is_satisfied", lambda s: True)
+        out = ld.install_authorized(("python-pptx",), source="test")
+        assert out["success"] is True
+        assert out["skipped"] == ["python-pptx"]
+        assert out["installed"] == []
+
+    def test_install_success_ignores_allowlist_and_switch(self, monkeypatch):
+        # 关键:白名单外的包 + 开关关闭,也应安装(授权即同意)
+        monkeypatch.setenv("ECHO_AGENT_DISABLE_LAZY_INSTALLS", "1")
+        calls = {"n": 0}
+        def fake_satisfied(spec):
+            calls["n"] += 1
+            return calls["n"] > 1  # 装前 missing,装后 satisfied
+        monkeypatch.setattr(ld, "_is_satisfied", fake_satisfied)
+        monkeypatch.setattr(ld, "_venv_pip_install",
+                            lambda specs, **kw: ld._InstallResult(True, "ok", ""))
+        out = ld.install_authorized(("some-third-party-pkg",), source="test")
+        assert out["success"] is True
+        assert out["installed"] == ["some-third-party-pkg"]
+
+    def test_install_failure_returns_detail(self, monkeypatch):
+        monkeypatch.setattr(ld, "_is_satisfied", lambda s: False)
+        monkeypatch.setattr(ld, "_venv_pip_install",
+                            lambda specs, **kw: ld._InstallResult(False, "", "pip exploded"))
+        out = ld.install_authorized(("pkg",), source="test")
+        assert out["success"] is False
+        assert "pip exploded" in out["detail"]
