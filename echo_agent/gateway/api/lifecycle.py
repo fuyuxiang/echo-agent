@@ -16,7 +16,8 @@ class LifecycleAPI:
         return self._server._require_api_token(request, action=action)
 
     async def shutdown(self, request: web.Request) -> web.Response:
-        guard = self._guard(request, "shutdown")
+        # Shutdown is a high-risk admin action — require an admin-scoped token.
+        guard = self._server._require_admin_token(request, action="shutdown")
         if guard is not None:
             return guard
 

@@ -18,6 +18,9 @@ class SkillsAPI:
     def _guard(self, request: web.Request, action: str) -> web.Response | None:
         return self._server._require_api_token(request, action=action)
 
+    def _admin_guard(self, request: web.Request, action: str) -> web.Response | None:
+        return self._server._require_admin_token(request, action=action)
+
     def _list_all_with_status(self) -> list[dict]:
         """Return all skills (including disabled) with their enabled status."""
         store = self._store()
@@ -85,7 +88,7 @@ class SkillsAPI:
         })
 
     async def delete_skill(self, request: web.Request) -> web.Response:
-        guard = self._guard(request, "skills_delete")
+        guard = self._admin_guard(request, "skills_delete")
         if guard is not None:
             return guard
 
@@ -132,7 +135,7 @@ class SkillsAPI:
         })
 
     async def install_skill_deps(self, request: web.Request) -> web.Response:
-        guard = self._guard(request, "skills_deps_install")
+        guard = self._admin_guard(request, "skills_deps_install")
         if guard is not None:
             return guard
         name = request.match_info["name"]
@@ -145,7 +148,7 @@ class SkillsAPI:
         return web.json_response(result, status=status)
 
     async def import_skill(self, request: web.Request) -> web.Response:
-        guard = self._guard(request, "skills_import")
+        guard = self._admin_guard(request, "skills_import")
         if guard is not None:
             return guard
 
