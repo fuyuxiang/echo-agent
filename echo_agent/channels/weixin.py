@@ -488,8 +488,12 @@ class WeixinChannel(BaseChannel):
                     res = await self._send_text(chat_id, block.text)
                     if not res.success:
                         all_ok, last_error = False, res.error
+            elif block.type == ContentType.AUDIO and block.url:
+                res = await self.send_voice(chat_id, block.url)
+                if not res.success:
+                    all_ok, last_error = False, res.error
             elif block.url and block.type in (
-                ContentType.IMAGE, ContentType.FILE, ContentType.AUDIO, ContentType.VIDEO,
+                ContentType.IMAGE, ContentType.FILE, ContentType.VIDEO,
             ):
                 as_image = block.type == ContentType.IMAGE
                 res = await self.send_file(chat_id, block.url, as_image=as_image)
