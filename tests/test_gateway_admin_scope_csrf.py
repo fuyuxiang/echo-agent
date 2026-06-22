@@ -31,21 +31,29 @@ def test_admin_token_open_when_no_tokens(tmp_path):
     assert auth.authenticate_admin_token("") is True
 
 
-# ── CSRF / Origin ───────────────────────────────────────────────────────────
+# ── CSRF / Origin (opt-in via allowed_origins) ──────────────────────────────
 
-def test_non_browser_request_allowed(tmp_path):
+def test_csrf_disabled_by_default_allows_cross_site(tmp_path):
+    # No allowed_origins configured → CSRF enforcement off → nothing is blocked,
+    # so existing clients (native HTTP, webview desktop) keep working unchanged.
     auth = _auth(tmp_path)
+    assert auth.is_origin_allowed("http://evil.example", "cross-site") is True
+    assert auth.is_origin_allowed("tauri://localhost", "cross-site") is True
+
+
+def test_non_browser_request_allowed_when_enabled(tmp_path):
+    auth = _auth(tmp_path, allowed_origins=["http://trusted.app"])
     # No Origin, no Sec-Fetch-Site → not a browser → allowed.
     assert auth.is_origin_allowed("", "") is True
 
 
-def test_same_origin_allowed(tmp_path):
-    auth = _auth(tmp_path)
+def test_same_origin_allowed_when_enabled(tmp_path):
+    auth = _auth(tmp_path, allowed_origins=["http://trusted.app"])
     assert auth.is_origin_allowed("http://127.0.0.1:9000", "same-origin") is True
 
 
-def test_cross_site_rejected_by_default(tmp_path):
-    auth = _auth(tmp_path)
+def test_cross_site_rejected_when_enabled(tmp_path):
+    auth = _auth(tmp_path, allowed_origins=["http://trusted.app"])
     assert auth.is_origin_allowed("http://evil.example", "cross-site") is False
 
 

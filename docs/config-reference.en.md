@@ -352,7 +352,7 @@
 | Field | snake | type | default | choices | description |
 |---|---|---|---|---|---|
 | `gateway.enabled` | `gateway.enabled` | bool | `false` | — | Enable the gateway service |
-| `gateway.host` | `gateway.host` | str | `127.0.0.1` | — | Gateway bind address |
+| `gateway.host` | `gateway.host` | str | `0.0.0.0` | — | Gateway bind address |
 | `gateway.port` | `gateway.port` | int | `9000` | — | Gateway listen port |
 | `gateway.apiPrefix` | `gateway.api_prefix` | str | `/api/v1` | — | Gateway API path prefix |
 | `gateway.wsPath` | `gateway.ws_path` | str | `/ws` | — | Gateway WebSocket path |
@@ -364,7 +364,7 @@
 | `gateway.auth.adminUsers` | `gateway.auth.admin_users` | list | `[]` | — | Gateway administrator users |
 | `gateway.auth.apiTokens` | `gateway.auth.api_tokens` | list | `[]` | — | Gateway API access tokens |
 | `gateway.auth.adminTokens` | `gateway.auth.admin_tokens` | list | `[]` | — | Tokens required for high-risk admin endpoints (shutdown, skills import/install/delete, knowledge upload/delete); falls back to api_tokens when empty |
-| `gateway.auth.allowedOrigins` | `gateway.auth.allowed_origins` | list | `[]` | — | Allowlisted browser Origins for CSRF protection; non-browser clients are unaffected |
+| `gateway.auth.allowedOrigins` | `gateway.auth.allowed_origins` | list | `[]` | — | Allowlisted browser Origins (CSRF protection); empty disables the CSRF check (default). When set, only listed cross-site browser requests pass; non-browser clients are always unaffected |
 | `gateway.auth.tokenHeader` | `gateway.auth.token_header` | str | `X-Echo-Agent-Token` | — | Request header carrying the API token |
 | `gateway.auth.pairingTtlSeconds` | `gateway.auth.pairing_ttl_seconds` | int | `300` | — | Pairing-mode token time-to-live (seconds) |
 | `gateway.platforms` | `gateway.platforms` | dict | `{}` | — | Per-platform gateway configurations keyed by platform |

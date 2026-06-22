@@ -2397,8 +2397,8 @@ class GatewayAuthConfig(_Base):
         default_factory=list,
         json_schema_extra={
             "status": "effective", "ref": "gateway/server.py:_check_csrf",
-            "desc_zh": "允许的浏览器 Origin 白名单(用于 CSRF 防护)；非浏览器客户端不受影响",
-            "desc_en": "Allowlisted browser Origins for CSRF protection; non-browser clients are unaffected",
+            "desc_zh": "浏览器 Origin 白名单(CSRF 防护)；留空则不启用 CSRF 检查(默认),配置后仅放行白名单内的跨站浏览器请求,非浏览器客户端始终不受影响",
+            "desc_en": "Allowlisted browser Origins (CSRF protection); empty disables the CSRF check (default). When set, only listed cross-site browser requests pass; non-browser clients are always unaffected",
         },
     )
     token_header: str = Field(
@@ -2429,7 +2429,7 @@ class GatewayConfig(_Base):
         },
     )
     host: str = Field(
-        default="127.0.0.1",
+        default="0.0.0.0",
         json_schema_extra={
             "status": "effective", "ref": "gateway/server.py:128",
             "desc_zh": "网关监听地址",

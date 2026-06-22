@@ -74,19 +74,26 @@ class GatewayAuth:
         return any(hmac.compare_digest(token, configured) for configured in admin)
 
     def is_origin_allowed(self, origin: str, sec_fetch_site: str) -> bool:
-        """CSRF defense for browser clients.
+        """CSRF defense for browser clients — opt-in via ``allowed_origins``.
 
-        Non-browser clients send neither Origin nor Sec-Fetch-Site, so they are
-        unaffected. Browsers always send Sec-Fetch-Site; a cross-site request
-        (the CSRF case) is rejected unless its Origin is explicitly allowlisted.
+        Disabled by default (empty ``allowed_origins``) so it never breaks
+        existing clients: native HTTP callers, the same-origin playground, or a
+        webview desktop client (which sends a cross-site Origin like
+        ``tauri://localhost``). When the operator opts in by configuring
+        ``allowed_origins``, genuine cross-site browser requests are rejected
+        unless their Origin is on the allowlist — this is what blocks
+        CSRF-to-localhost / DNS-rebinding from a malicious public web page.
         """
+        # Opt-in: no allowlist configured → CSRF enforcement off (no behavior change).
+        if not self._allowed_origins:
+            return True
         # No browser headers at all → not a browser-driven request → allow.
         if not origin and not sec_fetch_site:
             return True
         # Same-origin / same-site / direct navigation are safe.
         if sec_fetch_site in ("same-origin", "same-site", "none"):
             return True
-        # Cross-site: only an explicitly allowlisted Origin may proceed.
+        # Cross-site (or unknown): only an explicitly allowlisted Origin may proceed.
         return bool(origin) and origin in self._allowed_origins
 
     def token_from_headers(self, headers: Any) -> str:
