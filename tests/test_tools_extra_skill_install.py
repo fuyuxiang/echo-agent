@@ -223,10 +223,54 @@ class TestRunInstallSpecs:
         assert any("skipped unsafe" in r for r in results)
 
     @pytest.mark.asyncio
-    async def test_pip_ok(self):
-        with patch.object(skill_install, "_run", AsyncMock(return_value=(0, "out", ""))):
-            results = await _run_install_specs([{"kind": "pip", "package": "requests"}])
+    async def test_pip_routes_to_install_authorized(self, monkeypatch):
+        calls = []
+
+        def fake_install_authorized(specs, *, source):
+            calls.append((specs, source))
+            return {"success": True, "detail": "ok"}
+
+        monkeypatch.setattr(skill_install, "install_authorized", fake_install_authorized)
+        # _run must NOT be used for pip anymore
+        run_mock = AsyncMock(return_value=(0, "out", ""))
+        monkeypatch.setattr(skill_install, "_run", run_mock)
+
+        results = await _run_install_specs([{"kind": "pip", "package": "requests"}])
+
+        assert len(calls) == 1
+        specs, source = calls[0]
+        assert "requests" in specs
+        assert source == "tool:skill_install:requests"
         assert any("ok" in r for r in results)
+        run_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_pip_failure_reports_detail(self, monkeypatch):
+        def fake_install_authorized(specs, *, source):
+            return {"success": False, "detail": "boom"}
+
+        monkeypatch.setattr(skill_install, "install_authorized", fake_install_authorized)
+        results = await _run_install_specs([{"kind": "pip", "package": "requests"}])
+        assert any("boom" in r for r in results)
+
+    @pytest.mark.asyncio
+    async def test_brew_still_uses_run(self, monkeypatch):
+        run_mock = AsyncMock(return_value=(0, "out", ""))
+        ia_mock = MagicMock()
+        monkeypatch.setattr(skill_install, "_run", run_mock)
+        monkeypatch.setattr(skill_install, "install_authorized", ia_mock)
+        results = await _run_install_specs([{"kind": "brew", "formula": "wget"}])
+        run_mock.assert_called_once()
+        ia_mock.assert_not_called()
+        assert any("ok" in r for r in results)
+
+    @pytest.mark.asyncio
+    async def test_shell_does_not_install(self, monkeypatch):
+        ia_mock = MagicMock()
+        monkeypatch.setattr(skill_install, "install_authorized", ia_mock)
+        results = await _run_install_specs([{"kind": "shell", "command": "echo hi"}])
+        ia_mock.assert_not_called()
+        assert any("skipped for safety" in r for r in results)
 
     @pytest.mark.asyncio
     async def test_brew_unsafe_skipped(self):

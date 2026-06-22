@@ -17,6 +17,7 @@ from typing import Any
 from loguru import logger
 
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.dependencies.lazy_deps import install_authorized
 from echo_agent.skills.store import SkillStore, parse_frontmatter
 
 _TIMEOUT = 60
@@ -125,8 +126,8 @@ async def _run_install_specs(specs: list[dict], timeout: int = _TIMEOUT) -> list
             if not pkg or not _SAFE_PIP_PKG.match(pkg):
                 results.append(f"[pip] skipped unsafe package: {pkg}")
                 continue
-            code, out, err = await _run(["pip", "install", pkg], timeout=timeout)
-            results.append(f"[pip] {pkg}: {'ok' if code == 0 else err.strip()}")
+            res = install_authorized((pkg,), source=f"tool:skill_install:{pkg}")
+            results.append(f"[pip] {pkg}: {'ok' if res['success'] else res['detail']}")
         elif kind == "brew":
             formula = spec.get("formula", "")
             if not formula or not _SAFE_BREW_FORMULA.match(formula):
