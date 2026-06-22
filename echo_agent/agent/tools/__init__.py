@@ -136,7 +136,7 @@ def discover_tools(
         from echo_agent.agent.tools.skills import SkillsListTool, SkillViewTool, SkillManageTool
         from echo_agent.agent.tools.skill_install import SkillInstallTool
         tools.append(SkillsListTool(store=skill_store))
-        tools.append(SkillViewTool(store=skill_store, approval=approval, bus=bus))
+        tools.append(SkillViewTool(store=skill_store, approval=approval, bus=bus, config=config))
         tools.append(SkillManageTool(store=skill_store))
         tools.append(SkillInstallTool(store=skill_store))
 

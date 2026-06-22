@@ -65,13 +65,34 @@ class SkillViewTool(Tool):
         "required": ["name"],
     }
 
-    def __init__(self, store: SkillStore, *, approval: Any = None, bus: Any = None):
+    def __init__(self, store: SkillStore, *, approval: Any = None, bus: Any = None, config: Any = None):
         self._store = store
         self._approval = approval
         self._bus = bus
+        self._config = config
 
     def execution_mode(self, params: dict[str, Any]) -> str:
         return "read_only"
+
+    def _is_trusted_env(self, channel: str) -> bool:
+        """Mirror ApprovalGate's CLI-auto-approve and trusted-channel exemptions
+        without depending on an ApprovalGate instance. Used to skip the approval
+        prompt for dependency installs in trusted environments (CLI on personal
+        machine, or an explicitly trusted channel) — the same operations exec
+        already enjoys. config=None is treated as untrusted (backward compat).
+        """
+        if self._config is None:
+            return False
+        try:
+            approval_cfg = self._config.permissions.approval
+            cli_exempt = (
+                self._config.security.profile == "personal_cli"
+                and approval_cfg.cli_auto_approve
+                and channel in {"cli", "direct", ""}
+            )
+            return cli_exempt or channel in approval_cfg.trusted_channels
+        except Exception:
+            return False
 
     def _skill_pip_specs(self, name: str, content: str) -> list[str]:
         """Read a skill's declared pip deps from SKILL.md metadata.echo.requires.pip."""
@@ -107,6 +128,26 @@ class SkillViewTool(Tool):
         if not missing:
             return ""
 
+        spec_list = " ".join(missing)
+
+        # Trusted-environment exemption: CLI on a personal machine, or an
+        # explicitly trusted channel, installs directly without an approval
+        # prompt — matching the exemptions exec already gets. The install is
+        # still gated by install_authorized (venv + _spec_is_safe), so this
+        # is controlled, not a bare install. Untrusted channels fall through
+        # to the approval closed-loop below.
+        if self._is_trusted_env(ctx.channel):
+            result = install_authorized(tuple(missing), source=f"skill_view_trusted:{name}")
+            if result.get("success"):
+                installed = result.get("installed") or []
+                skipped = result.get("skipped") or []
+                detail = "、".join(str(x) for x in (list(installed) + list(skipped))) or spec_list
+                return f"\n\n---\n依赖已安装:{detail}。现在可以运行该技能脚本。"
+            return (
+                f"\n\n---\n注意:技能「{name}」依赖 {spec_list} 安装失败:"
+                f"{result.get('detail', '未知错误')}。暂时无法运行该技能脚本。"
+            )
+
         req = self._approval.request_approval(
             "dep_install",
             tool_name="skill_view",
@@ -114,7 +155,6 @@ class SkillViewTool(Tool):
             user_id=ctx.user_id,
         )
 
-        spec_list = " ".join(missing)
         prompt = (
             f"技能「{name}」需要安装以下依赖才能运行其脚本:\n  {spec_list}\n"
             f"回复 /approve {req.id} 授权安装,或 /deny {req.id} 拒绝。"
