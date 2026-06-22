@@ -96,7 +96,10 @@ class AgentCard:
         return {
             "name": self.name, "description": self.description,
             "url": self.url, "version": self.version,
-            "capabilities": {"streaming": True, "pushNotifications": False},
+            # streaming is False: tasks/send is a synchronous request/response,
+            # there is no SSE / tasks/sendSubscribe implementation. Declaring it
+            # truthfully prevents peers from expecting streaming we cannot honour.
+            "capabilities": {"streaming": False, "pushNotifications": False},
             "skills": [{"id": s, "name": s} for s in skill_tags],
             "authentication": self.authentication,
         }

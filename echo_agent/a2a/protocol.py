@@ -13,6 +13,9 @@ _JSONRPC_PARSE_ERROR = -32700
 _JSONRPC_METHOD_NOT_FOUND = -32601
 _JSONRPC_INTERNAL_ERROR = -32603
 
+# Task states from which no further transition is allowed.
+_TERMINAL_STATES = frozenset({TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELED})
+
 
 class A2AProtocol:
     """Handles A2A JSON-RPC methods: tasks/send, tasks/get, tasks/cancel."""
@@ -76,6 +79,11 @@ class A2AProtocol:
         task = self._tasks.get(task_id)
         if not task:
             raise ValueError(f"Task not found: {task_id}")
+        # tasks/send runs synchronously to completion, so by the time a separate
+        # cancel request arrives the task is almost always already terminal.
+        # Honour the A2A contract: a task in a terminal state cannot be canceled.
+        if task.state in _TERMINAL_STATES:
+            raise ValueError(f"Task '{task_id}' is already {task.state.value} and cannot be canceled")
         task.state = TaskState.CANCELED
         return task.to_dict()
 

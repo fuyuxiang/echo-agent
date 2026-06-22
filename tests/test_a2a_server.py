@@ -147,3 +147,40 @@ class TestProcessTaskNormal:
         assert result.state == TaskState.FAILED
         last_msg = result.messages[-1]
         assert "error" in last_msg.text_content.lower()
+
+
+class TestProcessTaskAttachments:
+    """Non-text parts must not be silently dropped."""
+
+    @pytest.mark.asyncio
+    async def test_text_with_attachment_flags_dropped_parts(self):
+        card = _make_agent_card()
+        processor = _make_processor(response_text="answer")
+        server = A2AServer(agent_loop=processor, agent_card=card)
+
+        msg = A2AMessage(role="user", parts=[
+            {"type": "text", "text": "describe this"},
+            {"type": "file", "file": {"name": "a.png"}},
+        ])
+        task = A2ATask(id="t_att", state=TaskState.SUBMITTED, messages=[msg])
+
+        result = await server._process_task(task)
+
+        assert result.state == TaskState.COMPLETED
+        assert "ignored parts" in result.messages[-1].text_content
+        assert "file" in result.messages[-1].text_content
+
+    @pytest.mark.asyncio
+    async def test_only_attachment_no_text_fails_with_notice(self):
+        card = _make_agent_card()
+        processor = _make_processor()
+        server = A2AServer(agent_loop=processor, agent_card=card)
+
+        msg = A2AMessage(role="user", parts=[{"type": "file", "file": {"name": "a.png"}}])
+        task = A2ATask(id="t_att2", state=TaskState.SUBMITTED, messages=[msg])
+
+        result = await server._process_task(task)
+
+        assert result.state == TaskState.FAILED
+        assert "file" in result.messages[-1].text_content
+        processor.process_direct.assert_not_called()
