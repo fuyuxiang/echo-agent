@@ -264,8 +264,8 @@ async def test_rollback_promoted_create(tmp_path: Path):
             })]),
             _llm_response(content="done"),
         ])
-        baseline = _report(2, 1, 0.5)
-        improved = _report(2, 2, 0.9)
+        baseline = _report(3, 1, 0.5)
+        improved = _report(3, 3, 0.9)
         calls = {"i": 0}
 
         def factory():
@@ -290,7 +290,7 @@ async def test_rollback_promoted_create(tmp_path: Path):
             skill_store=skill_store,
             skill_manager=None,
             eval_runner_factory=factory,
-            eval_dataset_loader=lambda: MagicMock(cases=list(range(2))),
+            eval_dataset_loader=lambda: MagicMock(cases=list(range(3))),
             hooks=None,
             reflection=None,
         )

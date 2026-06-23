@@ -191,8 +191,8 @@ async def test_patch_promotion_modifies_existing_skill(tmp_path: Path):
             "alpha",
             "---\nname: alpha\ndescription: original\n---\n# Body original\n",
         )
-        baseline = _make_report(total=2, passed=1, score=0.5)
-        improved = _make_report(total=2, passed=2, score=1.0)
+        baseline = _make_report(total=3, passed=1, score=0.5)
+        improved = _make_report(total=3, passed=3, score=1.0)
         gate = PromotionGate(
             eval_runner_factory=_factory_seq([baseline, improved]),
             eval_dataset_loader=lambda: _dataset(),
@@ -260,8 +260,8 @@ async def test_disable_operation_promotion(tmp_path: Path):
             "alpha",
             "---\nname: alpha\ndescription: original\n---\n",
         )
-        baseline = _make_report(total=2, passed=1, score=0.5)
-        improved = _make_report(total=2, passed=2, score=1.0)
+        baseline = _make_report(total=3, passed=1, score=0.5)
+        improved = _make_report(total=3, passed=3, score=1.0)
         gate = PromotionGate(
             eval_runner_factory=_factory_seq([baseline, improved]),
             eval_dataset_loader=lambda: _dataset(),
@@ -574,8 +574,8 @@ async def test_async_dataset_loader_supported(tmp_path: Path):
         async def async_loader():
             return _dataset()
 
-        baseline = _make_report(total=2, passed=1, score=0.5)
-        improved = _make_report(total=2, passed=2, score=0.9)
+        baseline = _make_report(total=3, passed=1, score=0.5)
+        improved = _make_report(total=3, passed=3, score=0.9)
         gate = PromotionGate(
             eval_runner_factory=_factory_seq([baseline, improved]),
             eval_dataset_loader=async_loader,
@@ -624,8 +624,8 @@ async def test_refresh_skill_manager_called_when_provided(tmp_path: Path):
         skill_manager = MagicMock()
         skill_manager._load_installed = MagicMock()
 
-        baseline = _make_report(total=2, passed=1, score=0.5)
-        improved = _make_report(total=2, passed=2, score=0.9)
+        baseline = _make_report(total=3, passed=1, score=0.5)
+        improved = _make_report(total=3, passed=3, score=0.9)
         gate = PromotionGate(
             eval_runner_factory=_factory_seq([baseline, improved]),
             eval_dataset_loader=lambda: _dataset(),
@@ -654,8 +654,8 @@ async def test_refresh_skill_manager_swallows_exception(tmp_path: Path):
         skill_manager = MagicMock()
         skill_manager._load_installed = MagicMock(side_effect=RuntimeError("scan failed"))
 
-        baseline = _make_report(total=2, passed=1, score=0.5)
-        improved = _make_report(total=2, passed=2, score=0.9)
+        baseline = _make_report(total=3, passed=1, score=0.5)
+        improved = _make_report(total=3, passed=3, score=0.9)
         gate = PromotionGate(
             eval_runner_factory=_factory_seq([baseline, improved]),
             eval_dataset_loader=lambda: _dataset(),
