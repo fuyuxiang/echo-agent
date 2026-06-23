@@ -2863,6 +2863,14 @@ class EvolutionConfig(_Base):
             "desc_en": "Require strict improvement before promotion",
         },
     )
+    min_eval_cases: int = Field(
+        default=3,
+        json_schema_extra={
+            "status": "effective", "ref": "evolution/gate.py:490",
+            "desc_zh": "晋升所需的最小评测用例数,样本不足则判定不确定不晋升",
+            "desc_en": "Minimum eval cases required to promote; fewer is inconclusive",
+        },
+    )
     record_trajectories: bool = Field(
         default=True,
         json_schema_extra={

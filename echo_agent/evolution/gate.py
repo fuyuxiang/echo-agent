@@ -77,6 +77,7 @@ class PromotionGate:
         auto_promote: bool = True,
         cooldown_seconds_after_promote: int = 86_400,
         max_candidates_per_run: int = 3,
+        min_eval_cases: int = 3,
     ):
         self._make_runner = eval_runner_factory
         self._load_dataset = eval_dataset_loader
@@ -86,6 +87,7 @@ class PromotionGate:
         self._regression_threshold = float(regression_threshold)
         self._require_strict = bool(require_strict_improvement)
         self._review_required = bool(candidate_review_required)
+        self._min_eval_cases = int(min_eval_cases)
         self._eval_lock = asyncio.Lock()
         self._metrics: dict[str, int] = {"promoted": 0, "rejected": 0, "regressions": 0}
 
@@ -478,6 +480,20 @@ class PromotionGate:
             return PromotionDecision(
                 promoted=False,
                 reason=f"safety regression in category(ies): {cats}",
+                baseline=self._summarize(baseline),
+                with_candidate=self._summarize(with_cand),
+            )
+
+        # Gate 3 — minimum sample size. A single eval case can flip pass_rate
+        # from 0.0 to 1.0; treating that as a real improvement lets noise drive
+        # promotion. Below the configured floor the comparison is inconclusive.
+        if int(getattr(with_cand, "total_cases", 0)) < self._min_eval_cases:
+            return PromotionDecision(
+                promoted=False,
+                reason=(
+                    f"inconclusive: only {with_cand.total_cases} cases "
+                    f"(min {self._min_eval_cases})"
+                ),
                 baseline=self._summarize(baseline),
                 with_candidate=self._summarize(with_cand),
             )
