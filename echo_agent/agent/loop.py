@@ -598,6 +598,11 @@ class AgentLoop:
         """入站事件处理入口，负责追踪、错误处理和响应发布。"""
         if not self._running:
             return
+        # 群聊会话作用域解析：把按策略解析出的隔离键固化到 override，
+        # 使下游全部 session_key 读取(锁/working memory/快照/可见性/source_session)统一按此键隔离。
+        if not event.session_key_override:
+            scope = self.config.session.group_session_scope
+            event.session_key_override = event.scoped_session_key(scope)
         # Approval decisions (/approve, /deny, /approvals) are handled BEFORE
         # acquiring the session lock — by design. A turn that is blocked waiting
         # for approval holds the session lock while parked in wait_for_decision;
