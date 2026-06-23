@@ -52,9 +52,11 @@ class TraceSpan:
 class TraceLogger:
     """Records full processing chain for each agent interaction."""
 
-    def __init__(self, logs_dir: Path | None = None, enabled: bool = True):
+    def __init__(self, logs_dir: Path | None = None, enabled: bool = True,
+                 max_trace_files: int = 500):
         self._logs_dir = logs_dir
         self._enabled = enabled
+        self._max_trace_files = int(max_trace_files)
         if logs_dir and enabled:
             logs_dir.mkdir(parents=True, exist_ok=True)
         self._traces: dict[str, list[TraceSpan]] = {}
@@ -98,6 +100,27 @@ class TraceLogger:
             path = self._logs_dir / f"trace_{trace_id}.json"
             data = [s.to_dict() for s in spans]
             path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            self._prune_trace_files()
+
+    def _prune_trace_files(self) -> None:
+        """按数量上限轮转 trace 文件:超过上限时按 mtime 升序删最旧的。
+        best-effort——单个删除失败不影响主流程(trace 是 ephemeral 调试产物)。
+        max_trace_files <= 0 视为禁用轮转。"""
+        if self._max_trace_files <= 0 or not self._logs_dir:
+            return
+        try:
+            files = sorted(
+                self._logs_dir.glob("trace_*.json"),
+                key=lambda p: p.stat().st_mtime,
+            )
+        except OSError:
+            return
+        excess = len(files) - self._max_trace_files
+        for path in files[:max(0, excess)]:
+            try:
+                path.unlink()
+            except OSError:
+                continue
 
     def get_recent_traces(self, limit: int = 20) -> list[str]:
         return list(self._traces.keys())[-limit:]

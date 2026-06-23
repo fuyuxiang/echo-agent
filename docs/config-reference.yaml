@@ -484,6 +484,8 @@ observability:
   logLevel: INFO
   # 是否记录执行轨迹(关闭则不写 trace 文件) (默认: true)
   traceEnabled: true
+  # trace 文件保留数量上限,超出按最旧优先轮转删除;<=0 表示不限制(禁用轮转) (默认: 500)
+  maxTraceFiles: 500
   # 健康检查间隔(秒) (默认: 60)
   healthCheckIntervalSeconds: 60
   # 是否启用 OpenTelemetry 指标导出 (默认: true)

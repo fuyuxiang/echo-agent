@@ -2177,6 +2177,14 @@ class ObservabilityConfig(_Base):
             "desc_en": "Whether to record execution traces (off disables trace files)",
         },
     )
+    max_trace_files: int = Field(
+        default=500,
+        json_schema_extra={
+            "status": "effective", "ref": "observability/monitor.py:95",
+            "desc_zh": "trace 文件保留数量上限,超出按最旧优先轮转删除;<=0 表示不限制(禁用轮转)",
+            "desc_en": "Max retained trace files; oldest are rotated out when exceeded; <=0 disables rotation",
+        },
+    )
     health_check_interval_seconds: int = Field(
         default=60,
         json_schema_extra={

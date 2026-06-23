@@ -84,3 +84,31 @@ async def test_put_memory_snapshot_bounded_by_lru():
     assert len(loop._memory_snapshots) == 3
     assert "s0" not in loop._memory_snapshots  # 最旧被逐出
     assert "s4" in loop._memory_snapshots      # 最新保留
+
+
+def test_trace_files_pruned_to_limit(tmp_path):
+    """flush 超过上限个 trace 后,目录只保留最近 N 个 trace_*.json。"""
+    from echo_agent.observability.monitor import TraceLogger
+
+    tracer = TraceLogger(logs_dir=tmp_path, enabled=True, max_trace_files=3)
+    for i in range(5):
+        tracer.start_span(trace_id=f"t{i}", span_id=f"sp{i}", name="x", kind="agent")
+        tracer.flush_trace(f"t{i}")
+
+    files = sorted(tmp_path.glob("trace_*.json"))
+    assert len(files) == 3
+    names = {f.name for f in files}
+    assert "trace_t0.json" not in names  # 最旧被裁
+    assert "trace_t4.json" in names      # 最新保留
+
+
+def test_trace_prune_disabled_when_limit_non_positive(tmp_path):
+    """max_trace_files <= 0 时不裁剪(禁用轮转),不误删。"""
+    from echo_agent.observability.monitor import TraceLogger
+
+    tracer = TraceLogger(logs_dir=tmp_path, enabled=True, max_trace_files=0)
+    for i in range(4):
+        tracer.start_span(trace_id=f"t{i}", span_id=f"sp{i}", name="x", kind="agent")
+        tracer.flush_trace(f"t{i}")
+
+    assert len(list(tmp_path.glob("trace_*.json"))) == 4
