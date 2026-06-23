@@ -174,6 +174,7 @@ class DingTalkChannel(BaseChannel):
             sender_id=sender_id, chat_id=chat_id, text=text,
             media=media or None,
             metadata={"conversation_type": conversation_type},
+            is_group=conversation_type == "2",
         )
 
     async def _refresh_token(self) -> None:

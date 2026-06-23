@@ -931,3 +931,120 @@ class TestCLIStreaming:
             _feed(ch, "x", eid=f"e{i}")
         assert len(ch._stream_printed) <= 4
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# is_group 归一化 —— 各通道把原始群/私聊判据映射到 InboundEvent.is_group
+# （群聊会话隔离的上游标记，下游按 group_session_scope 决定是否按 sender 隔离）
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def _qqbot_channel():
+    from echo_agent.bus.queue import MessageBus
+    from echo_agent.channels.qqbot import QQBotChannel
+
+    cfg = MagicMock()
+    cfg.app_id = "x"
+    cfg.app_secret = "y"
+    cfg.sandbox = False
+    cfg.markdown_support = False
+    cfg.media_enabled = False
+    cfg.media_parse_tags = False
+    cfg.media_max_file_size_mb = 10
+    cfg.media_upload_cache_size = 4
+    return QQBotChannel(cfg, MessageBus())
+
+
+class TestGroupFlagNormalization:
+    @pytest.mark.asyncio
+    async def test_telegram_group_and_private(self):
+        ch = _telegram_channel(group_policy="all")
+        ch._handle_message = AsyncMock()
+        ch._api = AsyncMock()  # group path issues a sendChatAction call
+        await ch._process_update({"message": {
+            "chat": {"id": -100, "type": "supergroup"},
+            "from": {"id": 7}, "text": "hi", "message_id": 1,
+        }})
+        assert ch._handle_message.call_args.kwargs["is_group"] is True
+
+        ch._handle_message.reset_mock()
+        await ch._process_update({"message": {
+            "chat": {"id": 7, "type": "private"},
+            "from": {"id": 7}, "text": "hi", "message_id": 2,
+        }})
+        assert ch._handle_message.call_args.kwargs["is_group"] is False
+
+    @pytest.mark.asyncio
+    async def test_feishu_group_and_private(self):
+        ch = _feishu_channel()
+        ch._handle_message = AsyncMock()
+
+        def _evt(chat_type: str) -> dict:
+            return {
+                "sender": {"sender_id": {"open_id": "ou"}, "sender_type": "user"},
+                "message": {"chat_id": "oc", "message_type": "text",
+                            "message_id": "m", "chat_type": chat_type,
+                            "content": json.dumps({"text": "hi"})},
+            }
+
+        await ch._on_message(_evt("group"))
+        assert ch._handle_message.call_args.kwargs["is_group"] is True
+        ch._handle_message.reset_mock()
+        await ch._on_message(_evt("p2p"))
+        assert ch._handle_message.call_args.kwargs["is_group"] is False
+
+    @pytest.mark.asyncio
+    async def test_qqbot_group_channel_vs_c2c(self):
+        ch = _qqbot_channel()
+        ch._handle_message = AsyncMock()
+        await ch._on_group_message({"author": {"member_openid": "u"},
+                                    "group_openid": "g", "content": "hi", "id": "1"})
+        assert ch._handle_message.call_args.kwargs["is_group"] is True
+        ch._handle_message.reset_mock()
+        await ch._on_c2c_message({"author": {"user_openid": "u"},
+                                  "content": "hi", "id": "2"})
+        assert ch._handle_message.call_args.kwargs.get("is_group", False) is False
+
+    @pytest.mark.asyncio
+    async def test_discord_guild_vs_dm(self):
+        ch = _discord_channel(group_policy="all")
+        ch._handle_message = AsyncMock()
+        await ch._on_message({"author": {"id": "42"}, "channel_id": "c",
+                              "guild_id": "g1", "content": "hi", "id": "m"})
+        assert ch._handle_message.call_args.kwargs["is_group"] is True
+        ch._handle_message.reset_mock()
+        await ch._on_message({"author": {"id": "42"}, "channel_id": "c",
+                              "content": "hi", "id": "m2"})
+        assert ch._handle_message.call_args.kwargs["is_group"] is False
+
+    @pytest.mark.asyncio
+    async def test_whatsapp_conservatively_private(self):
+        # WhatsApp 当前接线仅 1:1，无可靠群判据，保守按私聊处理（待补判据）。
+        ch = _whatsapp_channel()
+        ch._handle_message = AsyncMock()
+        await ch._process_message(
+            {"from": "+1555", "type": "text", "text": {"body": "hi"}}, {})
+        assert ch._handle_message.call_args.kwargs["is_group"] is False
+
+    @pytest.mark.asyncio
+    async def test_dingtalk_group_vs_single(self):
+        # 钉钉 conversationType: "1"=单聊, "2"=群聊（可靠判据）。
+        from echo_agent.bus.queue import MessageBus
+        from echo_agent.channels.dingtalk import DingTalkChannel
+
+        cfg = MagicMock()
+        cfg.app_key = "ak"
+        cfg.app_secret = "as"
+        cfg.robot_code = "rc"
+        cfg.allow_from = []
+        ch = DingTalkChannel(cfg, MessageBus())
+        ch._handle_message = AsyncMock()
+
+        await ch._on_message({"senderStaffId": "u", "conversationType": "2",
+                              "conversationId": "cid", "msgtype": "text",
+                              "text": {"content": "hi"}})
+        assert ch._handle_message.call_args.kwargs["is_group"] is True
+        ch._handle_message.reset_mock()
+        await ch._on_message({"senderStaffId": "u", "conversationType": "1",
+                              "msgtype": "text", "text": {"content": "hi"}})
+        assert ch._handle_message.call_args.kwargs["is_group"] is False
+
