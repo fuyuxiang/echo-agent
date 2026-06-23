@@ -384,6 +384,8 @@ session:
   historyImageLimit: 4
   # Skip history images when the current turn already has one (default: true)
   historyImageSkipIfCurrent: true
+  # Group session scope: per_user = isolate per sender (default), shared = whole group shares one session (default: per_user) [per_user|shared]
+  groupSessionScope: per_user
 
 # ── memory ──
 memory:

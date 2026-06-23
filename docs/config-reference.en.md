@@ -235,6 +235,7 @@
 | `session.historyImageTtlMinutes` | `session.history_image_ttl_minutes` | int | `30` | — | Time-to-live for images in history (minutes) |
 | `session.historyImageLimit` | `session.history_image_limit` | int | `4` | — | Maximum images retained in history |
 | `session.historyImageSkipIfCurrent` | `session.history_image_skip_if_current` | bool | `true` | — | Skip history images when the current turn already has one |
+| `session.groupSessionScope` | `session.group_session_scope` | Literal | `per_user` | per_user/shared | Group session scope: per_user = isolate per sender (default), shared = whole group shares one session |
 
 ## memory
 

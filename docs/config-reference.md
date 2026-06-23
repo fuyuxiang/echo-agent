@@ -235,6 +235,7 @@
 | `session.historyImageTtlMinutes` | `session.history_image_ttl_minutes` | int | `30` | — | 历史图片保留时长(分钟) |
 | `session.historyImageLimit` | `session.history_image_limit` | int | `4` | — | 历史中保留的最大图片数 |
 | `session.historyImageSkipIfCurrent` | `session.history_image_skip_if_current` | bool | `true` | — | 当前轮已带图时是否跳过历史图片 |
+| `session.groupSessionScope` | `session.group_session_scope` | Literal | `per_user` | per_user/shared | 群聊会话隔离策略:per_user 每人独立会话(默认,防群内串话),shared 整群共享一个会话 |
 
 ## memory
 
