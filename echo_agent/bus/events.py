@@ -69,12 +69,23 @@ class InboundEvent:
     session_key_override: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     gateway_metadata: dict[str, Any] = field(default_factory=dict)
+    is_group: bool = False
 
     @property
     def session_key(self) -> str:
         if self.session_key_override:
             return self.session_key_override
         return f"{self.channel}:{self.chat_id}"
+
+    def scoped_session_key(self, scope: str) -> str:
+        """会话作用域键。私聊及 shared 策略下等同 session_key；
+        群聊 + per_user 策略时把 sender_id 纳入键，实现群内每人隔离。"""
+        if self.session_key_override:
+            return self.session_key_override
+        base = f"{self.channel}:{self.chat_id}"
+        if scope == "per_user" and self.is_group and self.sender_id:
+            return f"{base}:{self.sender_id}"
+        return base
 
     @property
     def text(self) -> str:
