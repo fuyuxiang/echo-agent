@@ -37,7 +37,11 @@ def _make_loop():
     loop.sessions = _Sessions()
     loop.tracer = _Tracer()
     loop._running = True
-    loop.config = None
+    # _on_inbound 解析群聊会话作用域时读 config.session.group_session_scope；
+    # 用真实 SessionConfig 提供默认值，避免裸 None 触发 AttributeError。
+    from types import SimpleNamespace
+    from echo_agent.config.schema import SessionConfig
+    loop.config = SimpleNamespace(session=SessionConfig())
     return loop, sent
 
 
