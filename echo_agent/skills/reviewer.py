@@ -102,13 +102,17 @@ class SkillReviewer:
                 logger.warning("skill review blocked: action={} name={} reason={}",
                                action, skill_name, threat)
                 return f"Error: blocked by injection scan: {threat}"
-        logger.info("skill review write: action={} name={}", action, skill_name)
 
+        # Audit log fires only after a store call succeeds, with the real action
+        # name — blocked, empty-content, and unknown-action turns must not leave
+        # a "write" record in the audit trail.
         if action == "create":
             content = params.get("content", "")
             if not content:
                 return "Error: content is required"
             err = self._store.create_skill(skill_name, content, category=params.get("category", ""))
+            if err is None:
+                logger.info("skill review applied: action=create name={}", skill_name)
             return err or f"Skill '{skill_name}' created."
 
         elif action == "edit":
@@ -116,6 +120,8 @@ class SkillReviewer:
             if not content:
                 return "Error: content is required"
             err = self._store.update_skill(skill_name, content)
+            if err is None:
+                logger.info("skill review applied: action=edit name={}", skill_name)
             return err or f"Skill '{skill_name}' updated."
 
         elif action == "patch":
@@ -124,10 +130,14 @@ class SkillReviewer:
             if not old_text:
                 return "Error: old_text is required"
             err = self._store.patch_skill(skill_name, old_text, new_text, file_path=params.get("file_path", ""))
+            if err is None:
+                logger.info("skill review applied: action=patch name={}", skill_name)
             return err or f"Skill '{skill_name}' patched."
 
         elif action == "delete":
             err = self._store.delete_skill(skill_name)
+            if err is None:
+                logger.info("skill review applied: action=delete name={}", skill_name)
             return err or f"Skill '{skill_name}' deleted."
 
         elif action == "write_file":
@@ -136,6 +146,8 @@ class SkillReviewer:
             if not file_path or not content:
                 return "Error: file_path and content required"
             err = self._store.write_file(skill_name, file_path, content)
+            if err is None:
+                logger.info("skill review applied: action=write_file name={} file={}", skill_name, file_path)
             return err or f"File '{file_path}' written."
 
         elif action == "remove_file":
@@ -143,6 +155,8 @@ class SkillReviewer:
             if not file_path:
                 return "Error: file_path required"
             err = self._store.remove_file(skill_name, file_path)
+            if err is None:
+                logger.info("skill review applied: action=remove_file name={} file={}", skill_name, file_path)
             return err or f"File '{file_path}' removed."
 
         return f"Error: unknown action '{action}'"

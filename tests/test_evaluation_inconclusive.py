@@ -167,3 +167,35 @@ def test_decide_allows_at_or_above_min_cases():
     cand = EvalReport(total_cases=3, passed_cases=3)
     decision = gate._decide(baseline, cand)
     assert decision.promoted is True
+
+
+def test_decide_rejects_when_inconclusive_pushes_conclusive_below_min():
+    # total_cases meets the floor, but inconclusive cases drop the conclusive
+    # count below it. Gate 3 must gate on conclusive cases, not total_cases.
+    # Today Gate 1 fails closed first on any inconclusive case; this test guards
+    # that the candidate is still rejected and will exercise Gate 3 directly if
+    # Gate 1's fail-closed policy is ever relaxed.
+    from echo_agent.evolution.gate import PromotionGate
+    from echo_agent.evaluation.runner import EvalReport
+    gate = PromotionGate.__new__(PromotionGate)
+    gate._regression_threshold = 0.05
+    gate._require_strict = False
+    gate._min_eval_cases = 3
+    baseline = EvalReport(
+        results=[_case(1.0), _case(1.0), _case(1.0)],
+        total_cases=3, passed_cases=3,
+    )
+    # 4 total, but 2 inconclusive → only 2 conclusive < min 3
+    cand = EvalReport(
+        results=[
+            _case(1.0),
+            _case(1.0),
+            _case(0.5, inconclusive=True),
+            _case(0.5, inconclusive=True),
+        ],
+        total_cases=4, passed_cases=2,
+    )
+    decision = gate._decide(baseline, cand)
+    assert decision.promoted is False
+    assert "inconclusive" in decision.reason
+

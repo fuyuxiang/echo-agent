@@ -487,11 +487,19 @@ class PromotionGate:
         # Gate 3 — minimum sample size. A single eval case can flip pass_rate
         # from 0.0 to 1.0; treating that as a real improvement lets noise drive
         # promotion. Below the configured floor the comparison is inconclusive.
-        if int(getattr(with_cand, "total_cases", 0)) < self._min_eval_cases:
+        # Count only conclusive cases — total_cases includes inconclusive ones,
+        # which carry no signal. Gate 1 already fails closed on any inconclusive
+        # case today, but gating on the conclusive count keeps Gate 3 correct
+        # independent of Gate 1's policy.
+        conclusive_cases = (
+            int(getattr(with_cand, "total_cases", 0))
+            - int(getattr(with_cand, "inconclusive_cases", 0))
+        )
+        if conclusive_cases < self._min_eval_cases:
             return PromotionDecision(
                 promoted=False,
                 reason=(
-                    f"inconclusive: only {with_cand.total_cases} cases "
+                    f"inconclusive: only {conclusive_cases} conclusive cases "
                     f"(min {self._min_eval_cases})"
                 ),
                 baseline=self._summarize(baseline),
