@@ -64,3 +64,23 @@ async def test_evict_oldest_cleans_vector_index(tmp_path):
 
     await asyncio.sleep(0.05)  # 让 _cleanup_deleted 调度的异步任务跑完
     assert "emb-1" in removed
+
+
+@pytest.mark.asyncio
+async def test_put_memory_snapshot_bounded_by_lru():
+    """快照写入经 put_memory_snapshot -> _lru_put,字典不超 _max_cached_sessions,最旧被逐出。"""
+    from collections import OrderedDict
+    from echo_agent.agent.loop import AgentLoop
+
+    loop = AgentLoop.__new__(AgentLoop)  # 绕过重 __init__
+    import asyncio as _asyncio
+    loop._state_lock = _asyncio.Lock()
+    loop._memory_snapshots = OrderedDict()
+    loop._max_cached_sessions = 3
+
+    for i in range(5):
+        await loop.put_memory_snapshot(f"s{i}", f"snap{i}")
+
+    assert len(loop._memory_snapshots) == 3
+    assert "s0" not in loop._memory_snapshots  # 最旧被逐出
+    assert "s4" in loop._memory_snapshots      # 最新保留

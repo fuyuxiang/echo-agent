@@ -284,6 +284,7 @@ class AgentLoop:
             inference=self.inference,
             working_memories=self._working_memories,
             memory_snapshots=self._memory_snapshots,
+            put_snapshot=self.put_memory_snapshot,
             snapshot_enabled=self._snapshot_enabled,
             tool_definitions_fn=self.tools.get_definitions,
             episodic=self._episodic,
@@ -551,6 +552,11 @@ class AgentLoop:
             cache.move_to_end(key)
             while len(cache) > self._max_cached_sessions:
                 cache.popitem(last=False)
+
+    async def put_memory_snapshot(self, key: str, value: str) -> None:
+        """快照缓存的唯一写入入口:经统一 LRU 管控,
+        消除 context_stage 直写 dict 带来的无界增长与双锁竞态。"""
+        await self._lru_put(self._memory_snapshots, key, value)
 
     async def _clear_memory_snapshot(self, session_key: str) -> None:
         async with self._state_lock:
