@@ -21,7 +21,7 @@ from echo_agent.permissions.allowlist import ApprovalAllowlist
 from echo_agent.agent.compression import ConversationCompressor
 from echo_agent.agent.pipeline.context_stage import ContextStage
 from echo_agent.agent.pipeline.inference_stage import InferenceStage
-from echo_agent.agent.pipeline.response_stage import ResponseStage
+from echo_agent.agent.pipeline.response_stage import ResponseStage, _is_ephemeral_session
 from echo_agent.agent.tools.circuit_breaker import ToolCircuitBreaker
 from echo_agent.agent.tools.registry import ToolRegistry
 from echo_agent.bus.events import InboundEvent, OutboundEvent
@@ -681,7 +681,7 @@ class AgentLoop:
             return _ProcessResult(response_text=command_response)
 
         recorder = self.evolution.recorder if self.evolution is not None else None
-        if recorder is not None:
+        if recorder is not None and not _is_ephemeral_session(event.session_key, event.channel):
             try:
                 await recorder.begin_turn(
                     session_key=event.session_key,
