@@ -19,6 +19,8 @@ from echo_agent.bus.events import InboundEvent, OutboundEvent
 from echo_agent.session.manager import Session
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from echo_agent.agent.compression import ConversationCompressor
     from echo_agent.agent.planning.planner import AgentPlanner
     from echo_agent.config.schema import Config
@@ -54,6 +56,7 @@ class ContextStage:
         inference: InferenceController,
         working_memories: OrderedDict,
         memory_snapshots: OrderedDict,
+        put_snapshot: "Callable[[str, str], Awaitable[None]] | None" = None,
         snapshot_enabled: bool,
         tool_definitions_fn: Any,
         episodic: Any = None,
@@ -72,6 +75,7 @@ class ContextStage:
         self._inference = inference
         self._working_memories = working_memories
         self._memory_snapshots = memory_snapshots
+        self._put_snapshot = put_snapshot
         self._snapshot_enabled = snapshot_enabled
         self._tool_definitions_fn = tool_definitions_fn
         self._episodic = episodic
@@ -105,14 +109,18 @@ class ContextStage:
             working_ctx = self._working_memories[event.session_key].get_context()
 
         if self._snapshot_enabled:
-            if event.session_key not in self._memory_snapshots:
-                self._memory_snapshots[event.session_key] = self._memory.get_snapshot(
-                    session_key=event.session_key
-                )
-                self._memory_snapshots.move_to_end(event.session_key)
+            if event.session_key in self._memory_snapshots:
+                snapshot = self._memory_snapshots[event.session_key]
+            else:
+                snapshot = self._memory.get_snapshot(session_key=event.session_key)
+                if self._put_snapshot is not None:
+                    # 写入唯一入口经 loop 的统一 LRU(锁 + 上限);
+                    # put_snapshot 为空时本轮仍用刚算出的 snapshot,但不缓存
+                    # (不得回退到无界直写 dict)。
+                    await self._put_snapshot(event.session_key, snapshot)
             memory_ctx = build_memory_context(
                 self._memory,
-                snapshot=self._memory_snapshots.get(event.session_key, ""),
+                snapshot=snapshot,
                 working_memory=working_ctx,
             )
         else:
