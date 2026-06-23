@@ -310,6 +310,10 @@ class MemoryStore:
             entries = [entry for entry in entries if self._visible_in_session(entry, session_key)]
         return entries
 
+    def is_visible_in_session(self, entry: MemoryEntry, session_key: str) -> bool:
+        """Public wrapper so the retriever can apply the store's visibility policy."""
+        return self._visible_in_session(entry, session_key)
+
     def _visible_in_session(self, entry: MemoryEntry, session_key: str | None = None) -> bool:
         if not session_key:
             return True

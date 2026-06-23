@@ -430,6 +430,7 @@ class AgentLoop:
             forgetting=forgetting,
             embed_fn=embed_fn,
             embed_timeout=config.memory.embed_timeout_seconds,
+            visibility_fn=self.memory.is_visible_in_session,
         )
         self.memory.set_retriever(self._hybrid_retriever)
 
