@@ -228,6 +228,7 @@ class TelegramChannel(BaseChannel):
             media=media if media else None,
             reply_to_id=str(msg.get("message_id", "")),
             metadata={"chat_type": chat.get("type", "private")},
+            is_group=chat.get("type") in ("group", "supergroup"),
         )
 
     def _is_mentioned(self, msg: dict[str, Any], text: str) -> bool:

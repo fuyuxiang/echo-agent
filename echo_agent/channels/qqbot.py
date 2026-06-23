@@ -547,6 +547,7 @@ class QQBotChannel(BaseChannel):
             sender_id=sender_id, chat_id=channel_id, text=content,
             media=media or None,
             reply_to_id=msg_id, metadata={"msg_type": "channel", "guild_id": d.get("guild_id", "")},
+            is_group=True,
         )
 
     async def _on_group_message(self, d: dict[str, Any]) -> None:
@@ -566,6 +567,7 @@ class QQBotChannel(BaseChannel):
             sender_id=sender_id, chat_id=group_id, text=content,
             media=media or None,
             reply_to_id=msg_id, metadata={"msg_type": "group"},
+            is_group=True,
         )
 
     async def _on_c2c_message(self, d: dict[str, Any]) -> None:

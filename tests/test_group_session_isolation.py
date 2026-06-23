@@ -79,3 +79,24 @@ def test_on_inbound_resolution_shared_keeps_single():
     a = InboundEvent.text_message(channel="telegram", sender_id="alice",
                                   chat_id="grp1", text="x", is_group=True)
     assert _resolve("shared", a) == "telegram:grp1"
+
+
+def test_build_event_sets_is_group_flag():
+    from unittest.mock import MagicMock
+    from echo_agent.channels.base import BaseChannel
+
+    # BaseChannel is an ABC; subclass with no-op abstract methods to test _build_event.
+    class _Ch(BaseChannel):
+        async def start(self) -> None: ...
+        async def stop(self) -> None: ...
+        async def send(self, event):  # noqa: ANN001
+            return None
+
+    ch = _Ch.__new__(_Ch)
+    ch.config = MagicMock(allow_from=["*"])
+    ch.name = "telegram"
+
+    grp = ch._build_event(sender_id="alice", chat_id="grp1", text="hi", is_group=True)
+    assert grp.is_group is True
+    priv = ch._build_event(sender_id="alice", chat_id="alice", text="hi")
+    assert priv.is_group is False
