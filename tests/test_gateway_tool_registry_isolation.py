@@ -4,8 +4,6 @@ against the ordering bug where the profile was applied after tool registration."
 
 import asyncio
 
-import pytest
-
 from echo_agent.agent.tools import discover_tools
 from echo_agent.agent.tools.registry import ToolRegistry
 from echo_agent.bus.queue import MessageBus
