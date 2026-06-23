@@ -179,6 +179,7 @@ class AgentLoop:
         self.tracer = TraceLogger(
             logs_dir=workspace / config.storage.logs_dir,
             enabled=config.observability.trace_enabled,
+            max_trace_files=config.observability.max_trace_files,
         )
         self.consolidator = MemoryConsolidator(
             memory_store=self.memory,

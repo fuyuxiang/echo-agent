@@ -315,6 +315,7 @@
 |---|---|---|---|---|---|
 | `observability.logLevel` | `observability.log_level` | str | `INFO` | — | Logging level |
 | `observability.traceEnabled` | `observability.trace_enabled` | bool | `true` | — | Whether to record execution traces (off disables trace files) |
+| `observability.maxTraceFiles` | `observability.max_trace_files` | int | `500` | — | Max retained trace files; oldest are rotated out when exceeded; <=0 disables rotation |
 | `observability.healthCheckIntervalSeconds` | `observability.health_check_interval_seconds` | int | `60` | — | Health check interval (seconds) |
 | `observability.otelEnabled` | `observability.otel_enabled` | bool | `true` | — | Enable OpenTelemetry metrics export |
 | `observability.otelEndpoint` | `observability.otel_endpoint` | str | `""` | — | OpenTelemetry export endpoint |

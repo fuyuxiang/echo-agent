@@ -315,6 +315,7 @@
 |---|---|---|---|---|---|
 | `observability.logLevel` | `observability.log_level` | str | `INFO` | — | 日志级别 |
 | `observability.traceEnabled` | `observability.trace_enabled` | bool | `true` | — | 是否记录执行轨迹(关闭则不写 trace 文件) |
+| `observability.maxTraceFiles` | `observability.max_trace_files` | int | `500` | — | trace 文件保留数量上限,超出按最旧优先轮转删除;<=0 表示不限制(禁用轮转) |
 | `observability.healthCheckIntervalSeconds` | `observability.health_check_interval_seconds` | int | `60` | — | 健康检查间隔(秒) |
 | `observability.otelEnabled` | `observability.otel_enabled` | bool | `true` | — | 是否启用 OpenTelemetry 指标导出 |
 | `observability.otelEndpoint` | `observability.otel_endpoint` | str | `""` | — | OpenTelemetry 导出端点 |

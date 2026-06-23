@@ -484,6 +484,8 @@ observability:
   logLevel: INFO
   # Whether to record execution traces (off disables trace files) (default: true)
   traceEnabled: true
+  # Max retained trace files; oldest are rotated out when exceeded; <=0 disables rotation (default: 500)
+  maxTraceFiles: 500
   # Health check interval (seconds) (default: 60)
   healthCheckIntervalSeconds: 60
   # Enable OpenTelemetry metrics export (default: true)
