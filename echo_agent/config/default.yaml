@@ -20,8 +20,6 @@ permissions:
     - skill_manage
 memory:
   consolidationThreshold: 15
-session:
-  groupSessionScope: per_user
 multiAgent:
   workerProfiles:
   - id: coder
