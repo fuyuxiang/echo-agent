@@ -116,7 +116,7 @@ class ResponseStage:
         # Skill review still requires tool activity (it reviews tool usage patterns).
         # Memory review must run even for pure chat — personal facts are shared in
         # plain conversation without any tool calls, so it does NOT gate on tool count.
-        if result.should_review_skills and result.total_tool_calls > 0:
+        if result.should_review_skills and result.total_tool_calls > 0 and not ephemeral:
             self._spawn_fn(self._background_skill_review(ctx.messages))
         if result.should_review_memory and not ephemeral:
             self._spawn_fn(self._background_memory_review(ctx.messages, event.session_key))
