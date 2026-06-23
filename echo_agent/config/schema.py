@@ -1742,6 +1742,14 @@ class SessionConfig(_Base):
             "desc_en": "Skip history images when the current turn already has one",
         },
     )
+    group_session_scope: Literal["per_user", "shared"] = Field(
+        default="per_user",
+        json_schema_extra={
+            "status": "effective", "ref": "agent/loop.py:597",
+            "desc_zh": "群聊会话隔离策略:per_user 每人独立会话(默认,防群内串话),shared 整群共享一个会话",
+            "desc_en": "Group session scope: per_user = isolate per sender (default), shared = whole group shares one session",
+        },
+    )
 
 
 # ── Memory configs ───────────────────────────────────────────────────────────

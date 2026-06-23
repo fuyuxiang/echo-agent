@@ -43,3 +43,39 @@ def test_override_wins_over_scope():
         text="hi", is_group=True, session_key_override="custom:key",
     )
     assert evt.scoped_session_key("per_user") == "custom:key"
+
+
+def test_session_config_has_group_scope_default_per_user():
+    from echo_agent.config.schema import SessionConfig
+    cfg = SessionConfig()
+    assert cfg.group_session_scope == "per_user"
+
+
+def test_group_scope_field_rejects_unknown_value():
+    import pytest
+    from pydantic import ValidationError
+    from echo_agent.config.schema import SessionConfig
+    with pytest.raises(ValidationError):
+        SessionConfig(group_session_scope="everyone")
+
+
+def _resolve(scope: str, event: InboundEvent) -> str:
+    """复刻 _on_inbound 的解析契约：群聊 per_user 写回 override。"""
+    if not event.session_key_override:
+        event.session_key_override = event.scoped_session_key(scope)
+    return event.session_key
+
+
+def test_on_inbound_resolution_isolates_group_per_user():
+    a = InboundEvent.text_message(channel="telegram", sender_id="alice",
+                                  chat_id="grp1", text="x", is_group=True)
+    b = InboundEvent.text_message(channel="telegram", sender_id="bob",
+                                  chat_id="grp1", text="y", is_group=True)
+    assert _resolve("per_user", a) == "telegram:grp1:alice"
+    assert _resolve("per_user", b) == "telegram:grp1:bob"
+
+
+def test_on_inbound_resolution_shared_keeps_single():
+    a = InboundEvent.text_message(channel="telegram", sender_id="alice",
+                                  chat_id="grp1", text="x", is_group=True)
+    assert _resolve("shared", a) == "telegram:grp1"
