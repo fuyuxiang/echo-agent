@@ -44,11 +44,13 @@ class HybridRetriever:
         forgetting: ForgettingCurve | None = None,
         embed_fn: Callable[[str], Awaitable[list[float]]] | None = None,
         embed_timeout: float = 1.5,
+        visibility_fn: Callable[["MemoryEntry", str], bool] | None = None,
     ):
         self._entries_fn = entries_fn
         self._vector_index = vector_index
         self._forgetting = forgetting or ForgettingCurve()
         self._embed_fn = embed_fn
+        self._visibility_fn = visibility_fn
         # Latency budget for the embedding round-trip (configurable via
         # memory.embedTimeoutSeconds). Retrieval runs on the user-facing
         # critical path of every message; vector similarity is an enhancement,
@@ -72,6 +74,8 @@ class HybridRetriever:
             按共振评分降序排列的 (记忆条目, 分数) 列表
         """
         entries = self._entries_fn()
+        if session_key and self._visibility_fn is not None:
+            entries = [e for e in entries if self._visibility_fn(e, session_key)]
         if mem_type is not None:
             entries = [e for e in entries if e.type == mem_type]
         if not entries:
