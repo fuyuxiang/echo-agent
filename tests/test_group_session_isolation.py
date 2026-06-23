@@ -100,3 +100,24 @@ def test_build_event_sets_is_group_flag():
     assert grp.is_group is True
     priv = ch._build_event(sender_id="alice", chat_id="alice", text="hi")
     assert priv.is_group is False
+
+
+from echo_agent.scheduler.delivery import target_from_session_key
+
+
+def test_target_strips_group_sender_suffix():
+    # 群聊 per_user 键 -> 投递目标是群 chat_id，而非 chat_id:sender
+    assert target_from_session_key("telegram:grp1:alice") == ("telegram", "grp1")
+
+
+def test_target_private_two_part_unchanged():
+    assert target_from_session_key("telegram:c1") == ("telegram", "c1")
+
+
+def test_target_gateway_unchanged():
+    assert target_from_session_key("gateway:sess123:user1") == ("gateway:sess123", "user1")
+
+
+def test_target_empty_or_malformed():
+    assert target_from_session_key("") == ("", "")
+    assert target_from_session_key("nocolon") == ("", "")
