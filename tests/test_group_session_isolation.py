@@ -121,3 +121,28 @@ def test_target_gateway_unchanged():
 def test_target_empty_or_malformed():
     assert target_from_session_key("") == ("", "")
     assert target_from_session_key("nocolon") == ("", "")
+
+
+def test_group_per_user_memory_not_cross_visible(tmp_path):
+    """群内 alice 写入的 USER 记忆，对 bob 的 per_user 会话键不可见。
+
+    覆盖 scope_policy 非 legacy 的情形（legacy 下 USER 全局可见，隔离为 no-op）。
+    """
+    from echo_agent.memory.store import MemoryStore
+    from echo_agent.memory.types import MemoryEntry, MemoryType, MemoryTier
+
+    alice = InboundEvent.text_message(channel="telegram", sender_id="alice",
+                                      chat_id="grp1", text="x", is_group=True)
+    bob = InboundEvent.text_message(channel="telegram", sender_id="bob",
+                                    chat_id="grp1", text="y", is_group=True)
+    a_key = alice.scoped_session_key("per_user")
+    b_key = bob.scoped_session_key("per_user")
+    assert a_key != b_key  # 隔离键前提成立
+
+    store = MemoryStore(memory_dir=tmp_path / "mem", scope_policy="session")
+    entry = MemoryEntry(type=MemoryType.USER, tier=MemoryTier.SEMANTIC,
+                        key="pref", content="alice secret", source_session=a_key)
+
+    # per_user 键确实驱动可见性隔离：alice 自己的键可见，bob 的键不可见。
+    assert store.is_visible_in_session(entry, a_key) is True
+    assert store.is_visible_in_session(entry, b_key) is False
