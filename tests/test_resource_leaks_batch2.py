@@ -35,3 +35,32 @@ async def test_expire_session_loads_on_cache_miss(tmp_path):
         assert data["status"] == "expired"
     finally:
         await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_evict_oldest_cleans_vector_index(tmp_path):
+    """容量淘汰应像 delete() 一样清理向量索引,不留 FAISS 孤儿向量。"""
+    from echo_agent.memory.store import MemoryStore
+    from echo_agent.memory.types import MemoryEntry, MemoryType, MemoryTier
+
+    removed: list[str] = []
+
+    class _VecIndex:
+        async def remove(self, embedding_id):
+            removed.append(embedding_id)
+
+    store = MemoryStore(memory_dir=tmp_path / "mem", max_user=1)
+    store.set_vector_index(_VecIndex())
+
+    e1 = MemoryEntry(type=MemoryType.USER, tier=MemoryTier.SEMANTIC,
+                     key="k1", content="first entry", source_session="s")
+    e1.embedding_id = "emb-1"
+    e2 = MemoryEntry(type=MemoryType.USER, tier=MemoryTier.SEMANTIC,
+                     key="k2", content="second entry", source_session="s")
+    e2.embedding_id = "emb-2"
+
+    store.add(e1)
+    store.add(e2)  # max_user=1, 触发对 e1 的淘汰
+
+    await asyncio.sleep(0.05)  # 让 _cleanup_deleted 调度的异步任务跑完
+    assert "emb-1" in removed

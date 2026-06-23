@@ -487,6 +487,9 @@ class MemoryStore:
             evicted = self._entries.pop(typed[0].id, None)
             if evicted:
                 self._unindex_entry(evicted)
+                # 与 delete() 路径对齐:清理向量索引与 SQLite 镜像,
+                # 否则容量淘汰会在 FAISS 留下孤儿向量、在镜像表留下死行。
+                self._cleanup_deleted(evicted)
 
     def _merge_locked(self, existing_id: str, new_entry: MemoryEntry) -> MemoryEntry:
         existing = self._entries[existing_id]
