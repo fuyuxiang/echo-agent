@@ -10,6 +10,7 @@ from typing import Any
 
 from loguru import logger
 
+from echo_agent.memory.store import scan_text_for_threats
 from echo_agent.models.provider import LLMProvider
 from echo_agent.skills.store import SkillStore
 
@@ -89,6 +90,19 @@ class SkillReviewer:
     def _handle_skill_manage(self, params: dict[str, Any]) -> str:
         action = params.get("action", "")
         skill_name = params.get("name", "")
+
+        # Lightweight gate: scan any content that will land in the skill store
+        # for prompt-injection/exfiltration before writing. A poisoned turn
+        # must not auto-persist into SKILL.md. (trusted-operator model still
+        # treats reviewer-written skills as a tool-boundary that needs vetting.)
+        to_scan = " ".join(str(params.get(k, "")) for k in ("content", "new_text"))
+        if to_scan.strip():
+            threat = scan_text_for_threats(to_scan)
+            if threat:
+                logger.warning("skill review blocked: action={} name={} reason={}",
+                               action, skill_name, threat)
+                return f"Error: blocked by injection scan: {threat}"
+        logger.info("skill review write: action={} name={}", action, skill_name)
 
         if action == "create":
             content = params.get("content", "")
