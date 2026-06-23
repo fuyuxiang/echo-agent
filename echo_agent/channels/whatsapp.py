@@ -133,12 +133,15 @@ class WhatsAppChannel(BaseChannel):
         if not text and not media:
             return
 
+        # WhatsApp Cloud API 当前接线仅处理 1:1 会话（chat_id=sender），群聊隔离待补判据：
+        # 群消息需从 webhook 的 metadata/group payload 解析，本通道暂未消费，保守按私聊处理。
         await self._handle_message(
             sender_id=sender,
             chat_id=sender,
             text=text,
             media=media if media else None,
             metadata={"message_type": msg_type},
+            is_group=False,
         )
 
     async def _download_whatsapp_media(self, media_id: str) -> str | None:
