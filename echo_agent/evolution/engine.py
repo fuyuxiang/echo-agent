@@ -94,6 +94,7 @@ class EvolutionEngine:
             auto_promote=config.auto_promote,
             cooldown_seconds_after_promote=config.cooldown_seconds_after_promote,
             max_candidates_per_run=config.max_candidates_per_run,
+            min_eval_cases=config.min_eval_cases,
         )
         self._scheduler = EvolutionScheduler(
             run_fn=self.run_evolution,

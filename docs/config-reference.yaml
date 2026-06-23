@@ -683,6 +683,8 @@ evolution:
   regressionThreshold: 0.05
   # 是否要求严格改进才晋升 (默认: true)
   requireStrictImprovement: true
+  # 晋升所需的最小评测用例数,样本不足则判定不确定不晋升 (默认: 3)
+  minEvalCases: 3
   # 是否记录执行轨迹用于进化 (默认: true)
   recordTrajectories: true
   # 轨迹保留天数 (默认: 30)

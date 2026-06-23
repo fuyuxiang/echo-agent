@@ -460,6 +460,7 @@
 | `evolution.evalDatasetPath` | `evolution.eval_dataset_path` | str | `data/eval/baseline.yaml` | — | Evolution evaluation baseline dataset path |
 | `evolution.regressionThreshold` | `evolution.regression_threshold` | float | `0.05` | — | Score-drop threshold that flags a regression |
 | `evolution.requireStrictImprovement` | `evolution.require_strict_improvement` | bool | `true` | — | Require strict improvement before promotion |
+| `evolution.minEvalCases` | `evolution.min_eval_cases` | int | `3` | — | Minimum eval cases required to promote; fewer is inconclusive |
 | `evolution.recordTrajectories` | `evolution.record_trajectories` | bool | `true` | — | Record execution trajectories for evolution |
 | `evolution.trajectoryRetentionDays` | `evolution.trajectory_retention_days` | int | `30` | — | Trajectory retention period (days) |
 | `evolution.evolverModel` | `evolution.evolver_model` | str | `""` | — | Model used to perform evolution |

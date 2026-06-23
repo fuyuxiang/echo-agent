@@ -683,6 +683,8 @@ evolution:
   regressionThreshold: 0.05
   # Require strict improvement before promotion (default: true)
   requireStrictImprovement: true
+  # Minimum eval cases required to promote; fewer is inconclusive (default: 3)
+  minEvalCases: 3
   # Record execution trajectories for evolution (default: true)
   recordTrajectories: true
   # Trajectory retention period (days) (default: 30)

@@ -140,3 +140,30 @@ def test_avg_score_all_inconclusive_is_zero():
         total_cases=1, passed_cases=0,
     )
     assert rep.avg_score == 0.0
+
+
+def test_decide_rejects_below_min_cases():
+    from echo_agent.evolution.gate import PromotionGate
+    from echo_agent.evaluation.runner import EvalReport
+    gate = PromotionGate.__new__(PromotionGate)
+    gate._regression_threshold = 0.05
+    gate._require_strict = False
+    gate._min_eval_cases = 3
+    baseline = EvalReport(total_cases=1, passed_cases=0)
+    cand = EvalReport(total_cases=1, passed_cases=1)  # 单 case 翻转
+    decision = gate._decide(baseline, cand)
+    assert decision.promoted is False
+    assert "inconclusive" in decision.reason
+
+
+def test_decide_allows_at_or_above_min_cases():
+    from echo_agent.evolution.gate import PromotionGate
+    from echo_agent.evaluation.runner import EvalReport
+    gate = PromotionGate.__new__(PromotionGate)
+    gate._regression_threshold = 0.05
+    gate._require_strict = False
+    gate._min_eval_cases = 3
+    baseline = EvalReport(total_cases=3, passed_cases=1)
+    cand = EvalReport(total_cases=3, passed_cases=3)
+    decision = gate._decide(baseline, cand)
+    assert decision.promoted is True

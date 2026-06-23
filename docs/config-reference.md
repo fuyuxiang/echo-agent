@@ -460,6 +460,7 @@
 | `evolution.evalDatasetPath` | `evolution.eval_dataset_path` | str | `data/eval/baseline.yaml` | — | 进化评测基线数据集路径 |
 | `evolution.regressionThreshold` | `evolution.regression_threshold` | float | `0.05` | — | 判定回归的分数下降阈值 |
 | `evolution.requireStrictImprovement` | `evolution.require_strict_improvement` | bool | `true` | — | 是否要求严格改进才晋升 |
+| `evolution.minEvalCases` | `evolution.min_eval_cases` | int | `3` | — | 晋升所需的最小评测用例数,样本不足则判定不确定不晋升 |
 | `evolution.recordTrajectories` | `evolution.record_trajectories` | bool | `true` | — | 是否记录执行轨迹用于进化 |
 | `evolution.trajectoryRetentionDays` | `evolution.trajectory_retention_days` | int | `30` | — | 轨迹保留天数 |
 | `evolution.evolverModel` | `evolution.evolver_model` | str | `""` | — | 执行进化所用模型 |
