@@ -167,14 +167,16 @@ class SemanticManager:
         """Promote extracted facts from an episode to semantic memory."""
         promoted: list[MemoryEntry] = []
         for fact in extracted_facts:
+            fact_type = MemoryType(fact.get("type", "environment"))
             entry = MemoryEntry(
-                type=MemoryType(fact.get("type", "environment")),
+                type=fact_type,
                 tier=MemoryTier.SEMANTIC,
                 key=fact.get("key", ""),
                 content=fact.get("content", ""),
                 tags=fact.get("tags", []),
                 importance=fact.get("importance", 0.5),
                 episode_id=episode.id,
+                source_session=episode.session_key if fact_type == MemoryType.USER else "",
             )
             try:
                 result = self._store.add(entry)
