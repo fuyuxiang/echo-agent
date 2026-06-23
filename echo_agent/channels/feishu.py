@@ -179,6 +179,7 @@ class FeishuChannel(BaseChannel):
             media=media if media else None,
             reply_to_id=msg_id,
             metadata={"chat_type": chat_type, "receive_id_type": receive_id_type},
+            is_group=(chat_type == "group"),
         )
 
     async def _on_message_v1(self, event: dict[str, Any]) -> None:
@@ -192,6 +193,7 @@ class FeishuChannel(BaseChannel):
             chat_id=chat_id,
             text=text,
             metadata={"chat_type": event.get("chat_type", ""), "receive_id_type": "chat_id"},
+            is_group=(event.get("chat_type", "") == "group"),
         )
 
     async def _download_feishu_image(self, image_key: str, msg_id: str) -> str | None:

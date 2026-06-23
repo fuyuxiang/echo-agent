@@ -334,6 +334,7 @@ class DiscordChannel(BaseChannel):
             reply_to_id=str(d.get("id", "")),
             thread_id=d.get("thread", {}).get("id") if d.get("thread") else None,
             metadata={"guild_id": guild_id or ""},
+            is_group=bool(guild_id),
         )
 
     async def _heartbeat_loop(self) -> None:

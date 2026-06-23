@@ -121,6 +121,7 @@ class BaseChannel(ABC):
         session_key: str | None = None,
         reply_to_id: str | None = None,
         thread_id: str | None = None,
+        is_group: bool = False,
     ) -> InboundEvent:
         if not self.is_allowed(sender_id):
             logger.warning("Access denied for sender {} on channel {}", sender_id, self.name)
@@ -150,6 +151,7 @@ class BaseChannel(ABC):
             thread_id=thread_id,
             session_key_override=session_key,
             metadata=metadata or {},
+            is_group=is_group,
         )
 
     async def _handle_message(
@@ -162,6 +164,7 @@ class BaseChannel(ABC):
         session_key: str | None = None,
         reply_to_id: str | None = None,
         thread_id: str | None = None,
+        is_group: bool = False,
     ) -> InboundEvent | None:
         try:
             event = self._build_event(
@@ -173,6 +176,7 @@ class BaseChannel(ABC):
                 session_key=session_key,
                 reply_to_id=reply_to_id,
                 thread_id=thread_id,
+                is_group=is_group,
             )
         except PermissionError:
             return None
