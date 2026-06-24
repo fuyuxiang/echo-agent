@@ -39,6 +39,7 @@ CLAUDE.md
 
 # Internal development process docs (specs/plans/designs), not for public repo
 docs/superpowers/
+.superpowers/
 docs/*-design-*.md
 docs/*-plan-*.md
 docs/*roadmap*.md
