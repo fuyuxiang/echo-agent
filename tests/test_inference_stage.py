@@ -613,3 +613,70 @@ def test_processresult_has_degraded_notices_default():
     from echo_agent.agent.pipeline.response_stage import ProcessResult
     r = ProcessResult()
     assert r.degraded_notices == []
+
+
+# ── 工具执行中断兜底（except BaseException, 行 528-553）────────────────────
+
+
+@pytest.mark.asyncio
+async def test_tool_execution_exception_appends_interrupted_message_and_reraises():
+    """工具执行抛异常时：在未产出 tool 消息的情况下，必须补一条
+    'interrupted' tool 消息（否则下一轮 LLM 会因 tool_calls 无配对而拒绝），
+    记一次熔断 failure，然后把异常重新抛出。"""
+    tc = ToolCallRequest(id="call_x", name="exec", arguments={"command": "boom"})
+    provider = AsyncMock()
+    provider.chat_stream_with_retry = AsyncMock(
+        return_value=LLMResponse(content="run it", tool_calls=[tc], finish_reason="tool_calls")
+    )
+
+    tools_reg = MagicMock()
+    tools_reg.execute = AsyncMock(side_effect=RuntimeError("tool blew up"))
+    tools_reg.has = MagicMock(return_value=False)
+
+    stage, _bus = _make_stage(provider=provider, tools=tools_reg)
+    ctx = _make_ctx()
+
+    with pytest.raises(RuntimeError, match="tool blew up"):
+        await stage._run_tool_loop(ctx, ctx.messages)
+
+    # 补偿的 interrupted tool 消息已配对到 tool_call_id
+    tool_msgs = [m for m in ctx.messages if m.get("role") == "tool"]
+    assert any(
+        m["tool_call_id"] == "call_x" and "interrupted" in m["content"].lower()
+        for m in tool_msgs
+    )
+    # 中断被计入熔断 failure（而非静默跳过）
+    stage._circuit_breaker.record_failure.assert_called_with("exec")
+
+
+@pytest.mark.asyncio
+async def test_tool_exception_after_message_appended_skips_compensation():
+    """若异常发生在 tool 消息已 append 之后（这里用 record_success 抛错模拟
+    后置阶段异常）：兜底块的补偿分支不应再追加第二条 tool 消息，但异常仍冒泡。"""
+    tc = ToolCallRequest(id="call_y", name="exec", arguments={"command": "ok"})
+    provider = AsyncMock()
+    provider.chat_stream_with_retry = AsyncMock(
+        return_value=LLMResponse(content="run", tool_calls=[tc], finish_reason="tool_calls")
+    )
+
+    tools_reg = MagicMock()
+    tools_reg.execute = AsyncMock(
+        return_value=MagicMock(success=True, text="result", error=None, metadata={})
+    )
+    tools_reg.has = MagicMock(return_value=False)
+
+    stage, _bus = _make_stage(provider=provider, tools=tools_reg)
+    # tool 消息 append 之后才触发异常
+    stage._circuit_breaker.record_success = MagicMock(side_effect=RuntimeError("post fail"))
+    ctx = _make_ctx()
+
+    with pytest.raises(RuntimeError, match="post fail"):
+        await stage._run_tool_loop(ctx, ctx.messages)
+
+    # 只有一条 call_y 的 tool 消息（成功结果），没有额外的 interrupted 补偿消息
+    call_y_msgs = [
+        m for m in ctx.messages
+        if m.get("role") == "tool" and m.get("tool_call_id") == "call_y"
+    ]
+    assert len(call_y_msgs) == 1
+    assert "interrupted" not in call_y_msgs[0]["content"].lower()
