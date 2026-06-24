@@ -1,8 +1,11 @@
-"""Plugin sandbox — permission-based access control for plugin operations.
+"""Plugin sandbox — declaration tracking for plugin permissions.
 
-Validates that plugins only perform operations they have declared in their
-manifest permissions field. Untrusted plugins that attempt undeclared
-operations get logged and blocked.
+trusted-operator threat model: plugins run in-process and are trusted. This
+class is NOT a security boundary. tool.register / hook.register are enforced
+at registration time (plugins/manager.py). network / subprocess / filesystem.*
+are advisory manifest metadata only — they document intent and are surfaced
+via check_permission() for introspection, but are NOT enforced at runtime
+(in-process Python cannot constrain a plugin that does not voluntarily ask).
 """
 
 from __future__ import annotations
@@ -14,6 +17,8 @@ from loguru import logger
 if TYPE_CHECKING:
     from echo_agent.plugins.manifest import PluginManifest
 
+# network / subprocess / filesystem.* are advisory (declaration-only), NOT
+# runtime-enforced. tool.register / hook.register are enforced at registration.
 VALID_PERMISSIONS = frozenset({
     "filesystem.read",
     "filesystem.write",
@@ -100,15 +105,3 @@ class PluginSandbox:
 
     def check_hook_register(self) -> bool:
         return self.check_permission("hook.register")
-
-    def check_network(self) -> bool:
-        return self.check_permission("network")
-
-    def check_filesystem_write(self) -> bool:
-        return self.check_permission("filesystem.write")
-
-    def check_filesystem_read(self) -> bool:
-        return self.check_permission("filesystem.read")
-
-    def check_subprocess(self) -> bool:
-        return self.check_permission("subprocess")

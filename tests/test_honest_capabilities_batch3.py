@@ -154,3 +154,20 @@ def test_workflow_tool_describes_orchestration_only():
     assert "orchestrat" in desc
     # 必须诚实声明不自动执行 step 工具
     assert "does not execute" in desc or "external" in desc
+
+
+def test_sandbox_runtime_typed_checks_removed():
+    from echo_agent.plugins.sandbox import PluginSandbox
+    from echo_agent.plugins.manifest import PluginManifest
+    sb = PluginSandbox("t", PluginManifest(name="t", permissions=["network"]), trusted=False)
+    # typed runtime wrappers gone
+    assert not hasattr(sb, "check_network")
+    assert not hasattr(sb, "check_subprocess")
+    assert not hasattr(sb, "check_filesystem_read")
+    assert not hasattr(sb, "check_filesystem_write")
+    # generic advisory check still works for declaration introspection
+    assert sb.check_permission("network") is True
+    assert sb.check_permission("subprocess") is False
+    # registration-time enforcement preserved
+    assert hasattr(sb, "check_tool_register")
+    assert hasattr(sb, "check_hook_register")
