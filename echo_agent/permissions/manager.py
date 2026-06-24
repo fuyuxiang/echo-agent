@@ -175,28 +175,6 @@ class ApprovalManager:
     def get_pending(self) -> list[ApprovalRequest]:
         return list(self._pending.values())
 
-    def check_and_request(
-        self,
-        action: str,
-        tool_name: str = "",
-        params: dict[str, Any] | None = None,
-        user_id: str = "",
-    ) -> tuple[bool, ApprovalRequest | None]:
-        """Unified permission check: returns (allowed, request_or_none).
-
-        If allowed is True, execution can proceed (request will have APPROVED status).
-        If allowed is False and request is not None, approval is pending.
-        If allowed is False and request is None, action was auto-denied.
-        """
-        if not self.needs_approval(action):
-            return True, None
-        req = self.request_approval(action, tool_name, params, user_id)
-        if req.status == ApprovalStatus.APPROVED:
-            return True, req
-        if req.status == ApprovalStatus.DENIED:
-            return False, None
-        return False, req
-
     def get(self, request_id: str) -> ApprovalRequest | None:
         return self._pending.get(request_id)
 

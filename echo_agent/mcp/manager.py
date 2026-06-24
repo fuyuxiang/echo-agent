@@ -70,18 +70,6 @@ class MCPManager:
         logger.info("Discovered {} MCP tools from {} servers", total, len(self._clients))
         return total
 
-    async def refresh_tools(self, server_name: str, registry: ToolRegistry) -> int:
-        client = self._clients.get(server_name)
-        if not client or not client.is_connected:
-            return 0
-
-        for tool_name in self._registered_tools.get(server_name, []):
-            registry.unregister(tool_name)
-        self._registered_tools[server_name] = []
-
-        builtin_names = set(registry.tool_names)
-        return await self._register_server_tools(server_name, client, registry, builtin_names)
-
     @property
     def connected_servers(self) -> list[str]:
         return [name for name, client in self._clients.items() if client.is_connected]
