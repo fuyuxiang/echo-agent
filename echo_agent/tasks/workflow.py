@@ -20,7 +20,13 @@ from echo_agent.tasks.manager import TaskManager
 
 
 class WorkflowEngine:
-    """Manages workflow lifecycle and DAG step resolution."""
+    """Manages workflow lifecycle and DAG step resolution.
+
+    Orchestration only: this engine creates and tracks step tasks and resolves
+    DAG dependencies, but does NOT execute the steps' tools. TaskManager has no
+    executor — queued step tasks carry tool_name/tool_params in metadata for an
+    external driver to run, then call advance() to progress the workflow.
+    """
 
     def __init__(self, storage: Any, task_manager: TaskManager):
         self._storage = storage
