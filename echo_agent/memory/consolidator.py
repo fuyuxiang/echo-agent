@@ -91,6 +91,7 @@ class MemoryConsolidator:
         self._contradiction_detector = None
         self._archival_manager = None
         self._embed_fn = None
+        self._auto_resolve_contradictions = False
 
     def set_episodic_manager(self, mgr):
         self._episodic_manager = mgr
@@ -109,6 +110,9 @@ class MemoryConsolidator:
 
     def set_embed_fn(self, fn):
         self._embed_fn = fn
+
+    def set_auto_resolve_contradictions(self, enabled: bool):
+        self._auto_resolve_contradictions = enabled
 
     async def consolidate_chunk(self, messages: list[dict[str, Any]]) -> bool:
         if not messages:
@@ -188,7 +192,7 @@ class MemoryConsolidator:
         4. Run forgetting/archival pass
         Returns stats dict.
         """
-        stats = {"episodes": 0, "promoted": 0, "contradictions": 0, "archived": 0, "forgotten": 0}
+        stats = {"episodes": 0, "promoted": 0, "contradictions": 0, "resolved": 0, "archived": 0, "forgotten": 0}
         promoted: list = []
 
         # Step 1: Create episode
@@ -240,6 +244,14 @@ class MemoryConsolidator:
             except Exception as e:
                 logger.warning("Contradiction detection failed: {}", e)
 
+        # Step 3b: Conservative auto-resolution (same-key newest-wins only).
+        if self._auto_resolve_contradictions and self._contradiction_detector and promoted:
+            try:
+                all_entries = list(self.store._entries.values())
+                stats["resolved"] = await self._auto_resolve_same_key(promoted, all_entries)
+            except Exception as e:
+                logger.warning("Auto-resolution failed: {}", e)
+
         # Step 4: Run forgetting pass
         if self._forgetting_curve:
             all_entries = list(self.store._entries.values())
@@ -263,6 +275,45 @@ class MemoryConsolidator:
 
         logger.info("Sleep consolidation complete: {}", stats)
         return stats
+
+    async def _auto_resolve_same_key(self, promoted: list, all_entries: list) -> int:
+        """Auto-resolve only same-key content conflicts via newest-wins.
+
+        Deliberately narrow: LLM/temporal/cross-prefix contradictions are left
+        for human review. Returns count resolved.
+        """
+        if not self._contradiction_detector:
+            return 0
+        resolved = 0
+        for new_entry in promoted:
+            if not new_entry.key:
+                continue
+            for other in all_entries:
+                if other.id == new_entry.id or other.key != new_entry.key:
+                    continue
+                if other.content.strip() == new_entry.content.strip():
+                    continue
+                if other.is_superseded or new_entry.is_superseded:
+                    continue
+                winner, _loser = self._newest_wins(new_entry, other)
+                # check_lightweight_sync(new, [other]) yields memory_id_a=new_entry
+                contradictions = self._contradiction_detector.check_lightweight_sync(
+                    new_entry, [other]
+                )
+                for c in contradictions:
+                    await self._contradiction_detector.store_contradiction(c)
+                    resolution = "a_wins" if winner.id == c.memory_id_a else "b_wins"
+                    await self._contradiction_detector.resolve(
+                        c.id, resolution, winner_id=winner.id
+                    )
+                    resolved += 1
+        return resolved
+
+    @staticmethod
+    def _newest_wins(a, b):
+        def _ts(e):
+            return e.updated_at or e.created_at or ""
+        return (a, b) if _ts(a) >= _ts(b) else (b, a)
 
     def should_consolidate(self, session_message_count: int, last_consolidated: int) -> bool:
         unconsolidated = session_message_count - last_consolidated
