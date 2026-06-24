@@ -37,8 +37,14 @@ botpy.log
 .claude/
 CLAUDE.md
 
-# Internal development process docs (specs/plans), not for public repo
+# Internal development process docs (specs/plans/designs), not for public repo
 docs/superpowers/
+docs/*-design-*.md
+docs/*-plan-*.md
+docs/*roadmap*.md
+docs/config-reference*.md
+docs/config-reference*.yaml
+docs/*-backlog.md
 
 # Local runtime state and generated workspace data
 /runtime/cron/jobs.json
