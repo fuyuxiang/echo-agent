@@ -803,7 +803,8 @@ class AgentLoop:
             return "You are not allowed to decide this approval request."
 
         if command == "/approve":
-            ok = self.approval.approve(request_id, decided_by=event.sender_id)
+            level = parts[2] if len(parts) >= 3 else ""
+            ok = self.approval.approve(request_id, level=level, decided_by=event.sender_id)
             return f"Approval request {request_id} approved." if ok else f"Approval request not found: {request_id}"
 
         reason = parts[2] if len(parts) >= 3 else ""
