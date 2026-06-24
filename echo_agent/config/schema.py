@@ -1903,6 +1903,14 @@ class MemoryConfig(_Base):
             "desc_en": "Scan for contradictions at memory store time",
         },
     )
+    auto_resolve_contradictions: bool = Field(
+        default=False,
+        json_schema_extra={
+            "status": "effective", "ref": "memory/consolidator.py:auto_resolve",
+            "desc_zh": "睡眠整合时自动消解同 key 矛盾(newest-wins),默认关闭只检测不消解",
+            "desc_en": "Auto-resolve same-key contradictions (newest-wins) during sleep consolidation; off by default",
+        },
+    )
 
 
 class KnowledgeConfig(_Base):
