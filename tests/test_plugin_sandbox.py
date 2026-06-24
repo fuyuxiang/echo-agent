@@ -18,7 +18,7 @@ class TestPluginSandbox:
         sandbox = PluginSandbox("test", manifest, trusted=True)
         assert sandbox.check_tool_register() is True
         assert sandbox.check_hook_register() is True
-        assert sandbox.check_network() is True
+        assert sandbox.check_permission("network") is True
 
     def test_legacy_plugin_compat_allows_only_default_set(self):
         manifest = _make_manifest([])
@@ -26,9 +26,9 @@ class TestPluginSandbox:
         assert sandbox.is_legacy is True
         assert sandbox.check_tool_register() is True
         assert sandbox.check_hook_register() is True
-        assert sandbox.check_network() is False
-        assert sandbox.check_subprocess() is False
-        assert sandbox.check_filesystem_write() is False
+        assert sandbox.check_permission("network") is False
+        assert sandbox.check_permission("subprocess") is False
+        assert sandbox.check_permission("filesystem.write") is False
 
     def test_legacy_plugin_strict_allows_nothing(self):
         manifest = _make_manifest([])
@@ -36,21 +36,21 @@ class TestPluginSandbox:
         assert sandbox.is_legacy is True
         assert sandbox.check_tool_register() is False
         assert sandbox.check_hook_register() is False
-        assert sandbox.check_network() is False
+        assert sandbox.check_permission("network") is False
 
     def test_declared_permissions_unaffected_by_mode(self):
         manifest = _make_manifest(["network"])
         compat = PluginSandbox("t", manifest, trusted=False, mode="compat")
         strict = PluginSandbox("t", manifest, trusted=False, mode="strict")
-        assert compat.check_network() is True
-        assert strict.check_network() is True
+        assert compat.check_permission("network") is True
+        assert strict.check_permission("network") is True
         assert compat.check_tool_register() is False
         assert strict.check_tool_register() is False
 
     def test_trusted_bypasses_mode(self):
         manifest = _make_manifest([])
         sandbox = PluginSandbox("t", manifest, trusted=True, mode="strict")
-        assert sandbox.check_network() is True
+        assert sandbox.check_permission("network") is True
         assert sandbox.check_tool_register() is True
 
     def test_declared_permissions_allow(self):
@@ -65,13 +65,13 @@ class TestPluginSandbox:
         sandbox = PluginSandbox("test", manifest, trusted=False)
         assert sandbox.check_tool_register() is True
         assert sandbox.check_hook_register() is False
-        assert sandbox.check_network() is False
+        assert sandbox.check_permission("network") is False
 
     def test_violations_tracked(self):
         manifest = _make_manifest(["tool.register"])
         sandbox = PluginSandbox("test", manifest, trusted=False)
-        sandbox.check_network()
-        sandbox.check_subprocess()
+        sandbox.check_permission("network")
+        sandbox.check_permission("subprocess")
         assert len(sandbox.violations) == 2
         assert "network" in sandbox.violations
         assert "subprocess" in sandbox.violations
@@ -79,8 +79,8 @@ class TestPluginSandbox:
     def test_filesystem_permissions(self):
         manifest = _make_manifest(["filesystem.read"])
         sandbox = PluginSandbox("test", manifest, trusted=False)
-        assert sandbox.check_filesystem_read() is True
-        assert sandbox.check_filesystem_write() is False
+        assert sandbox.check_permission("filesystem.read") is True
+        assert sandbox.check_permission("filesystem.write") is False
 
 
 def test_plugins_config_default_permission_mode():
