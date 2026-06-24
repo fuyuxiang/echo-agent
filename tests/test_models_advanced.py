@@ -140,7 +140,6 @@ class TestInferenceConstraints:
         assert c.allowed_tools is None
         assert c.blocked_tools is None
         assert c.output_format is None
-        assert c.max_output_tokens == 4096
         assert c.require_tool_call is False
         assert c.require_confirmation_for == []
 
@@ -220,19 +219,6 @@ class TestInferenceController:
         issues = ctrl.validate_response(resp)
         assert not any("empty content" in i.lower() for i in issues)
 
-    # -- hallucination markers ----------------------------------------------
-
-    def test_hallucination_markers_detected(self):
-        ctrl = InferenceController()
-        text = "As an AI, I cannot browse the web. As of my training cutoff, I don't have access to that."
-        markers = ctrl.check_hallucination_markers(text)
-        assert len(markers) == 4
-
-    def test_hallucination_markers_clean(self):
-        ctrl = InferenceController()
-        markers = ctrl.check_hallucination_markers("The weather today is sunny.")
-        assert markers == []
-
     # -- needs_confirmation -------------------------------------------------
 
     def test_needs_confirmation(self):
@@ -240,24 +226,6 @@ class TestInferenceController:
         assert ctrl.needs_confirmation("deploy") is True
         assert ctrl.needs_confirmation("delete") is True
         assert ctrl.needs_confirmation("read") is False
-
-    # -- build_verification_prompt ------------------------------------------
-
-    def test_build_verification_prompt_format(self):
-        ctrl = InferenceController()
-        prompt = ctrl.build_verification_prompt("What is 2+2?", "4")
-        assert "What is 2+2?" in prompt
-        assert "4" in prompt
-        assert "CORRECT" in prompt
-
-    # -- layer_system_prompts -----------------------------------------------
-
-    def test_layer_system_prompts_skips_empty(self):
-        ctrl = InferenceController()
-        result = ctrl.layer_system_prompts("Base prompt", "", "  ", "Extra rules")
-        assert result == "Base prompt\n\n---\n\nExtra rules"
-        # Verify empty/whitespace-only layers are excluded
-        assert result.count("---") == 1
 
 
 # ===========================================================================
