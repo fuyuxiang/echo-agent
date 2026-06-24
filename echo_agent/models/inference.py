@@ -1,13 +1,12 @@
 """Inference controller — constrains and validates LLM outputs.
 
-Handles: system prompt layering, tool call constraints, output format enforcement,
-hallucination checks, self-verification, and critical step confirmation.
+Handles: tool call constraints, output format soft-checks, and critical step
+confirmation. Validation is advisory only (see validate_response).
 """
 
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -20,7 +19,6 @@ class InferenceConstraints:
     allowed_tools: list[str] | None = None
     blocked_tools: list[str] | None = None
     output_format: str | None = None  # "json", "markdown", "text"
-    max_output_tokens: int = 4096
     require_tool_call: bool = False
     require_confirmation_for: list[str] = field(default_factory=list)
 
@@ -42,6 +40,12 @@ class InferenceController:
         return tools
 
     def validate_response(self, response: LLMResponse) -> list[str]:
+        """Advisory soft-check: returns a list of issue strings for logging.
+
+        This NEVER blocks or mutates the response — callers (inference_stage)
+        only log the issues. Tool allow/block enforcement happens in
+        filter_tools(); this is observability, not a gate.
+        """
         issues = []
 
         if self._constraints.require_tool_call and not response.has_tool_calls:
@@ -68,33 +72,5 @@ class InferenceController:
 
         return issues
 
-    def check_hallucination_markers(self, content: str) -> list[str]:
-        """Detect common hallucination patterns in LLM output."""
-        markers = []
-        patterns = [
-            (r"as an ai", "Self-reference as AI"),
-            (r"i cannot.*browse", "Claims inability that may be false"),
-            (r"as of my.*cutoff", "Knowledge cutoff reference"),
-            (r"i don't have access to", "False access claim"),
-        ]
-        lower = content.lower()
-        for pattern, description in patterns:
-            if re.search(pattern, lower):
-                markers.append(description)
-        return markers
-
     def needs_confirmation(self, tool_name: str) -> bool:
         return tool_name in self._constraints.require_confirmation_for
-
-    def build_verification_prompt(self, original_question: str, answer: str) -> str:
-        return (
-            "Verify this answer for accuracy. Point out any errors or unsupported claims.\n\n"
-            f"Question: {original_question}\n\n"
-            f"Answer: {answer}\n\n"
-            "Is this answer correct? Reply with CORRECT or list specific issues."
-        )
-
-    def layer_system_prompts(self, *layers: str) -> str:
-        """Combine multiple system prompt layers with clear separation."""
-        parts = [layer for layer in layers if layer.strip()]
-        return "\n\n---\n\n".join(parts)

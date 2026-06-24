@@ -137,3 +137,12 @@ async def test_memory_tool_lists_and_resolves_contradictions():
                                "contradiction_id": "c1", "winner_id": "a"})
     assert done.success
     assert ("c1", "a_wins", "a") in det.resolved
+
+
+def test_inference_orphans_removed():
+    from echo_agent.models.inference import InferenceController, InferenceConstraints
+    ctrl = InferenceController()
+    assert not hasattr(ctrl, "check_hallucination_markers")
+    assert not hasattr(ctrl, "build_verification_prompt")
+    assert not hasattr(ctrl, "layer_system_prompts")
+    assert "max_output_tokens" not in InferenceConstraints.__dataclass_fields__
