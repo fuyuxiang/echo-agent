@@ -229,20 +229,6 @@ class ArchivalManager:
             logger.info("Archived {} memories", count)
         return count
 
-    async def search_archival(self, query: str, limit: int = 5) -> list[MemoryEntry]:
-        rows = await self._storage.fetch_sql(
-            "SELECT data FROM memories "
-            "WHERE json_extract(data, '$.tier') = 'archival' AND data LIKE ? LIMIT ?",
-            (f"%{query}%", limit),
-        )
-        results = []
-        for row in rows:
-            data = row.get("data", "{}")
-            if isinstance(data, str):
-                data = json.loads(data)
-            results.append(MemoryEntry.from_dict(data))
-        return results
-
     async def delete_forgotten(self, entries: list[MemoryEntry]) -> int:
         count = 0
         for entry in entries:

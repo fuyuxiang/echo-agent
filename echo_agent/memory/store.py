@@ -797,15 +797,6 @@ class MemoryStore:
                 return entry
         return None
 
-    def find_by_content(
-        self,
-        substring: str,
-        mem_type: MemoryType | None = None,
-        session_key: str | None = None,
-    ) -> MemoryEntry | None:
-        matches = self.find_by_content_matches(substring, mem_type=mem_type, limit=1, session_key=session_key)
-        return matches[0] if matches else None
-
     def find_by_content_matches(
         self,
         substring: str,
@@ -932,11 +923,3 @@ class MemoryStore:
                 logger.warning("History rotation failed: {}", e)
             with open(self._history_file, "a", encoding="utf-8") as handle:
                 handle.write(entry.rstrip() + "\n\n")
-
-    def search_history(self, query: str, limit: int = 20) -> list[str]:
-        if not self._history_file.exists():
-            return []
-        content = self._history_file.read_text(encoding="utf-8")
-        entries = content.split("\n\n")
-        pattern = re.compile(re.escape(query), re.IGNORECASE)
-        return [entry.strip() for entry in entries if entry.strip() and pattern.search(entry)][:limit]

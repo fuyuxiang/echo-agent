@@ -63,10 +63,6 @@ class Session:
         self.updated_at = datetime.now()
 
     @property
-    def is_expired(self) -> bool:
-        return self.status == "expired"
-
-    @property
     def message_count(self) -> int:
         return len(self.messages)
 
