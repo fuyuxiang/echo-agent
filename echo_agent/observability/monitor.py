@@ -201,26 +201,6 @@ class HealthChecker:
                 self._components[name].last_check = datetime.now().isoformat()
         return dict(self._components)
 
-    def get_status(self) -> dict[str, Any]:
-        overall = ComponentHealth.HEALTHY
-        for hs in self._components.values():
-            if hs.status == ComponentHealth.UNHEALTHY:
-                overall = ComponentHealth.UNHEALTHY
-                break
-            if hs.status == ComponentHealth.DEGRADED:
-                overall = ComponentHealth.DEGRADED
-        return {
-            "overall": overall.value,
-            "components": {
-                name: {
-                    "status": hs.status.value,
-                    "message": hs.message,
-                    "last_check": hs.last_check,
-                }
-                for name, hs in self._components.items()
-            },
-        }
-
     async def _check_loop(self) -> None:
         while self._running:
             try:

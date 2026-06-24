@@ -129,12 +129,6 @@ class LLMProvider(ABC):
             await _invoke_stream_callback(on_delta, response.content)
         return response
 
-    def _is_transient(self, error_text: str) -> bool:
-        return self._classify_error_text(error_text) == "transient"
-
-    def _is_permanent(self, error_text: str) -> bool:
-        return self._classify_error_text(error_text) == "permanent"
-
     def _classify_error_text(self, error_text: str) -> str:
         """Classify an error message as 'transient', 'permanent' or 'unknown'."""
         lower = error_text.lower()
