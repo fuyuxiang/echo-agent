@@ -105,9 +105,6 @@ class GatewayAuth:
             return auth[7:].strip()
         return ""
 
-    def authenticate_headers(self, headers: Any) -> bool:
-        return self.authenticate_token(self.token_from_headers(headers))
-
     def is_admin(self, platform: str, user_id: str, token: str = "") -> bool:
         if token and self._api_tokens and self.authenticate_token(token):
             return True

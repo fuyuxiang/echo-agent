@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Any, Callable, Awaitable
 from loguru import logger
-from echo_agent.agent.planning.models import Plan, StepAction, StrategyType, Feedback
+from echo_agent.agent.planning.models import Plan, StrategyType, Feedback
 from echo_agent.agent.planning.strategies import (
     PlanningStrategy, ReactStrategy, PlanExecuteStrategy,
     TreeOfThoughtStrategy, LATSStrategy,
@@ -50,10 +50,6 @@ class AgentPlanner:
         logger.debug("Planning with strategy: {}", strategy_type.value)
         plan = await strategy.plan(query, tools, context)
         return plan
-
-    async def execute_step(self, plan: Plan, step_index: int, result: str = "") -> StepAction:
-        strategy = self._strategies.get(plan.strategy, self._strategies[StrategyType.REACT])
-        return await strategy.step(plan, step_index, result)
 
     async def reflect(self, plan: Plan, results: list[str]) -> Feedback:
         if not self._reflection:

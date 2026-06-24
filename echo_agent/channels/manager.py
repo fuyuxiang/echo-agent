@@ -99,9 +99,6 @@ class ChannelManager:
         self.bus.subscribe_outbound_global(self._filter_and_dispatch)
         self.bus.subscribe_inbound(self._on_inbound_lifecycle)
 
-    def get_channel(self, name: str) -> BaseChannel | None:
-        return self._channels.get(name)
-
     @property
     def active_channels(self) -> list[str]:
         return [name for name, ch in self._channels.items() if ch.is_running]

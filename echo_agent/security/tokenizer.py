@@ -11,7 +11,6 @@ command substitutions like $(echo $(whoami)).
 from __future__ import annotations
 
 import re
-import shlex
 
 
 _COMPOUND_SPLIT_RE = re.compile(
@@ -120,10 +119,3 @@ class ShellTokenizer:
                 sub_commands.append(stripped)
 
         return sub_commands or [command.strip()]
-
-    def split_tokens(self, command: str) -> list[str]:
-        """Split command into shell tokens using shlex with fallback."""
-        try:
-            return shlex.split(command)
-        except ValueError:
-            return command.split()
