@@ -2,7 +2,7 @@ import pytest
 from echo_agent.config.schema import MemoryConfig
 from echo_agent.memory.consolidator import MemoryConsolidator
 from echo_agent.memory.contradiction import ContradictionDetector
-from echo_agent.memory.types import MemoryEntry, MemoryType, Contradiction
+from echo_agent.memory.types import MemoryEntry
 
 
 def test_auto_resolve_contradictions_defaults_false():
@@ -71,6 +71,33 @@ async def test_auto_resolve_disabled_by_default():
     consolidator.set_contradiction_detector(detector)
     # auto_resolve left at default False
     assert consolidator._auto_resolve_contradictions is False
+
+
+@pytest.mark.asyncio
+async def test_auto_resolve_gate_off_skips():
+    # 与 test_auto_resolve_supersedes_older_same_key 相同的 store/detector,
+    # 但不调用 set_auto_resolve_contradictions(保持默认 False)。
+    # 关键:显式复现 sleep_consolidate 的 Step 3b 门控语义——
+    # 门控关时连 _auto_resolve_same_key 都不会被调用,因此既不消解也不 supersede。
+    old = MemoryEntry(id="old1", key="pref:lang", content="Python",
+                      created_at="2026-06-01T00:00:00", updated_at="2026-06-01T00:00:00")
+    new = MemoryEntry(id="new1", key="pref:lang", content="Rust",
+                      created_at="2026-06-02T00:00:00", updated_at="2026-06-02T00:00:00")
+    store = _FakeStore([old, new])
+    detector = ContradictionDetector(storage=_StubStorage(), store=store)
+    consolidator = _make_consolidator(store)
+    consolidator.set_contradiction_detector(detector)
+    # 门控保持默认 False
+    assert consolidator._auto_resolve_contradictions is False
+
+    # 复现 Step 3b 门控:`if self._auto_resolve_contradictions and ...`
+    resolved = (
+        await consolidator._auto_resolve_same_key([new], [old, new])
+        if consolidator._auto_resolve_contradictions
+        else 0
+    )
+    assert resolved == 0
+    assert store.superseded == []
 
 
 @pytest.mark.asyncio
