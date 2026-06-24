@@ -86,17 +86,6 @@ class ProviderHealth:
             return True
         return False
 
-    @property
-    def score(self) -> float:
-        scores = {
-            HealthStatus.HEALTHY: 1.0,
-            HealthStatus.DEGRADED: 0.5,
-            HealthStatus.HALF_OPEN: 0.25,
-            HealthStatus.COOLDOWN: 0.0,
-            HealthStatus.DISABLED: -1.0,
-        }
-        return scores.get(self.status, 0.0)
-
 
 class ModelRouter:
     """Routes requests to the best model based on task type, cost, and availability."""
@@ -377,11 +366,6 @@ class ModelRouter:
                 "cooldown_until": h.cooldown_until.isoformat() if h.cooldown_until else None,
             }
         return data
-
-    def _save_health(self) -> None:
-        if not self._health_file:
-            return
-        self._write_health(self._health_snapshot())
 
     def _write_health(self, data: dict[str, Any]) -> None:
         with self._health_save_lock:

@@ -32,7 +32,6 @@ class TriggerKind(str, Enum):
     INTERVAL = "interval"
     ONCE = "once"
     EVENT = "event"
-    CONDITION = "condition"
 
 
 class JobStatus(str, Enum):
@@ -52,7 +51,6 @@ class ScheduledJob:
     at_ms: int = 0
     timezone: str = ""
     event_name: str = ""
-    condition_expr: str = ""
     payload: dict[str, Any] = field(default_factory=dict)
     status: JobStatus = JobStatus.ACTIVE
     enabled: bool = True
@@ -269,34 +267,6 @@ class Scheduler:
             return True
         return False
 
-    def pause_job(self, job_id: str) -> bool:
-        job = self._jobs.get(job_id)
-        if job:
-            job.status = JobStatus.PAUSED
-            self._save()
-            return True
-        return False
-
-    def resume_job(self, job_id: str) -> bool:
-        job = self._jobs.get(job_id)
-        if job and job.status == JobStatus.PAUSED:
-            job.status = JobStatus.ACTIVE
-            job.next_run_ms = _compute_next_run(job, _now_ms())
-            self._save()
-            return True
-        return False
-
-    def cancel_job(self, job_id: str) -> bool:
-        job = self._jobs.get(job_id)
-        if job:
-            job.status = JobStatus.CANCELLED
-            bg = self._background_tasks.pop(job_id, None)
-            if bg:
-                bg.cancel()
-            self._save()
-            return True
-        return False
-
     def list_jobs(self) -> list[ScheduledJob]:
         return list(self._jobs.values())
 
@@ -306,16 +276,6 @@ class Scheduler:
             return False
         await self._execute_job(job)
         return True
-
-    async def fire_event(self, event_name: str) -> int:
-        job_ids = self._event_handlers.get(event_name, [])
-        count = 0
-        for jid in job_ids:
-            job = self._jobs.get(jid)
-            if job and job.enabled and job.status == JobStatus.ACTIVE:
-                await self._execute_job(job)
-                count += 1
-        return count
 
     async def _tick_loop(self) -> None:
         while self._running:
@@ -409,25 +369,3 @@ class Scheduler:
             lock_fd.close()
         except (IOError, OSError):
             pass
-
-    def run_in_background(self, job_id: str, coro: Any) -> None:
-        task = asyncio.create_task(self._background_wrapper(job_id, coro))
-        self._background_tasks[job_id] = task
-
-    async def _background_wrapper(self, job_id: str, coro: Any) -> None:
-        try:
-            await coro
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.error("Background task {} failed: {}", job_id, e)
-        finally:
-            self._background_tasks.pop(job_id, None)
-
-    def get_status(self) -> dict[str, Any]:
-        return {
-            "running": self._running,
-            "total_jobs": len(self._jobs),
-            "active_jobs": sum(1 for j in self._jobs.values() if j.status == JobStatus.ACTIVE),
-            "background_tasks": len(self._background_tasks),
-        }
