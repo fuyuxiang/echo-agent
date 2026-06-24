@@ -422,6 +422,9 @@ class AgentLoop:
             from echo_agent.memory.contradiction import ContradictionDetector
             detector = ContradictionDetector(storage, vector_index, store=self.memory)
             self.consolidator.set_contradiction_detector(detector)
+            self.consolidator.set_auto_resolve_contradictions(
+                config.memory.auto_resolve_contradictions
+            )
 
         def entries_fn() -> list:
             return list(self.memory._entries.values())
