@@ -119,12 +119,13 @@ class ApprovalManager:
         self._save_state()
         return req
 
-    def approve(self, request_id: str, decided_by: str = "") -> bool:
+    def approve(self, request_id: str, level: str = "", decided_by: str = "") -> bool:
         req = self._pending.pop(request_id, None)
         if not req:
             return False
         self._pending_by_signature.pop(self._signature(req.action, req.tool_name, req.params, req.user_id), None)
         req.status = ApprovalStatus.APPROVED
+        req.reason = level  # 将 session/always 级别存入 reason,供 approval_gate 解析
         req.decided_by = decided_by
         req.decided_at = datetime.now().isoformat()
         if request_id not in self._waiters:
