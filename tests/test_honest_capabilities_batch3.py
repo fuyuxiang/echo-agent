@@ -2,7 +2,7 @@ import pytest
 from echo_agent.config.schema import MemoryConfig
 from echo_agent.memory.consolidator import MemoryConsolidator
 from echo_agent.memory.contradiction import ContradictionDetector
-from echo_agent.memory.types import MemoryEntry
+from echo_agent.memory.types import Contradiction, MemoryEntry
 
 
 def test_auto_resolve_contradictions_defaults_false():
@@ -112,3 +112,28 @@ async def test_auto_resolve_skips_different_key():
     resolved = await consolidator._auto_resolve_same_key([b], [a, b])
     assert resolved == 0
     assert store.superseded == []
+
+
+@pytest.mark.asyncio
+async def test_memory_tool_lists_and_resolves_contradictions():
+    from echo_agent.agent.tools.memory import MemoryTool
+
+    class _Detector:
+        def __init__(self):
+            self.resolved = []
+        async def get_unresolved(self, limit=10):
+            return [Contradiction(id="c1", memory_id_a="a", memory_id_b="b",
+                                  description="Key 'pref:lang' conflict")]
+        async def resolve(self, cid, resolution, winner_id=None):
+            self.resolved.append((cid, resolution, winner_id))
+
+    det = _Detector()
+    tool = MemoryTool(store=_FakeStore([]), contradiction_detector=det)
+
+    listed = await tool.execute({"action": "list_contradictions"})
+    assert "c1" in listed.output
+
+    done = await tool.execute({"action": "resolve_contradiction",
+                               "contradiction_id": "c1", "winner_id": "a"})
+    assert done.success
+    assert ("c1", "a_wins", "a") in det.resolved
