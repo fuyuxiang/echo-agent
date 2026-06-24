@@ -289,3 +289,72 @@ async def test_approval_command_saves_session(tmp_path: Path) -> None:
     session = await agent.sessions.get_or_create(event.session_key)
     user_msgs = [m for m in session.messages if m.get("role") == "user"]
     assert any("/approvals" in m.get("content", "") for m in user_msgs)
+
+
+# ── 审批决策门表征：approve/deny 两条出口 ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_approve_command_resolves_pending_request(tmp_path: Path) -> None:
+    """/approve <id>：命中待审批请求 → 通过 ApprovalManager 批准，
+    请求移出 pending，决策为 APPROVED。"""
+    from echo_agent.permissions.manager import ApprovalStatus
+
+    agent, _, _ = _make_agent_loop(tmp_path)
+    # 手动落一个 pending 请求，表征「人工批准」分支。
+    req = agent.approval.request_approval(action="shell", tool_name="bash", user_id="")
+    agent.approval._pending[req.id] = req
+
+    event = InboundEvent.text_message(
+        channel="test", sender_id="u1", chat_id="c1", text=f"/approve {req.id}"
+    )
+    resp = await agent._handle_approval_command(event)
+
+    assert resp == f"Approval request {req.id} approved."
+    assert agent.approval.get(req.id) is None  # 已移出 pending
+    decided = agent.approval._find_history(req.id)
+    assert decided is not None and decided.status == ApprovalStatus.APPROVED
+
+
+@pytest.mark.asyncio
+async def test_deny_command_resolves_pending_request(tmp_path: Path) -> None:
+    """/deny <id> <reason>：命中待审批请求 → 拒绝，记录 reason，
+    请求移出 pending，决策为 DENIED。"""
+    from echo_agent.permissions.manager import ApprovalStatus
+
+    agent, _, _ = _make_agent_loop(tmp_path)
+    req = agent.approval.request_approval(action="shell", tool_name="bash", user_id="")
+    agent.approval._pending[req.id] = req
+
+    event = InboundEvent.text_message(
+        channel="test", sender_id="u1", chat_id="c1", text=f"/deny {req.id} too risky"
+    )
+    resp = await agent._handle_approval_command(event)
+
+    assert resp == f"Approval request {req.id} denied."
+    assert agent.approval.get(req.id) is None
+    decided = agent.approval._find_history(req.id)
+    assert decided is not None and decided.status == ApprovalStatus.DENIED
+    assert decided.reason == "too risky"
+
+
+@pytest.mark.asyncio
+async def test_approve_unknown_request_returns_not_found(tmp_path: Path) -> None:
+    """/approve 未知 id：不命中任何 pending → 返回 not found。"""
+    agent, _, _ = _make_agent_loop(tmp_path)
+    event = InboundEvent.text_message(
+        channel="test", sender_id="u1", chat_id="c1", text="/approve nope123"
+    )
+    resp = await agent._handle_approval_command(event)
+    assert resp == "Approval request not found: nope123"
+
+
+@pytest.mark.asyncio
+async def test_non_approval_command_passes_through(tmp_path: Path) -> None:
+    """非审批命令文本 → _handle_approval_command 返回 None（不拦截）。"""
+    agent, _, _ = _make_agent_loop(tmp_path)
+    event = InboundEvent.text_message(
+        channel="test", sender_id="u1", chat_id="c1", text="hello there"
+    )
+    resp = await agent._handle_approval_command(event)
+    assert resp is None
