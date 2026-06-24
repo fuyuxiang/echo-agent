@@ -341,6 +341,7 @@ class AgentLoop:
             session_manager=self.sessions,
             skill_store=self.skill_store,
             memory_store=self.memory,
+            contradiction_detector=getattr(self, "_contradiction_detector", None),
             task_manager=task_manager,
             workflow_engine=workflow_engine,
             knowledge_index=self.knowledge,
@@ -418,9 +419,11 @@ class AgentLoop:
         self.memory.set_embed_fn(embed_fn)
         self.consolidator.set_embed_fn(embed_fn)
 
+        self._contradiction_detector = None
         if config.memory.contradiction_detection and storage:
             from echo_agent.memory.contradiction import ContradictionDetector
             detector = ContradictionDetector(storage, vector_index, store=self.memory)
+            self._contradiction_detector = detector
             self.consolidator.set_contradiction_detector(detector)
             self.consolidator.set_auto_resolve_contradictions(
                 config.memory.auto_resolve_contradictions

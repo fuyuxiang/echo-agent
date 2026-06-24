@@ -26,6 +26,7 @@ def discover_tools(
     session_manager: Any = None,
     skill_store: Any = None,
     memory_store: Any = None,
+    contradiction_detector: Any = None,
     task_manager: Any = None,
     workflow_engine: Any = None,
     knowledge_index: Any = None,
@@ -142,7 +143,7 @@ def discover_tools(
 
     if memory_store:
         from echo_agent.agent.tools.memory import MemoryTool
-        tools.append(MemoryTool(store=memory_store))
+        tools.append(MemoryTool(store=memory_store, contradiction_detector=contradiction_detector))
 
     if knowledge_index:
         from echo_agent.agent.tools.knowledge import KnowledgeIndexTool, KnowledgeSearchTool
