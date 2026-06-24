@@ -146,3 +146,11 @@ def test_inference_orphans_removed():
     assert not hasattr(ctrl, "build_verification_prompt")
     assert not hasattr(ctrl, "layer_system_prompts")
     assert "max_output_tokens" not in InferenceConstraints.__dataclass_fields__
+
+
+def test_workflow_tool_describes_orchestration_only():
+    from echo_agent.agent.tools.workflow import WorkflowTool
+    desc = WorkflowTool.description.lower()
+    assert "orchestrat" in desc
+    # 必须诚实声明不自动执行 step 工具
+    assert "does not execute" in desc or "external" in desc

@@ -12,7 +12,10 @@ from echo_agent.tasks.workflow import WorkflowEngine
 class WorkflowTool(Tool):
     name = "workflow"
     description = (
-        "Create and manage multi-step workflows with DAG-based step dependencies. "
+        "Orchestrate multi-step workflows with DAG-based step dependencies. "
+        "This engine ONLY orchestrates step state and dependency resolution — it "
+        "does NOT execute the steps' tools itself. Step execution must be driven "
+        "externally by calling 'advance'. "
         "Actions: create, start, status, advance, pause, resume, cancel, list."
     )
     parameters = {
@@ -21,7 +24,7 @@ class WorkflowTool(Tool):
             "action": {
                 "type": "string",
                 "enum": ["create", "start", "status", "advance", "pause", "resume", "cancel", "list"],
-                "description": "Action to perform",
+                "description": "Action to perform. 'advance' must be driven externally to progress steps.",
             },
             "workflow_id": {"type": "string", "description": "Workflow ID"},
             "name": {"type": "string", "description": "Workflow name (for create)"},
