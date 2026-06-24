@@ -229,10 +229,15 @@ class MemoryConsolidator:
                     except Exception as e:
                         logger.warning("Fact extraction failed: {}", e)
 
-        # Step 3: Run contradiction detection on newly promoted entries
+        # Step 3: Run contradiction detection on newly promoted entries.
+        # When auto-resolution is enabled, same-key conflicts are resolved by
+        # reusing the very Contradiction object just stored — no second detect,
+        # no second uuid, no second row. This prevents the "ghost" unresolved
+        # record that a separate re-detect pass would leave in get_unresolved.
         if self._contradiction_detector and promoted:
             try:
                 all_entries = list(self.store._entries.values())
+                entry_map = {e.id: e for e in all_entries}
                 for new_entry in promoted:
                     others = [e for e in all_entries if e.id != new_entry.id]
                     contradictions = await self._contradiction_detector.check(
@@ -241,16 +246,10 @@ class MemoryConsolidator:
                     for c in contradictions:
                         await self._contradiction_detector.store_contradiction(c)
                         stats["contradictions"] += 1
+                        if self._auto_resolve_contradictions and await self._auto_resolve_same_key(c, entry_map):
+                            stats["resolved"] += 1
             except Exception as e:
                 logger.warning("Contradiction detection failed: {}", e)
-
-        # Step 3b: Conservative auto-resolution (same-key newest-wins only).
-        if self._auto_resolve_contradictions and self._contradiction_detector and promoted:
-            try:
-                all_entries = list(self.store._entries.values())
-                stats["resolved"] = await self._auto_resolve_same_key(promoted, all_entries)
-            except Exception as e:
-                logger.warning("Auto-resolution failed: {}", e)
 
         # Step 4: Run forgetting pass
         if self._forgetting_curve:
@@ -276,38 +275,36 @@ class MemoryConsolidator:
         logger.info("Sleep consolidation complete: {}", stats)
         return stats
 
-    async def _auto_resolve_same_key(self, promoted: list, all_entries: list) -> int:
-        """Auto-resolve only same-key content conflicts via newest-wins.
+    async def _auto_resolve_same_key(self, c, entry_map: dict) -> bool:
+        """Resolve a single already-stored contradiction iff it is a same-key
+        content conflict, via newest-wins.
 
-        Deliberately narrow: LLM/temporal/cross-prefix contradictions are left
-        for human review. Returns count resolved.
+        Reuses the Contradiction ``c`` that Step 3 already detected and stored:
+        it is resolved in place (same row, same uuid), so get_unresolved never
+        retains a ghost copy.
+
+        Deliberately narrow: LLM/temporal/cross-key contradictions are left
+        unresolved for human review. Returns True when c was resolved.
         """
         if not self._contradiction_detector:
-            return 0
-        resolved = 0
-        for new_entry in promoted:
-            if not new_entry.key:
-                continue
-            for other in all_entries:
-                if other.id == new_entry.id or other.key != new_entry.key:
-                    continue
-                if other.content.strip() == new_entry.content.strip():
-                    continue
-                if other.is_superseded or new_entry.is_superseded:
-                    continue
-                winner, _loser = self._newest_wins(new_entry, other)
-                # check_lightweight_sync(new, [other]) yields memory_id_a=new_entry
-                contradictions = self._contradiction_detector.check_lightweight_sync(
-                    new_entry, [other]
-                )
-                for c in contradictions:
-                    await self._contradiction_detector.store_contradiction(c)
-                    resolution = "a_wins" if winner.id == c.memory_id_a else "b_wins"
-                    await self._contradiction_detector.resolve(
-                        c.id, resolution, winner_id=winner.id
-                    )
-                    resolved += 1
-        return resolved
+            return False
+        a = entry_map.get(c.memory_id_a)
+        b = entry_map.get(c.memory_id_b)
+        if a is None or b is None:
+            return False
+        # Same full key + differing content is the only auto-resolvable case.
+        if not a.key or a.key != b.key:
+            return False
+        if a.content.strip() == b.content.strip():
+            return False
+        if a.is_superseded or b.is_superseded:
+            return False
+        winner, _loser = self._newest_wins(a, b)
+        resolution = "a_wins" if winner.id == c.memory_id_a else "b_wins"
+        await self._contradiction_detector.resolve(
+            c.id, resolution, winner_id=winner.id
+        )
+        return True
 
     @staticmethod
     def _newest_wins(a, b):

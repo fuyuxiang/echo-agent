@@ -56,9 +56,12 @@ async def test_auto_resolve_supersedes_older_same_key(monkeypatch):
     consolidator.set_contradiction_detector(detector)
     consolidator.set_auto_resolve_contradictions(True)
 
-    stats = await consolidator._auto_resolve_same_key([new], [old, new])
+    # Reuse the Contradiction Step 3 would have stored (memory_id_a=new, _b=old).
+    c = Contradiction(id="c1", memory_id_a="new1", memory_id_b="old1",
+                      description="Key 'pref:lang' conflict")
+    resolved = await consolidator._auto_resolve_same_key(c, {"old1": old, "new1": new})
+    assert resolved is True
     assert ("old1", "new1") in store.superseded
-    assert stats == 1
 
 
 @pytest.mark.asyncio
@@ -77,7 +80,7 @@ async def test_auto_resolve_disabled_by_default():
 async def test_auto_resolve_gate_off_skips():
     # 与 test_auto_resolve_supersedes_older_same_key 相同的 store/detector,
     # 但不调用 set_auto_resolve_contradictions(保持默认 False)。
-    # 关键:显式复现 sleep_consolidate 的 Step 3b 门控语义——
+    # 关键:显式复现 sleep_consolidate 的 Step 3 门控语义——
     # 门控关时连 _auto_resolve_same_key 都不会被调用,因此既不消解也不 supersede。
     old = MemoryEntry(id="old1", key="pref:lang", content="Python",
                       created_at="2026-06-01T00:00:00", updated_at="2026-06-01T00:00:00")
@@ -90,13 +93,15 @@ async def test_auto_resolve_gate_off_skips():
     # 门控保持默认 False
     assert consolidator._auto_resolve_contradictions is False
 
-    # 复现 Step 3b 门控:`if self._auto_resolve_contradictions and ...`
+    c = Contradiction(id="c1", memory_id_a="new1", memory_id_b="old1",
+                      description="Key 'pref:lang' conflict")
+    # 复现 Step 3 门控:`if self._auto_resolve_contradictions and ...`
     resolved = (
-        await consolidator._auto_resolve_same_key([new], [old, new])
+        await consolidator._auto_resolve_same_key(c, {"old1": old, "new1": new})
         if consolidator._auto_resolve_contradictions
-        else 0
+        else False
     )
-    assert resolved == 0
+    assert resolved is False
     assert store.superseded == []
 
 
@@ -109,9 +114,71 @@ async def test_auto_resolve_skips_different_key():
     consolidator = _make_consolidator(store)
     consolidator.set_contradiction_detector(detector)
     consolidator.set_auto_resolve_contradictions(True)
-    resolved = await consolidator._auto_resolve_same_key([b], [a, b])
-    assert resolved == 0
+    c = Contradiction(id="c1", memory_id_a="a", memory_id_b="b",
+                      description="cross-key")
+    resolved = await consolidator._auto_resolve_same_key(c, {"a": a, "b": b})
+    assert resolved is False
     assert store.superseded == []
+
+
+class _InMemoryContradictionStorage:
+    """Minimal storage that honours the contradiction SQL the detector emits,
+    so get_unresolved reflects real resolve() side effects."""
+
+    def __init__(self):
+        self.rows: dict[str, dict] = {}
+
+    async def execute_sql(self, sql, params=()):
+        s = " ".join(sql.split())
+        if s.startswith("INSERT OR REPLACE INTO memory_contradictions"):
+            cid, a, b, desc, res, res_at, created = params
+            self.rows[cid] = {
+                "id": cid, "memory_id_a": a, "memory_id_b": b,
+                "description": desc, "resolution": res,
+                "resolved_at": res_at, "created_at": created,
+            }
+        elif s.startswith("UPDATE memory_contradictions SET resolution"):
+            res, res_at, cid = params
+            if cid in self.rows:
+                self.rows[cid]["resolution"] = res
+                self.rows[cid]["resolved_at"] = res_at
+        return None
+
+    async def fetch_sql(self, sql, params=()):
+        s = " ".join(sql.split())
+        if "WHERE resolution IS NULL" in s:
+            return [r for r in self.rows.values() if r["resolution"] is None]
+        if "SELECT memory_id_a, memory_id_b FROM memory_contradictions WHERE id" in s:
+            cid = params[0]
+            return [self.rows[cid]] if cid in self.rows else []
+        return []
+
+
+@pytest.mark.asyncio
+async def test_auto_resolve_leaves_no_ghost_unresolved():
+    # 自动消解后,同 key 冲突这条记录应被原地 resolve,
+    # get_unresolved 不得再返回它(无幽灵未解决行)。
+    old = MemoryEntry(id="old1", key="pref:lang", content="Python",
+                      created_at="2026-06-01T00:00:00", updated_at="2026-06-01T00:00:00")
+    new = MemoryEntry(id="new1", key="pref:lang", content="Rust",
+                      created_at="2026-06-02T00:00:00", updated_at="2026-06-02T00:00:00")
+    store = _FakeStore([old, new])
+    detector = ContradictionDetector(storage=_InMemoryContradictionStorage(), store=store)
+    consolidator = _make_consolidator(store)
+    consolidator.set_contradiction_detector(detector)
+    consolidator.set_auto_resolve_contradictions(True)
+
+    # Step 3 落库的那条 c(memory_id_a=new, _b=old)。
+    c = Contradiction(id="c1", memory_id_a="new1", memory_id_b="old1",
+                      description="Key 'pref:lang' conflict")
+    await detector.store_contradiction(c)
+    assert len(await detector.get_unresolved()) == 1  # 落库后先是未解决
+
+    resolved = await consolidator._auto_resolve_same_key(c, {"old1": old, "new1": new})
+    assert resolved is True
+    # 复用同一条 c 原地 resolve,无幽灵残留。
+    assert await detector.get_unresolved() == []
+    assert ("old1", "new1") in store.superseded
 
 
 @pytest.mark.asyncio
