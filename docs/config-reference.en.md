@@ -259,6 +259,7 @@
 | `memory.embeddingModel` | `memory.embedding_model` | str | `""` | — | Embedding model used for memory vectorization |
 | `memory.embedTimeoutSeconds` | `memory.embed_timeout_seconds` | float | `1.5` | — | Query-embedding timeout (seconds); falls back to keyword search on timeout |
 | `memory.contradictionScanOnStore` | `memory.contradiction_scan_on_store` | bool | `false` | — | Scan for contradictions at memory store time |
+| `memory.autoResolveContradictions` | `memory.auto_resolve_contradictions` | bool | `false` | — | Auto-resolve same-key contradictions (newest-wins) during sleep consolidation; off by default |
 
 ## knowledge
 

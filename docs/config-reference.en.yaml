@@ -425,6 +425,8 @@ memory:
   embedTimeoutSeconds: 1.5
   # Scan for contradictions at memory store time (default: false)
   contradictionScanOnStore: false
+  # Auto-resolve same-key contradictions (newest-wins) during sleep consolidation; off by default (default: false)
+  autoResolveContradictions: false
 
 # ── knowledge ──
 knowledge:

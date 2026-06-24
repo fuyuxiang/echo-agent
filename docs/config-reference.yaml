@@ -425,6 +425,8 @@ memory:
   embedTimeoutSeconds: 1.5
   # 是否在写入记忆时即时扫描矛盾 (默认: false)
   contradictionScanOnStore: false
+  # 睡眠整合时自动消解同 key 矛盾(newest-wins),默认关闭只检测不消解 (默认: false)
+  autoResolveContradictions: false
 
 # ── knowledge ──
 knowledge:
