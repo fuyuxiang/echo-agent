@@ -270,26 +270,6 @@ class ContradictionDetector:
                 contradictions.append(result)
         return contradictions
 
-    async def check_lightweight(
-        self,
-        new_entry: MemoryEntry,
-        candidates: list[MemoryEntry],
-        embed_fn: Callable[..., Any] | None = None,
-    ) -> list[Contradiction]:
-        """Lightweight contradiction check (heuristic + vector only, no LLM)."""
-        contradictions: list[Contradiction] = []
-        filtered = await self._pre_filter(new_entry, candidates, embed_fn)
-
-        for candidate in filtered:
-            if candidate.id == new_entry.id:
-                continue
-            result = self._heuristic_check(new_entry, candidate)
-            if result is None:
-                result = self._temporal_conflict_check(new_entry, candidate)
-            if result is not None:
-                contradictions.append(result)
-        return contradictions
-
     def _temporal_conflict_check(
         self, a: MemoryEntry, b: MemoryEntry
     ) -> Contradiction | None:

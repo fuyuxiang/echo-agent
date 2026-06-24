@@ -137,11 +137,3 @@ class VectorIndex:
         if self._index is not None:
             self._index.reset()
         await self._initialize_unlocked()
-
-    async def get_embedding_by_memory_id(self, memory_id: str) -> list[float] | None:
-        async with self._lock:
-            row = await self._storage.load_vector_by_source(memory_id)
-            if row and row.get("embedding"):
-                arr = np.frombuffer(row["embedding"], dtype=np.float32)
-                return arr.tolist()
-            return None
