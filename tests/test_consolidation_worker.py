@@ -192,6 +192,47 @@ class TestConsolidationWorker:
         assert not worker.is_pending("test:7")
 
 
+class TestDurableScheduling:
+    """Task 8: consolidation is a DURABLE background point — it must be scheduled
+    with tier=DURABLE and as a zero-arg factory (so the scheduler can retry it)."""
+
+    @pytest.mark.asyncio
+    async def test_schedule_durable_passes_factory_and_tier(
+        self, mock_sessions, mock_consolidator
+    ):
+        from echo_agent.agent.background import Tier
+
+        session = Session(key="test:dur")
+        session.add_message("user", "hello")
+        session.add_message("assistant", "hi")
+        mock_sessions.get_or_create = AsyncMock(return_value=session)
+        mock_sessions.save = AsyncMock()
+
+        worker = ConsolidationWorker(
+            sessions=mock_sessions,
+            consolidator=mock_consolidator,
+            sleep_consolidation=False,
+        )
+
+        captured: dict = {}
+
+        def spawn_fn(coro, *, session_key="", tier=None):
+            captured["coro"] = coro
+            captured["tier"] = tier
+
+        await worker.schedule("test:dur", spawn_fn, tier=Tier.DURABLE)
+
+        # DURABLE contract: tier flagged and a callable factory (not a bare
+        # coroutine), so a failed run can be re-invoked.
+        assert captured["tier"] is Tier.DURABLE
+        assert callable(captured["coro"])
+        assert not asyncio.iscoroutine(captured["coro"])
+
+        # The factory yields a fresh awaitable that actually runs consolidation.
+        await captured["coro"]()
+        mock_consolidator.consolidate_chunk.assert_called_once()
+
+
 class TestSnapshotValidity:
     """Full-region comparison: a mid-region rewrite (e.g. by compression)
     must invalidate the snapshot even when the tail message is identical."""
