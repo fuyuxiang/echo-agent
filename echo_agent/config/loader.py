@@ -136,6 +136,9 @@ def load_config(
     if overrides:
         data = _deep_merge(data, overrides)
 
+    from echo_agent.config.profile_defaults import apply_profile_cognitive_defaults
+    data = apply_profile_cognitive_defaults(data)
+
     try:
         return Config(**data)
     except Exception as e:
