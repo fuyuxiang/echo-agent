@@ -20,6 +20,13 @@ from loguru import logger
 StreamDeltaCallback = Callable[[str], Awaitable[None] | None]
 
 
+class StreamingUnsupported(Exception):
+    """Raised by providers that do not implement native streaming.
+    The retry wrapper catches this and falls back to a unary chat call —
+    making the degrade an explicit, visible decision rather than a silent
+    pseudo-stream."""
+
+
 async def _invoke_stream_callback(callback: StreamDeltaCallback | None, delta: str) -> None:
     if callback is None or not delta:
         return
@@ -123,11 +130,9 @@ class LLMProvider(ABC):
         on_delta: StreamDeltaCallback | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
-        """Stream text deltas when supported, otherwise fall back to a full response."""
-        response = await self.chat(messages, tools, model, tool_choice, **kwargs)
-        if response.finish_reason != "error" and response.content:
-            await _invoke_stream_callback(on_delta, response.content)
-        return response
+        """Providers must override this with native streaming. The base
+        class refuses rather than faking a stream by buffering chat()."""
+        raise StreamingUnsupported(f"{type(self).__name__} does not support streaming")
 
     def _classify_error_text(self, error_text: str) -> str:
         """Classify an error message as 'transient', 'permanent' or 'unknown'."""
@@ -267,6 +272,12 @@ class LLMProvider(ABC):
             emitted = False
             try:
                 response = await asyncio.wait_for(_stream_call(), timeout=timeout)
+            except StreamingUnsupported:
+                # Provider has no native streaming — explicit unary fallback.
+                return await self.chat_with_retry(
+                    messages=messages, tools=tools, model=model,
+                    tool_choice=tool_choice, **kwargs,
+                )
             except asyncio.CancelledError:
                 raise
             except (TimeoutError, asyncio.TimeoutError):
