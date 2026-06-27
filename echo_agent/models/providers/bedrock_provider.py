@@ -77,6 +77,18 @@ class BedrockProvider(LLMProvider):
         from echo_agent.models.provider import _invoke_stream_callback
         target = model or self._default_model
         if not _is_claude_model(target):
+            # The Converse streaming path only parses text deltas; it cannot
+            # collect toolUse blocks. When tools are supplied the model may
+            # respond with a tool call, so fall back to the non-streaming
+            # _chat_converse, which fully parses tool_calls/usage/stopReason.
+            # Correctness (never dropping tool calls) takes priority over the
+            # per-token streaming feel here — tool-bearing turns are typically
+            # not ones the user is watching stream. Without tools we keep the
+            # true streaming path.
+            if tools:
+                return await self._chat_converse(
+                    target, messages, tools, tool_choice, **kwargs
+                )
             return await self._chat_stream_converse(
                 target, messages, tools, tool_choice, on_delta=on_delta, **kwargs
             )
