@@ -1771,6 +1771,14 @@ class MemoryConfig(_Base):
             "desc_en": "Memory scope policy",
         },
     )
+    retrieval_on_miss: Literal["degrade", "sync"] = Field(
+        default="degrade",
+        json_schema_extra={
+            "status": "effective", "ref": "agent/pipeline/context_stage.py:170",
+            "desc_zh": "检索缓存未命中时的行为:degrade=本轮跳过检索,sync=同步补检索",
+            "desc_en": "Behavior on retrieval cache miss: degrade=skip this turn, sync=fetch synchronously",
+        },
+    )
     consolidation_threshold: int = Field(
         default=20,
         json_schema_extra={
