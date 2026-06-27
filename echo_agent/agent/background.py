@@ -37,12 +37,19 @@ class BackgroundScheduler:
     """Bounded, tiered scheduler for fire-and-forget background work."""
 
     def __init__(self, max_concurrency: int, *, durable_retries: int = 2) -> None:
-        self._sem = asyncio.Semaphore(max(1, max_concurrency))
+        self._max_concurrency = max(1, max_concurrency)
+        self._sem = asyncio.Semaphore(self._max_concurrency)
         self._durable_retries = max(0, durable_retries)
         self._tasks: set[asyncio.Task[Any]] = set()
         self._discardable_tasks: set[asyncio.Task[Any]] = set()
         self._dropped = 0
         self._queued = 0
+        # In-flight count maintained *synchronously*: incremented in ``spawn``
+        # the moment a task is created, decremented in ``_run``'s finally. This
+        # lets a synchronous burst of spawns detect saturation immediately,
+        # before any task has had a chance to acquire ``self._sem`` (which only
+        # happens after an await, i.e. after ``create_task`` schedules ``_run``).
+        self._in_flight = 0
 
     def spawn(
         self,
@@ -56,14 +63,18 @@ class BackgroundScheduler:
         ``coro`` may be a bare coroutine/awaitable or a zero-arg factory
         returning a fresh awaitable. DURABLE retries require a factory.
         """
-        if tier is Tier.DISCARDABLE and self._sem.locked():
+        if tier is Tier.DISCARDABLE and self._in_flight >= self._max_concurrency:
             # No free slot — drop and close any live coroutine to avoid a
-            # "coroutine was never awaited" warning.
+            # "coroutine was never awaited" warning. Using the synchronous
+            # in-flight count (not ``sem.locked()``) means a burst of spawns
+            # with no await in between is still bounded: once the cap is hit,
+            # further DISCARDABLE work is dropped instead of queued unbounded.
             self._dropped += 1
             logger.debug("Dropped discardable background task (saturated)")
             self._discard(coro)
             return
 
+        self._in_flight += 1
         task = asyncio.create_task(self._run(coro, tier))
         if session_key:
             task._session_key = session_key  # type: ignore[attr-defined]
@@ -80,18 +91,37 @@ class BackgroundScheduler:
             coro.close()
 
     async def _run(self, coro: Spawnable, tier: Tier) -> None:
-        if tier is Tier.DURABLE and self._sem.locked():
-            self._queued += 1
-            queued = True
-        else:
-            queued = False
-        async with self._sem:
+        queued = False
+        invoked = False
+        try:
+            if tier is Tier.DURABLE and self._sem.locked():
+                self._queued += 1
+                queued = True
+            async with self._sem:
+                if queued:
+                    self._queued -= 1
+                    queued = False
+                # Past this point the user coro is reached without any further
+                # suspension, so once ``invoked`` is set, ``coro`` is guaranteed
+                # to have been entered (awaited) and needs no defensive close.
+                invoked = True
+                if tier is Tier.DURABLE:
+                    await self._run_durable(coro)
+                else:
+                    await self._run_discardable(coro)
+        finally:
+            if not invoked:
+                # Cancelled (e.g. by ``aclose``) or failed before we ever
+                # awaited the user coro — typically while still blocked on the
+                # semaphore. Close the bare coroutine so it does not trigger a
+                # "coroutine was never awaited" warning. No-op for factories.
+                self._discard(coro)
             if queued:
                 self._queued -= 1
-            if tier is Tier.DURABLE:
-                await self._run_durable(coro)
-            else:
-                await self._run_discardable(coro)
+            # Balanced 1:1 with the synchronous increment in ``spawn``. Runs
+            # exactly once per created task (success, failure, or cancel), so
+            # the counter never drifts negative and never leaks a slot.
+            self._in_flight -= 1
 
     async def _run_discardable(self, coro: Spawnable) -> None:
         try:
@@ -137,6 +167,12 @@ class BackgroundScheduler:
 
     async def aclose(self, timeout: float = 10.0) -> None:
         """Cancel in-flight DISCARDABLE tasks; flush/await DURABLE tasks."""
+        # Yield once so freshly created tasks reach their first suspension
+        # point inside ``_run``. Without this, a task created during a
+        # synchronous burst may still be un-started; cancelling it closes
+        # ``_run`` before its body runs, so the ``finally`` cleanup never fires
+        # and the bare user coroutine leaks a "never awaited" warning.
+        await asyncio.sleep(0)
         for task in list(self._discardable_tasks):
             task.cancel()
         if not self._tasks:

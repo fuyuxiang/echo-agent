@@ -46,6 +46,28 @@ async def test_discardable_dropped_when_saturated():
 
 
 @pytest.mark.asyncio
+async def test_discardable_dropped_on_synchronous_burst():
+    # Regression: a synchronous burst of spawns never yields to the event loop,
+    # so the semaphore is not yet acquired by any task. Saturation must be
+    # detected via the synchronously maintained in-flight counter, not
+    # sem.locked(). Without that, dropped stays 0 and this asserts fails.
+    sched = BackgroundScheduler(max_concurrency=2)
+    block = asyncio.Event()
+    ran = []
+
+    async def work():
+        await block.wait()
+        ran.append(1)
+
+    for _ in range(20):  # far beyond max_concurrency, no await between spawns
+        sched.spawn(work(), tier=Tier.DISCARDABLE)
+
+    assert sched.stats()["dropped"] > 0  # saturation kicked in during the burst
+    block.set()
+    await sched.aclose()
+
+
+@pytest.mark.asyncio
 async def test_durable_queues_instead_of_dropping():
     sched = BackgroundScheduler(max_concurrency=1)
     block = asyncio.Event()
