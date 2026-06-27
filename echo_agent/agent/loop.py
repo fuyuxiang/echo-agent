@@ -255,6 +255,8 @@ class AgentLoop:
         self._memory_snapshots: OrderedDict[str, str] = OrderedDict()
         self._max_cached_sessions = 200
         self._background_tasks: set[asyncio.Task[Any]] = set()
+        from echo_agent.agent.background import BackgroundScheduler
+        self._bg_scheduler = BackgroundScheduler(config.execution.max_background_tasks)
         self._pending_consolidations: set[str] = set()
         self._state_lock = asyncio.Lock()
         self._plugin_manager: Any = None
@@ -519,6 +521,12 @@ class AgentLoop:
             await self._plugin_manager.shutdown()
         if self.mcp_manager:
             await self.mcp_manager.stop_all()
+        # Scheduler owns all background work spawned via ``_spawn_background``;
+        # ``aclose`` cancels discardable tasks and flushes durable ones. The
+        # legacy ``_background_tasks`` loop below now runs over an empty set
+        # (disjoint from the scheduler's own task set, so no double-cancel) and
+        # is kept only as a safety net for any direct task left in it.
+        await self._bg_scheduler.aclose(timeout=10.0)
         async with self._state_lock:
             tasks = list(self._background_tasks)
         for task in tasks:
@@ -538,12 +546,9 @@ class AgentLoop:
             self._background_tasks.clear()
         logger.info("Agent loop stopped")
 
-    def _spawn_background(self, coro: Any, *, session_key: str = "") -> None:
-        task = asyncio.create_task(coro)
-        if session_key:
-            task._session_key = session_key  # type: ignore[attr-defined]
-        self._background_tasks.add(task)
-        task.add_done_callback(self._on_background_done)
+    def _spawn_background(self, coro: Any, *, session_key: str = "", tier: Any = None) -> None:
+        from echo_agent.agent.background import Tier
+        self._bg_scheduler.spawn(coro, tier=tier or Tier.DISCARDABLE, session_key=session_key)
 
     def _on_background_done(self, task: asyncio.Task) -> None:
         self._background_tasks.discard(task)

@@ -1518,6 +1518,14 @@ class ExecutionConfig(_Base):
             "desc_en": "Network access policy for the execution environment",
         },
     )
+    max_background_tasks: int = Field(
+        default=64,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/loop.py:259",
+            "desc_zh": "后台任务并发上限,超限时可丢弃任务被丢、不可丢任务排队",
+            "desc_en": "Max concurrent background tasks; over limit discardable dropped, durable queued",
+        },
+    )
 
 
 # ── Permission configs ───────────────────────────────────────────────────────
