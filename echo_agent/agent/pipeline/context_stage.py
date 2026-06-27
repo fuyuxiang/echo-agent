@@ -288,34 +288,65 @@ class ContextStage:
                     )
 
         if self._knowledge:
-            # Knowledge is warmed by the same prefetch entry. A fresh cache hit
-            # is used directly; on a miss, "sync" pays the cost inline but the
-            # scan is CPU-bound, so it runs in an executor thread to keep the
-            # event loop responsive, while "degrade" skips it this turn.
+            # Knowledge is ACL-filtered per user (KnowledgeIndex.search filters
+            # by allowed_users). A cached knowledge_context is only trustworthy
+            # when it was prefetched for THIS turn's user: under a shared group
+            # session_key the cache entry is reachable by every sender, so
+            # serving user A's ACL-filtered knowledge to user B would leak
+            # restricted docs. So the cache hit requires knowledge_user_id to
+            # match the current sender.
             knowledge_context = None
             knowledge_results = None
-            if cache_fresh:
+            knowledge_from_cache = False
+            cached_user_ok = (
+                cache_fresh
+                and cached.knowledge_context is not None
+                and cached.knowledge_user_id == event.sender_id
+            )
+            if cached_user_ok:
                 knowledge_context = cached.knowledge_context
-            elif self._retrieval_on_miss == "sync":
-                try:
-                    knowledge_results, knowledge_context = (
-                        await self._fetch_knowledge(event.text, event.sender_id)
-                    )
-                except Exception as e:
-                    logger.debug("Knowledge retrieval failed: {}", e)
+                knowledge_from_cache = True
+            else:
+                # Miss (no/stale cache, or knowledge was prefetched for another
+                # user). The scan is CPU-bound, so any inline fetch runs in an
+                # executor thread and never blocks the event loop. When a
+                # prefetcher is warming knowledge (hybrid retriever present),
+                # honor retrieval_on_miss: "sync" fetches inline now, "degrade"
+                # skips and lets the next prefetch warm it. When there is NO
+                # prefetcher (memory disabled -> no hybrid retriever), nothing
+                # will ever warm the cache, so a degrade-skip would silently
+                # drop knowledge every turn — fall back to inline so knowledge
+                # keeps working independently of memory.enabled (its pre-Task-13
+                # behavior).
+                knowledge_prefetch_active = self._hybrid_retriever is not None
+                if self._retrieval_on_miss == "sync" or not knowledge_prefetch_active:
+                    try:
+                        knowledge_results, knowledge_context = (
+                            await self._fetch_knowledge(event.text, event.sender_id)
+                        )
+                    except Exception as e:
+                        logger.debug("Knowledge retrieval failed: {}", e)
             if knowledge_context:
                 retrieval_parts.append(knowledge_context)
                 if publish_response and self._bus:
                     _debug = getattr(self._config.gateway, 'progress_debug', False)
                     _know_meta: dict[str, Any] = {
                         "progress_type": "knowledge_cited",
-                        "count": len(knowledge_results) if knowledge_results else 0,
                     }
-                    if _debug:
-                        _know_meta["citations"] = [
-                            {"path": getattr(r, 'path', ''), "chunk_preview": getattr(r, 'text', '')[:200], "score": getattr(r, 'score', 0.0)}
-                            for r in (knowledge_results[:5] if knowledge_results else [])
-                        ]
+                    # On a cache hit we kept only the formatted context, not the
+                    # result objects, so an honest event reports the hit rather
+                    # than a misleading count=0 / empty citations.
+                    if knowledge_from_cache:
+                        _know_meta["from_cache"] = True
+                    else:
+                        _know_meta["count"] = (
+                            len(knowledge_results) if knowledge_results else 0
+                        )
+                        if _debug:
+                            _know_meta["citations"] = [
+                                {"path": getattr(r, 'path', ''), "chunk_preview": getattr(r, 'text', '')[:200], "score": getattr(r, 'score', 0.0)}
+                                for r in (knowledge_results[:5] if knowledge_results else [])
+                            ]
                     await self._emit_progress(event, _know_meta)
 
         task_type = self._infer_task_type(event.text)

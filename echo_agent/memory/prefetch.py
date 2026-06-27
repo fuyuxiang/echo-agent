@@ -39,6 +39,14 @@ class RetrievalCacheEntry:
     # only fills `scored` backward-compatible.
     episodes: list[Any] | None = None
     knowledge_context: str | None = None
+    # Knowledge is access-controlled per user (KnowledgeIndex filters by
+    # allowed_users). Under group_session_scope=shared the session_key is shared
+    # across senders, so a knowledge_context prefetched for user A must NOT be
+    # served to user B — that would leak A's ACL-restricted docs. Record the
+    # user this knowledge_context was filtered for; the reader only trusts it
+    # when it matches the current turn's user. Default None = "unknown / legacy",
+    # which the reader treats as a knowledge miss (never a blind hit).
+    knowledge_user_id: str | None = None
 
 
 def is_fresh(entry: RetrievalCacheEntry, query: str, *, now: float,
@@ -109,6 +117,9 @@ class RetrievalPrefetcher:
             created_at=time.time(),
             episodes=episodes,
             knowledge_context=knowledge_context,
+            # Stamp the user this knowledge was ACL-filtered for so a shared
+            # session_key can't serve it to a different user (see field doc).
+            knowledge_user_id=user_id if knowledge_context is not None else None,
         )
         await self._cache_put(session_key, entry)
 
