@@ -254,10 +254,8 @@ class AgentLoop:
         self._snapshot_enabled = config.memory.snapshot_enabled
         self._memory_snapshots: OrderedDict[str, str] = OrderedDict()
         self._max_cached_sessions = 200
-        self._background_tasks: set[asyncio.Task[Any]] = set()
         from echo_agent.agent.background import BackgroundScheduler
         self._bg_scheduler = BackgroundScheduler(config.execution.max_background_tasks)
-        self._pending_consolidations: set[str] = set()
         self._state_lock = asyncio.Lock()
         self._plugin_manager: Any = None
         self._register_tools(scheduler=scheduler, task_manager=task_manager, workflow_engine=workflow_engine)
@@ -521,42 +519,15 @@ class AgentLoop:
             await self._plugin_manager.shutdown()
         if self.mcp_manager:
             await self.mcp_manager.stop_all()
-        # Scheduler owns all background work spawned via ``_spawn_background``;
-        # ``aclose`` cancels discardable tasks and flushes durable ones. The
-        # legacy ``_background_tasks`` loop below now runs over an empty set
-        # (disjoint from the scheduler's own task set, so no double-cancel) and
-        # is kept only as a safety net for any direct task left in it.
+        # All background work is spawned via ``_spawn_background`` and owned by
+        # the scheduler; ``aclose`` cancels discardable tasks and flushes durable
+        # ones. This is the single shutdown path for background work.
         await self._bg_scheduler.aclose(timeout=10.0)
-        async with self._state_lock:
-            tasks = list(self._background_tasks)
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*tasks, return_exceptions=True),
-                    timeout=10.0,
-                )
-            except (TimeoutError, asyncio.TimeoutError):
-                logger.warning(
-                    "{} background task(s) did not finish within 10s during shutdown; abandoning",
-                    len(tasks),
-                )
-        async with self._state_lock:
-            self._background_tasks.clear()
         logger.info("Agent loop stopped")
 
     def _spawn_background(self, coro: Any, *, session_key: str = "", tier: Any = None) -> None:
         from echo_agent.agent.background import Tier
         self._bg_scheduler.spawn(coro, tier=tier or Tier.DISCARDABLE, session_key=session_key)
-
-    def _on_background_done(self, task: asyncio.Task) -> None:
-        self._background_tasks.discard(task)
-        if not task.cancelled() and task.exception():
-            logger.warning("Background task failed: {}", task.exception())
-            session_key = getattr(task, '_session_key', None)
-            if session_key:
-                self._pending_consolidations.add(session_key)
 
     async def _lru_put(self, cache: OrderedDict, key: str, value: Any) -> None:  # type: ignore[type-arg]
         async with self._state_lock:

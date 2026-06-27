@@ -44,6 +44,34 @@ def test_loop_has_background_scheduler(make_loop):
     assert loop._bg_scheduler.stats()["dropped"] == 0
 
 
+@pytest.mark.asyncio
+async def test_stop_drains_scheduler_tasks(make_loop):
+    """Real AgentLoop: _spawn_background delegates to the scheduler and stop()
+    drains it via aclose (the single shutdown path after the dead-code cleanup)."""
+    loop = make_loop()
+
+    started = asyncio.Event()
+
+    async def slow_task():
+        started.set()
+        await asyncio.sleep(100)
+
+    async def quick_task():
+        return "done"
+
+    loop._spawn_background(slow_task())
+    loop._spawn_background(quick_task())
+    await started.wait()
+    # Tasks live on the scheduler, not on the loop.
+    assert loop._bg_scheduler.stats()["running"] >= 1
+
+    await loop.stop()
+
+    # stop() -> aclose() cancelled/flushed everything; nothing left running.
+    assert loop._bg_scheduler.stats()["running"] == 0
+    assert len(loop._bg_scheduler._tasks) == 0
+
+
 
 class _FakeAgentLoop:
     """Minimal AgentLoop stand-in for testing _spawn_background and _on_background_done."""
