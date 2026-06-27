@@ -301,6 +301,7 @@ class ContextStage:
             cached_user_ok = (
                 cache_fresh
                 and cached.knowledge_context is not None
+                and bool(event.sender_id)
                 and cached.knowledge_user_id == event.sender_id
             )
             if cached_user_ok:
