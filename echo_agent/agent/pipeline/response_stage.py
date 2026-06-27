@@ -62,6 +62,7 @@ class ResponseStage:
         clear_memory_snapshot_fn: Callable[[str], Coroutine[Any, Any, None]],
         skill_store: Any = None,
         working_memories: Any = None,
+        prefetcher: Any = None,
     ):
         self._config = config
         self._sessions = sessions
@@ -73,6 +74,7 @@ class ResponseStage:
         self._clear_memory_snapshot = clear_memory_snapshot_fn
         self._skill_store = skill_store
         self._working_memories = working_memories
+        self._prefetcher = prefetcher
 
     async def finalize(self, ctx: PipelineContext, result: InferenceResult) -> ProcessResult:
         """Post-process inference result, save session, schedule background tasks."""
@@ -131,6 +133,20 @@ class ResponseStage:
         outbound_sent = False
         if ctx.publish_response and ctx.stream_publisher:
             outbound_sent = await ctx.stream_publisher.finalize(response_text)
+
+        # Reply is now out the door. Prefetch the NEXT turn's retrieval using
+        # this turn's query and write it to the per-session cache, so a
+        # continuing same-topic conversation hits the cache on its next turn
+        # (zero inline retrieval latency). DISCARDABLE: a dropped prefetch is
+        # harmless — the next turn simply misses and falls back to inline
+        # retrieval — so a bare coroutine (no retry factory) is fine.
+        if self._prefetcher is not None and event.text:
+            from echo_agent.agent.background import Tier
+            self._spawn_fn(
+                self._prefetcher.prefetch(event.session_key, event.text),
+                tier=Tier.DISCARDABLE,
+                session_key=event.session_key,
+            )
 
         return ProcessResult(
             response_text=response_text or "",
