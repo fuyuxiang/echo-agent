@@ -151,7 +151,13 @@ class GeminiProvider(LLMProvider):
                 if chunk is sentinel:
                     break
                 chunks.append(chunk)
-                text = getattr(chunk, "text", "") or ""
+                # `chunk.text` is a property that can raise (not just be missing)
+                # on non-pure-text chunks carrying a function_call, so guard the
+                # access itself: treat any failure as empty text and skip it.
+                try:
+                    text = getattr(chunk, "text", "") or ""
+                except Exception:
+                    text = ""
                 if text:
                     await _invoke_stream_callback(on_delta, text)
             resp = _GeminiAggregate(chunks)

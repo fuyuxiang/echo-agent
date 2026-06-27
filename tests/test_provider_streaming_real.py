@@ -96,6 +96,11 @@ async def test_anthropic_chat_stream_emits_deltas_before_completion(monkeypatch)
 async def test_gemini_chat_stream_emits_deltas():
     from echo_agent.models.providers.gemini_provider import GeminiProvider
     deltas = []
+    # 在收尾 _parse_response 上打桩计数,验证真流式(边收边吐)时序:
+    # 真流式下,首个 delta 触发时 _parse_response 还没被调用;
+    # 伪流式(攒完所有 chunk 后再统一回吐)会在 delta 之前先收尾。
+    parse_calls = {"count": 0}
+    parse_called_at_first_delta = {"value": None}
 
     class _Chunk:
         def __init__(self, t): self.text = t
@@ -113,11 +118,24 @@ async def test_gemini_chat_stream_emits_deltas():
     from echo_agent.models.provider import GenerationParams
     p.generation = GenerationParams()
     p._client = type("G", (), {"GenerativeModel": staticmethod(lambda **k: _FakeModel())})()
+
+    def _parse(resp, model_name):
+        parse_calls["count"] += 1
+        return __import__("echo_agent.models.provider", fromlist=["LLMResponse"]).LLMResponse(content="foobar", finish_reason="stop")
     # 让 _parse_response 收尾产出聚合文本
-    p._parse_response = lambda resp, model_name: __import__("echo_agent.models.provider", fromlist=["LLMResponse"]).LLMResponse(content="foobar", finish_reason="stop")
+    p._parse_response = _parse
+
+    def _on_delta(d):
+        # 首次 delta 触发时,记录此刻 _parse_response 是否已被调用
+        if parse_called_at_first_delta["value"] is None:
+            parse_called_at_first_delta["value"] = parse_calls["count"] > 0
+        deltas.append(d)
 
     resp = await p.chat_stream(messages=[{"role": "user", "content": "hi"}],
-                               on_delta=lambda d: deltas.append(d))
+                               on_delta=_on_delta)
+    # 时序断言:真流式下首个 delta 触发时 _parse_response 尚未调用(边收边吐,而非攒完再吐)
+    assert parse_called_at_first_delta["value"] is False, \
+        "delta 应严格早于 _parse_response(真流式),当前在 delta 之前已收尾(伪流式)"
     assert "".join(deltas) == "foobar"
 
 
