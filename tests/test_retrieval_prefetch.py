@@ -196,9 +196,9 @@ def _make_context_stage(*, cache, on_miss, on_retrieve=None, hybrid=True,
     return stage, captured, hybrid_retriever, memory
 
 
-async def _stage_build(stage, *, session_key, text):
+async def _stage_build(stage, *, session_key, text, sender_id="u1"):
     event = InboundEvent.text_message(
-        channel="cli", sender_id="u1", chat_id="c1", text=text
+        channel="cli", sender_id=sender_id, chat_id="c1", text=text
     )
     event.session_key_override = session_key
     session = Session(key=session_key)
@@ -557,6 +557,7 @@ async def test_context_uses_cached_episodes_and_knowledge():
         created_at=time.time(),
         episodes=[_Episode("cached episode")],
         knowledge_context="cached KB block",
+        knowledge_user_id="u1",
     )
     stage, captured, hybrid, memory = _make_context_stage(
         cache={"sess-1": entry}, on_miss="degrade",
@@ -602,3 +603,165 @@ async def test_context_episode_knowledge_sync_on_miss():
     assert "synced episode" in ctx
     assert "synced KB block" in ctx
     knowledge.search.assert_called_once()
+
+
+# --- Task 13 finalization: knowledge ACL isolation + memory-off fallback ---
+
+
+@pytest.mark.asyncio
+async def test_prefetcher_stamps_knowledge_user_id():
+    # The cache entry must record which user the knowledge_context was
+    # ACL-filtered for, so a shared session can't serve it to another user.
+    class _R:
+        async def retrieve(self, query, limit=5, session_key=""):
+            return []
+
+    def _know(query, user_id):
+        return "KB for A"
+
+    written = {}
+
+    async def cache_put(sk, e):
+        written[sk] = e
+
+    pf = RetrievalPrefetcher(_R(), cache_put, limit=5, knowledge_fetch=_know)
+    await pf.prefetch("shared-sess", "deploy gateway", user_id="user-A")
+    assert written["shared-sess"].knowledge_user_id == "user-A"
+
+
+@pytest.mark.asyncio
+async def test_context_knowledge_cache_hit_same_user():
+    # Same user as the cached knowledge_user_id -> trust the cache, no rescan.
+    knowledge = MagicMock()
+    knowledge.search = MagicMock(side_effect=AssertionError("must not scan"))
+    knowledge.format_results = MagicMock(side_effect=AssertionError("must not format"))
+
+    entry = RetrievalCacheEntry(
+        query_text="deploy gateway",
+        query_tokens=query_tokens("deploy gateway"),
+        scored=[],
+        created_at=time.time(),
+        knowledge_context="restricted doc for A",
+        knowledge_user_id="user-A",
+    )
+    stage, captured, hybrid, memory = _make_context_stage(
+        cache={"shared": entry}, on_miss="degrade", knowledge=knowledge,
+    )
+    await _stage_build(
+        stage, session_key="shared", text="gateway deploy steps", sender_id="user-A"
+    )
+    assert "restricted doc for A" in captured["retrieval_context"]
+
+
+@pytest.mark.asyncio
+async def test_context_knowledge_cache_not_leaked_across_users_degrade():
+    # Shared session_key: entry was prefetched for user-A. User-B hits a fresh
+    # cache (same topic) but must NOT see A's ACL-filtered knowledge. Under
+    # degrade with a prefetcher present, B's knowledge is skipped (not leaked).
+    knowledge = MagicMock()
+    knowledge.search = MagicMock(side_effect=AssertionError("must not scan under degrade"))
+
+    entry = RetrievalCacheEntry(
+        query_text="deploy gateway",
+        query_tokens=query_tokens("deploy gateway"),
+        scored=[],
+        created_at=time.time(),
+        knowledge_context="restricted doc only A may see",
+        knowledge_user_id="user-A",
+    )
+    stage, captured, hybrid, memory = _make_context_stage(
+        cache={"shared": entry}, on_miss="degrade", knowledge=knowledge,
+    )
+    await _stage_build(
+        stage, session_key="shared", text="gateway deploy steps", sender_id="user-B"
+    )
+    assert "restricted doc only A may see" not in captured["retrieval_context"]
+
+
+@pytest.mark.asyncio
+async def test_context_knowledge_cache_rescans_for_other_user_sync():
+    # Same shared-session leak scenario, but under sync-on-miss: B's turn must
+    # rescan knowledge with B's own user_id instead of serving A's cache.
+    knowledge = MagicMock()
+    knowledge.search = MagicMock(return_value=[object()])
+    knowledge.format_results = MagicMock(return_value="doc B may see")
+
+    entry = RetrievalCacheEntry(
+        query_text="deploy gateway",
+        query_tokens=query_tokens("deploy gateway"),
+        scored=[],
+        created_at=time.time(),
+        knowledge_context="restricted doc only A may see",
+        knowledge_user_id="user-A",
+    )
+    stage, captured, hybrid, memory = _make_context_stage(
+        cache={"shared": entry}, on_miss="sync", knowledge=knowledge,
+    )
+    await _stage_build(
+        stage, session_key="shared", text="gateway deploy steps", sender_id="user-B"
+    )
+    ctx = captured["retrieval_context"]
+    assert "restricted doc only A may see" not in ctx
+    assert "doc B may see" in ctx
+    # Rescanned with B's user_id, not A's.
+    _, kwargs = knowledge.search.call_args
+    assert kwargs.get("user_id") == "user-B"
+
+
+@pytest.mark.asyncio
+async def test_context_legacy_entry_without_user_id_is_knowledge_miss():
+    # A legacy/unknown entry (knowledge_user_id=None) must never blind-hit; it
+    # is treated as a miss so no ACL-unverified knowledge is served.
+    knowledge = MagicMock()
+    knowledge.search = MagicMock(side_effect=AssertionError("degrade: no rescan"))
+
+    entry = RetrievalCacheEntry(
+        query_text="deploy gateway",
+        query_tokens=query_tokens("deploy gateway"),
+        scored=[],
+        created_at=time.time(),
+        knowledge_context="some doc",
+        knowledge_user_id=None,
+    )
+    stage, captured, hybrid, memory = _make_context_stage(
+        cache={"shared": entry}, on_miss="degrade", knowledge=knowledge,
+    )
+    await _stage_build(
+        stage, session_key="shared", text="gateway deploy steps", sender_id="user-A"
+    )
+    assert "some doc" not in captured["retrieval_context"]
+
+
+@pytest.mark.asyncio
+async def test_context_knowledge_inline_when_memory_disabled():
+    # memory.enabled=False -> no hybrid retriever -> no prefetcher will ever
+    # warm the knowledge cache. Even under degrade, knowledge must still be
+    # produced (inline via executor) rather than silently dropped every turn.
+    knowledge = MagicMock()
+    knowledge.search = MagicMock(return_value=[object()])
+    knowledge.format_results = MagicMock(return_value="inline KB block")
+
+    stage, captured, hybrid, memory = _make_context_stage(
+        cache={}, on_miss="degrade", hybrid=False, knowledge=knowledge,
+    )
+    stage._config.memory.enabled = False
+    await _stage_build(stage, session_key="new", text="anything", sender_id="user-A")
+    assert "inline KB block" in captured["retrieval_context"]
+    knowledge.search.assert_called_once()
+    _, kwargs = knowledge.search.call_args
+    assert kwargs.get("user_id") == "user-A"
+
+
+@pytest.mark.asyncio
+async def test_context_knowledge_degrade_skips_when_prefetcher_active():
+    # With a hybrid retriever (prefetcher will warm the cache), degrade keeps
+    # skipping the inline scan on a miss — the memory-off fallback must not
+    # accidentally turn every degrade miss into an inline scan.
+    knowledge = MagicMock()
+    knowledge.search = MagicMock(side_effect=AssertionError("must not scan under degrade"))
+
+    stage, captured, hybrid, memory = _make_context_stage(
+        cache={}, on_miss="degrade", hybrid=True, knowledge=knowledge,
+    )
+    await _stage_build(stage, session_key="new", text="anything", sender_id="user-A")
+    assert "KB" not in captured["retrieval_context"]
