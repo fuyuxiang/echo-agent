@@ -35,11 +35,9 @@ async def test_chat_stream_with_retry_falls_back_to_chat():
     assert p.chat_calls >= 1  # 确实降级到了 chat 路径
 
 
-from echo_agent.models.providers.anthropic_provider import AnthropicProvider
-
-
 @pytest.mark.asyncio
 async def test_anthropic_chat_stream_emits_deltas_before_completion(monkeypatch):
+    from echo_agent.models.providers.anthropic_provider import AnthropicProvider
     # 用一个产出两段 text delta 的假 stream，断言 on_delta 在拿到 final 前被调用
     deltas = []
     # 在假 stream 的 get_final_message 上打桩计数，验证真流式（边收边吐）时序：
@@ -131,8 +129,8 @@ async def test_gemini_chat_stream_emits_deltas():
             parse_called_at_first_delta["value"] = parse_calls["count"] > 0
         deltas.append(d)
 
-    resp = await p.chat_stream(messages=[{"role": "user", "content": "hi"}],
-                               on_delta=_on_delta)
+    await p.chat_stream(messages=[{"role": "user", "content": "hi"}],
+                        on_delta=_on_delta)
     # 时序断言:真流式下首个 delta 触发时 _parse_response 尚未调用(边收边吐,而非攒完再吐)
     assert parse_called_at_first_delta["value"] is False, \
         "delta 应严格早于 _parse_response(真流式),当前在 delta 之前已收尾(伪流式)"
