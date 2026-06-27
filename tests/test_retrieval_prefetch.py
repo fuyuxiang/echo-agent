@@ -282,3 +282,138 @@ async def test_stale_cache_misses_then_degrades():
     await _stage_build(stage, session_key="sess-1", text="deploy gateway")
     assert captured["retrieval_context"] == ""
     hybrid.retrieve.assert_not_called()
+
+
+# --- ResponseStage post-reply prefetch trigger (Task 12) ---
+
+
+class _FakePrefetcher:
+    """Stand-in for RetrievalPrefetcher whose prefetch returns a real coroutine
+    so the spawn capture can close it without warnings."""
+
+    def __init__(self):
+        self.calls = []
+
+    async def prefetch(self, session_key, query):
+        self.calls.append((session_key, query))
+
+
+def _make_finalize_stage(prefetcher=None, spawn=None):
+    from echo_agent.agent.pipeline.response_stage import ResponseStage
+
+    sessions = AsyncMock()
+    sessions.save = AsyncMock()
+
+    memory = MagicMock()
+    memory.has_pending_embeds = MagicMock(return_value=False)
+
+    # spec=[] => no auto-created attributes, so the `hasattr(_consolidator)`
+    # consolidation branch is skipped in finalize.
+    consolidation = MagicMock(spec=[])
+
+    return ResponseStage(
+        config=MagicMock(),
+        sessions=sessions,
+        memory=memory,
+        provider=MagicMock(),
+        consolidation_worker=consolidation,
+        default_model="m",
+        spawn_fn=spawn or (lambda coro, **kw: getattr(coro, "close", lambda: None)()),
+        clear_memory_snapshot_fn=AsyncMock(),
+        skill_store=None,
+        working_memories=None,
+        prefetcher=prefetcher,
+    )
+
+
+async def _response_finalize(stage, *, session_key, text):
+    from echo_agent.agent.pipeline.types import InferenceResult, PipelineContext
+
+    event = InboundEvent.text_message(
+        channel="cli", sender_id="u1", chat_id="c1", text=text
+    )
+    event.session_key_override = session_key
+    session = Session(key=session_key)
+    ctx = PipelineContext(
+        event=event, session=session, trace_id="t1", publish_response=False
+    )
+    return await stage.finalize(ctx, InferenceResult(response_text="ok"))
+
+
+@pytest.mark.asyncio
+async def test_finalize_schedules_prefetch_as_discardable():
+    from echo_agent.agent.background import Tier
+
+    spawned = []
+    coros = []
+
+    def spawn(coro, *, session_key="", tier=None):
+        spawned.append((tier, session_key))
+        coros.append(coro)
+
+    pf = _FakePrefetcher()
+    stage = _make_finalize_stage(prefetcher=pf, spawn=spawn)
+    await _response_finalize(stage, session_key="sess-1", text="deploy gateway")
+
+    assert any(t == Tier.DISCARDABLE for t, _ in spawned)
+    # Awaiting the scheduled coroutine drives the real prefetch call, proving
+    # it was wired with this turn's session_key + query.
+    await coros[0]
+    assert ("sess-1", "deploy gateway") == pf.calls[0]
+
+
+@pytest.mark.asyncio
+async def test_finalize_skips_prefetch_when_no_prefetcher():
+    spawned = []
+
+    def spawn(coro, *, session_key="", tier=None):
+        spawned.append((tier, session_key))
+        getattr(coro, "close", lambda: None)()
+
+    stage = _make_finalize_stage(prefetcher=None, spawn=spawn)
+    await _response_finalize(stage, session_key="sess-1", text="deploy gateway")
+    assert spawned == []
+
+
+@pytest.mark.asyncio
+async def test_finalize_skips_prefetch_when_empty_text():
+    spawned = []
+
+    def spawn(coro, *, session_key="", tier=None):
+        spawned.append((tier, session_key))
+        getattr(coro, "close", lambda: None)()
+
+    stage = _make_finalize_stage(prefetcher=_FakePrefetcher(), spawn=spawn)
+    await _response_finalize(stage, session_key="sess-1", text="")
+    assert spawned == []
+
+
+@pytest.mark.asyncio
+async def test_prefetch_cache_isolated_per_session_end_to_end():
+    # End-to-end: run the prefetcher through the REAL loop cache writer
+    # (_put_retrieval_cache -> _lru_put) and reader (_get_retrieval_cache),
+    # then assert session A's prefetched entry is invisible to session B.
+    import asyncio
+
+    from echo_agent.agent.loop import AgentLoop
+
+    host = type("_CacheHost", (), {})()
+    host._retrieval_cache = OrderedDict()
+    host._state_lock = asyncio.Lock()
+    host._max_cached_sessions = 200
+    host._lru_put = AgentLoop._lru_put.__get__(host)
+    host._put_retrieval_cache = AgentLoop._put_retrieval_cache.__get__(host)
+    host._get_retrieval_cache = AgentLoop._get_retrieval_cache.__get__(host)
+
+    class _R:
+        async def retrieve(self, query, limit=5, session_key=""):
+            return [(f"hit-for-{session_key}", 0.9)]
+
+    pf = RetrievalPrefetcher(_R(), host._put_retrieval_cache, limit=5)
+    await pf.prefetch("sess-A", "deploy gateway")
+
+    entry_a = host._get_retrieval_cache("sess-A")
+    assert entry_a is not None
+    assert entry_a.scored == [("hit-for-sess-A", 0.9)]
+    # session B never prefetched -> must not see A's entry.
+    assert host._get_retrieval_cache("sess-B") is None

@@ -322,6 +322,18 @@ class AgentLoop:
             plan_run_store=self._plan_run_store,
             cost_tracker=self._cost_tracker,
         )
+        # Retrieval prefetcher: after each reply ResponseStage fires this on the
+        # DISCARDABLE tier to warm the next turn's cache. Needs _hybrid_retriever
+        # (set by _init_advanced_memory above) and _put_retrieval_cache, both
+        # already initialized at this point.
+        from echo_agent.memory.prefetch import RetrievalPrefetcher
+        self._prefetcher = (
+            RetrievalPrefetcher(
+                self._hybrid_retriever, self._put_retrieval_cache, limit=5,
+            )
+            if self._hybrid_retriever
+            else None
+        )
         self._response_stage = ResponseStage(
             config=config,
             sessions=self.sessions,
@@ -333,6 +345,7 @@ class AgentLoop:
             clear_memory_snapshot_fn=self._clear_memory_snapshot,
             skill_store=self.skill_store,
             working_memories=self._working_memories,
+            prefetcher=self._prefetcher,
         )
 
     def _register_tools(self, scheduler: Any = None, task_manager: Any = None, workflow_engine: Any = None) -> None:
