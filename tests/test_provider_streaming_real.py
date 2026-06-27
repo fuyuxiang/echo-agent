@@ -189,3 +189,94 @@ async def test_gemini_aggregate_feeds_real_parse_response():
     assert resp.tool_calls[0].arguments == {"city": "SF"}
     assert resp.usage["prompt_tokens"] == 7
     assert resp.usage["completion_tokens"] == 11
+
+
+@pytest.mark.asyncio
+async def test_bedrock_claude_chat_stream_emits_deltas_before_completion():
+    # Bedrock Claude 路径走 messages.stream，与 Anthropic 同款边收边吐。
+    # 时序断言：首个 delta 触发时 get_final_message 尚未被调用（真流式而非攒完再吐）。
+    from echo_agent.models.providers.bedrock_provider import BedrockProvider
+    deltas = []
+    final_calls = {"count": 0}
+    final_called_at_first_delta = {"value": None}
+
+    class _Final:
+        content = [type("B", (), {"type": "text", "text": "abc"})()]
+        stop_reason = "end_turn"
+        usage = type("U", (), {"input_tokens": 1, "output_tokens": 1})()
+        model = "anthropic.claude-x"
+
+    class _Stream:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        def __aiter__(self):
+            async def gen():
+                for t in ("ab", "c"):
+                    yield type("E", (), {"type": "content_block_delta",
+                                         "delta": type("D", (), {"type": "text_delta", "text": t})()})()
+            return gen()
+        async def get_final_message(self):
+            final_calls["count"] += 1
+            return _Final()
+
+    p = BedrockProvider.__new__(BedrockProvider)
+    p._default_model = "anthropic.claude-x"
+    p._enable_cache = False
+    from echo_agent.models.provider import GenerationParams
+    p.generation = GenerationParams()
+    p._build_anthropic_bedrock = lambda: type(
+        "C", (), {"messages": type("M", (), {"stream": staticmethod(lambda **k: _Stream())})()})()
+
+    def _on_delta(d):
+        if final_called_at_first_delta["value"] is None:
+            final_called_at_first_delta["value"] = final_calls["count"] > 0
+        deltas.append(d)
+
+    resp = await p.chat_stream(messages=[{"role": "user", "content": "hi"}],
+                               on_delta=_on_delta)
+    assert final_called_at_first_delta["value"] is False, \
+        "delta 应严格早于 get_final_message（真流式），当前在 delta 之前已取 final（伪流式）"
+    assert "".join(deltas) == "abc"
+    assert resp.content == "abc"
+
+
+@pytest.mark.asyncio
+async def test_bedrock_converse_chat_stream_emits_deltas_during_iteration():
+    # Converse 路径走 boto3 converse_stream 同步 event 迭代，经 executor 适配。
+    # 时序断言：首个 delta 触发时仅消费了首个 event（边收边吐），而非全部 event 消费完后再统一回放。
+    from echo_agent.models.providers.bedrock_provider import BedrockProvider
+    deltas = []
+    events_yielded = {"count": 0}
+    yielded_at_first_delta = {"value": None}
+
+    raw_events = [
+        {"contentBlockDelta": {"delta": {"text": "Hel"}}},
+        {"contentBlockDelta": {"delta": {"text": "lo"}}},
+    ]
+
+    def _event_gen():
+        for ev in raw_events:
+            events_yielded["count"] += 1
+            yield ev
+
+    class _FakeBoto:
+        def converse_stream(self, **kw):
+            return {"stream": _event_gen()}
+
+    p = BedrockProvider.__new__(BedrockProvider)
+    p._default_model = "amazon.titan-x"
+    from echo_agent.models.provider import GenerationParams
+    p.generation = GenerationParams()
+    p._build_boto3_client = lambda: _FakeBoto()
+
+    def _on_delta(d):
+        if yielded_at_first_delta["value"] is None:
+            yielded_at_first_delta["value"] = events_yielded["count"]
+        deltas.append(d)
+
+    resp = await p.chat_stream(messages=[{"role": "user", "content": "hi"}],
+                               on_delta=_on_delta)
+    assert yielded_at_first_delta["value"] == 1, \
+        "首个 delta 应在仅消费首个 event 后即触发（边收边吐），而非全部 event 消费完再回放"
+    assert "".join(deltas) == "Hello"
+    assert resp.content == "Hello"
