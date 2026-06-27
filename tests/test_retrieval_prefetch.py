@@ -733,6 +733,31 @@ async def test_context_legacy_entry_without_user_id_is_knowledge_miss():
 
 
 @pytest.mark.asyncio
+async def test_context_empty_sender_never_hits_knowledge_cache():
+    # Defense-in-depth: an empty sender_id must never match a cached entry even
+    # if that entry was also stamped with an empty user_id (e.g. two senderless
+    # users sharing a session). Empty sender => treated as a miss.
+    knowledge = MagicMock()
+    knowledge.search = MagicMock(side_effect=AssertionError("degrade: no rescan"))
+
+    entry = RetrievalCacheEntry(
+        query_text="deploy gateway",
+        query_tokens=query_tokens("deploy gateway"),
+        scored=[],
+        created_at=time.time(),
+        knowledge_context="doc stamped with empty user",
+        knowledge_user_id="",
+    )
+    stage, captured, hybrid, memory = _make_context_stage(
+        cache={"shared": entry}, on_miss="degrade", knowledge=knowledge,
+    )
+    await _stage_build(
+        stage, session_key="shared", text="gateway deploy steps", sender_id=""
+    )
+    assert "doc stamped with empty user" not in captured["retrieval_context"]
+
+
+@pytest.mark.asyncio
 async def test_context_knowledge_inline_when_memory_disabled():
     # memory.enabled=False -> no hybrid retriever -> no prefetcher will ever
     # warm the knowledge cache. Even under degrade, knowledge must still be
