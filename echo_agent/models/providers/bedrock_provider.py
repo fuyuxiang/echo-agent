@@ -8,7 +8,12 @@ from typing import Any
 
 from loguru import logger
 
-from echo_agent.models.provider import LLMProvider, LLMResponse, ToolCallRequest
+from echo_agent.models.provider import (
+    LLMProvider,
+    LLMResponse,
+    StreamDeltaCallback,
+    ToolCallRequest,
+)
 from echo_agent.models.providers.format_utils import (
     anthropic_response_to_llm_fields,
     openai_to_anthropic_messages,
@@ -59,6 +64,118 @@ class BedrockProvider(LLMProvider):
 
     def get_default_model(self) -> str:
         return self._default_model
+
+    async def chat_stream(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        tool_choice: str | dict | None = None,
+        on_delta: "StreamDeltaCallback | None" = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        from echo_agent.models.provider import _invoke_stream_callback
+        target = model or self._default_model
+        if not _is_claude_model(target):
+            return await self._chat_stream_converse(
+                target, messages, tools, tool_choice, on_delta=on_delta, **kwargs
+            )
+
+        client = self._build_anthropic_bedrock()
+        system_blocks, converted = openai_to_anthropic_messages(messages)
+        params: dict[str, Any] = {
+            "model": target,
+            "messages": converted,
+            "max_tokens": kwargs.get("max_tokens", 4096),
+        }
+        if system_blocks:
+            params["system"] = system_blocks
+        if tools:
+            params["tools"] = openai_to_anthropic_tools(tools)
+        temp = kwargs.get("temperature", self.generation.temperature)
+        if temp is not None:
+            params["temperature"] = temp
+
+        try:
+            async with client.messages.stream(**params) as stream:
+                async for event in stream:
+                    if getattr(event, "type", "") == "content_block_delta":
+                        delta = getattr(event, "delta", None)
+                        text = getattr(delta, "text", "") if delta is not None else ""
+                        if text:
+                            await _invoke_stream_callback(on_delta, text)
+                final = await stream.get_final_message()
+        except Exception as e:
+            logger.error("Bedrock Claude stream error: {}", e)
+            return LLMResponse(content=f"Error: {e}", finish_reason="error")
+
+        blocks = []
+        for block in final.content:
+            if block.type == "text":
+                blocks.append({"type": "text", "text": block.text})
+            elif block.type == "tool_use":
+                blocks.append({"type": "tool_use", "id": block.id, "name": block.name, "input": block.input})
+
+        usage_dict: dict[str, Any] = {}
+        if final.usage:
+            usage_dict["input_tokens"] = final.usage.input_tokens
+            usage_dict["output_tokens"] = final.usage.output_tokens
+
+        fields = anthropic_response_to_llm_fields(blocks, final.stop_reason or "", usage_dict, final.model or "")
+        return LLMResponse(**fields)
+
+    async def _chat_stream_converse(
+        self, model: str, messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None, tool_choice: str | dict | None,
+        *, on_delta: "StreamDeltaCallback | None" = None, **kwargs: Any,
+    ) -> LLMResponse:
+        import asyncio
+
+        from echo_agent.models.provider import _invoke_stream_callback
+        client = self._build_boto3_client()
+        converse_msgs = self._to_converse_messages(messages)
+        system_parts = self._extract_converse_system(messages)
+
+        params: dict[str, Any] = {"modelId": model, "messages": converse_msgs}
+        if system_parts:
+            params["system"] = system_parts
+        if tools:
+            params["toolConfig"] = self._to_converse_tools(tools)
+
+        config: dict[str, Any] = {"maxTokens": kwargs.get("max_tokens", 4096)}
+        temp = kwargs.get("temperature", self.generation.temperature)
+        if temp is not None:
+            config["temperature"] = temp
+        params["inferenceConfig"] = config
+
+        loop = asyncio.get_running_loop()
+        text_parts: list[str] = []
+        try:
+            resp = await loop.run_in_executor(None, lambda: client.converse_stream(**params))
+            # boto3 EventStream is a synchronous iterator; pull one event at a
+            # time on the executor so each delta is emitted as it arrives rather
+            # than buffered until the stream is exhausted.
+            events = resp.get("stream", []) if isinstance(resp, dict) else []
+            it = iter(events)
+            sentinel = object()
+            while True:
+                ev = await loop.run_in_executor(None, lambda: next(it, sentinel))
+                if ev is sentinel:
+                    break
+                # Defend per event: a malformed block must not abort the stream.
+                try:
+                    block = ev.get("contentBlockDelta") if isinstance(ev, dict) else None
+                    text = (block or {}).get("delta", {}).get("text", "") if block else ""
+                except Exception:
+                    text = ""
+                if text:
+                    text_parts.append(text)
+                    await _invoke_stream_callback(on_delta, text)
+        except Exception as e:
+            logger.error("Bedrock converse stream error: {}", e)
+            return LLMResponse(content=f"Error: {e}", finish_reason="error")
+
+        return LLMResponse(content="".join(text_parts), finish_reason="stop", model=model)
 
     async def _chat_claude(
         self, model: str, messages: list[dict[str, Any]],

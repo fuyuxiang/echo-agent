@@ -6,7 +6,7 @@ from typing import Any
 
 from loguru import logger
 
-from echo_agent.models.provider import LLMProvider, LLMResponse
+from echo_agent.models.provider import LLMProvider, LLMResponse, StreamDeltaCallback
 from echo_agent.models.providers.format_utils import (
     anthropic_response_to_llm_fields,
     openai_to_anthropic_messages,
