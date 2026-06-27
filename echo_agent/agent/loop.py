@@ -327,9 +327,30 @@ class AgentLoop:
         # (set by _init_advanced_memory above) and _put_retrieval_cache, both
         # already initialized at this point.
         from echo_agent.memory.prefetch import RetrievalPrefetcher
+
+        async def _episodic_fetch(query: str, session_key: str) -> list:
+            # Scoped by session_key; mirrors ContextStage inline recall.
+            episodes = await self._episodic.search_episodes(
+                query, session_key=session_key, limit=3
+            )
+            if not episodes:
+                episodes = await self._episodic.get_session_episodes(
+                    session_key, limit=3
+                )
+            return episodes
+
+        def _knowledge_fetch(query: str, user_id: str) -> str:
+            # SYNC CPU-bound scan; the prefetcher runs this in an executor.
+            results = self.knowledge.search(
+                query, limit=config.knowledge.max_results, user_id=user_id
+            )
+            return self.knowledge.format_results(results)
+
         self._prefetcher = (
             RetrievalPrefetcher(
                 self._hybrid_retriever, self._put_retrieval_cache, limit=5,
+                episodic_fetch=_episodic_fetch if self._episodic is not None else None,
+                knowledge_fetch=_knowledge_fetch if self.knowledge else None,
             )
             if self._hybrid_retriever
             else None

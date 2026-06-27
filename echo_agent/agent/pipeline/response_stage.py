@@ -143,7 +143,9 @@ class ResponseStage:
         if self._prefetcher is not None and event.text:
             from echo_agent.agent.background import Tier
             self._spawn_fn(
-                self._prefetcher.prefetch(event.session_key, event.text),
+                self._prefetcher.prefetch(
+                    event.session_key, event.text, event.sender_id
+                ),
                 tier=Tier.DISCARDABLE,
                 session_key=event.session_key,
             )
