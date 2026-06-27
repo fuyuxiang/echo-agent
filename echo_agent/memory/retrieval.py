@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import math
-import re
 from collections import Counter
 from typing import Callable, Awaitable, TYPE_CHECKING
 
@@ -15,18 +14,7 @@ if TYPE_CHECKING:
 
 from echo_agent.memory.types import MemoryEntry, MemoryType
 from echo_agent.memory.forgetting import ForgettingCurve
-from echo_agent.memory.text import cjk_tokens
-
-
-_STOP_WORDS = frozenset({
-    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
-    "have", "has", "had", "do", "does", "did", "will", "would", "could",
-    "should", "may", "might", "can", "shall", "to", "of", "in", "for",
-    "on", "with", "at", "by", "from", "as", "into", "about", "it", "its",
-    "this", "that", "and", "or", "but", "not", "no", "if", "so", "than",
-})
-
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
+from echo_agent.memory.text import tokenize as _tokenize_shared
 
 
 class HybridRetriever:
@@ -115,10 +103,7 @@ class HybridRetriever:
 
     @staticmethod
     def _tokenize(text: str) -> list[str]:
-        lower = text.lower()
-        tokens = [t for t in _TOKEN_RE.findall(lower) if t not in _STOP_WORDS]
-        tokens.extend(cjk_tokens(lower))
-        return tokens
+        return _tokenize_shared(text)
 
     # -- BM25 ----------------------------------------------------------------
 
@@ -185,9 +170,7 @@ class HybridRetriever:
     @staticmethod
     def _query_entropy(query: str) -> float:
         """Shannon entropy of token freq distribution, normalized to [0, 1]."""
-        lower = query.lower()
-        tokens = [t for t in _TOKEN_RE.findall(lower) if t not in _STOP_WORDS]
-        tokens.extend(cjk_tokens(lower))
+        tokens = _tokenize_shared(query)
         if not tokens:
             return 0.5
         freq = Counter(tokens)

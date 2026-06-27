@@ -6,33 +6,21 @@ current query overlaps the cached query (Jaccard) — a topic shift is a miss.
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any
 
-from echo_agent.memory.text import cjk_tokens
-
-# Mirror HybridRetriever._tokenize (retrieval.py:117): latin word tokens plus
-# CJK chars/bigrams. cjk_tokens alone drops English text to empty, so a
-# query-token set built on it would never overlap for latin queries.
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
-
-_STOP = frozenset({
-    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
-    "have", "has", "had", "do", "does", "did", "will", "would", "could",
-    "should", "may", "might", "can", "shall", "to", "of", "in", "for",
-    "on", "with", "at", "by", "from", "as", "into", "about", "it", "its",
-    "this", "that", "and", "or", "but", "not", "no", "if", "so", "than",
-    "how", "what", "my",
-})
+from echo_agent.memory.text import tokenize
 
 
 def query_tokens(text: str) -> frozenset[str]:
-    """Lowercase token set (latin words + CJK chars/bigrams), stop words removed."""
-    lower = (text or "").lower()
-    toks = {t for t in _TOKEN_RE.findall(lower) if t not in _STOP}
-    toks.update(t for t in cjk_tokens(lower) if t and t not in _STOP)
-    return frozenset(toks)
+    """Lowercase token set (latin words + CJK chars/bigrams), stop words removed.
+
+    Shares echo_agent.memory.text.tokenize with hybrid retrieval so the cache's
+    query-similarity token set and the real retrieval tokens use one stop-word
+    table and one tokenization. Set semantics (dedup) is the only difference
+    from the list returned by tokenize.
+    """
+    return frozenset(tokenize(text))
 
 
 @dataclass
