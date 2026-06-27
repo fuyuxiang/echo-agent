@@ -1,6 +1,13 @@
 import time
 
-from echo_agent.memory.prefetch import RetrievalCacheEntry, query_tokens, is_fresh
+import pytest
+
+from echo_agent.memory.prefetch import (
+    RetrievalCacheEntry,
+    RetrievalPrefetcher,
+    query_tokens,
+    is_fresh,
+)
 
 
 def _entry(text, scored=None, created=None):
@@ -38,3 +45,60 @@ def test_cjk_query_tokens():
     # CJK query stays fresh.
     e = _entry("如何部署网关服务")
     assert is_fresh(e, "如何部署网关服务", now=time.time(), ttl=60.0, jaccard_min=0.3)
+
+
+@pytest.mark.asyncio
+async def test_prefetcher_writes_cache_entry():
+    class _R:
+        async def retrieve(self, query, limit=5, session_key=""):
+            return [("entry-obj", 0.9)]
+
+    written = {}
+
+    async def cache_put(sk, entry):
+        written[sk] = entry
+
+    pf = RetrievalPrefetcher(_R(), cache_put, limit=5)
+    await pf.prefetch("sess-1", "deploy gateway")
+    assert "sess-1" in written
+    e = written["sess-1"]
+    assert isinstance(e, RetrievalCacheEntry)
+    assert e.query_text == "deploy gateway"
+    assert e.scored == [("entry-obj", 0.9)]
+
+
+@pytest.mark.asyncio
+async def test_prefetcher_passes_limit_and_session_key():
+    seen = {}
+
+    class _R:
+        async def retrieve(self, query, limit=10, session_key=""):
+            seen["query"] = query
+            seen["limit"] = limit
+            seen["session_key"] = session_key
+            return []
+
+    async def cache_put(sk, entry):
+        pass
+
+    pf = RetrievalPrefetcher(_R(), cache_put, limit=3)
+    await pf.prefetch("sess-9", "deploy gateway")
+    assert seen == {"query": "deploy gateway", "limit": 3, "session_key": "sess-9"}
+
+
+@pytest.mark.asyncio
+async def test_prefetcher_swallows_retrieve_failure():
+    # A background prefetch failure must not propagate; next turn just misses.
+    class _R:
+        async def retrieve(self, query, limit=5, session_key=""):
+            raise RuntimeError("retriever down")
+
+    called = False
+
+    async def cache_put(sk, entry):
+        nonlocal called
+        called = True
+
+    pf = RetrievalPrefetcher(_R(), cache_put, limit=5)
+    await pf.prefetch("sess-1", "deploy gateway")
+    assert called is False
