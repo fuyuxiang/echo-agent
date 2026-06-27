@@ -90,3 +90,84 @@ async def test_anthropic_chat_stream_emits_deltas_before_completion(monkeypatch)
         "delta 应严格早于 get_final_message（真流式），当前在 delta 之前已取 final（伪流式）"
     assert "".join(deltas) == "hello world"
     assert resp.content == "hello world"
+
+
+@pytest.mark.asyncio
+async def test_gemini_chat_stream_emits_deltas():
+    from echo_agent.models.providers.gemini_provider import GeminiProvider
+    deltas = []
+
+    class _Chunk:
+        def __init__(self, t): self.text = t
+        candidates = []
+
+    chunks = [_Chunk("foo"), _Chunk("bar")]
+
+    class _FakeModel:
+        def generate_content(self, **kw):
+            assert kw.get("stream") is True
+            return iter(chunks)
+
+    p = GeminiProvider.__new__(GeminiProvider)
+    p._default_model = "gemini-x"
+    from echo_agent.models.provider import GenerationParams
+    p.generation = GenerationParams()
+    p._client = type("G", (), {"GenerativeModel": staticmethod(lambda **k: _FakeModel())})()
+    # 让 _parse_response 收尾产出聚合文本
+    p._parse_response = lambda resp, model_name: __import__("echo_agent.models.provider", fromlist=["LLMResponse"]).LLMResponse(content="foobar", finish_reason="stop")
+
+    resp = await p.chat_stream(messages=[{"role": "user", "content": "hi"}],
+                               on_delta=lambda d: deltas.append(d))
+    assert "".join(deltas) == "foobar"
+
+
+@pytest.mark.asyncio
+async def test_gemini_aggregate_feeds_real_parse_response():
+    """生产路径校验:真实 _GeminiAggregate 喂给真实 _parse_response,
+    能正确还原跨 chunk 累积的文本、function_call 与 usage。"""
+    from echo_agent.models.providers.gemini_provider import GeminiProvider, _GeminiAggregate
+
+    class _Part:
+        def __init__(self, text="", function_call=None):
+            self.text = text
+            self.function_call = function_call
+
+    class _Content:
+        def __init__(self, parts): self.parts = parts
+
+    class _Candidate:
+        def __init__(self, parts): self.content = _Content(parts)
+
+    class _FC:
+        def __init__(self, name, args):
+            self.name = name
+            self.args = args
+
+    class _Usage:
+        prompt_token_count = 7
+        candidates_token_count = 11
+
+    class _Chunk:
+        def __init__(self, parts, usage=None):
+            self.candidates = [_Candidate(parts)]
+            if usage is not None:
+                self.usage_metadata = usage
+
+    # 文本分两 chunk 到达,function_call 在第三 chunk,usage 仅末块携带
+    chunks = [
+        _Chunk([_Part(text="Hello ")]),
+        _Chunk([_Part(text="world")]),
+        _Chunk([_Part(function_call=_FC("get_weather", {"city": "SF"}))], usage=_Usage()),
+    ]
+
+    agg = _GeminiAggregate(chunks)
+    p = GeminiProvider.__new__(GeminiProvider)
+    resp = p._parse_response(agg, "gemini-x")
+
+    assert resp.content == "Hello world"
+    assert resp.finish_reason == "tool_calls"
+    assert len(resp.tool_calls) == 1
+    assert resp.tool_calls[0].name == "get_weather"
+    assert resp.tool_calls[0].arguments == {"city": "SF"}
+    assert resp.usage["prompt_tokens"] == 7
+    assert resp.usage["completion_tokens"] == 11
