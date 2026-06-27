@@ -1787,6 +1787,22 @@ class MemoryConfig(_Base):
             "desc_en": "Behavior on retrieval cache miss: degrade=skip this turn, sync=fetch synchronously",
         },
     )
+    cache_ttl_seconds: float = Field(
+        default=60.0,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/pipeline/context_stage.py:171",
+            "desc_zh": "检索预取缓存新鲜度 TTL(秒),超时即视为未命中",
+            "desc_en": "Retrieval prefetch cache freshness TTL in seconds",
+        },
+    )
+    cache_jaccard_min: float = Field(
+        default=0.3,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/pipeline/context_stage.py:171",
+            "desc_zh": "当前查询与缓存查询的最小 Jaccard 相似度,低于则视为话题突变未命中",
+            "desc_en": "Min Jaccard similarity between current and cached query; below is a miss",
+        },
+    )
     consolidation_threshold: int = Field(
         default=20,
         json_schema_extra={
