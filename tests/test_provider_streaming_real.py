@@ -280,3 +280,123 @@ async def test_bedrock_converse_chat_stream_emits_deltas_during_iteration():
         "首个 delta 应在仅消费首个 event 后即触发（边收边吐），而非全部 event 消费完再回放"
     assert "".join(deltas) == "Hello"
     assert resp.content == "Hello"
+
+
+@pytest.mark.asyncio
+async def test_bedrock_converse_with_tools_falls_back_to_non_stream():
+    # 非 Claude 的 Bedrock 模型 + 带 tools 走 chat_stream 时，应回退到非流式
+    # _chat_converse（它能完整收 tool_calls），而不是只解析文本的流式路径。
+    from echo_agent.models.providers.bedrock_provider import BedrockProvider
+
+    p = BedrockProvider.__new__(BedrockProvider)
+    p._default_model = "amazon.titan-x"
+    from echo_agent.models.provider import GenerationParams, LLMResponse, ToolCallRequest
+    p.generation = GenerationParams()
+
+    converse_calls = {"count": 0}
+    stream_calls = {"count": 0}
+
+    async def _fake_converse(model, messages, tools, tool_choice, **kwargs):
+        converse_calls["count"] += 1
+        return LLMResponse(
+            content=None,
+            tool_calls=[ToolCallRequest(id="t1", name="do_it", arguments={"x": 1})],
+            finish_reason="tool_calls",
+            model=model,
+        )
+
+    async def _fake_stream(*a, **k):
+        stream_calls["count"] += 1
+        return LLMResponse(content="text only", finish_reason="stop")
+
+    p._chat_converse = _fake_converse
+    p._chat_stream_converse = _fake_stream
+
+    tools = [{"function": {"name": "do_it", "description": "", "parameters": {}}}]
+    resp = await p.chat_stream(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=tools,
+    )
+    # 带 tools 时走非流式 _chat_converse，不走流式 _chat_stream_converse
+    assert converse_calls["count"] == 1
+    assert stream_calls["count"] == 0
+    # tool_calls 不丢
+    assert resp.tool_calls and resp.tool_calls[0].name == "do_it"
+    assert resp.finish_reason == "tool_calls"
+
+
+@pytest.mark.asyncio
+async def test_bedrock_converse_without_tools_uses_real_stream():
+    # 无 tools 时仍走真流式 _chat_stream_converse。
+    from echo_agent.models.providers.bedrock_provider import BedrockProvider
+
+    p = BedrockProvider.__new__(BedrockProvider)
+    p._default_model = "amazon.titan-x"
+    from echo_agent.models.provider import GenerationParams, LLMResponse
+    p.generation = GenerationParams()
+
+    converse_calls = {"count": 0}
+    stream_calls = {"count": 0}
+
+    async def _fake_converse(*a, **k):
+        converse_calls["count"] += 1
+        return LLMResponse(content="non-stream", finish_reason="stop")
+
+    async def _fake_stream(model, messages, tools, tool_choice, *, on_delta=None, **kwargs):
+        stream_calls["count"] += 1
+        return LLMResponse(content="streamed", finish_reason="stop", model=model)
+
+    p._chat_converse = _fake_converse
+    p._chat_stream_converse = _fake_stream
+
+    resp = await p.chat_stream(messages=[{"role": "user", "content": "hi"}])
+    assert stream_calls["count"] == 1
+    assert converse_calls["count"] == 0
+    assert resp.content == "streamed"
+
+
+@pytest.mark.asyncio
+async def test_gemini_chat_stream_skips_chunk_whose_text_property_raises():
+    # 防御分支覆盖：chunk.text 是"访问即抛异常的 property"时，chat_stream 不应崩，
+    # 该 chunk 被跳过（不中断整个流），其后正常 chunk 的文本仍正常吐出。
+    from echo_agent.models.providers.gemini_provider import GeminiProvider
+    deltas = []
+
+    class _RaisingChunk:
+        candidates = []
+
+        @property
+        def text(self):
+            raise ValueError("function_call chunk has no text")
+
+    class _GoodChunk:
+        candidates = []
+
+        def __init__(self, t):
+            self._t = t
+
+        @property
+        def text(self):
+            return self._t
+
+    chunks = [_RaisingChunk(), _GoodChunk("after")]
+
+    class _FakeModel:
+        def generate_content(self, **kw):
+            assert kw.get("stream") is True
+            return iter(chunks)
+
+    p = GeminiProvider.__new__(GeminiProvider)
+    p._default_model = "gemini-x"
+    from echo_agent.models.provider import GenerationParams, LLMResponse
+    p.generation = GenerationParams()
+    p._client = type("G", (), {"GenerativeModel": staticmethod(lambda **k: _FakeModel())})()
+    p._parse_response = lambda resp, model_name: LLMResponse(content="after", finish_reason="stop")
+
+    resp = await p.chat_stream(
+        messages=[{"role": "user", "content": "hi"}],
+        on_delta=lambda d: deltas.append(d),
+    )
+    # 抛错 chunk 被跳过、流未中断，正常 chunk 的文本仍吐出
+    assert deltas == ["after"]
+    assert resp.finish_reason == "stop"
