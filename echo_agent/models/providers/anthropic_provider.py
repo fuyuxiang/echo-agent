@@ -78,6 +78,32 @@ class AnthropicProvider(LLMProvider):
             return LLMResponse(content=f"Error: {e}", finish_reason="error")
         return self._parse_response(resp)
 
+    async def chat_stream(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        tool_choice: str | dict | None = None,
+        on_delta: "StreamDeltaCallback | None" = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        from echo_agent.models.provider import _invoke_stream_callback
+        target_model = model or self._default_model
+        params = self._build_params(target_model, messages, tools, tool_choice, **kwargs)
+        try:
+            async with self._client.messages.stream(**params) as stream:
+                async for event in stream:
+                    if getattr(event, "type", "") == "content_block_delta":
+                        delta = getattr(event, "delta", None)
+                        text = getattr(delta, "text", "") if delta is not None else ""
+                        if text:
+                            await _invoke_stream_callback(on_delta, text)
+                final = await stream.get_final_message()
+        except Exception as e:
+            logger.error("Anthropic stream error: {}", e)
+            return LLMResponse(content=f"Error: {e}", finish_reason="error")
+        return self._parse_response(final)
+
     def get_default_model(self) -> str:
         return self._default_model
 
