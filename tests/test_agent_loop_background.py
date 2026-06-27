@@ -3,9 +3,45 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
 import pytest
+
+
+@pytest.fixture
+def make_loop(tmp_path):
+    """Build a real AgentLoop with heavy subsystems disabled."""
+    from echo_agent.agent.loop import AgentLoop
+    from echo_agent.bus.queue import MessageBus
+    from echo_agent.config.loader import load_config
+    from echo_agent.models.provider import LLMProvider, LLMResponse
+
+    class _Stub(LLMProvider):
+        async def chat(self, messages, tools=None, model=None, tool_choice=None, **kw):
+            return LLMResponse(content="ok")
+
+        def get_default_model(self):
+            return "stub"
+
+    def _build():
+        config = load_config(overrides={"workspace": str(tmp_path)})
+        config.evolution.enabled = False
+        config.knowledge.enabled = False
+        return AgentLoop(
+            bus=MessageBus(),
+            config=config,
+            provider=_Stub(),
+            workspace=tmp_path,
+        )
+
+    return _build
+
+
+def test_loop_has_background_scheduler(make_loop):
+    loop = make_loop()
+    assert loop._bg_scheduler is not None
+    assert loop._bg_scheduler.stats()["dropped"] == 0
 
 
 
