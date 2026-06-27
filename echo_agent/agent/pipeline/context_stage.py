@@ -103,6 +103,38 @@ class ContextStage:
         out.metadata.update(metadata)
         await self._bus.publish_outbound(out)
 
+    async def _fetch_episodes(self, query: str, session_key: str) -> list:
+        """Inline episodic recall, scoped to ``session_key`` (no cross-session).
+
+        Mirrors the prefetcher's episodic fetch so a sync-on-miss turn produces
+        the same episodes a warmed cache would have.
+        """
+        episodes = await self._episodic.search_episodes(
+            query, session_key=session_key, limit=3
+        )
+        if not episodes:
+            episodes = await self._episodic.get_session_episodes(session_key, limit=3)
+        return episodes
+
+    async def _fetch_knowledge(self, query: str, user_id: str) -> tuple[list, str]:
+        """Inline knowledge retrieval for a sync-on-miss turn.
+
+        The scan is synchronous and CPU-bound, so it runs in an executor thread
+        to avoid blocking the event loop. Scoped by ``user_id`` for access
+        control / isolation.
+        """
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        results = await loop.run_in_executor(
+            None,
+            lambda: self._knowledge.search(
+                query, limit=self._config.knowledge.max_results, user_id=user_id
+            ),
+        )
+        context = self._knowledge.format_results(results)
+        return results, context
+
     async def build(
         self,
         event: InboundEvent,
@@ -176,23 +208,28 @@ class ContextStage:
             session.add_message("user", event.text)
 
         retrieval_parts: list[str] = []
-        if self._config.memory.enabled:
-            from echo_agent.memory.prefetch import is_fresh
+        from echo_agent.memory.prefetch import is_fresh
 
+        # A single per-session prefetched entry warms main memory + episodic +
+        # knowledge together (Task 13). Fetch it once here so all three segments
+        # below share one freshness decision. Knowledge lives outside the
+        # memory.enabled block, so the lookup must sit above it.
+        cached = (
+            self._retrieval_cache_get(event.session_key)
+            if self._retrieval_cache_get is not None
+            else None
+        )
+        cache_fresh = cached is not None and is_fresh(
+            cached, event.text, now=time.time(),
+            ttl=self._cache_ttl, jaccard_min=self._cache_jaccard_min,
+        )
+        if self._config.memory.enabled:
             # Prefer a fresh prefetched result (zero inline latency). On a miss,
             # `retrieval_on_miss` decides: "sync" pays the retrieval latency this
             # turn (accuracy-first daemon/gateway), "degrade" skips retrieval this
             # turn (latency-first CLI) and emits a progress notice.
-            cached = (
-                self._retrieval_cache_get(event.session_key)
-                if self._retrieval_cache_get is not None
-                else None
-            )
             scored = None
-            if cached is not None and is_fresh(
-                cached, event.text, now=time.time(),
-                ttl=self._cache_ttl, jaccard_min=self._cache_jaccard_min,
-            ):
+            if cache_fresh:
                 scored = cached.scored
             elif self._retrieval_on_miss == "sync":
                 if self._hybrid_retriever:
@@ -229,31 +266,43 @@ class ContextStage:
             # Episodic recall — past conversation episodes for this session.
             # Episodes are written by the consolidator but were previously never
             # read back; surfacing the most relevant ones gives cross-session
-            # continuity beyond the distilled semantic facts above.
+            # continuity beyond the distilled semantic facts above. Like main
+            # memory, episodes are warmed by the prefetcher: a fresh cache hit is
+            # used as-is; a miss follows retrieval_on_miss (sync = inline await,
+            # degrade = skip this turn).
             if self._episodic is not None:
-                try:
-                    episodes = await self._episodic.search_episodes(
-                        event.text, session_key=event.session_key, limit=3
+                episodes = None
+                if cache_fresh:
+                    episodes = cached.episodes
+                elif self._retrieval_on_miss == "sync":
+                    try:
+                        episodes = await self._fetch_episodes(
+                            event.text, event.session_key
+                        )
+                    except Exception as e:
+                        logger.debug("Episodic recall failed: {}", e)
+                if episodes:
+                    retrieval_parts.append(
+                        "Past episodes:\n"
+                        + "\n".join(f"- {ep.summary}" for ep in episodes if ep.summary)
                     )
-                    if not episodes:
-                        episodes = await self._episodic.get_session_episodes(
-                            event.session_key, limit=3
-                        )
-                    if episodes:
-                        retrieval_parts.append(
-                            "Past episodes:\n"
-                            + "\n".join(f"- {ep.summary}" for ep in episodes if ep.summary)
-                        )
-                except Exception as e:
-                    logger.debug("Episodic recall failed: {}", e)
 
         if self._knowledge:
-            knowledge_results = self._knowledge.search(
-                event.text,
-                limit=self._config.knowledge.max_results,
-                user_id=event.sender_id,
-            )
-            knowledge_context = self._knowledge.format_results(knowledge_results)
+            # Knowledge is warmed by the same prefetch entry. A fresh cache hit
+            # is used directly; on a miss, "sync" pays the cost inline but the
+            # scan is CPU-bound, so it runs in an executor thread to keep the
+            # event loop responsive, while "degrade" skips it this turn.
+            knowledge_context = None
+            knowledge_results = None
+            if cache_fresh:
+                knowledge_context = cached.knowledge_context
+            elif self._retrieval_on_miss == "sync":
+                try:
+                    knowledge_results, knowledge_context = (
+                        await self._fetch_knowledge(event.text, event.sender_id)
+                    )
+                except Exception as e:
+                    logger.debug("Knowledge retrieval failed: {}", e)
             if knowledge_context:
                 retrieval_parts.append(knowledge_context)
                 if publish_response and self._bus:

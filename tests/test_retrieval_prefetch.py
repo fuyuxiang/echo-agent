@@ -120,7 +120,8 @@ class _Mem:
         self.content = content
 
 
-def _make_context_stage(*, cache, on_miss, on_retrieve=None, hybrid=True):
+def _make_context_stage(*, cache, on_miss, on_retrieve=None, hybrid=True,
+                         episodic=None, knowledge=None):
     """Build a ContextStage wired with a retrieval cache and on_miss policy.
 
     `on_retrieve` is a probe called with the query whenever inline retrieval
@@ -178,7 +179,7 @@ def _make_context_stage(*, cache, on_miss, on_retrieve=None, hybrid=True):
         compressor=compressor,
         context_builder=context_builder,
         skill_store=None,
-        knowledge=None,
+        knowledge=knowledge,
         hybrid_retriever=hybrid_retriever,
         planner=None,
         inference=inference,
@@ -186,6 +187,7 @@ def _make_context_stage(*, cache, on_miss, on_retrieve=None, hybrid=True):
         memory_snapshots=OrderedDict(),
         snapshot_enabled=False,
         tool_definitions_fn=lambda: [],
+        episodic=episodic,
         retrieval_cache_get=lambda sk: cache.get(sk),
         retrieval_on_miss=on_miss,
         cache_ttl=60.0,
@@ -294,8 +296,8 @@ class _FakePrefetcher:
     def __init__(self):
         self.calls = []
 
-    async def prefetch(self, session_key, query):
-        self.calls.append((session_key, query))
+    async def prefetch(self, session_key, query, user_id=""):
+        self.calls.append((session_key, query, user_id))
 
 
 def _make_finalize_stage(prefetcher=None, spawn=None):
@@ -359,7 +361,7 @@ async def test_finalize_schedules_prefetch_as_discardable():
     # Awaiting the scheduled coroutine drives the real prefetch call, proving
     # it was wired with this turn's session_key + query.
     await coros[0]
-    assert ("sess-1", "deploy gateway") == pf.calls[0]
+    assert pf.calls[0][:2] == ("sess-1", "deploy gateway")
 
 
 @pytest.mark.asyncio
@@ -417,3 +419,186 @@ async def test_prefetch_cache_isolated_per_session_end_to_end():
     assert entry_a.scored == [("hit-for-sess-A", 0.9)]
     # session B never prefetched -> must not see A's entry.
     assert host._get_retrieval_cache("sess-B") is None
+
+
+# --- Task 13: episodic + knowledge folded into the same prefetch/cache ---
+
+
+@pytest.mark.asyncio
+async def test_prefetcher_populates_episodes_and_knowledge():
+    class _R:
+        async def retrieve(self, query, limit=5, session_key=""):
+            return [("m", 0.9)]
+
+    async def _epi(query, session_key):
+        return [type("E", (), {"summary": "ep1"})()]
+
+    def _know(query, user_id):  # sync, CPU-bound in prod
+        return "KB: relevant doc"
+
+    written = {}
+
+    async def cache_put(sk, e):
+        written[sk] = e
+
+    pf = RetrievalPrefetcher(
+        _R(), cache_put, limit=5, episodic_fetch=_epi, knowledge_fetch=_know
+    )
+    await pf.prefetch("s1", "deploy gateway")
+    e = written["s1"]
+    assert e.scored == [("m", 0.9)]
+    assert e.episodes and e.episodes[0].summary == "ep1"
+    assert e.knowledge_context == "KB: relevant doc"
+
+
+@pytest.mark.asyncio
+async def test_prefetcher_passes_user_id_and_session_to_subfetchers():
+    # session isolation: episodic gets session_key, knowledge gets user_id.
+    seen = {}
+
+    class _R:
+        async def retrieve(self, query, limit=5, session_key=""):
+            return []
+
+    async def _epi(query, session_key):
+        seen["epi"] = (query, session_key)
+        return []
+
+    def _know(query, user_id):
+        seen["know"] = (query, user_id)
+        return ""
+
+    async def cache_put(sk, e):
+        pass
+
+    pf = RetrievalPrefetcher(
+        _R(), cache_put, limit=5, episodic_fetch=_epi, knowledge_fetch=_know
+    )
+    await pf.prefetch("sess-X", "deploy gateway", user_id="user-7")
+    assert seen["epi"] == ("deploy gateway", "sess-X")
+    assert seen["know"] == ("deploy gateway", "user-7")
+
+
+@pytest.mark.asyncio
+async def test_prefetcher_subfetch_failures_isolated():
+    # episodic failure must not block knowledge and vice versa; both leave None
+    # without crashing the background task.
+    class _R:
+        async def retrieve(self, query, limit=5, session_key=""):
+            return [("m", 0.5)]
+
+    async def _epi(query, session_key):
+        raise RuntimeError("episodic db down")
+
+    def _know(query, user_id):
+        raise RuntimeError("knowledge scan blew up")
+
+    written = {}
+
+    async def cache_put(sk, e):
+        written[sk] = e
+
+    pf = RetrievalPrefetcher(
+        _R(), cache_put, limit=5, episodic_fetch=_epi, knowledge_fetch=_know
+    )
+    await pf.prefetch("s2", "deploy gateway")
+    e = written["s2"]
+    assert e.scored == [("m", 0.5)]
+    assert e.episodes is None
+    assert e.knowledge_context is None
+
+
+@pytest.mark.asyncio
+async def test_prefetcher_knowledge_runs_off_event_loop():
+    # The sync CPU-bound knowledge fetch must run in an executor thread, not on
+    # the event loop thread — otherwise the background prefetch still blocks.
+    import threading
+
+    loop_thread = threading.get_ident()
+    seen = {}
+
+    class _R:
+        async def retrieve(self, query, limit=5, session_key=""):
+            return []
+
+    def _know(query, user_id):
+        seen["thread"] = threading.get_ident()
+        return "kb"
+
+    async def cache_put(sk, e):
+        pass
+
+    pf = RetrievalPrefetcher(_R(), cache_put, limit=5, knowledge_fetch=_know)
+    await pf.prefetch("s3", "deploy gateway")
+    assert seen["thread"] != loop_thread
+
+
+# --- ContextStage episodic/knowledge segments: cache-read + on_miss policy ---
+
+
+class _Episode:
+    def __init__(self, summary):
+        self.summary = summary
+
+
+@pytest.mark.asyncio
+async def test_context_uses_cached_episodes_and_knowledge():
+    episodic = MagicMock()
+    episodic.search_episodes = AsyncMock(side_effect=AssertionError("must not query"))
+    episodic.get_session_episodes = AsyncMock(side_effect=AssertionError("must not query"))
+    knowledge = MagicMock()
+    knowledge.search = MagicMock(side_effect=AssertionError("must not scan"))
+    knowledge.format_results = MagicMock(side_effect=AssertionError("must not format"))
+
+    entry = RetrievalCacheEntry(
+        query_text="deploy gateway",
+        query_tokens=query_tokens("deploy gateway"),
+        scored=[],
+        created_at=time.time(),
+        episodes=[_Episode("cached episode")],
+        knowledge_context="cached KB block",
+    )
+    stage, captured, hybrid, memory = _make_context_stage(
+        cache={"sess-1": entry}, on_miss="degrade",
+        episodic=episodic, knowledge=knowledge,
+    )
+    await _stage_build(stage, session_key="sess-1", text="gateway deploy steps")
+    ctx = captured["retrieval_context"]
+    assert "Past episodes:" in ctx
+    assert "cached episode" in ctx
+    assert "cached KB block" in ctx
+
+
+@pytest.mark.asyncio
+async def test_context_episode_knowledge_degrade_on_miss():
+    episodic = MagicMock()
+    episodic.search_episodes = AsyncMock(side_effect=AssertionError("must not query"))
+    episodic.get_session_episodes = AsyncMock(side_effect=AssertionError("must not query"))
+    knowledge = MagicMock()
+    knowledge.search = MagicMock(side_effect=AssertionError("must not scan"))
+
+    stage, captured, hybrid, memory = _make_context_stage(
+        cache={}, on_miss="degrade", episodic=episodic, knowledge=knowledge,
+    )
+    await _stage_build(stage, session_key="new", text="anything")
+    assert "Past episodes:" not in captured["retrieval_context"]
+    assert "cached KB" not in captured["retrieval_context"]
+
+
+@pytest.mark.asyncio
+async def test_context_episode_knowledge_sync_on_miss():
+    episodic = MagicMock()
+    episodic.search_episodes = AsyncMock(return_value=[_Episode("synced episode")])
+    episodic.get_session_episodes = AsyncMock(return_value=[])
+    knowledge = MagicMock()
+    knowledge.search = MagicMock(return_value=[object()])
+    knowledge.format_results = MagicMock(return_value="synced KB block")
+
+    stage, captured, hybrid, memory = _make_context_stage(
+        cache={}, on_miss="sync", episodic=episodic, knowledge=knowledge,
+    )
+    await _stage_build(stage, session_key="new", text="anything")
+    ctx = captured["retrieval_context"]
+    assert "synced episode" in ctx
+    assert "synced KB block" in ctx
+    knowledge.search.assert_called_once()
