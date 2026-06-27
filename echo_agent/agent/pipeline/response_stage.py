@@ -94,22 +94,28 @@ class ResponseStage:
         # injection was always blank. Skip ephemeral eval/test traffic.
         self._update_working_memory(session.key, event, response_text)
 
-        # Flush pending memory embeddings
+        # Flush pending memory embeddings. DURABLE: a dropped flush silently
+        # loses embeddings, so pass a zero-arg factory (retry-capable) and tag
+        # the tier so it is queued — never dropped — under saturation.
         if self._memory.has_pending_embeds():
-            self._spawn_fn(self._memory.flush_pending_embeds())
+            from echo_agent.agent.background import Tier
+            self._spawn_fn(lambda: self._memory.flush_pending_embeds(), tier=Tier.DURABLE)
 
         # Eval/test traffic must never feed long-term memory or memory review —
         # otherwise synthetic benchmark noise accumulates in MEMORY.md.
         ephemeral = _is_ephemeral_session(session.key, event.channel)
 
-        # Schedule consolidation (safe — acquires its own lock)
+        # Schedule consolidation (safe — acquires its own lock). DURABLE: the
+        # consolidation commit must not be dropped under load.
         if not ephemeral and hasattr(self._consolidation, '_consolidator'):
+            from echo_agent.agent.background import Tier
             consolidator = self._consolidation._consolidator
             if consolidator.should_consolidate(session.message_count, session.last_consolidated):
                 await self._consolidation.schedule(
                     session.key,
                     self._spawn_fn,
                     on_complete=self._clear_memory_snapshot,
+                    tier=Tier.DURABLE,
                 )
 
         # Background skill/memory reviews.

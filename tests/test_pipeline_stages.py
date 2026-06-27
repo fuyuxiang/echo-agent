@@ -1,5 +1,6 @@
 """Tests for the pipeline stages (context, inference, response)."""
 
+import asyncio
 from collections import OrderedDict
 from unittest.mock import AsyncMock, MagicMock
 
@@ -309,6 +310,89 @@ class TestResponseStage:
 
         consolidation.schedule.assert_not_called()
         assert len(spawned) == 0
+
+    @pytest.mark.asyncio
+    async def test_embedding_flush_is_durable_factory(self):
+        """Task 8: flushing pending embeddings is a DURABLE point — it must be
+        spawned with tier=DURABLE and as a zero-arg factory (retry-capable)."""
+        from echo_agent.agent.background import Tier
+
+        sessions = AsyncMock()
+        sessions.save = AsyncMock()
+        memory = MagicMock()
+        memory.has_pending_embeds = MagicMock(return_value=True)
+        memory.flush_pending_embeds = AsyncMock(return_value=0)
+
+        consolidation = MagicMock()
+        consolidation._consolidator = MagicMock()
+        consolidation._consolidator.should_consolidate = MagicMock(return_value=False)
+
+        seen = []
+
+        def _record_spawn(coro, *, session_key="", tier=None):
+            seen.append((coro, tier))
+            if asyncio.iscoroutine(coro):
+                coro.close()
+
+        stage = ResponseStage(
+            config=MagicMock(),
+            sessions=sessions,
+            memory=memory,
+            provider=MagicMock(),
+            consolidation_worker=consolidation,
+            default_model="m",
+            spawn_fn=_record_spawn,
+            clear_memory_snapshot_fn=AsyncMock(),
+        )
+
+        event = InboundEvent.text_message(channel="cli", sender_id="u1", chat_id="c1", text="hi")
+        session = Session(key="cli:c1")
+        ctx = PipelineContext(event=event, session=session, trace_id="t1", publish_response=False)
+        result = InferenceResult(response_text="ok")
+
+        await stage.finalize(ctx, result)
+
+        flush_spawns = [s for s in seen if s[1] is Tier.DURABLE]
+        assert len(flush_spawns) == 1
+        coro, _ = flush_spawns[0]
+        assert callable(coro) and not asyncio.iscoroutine(coro)
+
+    @pytest.mark.asyncio
+    async def test_consolidation_uses_durable_tier(self):
+        """Task 8: consolidation.schedule must be invoked with tier=DURABLE."""
+        from echo_agent.agent.background import Tier
+
+        sessions = AsyncMock()
+        sessions.save = AsyncMock()
+        memory = MagicMock()
+        memory.has_pending_embeds = MagicMock(return_value=False)
+
+        consolidation = MagicMock()
+        consolidation._consolidator = MagicMock()
+        consolidation._consolidator.should_consolidate = MagicMock(return_value=True)
+        consolidation.schedule = AsyncMock()
+
+        stage = ResponseStage(
+            config=MagicMock(),
+            sessions=sessions,
+            memory=memory,
+            provider=MagicMock(),
+            consolidation_worker=consolidation,
+            default_model="m",
+            spawn_fn=lambda coro, **kw: None,
+            clear_memory_snapshot_fn=AsyncMock(),
+        )
+
+        event = InboundEvent.text_message(channel="cli", sender_id="u1", chat_id="c1", text="hi")
+        session = Session(key="cli:c1")
+        session.add_message("user", "hi")
+        ctx = PipelineContext(event=event, session=session, trace_id="t1", publish_response=False)
+        result = InferenceResult(response_text="ok")
+
+        await stage.finalize(ctx, result)
+
+        consolidation.schedule.assert_called_once()
+        assert consolidation.schedule.call_args.kwargs.get("tier") is Tier.DURABLE
 
     @pytest.mark.asyncio
     async def test_finalize_prepends_intro(self):

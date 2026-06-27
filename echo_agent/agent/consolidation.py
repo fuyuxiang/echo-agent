@@ -36,14 +36,22 @@ class ConsolidationWorker:
     async def schedule(
         self,
         session_key: str,
-        spawn_fn: Callable[[Coroutine[Any, Any, None]], None],
+        spawn_fn: Callable[..., None],
         on_complete: Callable[[str], Coroutine[Any, Any, None]] | None = None,
+        *,
+        tier: Any = None,
     ) -> None:
         async with self._lock:
             if session_key in self._pending:
                 return
             self._pending.add(session_key)
-        spawn_fn(self._run(session_key, on_complete))
+        if tier is not None:
+            # DURABLE point: pass a zero-arg factory (not a bare coroutine) so the
+            # scheduler can re-invoke it on retry, and tag the tier so it is
+            # queued — never dropped — under saturation.
+            spawn_fn(lambda: self._run(session_key, on_complete), tier=tier)
+        else:
+            spawn_fn(self._run(session_key, on_complete))
 
     def is_pending(self, session_key: str) -> bool:
         return session_key in self._pending
