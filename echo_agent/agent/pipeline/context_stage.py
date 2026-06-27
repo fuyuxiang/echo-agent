@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import time
 from collections import OrderedDict
 from typing import Any, TYPE_CHECKING
 
@@ -62,6 +63,10 @@ class ContextStage:
         episodic: Any = None,
         plan_run_store: Any = None,
         bus: Any = None,
+        retrieval_cache_get: "Callable[[str], Any] | None" = None,
+        retrieval_on_miss: str = "degrade",
+        cache_ttl: float = 60.0,
+        cache_jaccard_min: float = 0.3,
     ):
         self._config = config
         self._sessions = sessions
@@ -81,6 +86,10 @@ class ContextStage:
         self._episodic = episodic
         self._plan_run_store = plan_run_store
         self._bus = bus
+        self._retrieval_cache_get = retrieval_cache_get
+        self._retrieval_on_miss = retrieval_on_miss
+        self._cache_ttl = cache_ttl
+        self._cache_jaccard_min = cache_jaccard_min
 
     async def _emit_progress(self, event: InboundEvent, metadata: dict[str, Any]) -> None:
         if not getattr(self._config.gateway, 'emit_progress_events', True):
@@ -168,13 +177,36 @@ class ContextStage:
 
         retrieval_parts: list[str] = []
         if self._config.memory.enabled:
-            if self._hybrid_retriever:
-                scored = await self._hybrid_retriever.retrieve(
-                    event.text, limit=5, session_key=event.session_key
-                )
-            else:
-                scored = self._memory.search_scored(
-                    event.text, limit=5, session_key=event.session_key
+            from echo_agent.memory.prefetch import is_fresh
+
+            # Prefer a fresh prefetched result (zero inline latency). On a miss,
+            # `retrieval_on_miss` decides: "sync" pays the retrieval latency this
+            # turn (accuracy-first daemon/gateway), "degrade" skips retrieval this
+            # turn (latency-first CLI) and emits a progress notice.
+            cached = (
+                self._retrieval_cache_get(event.session_key)
+                if self._retrieval_cache_get is not None
+                else None
+            )
+            scored = None
+            if cached is not None and is_fresh(
+                cached, event.text, now=time.time(),
+                ttl=self._cache_ttl, jaccard_min=self._cache_jaccard_min,
+            ):
+                scored = cached.scored
+            elif self._retrieval_on_miss == "sync":
+                if self._hybrid_retriever:
+                    scored = await self._hybrid_retriever.retrieve(
+                        event.text, limit=5, session_key=event.session_key
+                    )
+                else:
+                    scored = self._memory.search_scored(
+                        event.text, limit=5, session_key=event.session_key
+                    )
+            elif publish_response and self._bus:
+                # CLI degrade: no retrieval this turn — tell the user we skipped.
+                await self._emit_progress(
+                    event, {"progress_type": "memory_retrieval_skipped"}
                 )
             if scored:
                 retrieval_parts.append(

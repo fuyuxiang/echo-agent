@@ -253,6 +253,7 @@ class AgentLoop:
         self._tool_iters_since_memory_check = 0
         self._snapshot_enabled = config.memory.snapshot_enabled
         self._memory_snapshots: OrderedDict[str, str] = OrderedDict()
+        self._retrieval_cache: OrderedDict[str, Any] = OrderedDict()
         self._max_cached_sessions = 200
         from echo_agent.agent.background import BackgroundScheduler
         self._bg_scheduler = BackgroundScheduler(config.execution.max_background_tasks)
@@ -291,6 +292,10 @@ class AgentLoop:
             episodic=self._episodic,
             plan_run_store=self._plan_run_store,
             bus=bus,
+            retrieval_cache_get=self._get_retrieval_cache,
+            retrieval_on_miss=config.memory.retrieval_on_miss,
+            cache_ttl=config.memory.cache_ttl_seconds,
+            cache_jaccard_min=config.memory.cache_jaccard_min,
         )
         self._cost_tracker = CostTracker(
             storage=storage,
@@ -544,6 +549,14 @@ class AgentLoop:
     async def _clear_memory_snapshot(self, session_key: str) -> None:
         async with self._state_lock:
             self._memory_snapshots.pop(session_key, None)
+
+    async def _put_retrieval_cache(self, session_key: str, entry: Any) -> None:
+        """检索预取缓存的唯一写入入口:复用统一 LRU(锁 + 上限),
+        与 snapshot 缓存共用上限策略,避免无界增长。"""
+        await self._lru_put(self._retrieval_cache, session_key, entry)
+
+    def _get_retrieval_cache(self, session_key: str) -> Any:
+        return self._retrieval_cache.get(session_key)
 
     async def _start_mcp_background(self) -> None:
         try:
