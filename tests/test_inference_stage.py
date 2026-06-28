@@ -684,3 +684,48 @@ async def test_tool_exception_after_message_appended_skips_compensation():
     ]
     assert len(call_y_msgs) == 1
     assert "interrupted" not in call_y_msgs[0]["content"].lower()
+
+
+@pytest.mark.asyncio
+async def test_multi_tool_batch_fail_fast_skips_later_serial_tools():
+    """同一批 response.tool_calls 含两个工具：第一个执行抛异常时，必须
+    fail-fast —— 第二个工具的 execute 根本不被调用（其副作用不发生），
+    异常向上冒泡，且第一个工具拿到配对的 interrupted tool 消息。"""
+    tc1 = ToolCallRequest(id="call_a", name="exec", arguments={"command": "boom"})
+    tc2 = ToolCallRequest(id="call_b", name="writer", arguments={"path": "out.txt"})
+    provider = AsyncMock()
+    provider.chat_stream_with_retry = AsyncMock(
+        return_value=LLMResponse(
+            content="run both", tool_calls=[tc1, tc2], finish_reason="tool_calls"
+        )
+    )
+
+    # First tool blows up; second tool is a spy that must never be reached.
+    async def _execute(name, args, exec_ctx):
+        if name == "exec":
+            raise RuntimeError("first tool blew up")
+        return MagicMock(success=True, text="written", error=None, metadata={})
+
+    tools_reg = MagicMock()
+    tools_reg.execute = AsyncMock(side_effect=_execute)
+    tools_reg.has = MagicMock(return_value=False)
+
+    stage, _bus = _make_stage(provider=provider, tools=tools_reg)
+    ctx = _make_ctx()
+
+    with pytest.raises(RuntimeError, match="first tool blew up"):
+        await stage._run_tool_loop(ctx, ctx.messages)
+
+    # Fail-fast: the second (serial) tool's execute was never called.
+    called_names = [c.args[0] for c in tools_reg.execute.await_args_list]
+    assert "writer" not in called_names
+    assert called_names == ["exec"]
+
+    # First tool got its paired interrupted tool message.
+    tool_msgs = [m for m in ctx.messages if m.get("role") == "tool"]
+    assert any(
+        m["tool_call_id"] == "call_a" and "interrupted" in m["content"].lower()
+        for m in tool_msgs
+    )
+    # The unexecuted second tool produced no tool message before the raise.
+    assert not any(m["tool_call_id"] == "call_b" for m in tool_msgs)
