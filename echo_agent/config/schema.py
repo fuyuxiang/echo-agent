@@ -2611,6 +2611,22 @@ class SkillsConfig(_Base):
             "desc_en": "Allow lazy on-demand dependency installs for skills",
         },
     )
+    admission_policy: Literal["auto_write", "stage_for_review", "manual_only"] = Field(
+        default="stage_for_review",
+        json_schema_extra={
+            "status": "effective", "ref": "skills/admission.py",
+            "desc_zh": "技能自动沉淀准入策略:auto_write 按风险自动写 / stage_for_review 低风险自动高风险暂存 / manual_only 一律暂存",
+            "desc_en": "Skill auto-distillation admission policy",
+        },
+    )
+    auto_write_risk: Literal["low", "high"] = Field(
+        default="low",
+        json_schema_extra={
+            "status": "effective", "ref": "skills/admission.py",
+            "desc_zh": "auto_write 档下允许自动写盘的最高风险等级",
+            "desc_en": "Highest risk level auto-written under the auto_write policy",
+        },
+    )
 
 
 # ── Bus configs ─────────────────────────────────────────────────────────────
