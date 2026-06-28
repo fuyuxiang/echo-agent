@@ -679,6 +679,27 @@ async def test_context_knowledge_cache_not_leaked_across_users_degrade():
 
 
 @pytest.mark.asyncio
+async def test_context_knowledge_senderless_falls_back_to_inline_degrade():
+    # Senderless entrypoint (sender_id == "") under degrade WITH a prefetcher
+    # present. The cache-hit guard requires a non-empty sender, so the prefetch
+    # is unusable; without the senderless carve-out, degrade would skip
+    # knowledge on every turn. It must instead fall back to inline, fetching
+    # public (empty user_id) docs.
+    knowledge = MagicMock()
+    knowledge.search = MagicMock(return_value=[object()])
+    knowledge.format_results = MagicMock(return_value="public KB block")
+
+    stage, captured, hybrid, memory = _make_context_stage(
+        cache={}, on_miss="degrade", knowledge=knowledge,
+    )
+    await _stage_build(stage, session_key="anon-sess", text="deploy steps", sender_id="")
+    assert "public KB block" in captured["retrieval_context"]
+    # Inline fetch must pass the empty user_id so only unrestricted docs match.
+    knowledge.search.assert_called_once()
+    assert knowledge.search.call_args.kwargs.get("user_id", "") == ""
+
+
+@pytest.mark.asyncio
 async def test_context_knowledge_cache_rescans_for_other_user_sync():
     # Same shared-session leak scenario, but under sync-on-miss: B's turn must
     # rescan knowledge with B's own user_id instead of serving A's cache.

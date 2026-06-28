@@ -250,6 +250,8 @@ async def test_bedrock_converse_chat_stream_emits_deltas_during_iteration():
     raw_events = [
         {"contentBlockDelta": {"delta": {"text": "Hel"}}},
         {"contentBlockDelta": {"delta": {"text": "lo"}}},
+        {"messageStop": {"stopReason": "end_turn"}},
+        {"metadata": {"usage": {"inputTokens": 5, "outputTokens": 9}}},
     ]
 
     def _event_gen():
@@ -278,6 +280,37 @@ async def test_bedrock_converse_chat_stream_emits_deltas_during_iteration():
         "首个 delta 应在仅消费首个 event 后即触发（边收边吐），而非全部 event 消费完再回放"
     assert "".join(deltas) == "Hello"
     assert resp.content == "Hello"
+    # usage/stopReason 必须从 metadata/messageStop 事件解析出来，否则成本统计漏记
+    assert resp.usage["prompt_tokens"] == 5
+    assert resp.usage["completion_tokens"] == 9
+    assert resp.finish_reason == "stop"
+
+
+@pytest.mark.asyncio
+async def test_bedrock_converse_stream_reports_max_tokens_truncation():
+    # messageStop=max_tokens 必须映射为 finish_reason="length"，不能误报成 stop。
+    from echo_agent.models.providers.bedrock_provider import BedrockProvider
+
+    raw_events = [
+        {"contentBlockDelta": {"delta": {"text": "partial"}}},
+        {"messageStop": {"stopReason": "max_tokens"}},
+        {"metadata": {"usage": {"inputTokens": 3, "outputTokens": 4096}}},
+    ]
+
+    class _FakeBoto:
+        def converse_stream(self, **kw):
+            return {"stream": iter(raw_events)}
+
+    p = BedrockProvider.__new__(BedrockProvider)
+    p._default_model = "amazon.titan-x"
+    from echo_agent.models.provider import GenerationParams
+    p.generation = GenerationParams()
+    p._build_boto3_client = lambda: _FakeBoto()
+
+    resp = await p.chat_stream(messages=[{"role": "user", "content": "hi"}])
+    assert resp.content == "partial"
+    assert resp.finish_reason == "length"
+    assert resp.usage["completion_tokens"] == 4096
 
 
 @pytest.mark.asyncio
@@ -398,3 +431,78 @@ async def test_gemini_chat_stream_skips_chunk_whose_text_property_raises():
     # 抛错 chunk 被跳过、流未中断，正常 chunk 的文本仍吐出
     assert deltas == ["after"]
     assert resp.finish_reason == "stop"
+
+
+# --- finding 3: tools-aware delta buffering in chat_stream_with_retry ---
+
+
+class _ScriptedStreamProvider(LLMProvider):
+    """chat_stream 按脚本吐 delta，再返回预设的 LLMResponse。"""
+
+    def __init__(self, deltas, response):
+        super().__init__(api_key="k", api_base="b")
+        self._deltas = deltas
+        self._response = response
+
+    async def chat(self, messages, tools=None, model=None, tool_choice=None, **kwargs):
+        return self._response
+
+    async def chat_stream(self, messages, tools=None, model=None, tool_choice=None,
+                          on_delta=None, **kwargs):
+        from echo_agent.models.provider import _invoke_stream_callback
+        for d in self._deltas:
+            await _invoke_stream_callback(on_delta, d)
+        return self._response
+
+    def get_default_model(self):
+        return "stub"
+
+
+@pytest.mark.asyncio
+async def test_tool_bearing_turn_does_not_leak_pretool_draft():
+    # 带 tools 且本轮返回 tool_calls（中间轮）：流出去的"工具前草稿"必须被丢弃，
+    # 用户一个字都不应看到，避免与后续轮的最终答案分叉。
+    from echo_agent.models.provider import ToolCallRequest
+    resp = LLMResponse(
+        content="let me check the weather",
+        tool_calls=[ToolCallRequest(id="t1", name="get_weather", arguments={})],
+        finish_reason="tool_calls",
+    )
+    p = _ScriptedStreamProvider(["let me ", "check ", "the weather"], resp)
+    seen = []
+    out = await p.chat_stream_with_retry(
+        messages=[{"role": "user", "content": "weather?"}],
+        tools=[{"function": {"name": "get_weather"}}],
+        on_delta=lambda d: seen.append(d),
+    )
+    assert seen == []  # 工具前草稿未外发
+    assert out.has_tool_calls
+
+
+@pytest.mark.asyncio
+async def test_tool_offered_but_terminal_answer_releases_buffer():
+    # 带 tools 但本轮直接给终态答案（无 tool_calls）：缓冲的文本必须最终释放给用户，
+    # 不能因为缓冲而把答案吞掉。
+    resp = LLMResponse(content="it is sunny", finish_reason="stop")
+    p = _ScriptedStreamProvider(["it ", "is ", "sunny"], resp)
+    seen = []
+    out = await p.chat_stream_with_retry(
+        messages=[{"role": "user", "content": "weather?"}],
+        tools=[{"function": {"name": "get_weather"}}],
+        on_delta=lambda d: seen.append(d),
+    )
+    assert "".join(seen) == "it is sunny"  # 缓冲整段释放
+    assert out.finish_reason == "stop"
+
+
+@pytest.mark.asyncio
+async def test_no_tools_streams_in_realtime():
+    # 不带 tools：保持逐 delta 实时流式（无缓冲回退）。
+    resp = LLMResponse(content="hello world", finish_reason="stop")
+    p = _ScriptedStreamProvider(["hello ", "world"], resp)
+    seen = []
+    await p.chat_stream_with_retry(
+        messages=[{"role": "user", "content": "hi"}],
+        on_delta=lambda d: seen.append(d),
+    )
+    assert seen == ["hello ", "world"]  # 逐块到达，未被合并成整段

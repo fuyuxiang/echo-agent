@@ -90,6 +90,65 @@ async def test_durable_queues_instead_of_dropping():
 
 
 @pytest.mark.asyncio
+async def test_durable_burst_does_not_starve_synchronous_prefetch():
+    # Regression: the real post-reply pattern spawns several DURABLE tasks
+    # (embed flush, consolidation) and then a DISCARDABLE prefetch in the same
+    # synchronous stretch (no await between). The old counter incremented
+    # synchronously for durable at spawn time, so after a few durable spawns it
+    # was already >= cap and the trailing prefetch was wrongly dropped —
+    # silently defeating the prefetch latency win. Durable must NOT consume the
+    # discardable saturation budget until it is actually running.
+    sched = BackgroundScheduler(max_concurrency=2, durable_queue_warn=1000)
+    block = asyncio.Event()
+    prefetch_ran = []
+
+    async def durable_work():
+        await block.wait()
+
+    async def prefetch():
+        prefetch_ran.append(1)
+
+    # Synchronous burst: many durable spawns then a prefetch, no await between.
+    # The prefetch must be CREATED (not dropped) — under the old synchronous
+    # durable counter it would already be over the cap and dropped here.
+    for _ in range(10):
+        sched.spawn(durable_work(), tier=Tier.DURABLE)
+    sched.spawn(prefetch(), tier=Tier.DISCARDABLE)
+
+    assert sched.stats()["dropped"] == 0  # prefetch was not dropped by the burst
+
+    block.set()
+    await sched.aclose()
+    assert prefetch_ran == [1]  # and it actually ran once durable slots freed
+
+
+@pytest.mark.asyncio
+async def test_running_durable_counts_toward_discardable_saturation():
+    # The flip side: a durable task that is actually RUNNING (holds the slot)
+    # must count, so a discardable spawn while the slot is genuinely occupied is
+    # correctly dropped rather than over-committing concurrency.
+    sched = BackgroundScheduler(max_concurrency=1)
+    block = asyncio.Event()
+    prefetch_ran = []
+
+    async def durable_work():
+        await block.wait()
+
+    sched.spawn(durable_work(), tier=Tier.DURABLE)  # occupies the only slot
+    await asyncio.sleep(0.01)  # let it acquire the sem and become "running"
+
+    async def prefetch():
+        prefetch_ran.append(1)
+
+    sched.spawn(prefetch(), tier=Tier.DISCARDABLE)  # slot busy -> dropped
+    await asyncio.sleep(0.01)
+    assert sched.stats()["dropped"] >= 1
+    assert prefetch_ran == []
+    block.set()
+    await sched.aclose()
+
+
+@pytest.mark.asyncio
 async def test_durable_failure_retries():
     sched = BackgroundScheduler(max_concurrency=2, durable_retries=2)
     attempts = []

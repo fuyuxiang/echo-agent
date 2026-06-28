@@ -319,7 +319,18 @@ class ContextStage:
                 # drop knowledge every turn — fall back to inline so knowledge
                 # keeps working independently of memory.enabled (its pre-Task-13
                 # behavior).
-                knowledge_prefetch_active = self._hybrid_retriever is not None
+                #
+                # Senderless entrypoints (sender_id == "") can never satisfy the
+                # cache-hit guard above (it requires a non-empty sender to avoid
+                # leaking one user's ACL-filtered knowledge to another under a
+                # shared session_key). For them the prefetch is unusable, so a
+                # degrade-skip would drop knowledge on every turn. Treat the
+                # prefetch as inactive when there is no sender and fall back to
+                # inline: the inline fetch passes the empty user_id, which the
+                # index resolves to public (unrestricted) docs only — no leak.
+                knowledge_prefetch_active = (
+                    self._hybrid_retriever is not None and bool(event.sender_id)
+                )
                 if self._retrieval_on_miss == "sync" or not knowledge_prefetch_active:
                     try:
                         knowledge_results, knowledge_context = (
