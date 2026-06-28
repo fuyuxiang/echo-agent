@@ -3060,6 +3060,51 @@ class ToolConcurrencyConfig(_Base):
     )
 
 
+class HeartbeatConfig(_Base):
+    """Long-running-turn progress heartbeat (level-triggered feedback)."""
+
+    enabled: bool = Field(
+        default=True,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/progress_heartbeat.py",
+            "desc_zh": "长任务静默时是否定时播报进度心跳",
+            "desc_en": "Emit periodic progress heartbeat during long-running turns",
+        },
+    )
+    first_delay_sec: int = Field(
+        default=30, ge=1,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/progress_heartbeat.py",
+            "desc_zh": "首条心跳前的静默阈值(秒),短任务不触发",
+            "desc_en": "Silence threshold (sec) before the first heartbeat",
+        },
+    )
+    interval_sec: int = Field(
+        default=60, ge=1,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/progress_heartbeat.py",
+            "desc_zh": "后续心跳的最小间隔(秒)",
+            "desc_en": "Minimum interval (sec) between subsequent heartbeats",
+        },
+    )
+    on_uneditable: Literal["first_only", "off", "every"] = Field(
+        default="first_only",
+        json_schema_extra={
+            "status": "effective", "ref": "channels/manager.py",
+            "desc_zh": "不支持消息编辑的通道策略:仅首条/关闭/每条新发",
+            "desc_en": "Strategy for channels without message editing",
+        },
+    )
+    template: str = Field(
+        default="⏳ 正在处理中… 已用时 {elapsed}（{activity}）",
+        json_schema_extra={
+            "status": "effective", "ref": "agent/progress_heartbeat.py",
+            "desc_zh": "心跳文案模板,支持 {elapsed} 与 {activity} 占位",
+            "desc_en": "Heartbeat text template with {elapsed}/{activity}",
+        },
+    )
+
+
 class AgentBehaviorConfig(_Base):
     """High-level agent loop tuning surfaced by the setup wizard.
 
@@ -3080,6 +3125,7 @@ class AgentBehaviorConfig(_Base):
     tool_concurrency: ToolConcurrencyConfig = Field(
         default_factory=ToolConcurrencyConfig,
     )
+    heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
 
 
 class CostConfig(_Base):
