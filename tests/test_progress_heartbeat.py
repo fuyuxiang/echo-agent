@@ -1,6 +1,18 @@
+import asyncio
 import time
+
 import pytest
-from echo_agent.agent.progress_heartbeat import SharedActivityState, ActivitySnapshot
+
+from echo_agent.agent.progress_heartbeat import (
+    ActivitySnapshot,
+    ProgressHeartbeat,
+    SharedActivityState,
+    format_elapsed,
+    friendly_activity,
+    render_heartbeat,
+)
+from echo_agent.bus.events import InboundEvent
+from echo_agent.config.schema import HeartbeatConfig
 
 
 def test_activity_starts_thinking():
@@ -36,10 +48,6 @@ def test_mark_visible_feedback_resets_since():
     assert st.since_last_feedback(now=base + 7.0) == pytest.approx(7.0)
 
 
-from echo_agent.agent.progress_heartbeat import (
-    friendly_activity, format_elapsed, render_heartbeat, ActivitySnapshot,
-)
-
 TEMPLATE = "⏳ 正在处理中… 已用时 {elapsed}（{activity}）"
 
 
@@ -69,12 +77,6 @@ def test_render_heartbeat_fills_template():
     snap = ActivitySnapshot(elapsed_sec=125, phase="calling_tool", current_tool="read_file")
     text = render_heartbeat(snap, TEMPLATE)
     assert text == "⏳ 正在处理中… 已用时 2 分钟（正在阅读文档）"
-
-
-import asyncio
-from echo_agent.agent.progress_heartbeat import ProgressHeartbeat
-from echo_agent.config.schema import HeartbeatConfig
-from echo_agent.bus.events import InboundEvent
 
 
 class _FakeBus:
