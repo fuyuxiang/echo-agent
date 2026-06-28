@@ -144,3 +144,42 @@ async def test_approval_manager_waits_for_decision() -> None:
 
     assert decided is not None
     assert decided.status == ApprovalStatus.APPROVED
+
+
+@pytest.mark.asyncio
+async def test_approval_manager_times_out_to_expired() -> None:
+    # The real timeout path is the *only* producer of EXPIRED status: on timeout
+    # the request must leave _pending, be marked EXPIRED, and land in history so
+    # the command layer can later explain "expired, please re-trigger".
+    manager = ApprovalManager(require_approval=["exec"], default_policy="ask")
+    req = manager.request_approval("exec", tool_name="exec", params={"command": "date"}, user_id="u1")
+
+    decided = await manager.wait_for_decision(req.id, timeout_seconds=0)
+
+    assert decided is not None
+    assert decided.status == ApprovalStatus.EXPIRED
+    assert decided.reason == "approval timed out"
+    # No longer pending, but discoverable in history for the inactive-approval lookup.
+    assert manager.get(req.id) is None
+    assert manager._find_history(req.id) is decided
+
+
+@pytest.mark.asyncio
+async def test_approval_manager_wait_returns_history_when_already_decided() -> None:
+    # If a request was decided before wait_for_decision is entered (not in _pending),
+    # the wait must short-circuit to the historic record rather than block.
+    manager = ApprovalManager(require_approval=["exec"], default_policy="ask")
+    req = manager.request_approval("exec", tool_name="exec", params={"command": "ls"}, user_id="u1")
+    manager.deny(req.id, reason="nope", decided_by="admin")
+
+    decided = await manager.wait_for_decision(req.id, timeout_seconds=5)
+
+    assert decided is not None
+    assert decided.status == ApprovalStatus.DENIED
+    assert decided.reason == "nope"
+
+
+@pytest.mark.asyncio
+async def test_approval_manager_wait_unknown_id_returns_none() -> None:
+    manager = ApprovalManager(require_approval=["exec"], default_policy="ask")
+    assert await manager.wait_for_decision("deadbeef00", timeout_seconds=5) is None
