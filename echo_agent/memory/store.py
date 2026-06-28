@@ -583,9 +583,12 @@ class MemoryStore:
 
     def _admit_to_snapshot(self, entry: MemoryEntry) -> bool:
         """Gate for the frozen core snapshot. Hard gate (all types): exclude
-        entries in an open contradiction. Soft gate (USER only): exclude
-        low-confidence facts. Any error -> admit (degrade safe)."""
+        superseded entries (already-adjudicated losers) and entries in an open
+        contradiction (not-yet-adjudicated pairs). Soft gate (USER only):
+        exclude low-confidence facts. Any error -> admit (degrade safe)."""
         try:
+            if entry.is_superseded:
+                return False
             if self.is_unresolved(entry.id):
                 return False
             if entry.type == MemoryType.USER:

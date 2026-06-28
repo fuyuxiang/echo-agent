@@ -83,3 +83,23 @@ def test_admission_error_degrades_to_admit(tmp_path, monkeypatch):
     # self-validating: prove the exception path was genuinely hit, so a future
     # rename of _admit_to_snapshot can't let _boom silently delegate and pass.
     assert raised
+
+
+def test_superseded_loser_excluded_from_snapshot(tmp_path):
+    # A contradiction resolved as a_wins marks the loser superseded. The
+    # unresolved tracker then clears it, but the snapshot path does not filter
+    # superseded on its own — so without the hard gate, an already-adjudicated
+    # stale fact would still be frozen into the system prompt (and inconsistently,
+    # dynamic recall DOES filter it). The hard gate must exclude it.
+    store = _store(tmp_path)
+    _add(store, mid="winner", content="user likes red", importance=0.9, access=5)
+    _add(store, mid="loser", content="user likes blue", importance=0.9, access=5)
+    # Sanity: both admitted before supersession.
+    _text, ids = store.get_snapshot_with_ids()
+    assert "winner" in ids and "loser" in ids
+    # Adjudicate: loser superseded by winner.
+    assert store.mark_superseded("loser", "winner") is True
+    _text2, ids2 = store.get_snapshot_with_ids()
+    assert "loser" not in ids2  # already-adjudicated loser must not be frozen
+    assert "winner" in ids2     # winner stays
+
