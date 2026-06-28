@@ -39,7 +39,9 @@ def digest(value: Any, *, max_chars: int = 200) -> str:
 
 
 Outcome = Literal["success", "failure", "partial"]
-CandidateOperation = Literal["create", "patch", "disable"]
+CandidateOperation = Literal["create", "patch", "disable", "delete"]
+SkillSource = Literal["evolver", "reviewer", "manual"]
+SkillRisk = Literal["low", "high"]
 CandidateStatus = Literal[
     "pending",
     "evaluating",
@@ -175,6 +177,16 @@ class SkillCandidate:
     created_at: str = field(default_factory=_now_iso)
     run_id: str = ""
 
+    # Provenance / admission metadata (batch-1 skill-distillation).
+    # All defaulted so legacy rows in evolution_candidates deserialize cleanly.
+    source: SkillSource = "evolver"
+    created_by: str = ""
+    created_from_session: str = ""
+    channel: str = ""
+    risk: SkillRisk = "high"
+    confidence: float = 0.0
+    promotion_status: str = ""
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
@@ -194,6 +206,13 @@ class SkillCandidate:
             "rejected_reason": self.rejected_reason,
             "created_at": self.created_at,
             "run_id": self.run_id,
+            "source": self.source,
+            "created_by": self.created_by,
+            "created_from_session": self.created_from_session,
+            "channel": self.channel,
+            "risk": self.risk,
+            "confidence": self.confidence,
+            "promotion_status": self.promotion_status,
         }
 
     @classmethod
@@ -216,6 +235,13 @@ class SkillCandidate:
             rejected_reason=data.get("rejected_reason", ""),
             created_at=data.get("created_at", _now_iso()),
             run_id=data.get("run_id", ""),
+            source=data.get("source", "evolver"),
+            created_by=data.get("created_by", ""),
+            created_from_session=data.get("created_from_session", ""),
+            channel=data.get("channel", ""),
+            risk=data.get("risk", "high"),
+            confidence=float(data.get("confidence", 0.0)),
+            promotion_status=data.get("promotion_status", ""),
         )
 
 
