@@ -22,7 +22,7 @@ import tempfile
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from loguru import logger
 
@@ -577,6 +577,28 @@ class MemoryStore:
 
     SUSPECTED_CONFLICT_TAG = "suspected_conflict"
 
+    # Core-snapshot admission thresholds (no config; conservative defaults).
+    _SNAPSHOT_MIN_EFFECTIVE_IMPORTANCE = 0.15  # below this (after decay) -> not frozen
+    _SNAPSHOT_MIN_IMPORTANCE_UNVISITED = 0.4   # access_count==0 USER facts need this raw importance
+
+    def _admit_to_snapshot(self, entry: MemoryEntry) -> bool:
+        """Gate for the frozen core snapshot. Hard gate (all types): exclude
+        entries in an open contradiction. Soft gate (USER only): exclude
+        low-confidence facts. Any error -> admit (degrade safe)."""
+        try:
+            if self.is_unresolved(entry.id):
+                return False
+            if entry.type == MemoryType.USER:
+                if self._forgetting.effective_importance(entry) < self._SNAPSHOT_MIN_EFFECTIVE_IMPORTANCE:
+                    return False
+                if entry.access_count == 0 and entry.importance < self._SNAPSHOT_MIN_IMPORTANCE_UNVISITED:
+                    return False
+            return True
+        except Exception as e:
+            logger.debug("Snapshot admission check failed for {}, admitting: {}", entry.id, e)
+            return True
+
+
     def _run_contradiction_scan(self, entry: MemoryEntry) -> None:
         """Observe-only contradiction scan on store (heuristic + temporal).
 
@@ -884,12 +906,16 @@ class MemoryStore:
         max_chars: int | None = None,
         session_key: str | None = None,
         overflow_notice: str | None = None,
+        admit: "Callable[[MemoryEntry], bool] | None" = None,
+        collect_ids: list[str] | None = None,
     ) -> str:
         all_entries = sorted(
             self.list_all(mem_type, session_key=session_key),
             key=lambda entry: self._forgetting.effective_importance(entry),
             reverse=True,
         )
+        if admit is not None:
+            all_entries = [e for e in all_entries if admit(e)]
         entries = all_entries[:max_entries]
         if not entries:
             return ""
@@ -906,9 +932,13 @@ class MemoryStore:
                     truncated = line[: max_chars - 3].rstrip()
                     if truncated:
                         lines.append(truncated + "...")
+                        if collect_ids is not None:
+                            collect_ids.append(entry.id)
                 dropped += len(entries) - len(lines)
                 break
             lines.append(line)
+            if collect_ids is not None:
+                collect_ids.append(entry.id)
             used += delta
         # Overflow is a curation signal, not silent loss. Tell the model that
         # more durable facts exist than fit the budget so it can consolidate
@@ -917,9 +947,13 @@ class MemoryStore:
             lines.append(overflow_notice.format(dropped=dropped))
         return "\n".join(lines)
 
-    def get_snapshot(self, session_key: str | None = None) -> str:
-        """构建有界记忆快照，用于注入系统提示。包含长期记忆、用户记忆和环境记忆三部分。"""
+    def get_snapshot_with_ids(
+        self, session_key: str | None = None
+    ) -> tuple[str, frozenset[str]]:
+        """Build the bounded memory snapshot for system-prompt injection, plus the
+        set of entry ids that entered it (used to de-dup dynamic recall)."""
         parts: list[str] = []
+        collected: list[str] = []
         long_term = self.read_long_term()
         if long_term:
             parts.append(f"## Long-term Memory\n\n{long_term}")
@@ -933,6 +967,8 @@ class MemoryStore:
                 "- _(+{dropped} more durable facts about the user not shown — "
                 "consider consolidating with the memory tool)_"
             ),
+            admit=self._admit_to_snapshot,
+            collect_ids=collected,
         )
         if user_ctx:
             parts.append(f"## What I Know About You\n\n{user_ctx}")
@@ -942,11 +978,17 @@ class MemoryStore:
             max_entries=30,
             max_chars=self._env_snapshot_char_limit,
             session_key=session_key,
+            admit=self._admit_to_snapshot,
+            collect_ids=collected,
         )
         if env_ctx:
             parts.append(f"## Environment Memory\n\n{env_ctx}")
 
-        return "\n\n".join(parts)
+        return "\n\n".join(parts), frozenset(collected)
+
+    def get_snapshot(self, session_key: str | None = None) -> str:
+        """Text-only snapshot (back-compat wrapper over get_snapshot_with_ids)."""
+        return self.get_snapshot_with_ids(session_key=session_key)[0]
 
     # ── Long-term memory file (MEMORY.md) ────────────────────────────────────
 
