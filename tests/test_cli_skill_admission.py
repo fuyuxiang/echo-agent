@@ -1,5 +1,9 @@
 import pytest
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+from echo_agent.cli import skill_admission_cmd
 from echo_agent.evolution.store import TrajectoryStore
 from echo_agent.evolution.types import SkillCandidate
 from echo_agent.skills.admission import SkillAdmission
@@ -33,11 +37,6 @@ async def test_list_staged_and_approve_via_admission(tmp_path, capsys):
 # Covers action routing + sys.exit branches with _build_admission mocked out,
 # so no bootstrap/storage is needed.
 # ---------------------------------------------------------------------------
-
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
-
-from echo_agent.cli import skill_admission_cmd
 
 
 def _fake_admission():
