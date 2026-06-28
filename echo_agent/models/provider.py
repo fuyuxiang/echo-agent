@@ -252,11 +252,49 @@ class LLMProvider(ABC):
     ) -> LLMResponse:
         emitted = False
         timeout = self._stream_timeout
+        # When tools are offered, the model may stream a "pre-tool" preamble
+        # ("let me check ...") and then return tool_calls instead of a final
+        # answer. Streaming that preamble to the user and then replacing it with
+        # the real answer from a later iteration shows divergent text. So while
+        # tools are in play we BUFFER deltas instead of emitting them, and only
+        # release them once we know the response is a terminal answer (no
+        # tool_calls). Tool-bearing turns are not ones the user watches stream
+        # token-by-token, so the buffered release (full text at end) is an
+        # acceptable trade for not leaking a contradictory draft.
+        buffering = tools is not None
+        buffered: list[str] = []
 
         async def wrapped(delta: str) -> None:
             nonlocal emitted
+            if not delta:
+                return
+            if buffering:
+                buffered.append(delta)
+                return
             emitted = True
             await _invoke_stream_callback(on_delta, delta)
+
+        async def _release_buffer() -> None:
+            # Flush the buffered preamble as one delta — used only when the
+            # buffered turn turns out to be a terminal answer (no tool_calls).
+            nonlocal emitted
+            if not buffered:
+                return
+            text = "".join(buffered)
+            buffered.clear()
+            if text:
+                emitted = True
+                await _invoke_stream_callback(on_delta, text)
+
+        async def _maybe_release(response: "LLMResponse") -> None:
+            # Terminal answer → release buffered text to the user. Intermediate
+            # tool-call turn → drop the buffered preamble (never shown).
+            if not buffering:
+                return
+            if response.finish_reason != "error" and not response.has_tool_calls:
+                await _release_buffer()
+            else:
+                buffered.clear()
 
         def _stream_call() -> Awaitable[LLMResponse]:
             return self.chat_stream(
@@ -270,6 +308,7 @@ class LLMProvider(ABC):
 
         for attempt, base_delay in enumerate(self._retry_delays()):
             emitted = False
+            buffered.clear()
             try:
                 response = await asyncio.wait_for(_stream_call(), timeout=timeout)
             except StreamingUnsupported:
@@ -288,21 +327,27 @@ class LLMProvider(ABC):
                 classification = self._classify_exception(e)
             else:
                 if response.finish_reason != "error":
-                    if not emitted and self._is_empty_success(response):
+                    if not emitted and not buffered and self._is_empty_success(response):
                         logger.warning("LLM stream returned empty content on finish=stop, retrying once")
                         try:
                             retry = await asyncio.wait_for(_stream_call(), timeout=timeout)
                         except asyncio.CancelledError:
                             raise
                         except Exception:
+                            await _maybe_release(response)
                             return response
                         if retry.finish_reason != "error" and not self._is_empty_success(retry):
+                            await _maybe_release(retry)
                             return retry
+                        await _maybe_release(response)
                         return response
+                    await _maybe_release(response)
                     return response
                 classification = self._classify_error_text(response.content or "")
 
             # Never retry after partial emission — the user already saw tokens.
+            # (Buffered, un-released text has NOT been shown, so it stays
+            # retryable; the buffer is cleared at the top of the next attempt.)
             if emitted or classification != "transient":
                 return response
 
@@ -311,7 +356,9 @@ class LLMProvider(ABC):
             await asyncio.sleep(jitter)
 
         try:
-            return await asyncio.wait_for(_stream_call(), timeout=timeout)
+            response = await asyncio.wait_for(_stream_call(), timeout=timeout)
+            await _maybe_release(response)
+            return response
         except asyncio.CancelledError:
             raise
         except Exception as e:

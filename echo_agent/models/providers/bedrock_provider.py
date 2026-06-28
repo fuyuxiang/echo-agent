@@ -162,6 +162,8 @@ class BedrockProvider(LLMProvider):
 
         loop = asyncio.get_running_loop()
         text_parts: list[str] = []
+        stop_reason = ""
+        usage: dict[str, int] = {}
         try:
             resp = await loop.run_in_executor(None, lambda: client.converse_stream(**params))
             # boto3 EventStream is a synchronous iterator; pull one event at a
@@ -176,18 +178,43 @@ class BedrockProvider(LLMProvider):
                     break
                 # Defend per event: a malformed block must not abort the stream.
                 try:
-                    block = ev.get("contentBlockDelta") if isinstance(ev, dict) else None
-                    text = (block or {}).get("delta", {}).get("text", "") if block else ""
+                    if not isinstance(ev, dict):
+                        continue
+                    block = ev.get("contentBlockDelta")
+                    if block:
+                        text = (block or {}).get("delta", {}).get("text", "")
+                        if text:
+                            text_parts.append(text)
+                            await _invoke_stream_callback(on_delta, text)
+                    # messageStop carries the stop reason; metadata carries token
+                    # usage. Capture both so streamed turns report finish_reason
+                    # and usage just like the non-streaming _chat_converse path —
+                    # otherwise cost tracking silently records zero.
+                    stop_ev = ev.get("messageStop")
+                    if stop_ev:
+                        stop_reason = stop_ev.get("stopReason", "") or stop_reason
+                    meta = ev.get("metadata")
+                    if meta and meta.get("usage"):
+                        u = meta["usage"]
+                        usage["prompt_tokens"] = u.get("inputTokens", 0)
+                        usage["completion_tokens"] = u.get("outputTokens", 0)
                 except Exception:
-                    text = ""
-                if text:
-                    text_parts.append(text)
-                    await _invoke_stream_callback(on_delta, text)
+                    continue
         except Exception as e:
             logger.error("Bedrock converse stream error: {}", e)
             return LLMResponse(content=f"Error: {e}", finish_reason="error")
 
-        return LLMResponse(content="".join(text_parts), finish_reason="stop", model=model)
+        # Map stopReason → finish_reason the same way _chat_converse does, so a
+        # max_tokens truncation is not misreported as a clean stop. The text-only
+        # stream path never collects toolUse (the tool case falls back to the
+        # non-streaming converse upstream), so tool_use is not expected here.
+        finish = "length" if stop_reason == "max_tokens" else "stop"
+        return LLMResponse(
+            content="".join(text_parts),
+            finish_reason=finish,
+            usage=usage,
+            model=model,
+        )
 
     async def _chat_claude(
         self, model: str, messages: list[dict[str, Any]],

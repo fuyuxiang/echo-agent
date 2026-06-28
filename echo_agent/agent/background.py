@@ -36,20 +36,40 @@ class Tier(enum.Enum):
 class BackgroundScheduler:
     """Bounded, tiered scheduler for fire-and-forget background work."""
 
-    def __init__(self, max_concurrency: int, *, durable_retries: int = 2) -> None:
+    def __init__(
+        self,
+        max_concurrency: int,
+        *,
+        durable_retries: int = 2,
+        durable_queue_warn: int | None = None,
+    ) -> None:
         self._max_concurrency = max(1, max_concurrency)
         self._sem = asyncio.Semaphore(self._max_concurrency)
         self._durable_retries = max(0, durable_retries)
+        # High-water mark for queued (not-yet-running) DURABLE work. DURABLE is
+        # never dropped, so a slow consumer can let the queue grow; this is the
+        # threshold past which we log a warning so the backlog is observable
+        # rather than silently accumulating. Defaults to 4x concurrency.
+        self._durable_queue_warn = (
+            durable_queue_warn if durable_queue_warn is not None
+            else self._max_concurrency * 4
+        )
         self._tasks: set[asyncio.Task[Any]] = set()
         self._discardable_tasks: set[asyncio.Task[Any]] = set()
         self._dropped = 0
         self._queued = 0
-        # In-flight count maintained *synchronously*: incremented in ``spawn``
-        # the moment a task is created, decremented in ``_run``'s finally. This
-        # lets a synchronous burst of spawns detect saturation immediately,
-        # before any task has had a chance to acquire ``self._sem`` (which only
-        # happens after an await, i.e. after ``create_task`` schedules ``_run``).
-        self._in_flight = 0
+        # Saturation counter for the DISCARDABLE drop decision. It counts work
+        # that is *occupying or about to occupy* a concurrency slot:
+        #   - every DISCARDABLE task from the moment it is spawned, and
+        #   - every DURABLE task only once it is actually RUNNING (holds the sem).
+        # A DURABLE task merely *queued* on the semaphore is deliberately NOT
+        # counted: otherwise a burst of queued durable work (e.g. memory writes
+        # under load) would pin this at the cap and cause every retrieval
+        # prefetch to be dropped — silently defeating the prefetch latency win
+        # exactly when the system is busy. Maintained synchronously for
+        # DISCARDABLE (incremented in ``spawn``) so a synchronous burst is
+        # bounded before any task reaches its first await.
+        self._slot_load = 0
 
     def spawn(
         self,
@@ -63,10 +83,10 @@ class BackgroundScheduler:
         ``coro`` may be a bare coroutine/awaitable or a zero-arg factory
         returning a fresh awaitable. DURABLE retries require a factory.
         """
-        if tier is Tier.DISCARDABLE and self._in_flight >= self._max_concurrency:
+        if tier is Tier.DISCARDABLE and self._slot_load >= self._max_concurrency:
             # No free slot — drop and close any live coroutine to avoid a
             # "coroutine was never awaited" warning. Using the synchronous
-            # in-flight count (not ``sem.locked()``) means a burst of spawns
+            # slot-load count (not ``sem.locked()``) means a burst of spawns
             # with no await in between is still bounded: once the cap is hit,
             # further DISCARDABLE work is dropped instead of queued unbounded.
             self._dropped += 1
@@ -74,7 +94,8 @@ class BackgroundScheduler:
             self._discard(coro)
             return
 
-        self._in_flight += 1
+        if tier is Tier.DISCARDABLE:
+            self._slot_load += 1
         task = asyncio.create_task(self._run(coro, tier))
         if session_key:
             task._session_key = session_key  # type: ignore[attr-defined]
@@ -93,10 +114,20 @@ class BackgroundScheduler:
     async def _run(self, coro: Spawnable, tier: Tier) -> None:
         queued = False
         invoked = False
+        durable_running = False
         try:
             if tier is Tier.DURABLE and self._sem.locked():
                 self._queued += 1
                 queued = True
+                # DURABLE is never dropped, so the queue can grow under a slow
+                # consumer. Surface a backlog instead of letting it accumulate
+                # invisibly — the only OOM vector left once durable no longer
+                # pins the discardable saturation counter.
+                if self._queued >= self._durable_queue_warn:
+                    logger.warning(
+                        "DURABLE background queue backlog: {} waiting (warn at {})",
+                        self._queued, self._durable_queue_warn,
+                    )
             async with self._sem:
                 if queued:
                     self._queued -= 1
@@ -106,6 +137,11 @@ class BackgroundScheduler:
                 # to have been entered (awaited) and needs no defensive close.
                 invoked = True
                 if tier is Tier.DURABLE:
+                    # Count durable against the discardable saturation cap only
+                    # while it actually holds a concurrency slot (running), not
+                    # while it was merely queued above.
+                    self._slot_load += 1
+                    durable_running = True
                     await self._run_durable(coro)
                 else:
                     await self._run_discardable(coro)
@@ -118,10 +154,11 @@ class BackgroundScheduler:
                 self._discard(coro)
             if queued:
                 self._queued -= 1
-            # Balanced 1:1 with the synchronous increment in ``spawn``. Runs
-            # exactly once per created task (success, failure, or cancel), so
-            # the counter never drifts negative and never leaks a slot.
-            self._in_flight -= 1
+            # Release the saturation slot: DISCARDABLE held it from ``spawn``;
+            # DURABLE held it only while running. Balanced 1:1 with each
+            # increment so the counter never drifts negative or leaks a slot.
+            if tier is Tier.DISCARDABLE or durable_running:
+                self._slot_load -= 1
 
     async def _run_discardable(self, coro: Spawnable) -> None:
         try:
