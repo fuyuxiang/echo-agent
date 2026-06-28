@@ -370,6 +370,48 @@ class SkillStore:
         logger.info("Removed file '{}' from skill '{}'", file_path, name)
         return None
 
+    def write_provenance(
+        self,
+        name: str,
+        *,
+        source: str,
+        created_at: str,
+        promotion_status: str,
+        created_from_session: str,
+    ) -> str | None:
+        """Mirror provenance into SKILL.md frontmatter under metadata.echo.provenance.
+
+        SQLite (evolution_candidates) is the source of truth; this is a derived,
+        human-readable, git-visible copy. Preserves all other frontmatter.
+        """
+        skill_dir = self._find_skill_dir(name)
+        if not skill_dir:
+            return f"skill '{name}' not found"
+        if not self._is_writable(skill_dir):
+            return f"skill '{name}' is read-only"
+        skill_md = skill_dir / "SKILL.md"
+        if not skill_md.exists():
+            return f"skill '{name}' has no SKILL.md"
+
+        fm, body = parse_frontmatter(skill_md.read_text(encoding="utf-8"))
+        meta = fm.setdefault("metadata", {})
+        if not isinstance(meta, dict):
+            meta = {}
+            fm["metadata"] = meta
+        echo_meta = meta.setdefault("echo", {})
+        if not isinstance(echo_meta, dict):
+            echo_meta = {}
+            meta["echo"] = echo_meta
+        echo_meta["provenance"] = {
+            "source": source,
+            "created_at": created_at,
+            "promotion_status": promotion_status,
+            "created_from_session": created_from_session,
+        }
+        self._atomic_write(skill_md, _build_frontmatter(fm, body))
+        logger.info("Wrote provenance for skill '{}' (source={})", name, source)
+        return None
+
     # ── Helpers ──────────────────────────────────────────────────────────────
 
     def _is_writable(self, skill_dir: Path) -> bool:
