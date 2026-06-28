@@ -565,14 +565,16 @@ class AgentLoop:
             except Exception as e:
                 logger.warning("Unresolved-contradiction rebuild failed: {}", e)
         self._spawn_background(self._start_mcp_background())
-        self.bus.subscribe_inbound(self._on_inbound)
         # Skill admission candidate store: ensure schema exists before the first
-        # background skill review can stage a candidate. Independent of evolution.
+        # background skill review can stage a candidate. Must run BEFORE
+        # subscribe_inbound to close the startup race where an inbound event
+        # triggers a review against a not-yet-created table. Independent of evolution.
         if self._skill_candidate_store is not None:
             try:
                 await self._skill_candidate_store.init_schema()
             except Exception as e:
                 logger.warning("Skill candidate store schema init failed: {}", e)
+        self.bus.subscribe_inbound(self._on_inbound)
         if self._plugin_manager:
             await self._plugin_manager.hooks.dispatch("on_agent_start")
         if self.evolution is not None:
