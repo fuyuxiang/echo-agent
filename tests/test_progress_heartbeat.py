@@ -34,3 +34,38 @@ def test_mark_visible_feedback_resets_since():
     base = time.monotonic()
     st.mark_visible_feedback(now=base)
     assert st.since_last_feedback(now=base + 7.0) == pytest.approx(7.0)
+
+
+from echo_agent.agent.progress_heartbeat import (
+    friendly_activity, format_elapsed, render_heartbeat, ActivitySnapshot,
+)
+
+TEMPLATE = "⏳ 正在处理中… 已用时 {elapsed}（{activity}）"
+
+
+def test_friendly_activity_maps_known_tool():
+    snap = ActivitySnapshot(elapsed_sec=10, phase="calling_tool", current_tool="web_search")
+    assert friendly_activity(snap) == "正在查阅资料"
+
+
+def test_friendly_activity_unknown_tool_falls_back_no_leak():
+    snap = ActivitySnapshot(elapsed_sec=10, phase="calling_tool", current_tool="super_secret_tool")
+    out = friendly_activity(snap)
+    assert out == "处理中"
+    assert "super_secret_tool" not in out
+
+
+def test_friendly_activity_thinking_and_generating():
+    assert friendly_activity(ActivitySnapshot(1, "thinking", None)) == "思考中"
+    assert friendly_activity(ActivitySnapshot(1, "generating", None)) == "正在组织答案"
+
+
+def test_format_elapsed_seconds_and_minutes():
+    assert format_elapsed(40) == "40 秒"
+    assert format_elapsed(125) == "2 分钟"
+
+
+def test_render_heartbeat_fills_template():
+    snap = ActivitySnapshot(elapsed_sec=125, phase="calling_tool", current_tool="read_file")
+    text = render_heartbeat(snap, TEMPLATE)
+    assert text == "⏳ 正在处理中… 已用时 2 分钟（正在阅读文档）"
