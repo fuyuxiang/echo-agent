@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from loguru import logger
 
@@ -70,7 +70,7 @@ class SharedActivityState:
     started_at: float
     current_tool: str | None = None
     phase: str = "thinking"  # thinking | calling_tool | generating
-    last_visible_feedback_at: float = field(default=0.0)
+    last_visible_feedback_at: float = 0.0
 
     def enter_tool(self, name: str) -> None:
         self.current_tool = name

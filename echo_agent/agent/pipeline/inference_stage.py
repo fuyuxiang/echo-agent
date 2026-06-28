@@ -20,6 +20,7 @@ from echo_agent.agent.pipeline.types import InferenceResult, PipelineContext
 from echo_agent.agent.tools.base import ToolExecutionContext, build_idempotency_key
 from echo_agent.agent.tools.circuit_breaker import ToolCircuitBreaker
 from echo_agent.agent.planning.models import StepStatus
+from echo_agent.agent.progress_heartbeat import ActivitySnapshot, friendly_activity
 from echo_agent.bus.events import OutboundEvent
 from echo_agent.cost.budget import BudgetExceeded
 from echo_agent.models.provider import LLMResponse
@@ -480,7 +481,6 @@ class InferenceStage:
             # repeat-guarded / hook-cancelled) still surface this progress,
             # matching the pre-refactor loop where it fired at the top of the
             # body. Phase B must NOT re-emit it for RUN tools.
-            from echo_agent.agent.progress_heartbeat import friendly_activity, ActivitySnapshot
             _friendly = friendly_activity(ActivitySnapshot(0.0, "calling_tool", tool_call.name))
             await self._emit_progress(ctx, _friendly, tool_hint=True)
 

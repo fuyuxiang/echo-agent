@@ -118,7 +118,7 @@ async def test_long_turn_emits_heartbeat():
     assert ev.message_kind == "heartbeat"
     assert ev.is_final is False
     assert ev.metadata["_heartbeat"] is True
-    assert ev.metadata["_inbound_event_id"] == "r1" or "_inbound_event_id" in ev.metadata
+    assert "_inbound_event_id" in ev.metadata
     assert ev.metadata["_hb_on_uneditable"] in {"first_only", "off", "every"}
     assert "已用时" in ev.text and "查阅资料" in ev.text
 

@@ -84,3 +84,89 @@ async def test_uneditable_every_sends_each(manager):
     await manager._filter_and_dispatch(_hb_event("every", "hb1"))
     await manager._filter_and_dispatch(_hb_event("every", "hb2"))
     assert ch.sent == ["hb1", "hb2"]
+
+
+def _final_event(key="evtX", text="最终答案"):
+    out = OutboundEvent.text_reply(channel="x", chat_id="c1", text=text)
+    out.is_final = True
+    out.message_kind = "final"
+    out.metadata = {"_inbound_event_id": key}
+    return out
+
+
+def _late_hb_event(key="evtX", text="正在处理中…"):
+    out = OutboundEvent.text_reply(channel="x", chat_id="c1", text=text)
+    out.is_final = False
+    out.message_kind = "heartbeat"
+    out.metadata = {"_heartbeat": True, "_inbound_event_id": key,
+                    "_hb_on_uneditable": "first_only"}
+    return out
+
+
+@pytest.mark.asyncio
+async def test_late_heartbeat_after_final_is_discarded(manager):
+    """Important 1: a heartbeat that lands after the turn is finalized must be
+    dropped entirely — no fresh send, no edit — even after _on_outbound_final
+    has cleaned up the heartbeat msg id mapping."""
+    ch = _FakeChannel(supports_edit=True)
+    manager._channels["x"] = ch
+    # Final answer is delivered first (fresh send, no prior heartbeat).
+    await manager._filter_and_dispatch(_final_event())
+    assert ch.sent == ["最终答案"]
+    sent_before = len(ch.sent)
+    edits_before = len(ch.edits)
+    # A timer-scheduled heartbeat for the same turn fires late.
+    await manager._handle_heartbeat(_late_hb_event())
+    # It must produce no new platform side effects.
+    assert len(ch.sent) == sent_before
+    assert len(ch.edits) == edits_before
+
+
+class _SealFailChannel:
+    """Editable channel whose finalize-edit fails, exercising the delete fallback."""
+
+    def __init__(self):
+        self.supports_edit = True
+        self.is_running = True
+        self.config = type("C", (), {"reactions_enabled": False})()
+        self.sent = []
+        self.edits = []
+        self.deleted = []
+        self._mid = 0
+
+    async def send(self, event):
+        self._mid += 1
+        self.sent.append(event.text)
+        return SendResult(success=True, message_id=f"m{self._mid}")
+
+    async def edit_message(self, chat_id, message_id, text, *, metadata=None, finalize=False):
+        self.edits.append((message_id, text, finalize))
+        if finalize:
+            return SendResult(success=False, error="message too old")
+        return SendResult(success=True, message_id=message_id)
+
+    async def delete_message(self, chat_id, message_id, metadata=None):
+        self.deleted.append(message_id)
+        return SendResult(success=True, message_id=message_id)
+
+    async def send_typing(self, chat_id, metadata=None):
+        pass
+
+    async def stop_typing(self, chat_id):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_seal_edit_failure_deletes_stale_heartbeat(manager):
+    """Important 2: when the finalize-edit fails, the stale heartbeat message
+    is deleted before falling back to a fresh send, so the turn keeps one slot."""
+    ch = _SealFailChannel()
+    manager._channels["x"] = ch
+    # First heartbeat records a platform msg id for the turn.
+    await manager._handle_heartbeat(_late_hb_event(key="evt2", text="心跳"))
+    assert ch.sent == ["心跳"]
+    hb_msg_id = manager._heartbeat_msg_ids["evt2"]
+    # Final delivery: seal-edit fails -> delete stale msg -> fresh send.
+    await manager._deliver_final(_final_event(key="evt2"))
+    assert hb_msg_id in ch.deleted
+    assert "最终答案" in ch.sent

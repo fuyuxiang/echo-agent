@@ -90,6 +90,7 @@ class ChannelManager:
         self._on_cli_exit = on_cli_exit
         self._stream_states: dict[str, _StreamState] = {}
         self._heartbeat_msg_ids: dict[str, str] = {}  # inbound_event_id -> platform msg id
+        self._finalized_keys: dict[str, float] = {}  # inbound_event_id -> finalize time (bounded set)
         self._inbound_msg_ids: dict[str, tuple[str, str, float]] = {}
         self._max_inbound_ids = 1000
         self._max_stream_states = 500
@@ -191,6 +192,17 @@ class ChannelManager:
                 logger.debug("send_reaction failed on {}: {}", event.channel, e)
 
     async def _deliver_final(self, event: OutboundEvent) -> None:
+        # Authoritative finalize guard: mark this turn finalized synchronously,
+        # before any await yields the event loop, so a still-running heartbeat
+        # timer that fires during downstream channel I/O is discarded rather
+        # than overwriting or duplicating the final answer.
+        key = str(event.metadata.get("_inbound_event_id", ""))
+        if key:
+            async with self._state_lock:
+                self._finalized_keys[key] = time.monotonic()
+                while len(self._finalized_keys) > self._max_inbound_ids:
+                    oldest = next(iter(self._finalized_keys))
+                    del self._finalized_keys[oldest]
         channel = self._channels.get(event.channel)
         has_content = any(b.text or b.url for b in event.content)
         if not has_content:
@@ -200,7 +212,6 @@ class ChannelManager:
             return
         # If a heartbeat already occupies a message on an editable channel, seal
         # the final answer into that same message so the turn uses one slot total.
-        key = str(event.metadata.get("_inbound_event_id", ""))
         if key and getattr(channel, "supports_edit", False):
             async with self._state_lock:
                 hb_msg_id = self._heartbeat_msg_ids.get(key)
@@ -213,12 +224,17 @@ class ChannelManager:
                     )
                     if result and not result.success:
                         logger.warning("Final seal-edit failed on {}: {}", event.channel, result.error)
+                        # Best-effort delete the stale heartbeat message before
+                        # falling back to a fresh send, so the turn does not leave
+                        # a lingering "正在处理中…" message alongside the answer.
+                        await self._delete_stale_heartbeat(channel, event, hb_msg_id)
                         # fall through to a fresh send if the in-place edit failed
                     else:
                         event.metadata["_drop"] = True
                         return
                 except Exception as e:
                     logger.error("Final seal-edit exception on {}: {}", event.channel, e)
+                    await self._delete_stale_heartbeat(channel, event, hb_msg_id)
                     # fall through to a fresh send on edit failure
         send_event = OutboundEvent(
             channel=event.channel,
@@ -237,17 +253,35 @@ class ChannelManager:
             logger.error("Final delivery exception on {}: {}", event.channel, e)
         event.metadata["_drop"] = True
 
+    async def _delete_stale_heartbeat(self, channel, event: OutboundEvent, msg_id: str) -> None:
+        """Best-effort removal of a lingering heartbeat message after a failed
+        seal-edit. Isolated from the caller: failures only log at debug level."""
+        try:
+            await channel.delete_message(
+                event.chat_id, msg_id,
+                metadata=self._public_metadata(event.metadata),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug("stale heartbeat delete failed on {}: {}", event.channel, e)
+
     async def _handle_heartbeat(self, event: OutboundEvent) -> None:
         channel = self._channels.get(event.channel)
         if not channel:
             return
+        # Authoritative finalize guard: if the turn is already finalized, drop
+        # this late beat entirely — no typing refresh, no text, no edit — so it
+        # cannot overwrite the answer or post a stray "正在处理中…" after it.
+        key = str(event.metadata.get("_inbound_event_id", ""))
+        if key:
+            async with self._state_lock:
+                if key in self._finalized_keys:
+                    return
         # Keep typing alive on every beat, regardless of text display.
         try:
             await channel.send_typing(event.chat_id, metadata=self._public_metadata(event.metadata))
         except Exception as e:  # noqa: BLE001
             logger.debug("heartbeat typing failed on {}: {}", event.channel, e)
 
-        key = str(event.metadata.get("_inbound_event_id", ""))
         text = event.text
         if not text:
             return
@@ -498,3 +532,10 @@ class ChannelManager:
                 ]
                 for k in stale_inbound:
                     del self._inbound_msg_ids[k]
+
+                stale_finalized = [
+                    k for k, ts in self._finalized_keys.items()
+                    if (now - ts) > self._inbound_ttl_seconds
+                ]
+                for k in stale_finalized:
+                    del self._finalized_keys[k]
