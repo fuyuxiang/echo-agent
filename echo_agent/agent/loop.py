@@ -253,6 +253,7 @@ class AgentLoop:
         self._tool_iters_since_memory_check = 0
         self._snapshot_enabled = config.memory.snapshot_enabled
         self._memory_snapshots: OrderedDict[str, str] = OrderedDict()
+        self._memory_snapshot_ids: "OrderedDict[str, frozenset[str]]" = OrderedDict()
         self._retrieval_cache: OrderedDict[str, Any] = OrderedDict()
         self._max_cached_sessions = 200
         from echo_agent.agent.background import BackgroundScheduler
@@ -286,6 +287,7 @@ class AgentLoop:
             inference=self.inference,
             working_memories=self._working_memories,
             memory_snapshots=self._memory_snapshots,
+            memory_snapshot_ids=self._memory_snapshot_ids,
             put_snapshot=self.put_memory_snapshot,
             snapshot_enabled=self._snapshot_enabled,
             tool_definitions_fn=self.tools.get_definitions,
@@ -584,14 +586,18 @@ class AgentLoop:
             while len(cache) > self._max_cached_sessions:
                 cache.popitem(last=False)
 
-    async def put_memory_snapshot(self, key: str, value: str) -> None:
-        """快照缓存的唯一写入入口:经统一 LRU 管控,
-        消除 context_stage 直写 dict 带来的无界增长与双锁竞态。"""
+    async def put_memory_snapshot(
+        self, key: str, value: str, ids: "frozenset[str] | None" = None
+    ) -> None:
+        """快照缓存的唯一写入入口:经统一 LRU 管控。同时写入进入快照的 entry.id 集,
+        供动态召回去重。"""
         await self._lru_put(self._memory_snapshots, key, value)
+        await self._lru_put(self._memory_snapshot_ids, key, ids or frozenset())
 
     async def _clear_memory_snapshot(self, session_key: str) -> None:
         async with self._state_lock:
             self._memory_snapshots.pop(session_key, None)
+            self._memory_snapshot_ids.pop(session_key, None)
 
     async def _put_retrieval_cache(self, session_key: str, entry: Any) -> None:
         """检索预取缓存的唯一写入入口:复用统一 LRU(锁 + 上限),
