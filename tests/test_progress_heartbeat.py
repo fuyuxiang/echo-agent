@@ -69,3 +69,97 @@ def test_render_heartbeat_fills_template():
     snap = ActivitySnapshot(elapsed_sec=125, phase="calling_tool", current_tool="read_file")
     text = render_heartbeat(snap, TEMPLATE)
     assert text == "⏳ 正在处理中… 已用时 2 分钟（正在阅读文档）"
+
+
+import asyncio
+from echo_agent.agent.progress_heartbeat import ProgressHeartbeat
+from echo_agent.config.schema import HeartbeatConfig
+from echo_agent.bus.events import InboundEvent
+
+
+class _FakeBus:
+    def __init__(self):
+        self.events = []
+    async def publish_outbound(self, event):
+        self.events.append(event)
+
+
+def _event():
+    return InboundEvent(channel="cli", chat_id="c1", reply_to_id="r1")
+
+
+def _cfg(**kw):
+    return HeartbeatConfig(**{"first_delay_sec": 1, "interval_sec": 1, **kw})
+
+
+@pytest.mark.asyncio
+async def test_short_turn_emits_nothing():
+    bus = _FakeBus()
+    hb = ProgressHeartbeat(bus, _event(), _cfg(first_delay_sec=10))
+    await hb.start(SharedActivityState(started_at=time.monotonic()))
+    await asyncio.sleep(0.05)
+    await hb.stop()
+    assert bus.events == []
+
+
+@pytest.mark.asyncio
+async def test_long_turn_emits_heartbeat():
+    bus = _FakeBus()
+    hb = ProgressHeartbeat(bus, _event(), _cfg(first_delay_sec=0))
+    activity = SharedActivityState(started_at=time.monotonic())
+    activity.enter_tool("web_search")
+    await hb.start(activity)
+    await asyncio.sleep(0.05)
+    await hb.stop()
+    assert len(bus.events) >= 1
+    ev = bus.events[0]
+    assert ev.message_kind == "heartbeat"
+    assert ev.is_final is False
+    assert ev.metadata["_heartbeat"] is True
+    assert ev.metadata["_inbound_event_id"] == "r1" or "_inbound_event_id" in ev.metadata
+    assert ev.metadata["_hb_on_uneditable"] in {"first_only", "off", "every"}
+    assert "已用时" in ev.text and "查阅资料" in ev.text
+
+
+@pytest.mark.asyncio
+async def test_disabled_emits_nothing():
+    bus = _FakeBus()
+    hb = ProgressHeartbeat(bus, _event(), _cfg(enabled=False, first_delay_sec=0))
+    await hb.start(SharedActivityState(started_at=time.monotonic()))
+    await asyncio.sleep(0.05)
+    await hb.stop()
+    assert bus.events == []
+
+
+@pytest.mark.asyncio
+async def test_seal_after_stop_drops_late_heartbeat():
+    bus = _FakeBus()
+    hb = ProgressHeartbeat(bus, _event(), _cfg(first_delay_sec=0))
+    await hb.start(SharedActivityState(started_at=time.monotonic()))
+    await hb.stop()
+    n = len(bus.events)
+    await asyncio.sleep(0.05)
+    assert len(bus.events) == n  # no new events after seal
+
+
+@pytest.mark.asyncio
+async def test_throttle_skips_when_recent_feedback():
+    bus = _FakeBus()
+    hb = ProgressHeartbeat(bus, _event(), _cfg(first_delay_sec=0, interval_sec=100))
+    activity = SharedActivityState(started_at=time.monotonic())
+    activity.mark_visible_feedback()  # recent -> within interval
+    await hb.start(activity)
+    await asyncio.sleep(0.05)
+    await hb.stop()
+    assert bus.events == []
+
+
+@pytest.mark.asyncio
+async def test_publish_exception_does_not_propagate():
+    class _BoomBus:
+        async def publish_outbound(self, event):
+            raise RuntimeError("boom")
+    hb = ProgressHeartbeat(_BoomBus(), _event(), _cfg(first_delay_sec=0))
+    await hb.start(SharedActivityState(started_at=time.monotonic()))
+    await asyncio.sleep(0.05)
+    await hb.stop()  # must not raise

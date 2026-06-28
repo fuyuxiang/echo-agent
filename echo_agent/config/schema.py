@@ -3072,7 +3072,7 @@ class HeartbeatConfig(_Base):
         },
     )
     first_delay_sec: int = Field(
-        default=30, ge=1,
+        default=30, ge=0,
         json_schema_extra={
             "status": "effective", "ref": "agent/progress_heartbeat.py",
             "desc_zh": "首条心跳前的静默阈值(秒),短任务不触发",
