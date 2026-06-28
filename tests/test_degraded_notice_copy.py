@@ -17,11 +17,16 @@ def test_notice_approval_unavailable_is_chinese():
     assert text.startswith("⚠️")
 
 
-def test_notice_approval_timeout_includes_tool_and_id():
+def test_notice_approval_timeout_tells_user_to_retrigger():
+    # On timeout the request is already expired and removed from _pending, so the
+    # notice must NOT tell users to /approve the stale id — it must ask them to
+    # re-trigger the action to get a fresh request.
     text = notice_for(REASON_APPROVAL_TIMEOUT, tool="exec", request_id="abc123")
     assert "exec" in text
-    assert "abc123" in text
-    assert "/approve" in text
+    assert "超时" in text
+    assert "重新发起" in text
+    assert "/approve" not in text
+    assert "abc123" not in text
 
 
 def test_notice_repeat_blocked_is_chinese():

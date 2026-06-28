@@ -34,7 +34,7 @@ from echo_agent.models.inference import InferenceController
 from echo_agent.models.provider import LLMProvider
 from echo_agent.models.router import ModelRouter
 from echo_agent.observability.monitor import TraceLogger
-from echo_agent.permissions.manager import ApprovalManager, CredentialManager
+from echo_agent.permissions.manager import ApprovalManager, ApprovalStatus, CredentialManager
 from echo_agent.runtime_paths import bundled_skills_dir
 from echo_agent.session.manager import Session, SessionManager
 from echo_agent.skills.store import SkillStore
@@ -863,18 +863,53 @@ class AgentLoop:
         request_id = parts[1]
         req = self.approval.get(request_id)
         if not req:
-            return f"Approval request not found: {request_id}"
+            # Not pending — distinguish "already decided / expired" from "never existed"
+            # so users don't see a misleading "not found" for a request they just acted on.
+            return self._describe_inactive_approval(request_id)
         if not self._can_decide_approval(event.sender_id, req):
             return "You are not allowed to decide this approval request."
 
         if command == "/approve":
             level = parts[2] if len(parts) >= 3 else ""
             ok = self.approval.approve(request_id, level=level, decided_by=event.sender_id)
-            return f"Approval request {request_id} approved." if ok else f"Approval request not found: {request_id}"
+            # `ok` is True on the happy path: get()/approve() both read _pending and
+            # no await separates the check above from this act, so today nothing can
+            # decide the request in between. The `else` is a check-then-act (TOCTOU)
+            # guard: if a future change introduces an await in that window, a
+            # concurrent decision could pop the request first — then approve()
+            # returns False and we describe its now-historic state instead of
+            # silently dropping the user's command. See the redeny test for the
+            # forced-False path.
+            return f"Approval request {request_id} approved." if ok else self._describe_inactive_approval(request_id)
 
         reason = parts[2] if len(parts) >= 3 else ""
         ok = self.approval.deny(request_id, reason=reason, decided_by=event.sender_id)
-        return f"Approval request {request_id} denied." if ok else f"Approval request not found: {request_id}"
+        # Same check-then-act guard as /approve above.
+        return f"Approval request {request_id} denied." if ok else self._describe_inactive_approval(request_id)
+
+    def _describe_inactive_approval(self, request_id: str) -> str:
+        """Explain why a non-pending request can't be acted on, based on its history.
+
+        A request leaves `_pending` once it is approved, denied, or times out. The
+        command layer only looks at `_pending`, so without this lookup all three
+        cases collapse into a misleading "not found".
+        """
+        historic = self.approval._find_history(request_id)
+        if historic is None:
+            return f"Approval request not found: {request_id}"
+        status = historic.status
+        if status == ApprovalStatus.APPROVED:
+            when = historic.decided_at or "earlier"
+            return f"Approval request {request_id} was already approved ({when}); no action needed."
+        if status == ApprovalStatus.DENIED:
+            suffix = f": {historic.reason}" if historic.reason else ""
+            return f"Approval request {request_id} was already denied{suffix}."
+        if status == ApprovalStatus.EXPIRED:
+            return (
+                f"Approval request {request_id} expired before it was approved; "
+                "the action did not run. Please re-trigger it to get a fresh request."
+            )
+        return f"Approval request not found: {request_id}"
 
     def _is_approval_command(self, text: str) -> bool:
         stripped = text.strip()

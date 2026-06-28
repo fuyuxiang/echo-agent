@@ -26,10 +26,9 @@ def notice_for(reason: str, *, tool: str = "", request_id: str = "") -> str:
         )
     if reason == REASON_APPROVAL_TIMEOUT:
         tool_label = tool or "该操作"
-        rid = request_id or "<id>"
         return (
-            f"⚠️ 这步需要你确认执行 `{tool_label}`,等待超时已暂停。"
-            f"回复 `/approve {rid}` 继续,或 `/deny {rid}` 取消。"
+            f"⚠️ 这步需要你确认执行 `{tool_label}`,但等待已超时,该审批请求已失效。"
+            "请重新发起该操作以获取新的确认请求。"
         )
     if reason == REASON_REPEAT_BLOCKED:
         return (

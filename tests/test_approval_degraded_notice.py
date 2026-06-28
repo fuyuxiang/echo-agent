@@ -206,3 +206,11 @@ async def test_smart_escalate_still_enters_manual_flow(monkeypatch):
     assert any(getattr(o, "metadata", {}).get("_approval_request") for o in published)
     # and the gate returns a notify-the-user timeout denial rather than hanging
     assert check.denial is not None
+    # The timeout notice must reflect the current copy: the stale request has
+    # expired, so the user is told to re-trigger — NOT to /approve the dead id.
+    assert check.notify_user is True
+    assert check.notice is not None
+    assert "超时" in check.notice
+    assert "重新发起" in check.notice
+    assert "/approve" not in check.notice
+    assert gate._approval is not None  # sanity: gate held a real manager
