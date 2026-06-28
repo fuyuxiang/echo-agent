@@ -535,6 +535,15 @@ class AgentLoop:
         if self._vector_index is not None:
             await self._vector_index.initialize()
         await self._cost_tracker.load()
+        if self._contradiction_detector is not None:
+            try:
+                self.memory.reset_unresolved()
+                for c in await self._contradiction_detector.get_unresolved(limit=10000):
+                    self.memory.mark_contradiction_unresolved(
+                        c.id, c.memory_id_a, c.memory_id_b
+                    )
+            except Exception as e:
+                logger.warning("Unresolved-contradiction rebuild failed: {}", e)
         self._spawn_background(self._start_mcp_background())
         self.bus.subscribe_inbound(self._on_inbound)
         if self._plugin_manager:
