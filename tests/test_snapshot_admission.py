@@ -1,4 +1,5 @@
 # tests/test_snapshot_admission.py
+import inspect
 from pathlib import Path
 
 from echo_agent.memory.store import MemoryStore
@@ -54,3 +55,25 @@ def test_get_snapshot_returns_text_only_and_matches(tmp_path):
     text2, ids = store.get_snapshot_with_ids()
     assert text == text2
     assert "m1" in ids
+
+
+def test_admission_error_degrades_to_admit(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    _add(store, mid="m1", content="likes tea", importance=0.9, access=5)
+
+    # get_context's sort ALSO calls effective_importance (and is not wrapped in
+    # try/except), so a blanket raise would break sorting before admission is
+    # ever reached. Narrow the seam: delegate to the real implementation, and
+    # raise ONLY when the call originates from _admit_to_snapshot. This keeps the
+    # test honest — it exercises an exception during the admission
+    # confidence-check specifically, and proves the entry is still admitted.
+    real = store._forgetting.effective_importance
+
+    def _boom(entry):
+        if any(frame.function == "_admit_to_snapshot" for frame in inspect.stack()):
+            raise RuntimeError("forgetting blew up")
+        return real(entry)
+
+    monkeypatch.setattr(store._forgetting, "effective_importance", _boom)
+    text, ids = store.get_snapshot_with_ids()
+    assert "m1" in ids  # 降级:准入检查抛错时仍固化,不因异常丢失
