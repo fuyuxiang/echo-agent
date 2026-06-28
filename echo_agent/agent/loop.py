@@ -357,6 +357,23 @@ class AgentLoop:
             if self._hybrid_retriever
             else None
         )
+        # Skill admission gate — always-on, independent of evolution.enabled.
+        # Uses its own TrajectoryStore over the shared storage backend so skill
+        # distillation governance works even when the evolution engine is off.
+        # Schema init is deferred to start() (init_schema is async; doing it as a
+        # fire-and-forget in __init__ would race the first skill review).
+        self._skill_admission = None
+        self._skill_candidate_store = None
+        if storage is not None:
+            from echo_agent.evolution.store import TrajectoryStore
+            from echo_agent.skills.admission import SkillAdmission
+            self._skill_candidate_store = TrajectoryStore(storage)
+            self._skill_admission = SkillAdmission(
+                skill_store=self.skill_store,
+                candidate_store=self._skill_candidate_store,
+                policy=config.skills.admission_policy,
+                auto_write_risk=config.skills.auto_write_risk,
+            )
         self._response_stage = ResponseStage(
             config=config,
             sessions=self.sessions,
@@ -367,6 +384,7 @@ class AgentLoop:
             spawn_fn=self._spawn_background,
             clear_memory_snapshot_fn=self._clear_memory_snapshot,
             skill_store=self.skill_store,
+            skill_admission=self._skill_admission,
             working_memories=self._working_memories,
             prefetcher=self._prefetcher,
         )
@@ -548,6 +566,13 @@ class AgentLoop:
                 logger.warning("Unresolved-contradiction rebuild failed: {}", e)
         self._spawn_background(self._start_mcp_background())
         self.bus.subscribe_inbound(self._on_inbound)
+        # Skill admission candidate store: ensure schema exists before the first
+        # background skill review can stage a candidate. Independent of evolution.
+        if self._skill_candidate_store is not None:
+            try:
+                await self._skill_candidate_store.init_schema()
+            except Exception as e:
+                logger.warning("Skill candidate store schema init failed: {}", e)
         if self._plugin_manager:
             await self._plugin_manager.hooks.dispatch("on_agent_start")
         if self.evolution is not None:
