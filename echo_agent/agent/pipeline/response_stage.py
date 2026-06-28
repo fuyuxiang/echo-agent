@@ -147,7 +147,6 @@ class ResponseStage:
                     event.session_key, event.text, event.sender_id
                 ),
                 tier=Tier.DISCARDABLE,
-                session_key=event.session_key,
             )
 
         return ProcessResult(
