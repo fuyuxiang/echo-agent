@@ -472,6 +472,12 @@ class InferenceStage:
         for tool_index, tool_call in enumerate(response.tool_calls):
             d = _Decision(tool_call=tool_call, index=tool_index, verdict="RUN")
 
+            # Emit "Using tool" BEFORE approval so BLOCKED tools (denied /
+            # repeat-guarded / hook-cancelled) still surface this progress,
+            # matching the pre-refactor loop where it fired at the top of the
+            # body. Phase B must NOT re-emit it for RUN tools.
+            await self._emit_progress(ctx, f"Using tool: {tool_call.name}", tool_hint=True)
+
             approval_check = await self._approval_gate.check(
                 tool_call.name,
                 tool_call.arguments,
@@ -588,7 +594,6 @@ class InferenceStage:
             if d.index in conc_idx:
                 continue
             tool_call = d.tool_call
-            await self._emit_progress(ctx, f"Using tool: {tool_call.name}", tool_hint=True)
 
             import time as _time
             _tool_start_ts = _time.monotonic()
@@ -625,7 +630,13 @@ class InferenceStage:
 
                 results[d.index] = result
             except BaseException as exc:  # noqa: BLE001 — recorded per-tool in Phase C
+                # Fail-fast: mirror the original serial loop's `raise` on the
+                # first tool exception. Record this failure but DO NOT run any
+                # later serial tool — their side effects must not fire once a
+                # sibling has crashed. Phase C raises at this decision's index
+                # (in original order) before reaching the unexecuted ones.
                 results[d.index] = exc
+                break
 
         # ---- Phase C: serial writeback in ORIGINAL tool_call order ----
         for d in decisions:
