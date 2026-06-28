@@ -574,8 +574,20 @@ class InferenceStage:
 
             async def _run_one(d):
                 async with sem:
-                    return await self._tools.execute(
+                    result = await self._tools.execute(
                         d.tool_call.name, d.tool_call.arguments, d.exec_ctx)
+                    # post_tool_call hook — kept consistent with the serial group
+                    # below so concurrently-executed read-only tools still honor
+                    # the hook contract (e.g. evolution trajectory recording).
+                    # `result` is a local var per decision; the gather'd tasks
+                    # share no mutable state here. If a hook raises, it propagates
+                    # out and is captured by gather(return_exceptions=True).
+                    if self._hook_registry and self._hook_registry.has_hooks("post_tool_call"):
+                        result = await self._hook_registry.dispatch_modify(
+                            "post_tool_call", result, d.tool_call.name,
+                            d.tool_call.arguments, d.exec_ctx,
+                        )
+                    return result
 
             conc_order = list(conc_idx)
             gathered = await asyncio.gather(

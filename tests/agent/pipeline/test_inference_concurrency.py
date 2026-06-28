@@ -158,3 +158,34 @@ async def test_max_concurrent_one_is_serial():
     tool_msgs = [m for m in ctx.messages if m.get("role") == "tool"]
     assert [m["tool_call_id"] for m in tool_msgs] == ["a", "b"]
     assert result.total_tool_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_concurrent_group_fires_post_tool_call_hook_per_tool():
+    """Each concurrently-executed tool must trigger the post_tool_call hook,
+    mirroring the serial group's behavior (regression for the hook being
+    skipped in the concurrent _run_one path)."""
+    reg = MagicMock()
+    reg.has = MagicMock(return_value=False)
+    reg.get = MagicMock(return_value=_tool(read_only=True))
+    reg.execute = AsyncMock(side_effect=lambda name, args, ctx: MagicMock(
+        success=True, text=f"read:{args['path']}", error=None))
+    stage = _stage(reg, enabled=True, max_concurrent=4)
+    stage._provider.chat_stream_with_retry = _two_reads_then_stop()
+
+    hooks = MagicMock()
+    hooks.has_hooks = MagicMock(side_effect=lambda name: name == "post_tool_call")
+    # dispatch_modify returns the result unchanged (identity), recording calls
+    hooks.dispatch_modify = AsyncMock(side_effect=lambda event, result, *a: result)
+    stage._hook_registry = hooks
+
+    ctx = _ctx()
+    result = await stage._run_tool_loop(ctx, ctx.messages)
+
+    # both reads went concurrent and each fired the post_tool_call hook
+    assert result.total_tool_calls == 2
+    post_calls = [c for c in hooks.dispatch_modify.await_args_list
+                  if c.args[0] == "post_tool_call"]
+    assert len(post_calls) == 2
+    hooked_tools = {c.args[2] for c in post_calls}
+    assert hooked_tools == {"read_file"}
