@@ -187,8 +187,13 @@ class TestConsolidationWorker:
             spawned.append(asyncio.ensure_future(coro))
 
         await worker.schedule("test:7", spawn_fn)
-        await asyncio.gather(*spawned)
+        # _run now re-raises so the DURABLE scheduler tier can retry; collect the
+        # exception instead of letting gather propagate it.
+        results = await asyncio.gather(*spawned, return_exceptions=True)
+        assert any(isinstance(r, RuntimeError) for r in results)
 
+        # Regardless of failure, the session must be released from _pending so a
+        # later turn (or a scheduler retry with a fresh factory) can re-drive it.
         assert not worker.is_pending("test:7")
 
 
@@ -231,6 +236,47 @@ class TestDurableScheduling:
         # The factory yields a fresh awaitable that actually runs consolidation.
         await captured["coro"]()
         mock_consolidator.consolidate_chunk.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_durable_retry_actually_recovers_transient_failure(
+        self, mock_sessions, mock_consolidator
+    ):
+        """End-to-end: a transient consolidation failure must be retried by the
+        real DURABLE scheduler tier. Regression guard for the bug where _run
+        swallowed its own exception, so the scheduler never saw a raise and the
+        DURABLE retry path was inert."""
+        from echo_agent.agent.background import BackgroundScheduler, Tier
+
+        session = Session(key="test:retry")
+        session.add_message("user", "hello")
+        session.add_message("assistant", "hi")
+        mock_sessions.get_or_create = AsyncMock(return_value=session)
+        mock_sessions.save = AsyncMock()
+
+        calls = []
+
+        async def flaky(chunk):
+            calls.append(1)
+            if len(calls) < 2:
+                raise RuntimeError("transient")
+            return True
+
+        mock_consolidator.consolidate_chunk = AsyncMock(side_effect=flaky)
+
+        worker = ConsolidationWorker(
+            sessions=mock_sessions,
+            consolidator=mock_consolidator,
+            sleep_consolidation=False,
+        )
+
+        sched = BackgroundScheduler(max_concurrency=2, durable_retries=2)
+        await worker.schedule("test:retry", sched.spawn, tier=Tier.DURABLE)
+        await sched.aclose(timeout=5.0)
+
+        # First attempt raised, scheduler retried with a fresh factory coro, and
+        # the second attempt committed. _pending is released either way.
+        assert len(calls) >= 2
+        assert not worker.is_pending("test:retry")
 
 
 class TestSnapshotValidity:
