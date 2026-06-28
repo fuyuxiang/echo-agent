@@ -655,10 +655,18 @@ class InferenceStage:
 
             res = results.get(d.index)
             if isinstance(res, BaseException):
-                # Mirror the original interrupted-tool compensation: every
-                # announced tool_call must get a paired tool message, the failure
-                # is counted by the circuit breaker, and the exception propagates
-                # (a bare asyncio.CancelledError must never be swallowed).
+                # Every announced tool_call must get a paired tool message, and
+                # the failure is counted by the circuit breaker. What differs is
+                # whether the exception propagates:
+                #   - concurrent group -> failure isolation: append an error tool
+                #     message, record the failure, but DO NOT raise — sibling
+                #     read-only tools have already completed and the batch must
+                #     not be aborted by one tool crashing.
+                #   - serial group -> fail-fast: preserve the original loop's
+                #     behavior and re-raise so later writeback is skipped.
+                # A bare asyncio.CancelledError must NEVER be swallowed
+                # regardless of source: a cancellation signal is not an ordinary
+                # tool failure and must always propagate.
                 err_text = "Tool execution interrupted before producing a result."
                 messages.append({"role": "tool", "tool_call_id": tool_call.id,
                                  "name": tool_call.name, "content": err_text})
@@ -675,6 +683,12 @@ class InferenceStage:
                 except Exception:
                     pass
                 counters.total_tool_calls += 1
+                if isinstance(res, asyncio.CancelledError):
+                    raise res
+                if d.index in conc_idx:
+                    # Isolated concurrent-group failure: keep writing back the
+                    # remaining decisions instead of aborting the batch.
+                    continue
                 raise res
 
             result = res
