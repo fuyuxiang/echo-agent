@@ -6,13 +6,16 @@ to capture a reusable skill. Runs in the background so it doesn't block the user
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
 from echo_agent.memory.store import scan_text_for_threats
 from echo_agent.models.provider import LLMProvider
 from echo_agent.skills.store import SkillStore
+
+if TYPE_CHECKING:
+    from echo_agent.skills.admission import SkillAdmission
 
 _REVIEW_PROMPT = """\
 Review the conversation above and consider saving or updating a skill if appropriate.
@@ -35,10 +38,21 @@ _MAX_REVIEW_ITERATIONS = 8
 class SkillReviewer:
     """Reviews conversations and auto-creates/updates skills."""
 
-    def __init__(self, provider: LLMProvider, store: SkillStore, model: str = ""):
+    def __init__(
+        self,
+        provider: LLMProvider,
+        store: SkillStore,
+        model: str = "",
+        admission: "SkillAdmission | None" = None,
+        session_key: str = "",
+        channel: str = "",
+    ):
         self._provider = provider
         self._store = store
         self._model = model
+        self._admission = admission
+        self._session_key = session_key
+        self._channel = channel
 
     async def review(self, conversation: list[dict[str, Any]]) -> list[str]:
         """Run a background review. Returns list of action summaries."""
@@ -72,7 +86,7 @@ class SkillReviewer:
             messages.append(assistant_msg)
 
             for tc in response.tool_calls:
-                result = self._execute_tool(tc.name, tc.arguments)
+                result = await self._execute_tool(tc.name, tc.arguments)
                 messages.append({"role": "tool", "tool_call_id": tc.id, "name": tc.name, "content": result})
                 if not result.startswith("Error"):
                     actions.append(f"{tc.name}: {result}")
@@ -81,15 +95,47 @@ class SkillReviewer:
             logger.info("Skill review completed with {} action(s)", len(actions))
         return actions
 
-    def _execute_tool(self, name: str, params: dict[str, Any]) -> str:
-        """Synchronously execute a skill management tool call."""
+    async def _execute_tool(self, name: str, params: dict[str, Any]) -> str:
+        """Execute a skill management tool call."""
         if name == "skill_manage":
-            return self._handle_skill_manage(params)
+            return await self._handle_skill_manage(params)
         return f"Error: unknown tool '{name}'"
 
-    def _handle_skill_manage(self, params: dict[str, Any]) -> str:
+    # action → (operation, risk) 映射;edit 语义等同 patch(改已存在技能)
+    _ACTION_TO_OP = {
+        "create": ("create", "high"),
+        "edit": ("patch", "low"),
+        "patch": ("patch", "low"),
+        "delete": ("delete", "high"),
+    }
+
+    async def _route_via_admission(self, action: str, params: dict[str, Any]) -> str:
+        from echo_agent.evolution.types import SkillCandidate
+
+        op, risk = self._ACTION_TO_OP[action]
+        c = SkillCandidate(
+            operation=op,
+            skill_name=params.get("name", ""),
+            source="reviewer",
+            created_by="reviewer",
+            created_from_session=self._session_key,
+            channel=self._channel,
+            risk=risk,
+            proposed_content=params.get("content", ""),
+            proposed_patch_old=params.get("old_text", ""),
+            proposed_patch_new=params.get("new_text", ""),
+            rationale="background skill review",
+        )
+        res = await self._admission.admit(c)
+        return f"{res.outcome}: {res.message}"
+
+    async def _handle_skill_manage(self, params: dict[str, Any]) -> str:
         action = params.get("action", "")
         skill_name = params.get("name", "")
+
+        # 收编:已接 admission 时,技能正文类操作统一走准入治理层
+        if self._admission is not None and action in self._ACTION_TO_OP:
+            return await self._route_via_admission(action, params)
 
         # Lightweight gate: scan any content that will land in the skill store
         # for prompt-injection/exfiltration before writing. A poisoned turn
