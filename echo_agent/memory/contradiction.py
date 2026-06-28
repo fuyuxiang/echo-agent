@@ -153,6 +153,9 @@ class ContradictionDetector:
                 contradiction.created_at,
             ),
         )
+        marker = getattr(self._store, "mark_contradiction_unresolved", None)
+        if marker is not None:
+            marker(contradiction.id, contradiction.memory_id_a, contradiction.memory_id_b)
         logger.debug("Stored contradiction {}", contradiction.id)
 
     async def resolve(
@@ -168,6 +171,10 @@ class ContradictionDetector:
             (resolution, now, contradiction_id),
         )
         logger.info("Resolved contradiction {} as '{}'", contradiction_id, resolution)
+
+        clearer = getattr(self._store, "clear_contradiction", None)
+        if clearer is not None:
+            clearer(contradiction_id)
 
         if winner_id and resolution in ("a_wins", "b_wins"):
             rows = await self._storage.fetch_sql(
