@@ -564,9 +564,9 @@ class AgentLoop:
         await self._bg_scheduler.aclose(timeout=10.0)
         logger.info("Agent loop stopped")
 
-    def _spawn_background(self, coro: Any, *, session_key: str = "", tier: Any = None) -> None:
+    def _spawn_background(self, coro: Any, *, tier: Any = None) -> None:
         from echo_agent.agent.background import Tier
-        self._bg_scheduler.spawn(coro, tier=tier or Tier.DISCARDABLE, session_key=session_key)
+        self._bg_scheduler.spawn(coro, tier=tier or Tier.DISCARDABLE)
 
     async def _lru_put(self, cache: OrderedDict, key: str, value: Any) -> None:  # type: ignore[type-arg]
         async with self._state_lock:

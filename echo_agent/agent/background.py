@@ -76,7 +76,6 @@ class BackgroundScheduler:
         coro: Spawnable,
         *,
         tier: Tier = Tier.DISCARDABLE,
-        session_key: str = "",
     ) -> None:
         """Schedule ``coro`` under the given tier.
 
@@ -97,8 +96,6 @@ class BackgroundScheduler:
         if tier is Tier.DISCARDABLE:
             self._slot_load += 1
         task = asyncio.create_task(self._run(coro, tier))
-        if session_key:
-            task._session_key = session_key  # type: ignore[attr-defined]
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         if tier is Tier.DISCARDABLE:
