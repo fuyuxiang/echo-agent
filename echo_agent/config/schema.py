@@ -3022,6 +3022,28 @@ class UIConfig(_Base):
     )
 
 
+class ToolConcurrencyConfig(_Base):
+    """Concurrent execution of read-only, non-overlapping tool calls."""
+
+    enabled: bool = Field(
+        default=True,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/pipeline/inference_stage.py",
+            "desc_zh": "是否对只读、路径不冲突的工具并发执行",
+            "desc_en": "Run read-only, non-overlapping tool calls concurrently",
+        },
+    )
+    max_concurrent: int = Field(
+        default=4,
+        ge=1,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/pipeline/inference_stage.py",
+            "desc_zh": "工具并发上限(1 等价关闭并发,退化为串行)",
+            "desc_en": "Max concurrent tools (1 disables concurrency = serial)",
+        },
+    )
+
+
 class AgentBehaviorConfig(_Base):
     """High-level agent loop tuning surfaced by the setup wizard.
 
@@ -3038,6 +3060,9 @@ class AgentBehaviorConfig(_Base):
             "desc_zh": "agent 主循环最大迭代数",
             "desc_en": "Maximum iterations of the agent main loop",
         },
+    )
+    tool_concurrency: ToolConcurrencyConfig = Field(
+        default_factory=ToolConcurrencyConfig,
     )
 
 
