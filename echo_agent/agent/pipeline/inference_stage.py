@@ -152,6 +152,8 @@ class InferenceStage:
         out.metadata = dict(event.metadata)
         out.metadata.update({"_progress": True, "_tool_hint": tool_hint, "_inbound_event_id": event.event_id})
         await self._bus.publish_outbound(out)
+        if ctx.activity is not None:
+            ctx.activity.mark_visible_feedback()
 
     async def _emit_tool_event(self, ctx: PipelineContext, metadata: dict[str, Any]) -> None:
         if not ctx.publish_response:
@@ -167,6 +169,8 @@ class InferenceStage:
         out.metadata = {"_progress": True, "_inbound_event_id": event.event_id}
         out.metadata.update(metadata)
         await self._bus.publish_outbound(out)
+        if ctx.activity is not None:
+            ctx.activity.mark_visible_feedback()
 
     async def run(self, ctx: PipelineContext) -> InferenceResult:
         """Execute the inference loop, returning the final result."""
@@ -476,7 +480,9 @@ class InferenceStage:
             # repeat-guarded / hook-cancelled) still surface this progress,
             # matching the pre-refactor loop where it fired at the top of the
             # body. Phase B must NOT re-emit it for RUN tools.
-            await self._emit_progress(ctx, f"Using tool: {tool_call.name}", tool_hint=True)
+            from echo_agent.agent.progress_heartbeat import friendly_activity, ActivitySnapshot
+            _friendly = friendly_activity(ActivitySnapshot(0.0, "calling_tool", tool_call.name))
+            await self._emit_progress(ctx, _friendly, tool_hint=True)
 
             approval_check = await self._approval_gate.check(
                 tool_call.name,
@@ -617,6 +623,8 @@ class InferenceStage:
             }
             if _debug_progress:
                 _tool_start_meta["args"] = str(tool_call.arguments)[:500]
+            if ctx.activity is not None:
+                ctx.activity.enter_tool(tool_call.name)
             await self._emit_tool_event(ctx, _tool_start_meta)
 
             try:
@@ -639,6 +647,8 @@ class InferenceStage:
                 if _debug_progress:
                     _tool_result_meta["result_preview"] = result.text[:500]
                 await self._emit_tool_event(ctx, _tool_result_meta)
+                if ctx.activity is not None:
+                    ctx.activity.exit_tool()
 
                 results[d.index] = result
             except BaseException as exc:  # noqa: BLE001 — recorded per-tool in Phase C

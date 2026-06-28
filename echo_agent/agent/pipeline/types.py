@@ -29,6 +29,7 @@ class PipelineContext:
     plan_run_id: str = ""
     intro_text: str = ""
     stream_publisher: Any = None
+    activity: Any = None  # SharedActivityState | None; updated by inference, read by heartbeat
 
 
 @dataclass
