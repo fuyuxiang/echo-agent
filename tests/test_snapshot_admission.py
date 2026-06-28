@@ -68,12 +68,18 @@ def test_admission_error_degrades_to_admit(tmp_path, monkeypatch):
     # test honest — it exercises an exception during the admission
     # confidence-check specifically, and proves the entry is still admitted.
     real = store._forgetting.effective_importance
+    raised = False
 
     def _boom(entry):
         if any(frame.function == "_admit_to_snapshot" for frame in inspect.stack()):
+            nonlocal raised
+            raised = True
             raise RuntimeError("forgetting blew up")
         return real(entry)
 
     monkeypatch.setattr(store._forgetting, "effective_importance", _boom)
     text, ids = store.get_snapshot_with_ids()
     assert "m1" in ids  # 降级:准入检查抛错时仍固化,不因异常丢失
+    # self-validating: prove the exception path was genuinely hit, so a future
+    # rename of _admit_to_snapshot can't let _boom silently delegate and pass.
+    assert raised
