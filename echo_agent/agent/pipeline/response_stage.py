@@ -127,7 +127,9 @@ class ResponseStage:
         # Memory review must run even for pure chat — personal facts are shared in
         # plain conversation without any tool calls, so it does NOT gate on tool count.
         if result.should_review_skills and result.total_tool_calls > 0 and not ephemeral:
-            self._spawn_fn(self._background_skill_review(ctx.messages))
+            self._spawn_fn(self._background_skill_review(
+                ctx.messages, event.session_key, event.channel,
+            ))
         if result.should_review_memory and not ephemeral:
             self._spawn_fn(self._background_memory_review(ctx.messages, event.session_key))
 
@@ -186,7 +188,9 @@ class ResponseStage:
         except Exception as e:
             logger.debug("Working memory update failed: {}", e)
 
-    async def _background_skill_review(self, messages: list[dict[str, Any]]) -> None:
+    async def _background_skill_review(
+        self, messages: list[dict[str, Any]], session_key: str = "", channel: str = "",
+    ) -> None:
         try:
             from echo_agent.skills.reviewer import SkillReviewer
             if self._skill_store is None:
@@ -197,6 +201,8 @@ class ResponseStage:
                 store=self._skill_store,
                 model=self._default_model,
                 admission=self._skill_admission,
+                session_key=session_key,
+                channel=channel,
             )
             actions = await reviewer.review(messages)
             if actions:

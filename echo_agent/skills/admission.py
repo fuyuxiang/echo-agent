@@ -60,7 +60,7 @@ class SkillAdmission:
     def _should_write(self, c: SkillCandidate) -> bool:
         if c.operation == "delete":
             # delete 永远走暂存,即便 auto_write
-            return self._policy == "auto_write" and self._auto_write_risk == "high" and False
+            return False
         if self._policy == "manual_only":
             return False
         if self._policy == "stage_for_review":
