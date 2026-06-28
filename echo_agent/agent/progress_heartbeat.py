@@ -11,6 +11,46 @@ import time
 from dataclasses import dataclass, field
 
 
+_TOOL_FRIENDLY: dict[str, str] = {
+    "web_search": "正在查阅资料",
+    "search": "正在查阅资料",
+    "read_file": "正在阅读文档",
+    "filesystem": "正在整理文件",
+    "shell": "正在执行命令",
+    "code_exec": "正在运行代码",
+    "memory": "正在回忆相关内容",
+    "knowledge": "正在检索知识库",
+    "vision": "正在查看图片",
+    "document": "正在处理文档",
+    "delegate": "正在协调子任务",
+}
+_PHASE_FRIENDLY: dict[str, str] = {
+    "thinking": "思考中",
+    "generating": "正在组织答案",
+}
+_FALLBACK_ACTIVITY = "处理中"
+
+
+def friendly_activity(snapshot: "ActivitySnapshot") -> str:
+    if snapshot.phase == "calling_tool" and snapshot.current_tool:
+        return _TOOL_FRIENDLY.get(snapshot.current_tool, _FALLBACK_ACTIVITY)
+    return _PHASE_FRIENDLY.get(snapshot.phase, _FALLBACK_ACTIVITY)
+
+
+def format_elapsed(elapsed_sec: float) -> str:
+    secs = int(elapsed_sec)
+    if secs < 60:
+        return f"{secs} 秒"
+    return f"{secs // 60} 分钟"
+
+
+def render_heartbeat(snapshot: "ActivitySnapshot", template: str) -> str:
+    return template.format(
+        elapsed=format_elapsed(snapshot.elapsed_sec),
+        activity=friendly_activity(snapshot),
+    )
+
+
 @dataclass
 class ActivitySnapshot:
     elapsed_sec: float
