@@ -17,6 +17,10 @@ def _make_config():
     config.skills.creation_nudge_interval = 0
     config.memory = MagicMock()
     config.memory.memory_nudge_interval = 0
+    config.agent = MagicMock()
+    config.agent.tool_concurrency = MagicMock()
+    config.agent.tool_concurrency.enabled = False
+    config.agent.tool_concurrency.max_concurrent = 1
     return config
 
 
