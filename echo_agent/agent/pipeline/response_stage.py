@@ -61,6 +61,7 @@ class ResponseStage:
         spawn_fn: Callable[[Any], None],
         clear_memory_snapshot_fn: Callable[[str], Coroutine[Any, Any, None]],
         skill_store: Any = None,
+        skill_admission: Any = None,
         working_memories: Any = None,
         prefetcher: Any = None,
     ):
@@ -73,6 +74,7 @@ class ResponseStage:
         self._spawn_fn = spawn_fn
         self._clear_memory_snapshot = clear_memory_snapshot_fn
         self._skill_store = skill_store
+        self._skill_admission = skill_admission
         self._working_memories = working_memories
         self._prefetcher = prefetcher
 
@@ -194,6 +196,7 @@ class ResponseStage:
                 provider=self._provider,
                 store=self._skill_store,
                 model=self._default_model,
+                admission=self._skill_admission,
             )
             actions = await reviewer.review(messages)
             if actions:
