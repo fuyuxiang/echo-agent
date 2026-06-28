@@ -166,6 +166,14 @@ def _build_parser() -> argparse.ArgumentParser:
     evo_parser.add_argument("-c", "--config", help="Path to config file")
     evo_parser.add_argument("-w", "--workspace", help="Workspace directory")
 
+    # skill (admission: staging / approve / reject) — not gated on evolution.enabled
+    skill_parser = subparsers.add_parser("skill", help="Manage skill-distillation admission (staging/approve/reject)")
+    skill_parser.add_argument("skill_action", choices=["list-staged", "approve", "reject"])
+    skill_parser.add_argument("candidate_id", nargs="?", default="")
+    skill_parser.add_argument("--reason", default="")
+    skill_parser.add_argument("-c", "--config", help="Path to config file")
+    skill_parser.add_argument("-w", "--workspace", help="Workspace directory")
+
     # config
     config_parser = subparsers.add_parser("config", help="Inspect and validate configuration")
     config_parser.add_argument(
@@ -260,6 +268,20 @@ def _dispatch() -> None:
                 skill=skill,
                 status_filter=getattr(args, "status_filter", "") or "",
                 candidate_id=candidate_id,
+                config_path=args.config or args.top_config,
+                workspace=args.workspace or args.top_workspace,
+            )
+        except KeyboardInterrupt:
+            pass
+        return
+
+    if args.command == "skill":
+        from echo_agent.cli.skill_admission_cmd import run_skill_command
+        try:
+            run_skill_command(
+                args.skill_action,
+                candidate_id=args.candidate_id,
+                reason=args.reason,
                 config_path=args.config or args.top_config,
                 workspace=args.workspace or args.top_workspace,
             )
