@@ -7,6 +7,7 @@ Orchestrates pipeline stages: context building, inference, and response finaliza
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from collections import OrderedDict
 from pathlib import Path
@@ -42,6 +43,7 @@ from echo_agent.agent.streaming import (
     ProcessResult as _ProcessResult,
     TokenStreamPublisher as _TokenStreamPublisher,
 )
+from echo_agent.agent.progress_heartbeat import ProgressHeartbeat, SharedActivityState
 from echo_agent.agent.degraded_notice import (
     GENERIC_FALLBACK_TEXT,
     combine_notices,
@@ -704,8 +706,11 @@ class AgentLoop:
         async with session_lock:
             trace_id = uuid.uuid4().hex[:12]
             span = self.tracer.start_span(trace_id, f"s_{trace_id}", "process_message", "input")
+            heartbeat = ProgressHeartbeat(self.bus, event, self.config.agent.heartbeat)
+            activity = SharedActivityState(started_at=time.monotonic())
             try:
-                result = await self._process_event(event, trace_id, publish_response=True)
+                await heartbeat.start(activity)
+                result = await self._process_event(event, trace_id, publish_response=True, activity=activity)
                 response_text = result.response_text
                 notice = combine_notices(result.degraded_notices)
 
@@ -747,9 +752,10 @@ class AgentLoop:
                 error_out.metadata["_inbound_event_id"] = event.event_id
                 await self.bus.publish_outbound(error_out)
             finally:
+                await heartbeat.stop()
                 self.tracer.flush_trace(trace_id)
 
-    async def _process_event(self, event: InboundEvent, trace_id: str, *, publish_response: bool = False) -> _ProcessResult:
+    async def _process_event(self, event: InboundEvent, trace_id: str, *, publish_response: bool = False, activity: Any = None) -> _ProcessResult:
         """处理单个入站事件 — 委托给 pipeline stages。"""
         session = await self.sessions.get_or_create(event.session_key)
         if event.session_key not in self._working_memories:
@@ -804,6 +810,8 @@ class AgentLoop:
                 stream_publisher=stream_publisher,
                 intro_text=intro_text,
             )
+            if activity is not None:
+                ctx.activity = activity
 
             # Stage 2: Inference (LLM + tool execution loop)
             inference_result = await self._inference_stage.run(ctx)
