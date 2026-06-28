@@ -321,9 +321,18 @@ class ChannelManager:
         send_event.message_kind = "heartbeat"
         send_event.metadata = self._public_metadata(event.metadata)
         result = await channel.send(send_event)
-        if track and result and result.success and result.message_id:
+        if result and result.success and not getattr(result, "skipped", False):
+            logger.info("heartbeat delivered: channel={} chat={}", event.channel, str(event.chat_id)[:8])
+        elif result and not result.success:
+            logger.info("heartbeat send failed: channel={} error={}", event.channel, getattr(result, "error", ""))
+        # Record the turn key on any successful send — not only when a platform
+        # message_id is returned. Uneditable channels (e.g. weixin) succeed
+        # without an id; the first_only strategy keys off membership (key in
+        # _heartbeat_msg_ids), so an empty-string value is enough to suppress
+        # repeat beats. Editable channels still store their real id for seal/edit.
+        if track and result and result.success and not getattr(result, "skipped", False):
             async with self._state_lock:
-                self._heartbeat_msg_ids[key] = result.message_id
+                self._heartbeat_msg_ids[key] = result.message_id or ""
                 while len(self._heartbeat_msg_ids) > self._max_inbound_ids:
                     oldest = next(iter(self._heartbeat_msg_ids))
                     del self._heartbeat_msg_ids[oldest]
