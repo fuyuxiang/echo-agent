@@ -21,8 +21,18 @@ def _ffmpeg_available() -> bool:
         return False
 
 
+def _pilk_available() -> bool:
+    try:
+        import pilk  # noqa: F401
+
+        return True
+    except Exception:
+        return False
+
+
 pytestmark = pytest.mark.skipif(
-    not _ffmpeg_available(), reason="ffmpeg not available for SILK encoding"
+    not (_ffmpeg_available() and _pilk_available()),
+    reason="ffmpeg and pilk required for SILK encoding",
 )
 
 

@@ -93,6 +93,7 @@ class TestIsOpenAICompatibleProvider:
         assert _is_openai_compatible_provider(wrapped) is True
 
     def test_wrapped_anthropic_returns_false(self):
+        pytest.importorskip("anthropic")
         from echo_agent.models.providers.anthropic_provider import AnthropicProvider
         from echo_agent.models.rate_limiter import RateLimitedProvider, TokenBucketLimiter
         inner = AnthropicProvider(api_key="sk-ant-test")

@@ -19,6 +19,20 @@ def _fake_proc(returncode=0, stdout=b"out", stderr=b"err"):
     return proc
 
 
+def _timeout_wait_for():
+    """AsyncMock for asyncio.wait_for that raises TimeoutError but first closes
+    the coroutine it was handed, so proc.communicate(...) doesn't leak as an
+    un-awaited coroutine (which surfaces as a RuntimeWarning at GC time)."""
+    import asyncio
+
+    async def _side_effect(coro, *args, **kwargs):
+        if asyncio.iscoroutine(coro):
+            coro.close()
+        raise asyncio.TimeoutError()
+
+    return AsyncMock(side_effect=_side_effect)
+
+
 # ===========================================================================
 # RemoteExecutor.execute
 # ===========================================================================
@@ -65,7 +79,7 @@ class TestRemoteExecutorExecute:
     async def test_execute_timeout(self):
         ex = self._make()
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=_fake_proc())), \
-             patch("asyncio.wait_for", AsyncMock(side_effect=__import__("asyncio").TimeoutError())):
+             patch("asyncio.wait_for", _timeout_wait_for()):
             resp = await ex.execute(ExecRequest(command="sleep 100", timeout=1))
         assert resp.success is False
         assert "Timeout" in resp.stderr
@@ -150,7 +164,7 @@ class TestContainerExecutor:
         ex = ContainerExecutor(image="python:3")
         ex._container_id = "cid123"
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=_fake_proc())), \
-             patch("asyncio.wait_for", AsyncMock(side_effect=__import__("asyncio").TimeoutError())):
+             patch("asyncio.wait_for", _timeout_wait_for()):
             resp = await ex.execute(ExecRequest(command="sleep 99", timeout=1))
         assert resp.success is False
         assert "Timeout" in resp.stderr
