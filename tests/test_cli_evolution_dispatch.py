@@ -8,7 +8,7 @@ guards (missing id / skill) and the unknown-action exit.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -17,9 +17,18 @@ from echo_agent.cli import evolution_cmd
 _T = "echo_agent.cli.evolution_cmd"
 
 
-@pytest.mark.parametrize("action", ["status", "run", "list-candidates"])
-def test_dispatch_no_arg_actions_run_async(action):
-    with patch(f"{_T}.asyncio.run") as run:
+# Each action dispatches to an async helper via asyncio.run. We patch both the
+# helper (so evaluating helper(...) yields a plain value, not a live coroutine
+# that would later warn "never awaited") and asyncio.run (so no event loop
+# starts). This keeps the dispatcher test synchronous and warning-clean.
+@pytest.mark.parametrize("action,helper", [
+    ("status", "_status"),
+    ("run", "_run_once"),
+    ("list-candidates", "_list_candidates"),
+])
+def test_dispatch_no_arg_actions_run_async(action, helper):
+    with patch(f"{_T}.{helper}", MagicMock(return_value=None)), \
+         patch(f"{_T}.asyncio.run") as run:
         evolution_cmd.run_evolution_command(action)
     run.assert_called_once()
 
@@ -32,7 +41,8 @@ def test_dispatch_show_candidate_requires_id(capsys):
 
 
 def test_dispatch_show_candidate_with_id():
-    with patch(f"{_T}.asyncio.run") as run:
+    with patch(f"{_T}._show_candidate", MagicMock(return_value=None)), \
+         patch(f"{_T}.asyncio.run") as run:
         evolution_cmd.run_evolution_command("show-candidate", candidate_id="c1")
     run.assert_called_once()
 
@@ -44,7 +54,8 @@ def test_dispatch_promote_requires_id(capsys):
 
 
 def test_dispatch_promote_with_id():
-    with patch(f"{_T}.asyncio.run") as run:
+    with patch(f"{_T}._promote_candidate", MagicMock(return_value=None)), \
+         patch(f"{_T}.asyncio.run") as run:
         evolution_cmd.run_evolution_command("promote", candidate_id="c1")
     run.assert_called_once()
 
@@ -56,7 +67,8 @@ def test_dispatch_rollback_requires_skill(capsys):
 
 
 def test_dispatch_rollback_with_skill():
-    with patch(f"{_T}.asyncio.run") as run:
+    with patch(f"{_T}._rollback", MagicMock(return_value=None)), \
+         patch(f"{_T}.asyncio.run") as run:
         evolution_cmd.run_evolution_command("rollback", skill="my-skill")
     run.assert_called_once()
 

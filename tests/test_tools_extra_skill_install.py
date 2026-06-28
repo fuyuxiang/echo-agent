@@ -33,6 +33,20 @@ def _fake_proc(returncode=0, stdout=b"", stderr=b""):
     return proc
 
 
+def _timeout_wait_for():
+    """AsyncMock for asyncio.wait_for that raises TimeoutError but first closes
+    the coroutine it was handed, so proc.communicate() doesn't leak as an
+    un-awaited coroutine (which surfaces as a RuntimeWarning at GC time)."""
+    import asyncio
+
+    async def _side_effect(coro, *args, **kwargs):
+        if asyncio.iscoroutine(coro):
+            coro.close()
+        raise asyncio.TimeoutError()
+
+    return AsyncMock(side_effect=_side_effect)
+
+
 class TestRunHelper:
     @pytest.mark.asyncio
     async def test_run_success(self):
@@ -46,7 +60,7 @@ class TestRunHelper:
     async def test_run_timeout(self):
         proc = _fake_proc()
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)), \
-             patch("asyncio.wait_for", AsyncMock(side_effect=__import__("asyncio").TimeoutError())):
+             patch("asyncio.wait_for", _timeout_wait_for()):
             code, out, err = await _run(["sleep", "100"], timeout=1)
         assert code == -1
         assert "timed out" in err
