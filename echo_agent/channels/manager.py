@@ -89,6 +89,7 @@ class ChannelManager:
         self._send_tool_hints = config.send_tool_hints
         self._on_cli_exit = on_cli_exit
         self._stream_states: dict[str, _StreamState] = {}
+        self._heartbeat_msg_ids: dict[str, str] = {}  # inbound_event_id -> platform msg id
         self._inbound_msg_ids: dict[str, tuple[str, str, float]] = {}
         self._max_inbound_ids = 1000
         self._max_stream_states = 500
@@ -135,6 +136,11 @@ class ChannelManager:
             if event.metadata.get("_drop"):
                 return
 
+        if event.metadata.get("_heartbeat"):
+            await self._handle_heartbeat(event)
+            event.metadata["_drop"] = True
+            return
+
         if event.metadata.get("_progress"):
             is_tool_hint = event.metadata.get("_tool_hint", False)
             if is_tool_hint and not self._send_tool_hints:
@@ -164,6 +170,7 @@ class ChannelManager:
         inbound_event_id = str(event.metadata.get("_inbound_event_id", ""))
         async with self._state_lock:
             mapping = self._inbound_msg_ids.pop(inbound_event_id, None)
+            self._heartbeat_msg_ids.pop(inbound_event_id, None)
         if not mapping:
             return
         _, platform_msg_id, _ = mapping
@@ -207,6 +214,63 @@ class ChannelManager:
         except Exception as e:
             logger.error("Final delivery exception on {}: {}", event.channel, e)
         event.metadata["_drop"] = True
+
+    async def _handle_heartbeat(self, event: OutboundEvent) -> None:
+        channel = self._channels.get(event.channel)
+        if not channel:
+            return
+        # Keep typing alive on every beat, regardless of text display.
+        try:
+            await channel.send_typing(event.chat_id, metadata=self._public_metadata(event.metadata))
+        except Exception as e:  # noqa: BLE001
+            logger.debug("heartbeat typing failed on {}: {}", event.channel, e)
+
+        key = str(event.metadata.get("_inbound_event_id", ""))
+        text = event.text
+        if not text:
+            return
+        try:
+            if channel.supports_edit:
+                async with self._state_lock:
+                    msg_id = self._heartbeat_msg_ids.get(key)
+                if msg_id:
+                    await channel.edit_message(
+                        event.chat_id, msg_id, text,
+                        metadata=self._public_metadata(event.metadata),
+                    )
+                else:
+                    await self._heartbeat_send(channel, event, key)
+                return
+            # Uneditable channel: apply strategy.
+            strategy = event.metadata.get("_hb_on_uneditable", "first_only")
+            if strategy == "off":
+                return
+            if strategy == "first_only":
+                async with self._state_lock:
+                    already = key in self._heartbeat_msg_ids
+                if already:
+                    return
+                await self._heartbeat_send(channel, event, key)
+            else:  # "every"
+                await self._heartbeat_send(channel, event, key, track=False)
+        except Exception as e:  # noqa: BLE001 — heartbeat must never crash delivery
+            logger.debug("heartbeat delivery failed on {}: {}", event.channel, e)
+
+    async def _heartbeat_send(self, channel, event: OutboundEvent, key: str, *, track: bool = True) -> None:
+        send_event = OutboundEvent.text_reply(
+            channel=event.channel, chat_id=event.chat_id,
+            text=event.text, reply_to_id=event.reply_to_id,
+        )
+        send_event.is_final = False
+        send_event.message_kind = "heartbeat"
+        send_event.metadata = self._public_metadata(event.metadata)
+        result = await channel.send(send_event)
+        if track and result and result.success and result.message_id:
+            async with self._state_lock:
+                self._heartbeat_msg_ids[key] = result.message_id
+                while len(self._heartbeat_msg_ids) > self._max_inbound_ids:
+                    oldest = next(iter(self._heartbeat_msg_ids))
+                    del self._heartbeat_msg_ids[oldest]
 
     async def _handle_token_stream(self, event: OutboundEvent) -> None:
         channel = self._channels.get(event.channel)
