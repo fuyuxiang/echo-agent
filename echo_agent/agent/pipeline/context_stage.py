@@ -33,6 +33,17 @@ if TYPE_CHECKING:
     from echo_agent.skills.store import SkillStore
 
 
+def filter_recall_by_snapshot(scored, snapshot_ids):
+    """Drop scored memory entries whose id already entered the frozen snapshot.
+    Defensive: entries without an id, or a falsy snapshot_ids, are kept as-is."""
+    if not snapshot_ids:
+        return scored
+    return [
+        (r, s) for (r, s) in scored
+        if getattr(r, "id", None) not in snapshot_ids
+    ]
+
+
 class ContextStage:
     """Builds the full pipeline context: system prompt, messages, retrieval, tool defs."""
 
@@ -57,7 +68,8 @@ class ContextStage:
         inference: InferenceController,
         working_memories: OrderedDict,
         memory_snapshots: OrderedDict,
-        put_snapshot: "Callable[[str, str], Awaitable[None]] | None" = None,
+        memory_snapshot_ids: "OrderedDict | None" = None,
+        put_snapshot: "Callable[[str, str, frozenset], Awaitable[None]] | None" = None,
         snapshot_enabled: bool,
         tool_definitions_fn: Any,
         episodic: Any = None,
@@ -80,6 +92,7 @@ class ContextStage:
         self._inference = inference
         self._working_memories = working_memories
         self._memory_snapshots = memory_snapshots
+        self._memory_snapshot_ids = memory_snapshot_ids if memory_snapshot_ids is not None else {}
         self._put_snapshot = put_snapshot
         self._snapshot_enabled = snapshot_enabled
         self._tool_definitions_fn = tool_definitions_fn
@@ -149,16 +162,20 @@ class ContextStage:
         if event.session_key in self._working_memories:
             working_ctx = self._working_memories[event.session_key].get_context()
 
+        snapshot_ids: frozenset[str] = frozenset()
         if self._snapshot_enabled:
             if event.session_key in self._memory_snapshots:
                 snapshot = self._memory_snapshots[event.session_key]
+                snapshot_ids = self._memory_snapshot_ids.get(event.session_key, frozenset())
             else:
-                snapshot = self._memory.get_snapshot(session_key=event.session_key)
+                snapshot, snapshot_ids = self._memory.get_snapshot_with_ids(
+                    session_key=event.session_key
+                )
                 if self._put_snapshot is not None:
                     # 写入唯一入口经 loop 的统一 LRU(锁 + 上限);
                     # put_snapshot 为空时本轮仍用刚算出的 snapshot,但不缓存
                     # (不得回退到无界直写 dict)。
-                    await self._put_snapshot(event.session_key, snapshot)
+                    await self._put_snapshot(event.session_key, snapshot, snapshot_ids)
             memory_ctx = build_memory_context(
                 self._memory,
                 snapshot=snapshot,
@@ -245,6 +262,8 @@ class ContextStage:
                 await self._emit_progress(
                     event, {"progress_type": "memory_retrieval_skipped"}
                 )
+            if scored:
+                scored = filter_recall_by_snapshot(scored, snapshot_ids)
             if scored:
                 retrieval_parts.append(
                     "Relevant memory:\n"

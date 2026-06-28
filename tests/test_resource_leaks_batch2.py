@@ -76,6 +76,7 @@ async def test_put_memory_snapshot_bounded_by_lru():
     import asyncio as _asyncio
     loop._state_lock = _asyncio.Lock()
     loop._memory_snapshots = OrderedDict()
+    loop._memory_snapshot_ids = OrderedDict()
     loop._max_cached_sessions = 3
 
     for i in range(5):
@@ -84,6 +85,7 @@ async def test_put_memory_snapshot_bounded_by_lru():
     assert len(loop._memory_snapshots) == 3
     assert "s0" not in loop._memory_snapshots  # 最旧被逐出
     assert "s4" in loop._memory_snapshots      # 最新保留
+    assert len(loop._memory_snapshot_ids) == 3  # 并行 id 集 LRU 同样受限
 
 
 def test_trace_files_pruned_to_limit(tmp_path):
