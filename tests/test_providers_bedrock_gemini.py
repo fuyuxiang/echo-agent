@@ -274,7 +274,7 @@ class TestBedrockChatRouting:
         resp.content = [text_block]
         resp.stop_reason = "end_turn"
         resp.model = "anthropic.claude-3"
-        usage = MagicMock()
+        usage = MagicMock(spec=["input_tokens", "output_tokens"])
         usage.input_tokens = 3
         usage.output_tokens = 7
         resp.usage = usage
@@ -284,6 +284,37 @@ class TestBedrockChatRouting:
             out = await p.chat(messages=[{"role": "user", "content": "hi"}])
         assert out.content == "hi from claude"
         assert out.usage == {"prompt_tokens": 3, "completion_tokens": 7}
+
+    @pytest.mark.asyncio
+    async def test_chat_claude_parses_cache_tokens(self):
+        # Regression: the Bedrock Claude path now shares parse_anthropic_message
+        # with the native provider, so prompt-cache tokens are no longer dropped.
+        p = BedrockProvider(default_model="anthropic.claude-3", region="us-east-1")
+        fake_client = MagicMock()
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = "cached"
+        resp = MagicMock()
+        resp.content = [text_block]
+        resp.stop_reason = "end_turn"
+        resp.model = "anthropic.claude-3"
+        usage = MagicMock(spec=[
+            "input_tokens", "output_tokens",
+            "cache_read_input_tokens", "cache_creation_input_tokens",
+        ])
+        usage.input_tokens = 10
+        usage.output_tokens = 5
+        usage.cache_read_input_tokens = 100
+        usage.cache_creation_input_tokens = 20
+        resp.usage = usage
+        fake_client.messages.create = AsyncMock(return_value=resp)
+
+        with patch.object(p, "_build_anthropic_bedrock", return_value=fake_client):
+            out = await p.chat(messages=[{"role": "user", "content": "hi"}])
+        # format_utils folds cache_read + cache_creation into cached_tokens;
+        # before the shared parser the Bedrock path dropped them entirely.
+        assert out.usage.get("cached_tokens") == 120
+        assert out.usage.get("prompt_tokens") == 10
 
     @pytest.mark.asyncio
     async def test_chat_claude_error_mapping(self):

@@ -14,8 +14,11 @@ from echo_agent.models.provider import (
     StreamDeltaCallback,
     ToolCallRequest,
 )
+from echo_agent.models.providers.anthropic_provider import (
+    parse_anthropic_message,
+    stream_anthropic_messages,
+)
 from echo_agent.models.providers.format_utils import (
-    anthropic_response_to_llm_fields,
     openai_to_anthropic_messages,
     openai_to_anthropic_tools,
 )
@@ -74,7 +77,6 @@ class BedrockProvider(LLMProvider):
         on_delta: "StreamDeltaCallback | None" = None,
         **kwargs: Any,
     ) -> LLMResponse:
-        from echo_agent.models.provider import _invoke_stream_callback
         target = model or self._default_model
         if not _is_claude_model(target):
             # The Converse streaming path only parses text deltas; it cannot
@@ -109,32 +111,14 @@ class BedrockProvider(LLMProvider):
             params["temperature"] = temp
 
         try:
-            async with client.messages.stream(**params) as stream:
-                async for event in stream:
-                    if getattr(event, "type", "") == "content_block_delta":
-                        delta = getattr(event, "delta", None)
-                        text = getattr(delta, "text", "") if delta is not None else ""
-                        if text:
-                            await _invoke_stream_callback(on_delta, text)
-                final = await stream.get_final_message()
+            final = await stream_anthropic_messages(client, params, on_delta)
         except Exception as e:
             logger.error("Bedrock Claude stream error: {}", e)
             return LLMResponse(content=f"Error: {e}", finish_reason="error")
 
-        blocks = []
-        for block in final.content:
-            if block.type == "text":
-                blocks.append({"type": "text", "text": block.text})
-            elif block.type == "tool_use":
-                blocks.append({"type": "tool_use", "id": block.id, "name": block.name, "input": block.input})
-
-        usage_dict: dict[str, Any] = {}
-        if final.usage:
-            usage_dict["input_tokens"] = final.usage.input_tokens
-            usage_dict["output_tokens"] = final.usage.output_tokens
-
-        fields = anthropic_response_to_llm_fields(blocks, final.stop_reason or "", usage_dict, final.model or "")
-        return LLMResponse(**fields)
+        # Shared parser keeps block extraction and usage (incl. prompt-cache
+        # tokens) consistent with the native Anthropic provider.
+        return parse_anthropic_message(final)
 
     async def _chat_stream_converse(
         self, model: str, messages: list[dict[str, Any]],
@@ -242,20 +226,7 @@ class BedrockProvider(LLMProvider):
             logger.error("Bedrock Claude error: {}", e)
             return LLMResponse(content=f"Error: {e}", finish_reason="error")
 
-        blocks = []
-        for block in resp.content:
-            if block.type == "text":
-                blocks.append({"type": "text", "text": block.text})
-            elif block.type == "tool_use":
-                blocks.append({"type": "tool_use", "id": block.id, "name": block.name, "input": block.input})
-
-        usage_dict: dict[str, Any] = {}
-        if resp.usage:
-            usage_dict["input_tokens"] = resp.usage.input_tokens
-            usage_dict["output_tokens"] = resp.usage.output_tokens
-
-        fields = anthropic_response_to_llm_fields(blocks, resp.stop_reason or "", usage_dict, resp.model or "")
-        return LLMResponse(**fields)
+        return parse_anthropic_message(resp)
 
     def _build_anthropic_bedrock(self) -> Any:
         try:
