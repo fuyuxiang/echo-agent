@@ -7,8 +7,13 @@ the typing indicator alive, sealing once the final answer is delivered.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass, field
+
+from loguru import logger
+
+from echo_agent.bus.events import OutboundEvent
 
 
 _TOOL_FRIENDLY: dict[str, str] = {
@@ -93,3 +98,83 @@ class SharedActivityState:
             phase=self.phase,
             current_tool=self.current_tool,
         )
+
+
+# tick granularity: poll at most this often so stop() reacts promptly
+_TICK_SEC = 0.5
+
+
+class ProgressHeartbeat:
+    """Per-turn level-triggered progress timer. One instance per turn."""
+
+    def __init__(self, bus, event, config) -> None:
+        self._bus = bus
+        self._event = event
+        self._config = config
+        self._activity: SharedActivityState | None = None
+        self._task: asyncio.Task | None = None
+        self._sealed = False
+
+    async def start(self, activity: SharedActivityState) -> None:
+        if not self._config.enabled:
+            return
+        self._activity = activity
+        self._task = asyncio.create_task(self._run())
+
+    async def stop(self) -> None:
+        self._sealed = True
+        task = self._task
+        self._task = None
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+
+    async def _run(self) -> None:
+        try:
+            await asyncio.sleep(self._config.first_delay_sec)
+            while not self._sealed:
+                activity = self._activity
+                if activity is not None and not self._sealed:
+                    if self._should_beat(activity):
+                        await self._publish(activity)
+                        activity.mark_visible_feedback()
+                await asyncio.sleep(min(_TICK_SEC, self._config.interval_sec))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 — heartbeat must never crash a turn
+            logger.debug("heartbeat loop error: {}", e)
+
+    def _should_beat(self, activity: SharedActivityState) -> bool:
+        # The first_delay_sec gate already provided the initial silence window.
+        # Afterwards, throttle only against an actual recent visible feedback:
+        # if none has happened yet, beat; otherwise require interval_sec to pass.
+        last_fb = activity.last_visible_feedback_at
+        if not last_fb:
+            return True
+        return (time.monotonic() - last_fb) >= self._config.interval_sec
+
+    async def _publish(self, activity: SharedActivityState) -> None:
+        if self._sealed:
+            return
+        try:
+            text = render_heartbeat(activity.snapshot(), self._config.template)
+            ev = self._event
+            out = OutboundEvent.text_reply(
+                channel=ev.channel,
+                chat_id=ev.chat_id,
+                text=text,
+                reply_to_id=ev.reply_to_id,
+                is_final=False,
+                message_kind="heartbeat",
+            )
+            out.metadata = {
+                "_heartbeat": True,
+                "_inbound_event_id": ev.event_id,
+                "_hb_on_uneditable": self._config.on_uneditable,
+            }
+            await self._bus.publish_outbound(out)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("heartbeat publish failed: {}", e)
