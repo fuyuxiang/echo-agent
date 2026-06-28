@@ -182,6 +182,13 @@ class MemoryStore:
         self._pending_embeds: list[tuple[str, str]] = []  # (entry_id, text) pairs awaiting embedding
         self._contradiction_scan_on_store = contradiction_scan_on_store
         self._contradiction_detector = None  # set externally or lazily created
+        # Unresolved-contradiction tracking for core-snapshot admission.
+        # Source of truth is the SQL memory_contradictions table; this is an
+        # in-memory mirror so the synchronous snapshot path needs zero DB calls.
+        import threading
+        self._unresolved_lock = threading.Lock()
+        self._unresolved_pairs: dict[str, tuple[str, str]] = {}  # contradiction_id -> (a, b)
+        self._unresolved_refs: dict[str, int] = {}  # memory_id -> refcount
 
     def has_pending_embeds(self) -> bool:
         """Check if there are pending embeddings to flush."""
@@ -696,6 +703,42 @@ class MemoryStore:
             self._dirty_ids.add(entry_id)
             self._save_type(entry.type)
             return True
+
+    def mark_contradiction_unresolved(
+        self, contradiction_id: str, memory_id_a: str, memory_id_b: str
+    ) -> None:
+        """Record that a memory pair has an open (unresolved) contradiction so the
+        core snapshot can exclude both ends. Idempotent per contradiction_id."""
+        with self._unresolved_lock:
+            if contradiction_id in self._unresolved_pairs:
+                return
+            self._unresolved_pairs[contradiction_id] = (memory_id_a, memory_id_b)
+            for mid in (memory_id_a, memory_id_b):
+                self._unresolved_refs[mid] = self._unresolved_refs.get(mid, 0) + 1
+
+    def clear_contradiction(self, contradiction_id: str) -> None:
+        """Drop tracking for a resolved/removed contradiction. No-op if unknown."""
+        with self._unresolved_lock:
+            pair = self._unresolved_pairs.pop(contradiction_id, None)
+            if pair is None:
+                return
+            for mid in pair:
+                remaining = self._unresolved_refs.get(mid, 0) - 1
+                if remaining > 0:
+                    self._unresolved_refs[mid] = remaining
+                else:
+                    self._unresolved_refs.pop(mid, None)
+
+    def is_unresolved(self, memory_id: str) -> bool:
+        """True if memory_id is involved in any open contradiction."""
+        with self._unresolved_lock:
+            return self._unresolved_refs.get(memory_id, 0) > 0
+
+    def reset_unresolved(self) -> None:
+        """Clear all tracking (used before a startup rebuild)."""
+        with self._unresolved_lock:
+            self._unresolved_pairs.clear()
+            self._unresolved_refs.clear()
 
     def mark_superseded(self, entry_id: str, superseded_by: str) -> bool:
         """Persist a supersession marker to the authoritative JSON store, so
