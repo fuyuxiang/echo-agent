@@ -175,6 +175,7 @@ class ProgressHeartbeat:
                 "_inbound_event_id": ev.event_id,
                 "_hb_on_uneditable": self._config.on_uneditable,
             }
+            logger.info("heartbeat published: channel={} text={!r}", ev.channel, text)
             await self._bus.publish_outbound(out)
         except Exception as e:  # noqa: BLE001
             logger.debug("heartbeat publish failed: {}", e)

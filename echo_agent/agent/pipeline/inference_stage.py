@@ -153,7 +153,10 @@ class InferenceStage:
         out.metadata = dict(event.metadata)
         out.metadata.update({"_progress": True, "_tool_hint": tool_hint, "_inbound_event_id": event.event_id})
         await self._bus.publish_outbound(out)
-        if ctx.activity is not None:
+        # Only count this as visible feedback if it actually reached the user.
+        # On uneditable channels (e.g. weixin) the ChannelManager drops progress
+        # events; counting a dropped event would starve the heartbeat throttle.
+        if ctx.activity is not None and not out.metadata.get("_drop"):
             ctx.activity.mark_visible_feedback()
 
     async def _emit_tool_event(self, ctx: PipelineContext, metadata: dict[str, Any]) -> None:
@@ -170,7 +173,8 @@ class InferenceStage:
         out.metadata = {"_progress": True, "_inbound_event_id": event.event_id}
         out.metadata.update(metadata)
         await self._bus.publish_outbound(out)
-        if ctx.activity is not None:
+        # See _emit_progress: a dropped event is not visible feedback.
+        if ctx.activity is not None and not out.metadata.get("_drop"):
             ctx.activity.mark_visible_feedback()
 
     async def run(self, ctx: PipelineContext) -> InferenceResult:
