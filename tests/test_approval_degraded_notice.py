@@ -38,10 +38,14 @@ def _make_loop():
     loop.tracer = _Tracer()
     loop._running = True
     # _on_inbound 解析群聊会话作用域时读 config.session.group_session_scope；
-    # 用真实 SessionConfig 提供默认值，避免裸 None 触发 AttributeError。
+    # 接线心跳后还会读 config.agent.heartbeat。用真实 SessionConfig/HeartbeatConfig
+    # 提供默认值；心跳置 enabled=False，使这些用例只聚焦降级通知行为。
     from types import SimpleNamespace
-    from echo_agent.config.schema import SessionConfig
-    loop.config = SimpleNamespace(session=SessionConfig())
+    from echo_agent.config.schema import HeartbeatConfig, SessionConfig
+    loop.config = SimpleNamespace(
+        session=SessionConfig(),
+        agent=SimpleNamespace(heartbeat=HeartbeatConfig(enabled=False)),
+    )
     return loop, sent
 
 
@@ -57,7 +61,7 @@ async def test_empty_response_with_notice_sends_chinese(monkeypatch):
     loop, sent = _make_loop()
     notice = notice_for(REASON_APPROVAL_UNAVAILABLE)
 
-    async def fake_process(event, trace_id, publish_response=False):
+    async def fake_process(event, trace_id, publish_response=False, activity=None):
         return ProcessResult(response_text="", outbound_sent=False, degraded_notices=[notice])
 
     monkeypatch.setattr(loop, "_process_event", fake_process)
@@ -72,7 +76,7 @@ async def test_empty_response_with_notice_sends_chinese(monkeypatch):
 async def test_empty_response_no_notice_sends_generic_chinese(monkeypatch):
     loop, sent = _make_loop()
 
-    async def fake_process(event, trace_id, publish_response=False):
+    async def fake_process(event, trace_id, publish_response=False, activity=None):
         return ProcessResult(response_text="", outbound_sent=False, degraded_notices=[])
 
     monkeypatch.setattr(loop, "_process_event", fake_process)
@@ -88,7 +92,7 @@ async def test_generic_english_replaced_by_notice(monkeypatch):
     notice = notice_for(REASON_APPROVAL_UNAVAILABLE)
     english = "I encountered an issue processing your request. Please try again or rephrase your question."
 
-    async def fake_process(event, trace_id, publish_response=False):
+    async def fake_process(event, trace_id, publish_response=False, activity=None):
         return ProcessResult(response_text=english, outbound_sent=False, degraded_notices=[notice])
 
     monkeypatch.setattr(loop, "_process_event", fake_process)
@@ -104,7 +108,7 @@ async def test_real_answer_not_yet_sent_combines_answer_and_notice(monkeypatch):
     loop, sent = _make_loop()
     notice = notice_for(REASON_APPROVAL_UNAVAILABLE)
 
-    async def fake_process(event, trace_id, publish_response=False):
+    async def fake_process(event, trace_id, publish_response=False, activity=None):
         return ProcessResult(response_text="真实回答", outbound_sent=False, degraded_notices=[notice])
 
     monkeypatch.setattr(loop, "_process_event", fake_process)
@@ -121,7 +125,7 @@ async def test_real_answer_already_sent_appends_notice(monkeypatch):
     loop, sent = _make_loop()
     notice = notice_for(REASON_APPROVAL_UNAVAILABLE)
 
-    async def fake_process(event, trace_id, publish_response=False):
+    async def fake_process(event, trace_id, publish_response=False, activity=None):
         return ProcessResult(response_text="真实回答", outbound_sent=True, degraded_notices=[notice])
 
     monkeypatch.setattr(loop, "_process_event", fake_process)
@@ -137,7 +141,7 @@ async def test_real_answer_already_sent_appends_notice(monkeypatch):
 async def test_real_answer_no_notice_unchanged(monkeypatch):
     loop, sent = _make_loop()
 
-    async def fake_process(event, trace_id, publish_response=False):
+    async def fake_process(event, trace_id, publish_response=False, activity=None):
         return ProcessResult(response_text="真实回答", outbound_sent=False, degraded_notices=[])
 
     monkeypatch.setattr(loop, "_process_event", fake_process)

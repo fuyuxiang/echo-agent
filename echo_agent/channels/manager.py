@@ -198,6 +198,28 @@ class ChannelManager:
             return
         if not channel:
             return
+        # If a heartbeat already occupies a message on an editable channel, seal
+        # the final answer into that same message so the turn uses one slot total.
+        key = str(event.metadata.get("_inbound_event_id", ""))
+        if key and getattr(channel, "supports_edit", False):
+            async with self._state_lock:
+                hb_msg_id = self._heartbeat_msg_ids.get(key)
+            if hb_msg_id:
+                try:
+                    result = await channel.edit_message(
+                        event.chat_id, hb_msg_id, event.text,
+                        metadata=self._public_metadata(event.metadata),
+                        finalize=True,
+                    )
+                    if result and not result.success:
+                        logger.warning("Final seal-edit failed on {}: {}", event.channel, result.error)
+                        # fall through to a fresh send if the in-place edit failed
+                    else:
+                        event.metadata["_drop"] = True
+                        return
+                except Exception as e:
+                    logger.error("Final seal-edit exception on {}: {}", event.channel, e)
+                    # fall through to a fresh send on edit failure
         send_event = OutboundEvent(
             channel=event.channel,
             chat_id=event.chat_id,
