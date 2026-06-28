@@ -11,6 +11,7 @@ from echo_agent.config.loader import (
     _env_overrides,
     _find_config_file_in,
     _load_yaml_file,
+    load_config,
     resolve_config_file,
     save_config,
 )
@@ -164,4 +165,39 @@ class TestResolveConfigFile:
         result = resolve_config_file(search_dir=tmp_path)
         assert result is not None
         assert result.name == "echo-agent.yaml"
+
+
+# ---------------------------------------------------------------------------
+# load_config — end-to-end profile cognitive defaults
+# ---------------------------------------------------------------------------
+
+class TestLoadConfigProfileDefaults:
+    """Lock the zero-config default: a CLI run with no user YAML must resolve
+    to the lean personal_cli cognitive defaults (planning off). Regression
+    guard for the bug where profile_defaults ran before pydantic injected the
+    default profile, so planning stayed on for the most common path."""
+
+    def test_zero_config_defaults_to_lean_cli(self, tmp_path: Path):
+        # Point at a nonexistent file inside an empty dir so only the packaged
+        # default.yaml is loaded — no user/home config bleeds in.
+        cfg = load_config(config_path=tmp_path / "absent.yaml")
+        assert cfg.security.profile == "personal_cli"
+        assert cfg.planning.enabled is False
+        assert cfg.memory.retrieval_on_miss == "degrade"
+
+    def test_explicit_daemon_keeps_planning(self, tmp_path: Path):
+        cfg_file = tmp_path / "echo-agent.yaml"
+        cfg_file.write_text("security:\n  profile: daemon\n")
+        cfg = load_config(config_path=cfg_file)
+        assert cfg.security.profile == "daemon"
+        assert cfg.planning.enabled is True
+        assert cfg.memory.retrieval_on_miss == "sync"
+
+    def test_explicit_user_planning_overrides_profile_default(self, tmp_path: Path):
+        # personal_cli would turn planning off, but an explicit user value wins.
+        cfg_file = tmp_path / "echo-agent.yaml"
+        cfg_file.write_text("planning:\n  enabled: true\n")
+        cfg = load_config(config_path=cfg_file)
+        assert cfg.security.profile == "personal_cli"
+        assert cfg.planning.enabled is True
 

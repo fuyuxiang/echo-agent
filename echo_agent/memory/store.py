@@ -202,16 +202,26 @@ class MemoryStore:
             self._pending_embeds.append((entry.id, text))
 
     async def flush_pending_embeds(self) -> int:
-        """Generate embeddings for queued entries and add to vector index. Returns count."""
+        """Generate embeddings for queued entries and add to vector index. Returns count.
+
+        Only entries that are successfully embedded (or whose source entry has
+        since vanished) are removed from the queue; entries that fail to embed
+        are left pending so they are retried — either by the DURABLE scheduler
+        tier or simply on the next post-reply flush. This is why the queue is
+        not cleared up front: a whole-batch failure (e.g. the embedding backend
+        is down) must not silently drop the work."""
         if not self._pending_embeds or not self._embed_fn or not self._vector_index:
             return 0
         batch = list(self._pending_embeds)
-        self._pending_embeds.clear()
         count = 0
+        processed: set[str] = set()
         assigned: dict[MemoryType, dict[str, str]] = {}
         for entry_id, text in batch:
             entry = self._entries.get(entry_id)
             if entry is None:
+                # Source entry was deleted/forgotten while queued — nothing to
+                # embed, so drop it from the queue rather than retrying forever.
+                processed.add(entry_id)
                 continue
             try:
                 embedding = await self._embed_fn(text)
@@ -220,9 +230,16 @@ class MemoryStore:
                     if vec_id:
                         entry.embedding_id = vec_id
                         assigned.setdefault(entry.type, {})[entry_id] = vec_id
+                        processed.add(entry_id)
                         count += 1
             except Exception as e:
                 logger.debug("Embedding generation failed for {}: {}", entry_id, e)
+        # Drop only the entries we actually handled; keep failures (and any
+        # entries enqueued concurrently during the awaits above) for retry.
+        if processed:
+            self._pending_embeds = [
+                item for item in self._pending_embeds if item[0] not in processed
+            ]
         # Persist embedding_id assignments — without this, vector cleanup on
         # delete/forget has nothing to key on and the index grows forever.
         for mem_type, ids in assigned.items():

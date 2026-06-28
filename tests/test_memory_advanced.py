@@ -800,6 +800,41 @@ class TestStoreEmbeddingPipeline:
         assert count == 0
 
     @pytest.mark.asyncio
+    async def test_flush_keeps_failed_entries_for_retry(self, tmp_path: Path, storage: SQLiteBackend):
+        """A failing embed backend must not silently drop the queued work — the
+        entry stays pending so the DURABLE scheduler tier (or the next flush)
+        can retry it. Regression guard for the bug where the queue was cleared
+        up front, so a whole-batch failure lost the embeddings permanently."""
+        store = MemoryStore(memory_dir=tmp_path / "mem", storage=storage)
+        vi = VectorIndex(storage, dimensions=4)
+        await vi.initialize()
+        if not vi.available:
+            pytest.skip("FAISS not installed")
+        store.set_vector_index(vi)
+
+        attempts = {"n": 0}
+
+        async def flaky_embed(text):
+            attempts["n"] += 1
+            if attempts["n"] < 2:
+                raise RuntimeError("backend down")
+            return [1.0, 0.0, 0.0, 0.0]
+
+        store.set_embed_fn(flaky_embed)
+        entry = store.add(MemoryEntry(type=MemoryType.USER, key="k1", content="hello"))
+
+        # First flush fails to embed → entry must remain queued, not dropped.
+        count = await store.flush_pending_embeds()
+        assert count == 0
+        assert len(store._pending_embeds) == 1
+
+        # Retry succeeds and the entry is finally removed from the queue.
+        count = await store.flush_pending_embeds()
+        assert count == 1
+        assert entry.embedding_id != ""
+        assert len(store._pending_embeds) == 0
+
+    @pytest.mark.asyncio
     async def test_update_queues_embed_on_content_change(self, tmp_path: Path, storage: SQLiteBackend):
         store = MemoryStore(memory_dir=tmp_path / "mem", storage=storage)
         vi = VectorIndex(storage, dimensions=4)

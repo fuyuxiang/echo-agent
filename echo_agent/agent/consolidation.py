@@ -127,8 +127,18 @@ class ConsolidationWorker:
             if on_complete:
                 await on_complete(session_key)
 
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
-            logger.error("Consolidation failed for {}: {}", session_key, e)
+            # Re-raise so the DURABLE scheduler tier actually retries this
+            # attempt — previously the error was swallowed here, so the
+            # DURABLE factory/tier wiring was inert and a transient failure was
+            # silently dropped. Consolidation is idempotent: the Phase-3 commit
+            # re-checks ``last_consolidated == start`` and snapshot validity, so
+            # a retried (or even concurrent) re-run cannot double-commit a
+            # region. The scheduler logs the final give-up after retries.
+            logger.warning("Consolidation attempt failed for {}: {}", session_key, e)
+            raise
         finally:
             async with self._lock:
                 self._pending.discard(session_key)

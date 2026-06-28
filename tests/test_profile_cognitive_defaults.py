@@ -52,16 +52,21 @@ def test_unknown_profile_injects_nothing():
     assert out == {"security": {"profile": "nonexistent"}}
 
 
-def test_missing_security_returns_unchanged():
+def test_missing_security_applies_default_profile():
+    # No security block at all → mirror pydantic's default (personal_cli),
+    # so a zero-config CLI run gets the lean defaults (planning off).
     data = {}
     out = apply_profile_cognitive_defaults(data)
-    assert out == {}
+    assert out["planning"]["enabled"] is False
+    assert out["memory"]["retrieval_on_miss"] == "degrade"
 
 
-def test_missing_profile_returns_unchanged():
+def test_missing_profile_applies_default_profile():
+    # security present but no profile → same default-profile fallback.
     data = {"security": {}}
     out = apply_profile_cognitive_defaults(data)
-    assert out == {"security": {}}
+    assert out["planning"]["enabled"] is False
+    assert out["memory"]["retrieval_on_miss"] == "degrade"
 
 
 def test_public_gateway_enables_planning_and_sync_memory():
