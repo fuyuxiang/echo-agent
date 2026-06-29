@@ -87,8 +87,9 @@ class KnowledgeAPI:
                 break
             if part.name == "file":
                 raw_name = part.filename or "unnamed.txt"
-                # Prefer a relpath part header when the client supplies one;
-                # otherwise fall back to the filename. Flatten when unsafe-empty.
+                # Use part.filename's relative path as-is for the target path;
+                # _safe_relative_dest validates it stays within docs_dir,
+                # rejecting traversal/absolute paths with a 400.
                 relpath = raw_name
                 dest = _safe_relative_dest(docs_dir, relpath)
                 if dest is None:
