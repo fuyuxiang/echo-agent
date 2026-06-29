@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
@@ -11,13 +12,17 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from loguru import logger
 
 
 _LATIN_OR_NUM_RE = re.compile(r"[a-z0-9_]+", re.I)
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
+# Fusion baseline mirrors echo_agent/memory/retrieval.py resonance weights.
+# Kept as a module constant (not config) until tuning data justifies a knob.
+_FUSION_BASE = 0.5
 
 
 @dataclass
@@ -100,6 +105,10 @@ class KnowledgeIndex:
         self._loaded = False
         self._lock = threading.Lock()
         self._needs_rebuild = False
+        self._embed_fn: Callable[[str], Awaitable[list[float]]] | None = None
+        self._vector_store: Any = None
+        self._embed_timeout: float = 1.5
+        self._chunk_vectors: dict[str, list[float]] = {}
 
     @property
     def chunk_count(self) -> int:
@@ -157,6 +166,104 @@ class KnowledgeIndex:
                 self._needs_rebuild = True
             self._recompute_stats()
             self._loaded = True
+
+    def attach_embedding(
+        self, embed_fn: Callable[[str], Awaitable[list[float]]],
+        dimensions: int, *, embed_timeout: float = 1.5,
+    ) -> None:
+        """Wire an async embedding fn + sidecar vector store. Returns immediately;
+        does NOT compute embeddings (that happens in rebuild_async, backgrounded)."""
+        from echo_agent.knowledge.vector_store import KnowledgeVectorStore
+        self._embed_fn = embed_fn
+        self._embed_timeout = max(0.1, float(embed_timeout))
+        sidecar = self.index_path.with_name(self.index_path.name + ".vectors.npz")
+        self._vector_store = KnowledgeVectorStore(sidecar, dimensions=dimensions)
+        self._ensure_loaded()
+        self._chunk_vectors = self._vector_store.load()
+        ordered = [(c["id"], self._chunk_vectors[c["id"]])
+                   for c in self._chunks if c["id"] in self._chunk_vectors]
+        self._vector_store.build(ordered)
+
+    def needs_vector_backfill(self) -> bool:
+        if not self._vector_store or not self._vector_store.available or not self._embed_fn:
+            return False
+        self._ensure_loaded()
+        return any(c["id"] not in self._chunk_vectors for c in self._chunks)
+
+    async def rebuild_async(self) -> dict[str, Any]:
+        # 1) 重建文本索引(同步内核,executor 防阻塞事件循环)
+        loop = asyncio.get_running_loop()
+        summary = await loop.run_in_executor(None, self.rebuild)
+        if not self._vector_store or not self._vector_store.available or not self._embed_fn:
+            return summary
+        # 2) 复用旧向量 + 仅对新增/变更 chunk 计算嵌入
+        old = self._vector_store.load()
+        new_vectors: dict[str, list[float]] = {}
+        for chunk in self._chunks:
+            cid = chunk["id"]
+            reuse = old.get(cid)
+            if reuse is not None:
+                new_vectors[cid] = reuse
+                continue
+            try:
+                emb = await asyncio.wait_for(self._embed_fn(chunk["text"]), self._embed_timeout)
+            except Exception as e:
+                logger.warning("knowledge embed failed for {}: {}", cid, e)
+                continue
+            if emb:
+                new_vectors[cid] = emb
+        ordered = [(c["id"], new_vectors[c["id"]]) for c in self._chunks if c["id"] in new_vectors]
+        self._vector_store.build(ordered)
+        self._vector_store.save(ordered)
+        self._chunk_vectors = new_vectors
+        logger.info("knowledge vectors backfilled: {} chunks", len(ordered))
+        return summary
+
+    async def search_async(self, query: str, *, limit: int = 5, user_id: str = "") -> list[KnowledgeSearchResult]:
+        self._ensure_loaded()
+        with self._lock:
+            chunks_snapshot = list(self._chunks)
+            df_snapshot = Counter(self._df)
+        kw = self._keyword_scores(query, chunks_snapshot, df_snapshot, user_id=user_id)
+        vec: dict[str, float] = {}
+        if self._vector_store and self._vector_store.available and self._embed_fn:
+            try:
+                q_emb = await asyncio.wait_for(self._embed_fn(query), self._embed_timeout)
+                if q_emb:
+                    for cid, score in self._vector_store.search(q_emb, limit * 3):
+                        vec[cid] = score
+            except Exception:
+                logger.debug("knowledge query embed failed; keyword-only")
+        by_id = {c["id"]: c for c in chunks_snapshot}
+        allowed_vec = {cid: s for cid, s in vec.items()
+                       if cid in by_id and self._allowed_for_user(by_id[cid].get("metadata", {}), user_id)}
+        fused = self._fuse(query, kw, allowed_vec)
+        ranked = sorted(fused.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+        return self._to_results([(by_id[cid], sc) for cid, sc in ranked if cid in by_id])
+
+    def _fuse(self, query: str, kw: dict[str, float], vec: dict[str, float]) -> dict[str, float]:
+        if not vec:
+            return kw  # 降级:等价同步 search 的纯关键词
+        kw_max = max(kw.values(), default=1.0) or 1.0
+        vec_max = max(vec.values(), default=1.0) or 1.0
+        e = self._query_entropy(query)
+        w_kw = _FUSION_BASE * (1 - e)
+        w_vec = _FUSION_BASE + _FUSION_BASE * e
+        fused: dict[str, float] = {}
+        for cid in set(kw) | set(vec):
+            fused[cid] = w_kw * (kw.get(cid, 0.0) / kw_max) + w_vec * (vec.get(cid, 0.0) / vec_max)
+        return fused
+
+    @staticmethod
+    def _query_entropy(query: str) -> float:
+        tokens = _tokenize(query)
+        if not tokens:
+            return 0.5
+        counts = Counter(tokens)
+        total = len(tokens)
+        entropy = -sum((c / total) * math.log2(c / total) for c in counts.values())
+        max_ent = math.log2(len(counts)) if len(counts) > 1 else 1.0
+        return min(entropy / max_ent, 1.0) if max_ent > 0 else 0.0
 
     def _keyword_scores(
         self, query: str, chunks: list[dict[str, Any]],
