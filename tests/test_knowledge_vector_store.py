@@ -1,6 +1,21 @@
 import pytest
 from pathlib import Path
+from echo_agent.knowledge import vector_store
 from echo_agent.knowledge.vector_store import KnowledgeVectorStore
+
+
+def test_degrades_gracefully_without_faiss(tmp_path: Path, monkeypatch):
+    # 模拟 faiss/numpy 缺失:不真正卸载库,只把模块级标志置 False
+    monkeypatch.setattr(vector_store, "_HAS_FAISS", False)
+    sidecar = tmp_path / "idx.json.vectors.npz"
+    store = KnowledgeVectorStore(sidecar, dimensions=3)
+    assert store.available is False
+    assert store.load() == {}
+    assert store.search([0.1, 0.2, 0.3], 1) == []
+    # build / save 均为 no-op,不应抛异常
+    store.build([("c0", [1.0, 0.0, 0.0])])
+    store.save([("c0", [1.0, 0.0, 0.0])])
+
 
 faiss = pytest.importorskip("faiss")
 
