@@ -174,9 +174,18 @@ async def test_B_cache_hit_avoids_injected_blocking_cost():
     await _build(stage_hit, session_key="s", text="q", sender_id="u1")
     hit_cost = time.perf_counter() - t1
 
-    # 命中路径不该付那 200ms;给足余量避免 CI 抖动 flaky
-    assert hit_cost < BLOCK / 2, f"命中缓存仍耗 {hit_cost:.3f}s,未跳过阻塞检索"
+    # 核心断言用"是否触发昂贵检索"来判定,而非绝对墙钟:命中路径根本不该
+    # 调用 knowledge.search,这是确定性的,不受 CI 负载下的事件循环调度抖动影响。
+    knowledge2.search.assert_not_called()
+    knowledge.search.assert_called()  # 基线确实触发了注入的阻塞检索
+
+    # 命中路径省掉了那 200ms 阻塞:相对基线应快出至少一个 BLOCK 的量级。
+    # 不再用 hit_cost < BLOCK/2 这种绝对上限——负载下纯 await 调度延迟即可
+    # 超过 100ms,与"是否跳过检索"无关,会造成 flaky。
     assert miss_cost >= BLOCK, f"基线 {miss_cost:.3f}s 未体现注入的阻塞(基准无效)"
+    assert miss_cost - hit_cost >= BLOCK / 2, (
+        f"命中 {hit_cost:.3f}s 相对基线 {miss_cost:.3f}s 提速不足,疑未跳过阻塞检索"
+    )
 
 
 # ====================================================================

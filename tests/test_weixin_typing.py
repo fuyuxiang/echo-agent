@@ -10,6 +10,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -162,3 +163,122 @@ class TestSendStopsTyping:
 
         assert res.success
         assert stopped == ["user@x"]
+
+
+class TestGetConfigAndSendTypingApi:
+    """Exercise the thin _api_post wrappers themselves (not monkeypatched away)."""
+
+    @pytest.mark.asyncio
+    async def test_get_config_hits_getconfig_endpoint(self, monkeypatch):
+        captured: dict = {}
+
+        async def fake_api_post(session, *, base_url, endpoint, payload, token, timeout_ms):
+            captured.update(endpoint=endpoint, payload=payload, token=token, base_url=base_url)
+            return {"typing_ticket": "TKT"}
+
+        monkeypatch.setattr(wx, "_api_post", fake_api_post)
+        resp = await wx._get_config(MagicMock(), base_url="https://api", token="tok")
+        assert resp == {"typing_ticket": "TKT"}
+        assert captured["endpoint"] == wx._EP_GET_CONFIG
+        assert captured["payload"] == {}
+        assert captured["base_url"] == "https://api"
+        assert captured["token"] == "tok"
+
+    @pytest.mark.asyncio
+    async def test_send_typing_hits_sendtyping_endpoint(self, monkeypatch):
+        captured: dict = {}
+
+        async def fake_api_post(session, *, base_url, endpoint, payload, token, timeout_ms):
+            captured.update(endpoint=endpoint, payload=payload)
+            return {"errcode": 0}
+
+        monkeypatch.setattr(wx, "_api_post", fake_api_post)
+        resp = await wx._send_typing(
+            MagicMock(),
+            base_url="https://api",
+            token="tok",
+            to="user@x",
+            status=wx._TYPING_START,
+            typing_ticket="TKT",
+        )
+        assert resp == {"errcode": 0}
+        assert captured["endpoint"] == wx._EP_SEND_TYPING
+        assert captured["payload"] == {
+            "to_user_id": "user@x",
+            "status": wx._TYPING_START,
+            "typing_ticket": "TKT",
+        }
+
+
+class TestEnsureTicketEdges:
+    @pytest.mark.asyncio
+    async def test_none_without_session(self, tmp_path):
+        ch = _make_weixin(tmp_path)
+        ch._send_session = None
+        assert await ch._ensure_typing_ticket() is None
+
+    @pytest.mark.asyncio
+    async def test_cache_hit_skips_getconfig(self, tmp_path, monkeypatch):
+        ch = _make_weixin(tmp_path)
+        calls = _patch_getconfig(monkeypatch, "FRESH")
+        ch._typing_ticket = "CACHED"
+        ch._typing_ticket_ts = time.monotonic()  # within TTL
+        assert await ch._ensure_typing_ticket() == "CACHED"
+        assert calls == []  # served from cache, getconfig not called
+
+    @pytest.mark.asyncio
+    async def test_ticket_read_from_nested_config(self, tmp_path, monkeypatch):
+        ch = _make_weixin(tmp_path)
+
+        async def fake_getconfig(session, *, base_url, token):
+            return {"config": {"typing_ticket": "NESTED"}}
+
+        monkeypatch.setattr(wx, "_get_config", fake_getconfig)
+        assert await ch._ensure_typing_ticket() == "NESTED"
+
+
+class TestTypingLoopExtraBranches:
+    @pytest.mark.asyncio
+    async def test_loop_exits_on_deadline_with_final_stop(self, tmp_path, monkeypatch):
+        """Natural timeout (not cancel): loop ends and still sends a final stop."""
+        ch = _make_weixin(tmp_path)
+        monkeypatch.setattr(wx, "_TYPING_REFRESH_INTERVAL", 0.0)
+        monkeypatch.setattr(wx, "_TYPING_MAX_DURATION", 0.0)  # deadline already passed
+        _patch_getconfig(monkeypatch, "TKT")
+        sent: list[int] = []
+
+        async def fake_sendtyping(session, *, base_url, token, to, status, typing_ticket):
+            sent.append(status)
+            return {}
+
+        monkeypatch.setattr(wx, "_send_typing", fake_sendtyping)
+        await ch._typing_loop("user@x")
+        assert sent == [wx._TYPING_STOP]  # no start (deadline passed), only final stop
+
+    @pytest.mark.asyncio
+    async def test_do_send_typing_swallows_send_error(self, tmp_path, monkeypatch):
+        ch = _make_weixin(tmp_path)
+        _patch_getconfig(monkeypatch, "TKT")
+
+        async def boom(session, **kwargs):
+            raise RuntimeError("sendtyping failed")
+
+        monkeypatch.setattr(wx, "_send_typing", boom)
+        # Should not raise despite the underlying network error.
+        await ch._do_send_typing("user@x", wx._TYPING_START)
+
+    @pytest.mark.asyncio
+    async def test_on_typing_done_logs_task_exception(self, tmp_path, monkeypatch):
+        ch = _make_weixin(tmp_path)
+
+        async def failing_loop(chat_id):
+            raise RuntimeError("loop crashed")
+
+        monkeypatch.setattr(ch, "_typing_loop", failing_loop)
+        ch._start_typing("user@x")
+        task = ch._typing_tasks["user@x"]
+        # Let the task run, crash, and fire the done callback.
+        with pytest.raises(RuntimeError):
+            await task
+        await asyncio.sleep(0)  # allow done callback to run
+        assert "user@x" not in ch._typing_tasks
