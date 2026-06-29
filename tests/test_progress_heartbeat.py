@@ -148,7 +148,8 @@ async def test_long_turn_emits_heartbeat():
     assert ev.is_final is False
     assert ev.metadata["_heartbeat"] is True
     assert "_inbound_event_id" in ev.metadata
-    assert ev.metadata["_hb_on_uneditable"] in {"first_only", "off", "every"}
+    assert ev.metadata["_hb_milestone"] == activity.milestone_seq
+    assert ev.metadata["_hb_milestone"] >= 1
     assert "已用时" in ev.text and "查阅资料" in ev.text
 
 
@@ -212,3 +213,51 @@ def test_set_generating_is_idempotent():
     assert st.milestone_seq == 1
     st.set_generating()                # already generating, must NOT bump
     assert st.milestone_seq == 1
+
+
+class _MsBus:
+    def __init__(self):
+        self.published = []
+
+    async def publish_outbound(self, event):
+        self.published.append(event)
+
+
+class _MsEvent:
+    channel = "weixin"
+    chat_id = "u1"
+    reply_to_id = None
+    event_id = "evt-1"
+
+
+class _MsCfg:
+    enabled = True
+    first_delay_sec = 0
+    min_interval_sec = 0
+    template = "⏳ {activity}（已用时 {elapsed}）"
+
+
+@pytest.mark.asyncio
+async def test_no_milestone_means_no_beat():
+    bus = _MsBus()
+    hb = ProgressHeartbeat(bus, _MsEvent(), _MsCfg())
+    st = SharedActivityState(started_at=0.0)  # never bumps milestone_seq
+    # Drive one decision cycle directly rather than sleeping.
+    assert hb._should_beat(st) is False
+    assert bus.published == []
+
+
+@pytest.mark.asyncio
+async def test_new_milestone_triggers_beat_and_records():
+    bus = _MsBus()
+    hb = ProgressHeartbeat(bus, _MsEvent(), _MsCfg())
+    st = SharedActivityState(started_at=0.0)
+    st.enter_tool("web_search")  # milestone_seq -> 1
+    assert hb._should_beat(st) is True
+    await hb._publish(st)
+    assert len(bus.published) == 1
+    assert bus.published[0].metadata["_hb_milestone"] == 1
+    # After delivery the consumer records last_delivered_milestone; once equal,
+    # no further beat until a new milestone arrives.
+    st.last_delivered_milestone = 1
+    assert hb._should_beat(st) is False

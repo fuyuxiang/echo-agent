@@ -145,27 +145,36 @@ class ProgressHeartbeat:
 
     async def _run(self) -> None:
         try:
-            await asyncio.sleep(self._config.first_delay_sec)
+            first_delay = getattr(self._config, "first_delay_sec", 30)
+            await asyncio.sleep(first_delay)
             while not self._sealed:
                 activity = self._activity
                 if activity is not None and not self._sealed:
                     if self._should_beat(activity):
                         await self._publish(activity)
+                        # mark_visible_feedback keeps the existing throttle line
+                        # alive; the authoritative dedup is last_delivered_milestone,
+                        # written by the delivery layer once the beat is consumed.
                         activity.mark_visible_feedback()
-                await asyncio.sleep(min(_TICK_SEC, self._config.interval_sec))
+                await asyncio.sleep(_TICK_SEC)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 — heartbeat must never crash a turn
             logger.debug("heartbeat loop error: {}", e)
 
     def _should_beat(self, activity: SharedActivityState) -> bool:
-        # The first_delay_sec gate already provided the initial silence window.
-        # Afterwards, throttle only against an actual recent visible feedback:
-        # if none has happened yet, beat; otherwise require interval_sec to pass.
+        # Progress gate: only beat when a genuine milestone happened since the
+        # last one we delivered. Pure thinking/generation never bumps the seq,
+        # so a long no-tool generation produces zero text beats.
+        if activity.milestone_seq <= activity.last_delivered_milestone:
+            return False
+        # Silence gate: throttle bursts of milestones against the last visible
+        # feedback. min_interval_sec=0 disables throttling (used in tests).
+        min_interval = getattr(self._config, "min_interval_sec", 60)
         last_fb = activity.last_visible_feedback_at
-        if not last_fb:
-            return True
-        return (time.monotonic() - last_fb) >= self._config.interval_sec
+        if last_fb and (time.monotonic() - last_fb) < min_interval:
+            return False
+        return True
 
     async def _publish(self, activity: SharedActivityState) -> None:
         if self._sealed:
@@ -184,7 +193,7 @@ class ProgressHeartbeat:
             out.metadata = {
                 "_heartbeat": True,
                 "_inbound_event_id": ev.event_id,
-                "_hb_on_uneditable": self._config.on_uneditable,
+                "_hb_milestone": activity.milestone_seq,
             }
             logger.info("heartbeat published: channel={} text={!r}", ev.channel, text)
             await self._bus.publish_outbound(out)
