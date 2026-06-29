@@ -194,3 +194,21 @@ async def test_publish_exception_does_not_propagate():
     await hb.start(SharedActivityState(started_at=time.monotonic()))
     await asyncio.sleep(0.05)
     await hb.stop()  # must not raise
+
+
+def test_enter_tool_same_phase_does_not_double_increment():
+    st = SharedActivityState(started_at=0.0)
+    st.enter_tool("web_search")        # thinking -> calling_tool, seq 0 -> 1
+    assert st.milestone_seq == 1
+    st.enter_tool("web_search")        # already calling_tool, must NOT bump
+    assert st.milestone_seq == 1
+    st.enter_tool("other_tool")        # still calling_tool, must NOT bump
+    assert st.milestone_seq == 1
+
+
+def test_set_generating_is_idempotent():
+    st = SharedActivityState(started_at=0.0)
+    st.set_generating()                # thinking -> generating, seq 0 -> 1
+    assert st.milestone_seq == 1
+    st.set_generating()                # already generating, must NOT bump
+    assert st.milestone_seq == 1
