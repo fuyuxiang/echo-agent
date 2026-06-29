@@ -3087,24 +3087,24 @@ class HeartbeatConfig(_Base):
             "desc_en": "Silence threshold (sec) before the first heartbeat",
         },
     )
-    interval_sec: int = Field(
+    min_interval_sec: int = Field(
         default=60, ge=1,
         json_schema_extra={
             "status": "effective", "ref": "agent/progress_heartbeat.py",
-            "desc_zh": "后续心跳的最小间隔(秒)",
-            "desc_en": "Minimum interval (sec) between subsequent heartbeats",
+            "desc_zh": "两次可见反馈之间的最小间隔(秒),压制高频里程碑",
+            "desc_en": "Minimum interval (sec) between visible feedback",
         },
     )
-    on_uneditable: Literal["first_only", "off", "every"] = Field(
-        default="first_only",
+    verbosity: Literal["key_milestones", "every_tool", "silent"] = Field(
+        default="key_milestones",
         json_schema_extra={
             "status": "effective", "ref": "channels/manager.py",
-            "desc_zh": "不支持消息编辑的通道策略:仅首条/关闭/每条新发",
-            "desc_en": "Strategy for channels without message editing",
+            "desc_zh": "心跳详细度:仅关键里程碑/每个工具/不发文字",
+            "desc_en": "Heartbeat verbosity tier",
         },
     )
     template: str = Field(
-        default="⏳ 正在处理中… 已用时 {elapsed}（{activity}）",
+        default="⏳ {activity}（已用时 {elapsed}）",
         json_schema_extra={
             "status": "effective", "ref": "agent/progress_heartbeat.py",
             "desc_zh": "心跳文案模板,支持 {elapsed} 与 {activity} 占位",
