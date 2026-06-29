@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -98,6 +99,7 @@ class KnowledgeIndex:
         self._df: Counter[str] = Counter()
         self._loaded = False
         self._lock = threading.Lock()
+        self._needs_rebuild = False
 
     @property
     def chunk_count(self) -> int:
@@ -112,6 +114,8 @@ class KnowledgeIndex:
     def ensure_ready(self, *, auto_index: bool = True) -> None:
         if self.index_path.exists() and not self._is_stale():
             self.load()
+            if self._needs_rebuild and auto_index:
+                self.rebuild()
             return
         if auto_index:
             self.rebuild()
@@ -132,6 +136,7 @@ class KnowledgeIndex:
             self._recompute_stats()
             self._save()
             self._loaded = True
+            self._needs_rebuild = False
         summary = {"documents": len(files), "chunks": len(self._chunks), "index_path": str(self.index_path)}
         logger.info("Knowledge index rebuilt: {} documents, {} chunks", summary["documents"], summary["chunks"])
         return summary
@@ -145,22 +150,25 @@ class KnowledgeIndex:
                 return
             data = json.loads(self.index_path.read_text(encoding="utf-8"))
             self._chunks = list(data.get("chunks", []))
+            if data.get("format") != "echo-agent-knowledge-v2" or any(
+                "content_hash" not in c for c in self._chunks
+            ):
+                self._needs_rebuild = True
             self._recompute_stats()
             self._loaded = True
 
-    def search(self, query: str, *, limit: int = 5, user_id: str = "") -> list[KnowledgeSearchResult]:
-        self._ensure_loaded()
+    def _keyword_scores(
+        self, query: str, chunks: list[dict[str, Any]],
+        df: Counter, *, user_id: str,
+    ) -> dict[str, float]:
         query_terms = _tokenize(query)
         if not query_terms:
-            return []
-        with self._lock:
-            chunks_snapshot = list(self._chunks)
-            df_snapshot = Counter(self._df)
+            return {}
         query_counts = Counter(query_terms)
-        total_chunks = max(1, len(chunks_snapshot))
-        scored: list[tuple[float, dict[str, Any]]] = []
+        total_chunks = max(1, len(chunks))
         query_lower = query.lower()
-        for chunk in chunks_snapshot:
+        scores: dict[str, float] = {}
+        for chunk in chunks:
             if not self._allowed_for_user(chunk.get("metadata", {}), user_id):
                 continue
             terms = Counter(chunk.get("terms", {}))
@@ -172,16 +180,18 @@ class KnowledgeIndex:
                 tf = terms.get(term, 0)
                 if tf <= 0:
                     continue
-                idf = math.log((1 + total_chunks) / (1 + df_snapshot.get(term, 0))) + 1
+                idf = math.log((1 + total_chunks) / (1 + df.get(term, 0))) + 1
                 score += (tf / length) * idf * query_tf
             text_lower = chunk.get("text", "").lower()
             if query_lower and query_lower in text_lower:
                 score += 1.5
             if score > 0:
-                scored.append((score, chunk))
-        scored.sort(key=lambda item: item[0], reverse=True)
+                scores[chunk["id"]] = score
+        return scores
+
+    def _to_results(self, scored: list[tuple[dict[str, Any], float]]) -> list[KnowledgeSearchResult]:
         results: list[KnowledgeSearchResult] = []
-        for idx, (score, chunk) in enumerate(scored[:limit], 1):
+        for idx, (chunk, score) in enumerate(scored, 1):
             results.append(KnowledgeSearchResult(
                 citation_id=f"K{idx}",
                 path=chunk.get("path", ""),
@@ -192,6 +202,16 @@ class KnowledgeIndex:
                 metadata=chunk.get("metadata", {}),
             ))
         return results
+
+    def search(self, query: str, *, limit: int = 5, user_id: str = "") -> list[KnowledgeSearchResult]:
+        self._ensure_loaded()
+        with self._lock:
+            chunks_snapshot = list(self._chunks)
+            df_snapshot = Counter(self._df)
+        scores = self._keyword_scores(query, chunks_snapshot, df_snapshot, user_id=user_id)
+        by_id = {c["id"]: c for c in chunks_snapshot}
+        ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+        return self._to_results([(by_id[cid], sc) for cid, sc in ranked])
 
     def format_results(self, results: list[KnowledgeSearchResult]) -> str:
         if not results:
@@ -252,6 +272,7 @@ class KnowledgeIndex:
                 "title": title,
                 "text": text,
                 "terms": dict(terms),
+                "content_hash": hashlib.sha1(text.encode("utf-8")).hexdigest(),
                 "metadata": metadata,
                 "mtime": path.stat().st_mtime,
             })
@@ -300,7 +321,7 @@ class KnowledgeIndex:
     def _save(self) -> None:
         self.index_path.parent.mkdir(parents=True, exist_ok=True)
         data = {
-            "format": "echo-agent-knowledge-v1",
+            "format": "echo-agent-knowledge-v2",
             "generated_at": datetime.now().isoformat(),
             "docs_dir": str(self.docs_dir),
             "chunks": self._chunks,
