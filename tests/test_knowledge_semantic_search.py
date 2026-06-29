@@ -122,6 +122,30 @@ async def test_rebuild_async_incremental_reuse(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_rebuild_async_recomputes_on_content_change(tmp_path):
+    from echo_agent.knowledge.index import KnowledgeIndex
+    pytest.importorskip("faiss")
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "a.md").write_text("# Alpha\nquick fox", encoding="utf-8")
+    idx = KnowledgeIndex(workspace=tmp_path, docs_dir="docs", index_path="idx.json",
+                         allowed_extensions=[".md"])
+    calls = {"n": 0}
+
+    async def counting_embed(text: str):
+        calls["n"] += 1
+        return await _fake_embed(text)
+
+    idx.attach_embedding(counting_embed, dimensions=3)
+    await idx.rebuild_async()
+    first = calls["n"]
+    # 改内容但保持单块(分块数不变 → chunk id 不变,content_hash 变) → 必须重算
+    (docs / "a.md").write_text("# Alpha\nslow turtle", encoding="utf-8")
+    await idx.rebuild_async()
+    assert calls["n"] > first
+
+
+@pytest.mark.asyncio
 async def test_search_async_vector_recall(tmp_path):
     from echo_agent.knowledge.index import KnowledgeIndex
     pytest.importorskip("faiss")

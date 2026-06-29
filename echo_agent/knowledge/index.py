@@ -191,18 +191,21 @@ class KnowledgeIndex:
         return any(c["id"] not in self._chunk_vectors for c in self._chunks)
 
     async def rebuild_async(self) -> dict[str, Any]:
-        # 1) 重建文本索引(同步内核,executor 防阻塞事件循环)
         loop = asyncio.get_running_loop()
-        summary = await loop.run_in_executor(None, self.rebuild)
         if not self._vector_store or not self._vector_store.available or not self._embed_fn:
-            return summary
-        # 2) 复用旧向量 + 仅对新增/变更 chunk 计算嵌入
-        old = self._vector_store.load()
+            return await loop.run_in_executor(None, self.rebuild)
+        # 0) rebuild 会用新 content_hash 重写 self._chunks 与索引文件,故先快照旧 hash 与旧向量
+        self._ensure_loaded()
+        old_hashes = {c["id"]: c.get("content_hash") for c in self._chunks}
+        old_vectors = self._vector_store.load()
+        # 1) 重建文本索引(同步内核,executor 防阻塞事件循环)
+        summary = await loop.run_in_executor(None, self.rebuild)
+        # 2) 仅对 id 命中且 content_hash 未变的 chunk 复用,新增/变更的重算嵌入
         new_vectors: dict[str, list[float]] = {}
         for chunk in self._chunks:
             cid = chunk["id"]
-            reuse = old.get(cid)
-            if reuse is not None:
+            reuse = old_vectors.get(cid)
+            if reuse is not None and old_hashes.get(cid) == chunk["content_hash"]:
                 new_vectors[cid] = reuse
                 continue
             try:
