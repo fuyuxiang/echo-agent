@@ -74,23 +74,30 @@ class SharedActivityState:
     last_visible_feedback_at: float = 0.0
     milestone_seq: int = 0            # monotonic; only real progress bumps it
     last_delivered_milestone: int = 0  # written by delivery layer (manager)
+    _first_tool_seen: bool = False
+    last_milestone_is_key: bool = False  # current milestone is a key one
 
     def enter_tool(self, name: str) -> None:
         # Only the thinking -> calling_tool transition is a milestone, so a
         # retry of the same tool without leaving calling_tool does not bump.
+        # The first tool entry of the turn is a key milestone; later ones are not.
         if self.phase != "calling_tool":
             self.milestone_seq += 1
+            self.last_milestone_is_key = not self._first_tool_seen
+            self._first_tool_seen = True
         self.current_tool = name
         self.phase = "calling_tool"
 
     def exit_tool(self) -> None:
         self.milestone_seq += 1
+        self.last_milestone_is_key = False
         self.current_tool = None
         self.phase = "thinking"
 
     def set_generating(self) -> None:
         if self.phase != "generating":
             self.milestone_seq += 1
+            self.last_milestone_is_key = True
         self.phase = "generating"
 
     def mark_visible_feedback(self, now: float | None = None) -> None:
@@ -198,6 +205,7 @@ class ProgressHeartbeat:
                 "_heartbeat": True,
                 "_inbound_event_id": ev.event_id,
                 "_hb_milestone": activity.milestone_seq,
+                "_hb_key": activity.last_milestone_is_key,
             }
             logger.info("heartbeat published: channel={} text={!r}", ev.channel, text)
             await self._bus.publish_outbound(out)

@@ -311,19 +311,19 @@ class ChannelManager:
         verbosity = getattr(getattr(self, "_heartbeat_cfg", None), "verbosity", "key_milestones")
         if verbosity == "silent":
             return
-        if channel.supports_edit:
-            # Editable channel: reuse the turn's heartbeat slot via edit. The
-            # full capability-based edit tiering is completed in Task 8; this
-            # keeps the existing single-slot behaviour intact.
-            async with self._state_lock:
-                msg_id = self._heartbeat_msg_ids.get(key)
-            if msg_id:
-                await channel.edit_message(
-                    event.chat_id, msg_id, event.text,
-                    metadata=self._public_metadata(event.metadata),
-                )
-            else:
-                await self._heartbeat_send(channel, event, key)
+        if not getattr(channel, "is_realtime", True):
+            return  # async tier (e.g. email): zero heartbeat
+        is_key = bool(event.metadata.get("_hb_key", False))
+        if (
+            verbosity == "key_milestones"
+            and has_milestone
+            and not getattr(channel, "supports_edit", False)
+            and not is_key
+        ):
+            return  # plain-text tier in key-only mode: skip non-key milestones
+        if getattr(channel, "supports_edit", False):
+            # Editable channel: reuse the turn's single heartbeat slot via edit.
+            await self._heartbeat_edit_or_send(channel, event, key)
         elif has_milestone:
             # Uneditable plain-text tier: milestone dedup upstream already
             # guaranteed this seq is new, so just send (no msg-id bookkeeping).
@@ -350,7 +350,26 @@ class ChannelManager:
                     oldest = next(iter(self._delivered_milestone))
                     del self._delivered_milestone[oldest]
 
-    async def _heartbeat_send(self, channel, event: OutboundEvent, key: str, *, track: bool = True) -> None:
+    async def _heartbeat_edit_or_send(self, channel, event: OutboundEvent, key: str) -> None:
+        """Editable tier: edit the turn's draft if one exists, else first-send it."""
+        async with self._state_lock:
+            msg_id = self._heartbeat_msg_ids.get(key)
+        if msg_id:
+            await channel.edit_message(
+                event.chat_id, msg_id, event.text,
+                metadata=self._public_metadata(event.metadata),
+            )
+            return
+        result = await channel.send(self._heartbeat_send_event(event))
+        if result and result.success and result.message_id and key:
+            async with self._state_lock:
+                self._heartbeat_msg_ids[key] = result.message_id
+                while len(self._heartbeat_msg_ids) > self._max_inbound_ids:
+                    oldest = next(iter(self._heartbeat_msg_ids))
+                    del self._heartbeat_msg_ids[oldest]
+
+    def _heartbeat_send_event(self, event: OutboundEvent) -> OutboundEvent:
+        """Build the OutboundEvent used to deliver a heartbeat beat (DRY)."""
         send_event = OutboundEvent.text_reply(
             channel=event.channel, chat_id=event.chat_id,
             text=event.text, reply_to_id=event.reply_to_id,
@@ -358,6 +377,10 @@ class ChannelManager:
         send_event.is_final = False
         send_event.message_kind = "heartbeat"
         send_event.metadata = self._public_metadata(event.metadata)
+        return send_event
+
+    async def _heartbeat_send(self, channel, event: OutboundEvent, key: str, *, track: bool = True) -> None:
+        send_event = self._heartbeat_send_event(event)
         result = await channel.send(send_event)
         if result and result.success and not getattr(result, "skipped", False):
             logger.info("heartbeat delivered: channel={} chat={}", event.channel, str(event.chat_id)[:8])

@@ -195,6 +195,9 @@ async def bootstrap(
             logger.warning("Failed to attach evolution engine: {}", e)
 
     channels = ChannelManager(config.channels, bus, on_cli_exit=on_cli_exit)
+    # Wire the real heartbeat config so verbosity (key_milestones/every_tool/
+    # silent) actually takes effect at runtime; the manager otherwise defaults.
+    channels._heartbeat_cfg = config.agent.heartbeat
     health = HealthChecker(check_interval=config.observability.health_check_interval_seconds)
 
     from echo_agent.observability.monitor import ComponentHealth as CH
