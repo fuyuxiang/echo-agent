@@ -27,6 +27,7 @@ _RATE_LIMIT_BACKOFF = 300
 class DiscordChannel(BaseChannel):
     name = "discord"
     supports_edit = True
+    supports_reactions = True
 
     def __init__(self, config: DiscordChannelConfig, bus: MessageBus):
         super().__init__(config, bus)

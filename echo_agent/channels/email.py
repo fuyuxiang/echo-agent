@@ -21,6 +21,7 @@ from echo_agent.utils.text import html_to_text
 
 class EmailChannel(BaseChannel):
     name = "email"
+    is_realtime = False
 
     def __init__(self, config: EmailChannelConfig, bus: MessageBus):
         super().__init__(config, bus)

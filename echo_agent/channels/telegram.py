@@ -24,6 +24,7 @@ _RECONNECT_BACKOFFS = [2, 5, 10, 30, 60]
 class TelegramChannel(BaseChannel):
     name = "telegram"
     supports_edit = True
+    supports_reactions = True
 
     def __init__(self, config: TelegramChannelConfig, bus: MessageBus):
         super().__init__(config, bus)

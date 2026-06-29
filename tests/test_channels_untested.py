@@ -827,3 +827,43 @@ class TestQQBotMedia:
         from echo_agent.channels.qqbot_media import parse_send_queue
         items = parse_send_queue("")
         assert items == []
+
+
+class TestChannelCapabilityAttributes:
+    """Capability flags used by progress-heartbeat tiering."""
+
+    def test_channel_capability_defaults(self):
+        from echo_agent.channels.base import BaseChannel
+        assert BaseChannel.supports_reactions is False
+        assert BaseChannel.is_realtime is True
+
+    def test_editable_channels_declare_reactions(self):
+        from echo_agent.channels.telegram import TelegramChannel
+        from echo_agent.channels.discord import DiscordChannel
+        from echo_agent.channels.slack import SlackChannel
+        from echo_agent.channels.matrix import MatrixChannel
+        assert TelegramChannel.supports_reactions is True
+        assert DiscordChannel.supports_reactions is True
+        assert SlackChannel.supports_reactions is True
+        assert MatrixChannel.supports_reactions is True
+
+    def test_matrix_has_reactions_but_no_edit(self):
+        # matrix overrides send_reaction but not edit -> reactions only
+        from echo_agent.channels.matrix import MatrixChannel
+        assert MatrixChannel.supports_reactions is True
+        assert MatrixChannel.supports_edit is False
+
+    def test_weixin_is_plain_text_tier(self):
+        # weixin: realtime but no edit, no reactions -> plain-text tier
+        from echo_agent.channels.weixin import WeixinChannel
+        assert WeixinChannel.supports_edit is False
+        assert WeixinChannel.supports_reactions is False
+        assert WeixinChannel.is_realtime is True
+
+    def test_async_channels_are_not_realtime(self):
+        from echo_agent.channels.email import EmailChannel
+        from echo_agent.channels.webhook import WebhookChannel
+        from echo_agent.channels.cron import CronChannel
+        assert EmailChannel.is_realtime is False
+        assert WebhookChannel.is_realtime is False
+        assert CronChannel.is_realtime is False

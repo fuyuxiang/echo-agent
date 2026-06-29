@@ -18,6 +18,7 @@ from echo_agent.config.schema import WebhookChannelConfig
 
 class WebhookChannel(BaseChannel):
     name = "webhook"
+    is_realtime = False
 
     def __init__(self, config: WebhookChannelConfig, bus: MessageBus):
         super().__init__(config, bus)

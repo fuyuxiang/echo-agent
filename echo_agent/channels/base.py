@@ -34,6 +34,8 @@ class BaseChannel(ABC):
     name: str = "base"
     transcription_api_key: str = ""
     supports_edit: bool = False
+    supports_reactions: bool = False  # overridden by channels that implement send_reaction
+    is_realtime: bool = True          # False for async channels (email/webhook/cron)
 
     def __init__(self, config: Any, bus: MessageBus):
         self.config = config

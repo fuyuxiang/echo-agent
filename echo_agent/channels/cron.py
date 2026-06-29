@@ -14,6 +14,7 @@ class CronChannel(BaseChannel):
     """Pseudo-channel that injects cron-triggered events into the bus."""
 
     name = "cron"
+    is_realtime = False
 
     def __init__(self, config: CronChannelConfig, bus: MessageBus):
         super().__init__(config, bus)

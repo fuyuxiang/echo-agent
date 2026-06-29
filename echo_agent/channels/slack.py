@@ -23,6 +23,7 @@ _RATE_LIMIT_BACKOFF = 300
 class SlackChannel(BaseChannel):
     name = "slack"
     supports_edit = True
+    supports_reactions = True
 
     def __init__(self, config: SlackChannelConfig, bus: MessageBus):
         super().__init__(config, bus)

@@ -21,6 +21,7 @@ _RECONNECT_BACKOFFS = [2, 5, 10, 30, 60]
 
 class MatrixChannel(BaseChannel):
     name = "matrix"
+    supports_reactions = True
 
     def __init__(self, config: MatrixChannelConfig, bus: MessageBus):
         super().__init__(config, bus)
