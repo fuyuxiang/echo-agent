@@ -229,3 +229,19 @@ def test_migrate_noop_when_no_heartbeat():
     data = {"agent": {}}
     assert migrate_heartbeat_config(data) == {"agent": {}}
 
+
+def test_migrate_every_does_not_override_explicit_verbosity():
+    # User already set verbosity explicitly -> legacy on_uneditable must not clobber it.
+    data = {"agent": {"heartbeat": {"on_uneditable": "every", "verbosity": "silent"}}}
+    out = migrate_heartbeat_config(data)
+    assert out["agent"]["heartbeat"]["verbosity"] == "silent"
+    assert "on_uneditable" not in out["agent"]["heartbeat"]
+
+
+def test_migrate_drops_interval_sec_when_min_interval_present():
+    # Both present -> keep min_interval_sec, drop legacy interval_sec.
+    data = {"agent": {"heartbeat": {"interval_sec": 90, "min_interval_sec": 45}}}
+    out = migrate_heartbeat_config(data)
+    assert out["agent"]["heartbeat"]["min_interval_sec"] == 45
+    assert "interval_sec" not in out["agent"]["heartbeat"]
+
