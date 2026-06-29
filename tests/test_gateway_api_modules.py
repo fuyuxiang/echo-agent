@@ -354,6 +354,8 @@ class TestKnowledgeAPI:
         api = KnowledgeAPI(server)
         if index == "__default__":
             index = MagicMock()
+            # Runtime rebuilds go through async rebuild_async (refreshes vectors).
+            index.rebuild_async = AsyncMock(return_value={})
         server._agent_loop.knowledge = index
         return api, index, server
 
@@ -391,7 +393,7 @@ class TestKnowledgeAPI:
     @pytest.mark.asyncio
     async def test_rebuild_success(self):
         api, index, _ = self._make()
-        index.rebuild.return_value = {"indexed": 3}
+        index.rebuild_async.return_value = {"indexed": 3}
         resp = await api.rebuild(_Request())
         assert resp.status == 200
         data = await _payload(resp)
@@ -454,7 +456,7 @@ class TestKnowledgeAPI:
         target = tmp_path / "doc.txt"
         target.write_text("x")
         index.status.return_value = {"docs_dir": str(tmp_path)}
-        index.rebuild.return_value = {"indexed": 0}
+        index.rebuild_async.return_value = {"indexed": 0}
         resp = await api.delete_document(_Request(match_info={"path": "doc.txt"}))
         assert resp.status == 200
         data = await _payload(resp)
@@ -490,7 +492,7 @@ class TestKnowledgeAPI:
         api, index, _ = self._make()
         docs_dir = tmp_path / "docs"
         index.status.return_value = {"docs_dir": str(docs_dir)}
-        index.rebuild.return_value = {"indexed": 1}
+        index.rebuild_async.return_value = {"indexed": 1}
         part = _Part(name="file", filename="note.txt", chunks=[b"hello ", b"world"])
         reader = _MultipartReader([part])
         resp = await api.upload(_Request(multipart=reader))

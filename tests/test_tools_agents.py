@@ -298,7 +298,7 @@ class TestKnowledgeIndexTool:
     @pytest.mark.asyncio
     async def test_rebuild(self):
         tool, index = self._make()
-        index.rebuild.return_value = {"rebuilt": True, "chunks": 100}
+        index.rebuild_async = AsyncMock(return_value={"rebuilt": True, "chunks": 100})
         result = await tool.execute({"action": "rebuild"}, _ctx())
         assert result.success is True
         assert "100" in result.output

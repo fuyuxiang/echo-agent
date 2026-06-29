@@ -13,8 +13,10 @@ if TYPE_CHECKING:
 def _safe_relative_dest(docs_dir: Path, relpath: str) -> Path | None:
     """Resolve relpath under docs_dir, rejecting absolute paths and traversal.
 
-    Mirrors the delete_document validation: resolve then verify the result
-    stays within docs_dir. Returns None when the path escapes the root.
+    Resolve then verify the result stays within docs_dir. The ``+ os.sep``
+    boundary on the prefix check prevents a sibling like ``docs-evil`` from
+    being accepted under ``docs``. Returns None when the path escapes the
+    root (or equals the root itself). Shared by upload and delete_document.
     """
     candidate = Path(relpath)
     if candidate.is_absolute() or ".." in candidate.parts:
@@ -60,7 +62,7 @@ class KnowledgeAPI:
         if index is None:
             return web.json_response({"error": "knowledge index not configured"}, status=404)
 
-        result = index.rebuild()
+        result = await index.rebuild_async()
         return web.json_response(result)
 
     async def upload(self, request: web.Request) -> web.Response:
@@ -108,7 +110,7 @@ class KnowledgeAPI:
         if not uploaded:
             return web.json_response({"error": "no files uploaded"}, status=400)
 
-        result = index.rebuild()
+        result = await index.rebuild_async()
         return web.json_response({
             "uploaded": uploaded,
             "index": result,
@@ -152,14 +154,14 @@ class KnowledgeAPI:
         rel_path = request.match_info["path"]
         status = index.status()
         docs_dir = Path(status.get("docs_dir", ""))
-        target = (docs_dir / rel_path).resolve()
+        target = _safe_relative_dest(docs_dir, rel_path)
 
-        if not str(target).startswith(str(docs_dir.resolve())):
+        if target is None:
             return web.json_response({"error": "invalid path"}, status=400)
 
         if not target.exists():
             return web.json_response({"error": "not found"}, status=404)
 
         os.remove(target)
-        result = index.rebuild()
+        result = await index.rebuild_async()
         return web.json_response({"status": "deleted", "index": result})

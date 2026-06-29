@@ -77,5 +77,5 @@ class KnowledgeIndexTool(Tool):
         if action == "status":
             return ToolResult(output=json.dumps(self._index.status(), ensure_ascii=False, indent=2))
         if action == "rebuild":
-            return ToolResult(output=json.dumps(self._index.rebuild(), ensure_ascii=False, indent=2))
+            return ToolResult(output=json.dumps(await self._index.rebuild_async(), ensure_ascii=False, indent=2))
         return ToolResult(success=False, error=f"Unsupported action: {action}")
