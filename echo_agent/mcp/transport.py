@@ -311,8 +311,8 @@ class StreamableHttpTransport(MCPTransport):
         finally:
             try:
                 await resp_cm.__aexit__(None, None, None)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to close streamable HTTP response: {}", e)
 
     async def _read_sse_response(self, resp: Any) -> None:
         """Parse SSE events from streaming response."""

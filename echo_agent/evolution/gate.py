@@ -403,8 +403,8 @@ class PromotionGate:
             parent = backup_dir.parent
             if parent.exists() and parent.name.startswith("evolution-skills-backup-"):
                 shutil.rmtree(parent, ignore_errors=True)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to clean up evolution backup {}: {}", backup_dir, e)
 
     def _retain_backup(self, backup_dir: Path, candidate: SkillCandidate, token: str) -> Path | None:
         """Move the pre-change snapshot into a retained rollback area.
@@ -438,8 +438,8 @@ class PromotionGate:
             )
             for stale in entries[self._MAX_RETAINED_BACKUPS:]:
                 shutil.rmtree(stale, ignore_errors=True)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to prune retained backups under {}: {}", retain_root, e)
 
     # ── Decision logic ───────────────────────────────────────────────────────
 
