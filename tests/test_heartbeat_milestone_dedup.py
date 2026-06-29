@@ -67,11 +67,30 @@ def manager_with_channel():
 async def test_same_turn_same_milestone_sends_once(manager_with_channel):
     # manager_with_channel: helper building a ChannelManager wired to the fake
     # channel with verbosity="every_tool".
+    # Semantics locked here: identical-text repeat beats for the same milestone
+    # seq within one turn collapse to a single send (milestone dedup). This was
+    # already green pre-fix because first_only's empty-key membership suppressed
+    # the same milestone; the real regression net is the elapsed-time variant
+    # below, where each beat carries different text.
     mgr, ch = manager_with_channel(_FakePlainChannel(), verbosity="every_tool")
     # Three beats for milestone 1 (the old timer would fire repeatedly).
     for _ in range(3):
         await mgr._handle_heartbeat(_hb_event(1, "⏳ 正在查阅资料（已用时 1 分钟）"))
     assert len(ch.sent) == 1  # deduped by milestone, not spammed
+
+
+@pytest.mark.asyncio
+async def test_repeated_beats_same_milestone_do_not_spam_plaintext(manager_with_channel):
+    # Reproduces the WeChat spam: in a pure-generation stretch the timer fires
+    # repeatedly with the SAME milestone seq while only the elapsed-time text
+    # advances (已用时 1/3/4...11 分钟). Without milestone dedup this produced
+    # ~10 "正在处理中" messages on the uneditable channel; the plain-text tier
+    # now emits exactly once. verbosity="every_tool" isolates dedup from the
+    # key_milestones tier's extra suppression.
+    mgr, ch = manager_with_channel(_FakePlainChannel(), verbosity="every_tool")
+    for i in range(1, 11):
+        await mgr._handle_heartbeat(_hb_event(1, f"⏳ 正在处理中（已用时 {i} 分钟）"))
+    assert len(ch.sent) == 1  # deduped to a single message, not 10
 
 
 @pytest.mark.asyncio
