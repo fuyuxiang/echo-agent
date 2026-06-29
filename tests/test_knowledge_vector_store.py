@@ -17,10 +17,8 @@ def test_degrades_gracefully_without_faiss(tmp_path: Path, monkeypatch):
     store.save([("c0", [1.0, 0.0, 0.0])])
 
 
-faiss = pytest.importorskip("faiss")
-
-
 def test_build_search_and_sidecar_roundtrip(tmp_path: Path):
+    pytest.importorskip("faiss")
     sidecar = tmp_path / "idx.json.vectors.npz"
     store = KnowledgeVectorStore(sidecar, dimensions=3)
     ordered = [("c0", [1.0, 0.0, 0.0]), ("c1", [0.0, 1.0, 0.0])]
@@ -36,6 +34,7 @@ def test_build_search_and_sidecar_roundtrip(tmp_path: Path):
 
 
 def test_dimension_mismatch_sidecar_discarded(tmp_path: Path):
+    pytest.importorskip("faiss")
     sidecar = tmp_path / "idx.json.vectors.npz"
     store = KnowledgeVectorStore(sidecar, dimensions=3)
     store.save([("c0", [1.0, 0.0, 0.0])])
