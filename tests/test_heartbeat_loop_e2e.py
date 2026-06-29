@@ -15,16 +15,20 @@ class _RecordingBus:
 
 @pytest.mark.asyncio
 async def test_heartbeat_fires_during_long_work_and_sealed_after():
-    """End-to-end of the timer contract used by AgentLoop: a long body
-    yields heartbeats; once stop() is called no further beats appear."""
+    """End-to-end of the milestone contract used by AgentLoop: a long body that
+    advances a milestone yields a heartbeat; once stop() is called no further
+    beats appear."""
     bus = _RecordingBus()
-    # interval_sec must be >= 1 per HeartbeatConfig schema (ge=1); use the
-    # minimal valid value so the first beat still fires immediately after the
-    # zero first_delay_sec gate.
-    cfg = HeartbeatConfig(first_delay_sec=0, interval_sec=1)
+    # min_interval_sec is the renamed throttle field; 1 is the minimal valid
+    # value (schema ge=1) and the first beat still fires because no visible
+    # feedback has happened yet.
+    cfg = HeartbeatConfig(first_delay_sec=0, min_interval_sec=1)
     ev = InboundEvent(channel="cli", chat_id="c1")
     hb = ProgressHeartbeat(bus, ev, cfg)
     activity = SharedActivityState(started_at=time.monotonic())
+    # A real milestone advances (tool entry) so the progress gate opens; pure
+    # thinking would never bump the seq and would correctly emit zero beats.
+    activity.enter_tool("web_search")
     await hb.start(activity)
     await asyncio.sleep(0.05)            # simulate long work
     fired = len(bus.events)

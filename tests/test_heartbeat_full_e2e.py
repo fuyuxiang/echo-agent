@@ -42,10 +42,12 @@ async def test_heartbeats_precede_final_and_seal():
     ch = _Chan()
     mgr._channels["cli"] = ch
     ev = InboundEvent(channel="cli", chat_id="c1")
-    # interval_sec must satisfy schema ge=1; first_delay_sec=0 makes the
-    # first beat fire immediately so a short test window still produces one.
-    hb = ProgressHeartbeat(bus, ev, HeartbeatConfig(first_delay_sec=0, interval_sec=1))
+    # min_interval_sec is the renamed throttle (schema ge=1); first_delay_sec=0
+    # plus an advancing milestone makes the first beat fire inside the window.
+    hb = ProgressHeartbeat(bus, ev, HeartbeatConfig(first_delay_sec=0, min_interval_sec=1))
     activity = SharedActivityState(started_at=time.monotonic())
+    # A real milestone advances so the progress gate opens and a beat is due.
+    activity.enter_tool("web_search")
 
     await hb.start(activity)
     await asyncio.sleep(0.1)          # long work -> beats flow through bus -> manager

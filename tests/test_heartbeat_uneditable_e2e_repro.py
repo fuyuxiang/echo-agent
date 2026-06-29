@@ -44,9 +44,16 @@ async def test_uneditable_channel_receives_heartbeat_through_bus():
     mgr = ChannelManager(ChannelsConfig(), bus)
     ch = _UneditableChan()
     mgr._channels["weixin"] = ch
+    # every_tool verbosity so the plain-text tier emits every milestone, not just
+    # key ones — this test asserts the beat reaches weixin at all.
+    mgr._heartbeat_cfg = HeartbeatConfig(verbosity="every_tool")
     ev = InboundEvent(channel="weixin", chat_id="c1")
-    hb = ProgressHeartbeat(bus, ev, HeartbeatConfig(first_delay_sec=0, interval_sec=1))
+    hb = ProgressHeartbeat(bus, ev, HeartbeatConfig(first_delay_sec=0, min_interval_sec=1,
+                                                    verbosity="every_tool"))
     activity = SharedActivityState(started_at=time.monotonic())
+    # A real milestone advances (first tool entry) so a beat is due and flows
+    # bus -> manager -> the uneditable channel's send().
+    activity.enter_tool("web_search")
 
     await hb.start(activity)
     await asyncio.sleep(0.15)

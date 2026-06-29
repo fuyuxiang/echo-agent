@@ -283,10 +283,9 @@ class ChannelManager:
                 if key in self._finalized_keys:
                     return
         # Milestone dedup (Task 7): each turn delivers a given milestone seq at
-        # most once. The seq is set by ProgressHeartbeat; events that carry it
-        # use _delivered_milestone for dedup, while legacy beats without it fall
-        # back to the on_uneditable strategy below. This is the structural fix
-        # for weixin spam — dedup keys off the turn's milestone, not a msg id.
+        # most once. The seq is set by ProgressHeartbeat and always present on
+        # real beats; _delivered_milestone keys off the turn's milestone, not a
+        # msg id. This is the structural fix for weixin spam.
         has_milestone = "_hb_milestone" in event.metadata
         milestone = int(event.metadata.get("_hb_milestone", 0))
         pass_only_typing = False
@@ -327,20 +326,7 @@ class ChannelManager:
         elif has_milestone:
             # Uneditable plain-text tier: milestone dedup upstream already
             # guaranteed this seq is new, so just send (no msg-id bookkeeping).
-            await self._heartbeat_send(channel, event, key, track=False)
-        else:
-            # Legacy beats without a milestone seq: apply the on_uneditable strategy.
-            strategy = event.metadata.get("_hb_on_uneditable", "first_only")
-            if strategy == "off":
-                return
-            if strategy == "first_only":
-                async with self._state_lock:
-                    already = key in self._heartbeat_msg_ids
-                if already:
-                    return
-                await self._heartbeat_send(channel, event, key)
-            else:  # "every"
-                await self._heartbeat_send(channel, event, key, track=False)
+            await self._heartbeat_send(channel, event, key)
         # Record the delivered milestone so repeat beats for the same seq are
         # suppressed at the top of _handle_heartbeat.
         if key and has_milestone:
@@ -379,24 +365,13 @@ class ChannelManager:
         send_event.metadata = self._public_metadata(event.metadata)
         return send_event
 
-    async def _heartbeat_send(self, channel, event: OutboundEvent, key: str, *, track: bool = True) -> None:
+    async def _heartbeat_send(self, channel, event: OutboundEvent, key: str) -> None:
         send_event = self._heartbeat_send_event(event)
         result = await channel.send(send_event)
         if result and result.success and not getattr(result, "skipped", False):
             logger.info("heartbeat delivered: channel={} chat={}", event.channel, str(event.chat_id)[:8])
         elif result and not result.success:
             logger.info("heartbeat send failed: channel={} error={}", event.channel, getattr(result, "error", ""))
-        # Record the turn key on any successful send — not only when a platform
-        # message_id is returned. Uneditable channels (e.g. weixin) succeed
-        # without an id; the first_only strategy keys off membership (key in
-        # _heartbeat_msg_ids), so an empty-string value is enough to suppress
-        # repeat beats. Editable channels still store their real id for seal/edit.
-        if track and result and result.success and not getattr(result, "skipped", False):
-            async with self._state_lock:
-                self._heartbeat_msg_ids[key] = result.message_id or ""
-                while len(self._heartbeat_msg_ids) > self._max_inbound_ids:
-                    oldest = next(iter(self._heartbeat_msg_ids))
-                    del self._heartbeat_msg_ids[oldest]
 
     async def _handle_token_stream(self, event: OutboundEvent) -> None:
         channel = self._channels.get(event.channel)

@@ -68,10 +68,11 @@ class BaseChannel(ABC):
         if event.is_final:
             return True
         # Heartbeats are level-triggered progress beats that the ChannelManager
-        # has already throttled per the on_uneditable strategy (first_only/every/off)
-        # before reaching here. Let them through on uneditable channels too, so the
-        # manager's strategy is authoritative rather than silently overridden by this
-        # guard (which only exists to suppress token-stream / progress chunks).
+        # has already deduped per the turn's milestone seq and filtered per the
+        # channel's verbosity tier before reaching here. Let them through on
+        # uneditable channels too, so the manager's tiering is authoritative
+        # rather than silently overridden by this guard (which only exists to
+        # suppress token-stream / progress chunks).
         if event.message_kind == "heartbeat":
             return True
         return False

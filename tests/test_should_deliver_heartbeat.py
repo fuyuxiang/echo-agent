@@ -5,7 +5,7 @@ Background: heartbeat OutboundEvents carry is_final=False on uneditable channels
 progress chunks on channels that cannot edit, but it was also silently dropping
 heartbeats — so long-running turns produced no "still working" message on weixin
 until the final answer arrived. These tests pin the passthrough so the
-ChannelManager's on_uneditable strategy stays authoritative.
+ChannelManager's milestone-based tiering stays authoritative.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from echo_agent.bus.events import OutboundEvent
 from echo_agent.bus.queue import MessageBus
 from echo_agent.channels.base import BaseChannel, SendResult
 from echo_agent.channels.manager import ChannelManager
-from echo_agent.config.schema import ChannelsConfig
+from echo_agent.config.schema import ChannelsConfig, HeartbeatConfig
 
 
 class _MinimalChannel(BaseChannel):
@@ -95,19 +95,21 @@ async def test_heartbeat_reaches_send_on_uneditable_channel():
 
 
 @pytest.mark.asyncio
-async def test_first_only_strategy_delivers_one_heartbeat_via_manager():
-    """The manager's first_only strategy plus the relaxed guard yields exactly
-    one heartbeat on an uneditable channel — not zero (the bug) and not many."""
+async def test_milestone_dedup_delivers_one_heartbeat_via_manager():
+    """The manager's milestone dedup plus the relaxed guard yields exactly one
+    heartbeat on an uneditable channel for a repeated milestone seq — not zero
+    (the bug) and not many."""
     manager = ChannelManager(ChannelsConfig(), MessageBus())
+    manager._heartbeat_cfg = HeartbeatConfig(verbosity="every_tool")
     ch = _MinimalChannel()
     manager._channels["minimal"] = ch
 
     first = _heartbeat_event("hb1")
     first.metadata = {"_heartbeat": True, "_inbound_event_id": "evt1",
-                      "_hb_on_uneditable": "first_only"}
+                      "_hb_milestone": 1, "_hb_key": False}
     second = _heartbeat_event("hb2")
     second.metadata = {"_heartbeat": True, "_inbound_event_id": "evt1",
-                       "_hb_on_uneditable": "first_only"}
+                       "_hb_milestone": 1, "_hb_key": False}
 
     await manager._filter_and_dispatch(first)
     await manager._filter_and_dispatch(second)

@@ -77,9 +77,13 @@ async def test_dropped_tool_event_does_not_starve_heartbeat():
     await stub._emit_tool_event(ctx, {"_phase": "calling_tool"})
     assert ch.sent == []  # user saw nothing
 
-    # The dropped event must NOT have counted as visible feedback.
+    # The dropped event must NOT have counted as visible feedback: counting it
+    # would trip the silence gate and suppress the beat.
     assert activity.last_visible_feedback_at == 0.0
 
-    # So the heartbeat is free to fire its first beat.
-    hb = ProgressHeartbeat(bus, ev, HeartbeatConfig(first_delay_sec=0, interval_sec=60))
+    # New milestone model: a tool entry advances the milestone seq, so a beat is
+    # due. The dropped progress event did not mark feedback, so the silence gate
+    # stays open and the heartbeat is free to fire its first beat.
+    activity.enter_tool("web_search")
+    hb = ProgressHeartbeat(bus, ev, HeartbeatConfig(first_delay_sec=0, min_interval_sec=60))
     assert hb._should_beat(activity), "heartbeat starved by a dropped tool event"

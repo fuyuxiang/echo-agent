@@ -32,12 +32,12 @@ class _FakeChannel:
         pass
 
 
-def _hb_event(uneditable="first_only", text="⏳ 已用时 1 分钟（思考中）"):
+def _hb_event(milestone=1, text="⏳ 已用时 1 分钟（思考中）", *, key="evt1", is_key=False):
     out = OutboundEvent.text_reply(channel="x", chat_id="c1", text=text)
     out.is_final = False
     out.message_kind = "heartbeat"
-    out.metadata = {"_heartbeat": True, "_inbound_event_id": "evt1",
-                    "_hb_on_uneditable": uneditable}
+    out.metadata = {"_heartbeat": True, "_inbound_event_id": key,
+                    "_hb_milestone": milestone, "_hb_key": is_key}
     return out
 
 
@@ -46,12 +46,18 @@ def manager():
     return ChannelManager(ChannelsConfig(), MessageBus())
 
 
+def _with_verbosity(manager, verbosity):
+    from echo_agent.config.schema import HeartbeatConfig
+    manager._heartbeat_cfg = HeartbeatConfig(verbosity=verbosity)
+
+
 @pytest.mark.asyncio
 async def test_editable_channel_edits_single_message(manager):
     ch = _FakeChannel(supports_edit=True)
     manager._channels["x"] = ch
-    await manager._filter_and_dispatch(_hb_event(text="hb1"))
-    await manager._filter_and_dispatch(_hb_event(text="hb2"))
+    _with_verbosity(manager, "every_tool")
+    await manager._filter_and_dispatch(_hb_event(1, "hb1"))
+    await manager._filter_and_dispatch(_hb_event(2, "hb2"))
     assert len(ch.sent) == 1          # first beat sends
     assert len(ch.edits) == 1         # second beat edits
     assert ch.edits[0][1] == "hb2"
@@ -59,30 +65,37 @@ async def test_editable_channel_edits_single_message(manager):
 
 
 @pytest.mark.asyncio
-async def test_uneditable_first_only_sends_once(manager):
+async def test_uneditable_same_milestone_sends_once(manager):
+    # New model: repeat beats for the same milestone seq collapse to one send
+    # (was first_only). every_tool isolates dedup from key-milestone suppression.
     ch = _FakeChannel(supports_edit=False)
     manager._channels["x"] = ch
-    await manager._filter_and_dispatch(_hb_event("first_only", "hb1"))
-    await manager._filter_and_dispatch(_hb_event("first_only", "hb2"))
+    _with_verbosity(manager, "every_tool")
+    await manager._filter_and_dispatch(_hb_event(1, "hb1"))
+    await manager._filter_and_dispatch(_hb_event(1, "hb2"))  # same milestone -> deduped
     assert len(ch.sent) == 1
     assert ch.typings >= 2            # still keeps typing alive
 
 
 @pytest.mark.asyncio
-async def test_uneditable_off_sends_nothing_but_typing(manager):
+async def test_silent_verbosity_sends_nothing_but_typing(manager):
+    # New model: verbosity="silent" replaces the legacy on_uneditable="off".
     ch = _FakeChannel(supports_edit=False)
     manager._channels["x"] = ch
-    await manager._filter_and_dispatch(_hb_event("off", "hb1"))
+    _with_verbosity(manager, "silent")
+    await manager._filter_and_dispatch(_hb_event(1, "hb1"))
     assert len(ch.sent) == 0
     assert ch.typings >= 1
 
 
 @pytest.mark.asyncio
-async def test_uneditable_every_sends_each(manager):
+async def test_uneditable_new_milestones_each_send(manager):
+    # New model: each advancing milestone sends once under every_tool (was "every").
     ch = _FakeChannel(supports_edit=False)
     manager._channels["x"] = ch
-    await manager._filter_and_dispatch(_hb_event("every", "hb1"))
-    await manager._filter_and_dispatch(_hb_event("every", "hb2"))
+    _with_verbosity(manager, "every_tool")
+    await manager._filter_and_dispatch(_hb_event(1, "hb1"))
+    await manager._filter_and_dispatch(_hb_event(2, "hb2"))
     assert ch.sent == ["hb1", "hb2"]
 
 
@@ -94,12 +107,12 @@ def _final_event(key="evtX", text="最终答案"):
     return out
 
 
-def _late_hb_event(key="evtX", text="正在处理中…"):
+def _late_hb_event(key="evtX", text="正在处理中…", milestone=1):
     out = OutboundEvent.text_reply(channel="x", chat_id="c1", text=text)
     out.is_final = False
     out.message_kind = "heartbeat"
     out.metadata = {"_heartbeat": True, "_inbound_event_id": key,
-                    "_hb_on_uneditable": "first_only"}
+                    "_hb_milestone": milestone, "_hb_key": False}
     return out
 
 
