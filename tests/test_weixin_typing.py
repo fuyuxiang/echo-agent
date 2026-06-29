@@ -1,10 +1,17 @@
 """Tests for the Weixin typing indicator (ilink/bot/getconfig + sendtyping).
 
+Typing is exposed via the BaseChannel primitives send_typing / stop_typing and
+driven by ChannelManager (inbound + every heartbeat beat → send_typing; final
+reply → stop_typing). The channel keeps an internal refresh loop because the
+WeChat input state expires faster than the heartbeat interval.
+
 Covers:
   1. typing_ticket fetch + caching via getconfig
   2. _do_send_typing wiring (status + ticket passed through)
-  3. _start_typing / _stop_typing lifecycle: emits start then a final stop
-  4. config toggle and send() stopping the indicator on reply
+  3. send_typing / stop_typing lifecycle: emits start then a final stop
+  4. config toggle; send() no longer drives typing (manager owns it)
+  5. regressions: double-cancel still emits status=2; orphan-cap loop is
+     revived by a subsequent send_typing (heartbeat beat)
 """
 
 from __future__ import annotations
@@ -119,9 +126,9 @@ class TestTypingLifecycle:
 
         monkeypatch.setattr(wx, "_send_typing", fake_sendtyping)
 
-        ch._start_typing("user@x")
+        await ch.send_typing("user@x")
         await asyncio.sleep(0.03)  # allow a couple of start refreshes
-        ch._stop_typing("user@x")
+        await ch.stop_typing("user@x")
         await asyncio.sleep(0.02)  # allow the loop's finally to run
 
         assert wx._TYPING_START in sent
@@ -135,34 +142,91 @@ class TestTypingLifecycle:
         _patch_getconfig(monkeypatch, "TKT")
         monkeypatch.setattr(wx, "_send_typing", AsyncMock(return_value={}))
 
-        ch._start_typing("user@x")
+        await ch.send_typing("user@x")
         task1 = ch._typing_tasks["user@x"]
-        ch._start_typing("user@x")
+        await ch.send_typing("user@x")
         task2 = ch._typing_tasks["user@x"]
         assert task1 is task2  # no duplicate loop
-        ch._stop_typing("user@x")
+        await ch.stop_typing("user@x")
         await asyncio.sleep(0.02)
 
     @pytest.mark.asyncio
     async def test_disabled_does_not_start(self, tmp_path):
         ch = _make_weixin(tmp_path, typing_indicator=False)
-        ch._start_typing("user@x")
+        await ch.send_typing("user@x")
         assert ch._typing_tasks == {}
 
 
-class TestSendStopsTyping:
+class TestTypingCancellationRegressions:
     @pytest.mark.asyncio
-    async def test_send_stops_typing_for_chat(self, tmp_path, monkeypatch):
+    async def test_double_cancel_still_emits_stop(self, tmp_path, monkeypatch):
+        """stop_typing then a second cancel (channel stop) must not drop status=2.
+
+        Without shielding the finally's stop-send, the second CancelledError aborts
+        it and leaves "typing" stuck on the peer's screen.
+        """
+        ch = _make_weixin(tmp_path)
+        monkeypatch.setattr(wx, "_TYPING_REFRESH_INTERVAL", 0.01)
+        _patch_getconfig(monkeypatch, "TKT")
+        sent: list[int] = []
+
+        async def fake_sendtyping(session, *, base_url, token, to, status, typing_ticket):
+            if status == wx._TYPING_STOP:
+                await asyncio.sleep(0.02)  # a real suspension point during cleanup
+            sent.append(status)
+            return {}
+
+        monkeypatch.setattr(wx, "_send_typing", fake_sendtyping)
+
+        await ch.send_typing("user@x")
+        await asyncio.sleep(0.03)
+        task = ch._typing_tasks["user@x"]
+        await ch.stop_typing("user@x")   # first cancel
+        await asyncio.sleep(0)           # let loop enter finally's shielded stop
+        task.cancel()                    # second cancel (e.g. channel stop())
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.sleep(0.03)        # let the shielded stop-send finish
+
+        assert sent[-1] == wx._TYPING_STOP  # status=2 survived the double cancel
+
+    @pytest.mark.asyncio
+    async def test_orphan_cap_loop_is_revived_by_next_send_typing(self, tmp_path, monkeypatch):
+        """When the refresh loop self-terminates at the orphan cap, a later
+        send_typing (heartbeat beat) must start a fresh loop rather than no-op."""
+        ch = _make_weixin(tmp_path)
+        monkeypatch.setattr(wx, "_TYPING_REFRESH_INTERVAL", 0.001)
+        monkeypatch.setattr(wx, "_TYPING_MAX_DURATION", 0.0)  # cap already elapsed
+        _patch_getconfig(monkeypatch, "TKT")
+        monkeypatch.setattr(wx, "_send_typing", AsyncMock(return_value={}))
+
+        await ch.send_typing("user@x")
+        await asyncio.sleep(0.01)  # loop hits cap, self-terminates, clears slot
+        assert "user@x" not in ch._typing_tasks  # _on_typing_done cleared it
+
+        # A subsequent beat must revive it (idempotency guard sees no live task).
+        await ch.send_typing("user@x")
+        assert "user@x" in ch._typing_tasks
+        await ch.stop_typing("user@x")
+        await asyncio.sleep(0.01)
+
+
+class TestSendDoesNotTouchTyping:
+    """send() must no longer manage typing itself — ChannelManager owns that
+    lifecycle now (stop_typing on the final outbound). send() touching typing
+    again would double-drive it and reintroduce the old coupling."""
+
+    @pytest.mark.asyncio
+    async def test_send_does_not_stop_typing(self, tmp_path, monkeypatch):
         ch = _make_weixin(tmp_path)
         ch._send_text = AsyncMock(return_value=wx.SendResult(success=True))
-        stopped: list[str] = []
-        monkeypatch.setattr(ch, "_stop_typing", lambda cid: stopped.append(cid))
+        calls: list[str] = []
+        monkeypatch.setattr(ch, "stop_typing", AsyncMock(side_effect=lambda c: calls.append(c)))
 
         ev = OutboundEvent.text_reply(channel="weixin", chat_id="user@x", text="hi")
         res = await ch.send(ev)
 
         assert res.success
-        assert stopped == ["user@x"]
+        assert calls == []  # send() does not drive typing anymore
 
 
 class TestGetConfigAndSendTypingApi:
@@ -275,7 +339,7 @@ class TestTypingLoopExtraBranches:
             raise RuntimeError("loop crashed")
 
         monkeypatch.setattr(ch, "_typing_loop", failing_loop)
-        ch._start_typing("user@x")
+        await ch.send_typing("user@x")
         task = ch._typing_tasks["user@x"]
         # Let the task run, crash, and fire the done callback.
         with pytest.raises(RuntimeError):

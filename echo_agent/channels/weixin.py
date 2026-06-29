@@ -65,7 +65,11 @@ _LIVENESS_TIMEOUT = 30 * 60  # 30 分钟无消息视为静默失效
 _TYPING_START = 1               # status=1：显示“对方正在输入”
 _TYPING_STOP = 2               # status=2：取消输入状态
 _TYPING_REFRESH_INTERVAL = 5    # 秒，处理期间周期性补发以防输入状态过期
-_TYPING_MAX_DURATION = 120      # 秒，无回复时自动停止，避免“正在输入”卡死
+# 孤儿保护兜底：正常停止由 ChannelManager 在最终回复落地时调 stop_typing 完成，
+# 心跳每个 beat 又会 send_typing 复活刷新循环；这个上限只在“stop_typing 因故
+# 永不触发”（如最终回复事件丢失）时兜底，避免“正在输入”无限期刷下去。设得
+# 远高于心跳 interval，循环到期后由 _on_typing_done 清槽、下个 beat 自动复活。
+_TYPING_MAX_DURATION = 600      # 秒
 _TYPING_TICKET_TTL = 23 * 3600  # 秒，typing_ticket 缓存有效期（官方约 24h，留余量）
 
 _ITEM_TEXT = 1
@@ -529,9 +533,6 @@ class WeixinChannel(BaseChannel):
             return SendResult(success=False, error="no session or no token")
         chat_id = event.chat_id
 
-        # 回复即将发出，停止“正在输入”状态（下发 status=2）。
-        self._stop_typing(chat_id)
-
         # Route each content block: text via sendmessage, image/file via CDN upload.
         # Fall back to event.text when no structured blocks are present.
         blocks = list(event.content) or []
@@ -648,9 +649,21 @@ class WeixinChannel(BaseChannel):
         except asyncio.CancelledError:
             pass
         finally:
-            await self._do_send_typing(chat_id, _TYPING_STOP)
+            # Shield the stop send: this runs during cancellation, and a *second*
+            # cancel (e.g. stop_typing followed by channel stop()) would otherwise
+            # abort the await and leave "typing" stuck on the peer's screen.
+            await asyncio.shield(
+                asyncio.ensure_future(self._do_send_typing(chat_id, _TYPING_STOP))
+            )
 
-    def _start_typing(self, chat_id: str) -> None:
+    async def send_typing(self, chat_id: str, metadata: dict[str, Any] | None = None) -> None:
+        """Start (or keep) the typing indicator for *chat_id*.
+
+        Implements the BaseChannel primitive driven by ChannelManager: it is
+        called on inbound and on every heartbeat beat. Idempotent per chat — a
+        beat arriving while a refresh loop is already running is a no-op, and a
+        beat after the loop self-terminated (orphan-cap) revives it.
+        """
         if not self._typing_enabled or not chat_id:
             return
         existing = self._typing_tasks.get(chat_id)
@@ -660,7 +673,8 @@ class WeixinChannel(BaseChannel):
         self._typing_tasks[chat_id] = task
         task.add_done_callback(self._on_typing_done)
 
-    def _stop_typing(self, chat_id: str) -> None:
+    async def stop_typing(self, chat_id: str) -> None:
+        """Stop the typing indicator for *chat_id* (sends status=2 via the loop's finally)."""
         if not self._typing_enabled or not chat_id:
             return
         task = self._typing_tasks.pop(chat_id, None)
@@ -993,8 +1007,8 @@ class WeixinChannel(BaseChannel):
         if not text and not media:
             return
 
-        # 开始下发“对方正在输入”，直到回复发出（见 send）或处理超时自动停止。
-        self._start_typing(effective_chat_id)
+        # Typing indicator is driven by ChannelManager (send_typing on inbound +
+        # every heartbeat beat, stop_typing on the final reply), not started here.
         await self._handle_message(
             sender_id=sender_id,
             chat_id=effective_chat_id,

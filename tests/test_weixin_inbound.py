@@ -179,7 +179,6 @@ class TestProcessMessage:
     def _ch(self, tmp_path, **overrides):
         ch = _make_weixin(tmp_path, **overrides)
         ch._handle_message = AsyncMock()
-        ch._start_typing = MagicMock()
         return ch
 
     @pytest.mark.asyncio
@@ -231,13 +230,13 @@ class TestProcessMessage:
         ch._handle_message.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_happy_path_starts_typing_and_handles(self, tmp_path):
+    async def test_happy_path_handles_message(self, tmp_path):
         ch = self._ch(tmp_path)
         await ch._process_message({
             "from_user_id": "u@x", "message_id": "m1", "context_token": "ctx",
             "item_list": [{"type": wx._ITEM_TEXT, "text_item": {"text": "hello"}}],
         })
-        ch._start_typing.assert_called_once_with("u@x")
+        # Typing is now driven by ChannelManager (send_typing on inbound), not here.
         ch._handle_message.assert_awaited_once()
         kwargs = ch._handle_message.await_args.kwargs
         assert kwargs["text"] == "hello"
