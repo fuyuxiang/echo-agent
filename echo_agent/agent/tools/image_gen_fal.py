@@ -7,6 +7,8 @@ import os
 import threading
 from typing import Any
 
+from loguru import logger
+
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
 
 DEFAULT_MODEL = "fal-ai/flux/schnell"
@@ -114,8 +116,8 @@ def _load_fal_client():
     try:
         from echo_agent.dependencies import ensure
         ensure("tool.image-gen-fal")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Lazy dependency ensure for fal-client failed, will try import anyway: {}", e)
     import fal_client  # type: ignore
     return fal_client
 

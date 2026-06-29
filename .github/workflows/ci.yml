@@ -45,7 +45,9 @@ jobs:
           pip install -e ".[all,dev]"
 
       - name: Run tests
-        run: python -m pytest tests/ -v
+        # --cov activates the coverage gate (fail_under) defined in pyproject.toml,
+        # so a drop below the baseline fails CI instead of passing silently.
+        run: python -m pytest tests/ -v --cov
 
   security:
     runs-on: ubuntu-latest

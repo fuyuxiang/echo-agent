@@ -698,16 +698,16 @@ class InferenceStage:
                                  "name": tool_call.name, "content": err_text})
                 try:
                     session.add_message("tool", err_text, tool_call_id=tool_call.id, name=tool_call.name)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Failed to record interrupted-tool message for {}: {}", tool_call.name, e)
                 try:
                     self._tracer.end_span(tool_span, error="interrupted")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Failed to end span for interrupted tool {}: {}", tool_call.name, e)
                 try:
                     self._circuit_breaker.record_failure(tool_call.name)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Failed to record circuit-breaker failure for {}: {}", tool_call.name, e)
                 counters.total_tool_calls += 1
                 if isinstance(res, asyncio.CancelledError):
                     raise res

@@ -56,7 +56,7 @@ echo-agent setup
 echo-agent run
 ```
 
-> See [`docs/config-reference.en.md`](docs/config-reference.en.md) for the full set of effective options (description, type, default and allowed values). You can also run `echo-agent config explain <key>` for a single option, `echo-agent config dump` to view the active configuration (secrets are redacted), and `echo-agent config validate` to check a config file.
+> Inspect configuration with the CLI: `echo-agent config explain <key>` for a single option (description, type, default and allowed values), `echo-agent config dump` to view the active configuration (secrets are redacted), and `echo-agent config validate` to check a config file.
 
 <details>
 <summary>China mirror / Windows / one-liner script</summary>

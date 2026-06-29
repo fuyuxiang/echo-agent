@@ -217,8 +217,8 @@ class SQLiteBackend(StorageBackend):
                 if old_db is not None:
                     try:
                         await old_db.close()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("Failed to close stale SQLite connection: {}", e)
                 await self._connect()
             return self._db  # type: ignore[return-value]
 
@@ -242,8 +242,8 @@ class SQLiteBackend(StorageBackend):
         if self._db:
             try:
                 await self._db.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to close SQLite connection on shutdown: {}", e)
             self._db = None
 
     # ── Session ────────────────────────────────────────────────────────────
