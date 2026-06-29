@@ -160,3 +160,20 @@ async def test_search_async_vector_recall(tmp_path):
     res = await idx.search_async("fox", limit=2)
     assert res and "Alpha" in res[0].title
 
+
+@pytest.mark.asyncio
+async def test_attach_then_background_backfill_flag(tmp_path):
+    from echo_agent.knowledge.index import KnowledgeIndex
+    pytest.importorskip("faiss")
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "a.md").write_text("# Alpha\nquick fox", encoding="utf-8")
+    idx = KnowledgeIndex(workspace=tmp_path, docs_dir="docs", index_path="idx.json",
+                         allowed_extensions=[".md"])
+    idx.rebuild()  # 纯关键词索引先就绪
+    idx.attach_embedding(_fake_embed, dimensions=3)
+    # attach 不算嵌入 → 仍需补建
+    assert idx.needs_vector_backfill() is True
+    await idx.rebuild_async()
+    assert idx.needs_vector_backfill() is False
+

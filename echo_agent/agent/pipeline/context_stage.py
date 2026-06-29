@@ -130,20 +130,10 @@ class ContextStage:
         return episodes
 
     async def _fetch_knowledge(self, query: str, user_id: str) -> tuple[list, str]:
-        """Inline knowledge retrieval for a sync-on-miss turn.
-
-        The scan is synchronous and CPU-bound, so it runs in an executor thread
-        to avoid blocking the event loop. Scoped by ``user_id`` for access
-        control / isolation.
-        """
-        import asyncio
-
-        loop = asyncio.get_running_loop()
-        results = await loop.run_in_executor(
-            None,
-            lambda: self._knowledge.search(
-                query, limit=self._config.knowledge.max_results, user_id=user_id
-            ),
+        """Inline knowledge retrieval. Vector path is async; keyword-only path
+        degrades internally. Scoped by user_id for access control."""
+        results = await self._knowledge.search_async(
+            query, limit=self._config.knowledge.max_results, user_id=user_id
         )
         context = self._knowledge.format_results(results)
         return results, context

@@ -262,7 +262,7 @@ class TestKnowledgeSearchTool:
     @pytest.mark.asyncio
     async def test_no_results(self):
         tool, index = self._make()
-        index.search.return_value = []
+        index.search_async = AsyncMock(return_value=[])
         index.format_results.return_value = ""
         result = await tool.execute({"query": "anything"}, _ctx())
         assert result.success is True
@@ -272,7 +272,7 @@ class TestKnowledgeSearchTool:
     async def test_with_results(self):
         tool, index = self._make()
         mock_result = SimpleNamespace(citation_id="c1", path="doc.md", chunk_id="ch1", score=0.9)
-        index.search.return_value = [mock_result]
+        index.search_async = AsyncMock(return_value=[mock_result])
         index.format_results.return_value = "Found: doc.md chunk"
         result = await tool.execute({"query": "test query", "max_results": 3}, _ctx())
         assert result.success is True

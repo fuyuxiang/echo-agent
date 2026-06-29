@@ -547,7 +547,7 @@ async def test_context_uses_cached_episodes_and_knowledge():
     episodic.search_episodes = AsyncMock(side_effect=AssertionError("must not query"))
     episodic.get_session_episodes = AsyncMock(side_effect=AssertionError("must not query"))
     knowledge = MagicMock()
-    knowledge.search = MagicMock(side_effect=AssertionError("must not scan"))
+    knowledge.search_async = AsyncMock(side_effect=AssertionError("must not scan"))
     knowledge.format_results = MagicMock(side_effect=AssertionError("must not format"))
 
     entry = RetrievalCacheEntry(
@@ -576,7 +576,7 @@ async def test_context_episode_knowledge_degrade_on_miss():
     episodic.search_episodes = AsyncMock(side_effect=AssertionError("must not query"))
     episodic.get_session_episodes = AsyncMock(side_effect=AssertionError("must not query"))
     knowledge = MagicMock()
-    knowledge.search = MagicMock(side_effect=AssertionError("must not scan"))
+    knowledge.search_async = AsyncMock(side_effect=AssertionError("must not scan"))
 
     stage, captured, hybrid, memory = _make_context_stage(
         cache={}, on_miss="degrade", episodic=episodic, knowledge=knowledge,
@@ -592,7 +592,7 @@ async def test_context_episode_knowledge_sync_on_miss():
     episodic.search_episodes = AsyncMock(return_value=[_Episode("synced episode")])
     episodic.get_session_episodes = AsyncMock(return_value=[])
     knowledge = MagicMock()
-    knowledge.search = MagicMock(return_value=[object()])
+    knowledge.search_async = AsyncMock(return_value=[object()])
     knowledge.format_results = MagicMock(return_value="synced KB block")
 
     stage, captured, hybrid, memory = _make_context_stage(
@@ -602,7 +602,7 @@ async def test_context_episode_knowledge_sync_on_miss():
     ctx = captured["retrieval_context"]
     assert "synced episode" in ctx
     assert "synced KB block" in ctx
-    knowledge.search.assert_called_once()
+    knowledge.search_async.assert_called_once()
 
 
 # --- Task 13 finalization: knowledge ACL isolation + memory-off fallback ---
@@ -633,7 +633,7 @@ async def test_prefetcher_stamps_knowledge_user_id():
 async def test_context_knowledge_cache_hit_same_user():
     # Same user as the cached knowledge_user_id -> trust the cache, no rescan.
     knowledge = MagicMock()
-    knowledge.search = MagicMock(side_effect=AssertionError("must not scan"))
+    knowledge.search_async = AsyncMock(side_effect=AssertionError("must not scan"))
     knowledge.format_results = MagicMock(side_effect=AssertionError("must not format"))
 
     entry = RetrievalCacheEntry(
@@ -659,7 +659,7 @@ async def test_context_knowledge_cache_not_leaked_across_users_degrade():
     # cache (same topic) but must NOT see A's ACL-filtered knowledge. Under
     # degrade with a prefetcher present, B's knowledge is skipped (not leaked).
     knowledge = MagicMock()
-    knowledge.search = MagicMock(side_effect=AssertionError("must not scan under degrade"))
+    knowledge.search_async = AsyncMock(side_effect=AssertionError("must not scan under degrade"))
 
     entry = RetrievalCacheEntry(
         query_text="deploy gateway",
@@ -686,7 +686,7 @@ async def test_context_knowledge_senderless_falls_back_to_inline_degrade():
     # knowledge on every turn. It must instead fall back to inline, fetching
     # public (empty user_id) docs.
     knowledge = MagicMock()
-    knowledge.search = MagicMock(return_value=[object()])
+    knowledge.search_async = AsyncMock(return_value=[object()])
     knowledge.format_results = MagicMock(return_value="public KB block")
 
     stage, captured, hybrid, memory = _make_context_stage(
@@ -695,8 +695,8 @@ async def test_context_knowledge_senderless_falls_back_to_inline_degrade():
     await _stage_build(stage, session_key="anon-sess", text="deploy steps", sender_id="")
     assert "public KB block" in captured["retrieval_context"]
     # Inline fetch must pass the empty user_id so only unrestricted docs match.
-    knowledge.search.assert_called_once()
-    assert knowledge.search.call_args.kwargs.get("user_id", "") == ""
+    knowledge.search_async.assert_called_once()
+    assert knowledge.search_async.call_args.kwargs.get("user_id", "") == ""
 
 
 @pytest.mark.asyncio
@@ -704,7 +704,7 @@ async def test_context_knowledge_cache_rescans_for_other_user_sync():
     # Same shared-session leak scenario, but under sync-on-miss: B's turn must
     # rescan knowledge with B's own user_id instead of serving A's cache.
     knowledge = MagicMock()
-    knowledge.search = MagicMock(return_value=[object()])
+    knowledge.search_async = AsyncMock(return_value=[object()])
     knowledge.format_results = MagicMock(return_value="doc B may see")
 
     entry = RetrievalCacheEntry(
@@ -725,7 +725,7 @@ async def test_context_knowledge_cache_rescans_for_other_user_sync():
     assert "restricted doc only A may see" not in ctx
     assert "doc B may see" in ctx
     # Rescanned with B's user_id, not A's.
-    _, kwargs = knowledge.search.call_args
+    _, kwargs = knowledge.search_async.call_args
     assert kwargs.get("user_id") == "user-B"
 
 
@@ -734,7 +734,7 @@ async def test_context_legacy_entry_without_user_id_is_knowledge_miss():
     # A legacy/unknown entry (knowledge_user_id=None) must never blind-hit; it
     # is treated as a miss so no ACL-unverified knowledge is served.
     knowledge = MagicMock()
-    knowledge.search = MagicMock(side_effect=AssertionError("degrade: no rescan"))
+    knowledge.search_async = AsyncMock(side_effect=AssertionError("degrade: no rescan"))
 
     entry = RetrievalCacheEntry(
         query_text="deploy gateway",
@@ -759,7 +759,7 @@ async def test_context_empty_sender_never_hits_knowledge_cache():
     # if that entry was also stamped with an empty user_id (e.g. two senderless
     # users sharing a session). Empty sender => treated as a miss.
     knowledge = MagicMock()
-    knowledge.search = MagicMock(side_effect=AssertionError("degrade: no rescan"))
+    knowledge.search_async = AsyncMock(side_effect=AssertionError("degrade: no rescan"))
 
     entry = RetrievalCacheEntry(
         query_text="deploy gateway",
@@ -784,7 +784,7 @@ async def test_context_knowledge_inline_when_memory_disabled():
     # warm the knowledge cache. Even under degrade, knowledge must still be
     # produced (inline via executor) rather than silently dropped every turn.
     knowledge = MagicMock()
-    knowledge.search = MagicMock(return_value=[object()])
+    knowledge.search_async = AsyncMock(return_value=[object()])
     knowledge.format_results = MagicMock(return_value="inline KB block")
 
     stage, captured, hybrid, memory = _make_context_stage(
@@ -793,8 +793,8 @@ async def test_context_knowledge_inline_when_memory_disabled():
     stage._config.memory.enabled = False
     await _stage_build(stage, session_key="new", text="anything", sender_id="user-A")
     assert "inline KB block" in captured["retrieval_context"]
-    knowledge.search.assert_called_once()
-    _, kwargs = knowledge.search.call_args
+    knowledge.search_async.assert_called_once()
+    _, kwargs = knowledge.search_async.call_args
     assert kwargs.get("user_id") == "user-A"
 
 
@@ -804,7 +804,7 @@ async def test_context_knowledge_degrade_skips_when_prefetcher_active():
     # skipping the inline scan on a miss — the memory-off fallback must not
     # accidentally turn every degrade miss into an inline scan.
     knowledge = MagicMock()
-    knowledge.search = MagicMock(side_effect=AssertionError("must not scan under degrade"))
+    knowledge.search_async = AsyncMock(side_effect=AssertionError("must not scan under degrade"))
 
     stage, captured, hybrid, memory = _make_context_stage(
         cache={}, on_miss="degrade", hybrid=True, knowledge=knowledge,
