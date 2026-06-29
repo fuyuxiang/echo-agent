@@ -503,15 +503,6 @@ class AgentLoop:
         )
         self.memory.set_retriever(self._hybrid_retriever)
 
-        # Knowledge vectors reuse the same embed_fn but stay in their own
-        # sidecar store (isolated from memory vectors). Inject lazily here —
-        # embed_fn only exists now, after knowledge was constructed at init.
-        if self.knowledge is not None and embed_fn is not None:
-            self.knowledge.attach_embedding(
-                embed_fn, config.memory.vector_dimensions,
-                embed_timeout=config.memory.embed_timeout_seconds,
-            )
-
     def _setup_delegation(self) -> None:
         if not self.config.multi_agent.enabled:
             return
@@ -565,6 +556,15 @@ class AgentLoop:
         self._running = True
         if self._vector_index is not None:
             await self._vector_index.initialize()
+        # Knowledge vectors reuse the same embed_fn but stay in their own sidecar
+        # store. Inject here in start() — both self.knowledge and self._embed_fn
+        # are assigned during __init__, but _init_advanced_memory runs before
+        # knowledge is constructed, so injection cannot live there.
+        if self.knowledge is not None and self._embed_fn is not None:
+            self.knowledge.attach_embedding(
+                self._embed_fn, self.config.memory.vector_dimensions,
+                embed_timeout=self.config.memory.embed_timeout_seconds,
+            )
         if self.knowledge is not None and self.knowledge.needs_vector_backfill():
             self._spawn_background(self.knowledge.rebuild_async())
         await self._cost_tracker.load()

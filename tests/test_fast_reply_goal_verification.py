@@ -100,7 +100,7 @@ async def test_A_cache_hit_runs_zero_inline_retrieval():
     """主记忆 + episodic + knowledge 全部命中新鲜缓存时,ContextStage.build
     在首 token 前不调用任何昂贵检索(retrieve / knowledge.search)。"""
     knowledge = MagicMock()
-    knowledge.search = MagicMock(side_effect=AssertionError("不应在快路径同步扫描知识库"))
+    knowledge.search_async = AsyncMock(side_effect=AssertionError("不应在快路径同步扫描知识库"))
     knowledge.format_results = MagicMock(return_value="kb")
 
     episodic = MagicMock()
@@ -120,7 +120,7 @@ async def test_A_cache_hit_runs_zero_inline_retrieval():
 
     # 核心断言:三路昂贵检索在首 token 前的调用次数 = 0
     assert hybrid.retrieve.await_count == 0, "主记忆检索不应在快路径内联执行"
-    assert knowledge.search.call_count == 0, "knowledge 同步扫描不应在快路径执行"
+    assert knowledge.search_async.call_count == 0, "knowledge 同步扫描不应在快路径执行"
     assert episodic.search_episodes.await_count == 0, "episodic 不应在快路径执行"
 
 
@@ -128,7 +128,7 @@ async def test_A_cache_hit_runs_zero_inline_retrieval():
 async def test_A_cli_degrade_miss_skips_retrieval_entirely():
     """CLI 默认(degrade)下缓存未命中:快路径直接跳过检索,不阻塞、不内联。"""
     knowledge = MagicMock()
-    knowledge.search = MagicMock(side_effect=AssertionError("degrade 不应内联扫描"))
+    knowledge.search_async = AsyncMock(side_effect=AssertionError("degrade 不应内联扫描"))
     episodic = MagicMock()
     episodic.search_episodes = AsyncMock(side_effect=AssertionError("degrade 不应查 episodic"))
 
@@ -138,7 +138,7 @@ async def test_A_cli_degrade_miss_skips_retrieval_entirely():
     await _build(stage, session_key="new", text="anything", sender_id="u1")
 
     assert hybrid.retrieve.await_count == 0
-    assert knowledge.search.call_count == 0
+    assert knowledge.search_async.call_count == 0
     assert episodic.search_episodes.await_count == 0
 
 
@@ -157,7 +157,7 @@ async def test_B_cache_hit_avoids_injected_blocking_cost():
 
     # 旧行为基线:未命中 + sync,knowledge 内联(虽走 executor,墙钟仍要等)
     knowledge = MagicMock()
-    knowledge.search = MagicMock(side_effect=_slow_search)
+    knowledge.search_async = AsyncMock(side_effect=_slow_search)
     knowledge.format_results = MagicMock(return_value="kb")
     stage_miss, _ = _build_stage(cache={}, on_miss="sync", knowledge=knowledge)
     t0 = time.perf_counter()
@@ -166,7 +166,7 @@ async def test_B_cache_hit_avoids_injected_blocking_cost():
 
     # 改后:命中缓存,knowledge 不执行
     knowledge2 = MagicMock()
-    knowledge2.search = MagicMock(side_effect=_slow_search)
+    knowledge2.search_async = AsyncMock(side_effect=_slow_search)
     knowledge2.format_results = MagicMock(return_value="kb")
     entry = _fresh_entry("q", knowledge_context="cached kb", knowledge_user_id="u1")
     stage_hit, _ = _build_stage(cache={"s": entry}, on_miss="sync", knowledge=knowledge2)
@@ -176,8 +176,8 @@ async def test_B_cache_hit_avoids_injected_blocking_cost():
 
     # 核心断言用"是否触发昂贵检索"来判定,而非绝对墙钟:命中路径根本不该
     # 调用 knowledge.search,这是确定性的,不受 CI 负载下的事件循环调度抖动影响。
-    knowledge2.search.assert_not_called()
-    knowledge.search.assert_called()  # 基线确实触发了注入的阻塞检索
+    knowledge2.search_async.assert_not_called()
+    knowledge.search_async.assert_called()  # 基线确实触发了注入的阻塞检索
 
     # 命中路径省掉了那 200ms 阻塞:相对基线应快出至少一个 BLOCK 的量级。
     # 不再用 hit_cost < BLOCK/2 这种绝对上限——负载下纯 await 调度延迟即可
