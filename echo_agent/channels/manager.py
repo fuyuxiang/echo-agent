@@ -28,7 +28,7 @@ from echo_agent.channels.wecom import WeComChannel
 from echo_agent.channels.webhook import WebhookChannel
 from echo_agent.channels.weixin import WeixinChannel
 from echo_agent.channels.whatsapp import WhatsAppChannel
-from echo_agent.config.schema import ChannelsConfig
+from echo_agent.config.schema import ChannelsConfig, HeartbeatConfig
 
 _CHANNEL_REGISTRY: dict[str, type[BaseChannel]] = {
     "cli": CLIChannel,
@@ -87,9 +87,14 @@ class ChannelManager:
         self._channels: dict[str, BaseChannel] = {}
         self._send_progress = config.send_progress
         self._send_tool_hints = config.send_tool_hints
+        # Heartbeat verbosity tier. ChannelsConfig does not carry the heartbeat
+        # block (it lives at config.agent.heartbeat), so default here and let the
+        # composition root override _heartbeat_cfg when it wires the real value.
+        self._heartbeat_cfg = HeartbeatConfig()
         self._on_cli_exit = on_cli_exit
         self._stream_states: dict[str, _StreamState] = {}
         self._heartbeat_msg_ids: dict[str, str] = {}  # inbound_event_id -> platform msg id
+        self._delivered_milestone: dict[str, int] = {}  # inbound_event_id -> max delivered seq
         self._finalized_keys: dict[str, float] = {}  # inbound_event_id -> finalize time (bounded set)
         self._inbound_msg_ids: dict[str, tuple[str, str, float]] = {}
         self._max_inbound_ids = 1000
@@ -172,6 +177,7 @@ class ChannelManager:
         async with self._state_lock:
             mapping = self._inbound_msg_ids.pop(inbound_event_id, None)
             self._heartbeat_msg_ids.pop(inbound_event_id, None)
+            self._delivered_milestone.pop(inbound_event_id, None)
         if not mapping:
             return
         _, platform_msg_id, _ = mapping
@@ -276,28 +282,54 @@ class ChannelManager:
             async with self._state_lock:
                 if key in self._finalized_keys:
                     return
+        # Milestone dedup (Task 7): each turn delivers a given milestone seq at
+        # most once. The seq is set by ProgressHeartbeat; events that carry it
+        # use _delivered_milestone for dedup, while legacy beats without it fall
+        # back to the on_uneditable strategy below. This is the structural fix
+        # for weixin spam — dedup keys off the turn's milestone, not a msg id.
+        has_milestone = "_hb_milestone" in event.metadata
+        milestone = int(event.metadata.get("_hb_milestone", 0))
+        pass_only_typing = False
+        if key and has_milestone:
+            async with self._state_lock:
+                pass_only_typing = milestone <= self._delivered_milestone.get(key, 0)
         # Keep typing alive on every beat, regardless of text display.
         try:
             await channel.send_typing(event.chat_id, metadata=self._public_metadata(event.metadata))
         except Exception as e:  # noqa: BLE001
             logger.debug("heartbeat typing failed on {}: {}", event.channel, e)
-
-        text = event.text
-        if not text:
+        if pass_only_typing or not event.text:
             return
         try:
-            if channel.supports_edit:
-                async with self._state_lock:
-                    msg_id = self._heartbeat_msg_ids.get(key)
-                if msg_id:
-                    await channel.edit_message(
-                        event.chat_id, msg_id, text,
-                        metadata=self._public_metadata(event.metadata),
-                    )
-                else:
-                    await self._heartbeat_send(channel, event, key)
-                return
-            # Uneditable channel: apply strategy.
+            await self._dispatch_heartbeat_text(channel, event, key, milestone, has_milestone)
+        except Exception as e:  # noqa: BLE001 — heartbeat must never crash delivery
+            logger.debug("heartbeat delivery failed on {}: {}", event.channel, e)
+
+    async def _dispatch_heartbeat_text(
+        self, channel, event: OutboundEvent, key: str, milestone: int, has_milestone: bool
+    ) -> None:
+        verbosity = getattr(getattr(self, "_heartbeat_cfg", None), "verbosity", "key_milestones")
+        if verbosity == "silent":
+            return
+        if channel.supports_edit:
+            # Editable channel: reuse the turn's heartbeat slot via edit. The
+            # full capability-based edit tiering is completed in Task 8; this
+            # keeps the existing single-slot behaviour intact.
+            async with self._state_lock:
+                msg_id = self._heartbeat_msg_ids.get(key)
+            if msg_id:
+                await channel.edit_message(
+                    event.chat_id, msg_id, event.text,
+                    metadata=self._public_metadata(event.metadata),
+                )
+            else:
+                await self._heartbeat_send(channel, event, key)
+        elif has_milestone:
+            # Uneditable plain-text tier: milestone dedup upstream already
+            # guaranteed this seq is new, so just send (no msg-id bookkeeping).
+            await self._heartbeat_send(channel, event, key, track=False)
+        else:
+            # Legacy beats without a milestone seq: apply the on_uneditable strategy.
             strategy = event.metadata.get("_hb_on_uneditable", "first_only")
             if strategy == "off":
                 return
@@ -309,8 +341,14 @@ class ChannelManager:
                 await self._heartbeat_send(channel, event, key)
             else:  # "every"
                 await self._heartbeat_send(channel, event, key, track=False)
-        except Exception as e:  # noqa: BLE001 — heartbeat must never crash delivery
-            logger.debug("heartbeat delivery failed on {}: {}", event.channel, e)
+        # Record the delivered milestone so repeat beats for the same seq are
+        # suppressed at the top of _handle_heartbeat.
+        if key and has_milestone:
+            async with self._state_lock:
+                self._delivered_milestone[key] = milestone
+                while len(self._delivered_milestone) > self._max_inbound_ids:
+                    oldest = next(iter(self._delivered_milestone))
+                    del self._delivered_milestone[oldest]
 
     async def _heartbeat_send(self, channel, event: OutboundEvent, key: str, *, track: bool = True) -> None:
         send_event = OutboundEvent.text_reply(
