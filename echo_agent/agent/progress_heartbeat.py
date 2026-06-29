@@ -170,7 +170,11 @@ class ProgressHeartbeat:
             return False
         # Silence gate: throttle bursts of milestones against the last visible
         # feedback. min_interval_sec=0 disables throttling (used in tests).
-        min_interval = getattr(self._config, "min_interval_sec", 60)
+        # Fall back to the legacy name interval_sec during the rename transition
+        # (formal rename lands in Task 5).
+        min_interval = getattr(self._config, "min_interval_sec", None)
+        if min_interval is None:
+            min_interval = getattr(self._config, "interval_sec", 60)
         last_fb = activity.last_visible_feedback_at
         if last_fb and (time.monotonic() - last_fb) < min_interval:
             return False

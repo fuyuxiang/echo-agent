@@ -261,3 +261,47 @@ async def test_new_milestone_triggers_beat_and_records():
     # no further beat until a new milestone arrives.
     st.last_delivered_milestone = 1
     assert hb._should_beat(st) is False
+
+
+class _ThrottleCfg:
+    enabled = True
+    first_delay_sec = 0
+    min_interval_sec = 60  # throttling ON
+    template = "⏳ {activity}（已用时 {elapsed}）"
+
+
+def test_silence_gate_blocks_when_recent_feedback():
+    # Milestone advanced (passes progress gate) but last visible feedback is
+    # too recent (fails silence gate) -> no beat.
+    hb = ProgressHeartbeat(_MsBus(), _MsEvent(), _ThrottleCfg())
+    st = SharedActivityState(started_at=0.0)
+    st.enter_tool("web_search")  # milestone_seq -> 1, passes progress gate
+    st.last_visible_feedback_at = time.monotonic()  # very recent
+    assert hb._should_beat(st) is False  # silence gate blocks
+
+
+def test_silence_gate_allows_after_interval():
+    hb = ProgressHeartbeat(_MsBus(), _MsEvent(), _ThrottleCfg())
+    st = SharedActivityState(started_at=0.0)
+    st.enter_tool("web_search")  # passes progress gate
+    st.last_visible_feedback_at = time.monotonic() - 120  # 2 min ago, > interval
+    assert hb._should_beat(st) is True
+
+
+class _LegacyIntervalCfg:
+    # No min_interval_sec; only the legacy interval_sec name (rename transition).
+    enabled = True
+    first_delay_sec = 0
+    interval_sec = 60
+    template = "⏳ {activity}（已用时 {elapsed}）"
+
+
+def test_silence_gate_reads_legacy_interval_sec():
+    # min_interval_sec absent -> fall back to interval_sec for throttling.
+    hb = ProgressHeartbeat(_MsBus(), _MsEvent(), _LegacyIntervalCfg())
+    st = SharedActivityState(started_at=0.0)
+    st.enter_tool("web_search")  # passes progress gate
+    st.last_visible_feedback_at = time.monotonic()  # very recent
+    assert hb._should_beat(st) is False  # throttled via legacy interval_sec
+    st.last_visible_feedback_at = time.monotonic() - 120  # > interval
+    assert hb._should_beat(st) is True
