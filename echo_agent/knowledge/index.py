@@ -143,6 +143,7 @@ class KnowledgeIndex:
 
     def load(self) -> None:
         with self._lock:
+            self._needs_rebuild = False
             if not self.index_path.exists():
                 self._chunks = []
                 self._df = Counter()
