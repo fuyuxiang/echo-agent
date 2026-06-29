@@ -396,6 +396,8 @@ class InferenceStage:
             if not response.has_tool_calls:
                 if ctx.execution_plan and not ctx.execution_plan.is_complete:
                     ctx.execution_plan.is_complete = True
+                if ctx.activity is not None:
+                    ctx.activity.set_generating()
                 loop_exhausted = False
                 break
 
