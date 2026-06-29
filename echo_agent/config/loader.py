@@ -118,6 +118,36 @@ def profile_explicitly_set(config_path: str | Path | None = None) -> bool:
     return isinstance(env.get("security"), dict) and "profile" in env["security"]
 
 
+def migrate_heartbeat_config(data: dict[str, Any]) -> dict[str, Any]:
+    """Compat-migrate the removed agent.heartbeat fields in raw config data.
+
+    - on_uneditable: "every" -> verbosity "every_tool"; "first_only"/"off"
+      have no clean mapping, so they are dropped and the schema default
+      (key_milestones) applies. An INFO log tells the user what happened.
+    - interval_sec -> min_interval_sec (rename).
+    Extra/unknown keys are ignored by pydantic, so dropping is safe.
+    """
+    hb = data.get("agent", {}).get("heartbeat")
+    if not isinstance(hb, dict):
+        return data
+    legacy = hb.pop("on_uneditable", None)
+    if legacy is not None:
+        if legacy == "every":
+            hb.setdefault("verbosity", "every_tool")
+            logger.info("config: on_uneditable=every migrated to heartbeat.verbosity=every_tool")
+        else:
+            logger.info(
+                "config: on_uneditable={} is obsolete and ignored; "
+                "heartbeat now adapts per channel capability", legacy,
+            )
+    if "interval_sec" in hb and "min_interval_sec" not in hb:
+        hb["min_interval_sec"] = hb.pop("interval_sec")
+        logger.info("config: heartbeat.interval_sec migrated to min_interval_sec")
+    else:
+        hb.pop("interval_sec", None)
+    return data
+
+
 def load_config(
     config_path: str | Path | None = None,
     overrides: dict[str, Any] | None = None,
@@ -138,6 +168,8 @@ def load_config(
 
     from echo_agent.config.profile_defaults import apply_profile_cognitive_defaults
     data = apply_profile_cognitive_defaults(data)
+
+    data = migrate_heartbeat_config(data)
 
     try:
         return Config(**data)

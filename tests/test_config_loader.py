@@ -12,6 +12,7 @@ from echo_agent.config.loader import (
     _find_config_file_in,
     _load_yaml_file,
     load_config,
+    migrate_heartbeat_config,
     resolve_config_file,
     save_config,
 )
@@ -200,4 +201,31 @@ class TestLoadConfigProfileDefaults:
         cfg = load_config(config_path=cfg_file)
         assert cfg.security.profile == "personal_cli"
         assert cfg.planning.enabled is True
+
+
+def test_migrate_every_maps_to_every_tool():
+    data = {"agent": {"heartbeat": {"on_uneditable": "every"}}}
+    out = migrate_heartbeat_config(data)
+    assert out["agent"]["heartbeat"]["verbosity"] == "every_tool"
+    assert "on_uneditable" not in out["agent"]["heartbeat"]
+
+
+def test_migrate_first_only_drops_without_setting_verbosity():
+    data = {"agent": {"heartbeat": {"on_uneditable": "first_only"}}}
+    out = migrate_heartbeat_config(data)
+    assert "on_uneditable" not in out["agent"]["heartbeat"]
+    # first_only/off carry no clean mapping -> leave verbosity to schema default
+    assert "verbosity" not in out["agent"]["heartbeat"]
+
+
+def test_migrate_renames_interval_sec():
+    data = {"agent": {"heartbeat": {"interval_sec": 90}}}
+    out = migrate_heartbeat_config(data)
+    assert out["agent"]["heartbeat"]["min_interval_sec"] == 90
+    assert "interval_sec" not in out["agent"]["heartbeat"]
+
+
+def test_migrate_noop_when_no_heartbeat():
+    data = {"agent": {}}
+    assert migrate_heartbeat_config(data) == {"agent": {}}
 
