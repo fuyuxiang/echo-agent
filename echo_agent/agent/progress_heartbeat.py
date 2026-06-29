@@ -61,6 +61,7 @@ class ActivitySnapshot:
     elapsed_sec: float
     phase: str
     current_tool: str | None
+    milestone_seq: int = 0
 
 
 @dataclass
@@ -71,16 +72,25 @@ class SharedActivityState:
     current_tool: str | None = None
     phase: str = "thinking"  # thinking | calling_tool | generating
     last_visible_feedback_at: float = 0.0
+    milestone_seq: int = 0            # monotonic; only real progress bumps it
+    last_delivered_milestone: int = 0  # written by delivery layer (manager)
 
     def enter_tool(self, name: str) -> None:
+        # Only the thinking -> calling_tool transition is a milestone, so a
+        # retry of the same tool without leaving calling_tool does not bump.
+        if self.phase != "calling_tool":
+            self.milestone_seq += 1
         self.current_tool = name
         self.phase = "calling_tool"
 
     def exit_tool(self) -> None:
+        self.milestone_seq += 1
         self.current_tool = None
         self.phase = "thinking"
 
     def set_generating(self) -> None:
+        if self.phase != "generating":
+            self.milestone_seq += 1
         self.phase = "generating"
 
     def mark_visible_feedback(self, now: float | None = None) -> None:
@@ -97,6 +107,7 @@ class SharedActivityState:
             elapsed_sec=ref - self.started_at,
             phase=self.phase,
             current_tool=self.current_tool,
+            milestone_seq=self.milestone_seq,
         )
 
 

@@ -41,6 +41,35 @@ def test_set_generating_phase():
     assert st.snapshot(now=1.0).phase == "generating"
 
 
+def test_milestone_seq_increments_on_tool_transitions():
+    st = SharedActivityState(started_at=0.0)
+    assert st.milestone_seq == 0
+    st.enter_tool("web_search")          # thinking -> calling_tool
+    assert st.milestone_seq == 1
+    st.exit_tool()                        # tool done
+    assert st.milestone_seq == 2
+    st.set_generating()                   # entering finalize
+    assert st.milestone_seq == 3
+
+
+def test_pure_generation_does_not_increment_milestone():
+    st = SharedActivityState(started_at=0.0)
+    # No tool calls, just sitting in thinking/generating for a long time.
+    snap1 = st.snapshot(now=60.0)
+    snap2 = st.snapshot(now=600.0)
+    assert snap1.milestone_seq == 0
+    assert snap2.milestone_seq == 0
+
+
+def test_snapshot_carries_milestone_seq():
+    st = SharedActivityState(started_at=0.0)
+    st.enter_tool("read_file")
+    snap = st.snapshot(now=5.0)
+    assert snap.milestone_seq == 1
+    assert snap.phase == "calling_tool"
+    assert snap.current_tool == "read_file"
+
+
 def test_mark_visible_feedback_resets_since():
     st = SharedActivityState(started_at=0.0)
     base = time.monotonic()
