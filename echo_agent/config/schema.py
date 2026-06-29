@@ -348,6 +348,14 @@ class WeixinChannelConfig(_Base):
             "desc_en": "Local data directory for the Weixin channel",
         },
     )
+    typing_indicator: bool = Field(
+        default=True,
+        json_schema_extra={
+            "status": "effective", "ref": "channels/weixin.py",
+            "desc_zh": "处理消息期间是否向对方下发“对方正在输入”状态",
+            "desc_en": "Send a typing indicator to the user while a message is being processed",
+        },
+    )
 
 
 class QQBotChannelConfig(_Base):
