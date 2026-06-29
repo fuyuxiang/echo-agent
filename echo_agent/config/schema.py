@@ -2011,7 +2011,10 @@ class KnowledgeConfig(_Base):
         },
     )
     allowed_extensions: list[str] = Field(
-        default_factory=lambda: [".md", ".txt", ".rst", ".json", ".yaml", ".yml", ".py"],
+        default_factory=lambda: [
+            ".md", ".txt", ".rst", ".json", ".yaml", ".yml", ".py",
+            ".pdf", ".docx", ".xlsx", ".pptx",
+        ],
         json_schema_extra={
             "status": "effective", "ref": "agent/loop.py:223",
             "desc_zh": "允许索引的文档扩展名",

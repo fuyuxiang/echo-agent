@@ -236,10 +236,10 @@ class KnowledgeIndex:
         return False
 
     def _index_file(self, path: Path) -> None:
-        try:
-            raw = path.read_text(encoding="utf-8", errors="replace")
-        except Exception as e:
-            logger.warning("Failed to read knowledge document {}: {}", path, e)
+        from echo_agent.knowledge.extractors import extract_text
+
+        raw = extract_text(path)
+        if raw is None:
             return
         metadata, body = _extract_frontmatter(raw)
         rel_path = str(path.relative_to(self.workspace)) if path.is_relative_to(self.workspace) else str(path)
