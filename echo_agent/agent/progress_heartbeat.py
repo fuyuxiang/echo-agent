@@ -158,11 +158,19 @@ class ProgressHeartbeat:
                 activity = self._activity
                 if activity is not None and not self._sealed:
                     if self._should_beat(activity):
+                        # Capture the seq we are about to deliver before the
+                        # await in _publish, so the inference stage bumping a new
+                        # milestone mid-publish cannot make us over-advance the
+                        # source gate past a beat we never actually sent.
+                        beat_seq = activity.milestone_seq
                         await self._publish(activity)
                         # mark_visible_feedback keeps the existing throttle line
-                        # alive; the authoritative dedup is last_delivered_milestone,
-                        # written by the delivery layer once the beat is consumed.
+                        # alive; the authoritative dedup is last_delivered_milestone.
                         activity.mark_visible_feedback()
+                        # Advance the source-side progress gate (I2): once we have
+                        # delivered milestone N, do not rebeat the same N until a
+                        # genuinely new milestone (N+1) appears.
+                        activity.last_delivered_milestone = beat_seq
                 await asyncio.sleep(_TICK_SEC)
         except asyncio.CancelledError:
             raise
@@ -175,6 +183,11 @@ class ProgressHeartbeat:
         # so a long no-tool generation produces zero text beats.
         if activity.milestone_seq <= activity.last_delivered_milestone:
             return False
+        # Key milestones (first tool entry / entering finalize) bypass the
+        # min_interval throttle so important progress is never swallowed; the
+        # first_delay silence gate (the initial sleep in _run) still applies.
+        if getattr(activity, "last_milestone_is_key", False):
+            return True
         # Silence gate: throttle bursts of milestones against the last visible
         # feedback. min_interval_sec=0 disables throttling (used in tests).
         # Fall back to the legacy name interval_sec during the rename transition

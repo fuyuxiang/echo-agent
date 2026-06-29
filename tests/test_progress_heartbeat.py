@@ -272,10 +272,12 @@ class _ThrottleCfg:
 
 def test_silence_gate_blocks_when_recent_feedback():
     # Milestone advanced (passes progress gate) but last visible feedback is
-    # too recent (fails silence gate) -> no beat.
+    # too recent (fails silence gate) -> no beat. Use a non-key milestone so the
+    # key-milestone throttle bypass (I1) does not apply here.
     hb = ProgressHeartbeat(_MsBus(), _MsEvent(), _ThrottleCfg())
     st = SharedActivityState(started_at=0.0)
-    st.enter_tool("web_search")  # milestone_seq -> 1, passes progress gate
+    st.enter_tool("web_search")  # first entry: key milestone
+    st.exit_tool()               # milestone_seq -> 2, non-key, passes progress gate
     st.last_visible_feedback_at = time.monotonic()  # very recent
     assert hb._should_beat(st) is False  # silence gate blocks
 
@@ -283,7 +285,8 @@ def test_silence_gate_blocks_when_recent_feedback():
 def test_silence_gate_allows_after_interval():
     hb = ProgressHeartbeat(_MsBus(), _MsEvent(), _ThrottleCfg())
     st = SharedActivityState(started_at=0.0)
-    st.enter_tool("web_search")  # passes progress gate
+    st.enter_tool("web_search")  # first entry: key milestone
+    st.exit_tool()               # non-key milestone, passes progress gate
     st.last_visible_feedback_at = time.monotonic() - 120  # 2 min ago, > interval
     assert hb._should_beat(st) is True
 
@@ -297,11 +300,88 @@ class _LegacyIntervalCfg:
 
 
 def test_silence_gate_reads_legacy_interval_sec():
-    # min_interval_sec absent -> fall back to interval_sec for throttling.
+    # min_interval_sec absent -> fall back to interval_sec for throttling. Use a
+    # non-key milestone so we exercise the throttle, not the key bypass (I1).
     hb = ProgressHeartbeat(_MsBus(), _MsEvent(), _LegacyIntervalCfg())
     st = SharedActivityState(started_at=0.0)
-    st.enter_tool("web_search")  # passes progress gate
+    st.enter_tool("web_search")  # first entry: key milestone
+    st.exit_tool()               # non-key milestone, passes progress gate
     st.last_visible_feedback_at = time.monotonic()  # very recent
     assert hb._should_beat(st) is False  # throttled via legacy interval_sec
     st.last_visible_feedback_at = time.monotonic() - 120  # > interval
     assert hb._should_beat(st) is True
+
+
+# --- I1: key milestones bypass the min_interval throttle ---
+
+
+def test_key_milestone_bypasses_throttle():
+    # Recent visible feedback inside the throttle window WOULD normally block,
+    # but a key milestone (first tool entry) must beat anyway.
+    hb = ProgressHeartbeat(_MsBus(), _MsEvent(), _ThrottleCfg())
+    st = SharedActivityState(started_at=0.0)
+    st.enter_tool("web_search")  # first tool entry -> key milestone, seq 1
+    assert st.last_milestone_is_key is True
+    st.last_visible_feedback_at = time.monotonic()  # very recent, within window
+    assert hb._should_beat(st) is True  # key milestone is not throttled
+
+
+def test_non_key_milestone_still_throttled():
+    # A non-key milestone in the same throttle window must stay throttled,
+    # proving the bypass is scoped to key milestones only.
+    hb = ProgressHeartbeat(_MsBus(), _MsEvent(), _ThrottleCfg())
+    st = SharedActivityState(started_at=0.0)
+    st.enter_tool("web_search")  # first entry, key
+    st.exit_tool()               # seq 2, NOT key
+    assert st.last_milestone_is_key is False
+    st.last_visible_feedback_at = time.monotonic()  # recent, within window
+    assert hb._should_beat(st) is False  # ordinary milestone still throttled
+
+
+def test_finalize_key_milestone_bypasses_throttle():
+    # The "entering finalize" (generating) key milestone must not be swallowed
+    # by the throttle even right after a recent beat.
+    hb = ProgressHeartbeat(_MsBus(), _MsEvent(), _ThrottleCfg())
+    st = SharedActivityState(started_at=0.0)
+    st.enter_tool("web_search")  # key, seq 1
+    st.exit_tool()               # non-key, seq 2
+    st.last_delivered_milestone = 2
+    st.set_generating()          # entering finalize -> key, seq 3
+    assert st.last_milestone_is_key is True
+    st.last_visible_feedback_at = time.monotonic()  # recent
+    assert hb._should_beat(st) is True
+
+
+# --- I2: source-side gate advances after delivery (no rebeat of same milestone) ---
+
+
+def test_source_gate_advances_and_blocks_rebeat():
+    # Drive one beat cycle the way _run does: a new milestone beats once, then
+    # the source advances last_delivered_milestone so the SAME milestone does
+    # not rebeat; only a genuinely new milestone re-opens the gate.
+    hb = ProgressHeartbeat(_MsBus(), _MsEvent(), _MsCfg())  # throttle disabled
+    st = SharedActivityState(started_at=0.0)
+    st.enter_tool("web_search")  # seq 1
+    assert hb._should_beat(st) is True
+    # Simulate _run delivering and advancing the source gate.
+    st.last_delivered_milestone = st.milestone_seq
+    assert hb._should_beat(st) is False  # same milestone must not rebeat
+    st.exit_tool()  # seq 2 -> new milestone re-opens the gate
+    assert hb._should_beat(st) is True
+
+
+@pytest.mark.asyncio
+async def test_run_loop_advances_source_gate_no_rebeat():
+    # Integration: the real _run loop must advance last_delivered_milestone on
+    # its own (production code path), so a single milestone yields exactly one
+    # beat even though the loop ticks many times.
+    bus = _MsBus()
+    hb = ProgressHeartbeat(bus, _MsEvent(), _MsCfg())  # first_delay 0, throttle off
+    st = SharedActivityState(started_at=time.monotonic())
+    st.exit_tool()  # non-key milestone, seq 1 (avoids key-bypass re-beating)
+    await hb.start(st)
+    await asyncio.sleep(0.05)  # many ticks at _TICK_SEC granularity
+    await hb.stop()
+    assert len(bus.published) == 1  # exactly one beat, not one-per-tick
+    assert st.last_delivered_milestone == 1
+
