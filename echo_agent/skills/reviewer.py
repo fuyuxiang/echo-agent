@@ -113,17 +113,29 @@ class SkillReviewer:
         from echo_agent.evolution.types import SkillCandidate
 
         op, risk = self._ACTION_TO_OP[action]
+        skill_name = params.get("name", "")
+        patch_old = params.get("old_text", "")
+        patch_new = params.get("new_text", "")
+        # edit 语义是「整篇替换」,tool schema 给的是 content 而非 old/new。映射成
+        # patch 时必须基于当前 SKILL.md 生成明确的整篇 old→new patch,否则空 old/new
+        # 会让 admission 落一个 no-op patch(空串匹配任意文本、replace 不改动),审批后
+        # 内容根本不变。读不到当前内容时退回普通 patch 字段(保持旧行为不崩)。
+        if action == "edit":
+            current = self._store.read_skill(skill_name)
+            if current is not None:
+                patch_old = current
+                patch_new = params.get("content", "")
         c = SkillCandidate(
             operation=op,
-            skill_name=params.get("name", ""),
+            skill_name=skill_name,
             source="reviewer",
             created_by="reviewer",
             created_from_session=self._session_key,
             channel=self._channel,
             risk=risk,
             proposed_content=params.get("content", ""),
-            proposed_patch_old=params.get("old_text", ""),
-            proposed_patch_new=params.get("new_text", ""),
+            proposed_patch_old=patch_old,
+            proposed_patch_new=patch_new,
             rationale="background skill review",
         )
         res = await self._admission.admit(c)
@@ -136,6 +148,20 @@ class SkillReviewer:
         # 收编:已接 admission 时,技能正文类操作统一走准入治理层
         if self._admission is not None and action in self._ACTION_TO_OP:
             return await self._route_via_admission(action, params)
+
+        # 治理层缺口封堵:admission 激活时,支持文件(scripts/assets/templates 等)
+        # 也属于会被技能系统加载/执行的产物。背景 reviewer 读的是跨通道、可能含
+        # 注入内容的对话,绝不能绕过候选/审批直接落盘可执行脚本。这类写入必须走
+        # 显式/人工路径,故在此直接拒绝,且不留审计记录。
+        if self._admission is not None and action in ("write_file", "remove_file"):
+            logger.warning(
+                "skill review blocked supporting-file op under admission: action={} name={}",
+                action, skill_name,
+            )
+            return (
+                f"Error: '{action}' is not allowed for the background reviewer "
+                "(supporting files must go through an explicit path, not auto-admission)."
+            )
 
         # Lightweight gate: scan any content that will land in the skill store
         # for prompt-injection/exfiltration before writing. A poisoned turn
