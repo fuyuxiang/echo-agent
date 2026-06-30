@@ -291,6 +291,23 @@ class TestEnsureTicketEdges:
         assert calls == []  # served from cache, getconfig not called
 
     @pytest.mark.asyncio
+    async def test_expired_ticket_is_refetched(self, tmp_path, monkeypatch):
+        """ticket 缓存超过 TTL 后必须经 getconfig 重新拉取,不能复用过期 ticket。
+
+        回归:iLink 服务端 ticket 实际寿命约 600 秒,过期后 sendtyping 被静默拒绝,
+        连 status=2 停止都发不出去会导致气泡卡死。之前 TTL 误设为 23h,过期 ticket
+        会被长期复用。这里把缓存时间戳回拨到超过 TTL,断言会重拉到新 ticket。
+        """
+        ch = _make_weixin(tmp_path)
+        calls = _patch_getconfig(monkeypatch, "FRESH")
+        ch._typing_ticket = "STALE"
+        # 时间戳回拨到 TTL 之前一点,模拟 ticket 已过期
+        ch._typing_ticket_ts = time.monotonic() - (wx._TYPING_TICKET_TTL + 1)
+        assert await ch._ensure_typing_ticket() == "FRESH"
+        assert len(calls) == 1  # 过期 → 重新 getconfig
+        assert ch._typing_ticket == "FRESH"  # 缓存被刷新
+
+    @pytest.mark.asyncio
     async def test_ticket_read_from_nested_config(self, tmp_path, monkeypatch):
         ch = _make_weixin(tmp_path)
 

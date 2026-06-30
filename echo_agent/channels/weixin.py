@@ -64,13 +64,18 @@ _LIVENESS_TIMEOUT = 30 * 60  # 30 分钟无消息视为静默失效
 # 输入状态下发（ilink/bot/sendtyping）
 _TYPING_START = 1               # status=1：显示“对方正在输入”
 _TYPING_STOP = 2               # status=2：取消输入状态
-_TYPING_REFRESH_INTERVAL = 5    # 秒，处理期间周期性补发以防输入状态过期
+_TYPING_REFRESH_INTERVAL = 3    # 秒，处理期间周期性补发以防输入状态过期
+                                # （微信输入气泡约 5 秒过期，取 3 秒留余量，
+                                # 避免慢网络下单次 sendtyping 延迟露出气泡空窗）
 # 孤儿保护兜底：正常停止由 ChannelManager 在最终回复落地时调 stop_typing 完成，
 # 心跳每个 beat 又会 send_typing 复活刷新循环；这个上限只在“stop_typing 因故
 # 永不触发”（如最终回复事件丢失）时兜底，避免“正在输入”无限期刷下去。设得
 # 远高于心跳 interval，循环到期后由 _on_typing_done 清槽、下个 beat 自动复活。
 _TYPING_MAX_DURATION = 600      # 秒
-_TYPING_TICKET_TTL = 23 * 3600  # 秒，typing_ticket 缓存有效期（官方约 24h，留余量）
+_TYPING_TICKET_TTL = 500        # 秒，typing_ticket 缓存有效期。iLink 服务端实际
+                                # 寿命约 600 秒，过期后 sendtyping 会被静默拒绝
+                                # （连 status=2 停止也发不出去，导致气泡卡死），
+                                # 故取 500 秒在过期前主动经 getconfig 重拉。
 
 _ITEM_TEXT = 1
 _ITEM_IMAGE = 2
