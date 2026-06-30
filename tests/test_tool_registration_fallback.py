@@ -115,6 +115,7 @@ class TestImageGenRegistration:
         assert not any(t.name == "image_generate" for t in tools)
 
     def test_anthropic_provider_does_not_register(self):
+        pytest.importorskip("anthropic")
         from echo_agent.models.providers.anthropic_provider import AnthropicProvider
         tools: list[Tool] = []
         config = _make_config()
@@ -212,6 +213,7 @@ class TestTTSRegistration:
         assert tts_tools[0]._openai_key == ""
 
     def test_anthropic_provider_does_not_inject_key(self):
+        pytest.importorskip("anthropic")
         from echo_agent.models.providers.anthropic_provider import AnthropicProvider
         tools: list[Tool] = []
         config = _make_config(tts_backend="edge")
