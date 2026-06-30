@@ -403,7 +403,9 @@ class ContextStage:
         session_cfg = self._config.session
         messages = self._context_builder.build_messages(
             history=history,
-            current_message=event.text,
+            # 引用回复:本轮 prompt 也用带引用前缀的 user_message,让模型当轮就看到
+            # 被引用原文(消歧);event.text 保持原样,上游检索/压缩仍用原始问题。
+            current_message=user_message,
             media=resolved_media,
             channel=event.channel,
             chat_id=event.chat_id,

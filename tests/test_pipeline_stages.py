@@ -124,6 +124,62 @@ class TestContextStage:
         )
         assert stage._infer_task_type("你好") == "chat"
 
+    @pytest.mark.asyncio
+    async def test_reply_quote_enters_current_turn_prompt(self):
+        """带引用回复时,被引用原文必须进入本轮 prompt(current_message),
+        而不只是写进历史等下一轮才出现。检索/压缩仍用原始 event.text。"""
+        config = MagicMock()
+        config.session.max_history_messages = 100
+        config.session.history_image_ttl_minutes = 30
+        config.session.history_image_limit = 4
+        config.session.history_image_skip_if_current = True
+        config.memory.enabled = False
+        config.knowledge = MagicMock()
+        config.knowledge.enabled = False
+
+        sessions = AsyncMock()
+        sessions.save = AsyncMock()
+
+        memory = MagicMock()
+        memory.get_snapshot = MagicMock(return_value="")
+        compressor = MagicMock()
+        compressor.should_compress = MagicMock(return_value=False)
+
+        context_builder = MagicMock()
+        context_builder.build_system_prompt = MagicMock(return_value="sys")
+        context_builder.build_messages = MagicMock(return_value=[
+            {"role": "user", "content": "x"},
+        ])
+
+        inference = MagicMock()
+        inference.filter_tools = MagicMock(return_value=[])
+
+        stage = ContextStage(
+            config=config, sessions=sessions, memory=memory,
+            compressor=compressor, context_builder=context_builder,
+            skill_store=None, knowledge=None, hybrid_retriever=None,
+            planner=None, inference=inference, working_memories=OrderedDict(),
+            memory_snapshots=OrderedDict(), snapshot_enabled=False,
+            tool_definitions_fn=lambda: [],
+        )
+
+        event = InboundEvent.text_message(
+            channel="cli", sender_id="user", chat_id="c1", text="改改这个",
+            reply_to_text="原始方案", reply_to_sender="Alice",
+        )
+        session = Session(key="cli:c1")
+
+        await stage.build(
+            event, session, publish_response=False, trace_id="t1",
+            stream_publisher=None, intro_text="",
+        )
+
+        _, kwargs = context_builder.build_messages.call_args
+        current = kwargs["current_message"]
+        assert "原始方案" in current and "Alice" in current
+        # 原始 event.text 不被污染(上游检索/压缩仍用原问题)
+        assert event.text == "改改这个"
+
 
 class TestResponseStage:
     @pytest.mark.asyncio
