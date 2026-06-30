@@ -80,6 +80,8 @@ less install.sh && bash install.sh
 
 </details>
 
+> 常驻网关：用 `echo-agent gateway` 在前台启动常驻网关（或由 systemd/launchd 托管，`echo-agent service install` 可注册 systemd 服务）。网关运行后，可在本机用 `echo-agent cli` 作为瘦客户端接入，开一条独立会话与同一个常驻 agent 对话。仅限本机 loopback（127.0.0.1），不支持远程地址；远程接入请走 ssh。
+
 ---
 
 ## 架构总览

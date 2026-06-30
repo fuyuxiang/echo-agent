@@ -83,6 +83,8 @@ less install.sh && bash install.sh
 
 </details>
 
+> Resident gateway: start it in the foreground with `echo-agent gateway` (or have systemd/launchd manage it — `echo-agent service install` registers a systemd service). Once the gateway is running, you can attach on the same machine with `echo-agent cli` as a thin client, opening a separate session that talks to the same resident agent. Local loopback only (127.0.0.1); remote addresses are not supported — use ssh for remote access.
+
 ---
 
 ## Architecture
