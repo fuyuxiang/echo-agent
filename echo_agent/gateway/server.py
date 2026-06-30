@@ -34,6 +34,7 @@ from echo_agent.gateway.rate_limiter import RateLimiter
 from echo_agent.gateway.router import DeliveryRouter
 from echo_agent.gateway.session_context import set_session_vars, clear_session_vars
 from echo_agent.gateway.session_policy import SessionResetPolicy
+from echo_agent.gateway.ws_session import resolve_client_session_key
 from echo_agent.session.manager import SessionManager
 
 
@@ -591,7 +592,19 @@ class GatewayServer:
                             await websocket.close()
                             return websocket
 
-                        session_key = f"gateway:{platform}:{chat_id}"
+                        session_key, sk_err = resolve_client_session_key(
+                            data.get("session_key"),
+                            platform=platform,
+                            chat_id=chat_id,
+                        )
+                        if sk_err:
+                            self.auth.audit(
+                                "ws_auth", platform=platform, user_id=user_id,
+                                ok=False, reason=sk_err,
+                            )
+                            await websocket.send_json({"type": "error", "error": "forbidden session_key"})
+                            await websocket.close()
+                            return websocket
                         ws_id = session_key
                         self._ws_clients[ws_id] = websocket
 
