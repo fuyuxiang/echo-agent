@@ -146,6 +146,98 @@ async def test_cli_session_key_receives_outbound_reply(gateway_with_echo_agent):
             assert reply["text"] == "echo:ping"
 
 
+@pytest_asyncio.fixture
+async def gateway_with_fresh_metadata_agent():
+    """Gateway whose agent builds the outbound with a BRAND-NEW metadata dict.
+
+    Mimics the heartbeat/skills/send_file outbound paths that do NOT copy the
+    inbound ``event.metadata`` (so no ``_session_key`` is carried through). This
+    is the case the 治标 fix (出站读 metadata['_session_key']) silently dropped
+    for cli: clients. Under the root fix (投递键=出站重算键) it must still hit.
+    """
+    from pathlib import Path
+    from unittest.mock import AsyncMock, MagicMock
+
+    from echo_agent.bus.queue import MessageBus
+    from echo_agent.bus.events import OutboundEvent, ContentBlock, ContentType
+    from echo_agent.config.schema import (
+        GatewayConfig,
+        GatewayAuthConfig,
+        GatewaySessionPolicyConfig,
+    )
+    from echo_agent.gateway.server import GatewayServer
+
+    config = GatewayConfig(
+        enabled=True,
+        host="127.0.0.1",
+        port=0,
+        auth=GatewayAuthConfig(mode="open", api_tokens=[]),
+        session_policy=GatewaySessionPolicyConfig(mode="none"),
+    )
+
+    bus = MessageBus()
+    session_manager = MagicMock()
+    session_manager.get_or_create = AsyncMock(return_value=MagicMock(status="active"))
+
+    async def fake_agent(event):
+        # 关键：用全新 metadata（不含 _session_key），模拟 heartbeat 那样
+        # out.metadata = {"_inbound_event_id": ...}，而非 dict(event.metadata)。
+        out = OutboundEvent(
+            channel=event.channel,
+            chat_id=event.chat_id,
+            content=[ContentBlock(type=ContentType.TEXT, text=f"echo:{event.text}")],
+            is_final=True,
+        )
+        out.metadata = {"_inbound_event_id": event.event_id}
+        await bus.publish_outbound(out)
+
+    bus.subscribe_inbound(fake_agent)
+
+    server = GatewayServer(
+        config=config,
+        bus=bus,
+        channel_manager=MagicMock(),
+        session_manager=session_manager,
+        workspace=Path("/tmp/echo-agent-test-ws-fresh"),
+        agent_loop=None,
+    )
+    await bus.start()
+    await server.start()
+    try:
+        yield f"ws://127.0.0.1:{server.actual_port}/ws"
+    finally:
+        await server.stop()
+        await bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_cli_client_receives_reply_when_outbound_drops_metadata(
+    gateway_with_fresh_metadata_agent,
+):
+    """根治核心优势：出站不拷贝入站 metadata（无 _session_key）时，cli: 客户端仍能收到。
+
+    若回退到治标（_ws_clients 注册键=身份键 cli:alice，出站靠 metadata 透传），
+    这条必然失败——因为出站重算键 gateway:cli:alice 与注册键 cli:alice 不一致。
+    """
+    async with aiohttp.ClientSession() as s:
+        async with s.ws_connect(gateway_with_fresh_metadata_agent) as ws:
+            await ws.send_json({
+                "type": "auth", "platform": "cli",
+                "user_id": "alice", "session_key": "cli:alice",
+            })
+            assert (await ws.receive_json())["type"] == "auth_ok"
+
+            await ws.send_json({"type": "message", "text": "ping"})
+            msgs = []
+            while len(msgs) < 2:
+                m = await asyncio.wait_for(ws.receive_json(), timeout=5)
+                msgs.append(m)
+                if m["type"] == "message":
+                    break
+            reply = next(m for m in msgs if m["type"] == "message")
+            assert reply["text"] == "echo:ping"
+
+
 @pytest.mark.asyncio
 async def test_legacy_client_still_receives_outbound_reply(gateway_with_echo_agent):
     """老客户端（不带 session_key）出站仍可达，证明向后兼容未破坏。"""

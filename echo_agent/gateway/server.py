@@ -557,7 +557,7 @@ class GatewayServer:
         websocket = web.WebSocketResponse()
         await websocket.prepare(request)
 
-        ws_id = None
+        delivery_key = None
         platform = "ws"
         user_id = ""
         chat_id = ""
@@ -605,8 +605,11 @@ class GatewayServer:
                             await websocket.send_json({"type": "error", "error": "forbidden session_key"})
                             await websocket.close()
                             return websocket
-                        ws_id = session_key
-                        self._ws_clients[ws_id] = websocket
+                        # 身份键 session_key（cli 自带时=cli:alice）用于会话隔离与冒充拒绝；
+                        # 投递键 delivery_key 用出站重算式 gateway:{platform}:{chat_id}，
+                        # 让 _handle_outbound 无需任何 metadata 透传即可命中所有出站路径。
+                        delivery_key = f"gateway:{platform}:{chat_id}"
+                        self._ws_clients[delivery_key] = websocket
 
                         session = await self.session_manager.get_or_create(session_key)
                         if self.session_policy.should_reset(session):
@@ -650,7 +653,6 @@ class GatewayServer:
                             )
                             event.metadata["gateway"] = True
                             event.metadata["platform"] = platform
-                            event.metadata["_session_key"] = session_key
                             if not await self._bus.publish_inbound(event):
                                 await websocket.send_json({"type": "error", "error": "server overloaded"})
                                 continue
@@ -670,8 +672,8 @@ class GatewayServer:
         except Exception as e:
             logger.error("WebSocket error: {}", e)
         finally:
-            if ws_id and ws_id in self._ws_clients:
-                del self._ws_clients[ws_id]
+            if delivery_key and delivery_key in self._ws_clients:
+                del self._ws_clients[delivery_key]
 
         return websocket
 
@@ -682,7 +684,7 @@ class GatewayServer:
             return
 
         _, platform = event.channel.split(":", 1)
-        session_key = event.metadata.get("_session_key") or f"gateway:{platform}:{event.chat_id}"
+        session_key = f"gateway:{platform}:{event.chat_id}"
         payload = self._build_outbound_payload(event)
 
         correlation_id = str(event.metadata.get("_inbound_event_id") or event.reply_to_id or "")
