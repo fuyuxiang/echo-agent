@@ -381,6 +381,30 @@ def _gateway_profile_override(config_path: str | None) -> dict[str, Any]:
     return {"security": {"profile": "public_gateway"}}
 
 
+def _gateway_port_in_use(host: str, port: int) -> str | None:
+    """Probe whether ``host:port`` is already bound. Returns a friendly,
+    user-facing message when occupied, else None.
+
+    Probing with a throwaway socket (SO_REUSEADDR off) mirrors what aiohttp's
+    TCPSite does at bind time, so a free result here means start() will bind.
+    Port 0 is the ephemeral sentinel — never "in use", skip the probe."""
+    if not port:
+        return None
+    import socket
+
+    probe_host = "127.0.0.1" if host in ("", "0.0.0.0", "::") else host
+    family = socket.AF_INET6 if ":" in probe_host else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind((probe_host, port))
+        except OSError:
+            return (
+                f"网关端口 {host}:{port} 已被占用，可能本机已有一个常驻 echo-agent 在运行。"
+                "若要接入它请用 `echo-agent cli`；若要另起实例请用 `--port` 指定其它端口。"
+            )
+    return None
+
+
 async def run_gateway(
     config_path: str | None = None,
     host: str | None = None,
@@ -412,6 +436,16 @@ async def run_gateway(
 
     install_signal_handler(shutdown)
     runtime = AppRuntime(ctx, shutdown_event=shutdown)
+
+    # Preflight the listen port before bringing up the bus/agent/channels, so a
+    # predictable failure (a resident gateway already on this port) exits with a
+    # friendly hint instead of a full start→teardown churn and a bare traceback.
+    bind_err = _gateway_port_in_use(ctx.config.gateway.host, ctx.config.gateway.port)
+    if bind_err:
+        logger.error(bind_err)
+        await runtime.stop()
+        return
+
     try:
         if not await runtime.start():
             return

@@ -37,7 +37,17 @@ class GatewayAuth:
         self._load_approved()
         self._load_pending()
 
-    def is_authorized(self, platform: str, user_id: str) -> bool:
+    def is_authorized(self, platform: str, user_id: str, *, trusted: bool = False) -> bool:
+        # A loopback peer is part of the gateway's trust boundary — the same
+        # premise that lets bind-safety and token checks default to "open" on
+        # 127.0.0.1 (see gateway/server.py:_check_bind_safety and
+        # authenticate_token). The user-level gate must agree, otherwise the
+        # default allowlist (empty → deny-all) locks out the local thin client
+        # (echo-agent cli). ``trusted`` MUST be derived from the real socket
+        # peer, never from a client-supplied field or forwarded header.
+        if trusted:
+            return True
+
         if self._mode == "open":
             return True
 

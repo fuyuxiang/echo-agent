@@ -129,7 +129,17 @@ class GatewayServer:
             self._config.host,
             self._config.port,
         )
-        await self._site.start()
+        try:
+            await self._site.start()
+        except OSError as e:
+            import errno
+            if e.errno == errno.EADDRINUSE:
+                raise RuntimeError(
+                    f"网关端口 {self._config.host}:{self._config.port} 已被占用，"
+                    "可能本机已有一个常驻 echo-agent 在运行。若要接入它请用 "
+                    "`echo-agent cli`；若要另起实例请用 `--port` 指定其它端口。"
+                ) from e
+            raise
 
         actual_port = self._config.port
         if self._runner.addresses:
@@ -280,6 +290,27 @@ class GatewayServer:
             return token
         return request.query.get("token", "").strip()
 
+    @staticmethod
+    def _is_loopback_peer(request: web.Request) -> bool:
+        """Whether the request arrives over a loopback socket.
+
+        Derives the verdict from the real TCP peer (``transport.get_extra_info
+        ('peername')``), NEVER from ``request.remote`` or forwarded headers such
+        as ``X-Forwarded-For`` — those are client-controllable and would let a
+        remote caller spoof local trust. Used to grant the loopback exemption in
+        the user-authorization gate (see auth.py:is_authorized)."""
+        import ipaddress
+
+        transport = getattr(request, "transport", None)
+        peername = transport.get_extra_info("peername") if transport else None
+        if not peername:
+            return False
+        host = peername[0]
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
+
     def _check_csrf(self, request: web.Request, *, action: str) -> web.Response | None:
         """Reject cross-site browser requests to mutating endpoints.
 
@@ -327,15 +358,19 @@ class GatewayServer:
         return Path(__file__).resolve().parent / "static" / "index.html"
 
     def _authenticate_and_check_rate_limit(
-        self, platform: str, user_id: str, chat_id: str,
+        self, platform: str, user_id: str, chat_id: str, *, trusted: bool = False,
     ) -> str | None:
         """统一的认证和限流检查。
+
+        Args:
+            trusted: 来自 loopback socket 的可信请求，跳过用户白名单闸门
+                （仍受限流约束）。必须由真实 peer 推导，见 _is_loopback_peer。
 
         Returns:
             str: 错误信息（如果被拒绝）
             None: 检查通过
         """
-        if not self.auth.is_authorized(platform, user_id):
+        if not self.auth.is_authorized(platform, user_id, trusted=trusted):
             self.auth.audit("message", platform=platform, user_id=user_id, ok=False, reason="user unauthorized")
             return "unauthorized"
         if not self.rate_limiter.acquire(platform, chat_id):
@@ -383,7 +418,9 @@ class GatewayServer:
         if not text and not media_urls:
             return web.json_response({"error": "text or media_urls required"}, status=400)
 
-        rejection = self._authenticate_and_check_rate_limit(platform, user_id, chat_id)
+        rejection = self._authenticate_and_check_rate_limit(
+            platform, user_id, chat_id, trusted=self._is_loopback_peer(request),
+        )
         if rejection == "unauthorized":
             await self.hooks.emit("auth_failed", platform=platform, user_id=user_id)
             return web.json_response({"error": "unauthorized"}, status=403)
@@ -586,7 +623,9 @@ class GatewayServer:
                             await websocket.close()
                             return websocket
 
-                        if not self.auth.is_authorized(platform, user_id):
+                        if not self.auth.is_authorized(
+                            platform, user_id, trusted=self._is_loopback_peer(request),
+                        ):
                             self.auth.audit("ws_auth", platform=platform, user_id=user_id, ok=False, reason="user unauthorized")
                             await websocket.send_json({"type": "error", "error": "unauthorized"})
                             await websocket.close()
