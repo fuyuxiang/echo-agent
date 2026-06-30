@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
 
 import aiohttp
 
@@ -101,18 +102,45 @@ class OutboundRenderer:
 
 
 async def _send_loop(ws) -> None:
+    # stdin is read on a daemon thread so run_client teardown never has to
+    # join a thread blocked in readline(): when _recv_loop finishes first and
+    # this coroutine is cancelled, the daemon thread is simply abandoned and
+    # dies with the process (asyncio.run's shutdown_default_executor would
+    # otherwise hang forever joining a readline-blocked executor thread).
     loop = asyncio.get_running_loop()
-    while True:
-        print("You> ", end="", flush=True)
-        line = await loop.run_in_executor(None, sys.stdin.readline)
-        if line == "":  # EOF (Ctrl-D)
-            break
-        line = line.strip()
-        if not line:
-            continue
-        if line.lower() in ("exit", "quit", "/quit"):
-            break
-        await ws.send_json({"type": "message", "text": line})
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
+    stop_event = threading.Event()
+
+    def read_stdin() -> None:
+        while not stop_event.is_set():
+            try:
+                line = sys.stdin.readline()
+            except (EOFError, KeyboardInterrupt):
+                line = ""
+            item = line if line != "" else None
+            try:
+                loop.call_soon_threadsafe(queue.put_nowait, item)
+            except RuntimeError:
+                break
+            if item is None:  # EOF (Ctrl-D)
+                break
+
+    thread = threading.Thread(target=read_stdin, name="echo-agent-cli-attach-input", daemon=True)
+    thread.start()
+    try:
+        while True:
+            print("You> ", end="", flush=True)
+            line = await queue.get()
+            if line is None:  # EOF (Ctrl-D)
+                break
+            line = line.strip()
+            if not line:
+                continue
+            if line.lower() in ("exit", "quit", "/quit"):
+                break
+            await ws.send_json({"type": "message", "text": line})
+    finally:
+        stop_event.set()
 
 
 async def _recv_loop(ws, renderer: "OutboundRenderer") -> None:
@@ -150,6 +178,7 @@ async def run_client(
         )
         for t in pending:
             t.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
         await ws.close()
     return 0
 
