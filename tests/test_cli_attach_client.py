@@ -84,7 +84,7 @@ async def test_authenticate_returns_session_key_on_ok():
 
 @pytest.mark.asyncio
 async def test_authenticate_raises_on_error():
-    ws = _FakeWS({"type": "auth_error", "error": "bad token"})
+    ws = _FakeWS({"type": "error", "error": "bad token"})
     with pytest.raises(AuthError) as ei:
         await authenticate(
             ws, platform="cli", user_id="u1", session_key="sk", token="t"

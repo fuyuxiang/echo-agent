@@ -650,6 +650,7 @@ class GatewayServer:
                             )
                             event.metadata["gateway"] = True
                             event.metadata["platform"] = platform
+                            event.metadata["_session_key"] = session_key
                             if not await self._bus.publish_inbound(event):
                                 await websocket.send_json({"type": "error", "error": "server overloaded"})
                                 continue
@@ -681,7 +682,7 @@ class GatewayServer:
             return
 
         _, platform = event.channel.split(":", 1)
-        session_key = f"gateway:{platform}:{event.chat_id}"
+        session_key = event.metadata.get("_session_key") or f"gateway:{platform}:{event.chat_id}"
         payload = self._build_outbound_payload(event)
 
         correlation_id = str(event.metadata.get("_inbound_event_id") or event.reply_to_id or "")
