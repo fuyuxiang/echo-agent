@@ -29,13 +29,22 @@ class KnowledgeVectorStore:
         self._dim = dimensions
         self._index = None
         self._chunk_ids: list[str] = []
+        # id → content_hash that each persisted vector was computed from. Lets
+        # callers detect when a chunk's text changed (so its sidecar vector is
+        # stale) even when the chunk id is unchanged.
+        self._content_hashes: dict[str, str] = {}
 
     @property
     def available(self) -> bool:
         return _HAS_FAISS
 
+    def content_hashes(self) -> dict[str, str]:
+        """id → content_hash for the currently loaded sidecar vectors."""
+        return dict(self._content_hashes)
+
     def load(self) -> dict[str, list[float]]:
         if not _HAS_FAISS or not self._sidecar.exists():
+            self._content_hashes = {}
             return {}
         try:
             data = np.load(self._sidecar, allow_pickle=False)
@@ -43,10 +52,20 @@ class KnowledgeVectorStore:
             chunk_ids = [str(c) for c in data["chunk_ids"]]
             if vectors.shape[1] != self._dim or vectors.shape[0] != len(chunk_ids):
                 logger.warning("Knowledge sidecar shape mismatch; discarding {}", self._sidecar)
+                self._content_hashes = {}
                 return {}
+            # content_hashes is optional for back-compat with pre-existing
+            # sidecars; a missing/short array just yields no known hashes, so
+            # every chunk is treated as needing backfill (safe, not stale).
+            hashes = [str(h) for h in data["content_hashes"]] if "content_hashes" in data else []
+            if len(hashes) == len(chunk_ids):
+                self._content_hashes = {cid: hashes[i] for i, cid in enumerate(chunk_ids)}
+            else:
+                self._content_hashes = {}
             return {cid: vectors[i].tolist() for i, cid in enumerate(chunk_ids)}
         except Exception as e:
             logger.warning("Failed to load knowledge sidecar {}: {}", self._sidecar, e)
+            self._content_hashes = {}
             return {}
 
     def build(self, ordered: list[tuple[str, list[float]]]) -> None:
@@ -66,18 +85,25 @@ class KnowledgeVectorStore:
         self._index = index
         self._chunk_ids = [cid for cid, _ in ordered]
 
-    def save(self, ordered: list[tuple[str, list[float]]]) -> None:
+    def save(self, ordered: list[tuple[str, list[float]]],
+             content_hashes: dict[str, str] | None = None) -> None:
         if not _HAS_FAISS:
             return
         self._sidecar.parent.mkdir(parents=True, exist_ok=True)
         if not ordered:
             if self._sidecar.exists():
                 self._sidecar.unlink()
+            self._content_hashes = {}
             return
         matrix = np.array([v for _, v in ordered], dtype=np.float32)
         faiss.normalize_L2(matrix)
-        chunk_ids = np.array([cid for cid, _ in ordered], dtype=str)
-        np.savez(self._sidecar, vectors=matrix, chunk_ids=chunk_ids, dim=np.array([self._dim]))
+        ids = [cid for cid, _ in ordered]
+        chunk_ids = np.array(ids, dtype=str)
+        hashes = content_hashes or {}
+        hash_arr = np.array([hashes.get(cid, "") for cid in ids], dtype=str)
+        np.savez(self._sidecar, vectors=matrix, chunk_ids=chunk_ids,
+                 content_hashes=hash_arr, dim=np.array([self._dim]))
+        self._content_hashes = {cid: hashes.get(cid, "") for cid in ids}
 
     def search(self, query_vec: list[float], limit: int) -> list[tuple[str, float]]:
         if not _HAS_FAISS or self._index is None or self._index.ntotal == 0:

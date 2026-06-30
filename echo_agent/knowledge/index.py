@@ -188,24 +188,36 @@ class KnowledgeIndex:
         if not self._vector_store or not self._vector_store.available or not self._embed_fn:
             return False
         self._ensure_loaded()
-        return any(c["id"] not in self._chunk_vectors for c in self._chunks)
+        # 陈旧判定靠 sidecar 自记录的 content_hash:重启启动期 ensure_ready 已先把
+        # 文本索引 rebuild 成新内容(chunk id 不变但 content_hash 变),仅比对 id 命中
+        # 会漏判,导致语义检索一直吃旧向量。故 id 缺失或 hash 不一致都需补建。
+        sidecar_hashes = self._vector_store.content_hashes()
+        for c in self._chunks:
+            cid = c["id"]
+            if cid not in self._chunk_vectors:
+                return True
+            if sidecar_hashes.get(cid) != c.get("content_hash"):
+                return True
+        return False
 
     async def rebuild_async(self) -> dict[str, Any]:
         loop = asyncio.get_running_loop()
         if not self._vector_store or not self._vector_store.available or not self._embed_fn:
             return await loop.run_in_executor(None, self.rebuild)
-        # 0) rebuild 会用新 content_hash 重写 self._chunks 与索引文件,故先快照旧 hash 与旧向量
+        # 0) 复用判定的权威依据是 sidecar 自记录的 content_hash,而非 self._chunks 的
+        #    旧 hash:重启启动期 ensure_ready 可能已把 self._chunks rebuild 成新内容,
+        #    此时旧 hash 已失真,只有 sidecar 知道每个向量是基于哪段文本算出来的。
         self._ensure_loaded()
-        old_hashes = {c["id"]: c.get("content_hash") for c in self._chunks}
         old_vectors = self._vector_store.load()
+        sidecar_hashes = self._vector_store.content_hashes()
         # 1) 重建文本索引(同步内核,executor 防阻塞事件循环)
         summary = await loop.run_in_executor(None, self.rebuild)
-        # 2) 仅对 id 命中且 content_hash 未变的 chunk 复用,新增/变更的重算嵌入
+        # 2) 仅对 id 命中且 sidecar 记录的 hash 与当前 chunk hash 一致的复用,余者重算
         new_vectors: dict[str, list[float]] = {}
         for chunk in self._chunks:
             cid = chunk["id"]
             reuse = old_vectors.get(cid)
-            if reuse is not None and old_hashes.get(cid) == chunk["content_hash"]:
+            if reuse is not None and sidecar_hashes.get(cid) == chunk["content_hash"]:
                 new_vectors[cid] = reuse
                 continue
             try:
@@ -216,8 +228,9 @@ class KnowledgeIndex:
             if emb:
                 new_vectors[cid] = emb
         ordered = [(c["id"], new_vectors[c["id"]]) for c in self._chunks if c["id"] in new_vectors]
+        new_hashes = {c["id"]: c["content_hash"] for c in self._chunks if c["id"] in new_vectors}
         self._vector_store.build(ordered)
-        self._vector_store.save(ordered)
+        self._vector_store.save(ordered, new_hashes)
         self._chunk_vectors = new_vectors
         logger.info("knowledge vectors backfilled: {} chunks", len(ordered))
         return summary

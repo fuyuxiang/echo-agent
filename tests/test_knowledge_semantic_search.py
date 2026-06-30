@@ -177,3 +177,40 @@ async def test_attach_then_background_backfill_flag(tmp_path):
     await idx.rebuild_async()
     assert idx.needs_vector_backfill() is False
 
+
+@pytest.mark.asyncio
+async def test_backfill_detects_content_change_across_restart(tmp_path):
+    """重启场景:文档内容变(分块数不变 → chunk id 不变),启动期 ensure_ready 先把
+    文本索引 rebuild 成新内容,随后 attach_embedding 从 sidecar 载入旧向量。
+    needs_vector_backfill 必须靠 sidecar 自记录的 content_hash 发现陈旧,否则语义
+    检索会一直吃旧 embedding。"""
+    from echo_agent.knowledge.index import KnowledgeIndex
+    pytest.importorskip("faiss")
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "a.md").write_text("# Alpha\nquick fox", encoding="utf-8")
+
+    # 第一次运行:索引 + 向量补建,sidecar 落 fox 向量
+    idx1 = KnowledgeIndex(workspace=tmp_path, docs_dir="docs", index_path="idx.json",
+                          allowed_extensions=[".md"])
+    idx1.attach_embedding(_fake_embed, dimensions=3)
+    await idx1.rebuild_async()
+    assert idx1.needs_vector_backfill() is False
+
+    # 进程关闭期间内容被改(单块,chunk id 不变,content_hash 变)
+    (docs / "a.md").write_text("# Alpha\nlazy dog", encoding="utf-8")
+    # 模拟重启启动期:ensure_ready 先同步 rebuild 文本索引(idx.json 变新 hash)
+    idx2 = KnowledgeIndex(workspace=tmp_path, docs_dir="docs", index_path="idx.json",
+                          allowed_extensions=[".md"])
+    idx2.rebuild()  # ensure_ready 在 stale 时做的事:刷新文本索引,不碰向量
+    # 随后挂载 embedding,从 sidecar 载入旧(fox)向量
+    idx2.attach_embedding(_fake_embed, dimensions=3)
+
+    # 旧 sidecar 向量对应的是 fox,当前内容是 dog → 必须判定需要补建
+    assert idx2.needs_vector_backfill() is True
+    await idx2.rebuild_async()
+    # 补建后,语义检索应召回新内容(dog),而非旧的 fox
+    res = await idx2.search_async("dog", limit=1)
+    assert res and "dog" in res[0].text.lower()
+
+
