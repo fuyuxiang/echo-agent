@@ -672,7 +672,10 @@ class GatewayServer:
         except Exception as e:
             logger.error("WebSocket error: {}", e)
         finally:
-            if delivery_key and delivery_key in self._ws_clients:
+            # Only drop the slot if it still holds *this* socket — when two
+            # connections collapse onto the same delivery_key, an earlier
+            # connection's teardown must not delete the later one's slot.
+            if delivery_key and self._ws_clients.get(delivery_key) is websocket:
                 del self._ws_clients[delivery_key]
 
         return websocket
