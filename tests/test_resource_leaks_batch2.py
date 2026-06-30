@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import datetime, timedelta
 
 import pytest
@@ -114,3 +115,52 @@ def test_trace_prune_disabled_when_limit_non_positive(tmp_path):
         tracer.flush_trace(f"t{i}")
 
     assert len(list(tmp_path.glob("trace_*.json"))) == 4
+
+
+def test_trace_prune_correct_when_mtime_identical(tmp_path):
+    """同一毫秒连写导致 mtime 完全相同时,裁剪仍按写入顺序删最旧的。
+    回归:旧实现仅按 mtime 排序,相同 mtime 下排序不稳定会误删最新文件。"""
+    from echo_agent.observability.monitor import TraceLogger
+
+    tracer = TraceLogger(logs_dir=tmp_path, enabled=True, max_trace_files=3)
+    for i in range(5):
+        tracer.start_span(trace_id=f"t{i}", span_id=f"sp{i}", name="x", kind="agent")
+        tracer.flush_trace(f"t{i}")
+
+    # 强制把所有文件 mtime 抹平成同一时刻,模拟低精度文件系统
+    fixed = 1_700_000_000.0
+    for p in tmp_path.glob("trace_*.json"):
+        os.utime(p, (fixed, fixed))
+    # 再写两个,触发裁剪;此时磁盘上前 5 个 mtime 全相同
+    for i in range(5, 7):
+        tracer.start_span(trace_id=f"t{i}", span_id=f"sp{i}", name="x", kind="agent")
+        tracer.flush_trace(f"t{i}")
+
+    names = {p.name for p in tmp_path.glob("trace_*.json")}
+    assert len(names) == 3
+    assert names == {"trace_t4.json", "trace_t5.json", "trace_t6.json"}
+    assert "trace_t0.json" not in names  # 最旧被裁,不因 mtime 相同而误删最新
+
+
+def test_trace_order_backfilled_after_restart(tmp_path):
+    """进程重启(新建 TraceLogger 实例)后,内存写入队列用磁盘已有文件回填,
+    旧文件仍能被正常裁剪而非永久泄漏。"""
+    from echo_agent.observability.monitor import TraceLogger
+
+    first = TraceLogger(logs_dir=tmp_path, enabled=True, max_trace_files=10)
+    for i in range(4):
+        first.start_span(trace_id=f"t{i}", span_id=f"sp{i}", name="x", kind="agent")
+        first.flush_trace(f"t{i}")
+    assert len(list(tmp_path.glob("trace_*.json"))) == 4
+
+    # 模拟重启:全新实例,内存队列为空,需从磁盘回填
+    second = TraceLogger(logs_dir=tmp_path, enabled=True, max_trace_files=5)
+    for i in range(4, 8):
+        second.start_span(trace_id=f"t{i}", span_id=f"sp{i}", name="x", kind="agent")
+        second.flush_trace(f"t{i}")
+
+    files = list(tmp_path.glob("trace_*.json"))
+    assert len(files) == 5  # 回填生效,旧文件参与裁剪,未泄漏
+    names = {p.name for p in files}
+    assert "trace_t7.json" in names   # 最新保留
+    assert "trace_t0.json" not in names  # 重启前最旧被裁
