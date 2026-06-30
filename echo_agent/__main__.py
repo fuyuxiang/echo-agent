@@ -130,6 +130,16 @@ def _build_parser() -> argparse.ArgumentParser:
     gw_parser.add_argument("--host", help="Gateway host")
     gw_parser.add_argument("--port", type=int, help="Gateway port")
 
+    # cli — thin client attaching to a running local gateway
+    cli_parser = subparsers.add_parser(
+        "cli", help="Attach to a running local gateway as a thin client"
+    )
+    cli_parser.add_argument("--port", type=int, default=None, help="Gateway port (default: from config / 9000)")
+    cli_parser.add_argument("--token", default=None, help="API token (default: from gateway config)")
+    cli_parser.add_argument("--user", default="local", help="Client user id for the cli: session (default: local)")
+    cli_parser.add_argument("-c", "--config", help="Path to config file")
+    cli_parser.add_argument("-w", "--workspace", help="Workspace directory")
+
     # eval
     eval_parser = subparsers.add_parser("eval", help="Run evaluation test suite")
     eval_parser.add_argument("--dataset", "-d", default="", help="Path to eval dataset (YAML/JSON)")
@@ -300,6 +310,24 @@ def _dispatch() -> None:
             workspace=args.workspace or args.top_workspace,
         )
         _sys.exit(rc)
+
+    if args.command == "cli":
+        from echo_agent.cli import attach_client
+        host, port, ws_path, token = attach_client.resolve_defaults(
+            config_path=args.config or args.top_config,
+            workspace=args.workspace or args.top_workspace,
+        )
+        if args.port is not None:
+            port = args.port
+        if args.token is not None:
+            token = args.token
+        import sys as _sys
+        rc = attach_client.run_cli_attach(
+            host=host, port=port, ws_path=ws_path,
+            user_id=args.user, token=token,
+        )
+        _sys.exit(rc)
+        return
 
     # "run" command or no command (backward compat)
     config_path = getattr(args, "config", None) or args.top_config

@@ -183,6 +183,23 @@ async def run_client(
     return 0
 
 
+def resolve_defaults(
+    config_path: str | None, workspace: str | None
+) -> tuple[str, int, str, str]:
+    """Read connection defaults from the EXISTING gateway config (no new
+    config fields). Host is pinned to loopback — cli is local-only."""
+    try:
+        from echo_agent.config.loader import load_config, resolve_config_file
+        if config_path is None and workspace:
+            config_path = resolve_config_file(search_dir=workspace)
+        cfg = load_config(config_path=config_path)
+        gw = cfg.gateway
+        token = gw.auth.api_tokens[0] if gw.auth.api_tokens else ""
+        return "127.0.0.1", int(gw.port), gw.ws_path, token
+    except Exception:
+        return "127.0.0.1", 9000, "/ws", ""
+
+
 def run_cli_attach(
     *, host: str, port: int, ws_path: str, user_id: str, token: str
 ) -> int:
