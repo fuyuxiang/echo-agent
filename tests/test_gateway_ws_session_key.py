@@ -1,3 +1,6 @@
+import aiohttp
+import pytest
+
 from echo_agent.gateway.ws_session import resolve_client_session_key
 
 
@@ -25,10 +28,6 @@ def test_blank_string_after_strip_falls_back():
     key, err = resolve_client_session_key("   ", platform="cli", chat_id="bob")
     assert err == ""
     assert key == "gateway:cli:bob"
-
-
-import aiohttp
-import pytest
 
 
 @pytest.mark.asyncio
