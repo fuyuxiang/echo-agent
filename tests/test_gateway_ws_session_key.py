@@ -27,52 +27,8 @@ def test_blank_string_after_strip_falls_back():
     assert key == "gateway:cli:bob"
 
 
-import asyncio
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
-
 import aiohttp
 import pytest
-import pytest_asyncio
-
-
-@pytest_asyncio.fixture
-async def gateway_ws_url():
-    from echo_agent.gateway.server import GatewayServer
-    from echo_agent.config.schema import (
-        GatewayConfig,
-        GatewayAuthConfig,
-        GatewaySessionPolicyConfig,
-    )
-
-    config = GatewayConfig(
-        enabled=True,
-        host="127.0.0.1",
-        port=0,
-        auth=GatewayAuthConfig(mode="open", api_tokens=[]),
-        session_policy=GatewaySessionPolicyConfig(mode="none"),
-    )
-    from echo_agent.bus.queue import MessageBus
-
-    bus = MessageBus()
-    channel_manager = MagicMock()
-    session_manager = MagicMock()
-    session_manager.get_or_create = AsyncMock(return_value=MagicMock(status="active"))
-    workspace = MagicMock(spec=Path)
-
-    server = GatewayServer(
-        config=config,
-        bus=bus,
-        channel_manager=channel_manager,
-        session_manager=session_manager,
-        workspace=Path("/tmp/echo-agent-test-ws"),
-        agent_loop=None,
-    )
-    await server.start()
-    try:
-        yield f"ws://127.0.0.1:{server.actual_port}/ws"
-    finally:
-        await server.stop()
 
 
 @pytest.mark.asyncio

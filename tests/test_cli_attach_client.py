@@ -1,3 +1,6 @@
+import asyncio
+
+import aiohttp
 import pytest
 
 from echo_agent.cli.attach_client import (
@@ -87,3 +90,20 @@ async def test_authenticate_raises_on_error():
             ws, platform="cli", user_id="u1", session_key="sk", token="t"
         )
     assert "bad token" in str(ei.value)
+
+
+@pytest.mark.asyncio
+async def test_client_auth_and_send_roundtrip(gateway_ws_url):
+    # 不走完整 run_client 的 stdin，只验证 connect+auth+发 message 被服务端 accepted
+    async with aiohttp.ClientSession() as s:
+        ws = await connect_ws(s, gateway_ws_url)
+        sk = await authenticate(
+            ws, platform="cli", user_id="alice",
+            session_key="cli:alice", token="",
+        )
+        assert sk == "cli:alice"
+        await ws.send_json({"type": "message", "text": "ping"})
+        # 服务端先回 accepted（agent 回复异步，到不到取决于是否挂了真 agent）
+        msg = await asyncio.wait_for(ws.receive_json(), timeout=5)
+        assert msg["type"] in ("accepted", "message")
+        await ws.close()

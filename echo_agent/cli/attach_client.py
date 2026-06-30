@@ -3,6 +3,9 @@ gateway on loopback and opens its own (cli:) session. Builds no agent."""
 
 from __future__ import annotations
 
+import asyncio
+import sys
+
 import aiohttp
 
 
@@ -95,3 +98,75 @@ class OutboundRenderer:
         else:
             # Final text diverged from the streamed chunks — reprint cleanly.
             print(f"\n--- 完整回复 ---\n{text}\n")
+
+
+async def _send_loop(ws) -> None:
+    loop = asyncio.get_running_loop()
+    while True:
+        print("You> ", end="", flush=True)
+        line = await loop.run_in_executor(None, sys.stdin.readline)
+        if line == "":  # EOF (Ctrl-D)
+            break
+        line = line.strip()
+        if not line:
+            continue
+        if line.lower() in ("exit", "quit", "/quit"):
+            break
+        await ws.send_json({"type": "message", "text": line})
+
+
+async def _recv_loop(ws, renderer: "OutboundRenderer") -> None:
+    async for msg in ws:
+        if msg.type != aiohttp.WSMsgType.TEXT:
+            break
+        try:
+            payload = msg.json()
+        except Exception:
+            continue
+        mtype = payload.get("type")
+        if mtype == "error":
+            print(f"\n[错误] {payload.get('error')}\n")
+            continue
+        if mtype in ("accepted", "auth_ok", "pong"):
+            continue
+        renderer.render(payload)
+
+
+async def run_client(
+    *, host: str, port: int, ws_path: str, user_id: str, token: str
+) -> int:
+    url = build_ws_url(host, port, ws_path)
+    async with aiohttp.ClientSession() as session:
+        ws = await connect_ws(session, url)
+        await authenticate(
+            ws, platform="cli", user_id=user_id,
+            session_key=f"cli:{user_id}", token=token,
+        )
+        renderer = OutboundRenderer()
+        send = asyncio.create_task(_send_loop(ws))
+        recv = asyncio.create_task(_recv_loop(ws, renderer))
+        done, pending = await asyncio.wait(
+            {send, recv}, return_when=asyncio.FIRST_COMPLETED
+        )
+        for t in pending:
+            t.cancel()
+        await ws.close()
+    return 0
+
+
+def run_cli_attach(
+    *, host: str, port: int, ws_path: str, user_id: str, token: str
+) -> int:
+    try:
+        return asyncio.run(run_client(
+            host=host, port=port, ws_path=ws_path,
+            user_id=user_id, token=token,
+        ))
+    except NoGatewayError as e:
+        print(str(e))
+        return 1
+    except AuthError as e:
+        print(f"认证失败：{e}")
+        return 1
+    except KeyboardInterrupt:
+        return 0

@@ -3,9 +3,11 @@
 import uuid
 import json
 from datetime import datetime
-from unittest.mock import AsyncMock
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import pytest_asyncio
 
 
 # ── Common response helpers ──────────────────────────────────────────────────
@@ -62,6 +64,45 @@ def tmp_workspace(tmp_path):
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
     return tmp_path
+
+
+@pytest_asyncio.fixture
+async def gateway_ws_url():
+    """Start an open-mode GatewayServer on loopback and yield its ws url."""
+    from echo_agent.gateway.server import GatewayServer
+    from echo_agent.config.schema import (
+        GatewayConfig,
+        GatewayAuthConfig,
+        GatewaySessionPolicyConfig,
+    )
+
+    config = GatewayConfig(
+        enabled=True,
+        host="127.0.0.1",
+        port=0,
+        auth=GatewayAuthConfig(mode="open", api_tokens=[]),
+        session_policy=GatewaySessionPolicyConfig(mode="none"),
+    )
+    from echo_agent.bus.queue import MessageBus
+
+    bus = MessageBus()
+    channel_manager = MagicMock()
+    session_manager = MagicMock()
+    session_manager.get_or_create = AsyncMock(return_value=MagicMock(status="active"))
+
+    server = GatewayServer(
+        config=config,
+        bus=bus,
+        channel_manager=channel_manager,
+        session_manager=session_manager,
+        workspace=Path("/tmp/echo-agent-test-ws"),
+        agent_loop=None,
+    )
+    await server.start()
+    try:
+        yield f"ws://127.0.0.1:{server.actual_port}/ws"
+    finally:
+        await server.stop()
 
 
 # ── Trajectory helpers ───────────────────────────────────────────────────────
