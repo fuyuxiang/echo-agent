@@ -44,6 +44,29 @@ def filter_recall_by_snapshot(scored, snapshot_ids):
     ]
 
 
+_REPLY_SNIPPET_MAX = 500  # 被引用原文注入上限，过长截断，避免撑爆上下文
+
+
+def build_user_message_with_reply(event: InboundEvent) -> str:
+    """构造写入会话历史的用户消息文本，把被引用消息原文作为前缀注入。
+
+    跨通道统一的「理解层」：让模型知道用户在针对历史里哪一条消息发问（消歧），
+    而不是只看到用户这次的新文字。无被引用原文时原样返回 event.text，不注入。
+    注意只影响写入历史的副本，不改 event.text（检索/压缩仍用原始问题）。
+    """
+    reply_text = (event.reply_to_text or "").strip()
+    if not reply_text:
+        return event.text
+    snippet = reply_text[:_REPLY_SNIPPET_MAX]
+    if event.reply_to_is_own:
+        prefix = f'[回复你刚才的消息: "{snippet}"]'
+    elif event.reply_to_sender:
+        prefix = f'[引用 {event.reply_to_sender}: "{snippet}"]'
+    else:
+        prefix = f'[引用: "{snippet}"]'
+    return f"{prefix}\n\n{event.text}" if event.text else prefix
+
+
 class ContextStage:
     """Builds the full pipeline context: system prompt, messages, retrieval, tool defs."""
 
@@ -209,10 +232,13 @@ class ContextStage:
         )
 
         media_refs = self._build_media_refs(resolved_media) if resolved_media else None
+        # 引用回复：把被引用消息原文作为前缀注入写入历史的文本，供模型消歧。
+        # 只影响历史副本，event.text 保持原样（上游检索/压缩仍用原始问题）。
+        user_message = build_user_message_with_reply(event)
         if media_refs:
-            session.add_message("user", event.text, media_refs=media_refs)
+            session.add_message("user", user_message, media_refs=media_refs)
         else:
-            session.add_message("user", event.text)
+            session.add_message("user", user_message)
 
         retrieval_parts: list[str] = []
         from echo_agent.memory.prefetch import is_fresh

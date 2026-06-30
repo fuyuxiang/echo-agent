@@ -396,7 +396,12 @@ class _ContextTokenStore:
             logger.warning("weixin: failed to persist context tokens: {}", exc)
 
 
-def _extract_text(item_list: list[dict[str, Any]]) -> str:
+def _extract_text(item_list: list[dict[str, Any]]) -> tuple[str, str | None, str | None]:
+    """提取消息正文，并把被引用消息拆出来单独返回。
+
+    返回 (text, reply_to_text, reply_to_sender)：
+    引用上下文不再拼进 text，而是交给 pipeline 统一注入，与其他通道行为一致。
+    """
     for item in item_list:
         if item.get("type") == _ITEM_TEXT:
             text = str((item.get("text_item") or {}).get("text") or "")
@@ -407,14 +412,13 @@ def _extract_text(item_list: list[dict[str, Any]]) -> str:
                 if ref_text_item:
                     inner = str((ref_text_item.get("text_item") or {}).get("text") or "")
                     title = ref.get("title") or ""
-                    parts = [p for p in [title, inner] if p]
-                    if parts:
-                        return f"[引用: {' | '.join(parts)}]\n{text}".strip()
-            return text
+                    if inner or title:
+                        return text, (inner or None), (title or None)
+            return text, None, None
     for item in item_list:
         if item.get("type") == _ITEM_VOICE:
-            return str((item.get("voice_item") or {}).get("text") or "")
-    return ""
+            return str((item.get("voice_item") or {}).get("text") or ""), None, None
+    return "", None, None
 
 
 def _guess_chat_type(message: dict[str, Any], account_id: str) -> tuple[str, str]:
@@ -990,7 +994,7 @@ class WeixinChannel(BaseChannel):
             self._token_store.set(self._account_id, sender_id, context_token)
 
         item_list = message.get("item_list") or []
-        text = _extract_text(item_list)
+        text, reply_to_text, reply_to_sender = _extract_text(item_list)
 
         media: list[dict[str, str]] = []
         placeholders: list[str] = []
@@ -1019,6 +1023,8 @@ class WeixinChannel(BaseChannel):
             chat_id=effective_chat_id,
             text=text,
             media=media if media else None,
+            reply_to_text=reply_to_text,
+            reply_to_sender=reply_to_sender,
             metadata={"message_id": message_id, "chat_type": chat_type},
         )
 

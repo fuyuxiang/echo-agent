@@ -205,7 +205,7 @@ class TestWeixinItemExtraction:
         from echo_agent.channels.weixin import _ITEM_TEXT, _extract_text
 
         items = [{"type": _ITEM_TEXT, "text_item": {"text": "hi there"}}]
-        assert _extract_text(items) == "hi there"
+        assert _extract_text(items) == ("hi there", None, None)
 
     def test_extract_text_with_quoted_reference(self):
         from echo_agent.channels.weixin import _ITEM_TEXT, _extract_text
@@ -218,22 +218,22 @@ class TestWeixinItemExtraction:
                 "message_item": {"type": _ITEM_TEXT, "text_item": {"text": "original"}},
             },
         }]
-        result = _extract_text(items)
-        assert "引用" in result
-        assert "Alice" in result
-        assert "original" in result
-        assert "my reply" in result
+        text, reply_to_text, reply_to_sender = _extract_text(items)
+        # 引用拆到独立字段，正文保持干净
+        assert text == "my reply"
+        assert reply_to_text == "original"
+        assert reply_to_sender == "Alice"
 
     def test_extract_text_falls_back_to_voice(self):
         from echo_agent.channels.weixin import _ITEM_VOICE, _extract_text
 
         items = [{"type": _ITEM_VOICE, "voice_item": {"text": "transcribed"}}]
-        assert _extract_text(items) == "transcribed"
+        assert _extract_text(items) == ("transcribed", None, None)
 
     def test_extract_text_empty(self):
         from echo_agent.channels.weixin import _extract_text
 
-        assert _extract_text([]) == ""
+        assert _extract_text([]) == ("", None, None)
 
     def test_guess_chat_type_group_when_room_id(self):
         from echo_agent.channels.weixin import _guess_chat_type

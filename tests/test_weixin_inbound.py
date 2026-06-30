@@ -42,9 +42,9 @@ def _make_weixin(tmp_path: Path, **overrides) -> WeixinChannel:
 class TestExtractText:
     def test_plain_text(self):
         items = [{"type": wx._ITEM_TEXT, "text_item": {"text": "hello"}}]
-        assert wx._extract_text(items) == "hello"
+        assert wx._extract_text(items) == ("hello", None, None)
 
-    def test_quoted_text_prepends_reference(self):
+    def test_quoted_text_returned_as_reply_fields(self):
         items = [{
             "type": wx._ITEM_TEXT,
             "text_item": {"text": "my reply"},
@@ -53,8 +53,11 @@ class TestExtractText:
                 "message_item": {"type": wx._ITEM_TEXT, "text_item": {"text": "original"}},
             },
         }]
-        out = wx._extract_text(items)
-        assert out == "[引用: Alice | original]\nmy reply"
+        text, reply_to_text, reply_to_sender = wx._extract_text(items)
+        # 引用不再拼进正文，正文保持干净，引用拆到独立字段交给 pipeline 注入
+        assert text == "my reply"
+        assert reply_to_text == "original"
+        assert reply_to_sender == "Alice"
 
     def test_quoted_non_text_ref_ignored(self):
         items = [{
@@ -62,14 +65,14 @@ class TestExtractText:
             "text_item": {"text": "reply"},
             "ref_msg": {"message_item": {"type": wx._ITEM_IMAGE}},
         }]
-        assert wx._extract_text(items) == "reply"
+        assert wx._extract_text(items) == ("reply", None, None)
 
     def test_voice_transcription_fallback(self):
         items = [{"type": wx._ITEM_VOICE, "voice_item": {"text": "spoken words"}}]
-        assert wx._extract_text(items) == "spoken words"
+        assert wx._extract_text(items) == ("spoken words", None, None)
 
     def test_empty_when_no_known_items(self):
-        assert wx._extract_text([{"type": 999}]) == ""
+        assert wx._extract_text([{"type": 999}]) == ("", None, None)
 
 
 # ── 2. _guess_chat_type ─────────────────────────────────────────────────────────

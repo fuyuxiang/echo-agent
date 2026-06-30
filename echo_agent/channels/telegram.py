@@ -72,12 +72,22 @@ class TelegramChannel(BaseChannel):
         reply_to = event.reply_to_id
         first_result: SendResult | None = None
         for chunk in self._chunk_text(text, _MAX_TEXT):
-            result = await self._api("sendMessage", json={
+            payload = {
                 "chat_id": chat_id,
                 "text": chunk,
                 "parse_mode": "HTML",
                 **({"reply_to_message_id": reply_to} if reply_to else {}),
-            })
+            }
+            if reply_to:
+                # 被引用消息可能已被删除，Telegram 会报 "message to be replied not
+                # found"。这种情况下去掉锚点重发一次，避免整条回复发不出去。
+                result, err = await self._api("sendMessage", _return_error=True, json=payload)
+                if result is None and "replied" in err.lower():
+                    logger.debug("Telegram reply anchor gone, resending without it: {}", err)
+                    payload.pop("reply_to_message_id", None)
+                    result = await self._api("sendMessage", json=payload)
+            else:
+                result = await self._api("sendMessage", json=payload)
             send_result = self._send_result(result, "Telegram sendMessage failed")
             if first_result is None:
                 first_result = send_result
@@ -222,12 +232,30 @@ class TelegramChannel(BaseChannel):
 
         await self._api("sendChatAction", json={"chat_id": chat_id, "action": "typing"})
 
+        # 引用上下文：用户回复某条消息时 Telegram 在 reply_to_message 带上被引用消息，
+        # 解析其原文/作者交给 pipeline 统一注入（reply_to_id 仍是本条消息的锚点）。
+        reply_to_text = reply_to_sender = None
+        reply_to_is_own = False
+        replied = msg.get("reply_to_message") or {}
+        if replied:
+            reply_to_text = replied.get("text") or replied.get("caption") or None
+            replied_from = replied.get("from", {})
+            reply_to_sender = (
+                replied_from.get("first_name")
+                or replied_from.get("username")
+                or str(replied_from.get("id", "")) or None
+            )
+            reply_to_is_own = bool(self._bot_id) and str(replied_from.get("id", "")) == self._bot_id
+
         await self._handle_message(
             sender_id=sender_id,
             chat_id=chat_id,
             text=text,
             media=media if media else None,
             reply_to_id=str(msg.get("message_id", "")),
+            reply_to_text=reply_to_text,
+            reply_to_sender=reply_to_sender,
+            reply_to_is_own=reply_to_is_own,
             metadata={"chat_type": chat.get("type", "private")},
             is_group=chat.get("type") in ("group", "supergroup"),
         )
@@ -266,9 +294,9 @@ class TelegramChannel(BaseChannel):
         ext = ".jpg"
         return await self._resolve_media_to_cache(file_id, "telegram", fetch, suffix=ext)
 
-    async def _api(self, method: str, **kwargs: Any) -> Any:
+    async def _api(self, method: str, *, _return_error: bool = False, **kwargs: Any) -> Any:
         if not self._session:
-            return None
+            return (None, "") if _return_error else None
         url = _API.format(token=self._token, method=method)
         try:
             async with self._session.post(url, **kwargs) as resp:
@@ -280,11 +308,12 @@ class TelegramChannel(BaseChannel):
                         logger.warning("Telegram rate-limited, retry_after={}s", retry_after)
                     else:
                         logger.warning("Telegram API {}: {}", method, data.get("description", ""))
-                    return None
-                return data.get("result")
+                    return (None, str(data.get("description", ""))) if _return_error else None
+                result = data.get("result")
+                return (result, "") if _return_error else result
         except Exception as e:
             logger.error("Telegram API {} failed: {}", method, e)
-            return None
+            return (None, str(e)) if _return_error else None
 
     @staticmethod
     def _send_result(

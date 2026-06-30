@@ -83,21 +83,33 @@ class DiscordChannel(BaseChannel):
             payload: dict[str, Any] = {"content": chunk}
             if event.reply_to_id:
                 payload["message_reference"] = {"message_id": event.reply_to_id}
-            try:
-                async with self._session.post(url, json=payload) as resp:
-                    if resp.status >= 400:
-                        body = await resp.text()
-                        logger.warning("Discord send failed ({}): {}", resp.status, body[:200])
-                        send_result = SendResult(success=False, error=body[:200])
-                    else:
-                        data = await resp.json()
-                        send_result = SendResult(success=True, message_id=str(data.get("id", "")))
-            except Exception as e:
-                logger.error("Discord send error: {}", e)
-                send_result = SendResult(success=False, error=str(e))
+            send_result = await self._post_message(url, payload)
+            # 被引用消息已删时 Discord 报 50035(无效引用)/10008(消息不存在)，
+            # 去掉 reference 重发一次，避免整条回复发不出去。
+            if (
+                not send_result.success
+                and "message_reference" in payload
+                and any(code in send_result.error for code in ("50035", "10008"))
+            ):
+                logger.debug("Discord reply anchor gone, resending without it: {}", send_result.error)
+                payload.pop("message_reference", None)
+                send_result = await self._post_message(url, payload)
             if first_result is None:
                 first_result = send_result
         return first_result
+
+    async def _post_message(self, url: str, payload: dict[str, Any]) -> SendResult:
+        try:
+            async with self._session.post(url, json=payload) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    logger.warning("Discord send failed ({}): {}", resp.status, body[:200])
+                    return SendResult(success=False, error=body[:200])
+                data = await resp.json()
+                return SendResult(success=True, message_id=str(data.get("id", "")))
+        except Exception as e:
+            logger.error("Discord send error: {}", e)
+            return SendResult(success=False, error=str(e))
 
     async def edit_message(
         self,
@@ -327,12 +339,30 @@ class DiscordChannel(BaseChannel):
             else:
                 media.append({"type": "file", "url": url})
 
+        # 引用上下文：Discord 在 referenced_message 带上被引用消息，解析其原文/作者
+        # 交给 pipeline 统一注入（reply_to_id 仍是本条消息的出站锚点）。
+        reply_to_text = reply_to_sender = None
+        reply_to_is_own = False
+        ref = d.get("referenced_message") or {}
+        if ref:
+            reply_to_text = ref.get("content") or None
+            ref_author = ref.get("author", {})
+            reply_to_sender = (
+                ref_author.get("global_name")
+                or ref_author.get("username")
+                or str(ref_author.get("id", "")) or None
+            )
+            reply_to_is_own = str(ref_author.get("id", "")) == self._bot_id
+
         await self._handle_message(
             sender_id=sender_id,
             chat_id=channel_id,
             text=content,
             media=media if media else None,
             reply_to_id=str(d.get("id", "")),
+            reply_to_text=reply_to_text,
+            reply_to_sender=reply_to_sender,
+            reply_to_is_own=reply_to_is_own,
             thread_id=d.get("thread", {}).get("id") if d.get("thread") else None,
             metadata={"guild_id": guild_id or ""},
             is_group=bool(guild_id),
