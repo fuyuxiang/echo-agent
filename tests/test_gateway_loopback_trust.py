@@ -171,6 +171,58 @@ async def test_loopback_cli_auth_ok_under_empty_allowlist(allowlist_gateway_ws_u
             assert msg["session_key"] == "cli:local"
 
 
+@pytest.mark.asyncio
+async def test_cross_site_origin_rejected_before_upgrade(allowlist_gateway_ws_url):
+    import aiohttp
+    url = allowlist_gateway_ws_url.replace("ws://", "http://")
+    async with aiohttp.ClientSession() as s:
+        # 带跨站 Origin 的 WS 升级请求：应在 prepare 前 403，不升级。
+        async with s.get(
+            url,
+            headers={
+                "Origin": "https://evil.example",
+                "Upgrade": "websocket",
+                "Connection": "Upgrade",
+                "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+                "Sec-WebSocket-Version": "13",
+            },
+        ) as resp:
+            assert resp.status == 403
+
+
+@pytest.mark.asyncio
+async def test_loopback_only_client_without_cli_key_rejected(allowlist_gateway_ws_url):
+    import aiohttp
+    async with aiohttp.ClientSession() as s:
+        async with s.ws_connect(allowlist_gateway_ws_url) as ws:
+            # 空白名单 → 仅 loopback 豁免 → 无 cli key、自报 wechat:victim 必须被拒。
+            await ws.send_json({
+                "type": "auth", "platform": "wechat", "user_id": "victim",
+            })
+            msg = await ws.receive_json()
+            assert msg["type"] == "error"
+            assert msg["error"] == "forbidden session_key"
+
+
+@pytest.mark.asyncio
+async def test_loopback_cli_with_key_still_ok(allowlist_gateway_ws_url):
+    import aiohttp
+    async with aiohttp.ClientSession() as s:
+        async with s.ws_connect(allowlist_gateway_ws_url) as ws:
+            await ws.send_json({
+                "type": "auth", "platform": "cli",
+                "user_id": "local", "session_key": "cli:local",
+            })
+            msg = await ws.receive_json()
+            assert msg["type"] == "auth_ok"
+            assert msg["session_key"] == "cli:local"
+
+
+def test_cross_site_browser_origin_with_none_sfs_is_rejected(tmp_path) -> None:
+    auth = _auth(tmp_path)
+    assert auth.is_cross_site_browser("https://evil.example", "none") is True
+
+
 def test_cross_site_browser_detected_even_with_empty_allowlist(tmp_path) -> None:
     auth = _auth(tmp_path)  # allowed_origins 默认空
     # 明确跨站浏览器请求：默认开，判为 True（应被拒）。

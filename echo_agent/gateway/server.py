@@ -370,7 +370,9 @@ class GatewayServer:
             str: 错误信息（如果被拒绝）
             None: 检查通过
         """
-        if not self.auth.is_authorized(platform, user_id, trusted=trusted):
+        # trusted 只放宽用户白名单闸门（loopback 豁免），不接受 is_authorized 的
+        # trusted 形参（Task 1 已移除）：正常授权或可信 loopback 二者其一即放行。
+        if not (self.auth.is_authorized(platform, user_id) or trusted):
             self.auth.audit("message", platform=platform, user_id=user_id, ok=False, reason="user unauthorized")
             return "unauthorized"
         if not self.rate_limiter.acquire(platform, chat_id):
@@ -589,8 +591,16 @@ class GatewayServer:
 
     # ── WebSocket handler ─────────────────────────────────────────────────
 
-    async def _handle_websocket(self, request: web.Request) -> web.WebSocketResponse:
-        """处理 WebSocket 连接：认证握手 → 消息循环 → 事件分发。"""
+    async def _handle_websocket(self, request: web.Request) -> web.StreamResponse:
+        """处理 WebSocket 连接：Origin 闸门 → 认证握手 → 消息循环 → 事件分发。"""
+        # Gate A: reject cross-site browser upgrades BEFORE prepare(). Once the
+        # socket is upgraded the browser's onopen fires, so this must run first.
+        origin = request.headers.get("Origin", "").strip()
+        sec_fetch_site = request.headers.get("Sec-Fetch-Site", "").strip()
+        if self.auth.is_cross_site_browser(origin, sec_fetch_site):
+            self.auth.audit("ws_auth", ok=False, reason=f"cross-site origin rejected: {origin or '?'}")
+            return web.json_response({"error": "cross-site request forbidden"}, status=403)
+
         websocket = web.WebSocketResponse()
         await websocket.prepare(request)
 
@@ -623,18 +633,22 @@ class GatewayServer:
                             await websocket.close()
                             return websocket
 
-                        if not self.auth.is_authorized(
-                            platform, user_id, trusted=self._is_loopback_peer(request),
-                        ):
+                        trusted = self._is_loopback_peer(request)
+                        normally_ok = self.auth.is_authorized(platform, user_id)
+                        if not (normally_ok or trusted):
                             self.auth.audit("ws_auth", platform=platform, user_id=user_id, ok=False, reason="user unauthorized")
                             await websocket.send_json({"type": "error", "error": "unauthorized"})
                             await websocket.close()
                             return websocket
 
+                        # A client let in ONLY by the loopback exemption gets no
+                        # server-derived fallback key — it must present an explicit
+                        # cli: key, else it could self-report another user's identity.
                         session_key, sk_err = resolve_client_session_key(
                             data.get("session_key"),
                             platform=platform,
                             chat_id=chat_id,
+                            allow_fallback=normally_ok,
                         )
                         if sk_err:
                             self.auth.audit(
