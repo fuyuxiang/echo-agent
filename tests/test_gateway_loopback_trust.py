@@ -252,3 +252,26 @@ def test_cross_site_browser_allowlisted_origin_passes(tmp_path) -> None:
     # 其它跨站 Origin 仍判为 True。
     assert auth.is_cross_site_browser("https://evil.example", "cross-site") is True
 
+
+def _msg_request(body, *, headers=None, peer=("127.0.0.1", 5555)):
+    from unittest.mock import MagicMock
+    from aiohttp.test_utils import make_mocked_request
+    transport = MagicMock()
+    transport.get_extra_info = lambda key, default=None: peer if key == "peername" else default
+    req = make_mocked_request("POST", "/api/v1/message", headers=headers or {}, transport=transport)
+    async def _json():
+        return body
+    req.json = _json  # type: ignore[method-assign]
+    return req
+
+
+@pytest.mark.asyncio
+async def test_message_rejects_cross_site_browser(tmp_path) -> None:
+    from test_gateway_server import _make_gateway
+    gw, _ = _make_gateway()
+    resp = await gw._handle_message(_msg_request(
+        {"platform": "api", "user_id": "u1", "text": "hi"},
+        headers={"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"},
+    ))
+    assert resp.status == 403
+

@@ -404,6 +404,11 @@ class GatewayServer:
         guard = self._require_api_token(request, action="message")
         if guard is not None:
             return guard
+        origin = request.headers.get("Origin", "").strip()
+        sec_fetch_site = request.headers.get("Sec-Fetch-Site", "").strip()
+        if self.auth.is_cross_site_browser(origin, sec_fetch_site):
+            self.auth.audit("message", ok=False, reason=f"cross-site origin rejected: {origin or '?'}")
+            return web.json_response({"error": "cross-site request forbidden"}, status=403)
         try:
             body = await request.json()
         except json.JSONDecodeError:
