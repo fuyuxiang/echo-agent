@@ -146,8 +146,16 @@ class GatewayAuth:
             "ok": ok,
             "reason": reason,
         }
-        with self._audit_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        # Auditing is a side-channel: its failure must never break the caller's
+        # core flow (e.g. the WS message loop). Self-heal a missing data dir —
+        # the process may have been started from a cwd that was later unlinked —
+        # and downgrade any write failure to a warning.
+        try:
+            self._data_dir.mkdir(parents=True, exist_ok=True)
+            with self._audit_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError as e:
+            logger.warning("audit log write failed ({}): {}", action, e)
 
     def generate_pairing_code(self, platform: str) -> str:
         code = secrets.token_hex(5).upper()

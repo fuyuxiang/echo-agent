@@ -639,105 +639,124 @@ class GatewayServer:
                         await websocket.send_json({"error": "invalid JSON"})
                         continue
 
-                    msg_type = data.get("type", "message")
+                    # Per-message isolation: a failure while handling one
+                    # message (audit, content build, publish, session ops…)
+                    # must return an error frame and continue, never propagate
+                    # out of the loop and silently drop the connection. Only
+                    # genuine socket-level errors reach the outer handler below.
+                    try:
+                        msg_type = data.get("type", "message")
 
-                    if msg_type == "auth":
-                        platform = data.get("platform", "ws")
-                        user_id = data.get("user_id", "")
-                        chat_id = data.get("chat_id", user_id)
-                        token = str(data.get("token") or self._request_token(request))
+                        if msg_type == "auth":
+                            platform = data.get("platform", "ws")
+                            user_id = data.get("user_id", "")
+                            chat_id = data.get("chat_id", user_id)
+                            token = str(data.get("token") or self._request_token(request))
 
-                        if self._config.auth.api_tokens and not self.auth.authenticate_token(token):
-                            self.auth.audit("ws_auth", platform=platform, user_id=user_id, ok=False, reason="invalid api token")
-                            await websocket.send_json({"type": "error", "error": "unauthorized"})
-                            await websocket.close()
-                            return websocket
+                            if self._config.auth.api_tokens and not self.auth.authenticate_token(token):
+                                self.auth.audit("ws_auth", platform=platform, user_id=user_id, ok=False, reason="invalid api token")
+                                await websocket.send_json({"type": "error", "error": "unauthorized"})
+                                await websocket.close()
+                                return websocket
 
-                        trusted = self._is_loopback_peer(request)
-                        normally_ok = self.auth.is_authorized(platform, user_id)
-                        if not (normally_ok or trusted):
-                            self.auth.audit("ws_auth", platform=platform, user_id=user_id, ok=False, reason="user unauthorized")
-                            await websocket.send_json({"type": "error", "error": "unauthorized"})
-                            await websocket.close()
-                            return websocket
+                            trusted = self._is_loopback_peer(request)
+                            normally_ok = self.auth.is_authorized(platform, user_id)
+                            if not (normally_ok or trusted):
+                                self.auth.audit("ws_auth", platform=platform, user_id=user_id, ok=False, reason="user unauthorized")
+                                await websocket.send_json({"type": "error", "error": "unauthorized"})
+                                await websocket.close()
+                                return websocket
 
-                        # A client let in ONLY by the loopback exemption gets no
-                        # server-derived fallback key — it must present an explicit
-                        # cli: key, else it could self-report another user's identity.
-                        session_key, sk_err = resolve_client_session_key(
-                            data.get("session_key"),
-                            platform=platform,
-                            chat_id=chat_id,
-                            allow_fallback=normally_ok,
-                        )
-                        if sk_err:
-                            self.auth.audit(
-                                "ws_auth", platform=platform, user_id=user_id,
-                                ok=False, reason=sk_err,
-                            )
-                            await websocket.send_json({"type": "error", "error": "forbidden session_key"})
-                            await websocket.close()
-                            return websocket
-                        # 身份键 session_key（cli 自带时=cli:alice）用于会话隔离与冒充拒绝；
-                        # 投递键 delivery_key 用出站重算式 gateway:{platform}:{chat_id}，
-                        # 让 _handle_outbound 无需任何 metadata 透传即可命中所有出站路径。
-                        delivery_key = f"gateway:{platform}:{chat_id}"
-                        self._ws_clients[delivery_key] = websocket
-
-                        session = await self.session_manager.get_or_create(session_key)
-                        if self.session_policy.should_reset(session):
-                            await self.session_policy.reset(session, self.session_manager)
-
-                        await websocket.send_json({"type": "auth_ok", "session_key": session_key})
-                        self.auth.audit("ws_auth", platform=platform, user_id=user_id, ok=True)
-                        await self.hooks.emit(
-                            "auth_success", platform=platform, user_id=user_id,
-                        )
-                        continue
-
-                    if msg_type == "message":
-                        if not session_key:
-                            await websocket.send_json({"type": "error", "error": "authenticate first"})
-                            continue
-
-                        text = data.get("text", "")
-                        attachments = data.get("attachments") or []
-                        if not text and not attachments:
-                            continue
-
-                        if not self.rate_limiter.acquire(platform, chat_id):
-                            await websocket.send_json({"type": "error", "error": "rate limited"})
-                            continue
-
-                        tokens = set_session_vars(
-                            platform=platform,
-                            chat_id=chat_id,
-                            user_id=user_id,
-                            session_key=session_key,
-                        )
-                        try:
-                            content_blocks = self._build_ws_content_blocks(text, attachments)
-                            event = InboundEvent(
-                                channel=f"gateway:{platform}",
-                                sender_id=user_id,
+                            # A client let in ONLY by the loopback exemption gets no
+                            # server-derived fallback key — it must present an explicit
+                            # cli: key, else it could self-report another user's identity.
+                            session_key, sk_err = resolve_client_session_key(
+                                data.get("session_key"),
+                                platform=platform,
                                 chat_id=chat_id,
-                                content=content_blocks,
-                                session_key_override=session_key,
+                                allow_fallback=normally_ok,
                             )
-                            event.metadata["gateway"] = True
-                            event.metadata["platform"] = platform
-                            if not await self._bus.publish_inbound(event):
-                                await websocket.send_json({"type": "error", "error": "server overloaded"})
-                                continue
-                            await websocket.send_json({
-                                "type": "accepted",
-                                "event_id": event.event_id,
-                            })
-                        finally:
-                            clear_session_vars(tokens)
+                            if sk_err:
+                                self.auth.audit(
+                                    "ws_auth", platform=platform, user_id=user_id,
+                                    ok=False, reason=sk_err,
+                                )
+                                await websocket.send_json({"type": "error", "error": "forbidden session_key"})
+                                await websocket.close()
+                                return websocket
+                            # 身份键 session_key（cli 自带时=cli:alice）用于会话隔离与冒充拒绝；
+                            # 投递键 delivery_key 用出站重算式 gateway:{platform}:{chat_id}，
+                            # 让 _handle_outbound 无需任何 metadata 透传即可命中所有出站路径。
+                            delivery_key = f"gateway:{platform}:{chat_id}"
+                            self._ws_clients[delivery_key] = websocket
 
-                    if msg_type == "ping":
-                        await websocket.send_json({"type": "pong"})
+                            session = await self.session_manager.get_or_create(session_key)
+                            if self.session_policy.should_reset(session):
+                                await self.session_policy.reset(session, self.session_manager)
+
+                            await websocket.send_json({"type": "auth_ok", "session_key": session_key})
+                            self.auth.audit("ws_auth", platform=platform, user_id=user_id, ok=True)
+                            await self.hooks.emit(
+                                "auth_success", platform=platform, user_id=user_id,
+                            )
+                            continue
+
+                        if msg_type == "message":
+                            if not session_key:
+                                await websocket.send_json({"type": "error", "error": "authenticate first"})
+                                continue
+
+                            text = data.get("text", "")
+                            attachments = data.get("attachments") or []
+                            if not text and not attachments:
+                                continue
+
+                            if not self.rate_limiter.acquire(platform, chat_id):
+                                await websocket.send_json({"type": "error", "error": "rate limited"})
+                                continue
+
+                            tokens = set_session_vars(
+                                platform=platform,
+                                chat_id=chat_id,
+                                user_id=user_id,
+                                session_key=session_key,
+                            )
+                            try:
+                                content_blocks = self._build_ws_content_blocks(text, attachments)
+                                event = InboundEvent(
+                                    channel=f"gateway:{platform}",
+                                    sender_id=user_id,
+                                    chat_id=chat_id,
+                                    content=content_blocks,
+                                    session_key_override=session_key,
+                                )
+                                event.metadata["gateway"] = True
+                                event.metadata["platform"] = platform
+                                if not await self._bus.publish_inbound(event):
+                                    await websocket.send_json({"type": "error", "error": "server overloaded"})
+                                    continue
+                                await websocket.send_json({
+                                    "type": "accepted",
+                                    "event_id": event.event_id,
+                                })
+                            finally:
+                                clear_session_vars(tokens)
+
+                        if msg_type == "ping":
+                            await websocket.send_json({"type": "pong"})
+                    except Exception as e:
+                        # One message failed to process — report it and keep the
+                        # connection alive. This is what stops a stray per-message
+                        # error (a bad attachment, a transient audit/session fault)
+                        # from silently tearing down the whole session.
+                        logger.warning("WebSocket message handling failed: {}", e)
+                        try:
+                            await websocket.send_json({"type": "error", "error": "internal error"})
+                        except Exception:
+                            # Send failed → the socket itself is gone; let the
+                            # outer loop observe the close on the next iteration.
+                            pass
+                        continue
 
                 elif raw_msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSE):
                     break
