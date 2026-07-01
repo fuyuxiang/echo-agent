@@ -435,7 +435,22 @@ class GatewayServer:
             return web.json_response({"error": "rate limited"}, status=429)
         self.auth.audit("message", platform=platform, user_id=user_id, ok=True)
 
-        session_key = f"gateway:{platform}:{chat_id}"
+        # Gate B（身份收口，对齐 WS 握手）：仅靠 loopback 豁免放行的客户端
+        # （normally_ok=False）拿不到 server 派生的 gateway:{platform}:{chat_id}
+        # 兜底键，必须自带 cli: 前缀 key，否则被拒——否则本机裸调用者可自报
+        # platform=wechat,user_id=victim 落到他人隔离的 gateway:wechat:victim。
+        normally_ok = self.auth.is_authorized(platform, user_id)
+        session_key, sk_err = resolve_client_session_key(
+            body.get("session_key"),
+            platform=platform,
+            chat_id=chat_id,
+            allow_fallback=normally_ok,
+        )
+        if sk_err:
+            self.auth.audit(
+                "message", platform=platform, user_id=user_id, ok=False, reason=sk_err,
+            )
+            return web.json_response({"error": "forbidden session_key"}, status=403)
         session = await self.session_manager.get_or_create(session_key)
 
         if self.session_policy.should_reset(session):

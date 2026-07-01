@@ -309,3 +309,92 @@ async def test_port_preflight_runs_before_bootstrap(monkeypatch, tmp_path) -> No
 
     assert bootstrap_called is False
 
+
+# ── HTTP /api/v1/message 的 Gate B 身份收口（对齐 WS 握手）──────────────────
+#
+# WS 握手已用 resolve_client_session_key 堵死「loopback 豁免进来后自报他人身份」，
+# 但 HTTP 端点历史上无条件构造 gateway:{platform}:{chat_id}，缺 Gate B。
+# 这里用 allowlist 空白名单 gateway 直调 _handle_message 复现越权并锁死修复。
+
+
+def _allowlist_gateway():
+    """mode=allowlist + 空白名单 gateway，直调 _handle_message 用。
+
+    open 模式 normally_ok 恒 True、allow_fallback 恒 True，无法触发越权；
+    必须空白名单才让 loopback 豁免成为唯一放行来源。
+    """
+    from pathlib import Path
+    from unittest.mock import AsyncMock
+
+    from echo_agent.bus.queue import MessageBus
+    from echo_agent.config.schema import (
+        GatewayConfig,
+        GatewayAuthConfig,
+        GatewaySessionPolicyConfig,
+    )
+    from echo_agent.gateway.server import GatewayServer
+
+    config = GatewayConfig(
+        enabled=True,
+        host="127.0.0.1",
+        port=0,
+        auth=GatewayAuthConfig(mode="allowlist", allowed_users=[], api_tokens=[]),
+        session_policy=GatewaySessionPolicyConfig(mode="none"),
+    )
+    bus = MessageBus()
+    session_manager = MagicMock()
+    session_manager.get_or_create = AsyncMock(return_value=MagicMock(status="active"))
+    gw = GatewayServer(
+        config=config,
+        bus=bus,
+        channel_manager=MagicMock(),
+        session_manager=session_manager,
+        workspace=Path("/tmp/echo-agent-test-http-gateb"),
+        agent_loop=None,
+    )
+    return gw, session_manager
+
+
+@pytest.mark.asyncio
+async def test_http_message_loopback_without_key_forbidden() -> None:
+    # loopback、无 Origin、自报 wechat:victim、不带 session_key：
+    # 仅靠 loopback 豁免放行 → allow_fallback=False → 必须 403 forbidden session_key，
+    # 且绝不落到 gateway:wechat:victim 的会话。
+    gw, session_manager = _allowlist_gateway()
+    resp = await gw._handle_message(_msg_request(
+        {"platform": "wechat", "user_id": "victim", "text": "hi"},
+        peer=("127.0.0.1", 5555),
+    ))
+    assert resp.status == 403
+    import json as _json
+    assert _json.loads(resp.body)["error"] == "forbidden session_key"
+    # Gate B 应在建会话前拒掉：绝不能以受害者身份键创建会话。
+    called_keys = [c.args[0] for c in session_manager.get_or_create.call_args_list]
+    assert "gateway:wechat:victim" not in called_keys
+    assert session_manager.get_or_create.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_http_message_loopback_with_cli_key_accepted() -> None:
+    # 对照组：带合法 cli: 前缀 session_key → 不误伤，正常受理。
+    gw, session_manager = _allowlist_gateway()
+    resp = await gw._handle_message(_msg_request(
+        {"platform": "cli", "user_id": "local", "text": "hi", "session_key": "cli:local"},
+        peer=("127.0.0.1", 5555),
+    ))
+    assert resp.status == 200
+    session_manager.get_or_create.assert_awaited_once_with("cli:local")
+
+
+@pytest.mark.asyncio
+async def test_http_message_open_mode_fallback_unchanged(tmp_path) -> None:
+    # open 模式 normally_ok=True → allow_fallback=True，
+    # 无 session_key 仍走 gateway:{platform}:{chat_id}，行为不变（不误伤）。
+    from test_gateway_server import _make_gateway
+    gw, _ = _make_gateway()
+    resp = await gw._handle_message(_msg_request(
+        {"platform": "api", "user_id": "u1", "text": "hi"},
+    ))
+    assert resp.status == 200
+    gw.session_manager.get_or_create.assert_awaited_once_with("gateway:api:u1")
+
