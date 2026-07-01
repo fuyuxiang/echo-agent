@@ -34,12 +34,21 @@ def test_is_authorized_has_no_trusted_bypass(tmp_path) -> None:
 
 
 def test_is_authorized_allowlist_still_grants_listed_user(tmp_path) -> None:
-    from echo_agent.config.schema import GatewayAuthConfig
     auth = GatewayAuth(
         GatewayAuthConfig(mode="allowlist", allowed_users=["cli:local"]), tmp_path
     )
     assert auth.is_authorized("cli", "local")
     assert not auth.is_authorized("cli", "other")
+
+
+def test_is_authorized_rejects_trusted_kwarg(tmp_path) -> None:
+    # P0 回归护栏：trusted 短路已彻底移除，连关键字都不再接受。
+    # 若有人把 `if trusted: return True` 加回，此测试立即转红。
+    import inspect
+    auth = _auth(tmp_path)
+    assert "trusted" not in inspect.signature(auth.is_authorized).parameters
+    with pytest.raises(TypeError):
+        auth.is_authorized("cli", "local", trusted=True)
 
 
 def _request_with_peer(peer, headers=None):
