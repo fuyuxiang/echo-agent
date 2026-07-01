@@ -33,6 +33,30 @@ def test_blank_string_after_strip_falls_back():
     assert key == "gateway:cli:bob"
 
 
+def test_no_fallback_rejects_when_no_key():
+    key, err = resolve_client_session_key(
+        None, platform="web", chat_id="u1", allow_fallback=False
+    )
+    assert key is None
+    assert "session_key required" in err
+
+
+def test_no_fallback_still_accepts_cli_key():
+    key, err = resolve_client_session_key(
+        "cli:alice", platform="cli", chat_id="alice", allow_fallback=False
+    )
+    assert err == ""
+    assert key == "cli:alice"
+
+
+def test_fallback_true_keeps_legacy_gateway_key():
+    key, err = resolve_client_session_key(
+        None, platform="wechat", chat_id="u1", allow_fallback=True
+    )
+    assert err == ""
+    assert key == "gateway:wechat:u1"
+
+
 @pytest.mark.asyncio
 async def test_ws_auth_accepts_cli_session_key(gateway_ws_url):
     async with aiohttp.ClientSession() as s:
