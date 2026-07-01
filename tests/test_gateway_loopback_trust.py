@@ -111,6 +111,15 @@ def test_port_preflight_skips_ephemeral_port() -> None:
     assert _gateway_port_in_use("0.0.0.0", 0) is None
 
 
+def test_port_preflight_is_best_effort_not_authoritative() -> None:
+    # 契约：free 结果是「尽力」判断，权威判定在 GatewayServer.start() 的
+    # EADDRINUSE 包装。这里固定 docstring 不再过度承诺（回归防线）。
+    from echo_agent.app import _gateway_port_in_use
+    doc = _gateway_port_in_use.__doc__ or ""
+    assert "尽力" in doc or "best-effort" in doc.lower()
+    assert "127.0.0.1" in doc  # 说明 0.0.0.0/:: 的探测局限
+
+
 # ── 端到端：默认 allowlist 网关下 loopback cli 必须握手成功 ──────────────────
 #
 # 这正是 bug 现象（零配置 echo-agent cli 报 认证失败：unauthorized）的真实链路：

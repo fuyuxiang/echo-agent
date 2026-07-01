@@ -382,12 +382,15 @@ def _gateway_profile_override(config_path: str | None) -> dict[str, Any]:
 
 
 def _gateway_port_in_use(host: str, port: int) -> str | None:
-    """Probe whether ``host:port`` is already bound. Returns a friendly,
-    user-facing message when occupied, else None.
+    """尽力（best-effort）探测 ``host:port`` 是否已被占用；占用时返回一条
+    面向用户的友好提示，否则 None。
 
-    Probing with a throwaway socket (SO_REUSEADDR off) mirrors what aiohttp's
-    TCPSite does at bind time, so a free result here means start() will bind.
-    Port 0 is the ephemeral sentinel — never "in use", skip the probe."""
+    这是一个尽力预检，非权威判定：权威判定在 ``GatewayServer.start()`` 的
+    EADDRINUSE 包装（server.py），它对真实 bind 失败给出同样的提示。本函数
+    对 ``0.0.0.0`` / ``::`` 仅探测 ``127.0.0.1``，因此可能漏报 IPv6 或指定
+    网卡地址的占用——那种情况仍会走到 start() 的 EADDRINUSE 兜底。用一个
+    throwaway socket（SO_REUSEADDR off）探测，尽量贴近 aiohttp 的 bind 行为。
+    Port 0 是 ephemeral 哨兵——永不「占用」，跳过探测。"""
     if not port:
         return None
     import socket
