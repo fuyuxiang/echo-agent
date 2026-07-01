@@ -85,6 +85,8 @@ less install.sh && bash install.sh
 
 > Resident gateway: start it in the foreground with `echo-agent gateway` (or have systemd/launchd manage it — `echo-agent service install` registers a systemd service). Once the gateway is running, you can attach on the same machine with `echo-agent cli` as a thin client, opening a separate session that talks to the same resident agent. Local loopback only (127.0.0.1); remote addresses are not supported — use ssh for remote access.
 
+> Local security boundary: a zero-config loopback gateway (`allowlist` mode + empty list) serves only two kinds of client — `echo-agent cli` (which carries a `cli:` identity) and native clients that send no browser `Origin` (scripts/SDKs). Browser requests carrying a cross-site `Origin` (including the bundled playground page) are rejected, to stop a malicious web page from driving the local agent via the browser (CSRF). To let a browser/playground in, set `gateway.auth.mode=open`, add the user to `gateway.auth.allowed_users`, or (for a webview desktop client, etc.) add its Origin to `gateway.auth.allowed_origins`.
+
 ---
 
 ## Architecture

@@ -82,6 +82,8 @@ less install.sh && bash install.sh
 
 > 常驻网关：用 `echo-agent gateway` 在前台启动常驻网关（或由 systemd/launchd 托管，`echo-agent service install` 可注册 systemd 服务）。网关运行后，可在本机用 `echo-agent cli` 作为瘦客户端接入，开一条独立会话与同一个常驻 agent 对话。仅限本机 loopback（127.0.0.1），不支持远程地址；远程接入请走 ssh。
 
+> 本机安全边界：零配置（`allowlist` 模式 + 空白名单）的 loopback 网关只服务两类客户端——`echo-agent cli`（自带 `cli:` 身份），以及不带浏览器 `Origin` 的原生客户端（脚本/SDK）。带跨站 `Origin` 的浏览器请求（含自带 playground 页面）会被拒，以阻断恶意网页借浏览器驱动本机 agent（CSRF）。若要让浏览器/playground 访问，请在配置中设 `gateway.auth.mode=open`、把用户加进 `gateway.auth.allowed_users`，或（webview 桌面端等场景）把其 Origin 加进 `gateway.auth.allowed_origins`。
+
 ---
 
 ## 架构总览
