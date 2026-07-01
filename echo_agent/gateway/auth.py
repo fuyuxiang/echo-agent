@@ -100,6 +100,29 @@ class GatewayAuth:
         # Cross-site (or unknown): only an explicitly allowlisted Origin may proceed.
         return bool(origin) and origin in self._allowed_origins
 
+    def is_cross_site_browser(self, origin: str, sec_fetch_site: str) -> bool:
+        """Whether the request is an *explicit cross-site browser* request.
+
+        Default-on CSRF primitive for the main channels (WS handshake and
+        POST /message). Unlike ``is_origin_allowed`` (opt-in, off when
+        ``allowed_origins`` is empty), this stays on even with an empty
+        allowlist — that is what closes the loopback WebSocket hole where a
+        malicious page drives the local agent. Native clients (cli/curl/SDK)
+        send neither header, so they are never flagged."""
+        origin = (origin or "").strip()
+        sec_fetch_site = (sec_fetch_site or "").strip()
+        # No browser metadata at all → native client → not a browser request.
+        if not origin and sec_fetch_site in ("", "none"):
+            return False
+        # Same-origin / same-site are safe.
+        if sec_fetch_site in ("same-origin", "same-site"):
+            return False
+        # Explicitly allowlisted Origin is trusted (webview / desktop escape hatch).
+        if origin and origin in self._allowed_origins:
+            return False
+        # Everything else that carries a cross-site Origin or Sec-Fetch-Site.
+        return True
+
     def token_from_headers(self, headers: Any) -> str:
         token = headers.get(self.token_header, "")
         if token:

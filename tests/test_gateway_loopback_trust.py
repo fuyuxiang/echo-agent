@@ -170,3 +170,33 @@ async def test_loopback_cli_auth_ok_under_empty_allowlist(allowlist_gateway_ws_u
             assert msg["type"] == "auth_ok"
             assert msg["session_key"] == "cli:local"
 
+
+def test_cross_site_browser_detected_even_with_empty_allowlist(tmp_path) -> None:
+    auth = _auth(tmp_path)  # allowed_origins 默认空
+    # 明确跨站浏览器请求：默认开，判为 True（应被拒）。
+    assert auth.is_cross_site_browser("https://evil.example", "cross-site") is True
+    assert auth.is_cross_site_browser("https://evil.example", "") is True
+
+
+def test_cross_site_browser_false_for_native_client(tmp_path) -> None:
+    auth = _auth(tmp_path)
+    # 原生客户端（cli/curl）：无 Origin、无 Sec-Fetch-Site → 非浏览器 → False。
+    assert auth.is_cross_site_browser("", "") is False
+
+
+def test_cross_site_browser_false_for_same_origin(tmp_path) -> None:
+    auth = _auth(tmp_path)
+    assert auth.is_cross_site_browser("http://127.0.0.1:9000", "same-origin") is False
+    assert auth.is_cross_site_browser("", "none") is False
+
+
+def test_cross_site_browser_allowlisted_origin_passes(tmp_path) -> None:
+    from echo_agent.config.schema import GatewayAuthConfig
+    auth = GatewayAuth(
+        GatewayAuthConfig(mode="open", allowed_origins=["https://app.example"]), tmp_path
+    )
+    # 显式放行的 Origin：不算跨站浏览器攻击 → False。
+    assert auth.is_cross_site_browser("https://app.example", "cross-site") is False
+    # 其它跨站 Origin 仍判为 True。
+    assert auth.is_cross_site_browser("https://evil.example", "cross-site") is True
+
