@@ -10,6 +10,7 @@ from echo_agent.cli.attach_client import (
     authenticate,
     build_ws_url,
     connect_ws,
+    diagnose_no_gateway,
 )
 
 
@@ -28,7 +29,24 @@ async def test_connect_ws_raises_no_gateway_on_refused():
         # 9 是 discard 端口，本机通常无监听 → 连接被拒
         with pytest.raises(NoGatewayError) as ei:
             await connect_ws(s, "ws://127.0.0.1:9/ws")
-    assert "echo-agent gateway" in str(ei.value)
+    # connect_ws now carries only the bare url; actionable guidance is built
+    # separately by diagnose_no_gateway (which needs the config path).
+    assert "ws://127.0.0.1:9/ws" in str(ei.value)
+
+
+def test_diagnose_gateway_disabled(tmp_path):
+    cfg = tmp_path / "off.yaml"
+    cfg.write_text("gateway:\n  enabled: false\n")
+    msg = diagnose_no_gateway("ws://127.0.0.1:9000/ws", str(cfg), None)
+    assert "gateway.enabled=false" in msg
+    assert "true" in msg  # points the user at the fix
+
+
+def test_diagnose_gateway_enabled_unreachable(tmp_path):
+    cfg = tmp_path / "on.yaml"
+    cfg.write_text("gateway:\n  enabled: true\n  host: 127.0.0.1\n  port: 9000\n")
+    msg = diagnose_no_gateway("ws://127.0.0.1:9000/ws", str(cfg), None)
+    assert "gateway.enabled=true" in msg
 
 
 def test_renderer_streams_then_finalizes_without_dup(capsys):

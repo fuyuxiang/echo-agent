@@ -26,10 +26,52 @@ async def connect_ws(
     try:
         return await session.ws_connect(url, heartbeat=30)
     except (aiohttp.ClientError, OSError) as e:
-        raise NoGatewayError(
-            f"未发现本机常驻 echo-agent（{url} 无法连接）。"
-            f"请先用 systemd/launchd 启动，或运行 echo-agent gateway。"
-        ) from e
+        raise NoGatewayError(f"{url} 无法连接。") from e
+
+
+def diagnose_no_gateway(
+    url: str, config_path: str | None, workspace: str | None
+) -> str:
+    """Turn a bare connection failure into an actionable message.
+
+    The failure has three distinct causes and the fix differs for each, so we
+    read the EXISTING config to tell them apart instead of emitting one generic
+    "start the service" line (which misleads when the service is actually up
+    but the gateway component is simply disabled)."""
+    try:
+        from echo_agent.config.loader import load_config, resolve_config_file
+        cp = config_path
+        if cp is None and workspace:
+            cp = resolve_config_file(search_dir=workspace)
+        cfg = load_config(config_path=cp)
+        enabled = bool(cfg.gateway.enabled)
+    except Exception:
+        # (c) Config missing/unreadable — likely not set up yet.
+        return (
+            f"未发现本机常驻 echo-agent（{url} 无法连接），且读取配置失败。\n"
+            "请先运行 echo-agent setup 完成配置，并确认 echo-agent 服务已启动。"
+        )
+
+    if not enabled:
+        # (b) The exact trap: service can be running (channels work), but the
+        # gateway component is off, so the CLI has nothing to attach to.
+        return (
+            f"未发现本机常驻 echo-agent（{url} 无法连接）。\n"
+            "检测到配置中 gateway.enabled=false：网关组件未启用，"
+            "因此 echo-agent cli 无法连接（微信/QQ 等频道不依赖网关，仍可正常工作）。\n"
+            "修复：把配置里的 gateway.enabled 设为 true（host 保持 127.0.0.1），"
+            "重启 echo-agent 服务后重试；或临时前台运行 echo-agent gateway。"
+        )
+
+    # (a) Gateway is enabled but unreachable — not started, crashed, or the
+    # port is taken by another process.
+    return (
+        f"未发现本机常驻 echo-agent（{url} 无法连接）。\n"
+        "配置中 gateway.enabled=true，但该端口无响应。请确认：\n"
+        "  1. echo-agent 服务正在运行（systemctl is-active echo-agent）；\n"
+        "  2. 端口未被其他进程占用；\n"
+        "  3. 启动日志中出现 Gateway listening / ECHO_AGENT_READY。"
+    )
 
 
 class AuthError(Exception):
@@ -201,15 +243,17 @@ def resolve_defaults(
 
 
 def run_cli_attach(
-    *, host: str, port: int, ws_path: str, user_id: str, token: str
+    *, host: str, port: int, ws_path: str, user_id: str, token: str,
+    config_path: str | None = None, workspace: str | None = None
 ) -> int:
     try:
         return asyncio.run(run_client(
             host=host, port=port, ws_path=ws_path,
             user_id=user_id, token=token,
         ))
-    except NoGatewayError as e:
-        print(str(e))
+    except NoGatewayError:
+        url = build_ws_url(host, port, ws_path)
+        print(diagnose_no_gateway(url, config_path, workspace))
         return 1
     except AuthError as e:
         print(f"认证失败：{e}")

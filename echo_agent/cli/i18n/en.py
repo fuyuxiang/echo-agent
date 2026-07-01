@@ -194,8 +194,8 @@ MESSAGES = {
     },
     "gateway": {
         "header": "Gateway & Network",
-        "intro": "The gateway exposes a Web/WS API for external clients.",
-        "enable": "Enable gateway (Web API)?",
+        "intro": "The gateway exposes a Web/WS API and is required for echo-agent cli to attach locally.",
+        "enable": "Enable gateway? (disabling it stops echo-agent cli from connecting; weixin/QQ channels are unaffected)",
         "host": "Bind host (0.0.0.0 = all, 127.0.0.1 = loopback only)",
         "port": "Gateway port",
         "auth_mode": "Auth mode:",
@@ -203,6 +203,10 @@ MESSAGES = {
         "auth_allowlist": "Allowlist — listed users + token",
         "auth_pairing": "Pairing — short-lived pair codes",
         "api_token": "API token (blank = generate random)",
+        "open_exposed_warn": "Unsafe combo: host={host} is non-loopback and auth mode is \"open\" (no token); "
+                             "the service will refuse to start (an unauthenticated gateway cannot be exposed to the network).",
+        "open_exposed_fix": "Rebind to 127.0.0.1 (loopback only)? Choose No to switch to allowlist/pairing and set a token.",
+        "host_pinned": "Host set to 127.0.0.1.",
         "saved": "Gateway: {host}:{port}, auth={mode}",
     },
     "observability": {

@@ -194,8 +194,8 @@ MESSAGES = {
     },
     "gateway": {
         "header": "网关与网络",
-        "intro": "Gateway 对外提供 Web/WS API。",
-        "enable": "启用 Gateway（Web API）？",
+        "intro": "Gateway 对外提供 Web/WS API，也是 echo-agent cli 连接本机的必要组件。",
+        "enable": "启用 Gateway？（关闭后 echo-agent cli 将无法连接本机；微信/QQ 等频道不受影响）",
         "host": "绑定主机（0.0.0.0 = 全网卡，127.0.0.1 = 仅本机）",
         "port": "Gateway 端口",
         "auth_mode": "认证模式：",
@@ -203,6 +203,10 @@ MESSAGES = {
         "auth_allowlist": "白名单 — 列表内用户 + token",
         "auth_pairing": "配对 — 短期配对码",
         "api_token": "API token（留空 = 自动生成）",
+        "open_exposed_warn": "危险组合：host={host} 为非回环地址且认证模式为“开放”（无 token），"
+                             "服务将拒绝启动（无认证网关不允许暴露到网络）。",
+        "open_exposed_fix": "改绑到 127.0.0.1（仅本机）？选“否”请改用白名单/配对模式以配置 token。",
+        "host_pinned": "已将 host 改为 127.0.0.1。",
         "saved": "Gateway：{host}:{port}，认证={mode}",
     },
     "observability": {

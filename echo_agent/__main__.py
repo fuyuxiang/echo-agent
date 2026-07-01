@@ -325,6 +325,8 @@ def _dispatch() -> None:
         rc = attach_client.run_cli_attach(
             host=host, port=port, ws_path=ws_path,
             user_id=args.user, token=token,
+            config_path=args.config or args.top_config,
+            workspace=args.workspace or args.top_workspace,
         )
         _sys.exit(rc)
         return

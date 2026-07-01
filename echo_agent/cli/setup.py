@@ -603,6 +603,21 @@ def setup_gateway(config: dict) -> None:
     a_idx = prompt_choice(t("gateway.auth_mode"), auth_labels, default=default_auth)
     auth["mode"] = auth_keys[a_idx]
 
+    # An "open" (no-token) gateway bound to a non-loopback host is refused at
+    # startup by gateway/server.py:_check_bind_safety, which would leave the
+    # whole service unable to boot. Catch the combo here rather than letting it
+    # fail after save.
+    host_norm = str(gw["host"]).strip()
+    if auth_keys[a_idx] == "open" and host_norm not in ("127.0.0.1", "localhost", "::1", ""):
+        print_warning(t("gateway.open_exposed_warn", host=host_norm))
+        if prompt_yes_no(t("gateway.open_exposed_fix"), default=True):
+            gw["host"] = "127.0.0.1"
+            print_info(t("gateway.host_pinned"))
+        else:
+            # Keep the exposed host but force a token-bearing mode.
+            a_idx = auth_keys.index("allowlist")
+            auth["mode"] = "allowlist"
+
     if auth_keys[a_idx] in ("allowlist", "pairing"):
         existing_tokens = auth.get("api_tokens") or auth.get("apiTokens") or []
         token_default = existing_tokens[0] if existing_tokens else ""
