@@ -26,19 +26,20 @@ def _auth(tmp_path) -> GatewayAuth:
     return GatewayAuth(GatewayAuthConfig(mode="allowlist", allowed_users=[]), tmp_path)
 
 
-def test_loopback_trust_bypasses_empty_allowlist(tmp_path) -> None:
+def test_is_authorized_has_no_trusted_bypass(tmp_path) -> None:
     auth = _auth(tmp_path)
-    # 未信任 → 空白名单拒绝（原 bug 现象）。
+    # 空白名单：任何身份都不因 loopback 而放行——trusted 短路已移除。
     assert not auth.is_authorized("cli", "local")
-    # loopback 可信 → 放行，三道闸门姿态一致。
-    assert auth.is_authorized("cli", "local", trusted=True)
+    assert not auth.is_authorized("wechat", "victim")
 
 
-def test_non_loopback_still_enforces_allowlist(tmp_path) -> None:
-    auth = _auth(tmp_path)
-    # 远程来源（trusted=False）绝不因 loopback 豁免而放行。
-    assert not auth.is_authorized("cli", "local", trusted=False)
-    assert not auth.is_authorized("slack", "u2", trusted=False)
+def test_is_authorized_allowlist_still_grants_listed_user(tmp_path) -> None:
+    from echo_agent.config.schema import GatewayAuthConfig
+    auth = GatewayAuth(
+        GatewayAuthConfig(mode="allowlist", allowed_users=["cli:local"]), tmp_path
+    )
+    assert auth.is_authorized("cli", "local")
+    assert not auth.is_authorized("cli", "other")
 
 
 def _request_with_peer(peer, headers=None):
