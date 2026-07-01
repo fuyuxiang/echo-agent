@@ -275,3 +275,28 @@ async def test_message_rejects_cross_site_browser(tmp_path) -> None:
     ))
     assert resp.status == 403
 
+
+@pytest.mark.asyncio
+async def test_port_preflight_runs_before_bootstrap(monkeypatch, tmp_path) -> None:
+    import socket as _socket
+    from echo_agent import app as app_mod
+
+    bootstrap_called = False
+
+    async def _spy_bootstrap(*a, **k):
+        nonlocal bootstrap_called
+        bootstrap_called = True
+        raise AssertionError("bootstrap must not run when port is occupied")
+
+    monkeypatch.setattr(app_mod, "bootstrap", _spy_bootstrap)
+
+    # 占住一个端口，让预检命中。
+    with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as held:
+        held.bind(("127.0.0.1", 0))
+        held.listen(1)
+        port = held.getsockname()[1]
+        # host/port 直接由入参提供，跳过 bootstrap 也能预检。
+        await app_mod.run_gateway(host="127.0.0.1", port=port, workspace=str(tmp_path))
+
+    assert bootstrap_called is False
+

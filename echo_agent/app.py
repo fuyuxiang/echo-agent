@@ -417,6 +417,22 @@ async def run_gateway(
     if config_path is None and workspace:
         from echo_agent.config.loader import resolve_config_file
         config_path = str(resolve_config_file(search_dir=workspace) or "")
+
+    # Preflight the listen port BEFORE bootstrap(), so an occupied port (a
+    # resident gateway already running) exits with a friendly hint and never
+    # leaves a half-built storage handle open (bootstrap creates SQLiteBackend;
+    # AppRuntime.stop() is a no-op before start(), so a post-bootstrap bail
+    # would leak the connection). Resolve host/port from args first, else config.
+    from echo_agent.config.loader import load_config, resolve_config_file
+    _cfg_file = resolve_config_file(config_path)
+    _cfg = load_config(config_path=_cfg_file)
+    pre_host = host or _cfg.gateway.host
+    pre_port = port or _cfg.gateway.port
+    bind_err = _gateway_port_in_use(pre_host, pre_port)
+    if bind_err:
+        logger.error(bind_err)
+        return
+
     overrides: dict[str, Any] = {"workspace": workspace} if workspace else {}
     # Force gateway on and tighten the security profile *before* bootstrap so the
     # agent loop registers tools under the effective gateway policy. Applying
@@ -436,15 +452,6 @@ async def run_gateway(
 
     install_signal_handler(shutdown)
     runtime = AppRuntime(ctx, shutdown_event=shutdown)
-
-    # Preflight the listen port before bringing up the bus/agent/channels, so a
-    # predictable failure (a resident gateway already on this port) exits with a
-    # friendly hint instead of a full start→teardown churn and a bare traceback.
-    bind_err = _gateway_port_in_use(ctx.config.gateway.host, ctx.config.gateway.port)
-    if bind_err:
-        logger.error(bind_err)
-        await runtime.stop()
-        return
 
     try:
         if not await runtime.start():
