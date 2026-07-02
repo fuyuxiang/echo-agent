@@ -45,9 +45,11 @@ def _make_consolidator(store):
 
 @pytest.mark.asyncio
 async def test_auto_resolve_supersedes_older_same_key(monkeypatch):
-    old = MemoryEntry(id="old1", key="pref:lang", content="Python",
+    # 显式同级来源:provenance 裁决下 legacy 不自动消解,
+    # 同级(model_inferred)才走 newest-wins。
+    old = MemoryEntry(id="old1", key="pref:lang", content="Python", source="model_inferred",
                       created_at="2026-06-01T00:00:00", updated_at="2026-06-01T00:00:00")
-    new = MemoryEntry(id="new1", key="pref:lang", content="Rust",
+    new = MemoryEntry(id="new1", key="pref:lang", content="Rust", source="model_inferred",
                       created_at="2026-06-02T00:00:00", updated_at="2026-06-02T00:00:00")
     store = _FakeStore([old, new])
 
@@ -158,9 +160,10 @@ class _InMemoryContradictionStorage:
 async def test_auto_resolve_leaves_no_ghost_unresolved():
     # 自动消解后,同 key 冲突这条记录应被原地 resolve,
     # get_unresolved 不得再返回它(无幽灵未解决行)。
-    old = MemoryEntry(id="old1", key="pref:lang", content="Python",
+    # 来源需同级非 legacy(legacy 不自动消解)。
+    old = MemoryEntry(id="old1", key="pref:lang", content="Python", source="model_inferred",
                       created_at="2026-06-01T00:00:00", updated_at="2026-06-01T00:00:00")
-    new = MemoryEntry(id="new1", key="pref:lang", content="Rust",
+    new = MemoryEntry(id="new1", key="pref:lang", content="Rust", source="model_inferred",
                       created_at="2026-06-02T00:00:00", updated_at="2026-06-02T00:00:00")
     store = _FakeStore([old, new])
     detector = ContradictionDetector(storage=_InMemoryContradictionStorage(), store=store)
