@@ -209,6 +209,8 @@ class MemoryTool(Tool):
         if not results:
             return ToolResult(success=True, output="No matching memories found.")
 
+        self._store.reinforce([entry.id for entry, _ in results])
+
         lines = []
         for entry, score in results:
             tags = f" [{', '.join(entry.tags)}]" if entry.tags else ""

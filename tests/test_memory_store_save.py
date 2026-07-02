@@ -205,32 +205,33 @@ class TestCoreResidentUserMemory:
 
 
 class TestTouchDirtyTracking:
-    """Tests that search_keyword marks touched entries as dirty for persistence."""
+    """Reinforcement moved from search-time to use-time: searches stay
+    side-effect free; reinforce() touches entries and marks them dirty."""
 
-    def test_search_keyword_marks_dirty(self, tmp_path: Path) -> None:
+    def test_search_keyword_does_not_mark_dirty(self, tmp_path: Path) -> None:
         store = MemoryStore(memory_dir=tmp_path / "mem")
         entry = store.add(_make_entry(key="color", content="user likes blue"))
         store._dirty_ids.clear()
 
         results = store.search_keyword("blue")
         assert len(results) == 1
-        assert entry.id in store._dirty_ids
+        assert entry.id not in store._dirty_ids
 
-    def test_search_scored_marks_dirty(self, tmp_path: Path) -> None:
+    def test_search_scored_does_not_mark_dirty(self, tmp_path: Path) -> None:
         store = MemoryStore(memory_dir=tmp_path / "mem")
         entry = store.add(_make_entry(key="lang", content="user prefers python"))
         store._dirty_ids.clear()
 
         results = store.search_scored("python")
         assert len(results) == 1
-        assert entry.id in store._dirty_ids
+        assert entry.id not in store._dirty_ids
 
-    def test_touch_increments_access_count(self, tmp_path: Path) -> None:
+    def test_reinforce_increments_access_count(self, tmp_path: Path) -> None:
         store = MemoryStore(memory_dir=tmp_path / "mem")
         entry = store.add(_make_entry(key="food", content="user likes sushi"))
         initial_count = entry.access_count
 
-        store.search_keyword("sushi")
+        store.reinforce([entry.id])
         assert entry.access_count == initial_count + 1
 
 

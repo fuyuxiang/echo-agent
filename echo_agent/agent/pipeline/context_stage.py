@@ -285,6 +285,12 @@ class ContextStage:
                     "Relevant memory:\n"
                     + "\n".join(f"- {r.key}: {r.content}" for r, _ in scored)
                 )
+                # Reinforcement fires on USE, not on retrieval: only entries
+                # actually injected into this turn's context strengthen.
+                try:
+                    self._memory.reinforce([r.id for r, _ in scored])
+                except Exception as e:
+                    logger.debug("Memory reinforcement failed: {}", e)
                 if publish_response and self._bus:
                     _debug = getattr(self._config.gateway, 'progress_debug', False)
                     _mem_meta: dict[str, Any] = {

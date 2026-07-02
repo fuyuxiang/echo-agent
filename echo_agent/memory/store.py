@@ -477,9 +477,9 @@ class MemoryStore:
         for entry in self._load_type_from_disk(mem_type):
             prev = previous.get(entry.id)
             # Carry over unsaved spaced-repetition reinforcement (touch()
-            # marks entries dirty but searches don't save) — otherwise every
-            # reload before a save discards access_count/last_accessed, the
-            # inputs to the decay half-life.
+            # marks entries dirty but reinforcement doesn't save) — otherwise
+            # every reload before a save discards access_count/last_accessed,
+            # the inputs to the decay half-life.
             if prev is not None and prev.id in self._dirty_ids and prev.access_count > entry.access_count:
                 entry.access_count = prev.access_count
                 entry.last_accessed = prev.last_accessed or entry.last_accessed
@@ -905,8 +905,6 @@ class MemoryStore:
                 or any(pattern.search(tag) for tag in entry.tags)
             )
             if matched:
-                entry.touch()
-                self._dirty_ids.add(entry.id)
                 results.append(entry)
         results.sort(key=lambda entry: self._forgetting.effective_importance(entry), reverse=True)
         return results[:limit]
@@ -942,12 +940,25 @@ class MemoryStore:
             coverage = word_hits / len(words)
             eff_imp = self._forgetting.effective_importance(entry)
             score = coverage * 0.7 + eff_imp * 0.3
-            entry.touch()
-            self._dirty_ids.add(entry.id)
             scored.append((entry, score))
 
         scored.sort(key=lambda item: item[1], reverse=True)
         return scored[:limit]
+
+    def reinforce(self, ids: "Iterable[str]") -> int:
+        """Spaced-repetition reinforcement for memories that were actually
+        USED (injected into context / returned by the memory tool) — search
+        hits alone no longer count. Marks dirty; persisted on the next save.
+        Returns the number of entries reinforced."""
+        count = 0
+        for entry_id in ids:
+            entry = self._entries.get(entry_id)
+            if entry is None:
+                continue
+            entry.touch()
+            self._dirty_ids.add(entry_id)
+            count += 1
+        return count
 
     def find_by_key(
         self,
