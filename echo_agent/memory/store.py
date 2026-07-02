@@ -311,6 +311,12 @@ class MemoryStore:
         if not self._storage:
             return 0
         valid = {e.embedding_id for e in self._entries.values() if e.embedding_id}
+        episode_ids: set[str] = set()
+        try:
+            rows_ep = await self._storage.fetch_sql("SELECT id FROM memory_episodes", ())
+            episode_ids = {r["id"] for r in rows_ep}
+        except Exception as e:
+            logger.debug("Orphan scan: episodes table unavailable: {}", e)
         try:
             rows = await self._storage.load_vectors_all()
         except Exception as e:
@@ -318,12 +324,17 @@ class MemoryStore:
             return 0
         removed = 0
         for row in rows:
-            if row["id"] not in valid:
-                try:
-                    await self._storage.delete_vector(row["id"])
-                    removed += 1
-                except Exception as e:
-                    logger.debug("Failed to delete orphan vector {}: {}", row["id"], e)
+            source_id = row.get("source_id", "") or ""
+            if source_id.startswith("ep:"):
+                if source_id[3:] in episode_ids:
+                    continue  # live episode vector
+            elif row["id"] in valid:
+                continue
+            try:
+                await self._storage.delete_vector(row["id"])
+                removed += 1
+            except Exception as e:
+                logger.debug("Failed to delete orphan vector {}: {}", row["id"], e)
         if removed:
             logger.info("Removed {} orphan vector rows", removed)
         return removed

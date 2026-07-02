@@ -510,6 +510,8 @@ class AgentLoop:
 
         self._vector_index = vector_index
         self._embed_fn = embed_fn
+        if episodic is not None and embed_fn is not None and vector_index is not None:
+            episodic.attach_embedding(embed_fn, vector_index)
         self.memory.set_embed_fn(embed_fn)
         self.consolidator.set_embed_fn(embed_fn)
 
@@ -610,6 +612,11 @@ class AgentLoop:
             queued = self.memory.queue_missing_embeds(self._vector_index.stale_source_ids)
             if queued:
                 self._spawn_background(self.memory.flush_pending_embeds())
+            if self._episodic is not None:
+                try:
+                    await self._episodic.requeue_stale(self._vector_index.stale_source_ids)
+                except Exception as e:
+                    logger.warning("Episodic stale re-embed failed: {}", e)
         # Knowledge vectors reuse the same embed_fn but stay in their own sidecar
         # store. Inject here in start() — both self.knowledge and self._embed_fn
         # are assigned during __init__, but _init_advanced_memory runs before

@@ -56,10 +56,20 @@ class WorkingMemory:
 
 
 class EpisodicManager:
-    """Manages conversation episodes with temporal indexing."""
+    """Manages conversation episodes with temporal indexing.
+
+    With attach_embedding(), episode summaries are embedded into the shared
+    vectors table under 'ep:<episode_id>' source_ids so search_episodes can
+    do semantic matching (falls back to LIKE when embedding is unavailable)."""
 
     def __init__(self, storage: StorageBackend):
         self._storage = storage
+        self._embed_fn = None
+        self._vector_index = None
+
+    def attach_embedding(self, embed_fn, vector_index) -> None:
+        self._embed_fn = embed_fn
+        self._vector_index = vector_index
 
     async def create_episode(
         self,
@@ -90,11 +100,83 @@ class EpisodicManager:
                 json.dumps(episode.entity_ids), episode.importance, episode.created_at,
             ),
         )
+        await self._embed_summary(episode.id, summary)
         logger.debug("Created episode {} for session {}", episode.id, session_key)
         return episode
 
+    async def _embed_summary(self, episode_id: str, summary: str) -> None:
+        """Best-effort embed; failure degrades that episode to LIKE-only."""
+        if not self._embed_fn or not self._vector_index or not summary:
+            return
+        try:
+            embedding = await self._embed_fn(summary)
+            if embedding:
+                await self._vector_index.add(f"ep:{episode_id}", embedding)
+        except Exception as e:
+            logger.debug("Episode embedding failed for {}: {}", episode_id, e)
+
+    async def requeue_stale(self, stale_source_ids: set) -> int:
+        """Re-embed episodes whose vector came from a different model.
+        Old rows are removed by the caller-side orphan scan or replaced here."""
+        if not self._embed_fn or not self._vector_index:
+            return 0
+        count = 0
+        for source_id in stale_source_ids:
+            if not source_id.startswith("ep:"):
+                continue
+            episode_id = source_id[3:]
+            rows = await self._storage.fetch_sql(
+                "SELECT summary FROM memory_episodes WHERE id = ?", (episode_id,),
+            )
+            if not rows:
+                continue
+            # Remove the stale row(s) for this source before re-adding.
+            old = await self._storage.load_vector_by_source(source_id)
+            if old:
+                await self._storage.delete_vector(old["id"])
+            await self._embed_summary(episode_id, rows[0].get("summary", ""))
+            count += 1
+        if count:
+            logger.info("Re-embedded {} stale episode vectors", count)
+        return count
+
     async def search_episodes(
         self, query: str, session_key: str | None = None, limit: int = 5,
+    ) -> list[Episode]:
+        semantic = await self._semantic_search(query, session_key, limit)
+        if semantic:
+            return semantic
+        return await self._like_search(query, session_key, limit)
+
+    async def _semantic_search(
+        self, query: str, session_key: str | None, limit: int,
+    ) -> list[Episode]:
+        if not self._embed_fn or not self._vector_index:
+            return []
+        try:
+            embedding = await self._embed_fn(query)
+            if not embedding:
+                return []
+            hits = await self._vector_index.search(embedding, limit=limit * 4)
+        except Exception as e:
+            logger.debug("Episodic semantic search failed: {}", e)
+            return []
+        episode_ids = [sid[3:] for sid, _ in hits if sid.startswith("ep:")]
+        if not episode_ids:
+            return []
+        placeholders = ",".join("?" for _ in episode_ids)
+        rows = await self._storage.fetch_sql(
+            f"SELECT * FROM memory_episodes WHERE id IN ({placeholders})",
+            tuple(episode_ids),
+        )
+        by_id = {r["id"]: self._row_to_episode(r) for r in rows}
+        ordered = [by_id[eid] for eid in episode_ids if eid in by_id]
+        if session_key:
+            ordered = [ep for ep in ordered if ep.session_key == session_key]
+        return ordered[:limit]
+
+    async def _like_search(
+        self, query: str, session_key: str | None, limit: int,
     ) -> list[Episode]:
         if session_key:
             rows = await self._storage.fetch_sql(
