@@ -125,10 +125,11 @@ _TICK_SEC = 0.5
 class ProgressHeartbeat:
     """Per-turn level-triggered progress timer. One instance per turn."""
 
-    def __init__(self, bus, event, config) -> None:
+    def __init__(self, bus, event, config, cognitive_emitter=None) -> None:
         self._bus = bus
         self._event = event
         self._config = config
+        self._cog = cognitive_emitter
         self._activity: SharedActivityState | None = None
         self._task: asyncio.Task | None = None
         self._sealed = False
@@ -222,5 +223,15 @@ class ProgressHeartbeat:
             }
             logger.info("heartbeat published: channel={} text={!r}", ev.channel, text)
             await self._bus.publish_outbound(out)
+            # Additive cognitive emission (cli-gated). Wrapped so it can NEVER
+            # break the existing heartbeat publish path on failure.
+            if self._cog is not None:
+                try:
+                    await self._cog.emit(
+                        self._event, "heartbeat",
+                        {"stage": activity.phase, "note": text}, text,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
         except Exception as e:  # noqa: BLE001
             logger.debug("heartbeat publish failed: {}", e)

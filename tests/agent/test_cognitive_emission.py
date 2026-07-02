@@ -115,3 +115,76 @@ async def test_inference_stage_cost_and_tool_noop_without_emitter():
     )
     await stage._emit_tool_call(ev, "edit", {"path": "a.py"}, "ok", "x")
     await stage._emit_cost(ev, 1200, 0.012, 0.033)  # must be safe no-ops
+
+
+@pytest.mark.asyncio
+async def test_inference_stage_emits_written_thinking_evolution():
+    cap = _CapEmitter()
+    stage = InferenceStage.__new__(InferenceStage)
+    stage._cog = cap
+    ev = InboundEvent.text_message(
+        channel="gateway:cli", sender_id="u", chat_id="c", text="hi"
+    )
+    await stage._emit_memory_written(
+        ev, [{"content": "喜欢方案2", "source": "user_stated", "op": "write"}]
+    )
+    await stage._emit_thinking(ev, 3200, "先看配置再改")
+    await stage._emit_evolution(ev, "candidate", "faster_search", "生成候选")
+    types = [c[0] for c in cap.calls]
+    assert types == ["memory_written", "thinking", "evolution"]
+    assert cap.calls[0][1]["items"][0]["op"] == "write"
+    assert cap.calls[0][1]["items"][0]["source"] == "user_stated"
+    assert cap.calls[1][1]["duration_ms"] == 3200
+    assert cap.calls[1][1]["text"] == "先看配置再改"
+    assert cap.calls[2][1]["skill"] == "faster_search"
+    assert cap.calls[2][1]["phase"] == "candidate"
+
+
+@pytest.mark.asyncio
+async def test_written_thinking_evolution_noop_without_emitter():
+    stage = InferenceStage.__new__(InferenceStage)
+    stage._cog = None
+    ev = InboundEvent.text_message(
+        channel="gateway:cli", sender_id="u", chat_id="c", text="hi"
+    )
+    # No emitter and empty items must both be safe no-ops.
+    await stage._emit_memory_written(ev, [{"content": "x"}])
+    await stage._emit_thinking(ev, 100, "x")
+    await stage._emit_evolution(ev, "p", "s", "d")
+    stage._cog = _CapEmitter()
+    await stage._emit_memory_written(ev, [])  # empty items -> no call
+    assert stage._cog.calls == []
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_emits_cognitive_event():
+    from echo_agent.agent.progress_heartbeat import (
+        ProgressHeartbeat,
+        SharedActivityState,
+    )
+
+    class _FakeBus:
+        def __init__(self):
+            self.outbound = []
+
+        async def publish_outbound(self, out):
+            self.outbound.append(out)
+
+    class _HbConfig:
+        enabled = True
+        template = "还在处理中，已经 {elapsed}，正在{activity}"
+
+    cap = _CapEmitter()
+    ev = InboundEvent.text_message(
+        channel="gateway:cli", sender_id="u", chat_id="c", text="hi"
+    )
+    bus = _FakeBus()
+    hb = ProgressHeartbeat(bus, ev, _HbConfig(), cognitive_emitter=cap)
+    activity = SharedActivityState(started_at=0.0, phase="calling_tool", current_tool="search")
+    await hb._publish(activity)
+    # Existing heartbeat frame still published.
+    assert len(bus.outbound) == 1
+    # Cognitive heartbeat event emitted additively.
+    assert cap.calls[0][0] == "heartbeat"
+    assert cap.calls[0][1]["stage"] == "calling_tool"
+    assert "note" in cap.calls[0][1]

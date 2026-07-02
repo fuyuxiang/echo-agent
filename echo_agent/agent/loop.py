@@ -778,7 +778,10 @@ class AgentLoop:
         async with session_lock:
             trace_id = uuid.uuid4().hex[:12]
             span = self.tracer.start_span(trace_id, f"s_{trace_id}", "process_message", "input")
-            heartbeat = ProgressHeartbeat(self.bus, event, self.config.agent.heartbeat)
+            heartbeat = ProgressHeartbeat(
+                self.bus, event, self.config.agent.heartbeat,
+                cognitive_emitter=self.cognitive_emitter,
+            )
             activity = SharedActivityState(started_at=time.monotonic())
             try:
                 await heartbeat.start(activity)

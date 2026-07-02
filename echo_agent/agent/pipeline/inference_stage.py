@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
@@ -203,6 +204,39 @@ class InferenceStage:
             f"💰 ${round(total_cost, 4)}",
         )
 
+    async def _emit_memory_written(self, event, items) -> None:
+        """Surface written/reinforced memory items to the cognition stream."""
+        if self._cog is None or not items:
+            return
+        norm = [{"content": str(i.get("content", ""))[:200],
+                 "source": i.get("source", "model_inferred"),
+                 "op": i.get("op", "write")} for i in items]
+        n = len(norm)
+        await self._cog.emit(
+            event, "memory_written", {"items": norm},
+            f"✍ 写入/强化 {n} 条记忆",
+        )
+
+    async def _emit_thinking(self, event, duration_ms, text) -> None:
+        """Surface a reasoning/thinking span to the cognition stream."""
+        if self._cog is None:
+            return
+        await self._cog.emit(
+            event, "thinking",
+            {"duration_ms": duration_ms, "text": str(text)[:2000]},
+            f"💭 Thought for {round(duration_ms / 1000, 1)}s",
+        )
+
+    async def _emit_evolution(self, event, phase, skill, detail) -> None:
+        """Surface an evolution-engine event to the cognition stream."""
+        if self._cog is None:
+            return
+        await self._cog.emit(
+            event, "evolution",
+            {"phase": phase, "skill": skill, "detail": str(detail)[:300]},
+            f"🧬 {skill}: {phase}",
+        )
+
     async def run(self, ctx: PipelineContext) -> InferenceResult:
         """Execute the inference loop, returning the final result."""
         session = ctx.session
@@ -369,6 +403,7 @@ class InferenceStage:
                     budget_halted = True
                     break
 
+            _llm_started = time.monotonic()
             response, route_decision = await self._chat_stream_with_routing(
                 messages=messages,
                 tools=active_tool_defs if active_tool_defs else None,
@@ -376,6 +411,14 @@ class InferenceStage:
                 task_type=ctx.task_type,
                 content=event.text,
             )
+
+            # Surface model reasoning as a thinking event when the provider
+            # returns reasoning content (real signal on LLMResponse).
+            _reasoning = getattr(response, "reasoning_content", None)
+            if _reasoning:
+                await self._emit_thinking(
+                    event, int((time.monotonic() - _llm_started) * 1000), _reasoning,
+                )
 
             # post_llm_call hook
             if self._hook_registry and self._hook_registry.has_hooks("post_llm_call"):
