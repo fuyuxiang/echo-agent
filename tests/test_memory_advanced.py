@@ -236,11 +236,10 @@ class TestForgettingCurve:
 
 
 class TestVectorIndexNoFaiss:
-    def test_available_reflects_import(self):
+    def test_available_always_true(self):
         mock_storage = MagicMock()
         vi = VectorIndex(mock_storage, dimensions=4)
-        # available depends on whether faiss is installed; just check it's bool
-        assert isinstance(vi.available, bool)
+        assert vi.available is True
 
     def test_count_zero_before_init(self):
         mock_storage = MagicMock()
@@ -684,13 +683,11 @@ class TestMemoryConsolidator:
 # 10. Vector pipeline: VectorIndex source_map, add, search, initialize
 # ===========================================================================
 
-class TestVectorIndexWithFaiss:
+class TestVectorIndexNumpy:
     @pytest.mark.asyncio
     async def test_add_and_search_returns_source_id(self, storage: SQLiteBackend):
         vi = VectorIndex(storage, dimensions=4)
         await vi.initialize()
-        if not vi.available:
-            pytest.skip("FAISS not installed")
         vec_id = await vi.add("mem_abc", [1.0, 0.0, 0.0, 0.0])
         assert vec_id != ""
         assert vi.count == 1
@@ -704,8 +701,6 @@ class TestVectorIndexWithFaiss:
     async def test_search_ranks_by_similarity(self, storage: SQLiteBackend):
         vi = VectorIndex(storage, dimensions=4)
         await vi.initialize()
-        if not vi.available:
-            pytest.skip("FAISS not installed")
         await vi.add("python", [1.0, 0.0, 0.0, 0.0])
         await vi.add("cooking", [0.0, 1.0, 0.0, 0.0])
         await vi.add("music", [0.0, 0.0, 1.0, 0.0])
@@ -716,8 +711,6 @@ class TestVectorIndexWithFaiss:
     async def test_initialize_restores_source_map(self, storage: SQLiteBackend):
         vi = VectorIndex(storage, dimensions=4)
         await vi.initialize()
-        if not vi.available:
-            pytest.skip("FAISS not installed")
         await vi.add("entry_1", [1.0, 0.0, 0.0, 0.0])
         await vi.add("entry_2", [0.0, 1.0, 0.0, 0.0])
         assert vi.count == 2
@@ -732,8 +725,6 @@ class TestVectorIndexWithFaiss:
     async def test_rebuild_clears_and_reloads(self, storage: SQLiteBackend):
         vi = VectorIndex(storage, dimensions=4)
         await vi.initialize()
-        if not vi.available:
-            pytest.skip("FAISS not installed")
         await vi.add("e1", [1.0, 0.0, 0.0, 0.0])
         assert vi.count == 1
         await vi.rebuild()
@@ -766,8 +757,6 @@ class TestStoreEmbeddingPipeline:
         store = MemoryStore(memory_dir=tmp_path / "mem", storage=storage)
         vi = VectorIndex(storage, dimensions=4)
         await vi.initialize()
-        if not vi.available:
-            pytest.skip("FAISS not installed")
         store.set_vector_index(vi)
 
         async def fake_embed(text):
@@ -786,8 +775,6 @@ class TestStoreEmbeddingPipeline:
         store = MemoryStore(memory_dir=tmp_path / "mem", storage=storage)
         vi = VectorIndex(storage, dimensions=4)
         await vi.initialize()
-        if not vi.available:
-            pytest.skip("FAISS not installed")
         store.set_vector_index(vi)
 
         async def fake_embed(text):
@@ -808,8 +795,6 @@ class TestStoreEmbeddingPipeline:
         store = MemoryStore(memory_dir=tmp_path / "mem", storage=storage)
         vi = VectorIndex(storage, dimensions=4)
         await vi.initialize()
-        if not vi.available:
-            pytest.skip("FAISS not installed")
         store.set_vector_index(vi)
 
         attempts = {"n": 0}
@@ -872,8 +857,6 @@ class TestHybridRetrieverWithVectors:
     async def test_vector_search_boosts_ranking(self, storage: SQLiteBackend):
         vi = VectorIndex(storage, dimensions=4)
         await vi.initialize()
-        if not vi.available:
-            pytest.skip("FAISS not installed")
 
         entries = [
             _make_entry(id="py", key="python", content="python programming"),
@@ -902,8 +885,6 @@ class TestHybridRetrieverWithVectors:
         """Query with no keyword overlap should still find results via vector similarity."""
         vi = VectorIndex(storage, dimensions=4)
         await vi.initialize()
-        if not vi.available:
-            pytest.skip("FAISS not installed")
 
         entries = [
             _make_entry(id="py", key="python", content="python programming language"),
@@ -1145,8 +1126,6 @@ class TestVectorIndexConcurrency:
     async def test_concurrent_add_and_search(self, storage: SQLiteBackend):
         vi = VectorIndex(storage, dimensions=4)
         await vi.initialize()
-        if not vi.available:
-            pytest.skip("FAISS not installed")
 
         async def add_vectors(start: int):
             for i in range(5):
@@ -1170,8 +1149,6 @@ class TestVectorIndexConcurrency:
     async def test_concurrent_add_and_remove(self, storage: SQLiteBackend):
         vi = VectorIndex(storage, dimensions=4)
         await vi.initialize()
-        if not vi.available:
-            pytest.skip("FAISS not installed")
 
         vec_ids = []
         for i in range(5):
