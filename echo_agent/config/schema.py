@@ -1828,11 +1828,11 @@ class MemoryConfig(_Base):
         },
     )
     vector_dimensions: int = Field(
-        default=1536,
+        default=0,
         json_schema_extra={
             "status": "effective", "ref": "agent/loop.py:366",
-            "desc_zh": "记忆向量维度",
-            "desc_en": "Memory embedding vector dimensions",
+            "desc_zh": "记忆向量维度,0=自动跟随当前嵌入模型的实际维度",
+            "desc_en": "Memory embedding vector dimensions; 0 = follow the active embedding model",
         },
     )
     max_user_memories: int = Field(
@@ -1921,6 +1921,14 @@ class MemoryConfig(_Base):
             "status": "effective", "ref": "agent/loop.py:370",
             "desc_zh": "记忆向量化使用的嵌入模型",
             "desc_en": "Embedding model used for memory vectorization",
+        },
+    )
+    local_embedding_model: str = Field(
+        default="BAAI/bge-small-zh-v1.5",
+        json_schema_extra={
+            "status": "effective", "ref": "memory/local_embed.py",
+            "desc_zh": "无embed能力provider时的本地嵌入兜底模型(fastembed),空串禁用兜底",
+            "desc_en": "Local fastembed fallback model when no embed-capable provider exists; empty string disables the fallback",
         },
     )
     # Latency budget for the per-message query-embedding round-trip in hybrid
