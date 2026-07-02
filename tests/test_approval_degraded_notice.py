@@ -36,6 +36,7 @@ def _make_loop():
     loop.bus = _Bus()
     loop.sessions = _Sessions()
     loop.tracer = _Tracer()
+    loop.cognitive_emitter = None
     loop._running = True
     # _on_inbound 解析群聊会话作用域时读 config.session.group_session_scope；
     # 接线心跳后还会读 config.agent.heartbeat。用真实 SessionConfig/HeartbeatConfig
