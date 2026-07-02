@@ -312,11 +312,16 @@ class MemoryStore:
             return 0
         valid = {e.embedding_id for e in self._entries.values() if e.embedding_id}
         episode_ids: set[str] = set()
+        episodes_ok = True
         try:
             rows_ep = await self._storage.fetch_sql("SELECT id FROM memory_episodes", ())
             episode_ids = {r["id"] for r in rows_ep}
         except Exception as e:
-            logger.debug("Orphan scan: episodes table unavailable: {}", e)
+            episodes_ok = False
+            logger.warning(
+                "Orphan scan: episodes table unavailable, skipping ep: vectors "
+                "to avoid deleting live episode vectors: {}", e,
+            )
         try:
             rows = await self._storage.load_vectors_all()
         except Exception as e:
@@ -326,8 +331,10 @@ class MemoryStore:
         for row in rows:
             source_id = row.get("source_id", "") or ""
             if source_id.startswith("ep:"):
-                if source_id[3:] in episode_ids:
-                    continue  # live episode vector
+                # Only prune ep: vectors when the episodes table is readable;
+                # a transient DB error must not wipe every episode vector.
+                if not episodes_ok or source_id[3:] in episode_ids:
+                    continue  # live (or conservatively kept) episode vector
             elif row["id"] in valid:
                 continue
             try:

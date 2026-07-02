@@ -104,20 +104,27 @@ class EpisodicManager:
         logger.debug("Created episode {} for session {}", episode.id, session_key)
         return episode
 
-    async def _embed_summary(self, episode_id: str, summary: str) -> None:
-        """Best-effort embed; failure degrades that episode to LIKE-only."""
+    async def _embed_summary(self, episode_id: str, summary: str) -> bool:
+        """Best-effort embed; failure degrades that episode to LIKE-only.
+        Returns True only when a new vector row was actually added."""
         if not self._embed_fn or not self._vector_index or not summary:
-            return
+            return False
         try:
             embedding = await self._embed_fn(summary)
-            if embedding:
-                await self._vector_index.add(f"ep:{episode_id}", embedding)
+            if not embedding:
+                return False
+            vec_id = await self._vector_index.add(f"ep:{episode_id}", embedding)
+            return bool(vec_id)
         except Exception as e:
             logger.debug("Episode embedding failed for {}: {}", episode_id, e)
+            return False
 
     async def requeue_stale(self, stale_source_ids: set) -> int:
         """Re-embed episodes whose vector came from a different model.
-        Old rows are removed by the caller-side orphan scan or replaced here."""
+        Embed the new vector FIRST; only delete the stale row once the new
+        one is stored. If the re-embed fails the old row stays put so the next
+        startup surfaces it in stale_source_ids again for another retry — a
+        failed re-embed must never leave the episode with zero vectors."""
         if not self._embed_fn or not self._vector_index:
             return 0
         count = 0
@@ -130,11 +137,14 @@ class EpisodicManager:
             )
             if not rows:
                 continue
-            # Remove the stale row(s) for this source before re-adding.
             old = await self._storage.load_vector_by_source(source_id)
+            # Add the new vector first; keep the stale row until it succeeds so
+            # the episode always has at least one vector at any instant.
+            embedded = await self._embed_summary(episode_id, rows[0].get("summary", ""))
+            if not embedded:
+                continue  # keep stale row; will retry next startup
             if old:
                 await self._storage.delete_vector(old["id"])
-            await self._embed_summary(episode_id, rows[0].get("summary", ""))
             count += 1
         if count:
             logger.info("Re-embedded {} stale episode vectors", count)

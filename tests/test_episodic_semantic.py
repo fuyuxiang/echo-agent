@@ -113,3 +113,59 @@ async def test_requeue_stale_reembeds_episode(storage):
     rows = await storage.load_vectors_all()
     ep_rows = [r for r in rows if r["source_id"] == f"ep:{ep.id}"]
     assert len(ep_rows) == 1 and ep_rows[0]["model"] == MODEL
+
+
+@pytest.mark.asyncio
+async def test_scan_orphan_keeps_ep_vectors_when_episodes_table_fails(
+    storage, episodic, tmp_path,
+):
+    """C-1: episodes 表查询瞬时报错时，ep: 向量一律保守跳过，不被误删清空。"""
+    from echo_agent.memory.store import MemoryStore
+
+    ep = await episodic.create_episode("s1", [], "讨论了项目部署方案")
+
+    # 故障注入：让针对 memory_episodes 的 fetch_sql 抛错，其它查询照常。
+    real_fetch_sql = storage.fetch_sql
+
+    async def flaky_fetch_sql(sql, params=()):
+        if "memory_episodes" in sql:
+            raise RuntimeError("simulated transient DB error")
+        return await real_fetch_sql(sql, params)
+
+    storage.fetch_sql = flaky_fetch_sql
+    try:
+        store = MemoryStore(tmp_path / "memory", storage=storage)
+        removed = await store.scan_orphan_vectors()
+    finally:
+        storage.fetch_sql = real_fetch_sql
+
+    rows = await storage.load_vectors_all()
+    ids = {r["source_id"] for r in rows}
+    assert f"ep:{ep.id}" in ids   # 活 episode 向量仍在，未被瞬时错误清空
+    assert removed == 0           # episodes 表不可用时不删除任何 ep: 向量
+
+
+@pytest.mark.asyncio
+async def test_requeue_stale_keeps_old_vector_on_embed_failure(storage):
+    """I-1: 重嵌失败时旧向量行保留、count 为 0，episode 不会失去向量。"""
+    old_index = VectorIndex(storage, dimensions=4, model_id="fastembed:old")
+    await old_index.initialize()
+    mgr_old = EpisodicManager(storage)
+    mgr_old.attach_embedding(_embed_factory({"部署": [1.0, 0, 0, 0]}), old_index)
+    ep = await mgr_old.create_episode("s1", [], "讨论了项目部署方案")
+
+    new_index = VectorIndex(storage, dimensions=4, model_id=MODEL)
+    await new_index.initialize()
+    assert f"ep:{ep.id}" in new_index.stale_source_ids
+
+    async def failing_embed(text: str) -> list[float]:
+        raise RuntimeError("simulated embed failure")
+
+    mgr_new = EpisodicManager(storage)
+    mgr_new.attach_embedding(failing_embed, new_index)
+    n = await mgr_new.requeue_stale(new_index.stale_source_ids)
+    assert n == 0                 # 重嵌失败不计入 count
+    rows = await storage.load_vectors_all()
+    ep_rows = [r for r in rows if r["source_id"] == f"ep:{ep.id}"]
+    # 旧向量行保留（模型仍是旧模型），下次启动仍会进 stale 集合重试
+    assert len(ep_rows) == 1 and ep_rows[0]["model"] == "fastembed:old"
