@@ -277,7 +277,14 @@ class MemoryConsolidator:
 
     async def _auto_resolve_same_key(self, c, entry_map: dict) -> bool:
         """Resolve a single already-stored contradiction iff it is a same-key
-        content conflict, via newest-wins.
+        content conflict. Provenance priority adjudicates first; newest-wins
+        only breaks ties within the same priority. Legacy-source parties are
+        never auto-resolved.
+
+        Note that user_stated is not sticky: a same-key replace without an
+        explicit user statement downgrades the entry to model_inferred (the
+        deliberate conservative default), so adjudication here reads the
+        entry's *current* source, not its historical maximum.
 
         Reuses the Contradiction ``c`` that Step 3 already detected and stored:
         it is resolved in place (same row, same uuid), so get_unresolved never
@@ -299,7 +306,16 @@ class MemoryConsolidator:
             return False
         if a.is_superseded or b.is_superseded:
             return False
-        winner, _loser = self._newest_wins(a, b)
+        from echo_agent.memory.types import source_priority
+        pa, pb = source_priority(a.source), source_priority(b.source)
+        if pa == 0 or pb == 0:
+            # legacy/unknown provenance: no basis for automatic adjudication —
+            # leave it for human/model review via resolve_contradiction.
+            return False
+        if pa != pb:
+            winner = a if pa > pb else b
+        else:
+            winner, _loser = self._newest_wins(a, b)
         resolution = "a_wins" if winner.id == c.memory_id_a else "b_wins"
         await self._contradiction_detector.resolve(
             c.id, resolution, winner_id=winner.id

@@ -121,3 +121,140 @@ class TestWritePathStamping:
         assert store.get(e.id).source == "user_stated"
         store.update(e.id, content="c3", source="model_inferred")
         assert store.get(e.id).source == "model_inferred"
+
+
+class TestMergeGuard:
+    def test_lower_priority_does_not_overwrite(self, store):
+        from echo_agent.memory.types import MemoryEntry, MemoryType
+
+        store.add(MemoryEntry(
+            type=MemoryType.USER, key="pref:drink", content="喝茶",
+            source="user_stated", source_session="s1",
+        ))
+        merged = store.add(MemoryEntry(
+            type=MemoryType.USER, key="pref:drink", content="喝咖啡",
+            source="model_inferred", source_session="s1",
+        ))
+        assert merged.content == "喝茶"  # 用户明说的内容保住了
+        assert merged.source == "user_stated"
+        assert store.SUSPECTED_CONFLICT_TAG in merged.tags  # 冲突留痕
+
+    def test_equal_priority_overwrites(self, store):
+        from echo_agent.memory.types import MemoryEntry, MemoryType
+
+        store.add(MemoryEntry(
+            type=MemoryType.USER, key="pref:editor", content="vim",
+            source="model_inferred", source_session="s1",
+        ))
+        merged = store.add(MemoryEntry(
+            type=MemoryType.USER, key="pref:editor", content="emacs",
+            source="model_inferred", source_session="s1",
+        ))
+        assert merged.content == "emacs"
+
+    def test_higher_priority_overwrites_and_adopts_source(self, store):
+        from echo_agent.memory.types import MemoryEntry, MemoryType
+
+        store.add(MemoryEntry(
+            type=MemoryType.USER, key="pref:lang", content="推断喜欢Go",
+            source="model_inferred", source_session="s1",
+        ))
+        merged = store.add(MemoryEntry(
+            type=MemoryType.USER, key="pref:lang", content="用户明说喜欢Rust",
+            source="user_stated", source_session="s1",
+        ))
+        assert merged.content == "用户明说喜欢Rust"
+        assert merged.source == "user_stated"
+
+    def test_legacy_overwritten_by_any_new_write(self, store):
+        """存量 legacy=0 最低，任何新写入都可覆盖——与升级前行为一致。"""
+        from echo_agent.memory.types import MemoryEntry, MemoryType
+
+        store.add(MemoryEntry(
+            type=MemoryType.USER, key="pref:os", content="旧记录",
+            source="legacy", source_session="s1",
+        ))
+        merged = store.add(MemoryEntry(
+            type=MemoryType.USER, key="pref:os", content="新推断",
+            source="model_inferred", source_session="s1",
+        ))
+        assert merged.content == "新推断"
+
+
+class TestAutoResolvePriority:
+    def _consolidator(self, store):
+        from echo_agent.memory.consolidator import MemoryConsolidator
+        from unittest.mock import AsyncMock, MagicMock
+
+        c = MemoryConsolidator(store, llm_call=AsyncMock())
+        detector = MagicMock()
+        detector.resolve = AsyncMock()
+        c.set_contradiction_detector(detector)
+        return c, detector
+
+    @pytest.mark.asyncio
+    async def test_higher_priority_wins_even_if_older(self, store):
+        from echo_agent.memory.types import Contradiction, MemoryEntry, MemoryType
+
+        old_user = store.add(MemoryEntry(
+            type=MemoryType.USER, key="home", content="住北京",
+            source="user_stated", source_session="s1",
+        ))
+        old_user.updated_at = "2026-01-01T00:00:00"
+        newer_inferred = MemoryEntry(
+            type=MemoryType.USER, key="home", content="住上海",
+            source="model_inferred", source_session="s2",
+        )
+        store._entries[newer_inferred.id] = newer_inferred
+
+        c, detector = self._consolidator(store)
+        contradiction = Contradiction(
+            memory_id_a=old_user.id, memory_id_b=newer_inferred.id,
+        )
+        entry_map = {old_user.id: old_user, newer_inferred.id: newer_inferred}
+        resolved = await c._auto_resolve_same_key(contradiction, entry_map)
+        assert resolved is True
+        detector.resolve.assert_awaited_once()
+        assert detector.resolve.await_args.kwargs["winner_id"] == old_user.id
+
+    @pytest.mark.asyncio
+    async def test_equal_priority_falls_to_newest_wins(self, store):
+        from echo_agent.memory.types import Contradiction, MemoryEntry, MemoryType
+
+        older = store.add(MemoryEntry(
+            type=MemoryType.USER, key="job", content="工程师",
+            source="model_inferred", source_session="s1",
+        ))
+        older.updated_at = "2026-01-01T00:00:00"
+        newer = MemoryEntry(
+            type=MemoryType.USER, key="job", content="架构师",
+            source="model_inferred", source_session="s1",
+        )
+        newer.updated_at = "2026-06-01T00:00:00"
+        store._entries[newer.id] = newer
+
+        c, detector = self._consolidator(store)
+        contradiction = Contradiction(memory_id_a=older.id, memory_id_b=newer.id)
+        entry_map = {older.id: older, newer.id: newer}
+        assert await c._auto_resolve_same_key(contradiction, entry_map) is True
+        assert detector.resolve.await_args.kwargs["winner_id"] == newer.id
+
+    @pytest.mark.asyncio
+    async def test_legacy_party_skips_auto_resolve(self, store):
+        from echo_agent.memory.types import Contradiction, MemoryEntry, MemoryType
+
+        legacy = store.add(MemoryEntry(
+            type=MemoryType.USER, key="city", content="旧数据",
+            source="legacy", source_session="s1",
+        ))
+        newer = MemoryEntry(
+            type=MemoryType.USER, key="city", content="新推断",
+            source="model_inferred", source_session="s1",
+        )
+        store._entries[newer.id] = newer
+
+        c, detector = self._consolidator(store)
+        contradiction = Contradiction(memory_id_a=legacy.id, memory_id_b=newer.id)
+        entry_map = {legacy.id: legacy, newer.id: newer}
+        assert await c._auto_resolve_same_key(contradiction, entry_map) is False
+        detector.resolve.assert_not_awaited()

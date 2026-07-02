@@ -26,7 +26,7 @@ from typing import Any, Callable, Iterable
 
 from loguru import logger
 
-from echo_agent.memory.types import MemoryEntry, MemoryTier, MemoryType
+from echo_agent.memory.types import MemoryEntry, MemoryTier, MemoryType, source_priority
 from echo_agent.memory.text import cjk_tokens
 from echo_agent.memory.forgetting import ForgettingCurve
 
@@ -577,9 +577,27 @@ class MemoryStore:
 
     def _merge_locked(self, existing_id: str, new_entry: MemoryEntry) -> MemoryEntry:
         existing = self._entries[existing_id]
+        # Provenance guard: a lower-provenance write must not silently
+        # overwrite higher-provenance content (e.g. model inference vs. what
+        # the user explicitly stated). Keep the content, merge the metadata,
+        # and leave a suspected_conflict marker for the resolution flow.
+        if source_priority(new_entry.source) < source_priority(existing.source):
+            merged_tags = _normalize_tags(
+                [*existing.tags, *new_entry.tags, self.SUSPECTED_CONFLICT_TAG]
+            )
+            existing.tags = merged_tags
+            existing.importance = max(existing.importance, new_entry.importance)
+            existing.updated_at = datetime.now().isoformat()
+            self._dirty_ids.add(existing_id)
+            logger.info(
+                "Provenance guard: kept '{}' content from {} over incoming {}",
+                existing.key, existing.source, new_entry.source,
+            )
+            return existing
         existing.content = self._validate_content(new_entry.content)
         existing.tags = _normalize_tags([*existing.tags, *new_entry.tags])
         existing.importance = max(existing.importance, new_entry.importance)
+        existing.source = new_entry.source
         existing.updated_at = datetime.now().isoformat()
         self._dirty_ids.add(existing_id)
         return existing
