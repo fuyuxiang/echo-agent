@@ -11,7 +11,7 @@ from typing import Any
 from loguru import logger
 
 from echo_agent.memory.store import MemoryStore
-from echo_agent.memory.types import MemoryEntry, MemoryType
+from echo_agent.memory.types import MemoryEntry, MemoryType, source_priority
 from echo_agent.models.provider import LLMProvider
 
 _REVIEW_PROMPT = """\
@@ -176,6 +176,19 @@ class MemoryReviewer:
                 except ValueError as exc:
                     return f"Error: {exc}"
                 return f"Added (new) [{target}] {entry.key}"
+            if source_priority("model_inferred") < source_priority(entry.source):
+                # Background inference must not overwrite higher-provenance
+                # content via the replace side door (spec 2026-07-02 §a1).
+                flagged = self._store.get(entry.id)
+                if flagged is not None and MemoryStore.SUSPECTED_CONFLICT_TAG not in flagged.tags:
+                    self._store.update(
+                        entry.id,
+                        tags=[*flagged.tags, MemoryStore.SUSPECTED_CONFLICT_TAG],
+                    )
+                return (
+                    f"Kept existing (higher provenance) [{target}] {entry.key}; "
+                    "flagged conflict for review"
+                )
             try:
                 self._store.update(entry.id, content=content, source="model_inferred")
             except ValueError as exc:

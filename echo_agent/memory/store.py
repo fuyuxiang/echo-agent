@@ -587,12 +587,12 @@ class MemoryStore:
             )
             existing.tags = merged_tags
             existing.importance = max(existing.importance, new_entry.importance)
-            existing.updated_at = datetime.now().isoformat()
             self._dirty_ids.add(existing_id)
             logger.info(
                 "Provenance guard: kept '{}' content from {} over incoming {}",
                 existing.key, existing.source, new_entry.source,
             )
+            self._spawn_blocked_contradiction(existing, new_entry)
             return existing
         existing.content = self._validate_content(new_entry.content)
         existing.tags = _normalize_tags([*existing.tags, *new_entry.tags])
@@ -601,6 +601,49 @@ class MemoryStore:
         existing.updated_at = datetime.now().isoformat()
         self._dirty_ids.add(existing_id)
         return existing
+
+    def _spawn_blocked_contradiction(self, existing: MemoryEntry, blocked: MemoryEntry) -> None:
+        """Record the guard-blocked content as a Contradiction row so the
+        resolution flow can see it (placeholder memory_id_b = blocked:<source>).
+        Async fire-and-forget, mirroring _cleanup_deleted's spawn pattern."""
+        if not self._storage:
+            return
+        from echo_agent.memory.types import Contradiction
+        c = Contradiction(
+            memory_id_a=existing.id,
+            memory_id_b=f"blocked:{blocked.source}",
+            description=(
+                f"Provenance guard blocked lower-priority write on key "
+                f"'{existing.key}': {blocked.content}"
+            ),
+        )
+
+        async def _record() -> None:
+            try:
+                await self._storage.execute_sql(
+                    "INSERT OR REPLACE INTO memory_contradictions"
+                    "(id, memory_id_a, memory_id_b, description, resolution, resolved_at, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (c.id, c.memory_id_a, c.memory_id_b, c.description,
+                     None, None, c.created_at),
+                )
+            except Exception as e:
+                logger.warning("Failed to record blocked contradiction: {}", e)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None:
+            task = asyncio.ensure_future(_record())
+            self._pending_storage_tasks.add(task)
+            task.add_done_callback(self._pending_storage_tasks.discard)
+        else:
+            new_loop = asyncio.new_event_loop()
+            try:
+                new_loop.run_until_complete(_record())
+            finally:
+                new_loop.close()
 
     # ── CRUD ─────────────────────────────────────────────────────────────────
 

@@ -326,7 +326,7 @@ class TestMemoryTool:
     @pytest.mark.asyncio
     async def test_add_success(self):
         tool, store = self._make()
-        mock_entry = SimpleNamespace(type=SimpleNamespace(value="user"), key="lang")
+        mock_entry = SimpleNamespace(type=SimpleNamespace(value="user"), key="lang", content="Python")
         store.add.return_value = mock_entry
         result = await tool.execute(
             {"action": "add", "target": "user", "key": "lang", "content": "Python"},

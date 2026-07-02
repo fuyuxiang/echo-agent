@@ -163,6 +163,16 @@ class MemoryTool(Tool):
             result = self._store.add(entry)
         except ValueError as exc:
             return ToolResult(success=False, error=str(exc))
+        if result.content != entry.content:
+            # Provenance guard kept the existing higher-provenance content;
+            # do NOT claim we saved the new one.
+            return ToolResult(
+                success=True,
+                output=(
+                    f"Kept existing entry (higher provenance): [{result.type.value}] "
+                    f"{result.key} — conflict flagged for review"
+                ),
+            )
         return ToolResult(success=True, output=f"Memory saved: [{result.type.value}] {result.key}")
 
     def _replace(self, params: dict[str, Any], mem_type: MemoryType, session_key: str) -> ToolResult:
