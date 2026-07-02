@@ -1959,6 +1959,14 @@ class MemoryConfig(_Base):
             "desc_en": "Auto-resolve same-key contradictions (newest-wins) during sleep consolidation; off by default",
         },
     )
+    reflection_enabled: bool = Field(
+        default=True,
+        json_schema_extra={
+            "status": "effective", "ref": "memory/reflection.py",
+            "desc_zh": "是否启用睡眠反思(归纳提炼+LLM矛盾裁决),随睡眠整合运行",
+            "desc_en": "Enable sleep-time reflection (distillation + LLM conflict adjudication), piggybacking on sleep consolidation",
+        },
+    )
 
 
 class KnowledgeConfig(_Base):
