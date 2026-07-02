@@ -66,6 +66,8 @@ CREATE TABLE IF NOT EXISTS vectors (
     source_id TEXT NOT NULL,
     embedding BLOB,
     metadata TEXT,
+    model TEXT DEFAULT '',
+    dim INTEGER DEFAULT 0,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -173,6 +175,8 @@ _MIGRATIONS: list[tuple[int, str]] = [
         updated_at TEXT NOT NULL DEFAULT '',
         PRIMARY KEY (window_date, provider, model, channel)
     )"""),
+    (22, "ALTER TABLE vectors ADD COLUMN model TEXT DEFAULT ''"),
+    (23, "ALTER TABLE vectors ADD COLUMN dim INTEGER DEFAULT 0"),
 ]
 
 
@@ -231,7 +235,15 @@ class SQLiteBackend(StorageBackend):
         for version, sql in _MIGRATIONS:
             if version in applied:
                 continue
-            await db.execute(sql)
+            try:
+                await db.execute(sql)
+            except Exception as exc:
+                # ALTER TABLE ADD COLUMN 在新建库（建表语句已含该列）上报
+                # duplicate column——等价于已应用，跳过而非中断启动。
+                if "duplicate column" in str(exc).lower():
+                    logger.debug("Migration {} skipped (column exists)", version)
+                else:
+                    raise
             await db.execute(
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                 (version, now),
@@ -471,12 +483,17 @@ class SQLiteBackend(StorageBackend):
         except Exception as e:
             logger.error("Failed to store file meta '{}': {}", path, e)
 
-    async def store_vector(self, vec_id: str, source_id: str, embedding: bytes, metadata: dict[str, Any] | None = None) -> None:
+    async def store_vector(
+        self, vec_id: str, source_id: str, embedding: bytes,
+        metadata: dict[str, Any] | None = None, model: str = "", dim: int = 0,
+    ) -> None:
         db = await self._ensure_connection()
         try:
             await db.execute(
-                "INSERT OR REPLACE INTO vectors (id, source_id, embedding, metadata, created_at) VALUES (?, ?, ?, ?, ?)",
-                (vec_id, source_id, embedding, json.dumps(metadata or {}), datetime.now().isoformat()),
+                "INSERT OR REPLACE INTO vectors (id, source_id, embedding, metadata, model, dim, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (vec_id, source_id, embedding, json.dumps(metadata or {}), model, dim,
+                 datetime.now().isoformat()),
             )
             await db.commit()
         except Exception as e:
@@ -485,8 +502,12 @@ class SQLiteBackend(StorageBackend):
     async def load_vectors_all(self) -> list[dict[str, Any]]:
         db = await self._ensure_connection()
         try:
-            rows = await db.execute_fetchall("SELECT id, source_id, embedding, metadata FROM vectors")
-            return [{"id": r[0], "source_id": r[1], "embedding": r[2], "metadata": r[3]} for r in rows]
+            rows = await db.execute_fetchall("SELECT id, source_id, embedding, metadata, model, dim FROM vectors")
+            return [
+                {"id": r[0], "source_id": r[1], "embedding": r[2], "metadata": r[3],
+                 "model": r[4] or "", "dim": r[5] or 0}
+                for r in rows
+            ]
         except Exception as e:
             logger.error("Failed to load vectors: {}", e)
             return []
@@ -494,10 +515,14 @@ class SQLiteBackend(StorageBackend):
     async def load_vector_by_source(self, source_id: str) -> dict[str, Any] | None:
         db = await self._ensure_connection()
         try:
-            rows = await db.execute_fetchall("SELECT id, source_id, embedding, metadata FROM vectors WHERE source_id=?", (source_id,))
+            rows = await db.execute_fetchall(
+                "SELECT id, source_id, embedding, metadata, model, dim FROM vectors WHERE source_id=?",
+                (source_id,),
+            )
             if rows:
                 r = rows[0]
-                return {"id": r[0], "source_id": r[1], "embedding": r[2], "metadata": r[3]}
+                return {"id": r[0], "source_id": r[1], "embedding": r[2], "metadata": r[3],
+                        "model": r[4] or "", "dim": r[5] or 0}
             return None
         except Exception as e:
             logger.error("Failed to load vector for source '{}': {}", source_id, e)

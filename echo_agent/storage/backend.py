@@ -84,7 +84,7 @@ class StorageBackend(ABC):
         pass
 
     @abstractmethod
-    async def store_vector(self, vec_id: str, source_id: str, embedding: bytes, metadata: dict[str, Any] | None = None) -> None:
+    async def store_vector(self, vec_id: str, source_id: str, embedding: bytes, metadata: dict[str, Any] | None = None, model: str = "", dim: int = 0) -> None:
         pass
 
     async def load_vectors_all(self) -> list[dict[str, Any]]:
