@@ -695,6 +695,7 @@ class MemoryStore:
         entry_id: str,
         content: str | None = None,
         tags: list[str] | None = None,
+        source: str | None = None,
     ) -> MemoryEntry | None:
         entry = self._entries.get(entry_id)
         if not entry:
@@ -713,6 +714,8 @@ class MemoryStore:
                 entry.content = normalized_content
             if normalized_tags is not None:
                 entry.tags = normalized_tags
+            if source is not None:
+                entry.source = source
             entry.updated_at = datetime.now().isoformat()
             self._dirty_ids.add(entry_id)
             self._save_type(entry.type)

@@ -60,6 +60,15 @@ class MemoryTool(Tool):
                 "type": "number",
                 "description": "Importance score 0.0-1.0 (default 0.5)",
             },
+            "source": {
+                "type": "string",
+                "enum": ["user_stated", "model_inferred"],
+                "description": (
+                    "Provenance of this memory (for add/replace). Use 'user_stated' ONLY "
+                    "when the user explicitly asked to remember this or directly stated "
+                    "the fact; otherwise omit (defaults to 'model_inferred')."
+                ),
+            },
             "contradiction_id": {
                 "type": "string",
                 "description": "Contradiction id (for resolve_contradiction)",
@@ -140,10 +149,14 @@ class MemoryTool(Tool):
             importance = min(1.0, max(0.0, float(params.get("importance", 0.5))))
         except (TypeError, ValueError):
             importance = 0.5
+        source = params.get("source", "")
+        if source not in ("user_stated", "model_inferred"):
+            source = "model_inferred"
 
         entry = MemoryEntry(
             type=mem_type, key=key, content=content,
             tags=tags, importance=importance,
+            source=source,
             source_session=session_key if mem_type == MemoryType.USER else "",
         )
         try:
@@ -158,6 +171,9 @@ class MemoryTool(Tool):
         content = params.get("content", "")
         if not content:
             return ToolResult(success=False, error="content is required for replace")
+        source = params.get("source", "")
+        if source not in ("user_stated", "model_inferred"):
+            source = "model_inferred"
 
         entry, resolve_error = self._resolve_entry(key, old_text, mem_type, session_key)
         if resolve_error:
@@ -166,7 +182,7 @@ class MemoryTool(Tool):
             return ToolResult(success=False, error=f"No matching memory found for key='{key}' old_text='{old_text}'")
 
         try:
-            self._store.update(entry.id, content=content)
+            self._store.update(entry.id, content=content, source=source)
         except ValueError as exc:
             return ToolResult(success=False, error=str(exc))
         return ToolResult(success=True, output=f"Memory updated: [{entry.type.value}] {entry.key}")

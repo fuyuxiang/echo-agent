@@ -147,6 +147,7 @@ class MemoryReviewer:
                 key=key,
                 content=content,
                 importance=importance,
+                source="model_inferred",
                 source_session=self._session_key if mem_type == MemoryType.USER else "",
             )
             try:
@@ -167,6 +168,7 @@ class MemoryReviewer:
                     key=key or "auto",
                     content=content,
                     importance=importance,
+                    source="model_inferred",
                     source_session=self._session_key if mem_type == MemoryType.USER else "",
                 )
                 try:
@@ -175,7 +177,7 @@ class MemoryReviewer:
                     return f"Error: {exc}"
                 return f"Added (new) [{target}] {entry.key}"
             try:
-                self._store.update(entry.id, content=content)
+                self._store.update(entry.id, content=content, source="model_inferred")
             except ValueError as exc:
                 return f"Error: {exc}"
             return f"Updated [{target}] {entry.key}"

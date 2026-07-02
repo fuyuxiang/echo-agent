@@ -196,7 +196,7 @@ class TestExecute:
         })
 
         assert result == "Updated [user] lang"
-        store.update.assert_called_once_with("e1", content="rust")
+        store.update.assert_called_once_with("e1", content="rust", source="model_inferred")
 
     def test_replace_no_entry_creates_new(self):
         reviewer, _, store = _build_reviewer()

@@ -176,6 +176,7 @@ class SemanticManager:
                 tags=fact.get("tags", []),
                 importance=fact.get("importance", 0.5),
                 episode_id=episode.id,
+                source="consolidated",
                 source_session=episode.session_key if fact_type == MemoryType.USER else "",
             )
             try:
