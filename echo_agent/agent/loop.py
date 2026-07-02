@@ -67,6 +67,39 @@ def _resolve_builtin_skills_dir(workspace: Path, configured_path: str) -> Path |
     return None
 
 
+def resolve_embed_fallback(embed_provider, emb_model, local_model_name):
+    """Resolve the embedding tier: provider-backed when available, else the
+    local fastembed fallback (zero-config vector search), else nothing.
+
+    Returns (embed_fn | None, embed_model_id, local_embedder | None)."""
+    if embed_provider is not None:
+        async def _embed(text: str, _p=embed_provider, _model=emb_model) -> list[float]:
+            result = await _p.embed(text, model=_model)
+            return result or []
+        model_id = f"{type(embed_provider).__name__.lower()}:{emb_model or 'default'}"
+        return _embed, model_id, None
+
+    if local_model_name:
+        from echo_agent.memory.local_embed import LocalEmbedder
+        local = LocalEmbedder(local_model_name)
+        if local.available:
+            logger.info(
+                "No embed-capable provider; using local embedding fallback '{}'",
+                local_model_name,
+            )
+            return local.embed, local.model_id, local
+        logger.warning(
+            "fastembed not importable; vector search degrades to keyword mode",
+        )
+        return None, "", None
+
+    logger.warning(
+        "No embedding-capable provider registered and local fallback disabled; "
+        "vector search and hybrid retrieval will degrade to keyword mode"
+    )
+    return None, "", None
+
+
 class AgentLoop:
     """Core processing engine that ties all subsystems together."""
 
@@ -194,6 +227,8 @@ class AgentLoop:
         self._hybrid_retriever = None
         self._vector_index = None
         self._embed_fn = None
+        self._local_embedder = None
+        self._embed_model_id = ""
         self._episodic = None
         if config.memory.enabled:
             self._init_advanced_memory(config, storage)
@@ -438,17 +473,16 @@ class AgentLoop:
 
         vector_index = None
         embed_fn = None
+        self._local_embedder = None
+        self._embed_model_id = ""
         if config.memory.vector_enabled and storage:
-            from echo_agent.memory.vectors import VectorIndex
-            vector_index = VectorIndex(storage, dimensions=config.memory.vector_dimensions)
-            self.memory.set_vector_index(vector_index)
-
             from echo_agent.models.provider import LLMProvider
+
             emb_model = config.memory.embedding_model or None
             # Prefer the main provider when it supports embeddings; otherwise
-            # route to any registered embed-capable provider so an Anthropic
-            # (or other non-embedding) main provider no longer silently
-            # disables vector search / hybrid retrieval / contradiction scan.
+            # route to any registered embed-capable provider; otherwise fall
+            # back to the local fastembed model so vector search works with
+            # zero configuration (spec 2026-07-02).
             if hasattr(self.provider, "embed") and type(self.provider).embed is not LLMProvider.embed:
                 embed_provider: Any = self.provider
             elif self.router is not None:
@@ -464,16 +498,17 @@ class AgentLoop:
             else:
                 embed_provider = None
 
-            if embed_provider is not None:
-                async def _embed(text: str, _p=embed_provider, _model=emb_model) -> list[float]:
-                    result = await _p.embed(text, model=_model)
-                    return result or []
-                embed_fn = _embed
-            else:
-                logger.warning(
-                    "No embedding-capable provider registered; vector search "
-                    "and hybrid retrieval will degrade to keyword mode"
-                )
+            embed_fn, self._embed_model_id, self._local_embedder = resolve_embed_fallback(
+                embed_provider, emb_model, config.memory.local_embedding_model,
+            )
+
+            from echo_agent.memory.vectors import VectorIndex
+            vector_index = VectorIndex(
+                storage,
+                dimensions=config.memory.vector_dimensions,
+                model_id=self._embed_model_id,
+            )
+            self.memory.set_vector_index(vector_index)
 
         self._vector_index = vector_index
         self._embed_fn = embed_fn
@@ -552,17 +587,38 @@ class AgentLoop:
     def is_running(self) -> bool:
         return self._running
 
+    def _resolved_vector_dimensions(self) -> int:
+        """Dimension for knowledge attach: explicit config wins, then the live
+        index, then the local model's known dim, then the legacy default."""
+        if self.config.memory.vector_dimensions:
+            return self.config.memory.vector_dimensions
+        if self._vector_index is not None and self._vector_index.dimensions:
+            return self._vector_index.dimensions
+        if self._local_embedder is not None and self._local_embedder.dimensions:
+            return self._local_embedder.dimensions
+        return 1536
+
     async def start(self) -> None:
         self._running = True
         if self._vector_index is not None:
+            # Order matters: purge orphan rows BEFORE the index loads (so they
+            # never enter the matrix), then queue re-embeds for entries whose
+            # vector is missing or was produced by a different model.
+            try:
+                await self.memory.scan_orphan_vectors()
+            except Exception as e:
+                logger.warning("Orphan vector scan failed: {}", e)
             await self._vector_index.initialize()
+            queued = self.memory.queue_missing_embeds(self._vector_index.stale_source_ids)
+            if queued:
+                self._spawn_background(self.memory.flush_pending_embeds())
         # Knowledge vectors reuse the same embed_fn but stay in their own sidecar
         # store. Inject here in start() — both self.knowledge and self._embed_fn
         # are assigned during __init__, but _init_advanced_memory runs before
         # knowledge is constructed, so injection cannot live there.
         if self.knowledge is not None and self._embed_fn is not None:
             self.knowledge.attach_embedding(
-                self._embed_fn, self.config.memory.vector_dimensions,
+                self._embed_fn, self._resolved_vector_dimensions(),
                 embed_timeout=self.config.memory.embed_timeout_seconds,
             )
         if self.knowledge is not None and self.knowledge.needs_vector_backfill():
