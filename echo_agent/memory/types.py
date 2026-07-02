@@ -22,6 +22,22 @@ class MemoryType(str, Enum):
     ENVIRONMENT = "environment"
 
 
+# Provenance vocabulary — the writing PATH decides the label, the model never
+# free-chooses (except the memory tool's constrained enum). Current words:
+#   user_stated    — the user explicitly asked to remember / stated the fact
+#   consolidated   — distilled by sleep-time consolidation (promote_from_episodic)
+#   model_inferred — the model inferred it from conversation (tool default,
+#                    background reviewer)
+#   legacy         — pre-provenance entries (unknown origin)
+# String field, not an enum: future write paths add a word for free.
+_SOURCE_PRIORITY = {"user_stated": 3, "consolidated": 2, "model_inferred": 1}
+
+
+def source_priority(source: str) -> int:
+    """Contradiction-adjudication rank. Unknown words (incl. legacy) rank 0."""
+    return _SOURCE_PRIORITY.get(source, 0)
+
+
 @dataclass
 class MemoryEntry:
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
@@ -40,6 +56,7 @@ class MemoryEntry:
     episode_id: str = ""
     version: int = 1
     superseded_by: str = ""
+    source: str = "legacy"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -59,6 +76,7 @@ class MemoryEntry:
             "episode_id": self.episode_id,
             "version": self.version,
             "superseded_by": self.superseded_by,
+            "source": self.source,
         }
 
     @classmethod
@@ -80,6 +98,7 @@ class MemoryEntry:
             episode_id=data.get("episode_id", ""),
             version=data.get("version", 1),
             superseded_by=data.get("superseded_by", ""),
+            source=data.get("source", "legacy"),
         )
 
     def effective_importance(self, decay_half_life_days: float = 30.0) -> float:
