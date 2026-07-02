@@ -44,6 +44,7 @@ class ApprovalGate:
         allowlist: ApprovalAllowlist | None = None,
         registry: Any = None,
         router: Any = None,
+        cognitive_emitter: Any = None,
     ):
         self._config = config
         self._approval = approval
@@ -52,6 +53,7 @@ class ApprovalGate:
         self._provider = provider
         self._allowlist = allowlist or ApprovalAllowlist()
         self._router = router
+        self._cog = cognitive_emitter
         # The registry lets the gate read a tool's *declared* risk_level (e.g.
         # MCP tools classify destructiveHint → EXEC at adapter construction).
         # Without it, dynamic tools fall through to the WRITE default and skip
@@ -209,9 +211,11 @@ class ApprovalGate:
             return ApprovalCheck(approved_actions=approved_actions)
 
         if event is not None:
-            await self._publish_approval_request(event, approval_req.id, tool_name, guard, pattern_key)
+            await self._publish_approval_request(
+                event, approval_req.id, tool_name, guard, pattern_key, arguments
+            )
 
-        if not running and channel in {"cli", "direct", ""}:
+        if not running and self._is_interactive_channel(channel):
             return ApprovalCheck(ToolResult(
                 success=False,
                 error=(
@@ -258,6 +262,7 @@ class ApprovalGate:
         tool_name: str,
         guard: GuardDecision,
         pattern_key: str,
+        arguments: dict[str, Any] | None = None,
     ) -> None:
         reason = guard.reason or "approval policy requires confirmation"
         text = (
@@ -279,6 +284,16 @@ class ApprovalGate:
         out.metadata["_approval_request"] = True
         out.metadata["_inbound_event_id"] = event.event_id
         await self._bus.publish_outbound(out)
+        # Additive: emit an interactive approval frame for an attached cli TUI.
+        # Fires AFTER the text publish and never changes approval outcome.
+        if self._cog is not None:
+            await self._cog.emit(
+                event, "approval_request",
+                {"request_id": request_id, "action": tool_name, "tool": tool_name,
+                 "params": {k: str(v)[:120] for k, v in (arguments or {}).items()},
+                 "risk": reason},
+                f"⚠️ 需要确认: {tool_name}",
+            )
 
     def _approval_required(self, tool_name: str, guard: GuardDecision, risk: RiskLevel) -> bool:
         approval_cfg = self._config.permissions.approval
@@ -304,6 +319,13 @@ class ApprovalGate:
 
     def _is_trusted_channel(self, channel: str) -> bool:
         return channel in self._config.permissions.approval.trusted_channels
+
+    @staticmethod
+    def _is_interactive_channel(channel: str) -> bool:
+        """cli attaches over the gateway, so its channel is 'gateway:cli' — the
+        bare {'cli','direct',''} check would misroute it into unattended/auto
+        paths. Treat both spellings as interactive."""
+        return channel in {"cli", "direct", "", "gateway:cli"}
 
     def _is_unattended(self, event: InboundEvent | None, channel: str) -> bool:
         if event and event.metadata.get("_unattended"):

@@ -203,6 +203,7 @@ class AgentLoop:
             provider=provider,
             registry=self.tools,
             router=router,
+            cognitive_emitter=self.cognitive_emitter,
             allowlist=ApprovalAllowlist(
                 store_path=self.workspace / "data" / "approval_allowlist.json",
             ),

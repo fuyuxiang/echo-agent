@@ -12,6 +12,11 @@ def test_stages_accept_cognitive_emitter():
     assert "cognitive_emitter" in inspect.signature(ContextStage.__init__).parameters
 
 
+def test_approval_gate_accepts_cognitive_emitter():
+    from echo_agent.agent.approval_gate import ApprovalGate
+    assert "cognitive_emitter" in inspect.signature(ApprovalGate.__init__).parameters
+
+
 class _CapEmitter:
     def __init__(self):
         self.calls = []
