@@ -193,3 +193,31 @@ async def test_heartbeat_emits_cognitive_event():
     assert cap.calls[0][0] == "heartbeat"
     assert cap.calls[0][1]["stage"] == "calling_tool"
     assert "note" in cap.calls[0][1]
+
+
+@pytest.mark.asyncio
+async def test_non_cli_channel_emits_nothing():
+    """Zero-intrusion guard: a non-cli (wechat) session must produce ZERO
+    cognitive frames. Uses a REAL CognitiveEmitter so the channel gate inside
+    emit() is the thing under test — wechat channel -> gate drops everything."""
+    from echo_agent.agent.cognitive_emitter import CognitiveEmitter
+
+    class _CapBus:
+        def __init__(self):
+            self.out = []
+
+        async def publish_outbound(self, o):
+            self.out.append(o)
+
+    bus = _CapBus()
+    emitter = CognitiveEmitter(bus)
+    stage = ContextStage.__new__(ContextStage)
+    stage._cog = emitter
+    ev = InboundEvent.text_message(
+        channel="gateway:wechat", sender_id="u", chat_id="c", text="hi"
+    )
+    await stage._emit_memory_recalled(
+        ev, [{"content": "x", "source": "user_stated", "score": 1.0}]
+    )
+    # Gate lives in emitter.emit(); wechat channel -> nothing published.
+    assert bus.out == []
