@@ -372,18 +372,6 @@ class TestHybridRetriever:
             vector_index=None,
         )
 
-    def test_query_entropy_single_token(self):
-        ent = HybridRetriever._query_entropy("python")
-        assert ent == 0.0  # single unique token => 0 entropy
-
-    def test_query_entropy_diverse(self):
-        ent = HybridRetriever._query_entropy("python java rust golang typescript")
-        assert ent > 0.9  # all unique tokens => high entropy
-
-    def test_query_entropy_empty(self):
-        ent = HybridRetriever._query_entropy("")
-        assert ent == 0.5  # default for empty
-
     def test_bm25_search_basic(self):
         entries = [
             _make_entry(id="a", key="python", content="python programming language"),
@@ -401,18 +389,6 @@ class TestHybridRetriever:
         retriever = self._make_retriever(entries)
         results = retriever._bm25_search("zzzznonexistent", entries, limit=10)
         assert len(results) == 0
-
-    def test_resonance_score_low_entropy(self):
-        retriever = self._make_retriever([])
-        entry = _make_entry(importance=1.0, last_accessed="")
-        score = retriever._resonance_score(entry, keyword_score=1.0, vector_score=0.0, query_entropy=0.0)
-        assert score == pytest.approx(0.5 * 1.0, abs=0.01)
-
-    def test_resonance_score_high_entropy(self):
-        retriever = self._make_retriever([])
-        entry = _make_entry(importance=1.0, last_accessed="")
-        score = retriever._resonance_score(entry, keyword_score=0.0, vector_score=1.0, query_entropy=1.0)
-        assert score == pytest.approx(1.0 * 1.0, abs=0.01)
 
     @pytest.mark.asyncio
     async def test_retrieve_keyword_only(self):
@@ -903,16 +879,6 @@ class TestHybridRetrieverWithVectors:
         assert len(results) >= 1
         assert results[0][0].id == "py"
 
-    def test_resonance_score_mid_entropy(self):
-        retriever = HybridRetriever(entries_fn=lambda: [])
-        entry = _make_entry(importance=1.0, last_accessed="")
-        score = retriever._resonance_score(
-            entry, keyword_score=1.0, vector_score=1.0, query_entropy=0.5,
-        )
-        w_kw = 0.5 * (1 - 0.5)
-        w_vec = 0.5 + 0.5 * 0.5
-        expected = w_kw * 1.0 + w_vec * 1.0
-        assert score == pytest.approx(expected, abs=0.01)
 
 
 # ===========================================================================

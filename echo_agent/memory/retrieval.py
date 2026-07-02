@@ -1,10 +1,11 @@
-"""Hybrid retrieval — BM25 + vector + Resonance Scoring."""
+"""Hybrid retrieval — BM25 + vector + RRF (Reciprocal Rank Fusion)."""
 
 from __future__ import annotations
 
 import asyncio
 import math
 from collections import Counter
+from dataclasses import dataclass
 from typing import Callable, Awaitable, TYPE_CHECKING
 
 from loguru import logger
@@ -12,17 +13,33 @@ from loguru import logger
 if TYPE_CHECKING:
     from echo_agent.memory.vectors import VectorIndex
 
-from echo_agent.memory.types import MemoryEntry, MemoryType
+from echo_agent.memory.types import MemoryEntry, MemoryType, Episode
 from echo_agent.memory.forgetting import ForgettingCurve
 from echo_agent.memory.text import tokenize as _tokenize_shared
 
+_RRF_K = 60
+
+
+@dataclass
+class _EpisodicProxy:
+    """Lightweight wrapper so Episodes participate in BM25 scoring transparently."""
+    id: str
+    key: str
+    content: str
+    tags: list
+    is_superseded: bool = False
+    type: MemoryType = MemoryType.ENVIRONMENT
+    importance: float = 0.5
+    access_count: int = 0
+    last_accessed: str = ""
+    _episode: Episode | None = None
+
 
 class HybridRetriever:
-    """Multi-signal retrieval with query-adaptive Resonance Scoring.
+    """Multi-signal retrieval with Reciprocal Rank Fusion (RRF).
 
-    Weights adapt per-query based on query entropy (Shannon entropy of token distribution).
-    - High entropy (vague/broad query) -> upweight vector similarity
-    - Low entropy (specific query) -> upweight keyword match
+    Fuses BM25 keyword ranking and vector similarity ranking using RRF,
+    then applies forgetting-curve importance decay.
     """
 
     def __init__(
@@ -48,56 +65,98 @@ class HybridRetriever:
         self._embed_timeout_warned = False
 
     async def retrieve(
-        self, query: str, limit: int = 10,
+        self, query: str, limit: int = 8,
         session_key: str = "", mem_type: MemoryType | None = None,
-    ) -> list[tuple[MemoryEntry, float]]:
-        """混合检索管线：BM25 + 向量相似度 + 知识图谱扩展 + 共振评分。
+        episodes: list[Episode] | None = None,
+    ) -> list[tuple[MemoryEntry | Episode, float]]:
+        """混合检索管线：BM25 + 向量相似度 + RRF 融合。
 
         Args:
             query: 检索查询文本
             limit: 返回结果数量上限
             session_key: 会话标识，用于记忆可见性过滤
             mem_type: 可选的记忆类型过滤
+            episodes: 可选的 Episode 列表，参与统一排序
         Returns:
-            按共振评分降序排列的 (记忆条目, 分数) 列表
+            按 RRF 分数降序排列的 (记忆条目|Episode, 分数) 列表
         """
         entries = self._entries_fn()
         if session_key and self._visibility_fn is not None:
             entries = [e for e in entries if self._visibility_fn(e, session_key)]
         if mem_type is not None:
             entries = [e for e in entries if e.type == mem_type]
-        if not entries:
+
+        # Build unified candidate pool: memory entries + episodic proxies
+        candidates: list = list(entries)
+        ep_proxies: dict[str, Episode] = {}
+        if episodes:
+            for ep in episodes:
+                proxy = _EpisodicProxy(
+                    id=f"ep:{ep.id}", key="episode", content=ep.summary or "",
+                    tags=[], _episode=ep,
+                )
+                candidates.append(proxy)
+                ep_proxies[f"ep:{ep.id}"] = ep
+
+        if not candidates:
             return []
 
-        entry_map = {e.id: e for e in entries}
-        entropy = self._query_entropy(query)
         pool = limit * 3
+        # BM25 ranking
+        bm25_ranked = self._bm25_search(query, candidates, pool)
+        bm25_rank_map = {eid: rank for rank, (eid, _) in enumerate(bm25_ranked)}
 
-        keyword_scores: dict[str, float] = dict(self._bm25_search(query, entries, pool))
-        vector_scores: dict[str, float] = {}
+        # Vector ranking
+        vec_rank_map: dict[str, int] = {}
         if self._vector_index and self._embed_fn:
-            vector_scores = {eid: sc for eid, sc in await self._vector_search(query, pool) if eid in entry_map}
+            vec_results = await self._vector_search(query, pool)
+            candidate_ids = {c.id for c in candidates}
+            vec_rank_map = {
+                eid: rank for rank, (eid, _) in enumerate(vec_results)
+                if eid in candidate_ids
+            }
 
-        all_ids = set(keyword_scores) | set(vector_scores)
-        kw_max = max(keyword_scores.values(), default=1.0) or 1.0
-        vec_max = max(vector_scores.values(), default=1.0) or 1.0
-        has_vector = bool(vector_scores)
-        scored: list[tuple[MemoryEntry, float]] = []
-        for memory_id in all_ids:
-            entry = entry_map.get(memory_id)
-            if entry is None or entry.is_superseded:
+        # RRF fusion
+        all_ids = set(bm25_rank_map) | set(vec_rank_map)
+        entry_map = {c.id: c for c in candidates}
+        scored: list[tuple[MemoryEntry | Episode, float]] = []
+        for cid in all_ids:
+            candidate = entry_map.get(cid)
+            if candidate is None or candidate.is_superseded:
                 continue
-            score = self._resonance_score(
-                entry, keyword_scores.get(memory_id, 0.0) / kw_max,
-                vector_scores.get(memory_id, 0.0) / vec_max, entropy,
-                has_vector=has_vector,
-            )
-            if score > 0:
-                scored.append((entry, score))
+            rrf = 0.0
+            if cid in bm25_rank_map:
+                rrf += 1.0 / (_RRF_K + bm25_rank_map[cid])
+            if cid in vec_rank_map:
+                rrf += 1.0 / (_RRF_K + vec_rank_map[cid])
+            importance = self._forgetting.effective_importance(candidate)
+            final_score = rrf * importance
+
+            if final_score > 0:
+                if isinstance(candidate, _EpisodicProxy) and candidate._episode:
+                    scored.append((candidate._episode, final_score))
+                else:
+                    scored.append((candidate, final_score))
 
         scored.sort(key=lambda x: x[1], reverse=True)
-        logger.debug("hybrid retrieve: {} candidates, entropy={:.3f}", len(scored), entropy)
-        return scored[:limit]
+
+        # Quota: memory <=5, episode <=3
+        result: list[tuple[MemoryEntry | Episode, float]] = []
+        mem_count = ep_count = 0
+        for item, score in scored:
+            if isinstance(item, Episode):
+                if ep_count < 3:
+                    result.append((item, score))
+                    ep_count += 1
+            else:
+                if mem_count < 5:
+                    result.append((item, score))
+                    mem_count += 1
+            if mem_count + ep_count >= limit:
+                break
+        logger.debug("RRF retrieve: {} candidates, {} results ({}mem+{}ep)",
+                     len(scored), len(result), mem_count, ep_count)
+        return result
 
     # -- tokenizer -----------------------------------------------------------
 
@@ -107,7 +166,7 @@ class HybridRetriever:
 
     # -- BM25 ----------------------------------------------------------------
 
-    def _bm25_search(self, query: str, entries: list[MemoryEntry], limit: int) -> list[tuple[str, float]]:
+    def _bm25_search(self, query: str, entries: list, limit: int) -> list[tuple[str, float]]:
         k1, b = 1.5, 0.75
         q_tokens = self._tokenize(query)
         if not q_tokens:
@@ -164,39 +223,4 @@ class HybridRetriever:
             logger.warning("embed_fn failed for vector search")
             return []
         return await self._vector_index.search(embedding, limit)
-
-    # -- query entropy -------------------------------------------------------
-
-    @staticmethod
-    def _query_entropy(query: str) -> float:
-        """Shannon entropy of token freq distribution, normalized to [0, 1]."""
-        tokens = _tokenize_shared(query)
-        if not tokens:
-            return 0.5
-        freq = Counter(tokens)
-        total = len(tokens)
-        entropy = -sum((c / total) * math.log2(c / total) for c in freq.values())
-        max_ent = math.log2(len(freq)) if len(freq) > 1 else 1.0
-        return min(entropy / max_ent, 1.0) if max_ent > 0 else 0.0
-
-    # -- resonance scoring ---------------------------------------------------
-
-    def _resonance_score(
-        self, entry: MemoryEntry, keyword_score: float,
-        vector_score: float, query_entropy: float,
-        has_vector: bool = True,
-    ) -> float:
-        """Query-adaptive Resonance Scoring — weights shift with entropy.
-
-        When vector search is unavailable, uses keyword score only with
-        full weight to avoid penalizing high-entropy queries.
-        """
-        if not has_vector:
-            raw = keyword_score
-        else:
-            e = max(0.0, min(1.0, query_entropy))
-            w_keyword = 0.5 * (1 - e)
-            w_vector = 0.5 + 0.5 * e
-            raw = w_keyword * keyword_score + w_vector * vector_score
-        return raw * self._forgetting.effective_importance(entry)
 
