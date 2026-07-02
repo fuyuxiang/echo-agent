@@ -179,7 +179,8 @@ class MemoryStore:
         self._vector_index = None  # set externally via set_vector_index()
         self._retriever = None  # set externally via set_retriever()
         self._embed_fn = None  # async callable: str -> list[float]
-        self._pending_embeds: list[tuple[str, str]] = []  # (entry_id, text) pairs awaiting embedding
+        # (entry_id, text, old_vec_id) triples awaiting embedding
+        self._pending_embeds: list[tuple[str, str, str]] = []
         self._contradiction_scan_on_store = contradiction_scan_on_store
         self._contradiction_detector = None  # set externally or lazily created
         # Unresolved-contradiction tracking for core-snapshot admission.
@@ -203,10 +204,10 @@ class MemoryStore:
     def set_retriever(self, retriever):
         self._retriever = retriever
 
-    def _queue_embed(self, entry: MemoryEntry) -> None:
+    def _queue_embed(self, entry: MemoryEntry, old_vec_id: str = "") -> None:
         if self._embed_fn and self._vector_index:
             text = f"{entry.key} {entry.content}" if entry.key else entry.content
-            self._pending_embeds.append((entry.id, text))
+            self._pending_embeds.append((entry.id, text, old_vec_id))
 
     async def flush_pending_embeds(self) -> int:
         """Generate embeddings for queued entries and add to vector index. Returns count.
@@ -223,7 +224,8 @@ class MemoryStore:
         count = 0
         processed: set[str] = set()
         assigned: dict[MemoryType, dict[str, str]] = {}
-        for entry_id, text in batch:
+        replaced_old: list[str] = []
+        for entry_id, text, old_vec_id in batch:
             entry = self._entries.get(entry_id)
             if entry is None:
                 # Source entry was deleted/forgotten while queued — nothing to
@@ -239,6 +241,8 @@ class MemoryStore:
                         assigned.setdefault(entry.type, {})[entry_id] = vec_id
                         processed.add(entry_id)
                         count += 1
+                        if old_vec_id and old_vec_id != vec_id:
+                            replaced_old.append(old_vec_id)
             except Exception as e:
                 logger.debug("Embedding generation failed for {}: {}", entry_id, e)
         # Drop only the entries we actually handled; keep failures (and any
@@ -247,6 +251,13 @@ class MemoryStore:
             self._pending_embeds = [
                 item for item in self._pending_embeds if item[0] not in processed
             ]
+        # New vector landed — drop the superseded old row so the index and the
+        # vectors table don't accumulate orphans on every content update.
+        for old_id in replaced_old:
+            try:
+                await self._vector_index.remove(old_id)
+            except Exception as e:
+                logger.warning("Failed to remove replaced vector {}: {}", old_id, e)
         # Persist embedding_id assignments — without this, vector cleanup on
         # delete/forget has nothing to key on and the index grows forever.
         for mem_type, ids in assigned.items():
@@ -267,6 +278,50 @@ class MemoryStore:
         if count:
             logger.info("Generated {} embeddings", count)
         return count
+
+    def queue_missing_embeds(self, stale_source_ids: "Iterable[str]" = ()) -> int:
+        """Queue entries that lack a vector (embedding_id empty) or whose stored
+        vector was produced by a different embedding model (stale). Called once
+        at startup after the vector index is initialized. Returns queued count."""
+        if not self._embed_fn or not self._vector_index:
+            return 0
+        stale = set(stale_source_ids)
+        queued_ids = {item[0] for item in self._pending_embeds}
+        count = 0
+        for entry in self._entries.values():
+            if entry.is_superseded or entry.id in queued_ids:
+                continue
+            if not entry.embedding_id or entry.id in stale:
+                self._queue_embed(entry, old_vec_id=entry.embedding_id)
+                count += 1
+        if count:
+            logger.info("Queued {} entries for embedding backfill", count)
+        return count
+
+    async def scan_orphan_vectors(self) -> int:
+        """Delete vectors-table rows not referenced by any entry's embedding_id.
+        Safety net for rows left behind by pre-fix updates/evictions; runs at
+        startup BEFORE the index loads so orphans never enter the matrix.
+        Memory owns the vectors table (knowledge uses its own sidecar store)."""
+        if not self._storage:
+            return 0
+        valid = {e.embedding_id for e in self._entries.values() if e.embedding_id}
+        try:
+            rows = await self._storage.load_vectors_all()
+        except Exception as e:
+            logger.warning("Orphan vector scan failed to load vectors: {}", e)
+            return 0
+        removed = 0
+        for row in rows:
+            if row["id"] not in valid:
+                try:
+                    await self._storage.delete_vector(row["id"])
+                    removed += 1
+                except Exception as e:
+                    logger.debug("Failed to delete orphan vector {}: {}", row["id"], e)
+        if removed:
+            logger.info("Removed {} orphan vector rows", removed)
+        return removed
 
     @property
     def forgetting_curve(self) -> ForgettingCurve:
@@ -657,7 +712,7 @@ class MemoryStore:
             self._dirty_ids.add(entry_id)
             self._save_type(entry.type)
             if normalized_content is not None:
-                self._queue_embed(entry)
+                self._queue_embed(entry, old_vec_id=entry.embedding_id)
             return entry
 
     def delete(self, entry_id: str) -> bool:
