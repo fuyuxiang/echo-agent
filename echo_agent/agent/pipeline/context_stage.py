@@ -142,6 +142,42 @@ class ContextStage:
         out.metadata.update(metadata)
         await self._bus.publish_outbound(out)
 
+    async def _emit_memory_recalled(self, event: InboundEvent, scored: list) -> None:
+        """Emit a `memory_recalled` cognitive frame carrying each recalled
+        memory's content/source-grade/score. Called from build() after the
+        turn's memory items are known.
+
+        Normalizes BOTH shapes deliberately: the real call site passes
+        `(entry, score)` tuples (entry has `.content`/`.source`), while unit
+        tests and any structured-dict caller pass `{"content","source","score"}`
+        dicts. Handling both keeps the emitter robust to either provenance
+        without a shared type dependency — not overbuilding.
+        """
+        if self._cog is None or not scored:
+            return
+        items: list[dict[str, Any]] = []
+        for s in scored[:12]:
+            if isinstance(s, dict):
+                content = s.get("content", "")
+                source = s.get("source", "legacy")
+                score = s.get("score", 0.0)
+            elif isinstance(s, tuple):  # real call site: (entry, score)
+                entry, score = s[0], (s[1] if len(s) > 1 else 0.0)
+                content = getattr(entry, "content", "")
+                source = getattr(entry, "source", "legacy")
+            else:  # bare entry object
+                content = getattr(s, "content", str(s))
+                source = getattr(s, "source", "legacy")
+                score = getattr(s, "score", 0.0)
+            items.append({
+                "content": str(content)[:200],
+                "source": source or "legacy",
+                "score": round(float(score or 0.0), 3),
+            })
+        await self._cog.emit(
+            event, "memory_recalled", {"items": items},
+            f"召回 {len(items)} 条记忆",
+        )
 
     async def _fetch_knowledge(self, query: str, user_id: str) -> tuple[list, str]:
         """Inline knowledge retrieval. Vector path is async; keyword-only path
@@ -310,6 +346,12 @@ class ContextStage:
                             for r, _ in mem_items[:5]
                         ]
                     await self._emit_progress(event, _mem_meta)
+                # Cognitive埋点: surface the actual recalled memories (content/
+                # source-grade/score) to the CLI TUI. Pass mem_items (memory
+                # entries only), NOT `scored` which mixes in episodes. The
+                # emitter internally gates to channel=="gateway:cli".
+                if mem_items and self._cog is not None:
+                    await self._emit_memory_recalled(event, mem_items)
 
         if self._knowledge:
             # Knowledge is ACL-filtered per user (KnowledgeIndex.search filters
