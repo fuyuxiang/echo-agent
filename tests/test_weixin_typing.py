@@ -45,7 +45,7 @@ def _make_weixin(tmp_path: Path, *, typing_indicator: bool = True) -> WeixinChan
 def _patch_getconfig(monkeypatch, ticket: str | None) -> list[int]:
     calls: list[int] = []
 
-    async def fake_getconfig(session, *, base_url, token):
+    async def fake_getconfig(session, *, base_url, token, user_id, context_token=None):
         calls.append(1)
         return {"typing_ticket": ticket} if ticket else {}
 
@@ -58,8 +58,8 @@ class TestTypingTicket:
     async def test_fetches_and_caches_ticket(self, tmp_path, monkeypatch):
         ch = _make_weixin(tmp_path)
         calls = _patch_getconfig(monkeypatch, "T1")
-        first = await ch._ensure_typing_ticket()
-        second = await ch._ensure_typing_ticket()
+        first = await ch._ensure_typing_ticket("user@x")
+        second = await ch._ensure_typing_ticket("user@x")
         assert first == "T1"
         assert second == "T1"
         assert len(calls) == 1  # second call served from cache
@@ -68,17 +68,34 @@ class TestTypingTicket:
     async def test_none_when_getconfig_has_no_ticket(self, tmp_path, monkeypatch):
         ch = _make_weixin(tmp_path)
         _patch_getconfig(monkeypatch, None)
-        assert await ch._ensure_typing_ticket() is None
+        assert await ch._ensure_typing_ticket("user@x") is None
 
     @pytest.mark.asyncio
     async def test_none_when_getconfig_raises(self, tmp_path, monkeypatch):
         ch = _make_weixin(tmp_path)
 
-        async def boom(session, *, base_url, token):
+        async def boom(session, *, base_url, token, user_id, context_token=None):
             raise RuntimeError("network down")
 
         monkeypatch.setattr(wx, "_get_config", boom)
-        assert await ch._ensure_typing_ticket() is None
+        assert await ch._ensure_typing_ticket("user@x") is None
+
+    @pytest.mark.asyncio
+    async def test_ticket_is_cached_per_chat(self, tmp_path, monkeypatch):
+        """Each chat gets its own ticket; iLink binds tickets to the peer."""
+        ch = _make_weixin(tmp_path)
+        seen: list[str] = []
+
+        async def fake_getconfig(session, *, base_url, token, user_id, context_token=None):
+            seen.append(user_id)
+            return {"typing_ticket": f"TKT-{user_id}"}
+
+        monkeypatch.setattr(wx, "_get_config", fake_getconfig)
+        assert await ch._ensure_typing_ticket("alice@x") == "TKT-alice@x"
+        assert await ch._ensure_typing_ticket("bob@x") == "TKT-bob@x"
+        # Each distinct chat triggers exactly one fetch; repeats hit the cache.
+        assert await ch._ensure_typing_ticket("alice@x") == "TKT-alice@x"
+        assert seen == ["alice@x", "bob@x"]
 
 
 class TestSendTyping:
@@ -241,12 +258,29 @@ class TestGetConfigAndSendTypingApi:
             return {"typing_ticket": "TKT"}
 
         monkeypatch.setattr(wx, "_api_post", fake_api_post)
-        resp = await wx._get_config(MagicMock(), base_url="https://api", token="tok")
+        resp = await wx._get_config(
+            MagicMock(), base_url="https://api", token="tok", user_id="user@x",
+        )
         assert resp == {"typing_ticket": "TKT"}
         assert captured["endpoint"] == wx._EP_GET_CONFIG
-        assert captured["payload"] == {}
+        assert captured["payload"] == {"ilink_user_id": "user@x"}
         assert captured["base_url"] == "https://api"
         assert captured["token"] == "tok"
+
+    @pytest.mark.asyncio
+    async def test_get_config_includes_context_token(self, monkeypatch):
+        captured: dict = {}
+
+        async def fake_api_post(session, *, base_url, endpoint, payload, token, timeout_ms):
+            captured.update(payload=payload)
+            return {"typing_ticket": "TKT"}
+
+        monkeypatch.setattr(wx, "_api_post", fake_api_post)
+        await wx._get_config(
+            MagicMock(), base_url="https://api", token="tok",
+            user_id="user@x", context_token="ctx-123",
+        )
+        assert captured["payload"] == {"ilink_user_id": "user@x", "context_token": "ctx-123"}
 
     @pytest.mark.asyncio
     async def test_send_typing_hits_sendtyping_endpoint(self, monkeypatch):
@@ -268,7 +302,7 @@ class TestGetConfigAndSendTypingApi:
         assert resp == {"errcode": 0}
         assert captured["endpoint"] == wx._EP_SEND_TYPING
         assert captured["payload"] == {
-            "to_user_id": "user@x",
+            "ilink_user_id": "user@x",
             "status": wx._TYPING_START,
             "typing_ticket": "TKT",
         }
@@ -279,15 +313,14 @@ class TestEnsureTicketEdges:
     async def test_none_without_session(self, tmp_path):
         ch = _make_weixin(tmp_path)
         ch._send_session = None
-        assert await ch._ensure_typing_ticket() is None
+        assert await ch._ensure_typing_ticket("user@x") is None
 
     @pytest.mark.asyncio
     async def test_cache_hit_skips_getconfig(self, tmp_path, monkeypatch):
         ch = _make_weixin(tmp_path)
         calls = _patch_getconfig(monkeypatch, "FRESH")
-        ch._typing_ticket = "CACHED"
-        ch._typing_ticket_ts = time.monotonic()  # within TTL
-        assert await ch._ensure_typing_ticket() == "CACHED"
+        ch._typing_tickets["user@x"] = ("CACHED", time.monotonic())  # within TTL
+        assert await ch._ensure_typing_ticket("user@x") == "CACHED"
         assert calls == []  # served from cache, getconfig not called
 
     @pytest.mark.asyncio
@@ -300,22 +333,21 @@ class TestEnsureTicketEdges:
         """
         ch = _make_weixin(tmp_path)
         calls = _patch_getconfig(monkeypatch, "FRESH")
-        ch._typing_ticket = "STALE"
         # 时间戳回拨到 TTL 之前一点,模拟 ticket 已过期
-        ch._typing_ticket_ts = time.monotonic() - (wx._TYPING_TICKET_TTL + 1)
-        assert await ch._ensure_typing_ticket() == "FRESH"
+        ch._typing_tickets["user@x"] = ("STALE", time.monotonic() - (wx._TYPING_TICKET_TTL + 1))
+        assert await ch._ensure_typing_ticket("user@x") == "FRESH"
         assert len(calls) == 1  # 过期 → 重新 getconfig
-        assert ch._typing_ticket == "FRESH"  # 缓存被刷新
+        assert ch._typing_tickets["user@x"][0] == "FRESH"  # 缓存被刷新
 
     @pytest.mark.asyncio
     async def test_ticket_read_from_nested_config(self, tmp_path, monkeypatch):
         ch = _make_weixin(tmp_path)
 
-        async def fake_getconfig(session, *, base_url, token):
+        async def fake_getconfig(session, *, base_url, token, user_id, context_token=None):
             return {"config": {"typing_ticket": "NESTED"}}
 
         monkeypatch.setattr(wx, "_get_config", fake_getconfig)
-        assert await ch._ensure_typing_ticket() == "NESTED"
+        assert await ch._ensure_typing_ticket("user@x") == "NESTED"
 
 
 class TestTypingLoopExtraBranches:

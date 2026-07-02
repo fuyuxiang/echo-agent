@@ -238,13 +238,23 @@ async def _get_config(
     *,
     base_url: str,
     token: str,
+    user_id: str,
+    context_token: str | None = None,
 ) -> dict[str, Any]:
-    """Fetch bot runtime config, including the typing_ticket used by sendtyping."""
+    """Fetch bot runtime config, including the typing_ticket used by sendtyping.
+
+    iLink binds the typing_ticket to the peer conversation, so getconfig must
+    carry the peer's ``ilink_user_id`` (and the latest ``context_token`` when
+    known); an empty body yields a response without a usable ticket.
+    """
+    payload: dict[str, Any] = {"ilink_user_id": user_id}
+    if context_token:
+        payload["context_token"] = context_token
     return await _api_post(
         session,
         base_url=base_url,
         endpoint=_EP_GET_CONFIG,
-        payload={},
+        payload=payload,
         token=token,
         timeout_ms=_API_TIMEOUT_MS,
     )
@@ -264,7 +274,7 @@ async def _send_typing(
         session,
         base_url=base_url,
         endpoint=_EP_SEND_TYPING,
-        payload={"to_user_id": to, "status": status, "typing_ticket": typing_ticket},
+        payload={"ilink_user_id": to, "status": status, "typing_ticket": typing_ticket},
         token=token,
         timeout_ms=_API_TIMEOUT_MS,
     )
@@ -476,8 +486,10 @@ class WeixinChannel(BaseChannel):
         self._msg_tasks: set[asyncio.Task] = set()
         # Typing indicator state.
         self._typing_enabled = config.typing_indicator
-        self._typing_ticket: str | None = None
-        self._typing_ticket_ts: float = 0.0
+        # Per-chat typing_ticket cache: chat_id -> (ticket, fetched_at_monotonic).
+        # iLink binds the ticket to the peer conversation, so a global single
+        # ticket would cross wires between concurrent chats.
+        self._typing_tickets: dict[str, tuple[str, float]] = {}
         # One refreshing typing-loop task per chat being processed.
         self._typing_tasks: dict[str, asyncio.Task] = {}
 
@@ -607,15 +619,23 @@ class WeixinChannel(BaseChannel):
 
     # ── Typing indicator ───────────────────────────────────────────────────────
 
-    async def _ensure_typing_ticket(self) -> str | None:
-        """Return a cached typing_ticket, fetching a fresh one via getconfig if needed."""
+    async def _ensure_typing_ticket(self, chat_id: str) -> str | None:
+        """Return a cached typing_ticket for *chat_id*, fetching via getconfig if needed."""
         if not self._send_session or not self._token:
             return None
         now = time.monotonic()
-        if self._typing_ticket and now - self._typing_ticket_ts < _TYPING_TICKET_TTL:
-            return self._typing_ticket
+        cached = self._typing_tickets.get(chat_id)
+        if cached and now - cached[1] < _TYPING_TICKET_TTL:
+            return cached[0]
+        context_token = self._token_store.get(self._account_id, chat_id)
         try:
-            resp = await _get_config(self._send_session, base_url=self._base_url, token=self._token)
+            resp = await _get_config(
+                self._send_session,
+                base_url=self._base_url,
+                token=self._token,
+                user_id=chat_id,
+                context_token=context_token,
+            )
         except Exception as exc:
             logger.debug("weixin: getconfig for typing_ticket failed: {}", exc)
             return None
@@ -623,12 +643,11 @@ class WeixinChannel(BaseChannel):
         if not ticket:
             logger.debug("weixin: getconfig returned no typing_ticket: {}", resp)
             return None
-        self._typing_ticket = ticket
-        self._typing_ticket_ts = now
+        self._typing_tickets[chat_id] = (ticket, now)
         return ticket
 
     async def _do_send_typing(self, chat_id: str, status: int) -> None:
-        ticket = await self._ensure_typing_ticket()
+        ticket = await self._ensure_typing_ticket(chat_id)
         if not ticket or not self._send_session:
             return
         try:
