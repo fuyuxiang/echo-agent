@@ -28,6 +28,7 @@ from echo_agent.models.router import RouteDecision
 
 if TYPE_CHECKING:
     from echo_agent.agent.approval_gate import ApprovalGate
+    from echo_agent.agent.cognitive_emitter import CognitiveEmitter
     from echo_agent.agent.planning.planner import AgentPlanner
     from echo_agent.agent.tools.registry import ToolRegistry
     from echo_agent.bus.queue import MessageBus
@@ -111,6 +112,7 @@ class InferenceStage:
         planner: AgentPlanner | None = None,
         plan_run_store: Any = None,
         cost_tracker: Any = None,
+        cognitive_emitter: "CognitiveEmitter | None" = None,
     ):
         self._config = config
         self._bus = bus
@@ -131,6 +133,7 @@ class InferenceStage:
         self._planner = planner
         self._plan_run_store = plan_run_store
         self._cost_tracker = cost_tracker
+        self._cog = cognitive_emitter
         # Read-only tool concurrency config (Task 2 added the fields, marked
         # effective). getattr fallbacks because some test configs are MagicMock.
         _tc = getattr(getattr(config, "agent", None), "tool_concurrency", None)

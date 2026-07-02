@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from echo_agent.agent.compression import ConversationCompressor
+    from echo_agent.agent.cognitive_emitter import CognitiveEmitter
     from echo_agent.agent.planning.planner import AgentPlanner
     from echo_agent.config.schema import Config
     from echo_agent.knowledge.index import KnowledgeIndex
@@ -102,6 +103,7 @@ class ContextStage:
         retrieval_on_miss: str = "degrade",
         cache_ttl: float = 60.0,
         cache_jaccard_min: float = 0.3,
+        cognitive_emitter: "CognitiveEmitter | None" = None,
     ):
         self._config = config
         self._sessions = sessions
@@ -126,6 +128,7 @@ class ContextStage:
         self._retrieval_on_miss = retrieval_on_miss
         self._cache_ttl = cache_ttl
         self._cache_jaccard_min = cache_jaccard_min
+        self._cog = cognitive_emitter
 
     async def _emit_progress(self, event: InboundEvent, metadata: dict[str, Any]) -> None:
         if not getattr(self._config.gateway, 'emit_progress_events', True):

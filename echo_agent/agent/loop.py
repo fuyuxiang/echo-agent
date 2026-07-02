@@ -118,6 +118,8 @@ class AgentLoop:
         workflow_engine: Any = None,
     ):
         self.bus = bus
+        from echo_agent.agent.cognitive_emitter import CognitiveEmitter
+        self.cognitive_emitter = CognitiveEmitter(bus)
         self.config = config
         self.provider = provider
         self.router = router
@@ -335,6 +337,7 @@ class AgentLoop:
             retrieval_on_miss=config.memory.retrieval_on_miss,
             cache_ttl=config.memory.cache_ttl_seconds,
             cache_jaccard_min=config.memory.cache_jaccard_min,
+            cognitive_emitter=self.cognitive_emitter,
         )
         self._cost_tracker = CostTracker(
             storage=storage,
@@ -360,6 +363,7 @@ class AgentLoop:
             planner=self.planner,
             plan_run_store=self._plan_run_store,
             cost_tracker=self._cost_tracker,
+            cognitive_emitter=self.cognitive_emitter,
         )
         # Retrieval prefetcher: after each reply ResponseStage fires this on the
         # DISCARDABLE tier to warm the next turn's cache. Needs _hybrid_retriever
