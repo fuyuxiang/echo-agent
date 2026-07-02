@@ -139,18 +139,6 @@ class ContextStage:
         out.metadata.update(metadata)
         await self._bus.publish_outbound(out)
 
-    async def _fetch_episodes(self, query: str, session_key: str) -> list:
-        """Inline episodic recall, scoped to ``session_key`` (no cross-session).
-
-        Mirrors the prefetcher's episodic fetch so a sync-on-miss turn produces
-        the same episodes a warmed cache would have.
-        """
-        episodes = await self._episodic.search_episodes(
-            query, session_key=session_key, limit=3
-        )
-        if not episodes:
-            episodes = await self._episodic.get_session_episodes(session_key, limit=3)
-        return episodes
 
     async def _fetch_knowledge(self, query: str, user_id: str) -> tuple[list, str]:
         """Inline knowledge retrieval. Vector path is async; keyword-only path
@@ -266,8 +254,17 @@ class ContextStage:
                 scored = cached.scored
             elif self._retrieval_on_miss == "sync":
                 if self._hybrid_retriever:
+                    _episodes = None
+                    if self._episodic is not None:
+                        try:
+                            _episodes = await self._episodic.get_session_episodes(
+                                event.session_key, limit=10
+                            )
+                        except Exception as e:
+                            logger.debug("Episode fetch for retrieval failed: {}", e)
                     scored = await self._hybrid_retriever.retrieve(
-                        event.text, limit=5, session_key=event.session_key
+                        event.text, limit=8, session_key=event.session_key,
+                        episodes=_episodes,
                     )
                 else:
                     scored = self._memory.search_scored(
@@ -281,52 +278,35 @@ class ContextStage:
             if scored:
                 scored = filter_recall_by_snapshot(scored, snapshot_ids)
             if scored:
-                retrieval_parts.append(
-                    "Relevant memory:\n"
-                    + "\n".join(f"- {r.key}: {r.content}" for r, _ in scored)
-                )
-                # Reinforcement fires on USE, not on retrieval: only entries
-                # actually injected into this turn's context strengthen.
-                try:
-                    self._memory.reinforce([r.id for r, _ in scored])
-                except Exception as e:
-                    logger.debug("Memory reinforcement failed: {}", e)
-                if publish_response and self._bus:
+                from echo_agent.memory.types import Episode as _Ep
+                mem_items = [(r, s) for r, s in scored if not isinstance(r, _Ep)]
+                ep_items = [(r, s) for r, s in scored if isinstance(r, _Ep)]
+                if mem_items:
+                    retrieval_parts.append(
+                        "Relevant memory:\n"
+                        + "\n".join(f"- {r.key}: {r.content}" for r, _ in mem_items)
+                    )
+                    try:
+                        self._memory.reinforce([r.id for r, _ in mem_items])
+                    except Exception as e:
+                        logger.debug("Memory reinforcement failed: {}", e)
+                if ep_items:
+                    retrieval_parts.append(
+                        "Past episodes:\n"
+                        + "\n".join(f"- {r.summary}" for r, _ in ep_items if r.summary)
+                    )
+                if (mem_items or ep_items) and publish_response and self._bus:
                     _debug = getattr(self._config.gateway, 'progress_debug', False)
                     _mem_meta: dict[str, Any] = {
                         "progress_type": "memory_retrieved",
-                        "count": len(scored),
+                        "count": len(mem_items) + len(ep_items),
                     }
                     if _debug:
                         _mem_meta["entries"] = [
                             {"key": r.key, "content_preview": r.content[:100]}
-                            for r, _ in scored[:5]
+                            for r, _ in mem_items[:5]
                         ]
                     await self._emit_progress(event, _mem_meta)
-
-            # Episodic recall — past conversation episodes for this session.
-            # Episodes are written by the consolidator but were previously never
-            # read back; surfacing the most relevant ones gives cross-session
-            # continuity beyond the distilled semantic facts above. Like main
-            # memory, episodes are warmed by the prefetcher: a fresh cache hit is
-            # used as-is; a miss follows retrieval_on_miss (sync = inline await,
-            # degrade = skip this turn).
-            if self._episodic is not None:
-                episodes = None
-                if cache_fresh:
-                    episodes = cached.episodes
-                elif self._retrieval_on_miss == "sync":
-                    try:
-                        episodes = await self._fetch_episodes(
-                            event.text, event.session_key
-                        )
-                    except Exception as e:
-                        logger.debug("Episodic recall failed: {}", e)
-                if episodes:
-                    retrieval_parts.append(
-                        "Past episodes:\n"
-                        + "\n".join(f"- {ep.summary}" for ep in episodes if ep.summary)
-                    )
 
         if self._knowledge:
             # Knowledge is ACL-filtered per user (KnowledgeIndex.search filters

@@ -13,6 +13,7 @@ from echo_agent.memory.prefetch import (
     is_fresh,
 )
 from echo_agent.session.manager import Session
+from echo_agent.memory.types import Episode as _RealEpisode
 
 
 def _entry(text, scored=None, created=None):
@@ -167,7 +168,7 @@ def _make_context_stage(*, cache, on_miss, on_retrieve=None, hybrid=True,
     if hybrid:
         hybrid_retriever = MagicMock()
 
-        async def _retrieve(text, limit=5, session_key=""):
+        async def _retrieve(text, limit=5, session_key="", episodes=None):
             return on_retrieve(text) if on_retrieve else []
 
         hybrid_retriever.retrieve = AsyncMock(side_effect=_retrieve)
@@ -425,13 +426,11 @@ async def test_prefetch_cache_isolated_per_session_end_to_end():
 
 
 @pytest.mark.asyncio
-async def test_prefetcher_populates_episodes_and_knowledge():
+async def test_prefetcher_populates_knowledge_episodes_always_none():
+    """episodic_fetch removed; episodes field always None, knowledge still works."""
     class _R:
         async def retrieve(self, query, limit=5, session_key=""):
             return [("m", 0.9)]
-
-    async def _epi(query, session_key):
-        return [type("E", (), {"summary": "ep1"})()]
 
     def _know(query, user_id):  # sync, CPU-bound in prod
         return "KB: relevant doc"
@@ -442,27 +441,23 @@ async def test_prefetcher_populates_episodes_and_knowledge():
         written[sk] = e
 
     pf = RetrievalPrefetcher(
-        _R(), cache_put, limit=5, episodic_fetch=_epi, knowledge_fetch=_know
+        _R(), cache_put, limit=5, knowledge_fetch=_know
     )
     await pf.prefetch("s1", "deploy gateway")
     e = written["s1"]
     assert e.scored == [("m", 0.9)]
-    assert e.episodes and e.episodes[0].summary == "ep1"
+    assert e.episodes is None
     assert e.knowledge_context == "KB: relevant doc"
 
 
 @pytest.mark.asyncio
-async def test_prefetcher_passes_user_id_and_session_to_subfetchers():
-    # session isolation: episodic gets session_key, knowledge gets user_id.
+async def test_prefetcher_passes_user_id_to_knowledge():
+    # session isolation: knowledge gets user_id.
     seen = {}
 
     class _R:
         async def retrieve(self, query, limit=5, session_key=""):
             return []
-
-    async def _epi(query, session_key):
-        seen["epi"] = (query, session_key)
-        return []
 
     def _know(query, user_id):
         seen["know"] = (query, user_id)
@@ -472,23 +467,18 @@ async def test_prefetcher_passes_user_id_and_session_to_subfetchers():
         pass
 
     pf = RetrievalPrefetcher(
-        _R(), cache_put, limit=5, episodic_fetch=_epi, knowledge_fetch=_know
+        _R(), cache_put, limit=5, knowledge_fetch=_know
     )
     await pf.prefetch("sess-X", "deploy gateway", user_id="user-7")
-    assert seen["epi"] == ("deploy gateway", "sess-X")
     assert seen["know"] == ("deploy gateway", "user-7")
 
 
 @pytest.mark.asyncio
-async def test_prefetcher_subfetch_failures_isolated():
-    # episodic failure must not block knowledge and vice versa; both leave None
-    # without crashing the background task.
+async def test_prefetcher_knowledge_failure_isolated():
+    # knowledge failure leaves knowledge_context as None without crashing.
     class _R:
         async def retrieve(self, query, limit=5, session_key=""):
             return [("m", 0.5)]
-
-    async def _epi(query, session_key):
-        raise RuntimeError("episodic db down")
 
     def _know(query, user_id):
         raise RuntimeError("knowledge scan blew up")
@@ -499,7 +489,7 @@ async def test_prefetcher_subfetch_failures_isolated():
         written[sk] = e
 
     pf = RetrievalPrefetcher(
-        _R(), cache_put, limit=5, episodic_fetch=_epi, knowledge_fetch=_know
+        _R(), cache_put, limit=5, knowledge_fetch=_know
     )
     await pf.prefetch("s2", "deploy gateway")
     e = written["s2"]
@@ -541,21 +531,23 @@ class _Episode:
         self.summary = summary
 
 
+
 @pytest.mark.asyncio
 async def test_context_uses_cached_episodes_and_knowledge():
+    """Episodes now come from cached.scored (unified path), not cached.episodes."""
     episodic = MagicMock()
-    episodic.search_episodes = AsyncMock(side_effect=AssertionError("must not query"))
-    episodic.get_session_episodes = AsyncMock(side_effect=AssertionError("must not query"))
+    episodic.get_session_episodes = AsyncMock(return_value=[])
     knowledge = MagicMock()
     knowledge.search_async = AsyncMock(side_effect=AssertionError("must not scan"))
     knowledge.format_results = MagicMock(side_effect=AssertionError("must not format"))
 
+    ep = _RealEpisode(id="ep1", session_key="sess-1", summary="cached episode")
     entry = RetrievalCacheEntry(
         query_text="deploy gateway",
         query_tokens=query_tokens("deploy gateway"),
-        scored=[],
+        scored=[(ep, 0.85)],
         created_at=time.time(),
-        episodes=[_Episode("cached episode")],
+        episodes=None,
         knowledge_context="cached KB block",
         knowledge_user_id="u1",
     )
@@ -588,15 +580,20 @@ async def test_context_episode_knowledge_degrade_on_miss():
 
 @pytest.mark.asyncio
 async def test_context_episode_knowledge_sync_on_miss():
+    """Sync-on-miss: episodes come from unified retrieve (fed by get_session_episodes)."""
+    ep = _RealEpisode(id="ep1", session_key="new", summary="synced episode")
     episodic = MagicMock()
-    episodic.search_episodes = AsyncMock(return_value=[_Episode("synced episode")])
-    episodic.get_session_episodes = AsyncMock(return_value=[])
+    episodic.get_session_episodes = AsyncMock(return_value=[ep])
     knowledge = MagicMock()
     knowledge.search_async = AsyncMock(return_value=[object()])
     knowledge.format_results = MagicMock(return_value="synced KB block")
 
+    def _probe(query):
+        # Simulate retrieve returning episode in scored
+        return [(ep, 0.7)]
+
     stage, captured, hybrid, memory = _make_context_stage(
-        cache={}, on_miss="sync", episodic=episodic, knowledge=knowledge,
+        cache={}, on_miss="sync", on_retrieve=_probe, episodic=episodic, knowledge=knowledge,
     )
     await _stage_build(stage, session_key="new", text="anything")
     ctx = captured["retrieval_context"]
