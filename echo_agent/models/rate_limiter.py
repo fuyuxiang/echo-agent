@@ -73,3 +73,15 @@ class RateLimitedProvider(LLMProvider):
 
     def get_default_model(self) -> str:
         return self._inner.get_default_model()
+
+    async def embed(self, text: str, model: str | None = None) -> list[float] | None:
+        # Proxy so embed-capability probes see through the wrapper; without
+        # this a rate-limited OpenAI provider is misdetected as
+        # embed-incapable and embedding silently falls back to the local model.
+        if not self._inner.supports_embed():
+            return None
+        await self._limiter.acquire()
+        return await self._inner.embed(text, model=model)
+
+    def supports_embed(self) -> bool:
+        return self._inner.supports_embed()

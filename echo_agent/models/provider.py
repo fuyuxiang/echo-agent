@@ -121,6 +121,14 @@ class LLMProvider(ABC):
         """Generate an embedding vector for *text*. Returns None when unsupported."""
         return None
 
+    def supports_embed(self) -> bool:
+        """True when this provider actually implements ``embed``. Wrapper
+        providers (rate-limit, credential-pool) override this to delegate to
+        the wrapped provider so capability probes see through them; probing
+        ``type(p).embed is not LLMProvider.embed`` directly would misread a
+        wrapper (its class always overrides embed to proxy)."""
+        return type(self).embed is not LLMProvider.embed
+
     async def chat_stream(
         self,
         messages: list[dict[str, Any]],

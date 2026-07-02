@@ -229,10 +229,9 @@ class ModelRouter:
 
     @staticmethod
     def _supports_embed(provider: LLMProvider) -> bool:
-        return (
-            hasattr(provider, "embed")
-            and type(provider).embed is not LLMProvider.embed
-        )
+        # supports_embed() sees through rate-limit / credential-pool wrappers,
+        # whose classes always override embed to proxy the inner provider.
+        return provider.supports_embed()
 
     def mark_failure(self, provider_name: str, error: str = "") -> None:
         health = self._health.get(provider_name)

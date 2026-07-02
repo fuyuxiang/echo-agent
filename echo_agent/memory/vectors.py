@@ -54,6 +54,13 @@ class VectorIndex:
     def stale_source_ids(self) -> set[str]:
         return set(self._stale_source_ids)
 
+    @property
+    def loaded_vec_ids(self) -> set[str]:
+        """vec_ids currently present in the matrix. Lets the backfill queue
+        detect dangling entry.embedding_id references (e.g. the vectors DB was
+        deleted while the authoritative JSON memory files survived)."""
+        return set(self._id_map)
+
     @staticmethod
     def _normalize(arr: np.ndarray) -> np.ndarray:
         norms = np.linalg.norm(arr, axis=1, keepdims=True)
@@ -80,7 +87,13 @@ class VectorIndex:
             if emb is None:
                 continue
             arr = np.frombuffer(emb, dtype=np.float32)
-            if self._dimensions == 0 and arr.shape[0] > 0:
+            if arr.shape[0] == 0:
+                # Corrupted/zero-byte blob: never adopt 0 as the index
+                # dimension (a later vstack would crash startup); route the
+                # entry through the re-embed queue instead.
+                self._stale_source_ids.add(row.get("source_id", ""))
+                continue
+            if self._dimensions == 0:
                 self._dimensions = arr.shape[0]
             if arr.shape[0] != self._dimensions:
                 self._stale_source_ids.add(row.get("source_id", ""))
@@ -100,6 +113,9 @@ class VectorIndex:
     async def add(self, memory_id: str, embedding: list[float]) -> str:
         async with self._lock:
             arr = np.array(embedding, dtype=np.float32).reshape(1, -1)
+            if arr.shape[1] == 0:
+                logger.warning("Rejected empty embedding for {}", memory_id)
+                return ""
             if self._dimensions == 0:
                 self._dimensions = arr.shape[1]
             if arr.shape[1] != self._dimensions:

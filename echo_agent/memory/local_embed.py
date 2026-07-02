@@ -19,7 +19,7 @@ from loguru import logger
 _KNOWN_DIMS: dict[str, int] = {
     "BAAI/bge-small-zh-v1.5": 512,
     "BAAI/bge-small-en-v1.5": 384,
-    "BAAI/bge-base-zh-v1.5": 768,
+    "jinaai/jina-embeddings-v2-base-zh": 768,
 }
 
 _DEFAULT_MODEL = "BAAI/bge-small-zh-v1.5"

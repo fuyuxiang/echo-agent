@@ -476,14 +476,12 @@ class AgentLoop:
         self._local_embedder = None
         self._embed_model_id = ""
         if config.memory.vector_enabled and storage:
-            from echo_agent.models.provider import LLMProvider
-
             emb_model = config.memory.embedding_model or None
             # Prefer the main provider when it supports embeddings; otherwise
             # route to any registered embed-capable provider; otherwise fall
             # back to the local fastembed model so vector search works with
             # zero configuration (spec 2026-07-02).
-            if hasattr(self.provider, "embed") and type(self.provider).embed is not LLMProvider.embed:
+            if self.provider.supports_embed():
                 embed_provider: Any = self.provider
             elif self.router is not None:
                 embed_provider, routed_model = self.router.find_embed_provider(

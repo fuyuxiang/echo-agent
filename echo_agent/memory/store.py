@@ -280,18 +280,23 @@ class MemoryStore:
         return count
 
     def queue_missing_embeds(self, stale_source_ids: "Iterable[str]" = ()) -> int:
-        """Queue entries that lack a vector (embedding_id empty) or whose stored
-        vector was produced by a different embedding model (stale). Called once
-        at startup after the vector index is initialized. Returns queued count."""
+        """Queue entries that lack a vector (embedding_id empty), whose stored
+        vector came from a different embedding model (stale), or whose
+        embedding_id dangles — no such row in the loaded index, e.g. the
+        vectors DB was deleted while the authoritative JSON files survived.
+        Called once at startup after the vector index is initialized. Returns
+        queued count."""
         if not self._embed_fn or not self._vector_index:
             return 0
         stale = set(stale_source_ids)
+        loaded = getattr(self._vector_index, "loaded_vec_ids", None)
         queued_ids = {item[0] for item in self._pending_embeds}
         count = 0
         for entry in self._entries.values():
             if entry.is_superseded or entry.id in queued_ids:
                 continue
-            if not entry.embedding_id or entry.id in stale:
+            dangling = loaded is not None and entry.embedding_id not in loaded
+            if not entry.embedding_id or entry.id in stale or dangling:
                 self._queue_embed(entry, old_vec_id=entry.embedding_id)
                 count += 1
         if count:
