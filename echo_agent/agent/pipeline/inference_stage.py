@@ -180,6 +180,29 @@ class InferenceStage:
         if ctx.activity is not None and not out.metadata.get("_drop"):
             ctx.activity.mark_visible_feedback()
 
+    async def _emit_tool_call(self, event, name, params, status, result_summary) -> None:
+        """Surface a tool invocation to the cognition stream (cli-gated)."""
+        if self._cog is None:
+            return
+        safe_params = {k: str(v)[:120] for k, v in (params or {}).items()}
+        await self._cog.emit(
+            event, "tool_call",
+            {"name": name, "params": safe_params, "status": status,
+             "result_summary": str(result_summary)[:300]},
+            f"🔧 {name} · {status}",
+        )
+
+    async def _emit_cost(self, event, turn_tokens, turn_cost, total_cost) -> None:
+        """Surface a cost update to the cognition stream (cli-gated)."""
+        if self._cog is None:
+            return
+        await self._cog.emit(
+            event, "cost_update",
+            {"turn_tokens": int(turn_tokens), "turn_cost": round(turn_cost, 4),
+             "total_cost": round(total_cost, 4)},
+            f"💰 ${round(total_cost, 4)}",
+        )
+
     async def run(self, ctx: PipelineContext) -> InferenceResult:
         """Execute the inference loop, returning the final result."""
         session = ctx.session
@@ -377,9 +400,21 @@ class InferenceStage:
                 end_llm_span(otel_span)
 
             if self._cost_tracker is not None and response.usage:
+                _cost_before = self._cost_tracker.spent_usd
                 await self._cost_tracker.record(
                     route_decision.model, response.usage, route_decision.provider_name,
                     channel=event.channel,
+                )
+                _u = response.usage if isinstance(response.usage, dict) else {}
+                _turn_tokens = int(
+                    _u.get("total_tokens")
+                    or (int(_u.get("prompt_tokens") or _u.get("input_tokens") or 0)
+                        + int(_u.get("completion_tokens") or _u.get("output_tokens") or 0))
+                )
+                await self._emit_cost(
+                    event, _turn_tokens,
+                    self._cost_tracker.spent_usd - _cost_before,
+                    self._cost_tracker.spent_usd,
                 )
 
             issues = self._inference.validate_response(response)
@@ -656,6 +691,10 @@ class InferenceStage:
                 if _debug_progress:
                     _tool_result_meta["result_preview"] = result.text[:500]
                 await self._emit_tool_event(ctx, _tool_result_meta)
+                await self._emit_tool_call(
+                    ctx.event, tool_call.name, tool_call.arguments,
+                    "ok" if result.success else "err", result.text,
+                )
                 if ctx.activity is not None:
                     ctx.activity.exit_tool()
 

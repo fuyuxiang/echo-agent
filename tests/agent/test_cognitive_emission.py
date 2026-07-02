@@ -85,3 +85,33 @@ async def test_context_stage_recall_noop_without_emitter():
     stage._cog = _CapEmitter()
     await stage._emit_memory_recalled(ev, [])
     assert stage._cog.calls == []
+
+
+@pytest.mark.asyncio
+async def test_inference_stage_emits_tool_call_and_cost():
+    cap = _CapEmitter()
+    stage = InferenceStage.__new__(InferenceStage)
+    stage._cog = cap
+    ev = InboundEvent.text_message(
+        channel="gateway:cli", sender_id="u", chat_id="c", text="hi"
+    )
+    await stage._emit_tool_call(ev, "edit", {"path": "a.py"}, "ok", "已写入 3 行")
+    await stage._emit_cost(ev, 1200, 0.012, 0.033)
+    assert cap.calls[0][0] == "tool_call"
+    assert cap.calls[0][1]["name"] == "edit"
+    assert cap.calls[0][1]["status"] == "ok"
+    assert cap.calls[0][1]["params"]["path"] == "a.py"
+    assert cap.calls[1][0] == "cost_update"
+    assert cap.calls[1][1]["total_cost"] == 0.033
+    assert cap.calls[1][1]["turn_tokens"] == 1200
+
+
+@pytest.mark.asyncio
+async def test_inference_stage_cost_and_tool_noop_without_emitter():
+    stage = InferenceStage.__new__(InferenceStage)
+    stage._cog = None
+    ev = InboundEvent.text_message(
+        channel="gateway:cli", sender_id="u", chat_id="c", text="hi"
+    )
+    await stage._emit_tool_call(ev, "edit", {"path": "a.py"}, "ok", "x")
+    await stage._emit_cost(ev, 1200, 0.012, 0.033)  # must be safe no-ops
