@@ -525,6 +525,14 @@ class AgentLoop:
                 config.memory.auto_resolve_contradictions
             )
 
+        if config.memory.reflection_enabled:
+            from echo_agent.memory.reflection import ReflectionEngine
+            self.consolidator.set_reflection(ReflectionEngine(
+                self.memory,
+                llm_call=self.provider.chat_with_retry,
+                contradiction_detector=self._contradiction_detector,
+            ))
+
         def entries_fn() -> list:
             return list(self.memory._entries.values())
 

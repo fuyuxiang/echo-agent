@@ -1140,6 +1140,22 @@ class MemoryStore:
         if env_ctx:
             parts.append(f"## Environment Memory\n\n{env_ctx}")
 
+        # Reflection deferred conflicts: one-line nudge (reuses the snapshot
+        # channel; no new interruption mechanism).
+        try:
+            pending = sum(
+                1 for e in self._entries.values()
+                if "needs_user_confirmation" in e.tags and not e.is_superseded
+            )
+            if pending:
+                parts.append(
+                    f"_(There are {pending} memory conflict(s) that need your "
+                    "confirmation — use the memory tool's list_contradictions "
+                    "to review when convenient.)_"
+                )
+        except Exception:
+            pass
+
         return "\n\n".join(parts), frozenset(collected)
 
     def get_snapshot(self, session_key: str | None = None) -> str:

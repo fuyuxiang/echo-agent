@@ -99,3 +99,130 @@ class TestDistill:
 def test_config_reflection_enabled_default_true():
     from echo_agent.config.schema import MemoryConfig
     assert MemoryConfig().reflection_enabled is True
+
+
+class TestResolveConflicts:
+    def _pair(self, store, src_a="user_stated", src_b="model_inferred"):
+        from echo_agent.memory.store import MemoryStore as _MS
+        a = store.add(MemoryEntry(
+            type=MemoryType.USER, key="home:city", content="住北京",
+            source=src_a, tags=[_MS.SUSPECTED_CONFLICT_TAG],
+        ))
+        b = MemoryEntry(
+            type=MemoryType.USER, key="home:addr", content="搬到了上海",
+            source=src_b, tags=[_MS.SUSPECTED_CONFLICT_TAG],
+        )
+        store._entries[b.id] = b  # 绕过守卫构造并存冲突对
+        return a, b
+
+    def _engine(self, store, verdict_args, detector=None):
+        llm = _llm_returning("adjudicate", verdict_args)
+        if detector is None:
+            detector = MagicMock()
+            detector.get_unresolved = AsyncMock(return_value=[])
+            detector.resolve = AsyncMock()
+            detector.store_contradiction = AsyncMock()
+        return ReflectionEngine(store, llm_call=llm, contradiction_detector=detector), detector
+
+    @pytest.mark.asyncio
+    async def test_clear_verdict_supersedes(self, store):
+        a, b = self._pair(store)
+        engine, detector = self._engine(store, {"verdict": "b_wins", "explanation": "时效替代"})
+        stats = await engine.resolve_conflicts()
+        assert stats["resolved"] == 1
+        assert store.get(a.id).is_superseded
+        # 双方 suspected_conflict 已清
+        from echo_agent.memory.store import MemoryStore as _MS
+        assert _MS.SUSPECTED_CONFLICT_TAG not in store.get(a.id).tags
+        assert _MS.SUSPECTED_CONFLICT_TAG not in store.get(b.id).tags
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_defers_to_user(self, store):
+        a, b = self._pair(store)
+        engine, _ = self._engine(store, {"verdict": "ambiguous", "explanation": "无法判断"})
+        stats = await engine.resolve_conflicts()
+        assert stats["deferred"] == 1
+        assert ReflectionEngine.NEEDS_CONFIRMATION_TAG in store.get(a.id).tags
+        assert ReflectionEngine.NEEDS_CONFIRMATION_TAG in store.get(b.id).tags
+        assert not store.get(a.id).is_superseded
+
+    @pytest.mark.asyncio
+    async def test_not_contradictory_clears_tags(self, store):
+        a, b = self._pair(store)
+        engine, _ = self._engine(store, {"verdict": "not_contradictory", "explanation": "不矛盾"})
+        stats = await engine.resolve_conflicts()
+        assert stats["dismissed"] == 1
+        from echo_agent.memory.store import MemoryStore as _MS
+        assert _MS.SUSPECTED_CONFLICT_TAG not in store.get(a.id).tags
+        assert not store.get(a.id).is_superseded
+
+    @pytest.mark.asyncio
+    async def test_invalid_verdict_treated_ambiguous(self, store):
+        """白名单：幻觉输出按模糊处理。"""
+        a, b = self._pair(store)
+        engine, _ = self._engine(store, {"verdict": "hallucinated_option"})
+        stats = await engine.resolve_conflicts()
+        assert stats["deferred"] == 1
+        assert not store.get(a.id).is_superseded
+
+    @pytest.mark.asyncio
+    async def test_max_pairs_cap(self, store):
+        from echo_agent.memory.store import MemoryStore as _MS
+        for i in range(5):
+            e = MemoryEntry(
+                type=MemoryType.USER, key=f"g{i}:x", content=f"甲{i}",
+                source="model_inferred", tags=[_MS.SUSPECTED_CONFLICT_TAG],
+            )
+            e2 = MemoryEntry(
+                type=MemoryType.USER, key=f"g{i}:y", content=f"乙{i}",
+                source="model_inferred", tags=[_MS.SUSPECTED_CONFLICT_TAG],
+            )
+            store._entries[e.id] = e
+            store._entries[e2.id] = e2
+        llm = _llm_returning("adjudicate", {"verdict": "not_contradictory"})
+        detector = MagicMock()
+        detector.get_unresolved = AsyncMock(return_value=[])
+        detector.resolve = AsyncMock()
+        engine = ReflectionEngine(store, llm_call=llm, contradiction_detector=detector)
+        await engine.resolve_conflicts(max_pairs=3)
+        assert llm.await_count == 3
+
+
+class TestSnapshotConfirmationNotice:
+    def test_snapshot_appends_notice_when_pending(self, store):
+        e = store.add(MemoryEntry(
+            type=MemoryType.USER, key="k", content="待确认内容", importance=0.9,
+        ))
+        store.update(e.id, tags=[ReflectionEngine.NEEDS_CONFIRMATION_TAG])
+        snapshot, _ = store.get_snapshot_with_ids()
+        assert "need your confirmation" in snapshot
+
+    def test_snapshot_no_notice_when_none(self, store):
+        store.add(MemoryEntry(type=MemoryType.USER, key="k", content="普通内容"))
+        snapshot, _ = store.get_snapshot_with_ids()
+        assert "need your confirmation" not in snapshot
+
+
+class TestConsolidatorStep6:
+    @pytest.mark.asyncio
+    async def test_sleep_consolidate_runs_reflection(self, store):
+        from echo_agent.memory.consolidator import MemoryConsolidator
+
+        c = MemoryConsolidator(store, llm_call=AsyncMock())
+        engine = MagicMock()
+        engine.run = AsyncMock(return_value={"distilled": 1, "resolved": 0})
+        c.set_reflection(engine)
+        stats = await c.sleep_consolidate("s1", [])
+        engine.run.assert_awaited_once()
+        assert stats.get("distilled") == 1
+
+    @pytest.mark.asyncio
+    async def test_reflection_failure_does_not_break_consolidation(self, store):
+        from echo_agent.memory.consolidator import MemoryConsolidator
+
+        c = MemoryConsolidator(store, llm_call=AsyncMock())
+        engine = MagicMock()
+        engine.run = AsyncMock(side_effect=RuntimeError("reflection boom"))
+        c.set_reflection(engine)
+        stats = await c.sleep_consolidate("s1", [])  # 不抛异常
+        assert "episodes" in stats

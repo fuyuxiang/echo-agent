@@ -92,6 +92,7 @@ class MemoryConsolidator:
         self._archival_manager = None
         self._embed_fn = None
         self._auto_resolve_contradictions = False
+        self._reflection_engine = None
 
     def set_episodic_manager(self, mgr):
         self._episodic_manager = mgr
@@ -113,6 +114,9 @@ class MemoryConsolidator:
 
     def set_auto_resolve_contradictions(self, enabled: bool):
         self._auto_resolve_contradictions = enabled
+
+    def set_reflection(self, engine):
+        self._reflection_engine = engine
 
     async def consolidate_chunk(self, messages: list[dict[str, Any]]) -> bool:
         if not messages:
@@ -271,6 +275,14 @@ class MemoryConsolidator:
                 )
             except Exception as e:
                 logger.debug("Episode retention purge failed: {}", e)
+
+        # Step 6: Reflection — distill + active conflict resolution
+        if self._reflection_engine:
+            try:
+                reflection_stats = await self._reflection_engine.run()
+                stats.update(reflection_stats)
+            except Exception as e:
+                logger.warning("Reflection engine failed: {}", e)
 
         logger.info("Sleep consolidation complete: {}", stats)
         return stats
