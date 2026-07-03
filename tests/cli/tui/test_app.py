@@ -175,3 +175,17 @@ async def test_app_notify_disconnected_flips_status_bar():
         await pilot.pause()
         assert bar._ok is False
         assert "断开" in str(bar.render())
+
+
+@pytest.mark.asyncio
+async def test_on_mount_writes_session_and_connected():
+    from echo_agent.cli.tui.app import EchoTUI
+    from echo_agent.cli.tui.status_bar import StatusBar
+    app = EchoTUI(session_key="cli:local")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bar = app.query_one(StatusBar)
+        assert bar._ok is True
+        text = str(bar.render())
+        assert "●已连接" in text
+        assert "cli:local" in text

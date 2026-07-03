@@ -29,9 +29,10 @@ class EchoTUI(App):
         Binding("a", "approve_always", "始终允许", show=False),
     ]
 
-    def __init__(self, send_coro=None) -> None:
+    def __init__(self, send_coro=None, session_key: str = "") -> None:
         super().__init__()
         self._send = send_coro
+        self._session_key = session_key
         self._replies: dict[str, object] = {}
         # A single pending-approval slot is sufficient (no queue needed):
         # approval requests are serialized server-side by inference_stage Phase A
@@ -45,6 +46,15 @@ class EchoTUI(App):
         yield TranscriptView()
         yield PromptInput()
         yield StatusBar()
+
+    def on_mount(self) -> None:
+        # app is constructed only after a successful handshake, so mount means
+        # connected. StatusBar is yielded in compose() and mounted by now, so
+        # query_one is safe without a guard (unlike notify_disconnected, where
+        # the socket may die before mount).
+        bar = self.query_one(StatusBar)
+        bar.set_session(self._session_key)
+        bar.set_connection(True)
 
     def check_action(self, action: str, parameters):
         # Only surface approval keys while a decision is actually pending;
