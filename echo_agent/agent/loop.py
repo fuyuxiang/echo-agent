@@ -519,7 +519,6 @@ class AgentLoop:
     def _init_advanced_memory(self, config: Config, storage: Any) -> None:
         """初始化高级记忆子系统：分层记忆、向量索引、混合检索、矛盾检测。"""
         from echo_agent.memory.tiers import EpisodicManager, SemanticManager, ArchivalManager
-        from echo_agent.memory.retrieval import HybridRetriever
 
         forgetting = self.memory.forgetting_curve
 
