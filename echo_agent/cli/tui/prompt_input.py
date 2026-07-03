@@ -19,6 +19,7 @@ class PromptInput(TextArea):
         self.border_title = "❯ 输入消息 · Enter 发送 · Shift+Enter 换行"
 
     def on_mount(self) -> None:
+        super().on_mount()
         # border_title 需要有可见边框才会显示。
         self.styles.border = ("round", "grey")
 
