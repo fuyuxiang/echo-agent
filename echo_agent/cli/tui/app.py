@@ -92,6 +92,16 @@ class EchoTUI(App):
     def on_error(self, msg: str) -> None:
         self.query_one(StatusBar).set_connection(False)
 
+    def notify_disconnected(self) -> None:
+        """Flip the status bar to the disconnected state after a silent ws
+        close (gateway drops the socket with no error frame). Called by pump()
+        when its async-for over the socket ends. Defensive: the app may not be
+        fully mounted yet if the socket dies during startup."""
+        try:
+            self.query_one(StatusBar).set_connection(False)
+        except Exception:
+            pass
+
     # --- input ---
     async def on_prompt_input_submitted(
         self, message: PromptInput.Submitted

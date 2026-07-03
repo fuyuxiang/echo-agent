@@ -110,3 +110,20 @@ async def test_bridge_into_app_end_to_end():
                                       "data": {"name": "edit", "status": "ok"}}})
         await pilot.pause()
         assert len(app.query(CognitiveBlock)) == 1
+
+
+@pytest.mark.asyncio
+async def test_app_notify_disconnected_flips_status_bar():
+    # A silent ws close (no error frame) must still flip the status bar to the
+    # disconnected state — pump() calls notify_disconnected() when its async-for
+    # over the socket ends.
+    from echo_agent.cli.tui.app import EchoTUI
+    from echo_agent.cli.tui.status_bar import StatusBar
+    app = EchoTUI()
+    async with app.run_test() as pilot:
+        bar = app.query_one(StatusBar)
+        assert bar._ok is True
+        app.notify_disconnected()
+        await pilot.pause()
+        assert bar._ok is False
+        assert "断开" in str(bar.render())

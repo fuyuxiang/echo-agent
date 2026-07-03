@@ -175,7 +175,13 @@ async def run_client(
         )
 
         async def send_coro(text: str) -> None:
-            await ws.send_json({"type": "message", "text": text})
+            # The gateway may have closed the socket without an error frame; a
+            # send on a dead ws would raise. Swallow it and reflect the drop in
+            # the status bar instead of crashing the input handler.
+            try:
+                await ws.send_json({"type": "message", "text": text})
+            except (aiohttp.ClientError, ConnectionError, RuntimeError):
+                app.notify_disconnected()
 
         app = EchoTUI(send_coro=send_coro)
         bridge = WSBridge(app)
@@ -192,6 +198,10 @@ async def run_client(
                 except Exception:
                     continue
                 bridge.dispatch(payload)
+            # Loop exit means the socket closed / a non-TEXT frame arrived. No
+            # error frame is sent on a clean gateway shutdown, so flip the
+            # status bar to disconnected here rather than leaving it "●连接".
+            app.notify_disconnected()
 
         pump_task = asyncio.create_task(pump())
         try:
