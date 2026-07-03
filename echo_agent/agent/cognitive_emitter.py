@@ -22,6 +22,17 @@ class CognitiveEmitter:
     def __init__(self, bus: MessageBus) -> None:
         self._bus = bus
 
+    @staticmethod
+    def active(event: InboundEvent) -> bool:
+        """Whether cognitive emission is on for this event's channel.
+
+        Call sites check this BEFORE building an event payload so IM channels
+        pay truly zero cost — no dict comprehensions, no content slicing — not
+        just a discarded payload inside emit(). emit() still re-checks as the
+        authoritative gate, so skipping this call only wastes work, never leaks.
+        """
+        return should_emit_cognitive(event.channel)
+
     async def emit(
         self, event: InboundEvent, cog_type: str, data: dict, summary: str
     ) -> None:

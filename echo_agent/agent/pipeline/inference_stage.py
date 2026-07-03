@@ -183,7 +183,8 @@ class InferenceStage:
 
     async def _emit_tool_call(self, event, name, params, status, result_summary) -> None:
         """Surface a tool invocation to the cognition stream (cli-gated)."""
-        if self._cog is None:
+        # Gate before slicing params: IM channels skip the comprehension too.
+        if self._cog is None or not self._cog.active(event):
             return
         safe_params = {k: str(v)[:120] for k, v in (params or {}).items()}
         await self._cog.emit(
@@ -689,6 +690,21 @@ class InferenceStage:
             )
             for i, res in zip(conc_order, gathered):
                 results[i] = res
+                # Emit a tool_call frame per concurrent tool too — the serial
+                # group emits inline, so without this the cli TUI would drop
+                # every concurrently-executed tool once Task 4 turns concurrency
+                # on. Exceptions surface as status="err".
+                d = by_index[i]
+                if isinstance(res, BaseException):
+                    await self._emit_tool_call(
+                        ctx.event, d.tool_call.name, d.tool_call.arguments,
+                        "err", f"{type(res).__name__}: {res}"[:500],
+                    )
+                else:
+                    await self._emit_tool_call(
+                        ctx.event, d.tool_call.name, d.tool_call.arguments,
+                        "ok" if res.success else "err", res.text,
+                    )
 
         # serial group (runs after concurrent batch; preserves read-before-write
         # ordering because overlapping readers were demoted into this group).
@@ -748,6 +764,15 @@ class InferenceStage:
                 # later serial tool — their side effects must not fire once a
                 # sibling has crashed. Phase C raises at this decision's index
                 # (in original order) before reaching the unexecuted ones.
+                # Emit a terminal tool_call frame so the cli TUI doesn't leave
+                # the "started" progress hanging with no resolution — a real
+                # crash was previously invisible in the cognitive stream.
+                if ctx.activity is not None:
+                    ctx.activity.exit_tool()
+                await self._emit_tool_call(
+                    ctx.event, tool_call.name, tool_call.arguments,
+                    "err", f"{type(exc).__name__}: {exc}"[:500],
+                )
                 results[d.index] = exc
                 break
 

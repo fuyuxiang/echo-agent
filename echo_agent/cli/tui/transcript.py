@@ -66,6 +66,17 @@ class TranscriptView(VerticalScroll):
         self.mount(b)
         return b
 
+    def add_error(self, msg: str) -> AgentReply:
+        """Show a server-side error frame (e.g. rate limited) in the transcript.
+
+        The socket is still open when the gateway sends an ``error`` frame, so
+        this surfaces the reason instead of silently swallowing it or faking a
+        disconnect."""
+        w = AgentReply()
+        self.mount(w)
+        w.set_final(f"⚠️ 服务端错误: {msg}")
+        return w
+
     def heartbeat_line(self, inbound_event_id: str, note: str) -> _Heartbeat:
         hb = self._heartbeats.get(inbound_event_id)
         if hb is None:

@@ -153,7 +153,9 @@ class ContextStage:
         dicts. Handling both keeps the emitter robust to either provenance
         without a shared type dependency — not overbuilding.
         """
-        if self._cog is None or not scored:
+        # Gate before building items: on IM channels this skips the whole
+        # slice/round loop, not just a discarded emit() payload.
+        if self._cog is None or not scored or not self._cog.active(event):
             return
         items: list[dict[str, Any]] = []
         for s in scored[:12]:
@@ -293,17 +295,12 @@ class ContextStage:
                 scored = cached.scored
             elif self._retrieval_on_miss == "sync":
                 if self._hybrid_retriever:
-                    _episodes = None
-                    if self._episodic is not None:
-                        try:
-                            _episodes = await self._episodic.get_session_episodes(
-                                event.session_key, limit=10
-                            )
-                        except Exception as e:
-                            logger.debug("Episode fetch for retrieval failed: {}", e)
+                    # Episode candidates are assembled inside retrieve() by
+                    # relevance (semantic + LIKE), same as the prefetch path —
+                    # no separate "recent N" fetch here, which would otherwise
+                    # miss high-relevance episodes outside the recency window.
                     scored = await self._hybrid_retriever.retrieve(
                         event.text, limit=8, session_key=event.session_key,
-                        episodes=_episodes,
                     )
                 else:
                     scored = self._memory.search_scored(

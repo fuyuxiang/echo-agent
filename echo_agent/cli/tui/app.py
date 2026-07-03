@@ -100,7 +100,11 @@ class EchoTUI(App):
         self._tv.add_cognitive(ev)
 
     def on_error(self, msg: str) -> None:
-        self.query_one(StatusBar).set_connection(False)
+        # A gateway `error` frame (e.g. rate limited, unauthorized) arrives on a
+        # LIVE socket — it is not a disconnect. Surface the reason in the
+        # transcript rather than flipping the status bar to "disconnected",
+        # which would mislead the user into debugging their connection.
+        self._tv.add_error(msg or "未知错误")
 
     def notify_disconnected(self) -> None:
         """Flip the status bar to the disconnected state after a silent ws

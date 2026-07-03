@@ -50,12 +50,22 @@ class HybridRetriever:
         embed_fn: Callable[[str], Awaitable[list[float]]] | None = None,
         embed_timeout: float = 1.5,
         visibility_fn: Callable[["MemoryEntry", str], bool] | None = None,
+        episode_search_fn: Callable[[str, str, int], Awaitable[list[Episode]]] | None = None,
+        episode_candidate_limit: int = 10,
     ):
         self._entries_fn = entries_fn
         self._vector_index = vector_index
         self._forgetting = forgetting or ForgettingCurve()
         self._embed_fn = embed_fn
         self._visibility_fn = visibility_fn
+        # Assembles episodic candidates by relevance (semantic + LIKE fallback)
+        # when the caller does not pass `episodes` explicitly. Injecting it here
+        # is what lets episodes flow through the SAME retrieve() call the
+        # prefetcher warms — so a cache hit already carries episodes and a
+        # latency-first CLI turn (degrade-on-miss) still recalls them, instead
+        # of episodes only appearing on the inline sync-miss path.
+        self._episode_search_fn = episode_search_fn
+        self._episode_candidate_limit = max(1, int(episode_candidate_limit))
         # Latency budget for the embedding round-trip (configurable via
         # memory.embedTimeoutSeconds). Retrieval runs on the user-facing
         # critical path of every message; vector similarity is an enhancement,
@@ -86,6 +96,20 @@ class HybridRetriever:
         if mem_type is not None:
             entries = [e for e in entries if e.type == mem_type]
 
+        # Episodic candidates: use what the caller passed, else assemble them by
+        # relevance via the injected search fn (semantic + LIKE fallback). This
+        # keeps episodes on every retrieval path — prefetch warm-up included —
+        # rather than only the inline sync-miss branch. mem_type filters to a
+        # single memory type, so episodes don't belong in that query.
+        if episodes is None and mem_type is None and self._episode_search_fn is not None:
+            try:
+                episodes = await self._episode_search_fn(
+                    query, session_key, self._episode_candidate_limit
+                )
+            except Exception as e:
+                logger.debug("Episodic candidate search failed: {}", e)
+                episodes = None
+
         # Build unified candidate pool: memory entries + episodic proxies
         candidates: list = list(entries)
         ep_proxies: dict[str, Episode] = {}
@@ -106,14 +130,19 @@ class HybridRetriever:
         bm25_ranked = self._bm25_search(query, candidates, pool)
         bm25_rank_map = {eid: rank for rank, (eid, _) in enumerate(bm25_ranked)}
 
-        # Vector ranking
+        # Vector ranking. The shared vector index also holds superseded /
+        # cross-session / non-candidate episode vectors; filter those out
+        # BEFORE enumerating so surviving candidates get contiguous ranks. If
+        # we enumerated first and filtered after, a discarded hit would burn a
+        # rank slot and understate the RRF score of the real top candidate.
         vec_rank_map: dict[str, int] = {}
         if self._vector_index and self._embed_fn:
             vec_results = await self._vector_search(query, pool)
             candidate_ids = {c.id for c in candidates}
             vec_rank_map = {
-                eid: rank for rank, (eid, _) in enumerate(vec_results)
-                if eid in candidate_ids
+                eid: rank for rank, eid in enumerate(
+                    eid for eid, _ in vec_results if eid in candidate_ids
+                )
             }
 
         # RRF fusion

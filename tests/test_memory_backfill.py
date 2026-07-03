@@ -113,3 +113,85 @@ async def test_queue_missing_skips_superseded(store_with_index):
     store._pending_embeds.clear()
     store.mark_superseded(e.id, "winner_id")
     assert store.queue_missing_embeds() == 0
+
+
+@pytest.mark.asyncio
+async def test_merge_reembeds_when_content_changes(store_with_index):
+    """同 key 合并改写 content 后，向量必须随之替换，不能停留在旧文本。"""
+    store, index = store_with_index
+    e = store.add(MemoryEntry(
+        type=MemoryType.USER, key="home:city", content="住北京", source="user_stated",
+    ))
+    await store.flush_pending_embeds()
+    old_vec = store._entries[e.id].embedding_id
+    assert old_vec
+
+    # 同 key 同级来源、内容不同 → 走 _merge_locked 的内容替换分支。
+    store.add(MemoryEntry(
+        type=MemoryType.USER, key="home:city", content="搬到了上海", source="user_stated",
+    ))
+    assert store._entries[e.id].content == "搬到了上海"
+    await store.flush_pending_embeds()
+    new_vec = store._entries[e.id].embedding_id
+    assert new_vec and new_vec != old_vec
+    rows = await store._storage.load_vectors_all()
+    ids = {r["id"] for r in rows}
+    assert new_vec in ids and old_vec not in ids
+    assert index.count == 1
+
+
+@pytest.mark.asyncio
+async def test_merge_no_reembed_when_content_same(store_with_index):
+    """合并未改内容（仅元数据）时不应产生无谓的重嵌队列项。"""
+    store, index = store_with_index
+    e = store.add(MemoryEntry(
+        type=MemoryType.USER, key="k", content="同样内容", source="user_stated",
+    ))
+    await store.flush_pending_embeds()
+    store._pending_embeds.clear()
+    store.add(MemoryEntry(
+        type=MemoryType.USER, key="k", content="同样内容", source="user_stated",
+        importance=0.9,
+    ))
+    # 内容未变 → 命中去重直接返回，不入队。
+    assert store._pending_embeds == []
+
+
+@pytest.mark.asyncio
+async def test_circuit_open_stops_enqueue_and_flush(store_with_index):
+    """熔断跳闸后：不再入队新条目，flush 直接短路不空跑。"""
+    store, index = store_with_index
+
+    class _TrippedFn:
+        tripped = True
+        async def __call__(self, text):
+            return []
+
+    store.set_embed_fn(_TrippedFn())
+    store.add(MemoryEntry(type=MemoryType.USER, key="k", content="熔断期间写入"))
+    assert store._pending_embeds == []          # 未入队
+    assert await store.flush_pending_embeds() == 0
+
+
+@pytest.mark.asyncio
+async def test_flush_is_single_flight(store_with_index):
+    """并发触发 flush 时靠 _flush_lock 串行，同一条目只生成一个向量。"""
+    import asyncio
+
+    store, index = store_with_index
+    calls = {"n": 0}
+    orig_embed = fake_embed
+
+    async def slow_embed(text: str) -> list[float]:
+        calls["n"] += 1
+        await asyncio.sleep(0.02)   # 拉长窗口逼出并发
+        return await orig_embed(text)
+
+    store.set_embed_fn(slow_embed)
+    e = store.add(MemoryEntry(type=MemoryType.USER, key="k", content="唯一条目"))
+
+    # 两个 flush 并发；锁应让第二个在队列清空后空转返回。
+    await asyncio.gather(store.flush_pending_embeds(), store.flush_pending_embeds())
+    assert calls["n"] == 1                       # 只嵌了一次
+    assert index.count == 1                       # 矩阵单行，无重复/孤儿
+    assert store._entries[e.id].embedding_id

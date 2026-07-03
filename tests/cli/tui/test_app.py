@@ -130,6 +130,37 @@ async def test_bridge_into_app_end_to_end():
 
 
 @pytest.mark.asyncio
+async def test_app_error_frame_shows_reason_not_fake_disconnect():
+    # A gateway error frame arrives on a live socket; it must surface the reason
+    # in the transcript and NOT flip the status bar to disconnected (which would
+    # send the user chasing a connection problem that doesn't exist).
+    from echo_agent.cli.tui.app import EchoTUI
+    from echo_agent.cli.tui.blocks import AgentReply
+    from echo_agent.cli.tui.status_bar import StatusBar
+    app = EchoTUI()
+    async with app.run_test() as pilot:
+        bar = app.query_one(StatusBar)
+        before = len(app.query(AgentReply))
+        app.on_error("rate limited")
+        await pilot.pause()
+        assert bar._ok is True  # 连接态未被误置断开
+        replies = app.query(AgentReply)
+        assert len(replies) == before + 1
+        assert any("rate limited" in str(r.render()) for r in replies)
+
+
+@pytest.mark.asyncio
+async def test_status_bar_disconnect_text_is_honest():
+    # No client-side reconnect exists, so the text must not claim "重试中".
+    from echo_agent.cli.tui.status_bar import StatusBar
+    bar = StatusBar()
+    bar.set_connection(False)
+    text = bar._compose_text()
+    assert "重试" not in text
+    assert "已断开" in text
+
+
+@pytest.mark.asyncio
 async def test_app_notify_disconnected_flips_status_bar():
     # A silent ws close (no error frame) must still flip the status bar to the
     # disconnected state — pump() calls notify_disconnected() when its async-for

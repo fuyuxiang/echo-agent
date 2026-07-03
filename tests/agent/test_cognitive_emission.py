@@ -18,8 +18,12 @@ def test_approval_gate_accepts_cognitive_emitter():
 
 
 class _CapEmitter:
-    def __init__(self):
+    def __init__(self, active=True):
         self.calls = []
+        self._active = active
+
+    def active(self, event):
+        return self._active
 
     async def emit(self, event, cog_type, data, summary):
         self.calls.append((cog_type, data, summary))
@@ -151,6 +155,45 @@ async def test_inference_stage_emits_written_thinking_evolution():
     assert cap.calls[1][1]["text"] == "先看配置再改"
     assert cap.calls[2][1]["skill"] == "faster_search"
     assert cap.calls[2][1]["phase"] == "candidate"
+
+
+@pytest.mark.asyncio
+async def test_tool_call_skips_payload_when_inactive():
+    """非活跃通道(IM)：active() 为假时不构造 payload、不 emit。"""
+    cap = _CapEmitter(active=False)
+    stage = InferenceStage.__new__(InferenceStage)
+    stage._cog = cap
+    ev = InboundEvent.text_message(
+        channel="gateway:weixin", sender_id="u", chat_id="c", text="hi"
+    )
+    await stage._emit_tool_call(ev, "edit", {"path": "a.py"}, "ok", "x")
+    assert cap.calls == []
+
+
+@pytest.mark.asyncio
+async def test_memory_recalled_skips_build_when_inactive():
+    """非活跃通道：memory_recalled 不进入切片循环也不 emit。"""
+    stage = ContextStage.__new__(ContextStage)
+    stage._cog = _CapEmitter(active=False)
+    ev = InboundEvent.text_message(
+        channel="gateway:weixin", sender_id="u", chat_id="c", text="hi"
+    )
+    await stage._emit_memory_recalled(ev, [{"content": "x", "source": "user_stated"}])
+    assert stage._cog.calls == []
+
+
+@pytest.mark.asyncio
+async def test_real_emitter_active_matches_channel():
+    """真实 emitter 的 active() 只对 gateway:cli 为真。"""
+    from echo_agent.agent.cognitive_emitter import CognitiveEmitter
+    cli_ev = InboundEvent.text_message(
+        channel="gateway:cli", sender_id="u", chat_id="c", text="hi"
+    )
+    im_ev = InboundEvent.text_message(
+        channel="gateway:weixin", sender_id="u", chat_id="c", text="hi"
+    )
+    assert CognitiveEmitter.active(cli_ev) is True
+    assert CognitiveEmitter.active(im_ev) is False
 
 
 @pytest.mark.asyncio

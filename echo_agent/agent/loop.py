@@ -70,6 +70,27 @@ def _resolve_builtin_skills_dir(workspace: Path, configured_path: str) -> Path |
 _EMBED_CIRCUIT_THRESHOLD = 3
 
 
+def _embed_model_identity(provider: Any, emb_model: str | None) -> str:
+    """Stable embedding-model id: unwrap transport wrappers (rate-limit /
+    credential-pool) to the concrete provider class, then append the model.
+
+    The id is persisted in the vectors table and compared on startup to detect
+    a genuine embedding-model change. Deriving it from the OUTER wrapper class
+    (e.g. RateLimitedProvider) would flip the id whenever rate-limiting or
+    credential pooling is toggled between runs, wrongly marking every stored
+    vector stale and forcing a full re-embed even though the model never
+    changed. Unwrapping to the real provider keeps the id tied to what actually
+    determines the embedding space."""
+    inner = provider
+    # Wrappers expose the delegate as `_inner`; follow the chain to the bottom.
+    for _ in range(8):  # bounded guard against accidental cycles
+        nxt = getattr(inner, "_inner", None)
+        if nxt is None or nxt is inner:
+            break
+        inner = nxt
+    return f"{type(inner).__name__.lower()}:{emb_model or 'default'}"
+
+
 class _ProviderEmbedFn:
     """provider embedding 入口的熔断包装。连续失败达阈值后停止调用底层、
     返回 []（对检索与 flush 两条路径都安全），并只告警一次。止损后由重启
@@ -113,7 +134,7 @@ def resolve_embed_fallback(embed_provider, emb_model, local_model_name):
         async def _embed(text: str, _p=embed_provider, _model=emb_model) -> list[float]:
             result = await _p.embed(text, model=_model)
             return result or []
-        model_id = f"{type(embed_provider).__name__.lower()}:{emb_model or 'default'}"
+        model_id = _embed_model_identity(embed_provider, emb_model)
         return _embed, model_id, None
 
     if local_model_name:
@@ -450,7 +471,9 @@ class AgentLoop:
 
         self._prefetcher = (
             RetrievalPrefetcher(
-                self._hybrid_retriever, self._put_retrieval_cache, limit=5,
+                # limit=8 matches the inline sync path (5 memory + 3 episode)
+                # now that episodes ride the same retrieve() call.
+                self._hybrid_retriever, self._put_retrieval_cache, limit=8,
                 knowledge_fetch=_knowledge_fetch if self.knowledge else None,
             )
             if self._hybrid_retriever
@@ -665,9 +688,7 @@ class AgentLoop:
         if use_provider:
             # _ProviderEmbedFn 失败返回 []（非 None），且连续失败熔断，止损后靠重启重决策。
             embed_fn = _ProviderEmbedFn(candidate, emb_model)
-            self._embed_model_id = (
-                f"{type(candidate).__name__.lower()}:{emb_model or 'default'}"
-            )
+            self._embed_model_id = _embed_model_identity(candidate, emb_model)
         else:
             embed_fn, self._embed_model_id, self._local_embedder = resolve_embed_fallback(
                 None, emb_model, config.memory.local_embedding_model,
@@ -724,6 +745,20 @@ class AgentLoop:
         def entries_fn() -> list:
             return list(self.memory._entries.values())
 
+        # Episode candidates by relevance (semantic + LIKE), assembled inside
+        # retrieve() so they ride the same call the prefetcher warms — this is
+        # what keeps episodic recall alive on the CLI degrade-on-miss path (a
+        # cache hit now carries episodes). None-safe: no episodic manager ⇒ no
+        # episode candidates, retrieval stays memory-only.
+        episodic_mgr = self._episodic
+
+        async def _episode_search(query: str, session_key: str, limit: int) -> list:
+            if episodic_mgr is None:
+                return []
+            return await episodic_mgr.search_episodes(
+                query, session_key=session_key or None, limit=limit
+            )
+
         self._hybrid_retriever = HybridRetriever(
             entries_fn=entries_fn,
             vector_index=vector_index,
@@ -731,6 +766,7 @@ class AgentLoop:
             embed_fn=embed_fn,
             embed_timeout=config.memory.embed_timeout_seconds,
             visibility_fn=self.memory.is_visible_in_session,
+            episode_search_fn=_episode_search if episodic_mgr is not None else None,
         )
         self.memory.set_retriever(self._hybrid_retriever)
         # context_stage 在 __init__ 里按值持有了 None，这里重指最终检索器。
@@ -746,7 +782,9 @@ class AgentLoop:
             return self.knowledge.format_results(results)
 
         self._prefetcher = RetrievalPrefetcher(
-            self._hybrid_retriever, self._put_retrieval_cache, limit=5,
+            # limit=8 matches the inline sync path (5 memory + 3 episode) now
+            # that episodes ride the same retrieve() call.
+            self._hybrid_retriever, self._put_retrieval_cache, limit=8,
             knowledge_fetch=_knowledge_fetch if self.knowledge else None,
         )
         self._response_stage._prefetcher = self._prefetcher

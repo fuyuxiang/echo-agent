@@ -164,8 +164,16 @@ class ReflectionEngine:
 
     # ── Conflict resolution ──────────────────────────────────────────────────
 
-    def _conflict_pairs(self) -> list[tuple[MemoryEntry, MemoryEntry]]:
-        """Pair up suspected_conflict entries sharing a key prefix."""
+    async def _conflict_pairs(self) -> list[tuple[MemoryEntry, MemoryEntry]]:
+        """Pair up suspected_conflict entries for adjudication.
+
+        Prefers the detector's authoritative (memory_id_a, memory_id_b) rows —
+        those record which two entries actually conflict. Falls back to
+        key-prefix grouping only when no detector is wired. The prefix fallback
+        can mis-pair (two entries under the same prefix that aren't the actual
+        conflicting pair), so the exact detector pairing is used whenever
+        available.
+        """
         flagged = [
             e for e in self._store.list_all()
             if MemoryStore.SUSPECTED_CONFLICT_TAG in e.tags
@@ -181,6 +189,31 @@ class ReflectionEngine:
             types_to_save = {e.type for e in flagged}
             for t in types_to_save:
                 self._store._save_type(t)
+        flagged_by_id = {e.id: e for e in flagged}
+
+        # Preferred path: use the detector's exact conflict pairs, restricted to
+        # currently-flagged, non-superseded entries. De-dup unordered pairs.
+        if self._detector is not None:
+            try:
+                unresolved = await self._detector.get_unresolved(limit=10000)
+                pairs: list[tuple[MemoryEntry, MemoryEntry]] = []
+                seen: set[frozenset[str]] = set()
+                for c in unresolved:
+                    a = flagged_by_id.get(c.memory_id_a)
+                    b = flagged_by_id.get(c.memory_id_b)
+                    if a is None or b is None or a.id == b.id:
+                        continue
+                    key = frozenset((a.id, b.id))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    pairs.append((a, b))
+                if pairs:
+                    return pairs
+            except Exception as e:
+                logger.warning("Reflection: detector pairing failed, falling back: {}", e)
+
+        # Fallback: key-prefix grouping (oldest two per prefix).
         by_prefix: dict[str, list[MemoryEntry]] = defaultdict(list)
         for e in flagged:
             prefix = e.key.split(":")[0] if ":" in e.key else e.key
@@ -191,6 +224,23 @@ class ReflectionEngine:
                 group.sort(key=lambda e: e.updated_at or "")
                 pairs.append((group[0], group[1]))
         return pairs
+
+    @staticmethod
+    def _priority_allows_supersede(winner: MemoryEntry, loser: MemoryEntry) -> bool:
+        """Whether ``winner`` may supersede ``loser`` under the provenance floor.
+
+        Same contract as consolidator._auto_resolve_same_key:
+        - either side legacy/unknown (priority 0) → no basis, block;
+        - winner strictly lower priority than loser → block (a lower-provenance
+          entry must never bury a higher one);
+        - winner priority >= loser → allow (equal priority lets the LLM's
+          content judgment stand; higher obviously wins).
+        """
+        from echo_agent.memory.types import source_priority
+        pw, pl = source_priority(winner.source), source_priority(loser.source)
+        if pw == 0 or pl == 0:
+            return False
+        return pw >= pl
 
     def _clear_conflict_tags(self, *entries: MemoryEntry) -> None:
         for e in entries:
@@ -260,7 +310,7 @@ class ReflectionEngine:
         -> clear tags."""
         stats = {"resolved": 0, "deferred": 0, "dismissed": 0}
         try:
-            pairs = self._conflict_pairs()
+            pairs = await self._conflict_pairs()
         except Exception as e:
             logger.warning("Reflection resolve: pairing failed: {}", e)
             return stats
@@ -270,6 +320,18 @@ class ReflectionEngine:
             except Exception as e:
                 logger.warning("Reflection adjudication failed for {}/{}: {}", a.id, b.id, e)
                 continue
+            # Source-priority floor: the LLM verdict may not override the
+            # provenance hierarchy. Mirrors consolidator._auto_resolve_same_key
+            # so both adjudication paths honor one contract — legacy/unknown
+            # never auto-resolves, and a lower-provenance entry never supersedes
+            # a higher one (e.g. model_inferred must not bury user_stated).
+            # Violations degrade to "defer to user" instead of supersede.
+            if verdict in ("a_wins", "b_wins"):
+                winner, loser = (a, b) if verdict == "a_wins" else (b, a)
+                if not self._priority_allows_supersede(winner, loser):
+                    self._defer_to_user(a, b)
+                    stats["deferred"] += 1
+                    continue
             if verdict == "a_wins":
                 self._store.mark_superseded(b.id, a.id)
                 self._clear_conflict_tags(a, b)

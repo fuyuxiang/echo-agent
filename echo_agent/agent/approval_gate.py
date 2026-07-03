@@ -286,7 +286,8 @@ class ApprovalGate:
         await self._bus.publish_outbound(out)
         # Additive: emit an interactive approval frame for an attached cli TUI.
         # Fires AFTER the text publish and never changes approval outcome.
-        if self._cog is not None:
+        # Gate before building the params dict so IM channels pay nothing.
+        if self._cog is not None and self._cog.active(event):
             await self._cog.emit(
                 event, "approval_request",
                 {"request_id": request_id, "action": tool_name, "tool": tool_name,

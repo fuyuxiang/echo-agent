@@ -17,7 +17,9 @@ class StatusBar(Static):
         super().__init__(self._compose_text())
 
     def _compose_text(self) -> str:
-        conn = "●连接" if self._ok else "○断开重试中"
+        # No client-side reconnect exists (attach_client connects once), so
+        # don't claim "retrying" — say plainly it's disconnected.
+        conn = "●连接" if self._ok else "○已断开"
         return (
             f"{conn} · {self._session} · {self._model} · "
             f"累计 ${round(self._cost, 4)} · Enter发送 Shift+Enter换行 "

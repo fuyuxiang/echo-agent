@@ -317,10 +317,18 @@ class GatewayServer:
         Defends localhost deployments against CSRF-to-localhost / DNS-rebinding:
         a malicious web page cannot drive shutdown/skills/knowledge just because
         the user's browser can reach 127.0.0.1. Non-browser clients are
-        unaffected (they send no Origin/Sec-Fetch-Site)."""
+        unaffected (they send no Origin/Sec-Fetch-Site).
+
+        Uses the default-on ``is_cross_site_browser`` primitive — same defense
+        as POST /message and the WS handshake. It must NOT use the opt-in
+        ``is_origin_allowed`` (which returns True when ``allowed_origins`` is
+        empty): these admin endpoints are the highest-risk surface and an
+        unauthenticated loopback deployment (no tokens, no allowlist — the
+        default form) would otherwise leave shutdown/skills/knowledge fully
+        exposed to CSRF-to-localhost."""
         origin = request.headers.get("Origin", "").strip()
         sec_fetch_site = request.headers.get("Sec-Fetch-Site", "").strip()
-        if self.auth.is_origin_allowed(origin, sec_fetch_site):
+        if not self.auth.is_cross_site_browser(origin, sec_fetch_site):
             return None
         self.auth.audit(action, ok=False, reason=f"cross-site origin rejected: {origin or '?'}")
         return web.json_response({"error": "cross-site request forbidden"}, status=403)

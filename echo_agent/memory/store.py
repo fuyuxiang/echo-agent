@@ -181,6 +181,12 @@ class MemoryStore:
         self._embed_fn = None  # async callable: str -> list[float]
         # (entry_id, text, old_vec_id) triples awaiting embedding
         self._pending_embeds: list[tuple[str, str, str]] = []
+        # Serializes flush_pending_embeds: multiple triggers (startup backfill +
+        # post-reply, both via the background scheduler) can otherwise run
+        # concurrently, snapshot the same entry_id, and each add() a vector for
+        # it — producing a duplicate vector + an orphan. The lock makes flush
+        # single-flight; a second caller waits, then finds the queue drained.
+        self._flush_lock = asyncio.Lock()
         self._contradiction_scan_on_store = contradiction_scan_on_store
         self._contradiction_detector = None  # set externally or lazily created
         # Unresolved-contradiction tracking for core-snapshot admission.
@@ -205,9 +211,16 @@ class MemoryStore:
         self._retriever = retriever
 
     def _queue_embed(self, entry: MemoryEntry, old_vec_id: str = "") -> None:
-        if self._embed_fn and self._vector_index:
-            text = f"{entry.key} {entry.content}" if entry.key else entry.content
-            self._pending_embeds.append((entry.id, text, old_vec_id))
+        if not (self._embed_fn and self._vector_index):
+            return
+        # Circuit open (provider embedding down): stop enqueueing so the pending
+        # queue can't grow without bound while every flush spins O(N) over it.
+        # The backend is re-decided on restart, not hot-swapped, so there is no
+        # in-process recovery to wait for — dropping is the right call.
+        if getattr(self._embed_fn, "tripped", False):
+            return
+        text = f"{entry.key} {entry.content}" if entry.key else entry.content
+        self._pending_embeds.append((entry.id, text, old_vec_id))
 
     async def flush_pending_embeds(self) -> int:
         """Generate embeddings for queued entries and add to vector index. Returns count.
@@ -219,6 +232,18 @@ class MemoryStore:
         not cleared up front: a whole-batch failure (e.g. the embedding backend
         is down) must not silently drop the work."""
         if not self._pending_embeds or not self._embed_fn or not self._vector_index:
+            return 0
+        async with self._flush_lock:
+            return await self._flush_pending_embeds_locked()
+
+    async def _flush_pending_embeds_locked(self) -> int:
+        # Re-check under the lock: a prior flush may have drained the queue while
+        # we waited, and _embed_fn/_vector_index may have been torn down.
+        if not self._pending_embeds or not self._embed_fn or not self._vector_index:
+            return 0
+        # Circuit open: every embed would return [] and process nothing, so a
+        # flush is pure O(N) waste. Skip until a restart re-decides the backend.
+        if getattr(self._embed_fn, "tripped", False):
             return 0
         batch = list(self._pending_embeds)
         count = 0
@@ -612,12 +637,20 @@ class MemoryStore:
             )
             self._spawn_blocked_contradiction(existing, new_entry)
             return existing
-        existing.content = self._validate_content(new_entry.content)
+        new_content = self._validate_content(new_entry.content)
+        content_changed = new_content != existing.content
+        existing.content = new_content
         existing.tags = _normalize_tags([*existing.tags, *new_entry.tags])
         existing.importance = max(existing.importance, new_entry.importance)
         existing.source = new_entry.source
         existing.updated_at = datetime.now().isoformat()
         self._dirty_ids.add(existing_id)
+        # Content changed → the stored vector no longer matches. Re-queue an
+        # embed keyed on the old vector so flush replaces it (same contract as
+        # update()); otherwise the merge path silently leaves the index
+        # pointing at the pre-merge text.
+        if content_changed:
+            self._queue_embed(existing, old_vec_id=existing.embedding_id)
         return existing
 
     def _spawn_blocked_contradiction(self, existing: MemoryEntry, blocked: MemoryEntry) -> None:
