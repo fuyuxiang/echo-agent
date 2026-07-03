@@ -13,6 +13,15 @@ from textual.widgets import TextArea
 
 
 class PromptInput(TextArea):
+    def __init__(self) -> None:
+        super().__init__()
+        # 裸 TextArea 只有闪烁光标，用户认不出这是输入区。给边框加标题明确用途。
+        self.border_title = "❯ 输入消息 · Enter 发送 · Shift+Enter 换行"
+
+    def on_mount(self) -> None:
+        # border_title 需要有可见边框才会显示。
+        self.styles.border = ("round", "grey")
+
     class Submitted(Message):
         def __init__(self, text: str) -> None:
             self.text = text
