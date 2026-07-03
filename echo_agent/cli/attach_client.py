@@ -12,11 +12,19 @@ class NoGatewayError(Exception):
     """Raised when no local gateway can be reached."""
 
 
+class MissingTUIDependencyError(Exception):
+    """Raised when the optional TUI dependency (textual) is not installed.
+
+    Kept distinct from NoGatewayError so run_cli_attach can surface the
+    install hint directly instead of misdirecting the user to gateway/port
+    troubleshooting (the gateway may be perfectly healthy)."""
+
+
 def _require_textual() -> None:
     try:
         import textual  # noqa: F401
     except ImportError as e:
-        raise NoGatewayError(
+        raise MissingTUIDependencyError(
             "缺少 TUI 依赖 textual。请安装：pip install \"echo-agent[all]\" "
             "或 pip install \"echo-agent[tui]\"。"
         ) from e
@@ -221,6 +229,12 @@ def run_cli_attach(
             host=host, port=port, ws_path=ws_path,
             user_id=user_id, token=token,
         ))
+    except MissingTUIDependencyError as e:
+        # The gateway may be perfectly healthy — this is purely a missing
+        # optional dependency, so surface the install hint directly rather
+        # than the (misleading) gateway diagnosis.
+        print(str(e))
+        return 1
     except NoGatewayError:
         url = build_ws_url(host, port, ws_path)
         print(diagnose_no_gateway(url, config_path, workspace))

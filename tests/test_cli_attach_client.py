@@ -5,6 +5,7 @@ import pytest
 
 from echo_agent.cli.attach_client import (
     AuthError,
+    MissingTUIDependencyError,
     NoGatewayError,
     OutboundRenderer,
     authenticate,
@@ -125,3 +126,44 @@ async def test_client_auth_and_send_roundtrip(gateway_ws_url):
         msg = await asyncio.wait_for(ws.receive_json(), timeout=5)
         assert msg["type"] in ("accepted", "message")
         await ws.close()
+
+
+def test_require_textual_raises_missing_dep_when_absent(monkeypatch):
+    import builtins
+    from echo_agent.cli import attach_client
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "textual" or name.startswith("textual."):
+            raise ImportError("No module named 'textual'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    with pytest.raises(MissingTUIDependencyError) as ei:
+        attach_client._require_textual()
+    assert "textual" in str(ei.value)
+
+
+def test_run_cli_attach_missing_textual_prints_install_hint_not_gateway(
+    monkeypatch, capsys
+):
+    """缺 textual 时须给出清晰安装提示，且绝不误报网关缺失诊断。"""
+    from echo_agent.cli import attach_client
+
+    def boom() -> None:
+        raise MissingTUIDependencyError(
+            "缺少 TUI 依赖 textual。请安装：pip install \"echo-agent[all]\" "
+            "或 pip install \"echo-agent[tui]\"。"
+        )
+
+    monkeypatch.setattr(attach_client, "_require_textual", boom)
+    rc = attach_client.run_cli_attach(
+        host="127.0.0.1", port=9000, ws_path="/ws", user_id="u1", token="",
+    )
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "textual" in out
+    # 必须 NOT 落到网关诊断分支
+    assert "未发现本机常驻 echo-agent" not in out
+    assert "gateway.enabled" not in out
