@@ -14,7 +14,8 @@ class Sink:
 
 
 def test_bridge_routes_cognitive_with_dedup():
-    s = Sink(); b = WSBridge(s)
+    s = Sink()
+    b = WSBridge(s)
     frame = {"type": "message", "message_kind": "cognitive",
              "text": "召回 1 条", "metadata": {"cog_type": "memory_recalled",
              "cog_event_id": "e1", "_inbound_event_id": "in1", "data": {}}}
@@ -24,7 +25,8 @@ def test_bridge_routes_cognitive_with_dedup():
 
 
 def test_bridge_routes_error_and_final_text():
-    s = Sink(); b = WSBridge(s)
+    s = Sink()
+    b = WSBridge(s)
     b.dispatch({"type": "error", "error": "boom"})
     b.dispatch({"type": "message", "message_kind": "final", "text": "答案",
                 "is_final": True, "metadata": {"_inbound_event_id": "in1"}})
@@ -33,7 +35,8 @@ def test_bridge_routes_error_and_final_text():
 
 
 def test_bridge_ignores_control_frames():
-    s = Sink(); b = WSBridge(s)
+    s = Sink()
+    b = WSBridge(s)
     for t in ("accepted", "auth_ok", "pong"):
         b.dispatch({"type": t})
     assert s.events == []
