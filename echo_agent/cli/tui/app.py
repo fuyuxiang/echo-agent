@@ -86,7 +86,11 @@ class EchoTUI(App):
             self.set_focus(None)
             return
         if ev.cog_type == "cost_update":
+            # Cost only refreshes the status bar; it must not enter the
+            # transcript stream (symmetric with heartbeat/approval_request
+            # above), otherwise tool-heavy turns spam 💰 blocks.
             self.query_one(StatusBar).set_cost(ev.data.get("total_cost", 0.0))
+            return
         self._tv.add_cognitive(ev)
 
     def on_error(self, msg: str) -> None:

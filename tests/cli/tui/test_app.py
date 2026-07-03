@@ -96,6 +96,23 @@ async def test_app_approval_y_sends_command():
 
 
 @pytest.mark.asyncio
+async def test_app_cost_update_only_updates_status_bar():
+    # cost_update must refresh the status bar cost but NOT append a CognitiveBlock
+    # to the transcript, otherwise tool-heavy turns spam 💰 blocks.
+    from echo_agent.cli.tui.app import EchoTUI
+    from echo_agent.cli.tui.blocks import CognitiveBlock
+    from echo_agent.cli.tui.status_bar import StatusBar
+    app = EchoTUI()
+    async with app.run_test() as pilot:
+        before = len(app.query(CognitiveBlock))
+        ev = CogEvent("cost_update", "e3", "in1", {"total_cost": 0.042}, "累计 $0.042")
+        app.on_cognitive(ev)
+        await pilot.pause()
+        assert len(app.query(CognitiveBlock)) == before
+        assert app.query_one(StatusBar)._cost == 0.042
+
+
+@pytest.mark.asyncio
 async def test_bridge_into_app_end_to_end():
     from echo_agent.cli.tui.app import EchoTUI
     from echo_agent.cli.tui.bridge import WSBridge
