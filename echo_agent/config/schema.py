@@ -1915,6 +1915,17 @@ class MemoryConfig(_Base):
             "desc_en": "Maximum working-memory entries",
         },
     )
+    embedding_backend: Literal["auto", "local", "provider"] = Field(
+        default="auto",
+        json_schema_extra={
+            "status": "effective", "ref": "agent/loop.py",
+            "desc_zh": "嵌入后端: auto=启动探测provider,失败静默回退fastembed; "
+                       "local=直接用本地fastembed免探测; provider=强制provider,探测失败报错不回退",
+            "desc_en": "Embedding backend: auto=probe provider at startup, fall back to fastembed "
+                       "on failure; local=use local fastembed directly; provider=force provider, "
+                       "error out if probe fails",
+        },
+    )
     embedding_model: str = Field(
         default="",
         json_schema_extra={
