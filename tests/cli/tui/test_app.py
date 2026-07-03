@@ -42,6 +42,24 @@ def test_bridge_ignores_control_frames():
     assert s.events == []
 
 
+def test_bridge_ignores_progress_and_heartbeat_flat_frames():
+    # gateway:cli sessions also receive flat progress/tool/heartbeat frames
+    # (is_final=False, no _token_stream). They are NOT reply text and must not
+    # pop/overwrite an in-flight streaming reply.
+    s = Sink()
+    b = WSBridge(s)
+    meta = {"_inbound_event_id": "in1", "_token_stream": True}
+    b.dispatch({"type": "message", "text": "答", "is_final": False, "metadata": meta})
+    # progress (empty text) and heartbeat (non-empty text) interleaved
+    b.dispatch({"type": "message", "message_kind": "progress", "text": "",
+                "is_final": False, "metadata": {"_inbound_event_id": "in1"}})
+    b.dispatch({"type": "message", "message_kind": "heartbeat", "text": "还在处理中",
+                "is_final": False, "metadata": {"_inbound_event_id": "in1"}})
+    b.dispatch({"type": "message", "text": "案", "is_final": False, "metadata": meta})
+    # Only the two streaming tokens reached the sink; no final/pop happened.
+    assert s.events == [("tok", "in1", "答"), ("tok", "in1", "案")]
+
+
 @pytest.mark.asyncio
 async def test_app_renders_cognitive_and_toggles_memory():
     from echo_agent.cli.tui.app import EchoTUI

@@ -25,6 +25,14 @@ class WSBridge:
                 self._sink.on_cognitive(ev)
             return
 
+        # gateway:cli sessions also receive flat progress/tool/heartbeat frames
+        # (is_final=False, no _token_stream). These are NOT reply text — the
+        # cognitive heartbeat already went through parse_cog_frame above — so
+        # ignore them here, otherwise on_user_reply_final would pop/overwrite an
+        # in-flight streaming reply.
+        if payload.get("message_kind") in ("progress", "tool", "heartbeat"):
+            return
+
         # Plain outbound text (streaming or final)
         meta = payload.get("metadata") or {}
         inbound_id = str(meta.get("_inbound_event_id", ""))
