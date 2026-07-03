@@ -124,6 +124,14 @@ async def test_inference_stage_cost_and_tool_noop_without_emitter():
 
 @pytest.mark.asyncio
 async def test_inference_stage_emits_written_thinking_evolution():
+    # Verifies the render/output shape of three _emit_* helpers when called
+    # directly. IMPORTANT: only `thinking` is actually wired to a turn-in
+    # call-site. `memory_written` and `evolution` are render-ready helpers with
+    # NO turn-in emission call-site (not wired) — their real signals are
+    # background/offline (turn-after memory review returns list[str] logs; the
+    # evolution engine is an offline/independent-command path). This test only
+    # asserts helper output correctness, NOT that these events are emitted in a
+    # turn. See the "Follow-up" section in the design spec / plan.
     cap = _CapEmitter()
     stage = InferenceStage.__new__(InferenceStage)
     stage._cog = cap
@@ -147,6 +155,11 @@ async def test_inference_stage_emits_written_thinking_evolution():
 
 @pytest.mark.asyncio
 async def test_written_thinking_evolution_noop_without_emitter():
+    # Guards the None-emitter / empty-items no-op safety of the three helpers.
+    # Same caveat as above: `memory_written` and `evolution` are render-ready
+    # but NOT wired to any turn-in call-site (only `thinking` is). This asserts
+    # helper safety, not that these events fire in a turn. See spec/plan
+    # "Follow-up".
     stage = InferenceStage.__new__(InferenceStage)
     stage._cog = None
     ev = InboundEvent.text_message(
