@@ -127,7 +127,7 @@ async def test_status_bar_setters_update_render():
         sb.set_connection(False)
         text = str(sb.render())
         assert "sess_1" in text
-        assert "opus" in text
+        assert sb._model == "opus"  # 存下但不渲染
         assert "0.1234" in text
         assert "断开" in text
         sb.set_connection(True)
