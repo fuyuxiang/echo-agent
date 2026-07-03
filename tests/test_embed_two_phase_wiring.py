@@ -107,3 +107,46 @@ async def test_provider_backend_probe_failure_raises(agent_loop_factory):
     loop = agent_loop_factory(embedding_backend="provider", provider_embeds=None)
     with pytest.raises(RuntimeError, match="embedding"):
         await loop.start()
+
+
+@pytest.mark.asyncio
+async def test_vector_disabled_still_wires_keyword_consumers(tmp_path):
+    """vector_enabled=False（但 memory.enabled=True）时，消费者仍须按原语义接线：
+    HybridRetriever 以关键词模式建成、矛盾检测器建成，仅 VectorIndex 缺席。
+
+    覆盖两阶段改造相对改造前的回归——早退曾让 _wire_vector_consumers 永不执行，
+    导致关键词检索/矛盾工具/预取在该配置下一起静默失效。
+    """
+    config = load_config(overrides={"workspace": str(tmp_path)})
+    config.memory.enabled = True
+    config.memory.vector_enabled = False        # 关向量，仅关键词检索
+    config.memory.contradiction_detection = True
+    config.memory.reflection_enabled = True
+    config.knowledge.enabled = False
+    config.planning.enabled = False
+    config.multi_agent.enabled = False
+    config.observability.otel_enabled = False
+    config.observability.trace_enabled = False
+
+    provider = MagicMock(spec=LLMProvider)
+    provider.supports_embed = MagicMock(return_value=True)
+    provider.embed = AsyncMock(return_value=[0.1, 0.2, 0.3])
+    provider.get_default_model = MagicMock(return_value="stub")
+    provider.chat_with_retry = AsyncMock()
+
+    storage = SQLiteBackend(tmp_path / "mem_vec_off.db")
+
+    loop = AgentLoop(
+        bus=MessageBus(),
+        config=config,
+        provider=provider,
+        workspace=tmp_path,
+        storage=storage,
+    )
+    await loop.start()
+
+    assert loop._hybrid_retriever is not None       # 关键词模式仍在
+    assert loop._contradiction_detector is not None  # 矛盾检测仍建
+    assert loop._prefetcher is not None              # 预取仍接线
+    assert loop._vector_index is None                # 但不建向量索引
+    assert loop._embed_fn is None

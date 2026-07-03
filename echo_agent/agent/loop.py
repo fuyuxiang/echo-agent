@@ -627,7 +627,12 @@ class AgentLoop:
         # 原实现下不存在任何向量索引/消费者,这里同样短路以保持行为一致。
         if not config.memory.enabled:
             return
+        # vector_enabled=False 或无 storage 时,探针+建索引整段跳过,但消费者仍需
+        # 按原语义接线(关键词模式):改造前 HybridRetriever/矛盾检测/reflection/预取
+        # 的构造在向量块之外,只受各自开关+storage 控制。此处以 vector_index=None、
+        # embed_fn=None 调用 _wire_vector_consumers,HybridRetriever 退化为 BM25。
         if not (config.memory.vector_enabled and storage):
+            self._wire_vector_consumers(None, None)
             return
         candidate, emb_model = self._embed_candidate
         embed_fn = None
