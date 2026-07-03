@@ -71,9 +71,9 @@ class ApprovalBlock(Static):
         self.params = params
         self.risk = risk
         self.decision: str | None = None
-        super().__init__(self._render())
+        super().__init__(self._body())
 
-    def _render(self) -> str:
+    def _body(self) -> str:
         if self.decision == "approve":
             return f"⚠️ {self.action} — ✅ 已批准"
         if self.decision == "deny":
@@ -83,4 +83,4 @@ class ApprovalBlock(Static):
 
     def mark(self, decision: str) -> None:
         self.decision = decision
-        self.update(self._render())
+        self.update(self._body())
