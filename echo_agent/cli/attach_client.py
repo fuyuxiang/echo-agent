@@ -169,7 +169,7 @@ async def run_client(
     url = build_ws_url(host, port, ws_path)
     async with aiohttp.ClientSession() as session:
         ws = await connect_ws(session, url)
-        await authenticate(
+        session_key = await authenticate(
             ws, platform="cli", user_id=user_id,
             session_key=f"cli:{user_id}", token=token,
         )
@@ -183,7 +183,7 @@ async def run_client(
             except (aiohttp.ClientError, ConnectionError, RuntimeError):
                 app.notify_disconnected()
 
-        app = EchoTUI(send_coro=send_coro)
+        app = EchoTUI(send_coro=send_coro, session_key=session_key)
         bridge = WSBridge(app)
 
         async def pump() -> None:
@@ -200,7 +200,7 @@ async def run_client(
                 bridge.dispatch(payload)
             # Loop exit means the socket closed / a non-TEXT frame arrived. No
             # error frame is sent on a clean gateway shutdown, so flip the
-            # status bar to disconnected here rather than leaving it "●连接".
+            # status bar to disconnected here rather than leaving it "●已连接".
             app.notify_disconnected()
 
         pump_task = asyncio.create_task(pump())

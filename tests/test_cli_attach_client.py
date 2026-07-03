@@ -145,6 +145,54 @@ def test_require_textual_raises_missing_dep_when_absent(monkeypatch):
     assert "textual" in str(ei.value)
 
 
+@pytest.mark.asyncio
+async def test_run_client_passes_handshake_session_key_into_tui(monkeypatch):
+    import echo_agent.cli.attach_client as ac
+
+    captured = {}
+
+    class _WS:
+        def __init__(self):
+            self.closed = False
+        async def send_json(self, data):
+            self._auth_reply = {"type": "auth_ok", "session_key": "cli:server-side"}
+        async def receive_json(self):
+            return self._auth_reply
+        def __aiter__(self):
+            return self
+        async def __anext__(self):
+            raise StopAsyncIteration  # pump 立即结束
+        async def close(self):
+            self.closed = True
+
+    ws = _WS()
+
+    async def fake_connect(session, url):
+        return ws
+    monkeypatch.setattr(ac, "connect_ws", fake_connect)
+
+    class _FakeApp:
+        def __init__(self, send_coro=None, session_key=""):
+            captured["session_key"] = session_key
+        def notify_disconnected(self):
+            pass
+        async def run_async(self):
+            return None
+    monkeypatch.setattr("echo_agent.cli.tui.app.EchoTUI", _FakeApp)
+
+    class _FakeBridge:
+        def __init__(self, sink):
+            pass
+    monkeypatch.setattr("echo_agent.cli.tui.bridge.WSBridge", _FakeBridge)
+    monkeypatch.setattr(ac, "_require_textual", lambda: None)
+
+    rc = await ac.run_client(
+        host="127.0.0.1", port=9000, ws_path="/ws", user_id="local", token="",
+    )
+    assert rc == 0
+    assert captured["session_key"] == "cli:server-side"
+
+
 def test_run_cli_attach_missing_textual_prints_install_hint_not_gateway(
     monkeypatch, capsys
 ):
