@@ -67,6 +67,43 @@ def _resolve_builtin_skills_dir(workspace: Path, configured_path: str) -> Path |
     return None
 
 
+_EMBED_CIRCUIT_THRESHOLD = 3
+
+
+class _ProviderEmbedFn:
+    """provider embedding 入口的熔断包装。连续失败达阈值后停止调用底层、
+    返回 []（对检索与 flush 两条路径都安全），并只告警一次。止损后由重启
+    重新决策 backend（不做运行时热切换，避免维度污染）。"""
+
+    def __init__(self, provider: Any, model: str | None):
+        self._provider = provider
+        self._model = model
+        self._consecutive_failures = 0
+        self.tripped = False
+
+    async def __call__(self, text: str) -> list[float]:
+        if self.tripped:
+            return []
+        try:
+            result = await self._provider.embed(text, model=self._model)
+        except Exception as e:
+            logger.debug("Provider embedding raised: {}", e)
+            result = None
+        if result:
+            self._consecutive_failures = 0
+            return result
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= _EMBED_CIRCUIT_THRESHOLD and not self.tripped:
+            self.tripped = True
+            logger.warning(
+                "Provider embedding failed {} times consecutively; embedding backfill "
+                "paused. Fix the endpoint or set memory.embedding_backend=local and "
+                "restart. Vector search degrades to keyword-only until then.",
+                _EMBED_CIRCUIT_THRESHOLD,
+            )
+        return []
+
+
 def resolve_embed_fallback(embed_provider, emb_model, local_model_name):
     """Resolve the embedding tier: provider-backed when available, else the
     local fastembed fallback (zero-config vector search), else nothing.
