@@ -1,4 +1,7 @@
+import pytest
+
 from echo_agent.cli.tui.bridge import WSBridge
+from echo_agent.cli.tui.protocol import CogEvent
 
 
 class Sink:
@@ -34,3 +37,38 @@ def test_bridge_ignores_control_frames():
     for t in ("accepted", "auth_ok", "pong"):
         b.dispatch({"type": t})
     assert s.events == []
+
+
+@pytest.mark.asyncio
+async def test_app_renders_cognitive_and_toggles_memory():
+    from echo_agent.cli.tui.app import EchoTUI
+    from echo_agent.cli.tui.blocks import CognitiveBlock
+    app = EchoTUI()
+    async with app.run_test() as pilot:
+        ev = CogEvent("memory_recalled", "e1", "in1",
+                      {"items": [{"content": "喜欢深色", "source": "user_stated"}]},
+                      "召回 1 条记忆")
+        app.on_cognitive(ev)
+        await pilot.pause()
+        blk = app.query_one(CognitiveBlock)
+        assert blk.expanded is False
+        await pilot.press("ctrl+r")
+        assert blk.expanded is True
+
+
+@pytest.mark.asyncio
+async def test_app_approval_y_sends_command():
+    from echo_agent.cli.tui.app import EchoTUI
+    from echo_agent.cli.tui.protocol import CogEvent
+    sent = []
+    async def fake_send(text): sent.append(text)
+    app = EchoTUI(send_coro=fake_send)
+    async with app.run_test() as pilot:
+        ev = CogEvent("approval_request", "e2", "in1",
+                      {"request_id": "req9", "action": "shell", "params": {}, "risk": "EXEC"},
+                      "⚠️ 需要确认: shell")
+        app.on_cognitive(ev)
+        await pilot.pause()
+        await pilot.press("y")
+        await pilot.pause()
+        assert sent == ["/approve req9"]
