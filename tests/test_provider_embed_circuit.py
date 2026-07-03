@@ -33,9 +33,11 @@ async def test_success_midway_resets_counter():
     p = MagicMock()
     p.embed = AsyncMock(side_effect=[None, None, [1.0], None, None])
     fn = _ProviderEmbedFn(p, "m")
-    await fn("a"); await fn("b")          # 2 fails
+    await fn("a")
+    await fn("b")                         # 2 fails
     assert await fn("c") == [1.0]         # success resets
-    await fn("d"); await fn("e")          # 2 fails again
+    await fn("d")
+    await fn("e")                         # 2 fails again
     assert fn.tripped is False            # never reached 3 consecutive
 
 
