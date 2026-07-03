@@ -33,6 +33,12 @@ class EchoTUI(App):
         super().__init__()
         self._send = send_coro
         self._replies: dict[str, object] = {}
+        # A single pending-approval slot is sufficient (no queue needed):
+        # approval requests are serialized server-side by inference_stage Phase A
+        # — that check is a serial for-loop where cli blocks in wait_for_decision
+        # until this decision resolves, so at most one approval is ever
+        # outstanding. Phase B runs concurrently but only for read-only,
+        # non-conflicting tools that never raise an approval_request.
         self._pending_approval: ApprovalBlock | None = None
 
     def compose(self) -> ComposeResult:
