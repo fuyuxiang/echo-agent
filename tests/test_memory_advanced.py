@@ -218,16 +218,86 @@ class TestForgettingCurve:
         entry = _make_entry(last_accessed="", importance=0.8)
         assert curve.days_until_archive(entry) is None
 
+    def test_days_until_archive_malformed_timestamp_returns_none(self):
+        """非法 last_accessed 使 ETA 计算降级返回 None，而非抛异常。"""
+        curve = ForgettingCurve(base_half_life_days=30.0, archive_threshold=0.05)
+        entry = _make_entry(type=MemoryType.ENVIRONMENT, last_accessed="garbage", importance=0.8)
+        assert curve.days_until_archive(entry) is None
+
     @pytest.mark.asyncio
     async def test_run_decay_pass(self):
+        # type 必须为非 USER，否则 run_decay_pass 首行即 continue，永远走不到 tier 分支。
         curve = ForgettingCurve(base_half_life_days=5.0, archive_threshold=0.05, forget_threshold=0.01)
         old = (datetime.now() - timedelta(days=200)).isoformat()
-        semantic = _make_entry(last_accessed=old, importance=0.3, tier=MemoryTier.SEMANTIC)
-        working = _make_entry(last_accessed=old, importance=0.3, tier=MemoryTier.WORKING)
-        archival = _make_entry(last_accessed=old, importance=0.3, tier=MemoryTier.ARCHIVAL)
+        semantic = _make_entry(type=MemoryType.ENVIRONMENT, last_accessed=old,
+                               importance=0.3, tier=MemoryTier.SEMANTIC)
+        working = _make_entry(type=MemoryType.ENVIRONMENT, last_accessed=old,
+                              importance=0.3, tier=MemoryTier.WORKING)
+        archival = _make_entry(type=MemoryType.ENVIRONMENT, last_accessed=old,
+                               importance=0.3, tier=MemoryTier.ARCHIVAL)
         to_archive, to_forget = await curve.run_decay_pass([semantic, working, archival])
-        # working entries are skipped; archival entries go to forget if below threshold
+        # WORKING 层始终跳过；SEMANTIC 深度衰减后进 forget；ARCHIVAL 跌破阈值进 forget。
         assert working not in to_archive and working not in to_forget
+        assert semantic in to_forget
+        assert archival in to_forget
+
+    def test_future_timestamp_returns_raw_importance(self):
+        """负 days_since（时间戳在未来）时返回原始 importance，不放大也不报错。"""
+        curve = ForgettingCurve(base_half_life_days=30.0)
+        future = (datetime.now() + timedelta(days=10)).isoformat()
+        entry = _make_entry(type=MemoryType.ENVIRONMENT, last_accessed=future, importance=0.7)
+        assert curve.effective_importance(entry) == 0.7
+
+    def test_empty_last_accessed_returns_raw_importance(self):
+        """非 USER 记忆但从未被访问（last_accessed 为空）时按原始 importance 计。"""
+        curve = ForgettingCurve(base_half_life_days=30.0)
+        entry = _make_entry(type=MemoryType.ENVIRONMENT, last_accessed="", importance=0.6)
+        assert curve.effective_importance(entry) == 0.6
+
+    def test_malformed_timestamp_degrades_gracefully(self):
+        """非法时间戳触发 ValueError，须降级为原始 importance 而非崩溃。"""
+        curve = ForgettingCurve(base_half_life_days=30.0)
+        entry = _make_entry(type=MemoryType.ENVIRONMENT, last_accessed="not-a-date", importance=0.6)
+        assert curve.effective_importance(entry) == 0.6
+
+    def test_days_until_archive_already_below_threshold(self):
+        """importance 已不高于 archive_threshold 时立即可归档（0 天）。"""
+        curve = ForgettingCurve(base_half_life_days=30.0, archive_threshold=0.05)
+        entry = _make_entry(type=MemoryType.ENVIRONMENT, last_accessed="", importance=0.05)
+        assert curve.days_until_archive(entry) == 0.0
+
+    def test_days_until_archive_fresh_entry_has_positive_eta(self):
+        """新访问的高重要性记忆距归档还有正数天数。"""
+        curve = ForgettingCurve(base_half_life_days=30.0, archive_threshold=0.05)
+        recent = datetime.now().isoformat()
+        entry = _make_entry(type=MemoryType.ENVIRONMENT, last_accessed=recent,
+                            importance=0.8, access_count=0)
+        eta = curve.days_until_archive(entry)
+        assert eta is not None and eta > 0
+        # 0.8 衰减到 0.05 需要约 4 个半衰期（0.8*0.5^4=0.05），~120 天。
+        assert 100 < eta < 140
+
+    @pytest.mark.asyncio
+    async def test_run_decay_pass_archival_below_forget_goes_to_forget(self):
+        """ARCHIVAL 层记忆若跌破 forget 阈值则进入 to_forget，不再二次归档。"""
+        curve = ForgettingCurve(base_half_life_days=5.0, archive_threshold=0.05, forget_threshold=0.01)
+        old = (datetime.now() - timedelta(days=200)).isoformat()
+        archival = _make_entry(type=MemoryType.ENVIRONMENT, last_accessed=old,
+                               importance=0.3, tier=MemoryTier.ARCHIVAL)
+        to_archive, to_forget = await curve.run_decay_pass([archival])
+        assert archival in to_forget
+        assert archival not in to_archive
+
+    @pytest.mark.asyncio
+    async def test_run_decay_pass_semantic_archives_not_forgets(self):
+        """SEMANTIC 层衰减到 archive 与 forget 之间时归档而非遗忘。"""
+        curve = ForgettingCurve(base_half_life_days=10.0, archive_threshold=0.1, forget_threshold=0.001)
+        old = (datetime.now() - timedelta(days=40)).isoformat()
+        semantic = _make_entry(type=MemoryType.ENVIRONMENT, last_accessed=old,
+                               importance=0.5, tier=MemoryTier.SEMANTIC, access_count=0)
+        to_archive, to_forget = await curve.run_decay_pass([semantic])
+        assert semantic in to_archive
+        assert semantic not in to_forget
 
 
 # ===========================================================================
