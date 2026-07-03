@@ -137,6 +137,30 @@ def resolve_embed_fallback(embed_provider, emb_model, local_model_name):
     return None, "", None
 
 
+def pick_embed_candidate(backend, provider, router, emb_model):
+    """挑候选 embed provider（不发网络）。local 模式恒不挑 provider。
+    返回 (candidate_provider | None, resolved_model)。"""
+    if backend == "local":
+        return None, emb_model
+    if provider.supports_embed():
+        return provider, emb_model
+    if router is not None:
+        cand, routed_model = router.find_embed_provider(emb_model or "")
+        if cand is not None:
+            return cand, (routed_model or emb_model)
+    return None, emb_model
+
+
+async def probe_embed_provider(provider, model, timeout) -> int:
+    """发一次探针 embedding。成功且非空返回维度(>0)，否则返回 0。"""
+    try:
+        vec = await asyncio.wait_for(provider.embed("ping", model=model), timeout=timeout)
+    except Exception as e:
+        logger.info("Embedding probe failed, will fall back to local: {}", e)
+        return 0
+    return len(vec) if vec else 0
+
+
 class AgentLoop:
     """Core processing engine that ties all subsystems together."""
 
