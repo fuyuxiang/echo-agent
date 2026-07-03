@@ -4,14 +4,22 @@ gateway on loopback and opens its own (cli:) session. Builds no agent."""
 from __future__ import annotations
 
 import asyncio
-import sys
-import threading
 
 import aiohttp
 
 
 class NoGatewayError(Exception):
     """Raised when no local gateway can be reached."""
+
+
+def _require_textual() -> None:
+    try:
+        import textual  # noqa: F401
+    except ImportError as e:
+        raise NoGatewayError(
+            "缺少 TUI 依赖 textual。请安装：pip install \"echo-agent[all]\" "
+            "或 pip install \"echo-agent[tui]\"。"
+        ) from e
 
 
 def build_ws_url(host: str, port: int, ws_path: str) -> str:
@@ -143,68 +151,13 @@ class OutboundRenderer:
             print(f"\n--- 完整回复 ---\n{text}\n")
 
 
-async def _send_loop(ws) -> None:
-    # stdin is read on a daemon thread so run_client teardown never has to
-    # join a thread blocked in readline(): when _recv_loop finishes first and
-    # this coroutine is cancelled, the daemon thread is simply abandoned and
-    # dies with the process (asyncio.run's shutdown_default_executor would
-    # otherwise hang forever joining a readline-blocked executor thread).
-    loop = asyncio.get_running_loop()
-    queue: asyncio.Queue[str | None] = asyncio.Queue()
-    stop_event = threading.Event()
-
-    def read_stdin() -> None:
-        while not stop_event.is_set():
-            try:
-                line = sys.stdin.readline()
-            except (EOFError, KeyboardInterrupt):
-                line = ""
-            item = line if line != "" else None
-            try:
-                loop.call_soon_threadsafe(queue.put_nowait, item)
-            except RuntimeError:
-                break
-            if item is None:  # EOF (Ctrl-D)
-                break
-
-    thread = threading.Thread(target=read_stdin, name="echo-agent-cli-attach-input", daemon=True)
-    thread.start()
-    try:
-        while True:
-            print("You> ", end="", flush=True)
-            line = await queue.get()
-            if line is None:  # EOF (Ctrl-D)
-                break
-            line = line.strip()
-            if not line:
-                continue
-            if line.lower() in ("exit", "quit", "/quit"):
-                break
-            await ws.send_json({"type": "message", "text": line})
-    finally:
-        stop_event.set()
-
-
-async def _recv_loop(ws, renderer: "OutboundRenderer") -> None:
-    async for msg in ws:
-        if msg.type != aiohttp.WSMsgType.TEXT:
-            break
-        try:
-            payload = msg.json()
-        except Exception:
-            continue
-        mtype = payload.get("type")
-        if mtype == "error":
-            print(f"\n[错误] {payload.get('error')}\n")
-            continue
-        if mtype in ("accepted", "auth_ok", "pong"):
-            continue
-        renderer.render(payload)
-
-
 async def run_client(
     *, host: str, port: int, ws_path: str, user_id: str, token: str
 ) -> int:
+    _require_textual()
+    from echo_agent.cli.tui.app import EchoTUI
+    from echo_agent.cli.tui.bridge import WSBridge
+
     url = build_ws_url(host, port, ws_path)
     async with aiohttp.ClientSession() as session:
         ws = await connect_ws(session, url)
@@ -212,16 +165,33 @@ async def run_client(
             ws, platform="cli", user_id=user_id,
             session_key=f"cli:{user_id}", token=token,
         )
-        renderer = OutboundRenderer()
-        send = asyncio.create_task(_send_loop(ws))
-        recv = asyncio.create_task(_recv_loop(ws, renderer))
-        done, pending = await asyncio.wait(
-            {send, recv}, return_when=asyncio.FIRST_COMPLETED
-        )
-        for t in pending:
-            t.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
-        await ws.close()
+
+        async def send_coro(text: str) -> None:
+            await ws.send_json({"type": "message", "text": text})
+
+        app = EchoTUI(send_coro=send_coro)
+        bridge = WSBridge(app)
+
+        async def pump() -> None:
+            # app.run_async() and this coroutine share one event loop, so
+            # bridge.dispatch (which updates widgets) is called directly — no
+            # call_from_thread needed.
+            async for msg in ws:
+                if msg.type != aiohttp.WSMsgType.TEXT:
+                    break
+                try:
+                    payload = msg.json()
+                except Exception:
+                    continue
+                bridge.dispatch(payload)
+
+        pump_task = asyncio.create_task(pump())
+        try:
+            await app.run_async()
+        finally:
+            pump_task.cancel()
+            await asyncio.gather(pump_task, return_exceptions=True)
+            await ws.close()
     return 0
 
 

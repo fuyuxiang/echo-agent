@@ -72,3 +72,20 @@ async def test_app_approval_y_sends_command():
         await pilot.press("y")
         await pilot.pause()
         assert sent == ["/approve req9"]
+
+
+@pytest.mark.asyncio
+async def test_bridge_into_app_end_to_end():
+    from echo_agent.cli.tui.app import EchoTUI
+    from echo_agent.cli.tui.bridge import WSBridge
+    from echo_agent.cli.tui.blocks import CognitiveBlock
+    app = EchoTUI()
+    async with app.run_test() as pilot:
+        bridge = WSBridge(app)
+        bridge.dispatch({"type": "message", "message_kind": "cognitive",
+                         "text": "🔧 edit · ok",
+                         "metadata": {"cog_type": "tool_call", "cog_event_id": "e1",
+                                      "_inbound_event_id": "in1",
+                                      "data": {"name": "edit", "status": "ok"}}})
+        await pilot.pause()
+        assert len(app.query(CognitiveBlock)) == 1
