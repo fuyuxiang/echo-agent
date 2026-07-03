@@ -1,0 +1,109 @@
+"""两阶段接线：__init__ 只挑候选不定案，start() 探针后定案并构造 VectorIndex。
+
+覆盖 auto 探针成功走 provider、auto 探针失败静默回退 fastembed、
+local 免探针、provider 探针失败抛错四条路径，外加 start 前不构造索引。
+不依赖真实模型/网络：provider 用 MagicMock，storage 用内存态 SQLite。
+"""
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+import echo_agent.agent.loop as loop_mod
+from echo_agent.agent.loop import AgentLoop
+from echo_agent.bus.queue import MessageBus
+from echo_agent.config.loader import load_config
+from echo_agent.models.provider import LLMProvider
+from echo_agent.storage.sqlite import SQLiteBackend
+
+
+@pytest.fixture
+def agent_loop_factory(tmp_path, monkeypatch):
+    """构造最小 AgentLoop 的工厂：可控 embedding_backend 与 provider 返回向量。
+
+    - provider: MagicMock（supports_embed 恒 True、embed 返回 provider_embeds）；
+      用 MagicMock 是为了让 provider 型 model_id 前缀落在 'magicmock:'。
+    - storage: 内存态 SQLite（首次查询时惰性连接，无需预先 initialize）。
+    - _probe_spy: 包一层计数的 probe_embed_provider，验证 local 免探针。
+    """
+
+    def _make(embedding_backend="auto", provider_embeds=None):
+        config = load_config(overrides={"workspace": str(tmp_path)})
+        config.memory.enabled = True
+        config.memory.vector_enabled = True
+        config.memory.embedding_backend = embedding_backend
+        # 关掉无关子系统，缩小构造面（探测特性只关心 memory/embed 链路）。
+        config.knowledge.enabled = False
+        config.planning.enabled = False
+        config.multi_agent.enabled = False
+        config.observability.otel_enabled = False
+        config.observability.trace_enabled = False
+
+        # spec=LLMProvider 关键：裸 MagicMock 会对任意属性自动造子 mock，
+        # discover_tools 里 `_unwrap_provider` 的 `while hasattr(p, "_inner")`
+        # 会因此无限递归。限定 spec 后不存在的属性抛 AttributeError，循环即止。
+        provider = MagicMock(spec=LLMProvider)
+        provider.supports_embed = MagicMock(return_value=True)
+        provider.embed = AsyncMock(return_value=provider_embeds)
+        provider.get_default_model = MagicMock(return_value="stub")
+        provider.chat_with_retry = AsyncMock()
+
+        storage = SQLiteBackend(tmp_path / f"mem_{embedding_backend}.db")
+
+        loop = AgentLoop(
+            bus=MessageBus(),
+            config=config,
+            provider=provider,
+            workspace=tmp_path,
+            storage=storage,
+        )
+
+        # 包一层计数 spy，委托回真实探针；start() 内按模块全局名解析，故可被替换。
+        spy = AsyncMock(side_effect=loop_mod.probe_embed_provider)
+        monkeypatch.setattr(loop_mod, "probe_embed_provider", spy)
+        loop._probe_spy = spy
+        return loop
+
+    return _make
+
+
+@pytest.mark.asyncio
+async def test_vector_index_none_before_start(monkeypatch, agent_loop_factory):
+    loop = agent_loop_factory(embedding_backend="auto")
+    assert loop._vector_index is None      # 阶段 A 不构造
+    assert loop._embed_fn is None
+
+
+@pytest.mark.asyncio
+async def test_auto_probe_success_uses_provider(agent_loop_factory):
+    loop = agent_loop_factory(embedding_backend="auto", provider_embeds=[0.1, 0.2, 0.3])
+    await loop.start()
+    assert loop._vector_index is not None
+    assert loop._vector_index.dimensions == 3
+    assert loop._embed_model_id.startswith(("magicmock", "openai"))  # provider 型
+
+
+@pytest.mark.asyncio
+async def test_auto_probe_failure_falls_back_to_fastembed(agent_loop_factory):
+    with patch("echo_agent.memory.local_embed.LocalEmbedder.available",
+               new_callable=lambda: property(lambda self: True)):
+        loop = agent_loop_factory(embedding_backend="auto", provider_embeds=None)  # 探针失败
+        await loop.start()
+    assert loop._embed_model_id.startswith("fastembed:")
+
+
+@pytest.mark.asyncio
+async def test_local_backend_skips_probe(agent_loop_factory):
+    loop = agent_loop_factory(embedding_backend="local", provider_embeds=[0.1])
+    probe = loop._probe_spy  # factory 注入的探针调用记录
+    await loop.start()
+    assert loop._embed_model_id.startswith("fastembed:")
+    assert probe.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_provider_backend_probe_failure_raises(agent_loop_factory):
+    loop = agent_loop_factory(embedding_backend="provider", provider_embeds=None)
+    with pytest.raises(RuntimeError, match="embedding"):
+        await loop.start()

@@ -185,6 +185,9 @@ class AgentLoop:
         self.provider = provider
         self.router = router
         self.workspace = workspace
+        # 阶段 B(start 内 _resolve_embed_and_index)需要 storage 才能定案 backend
+        # 并构造 VectorIndex/依赖它的消费者,故在此固化引用。
+        self._storage = storage
         try:
             provider_default_model = provider.get_default_model()
         except Exception as e:
@@ -294,6 +297,11 @@ class AgentLoop:
         self._local_embedder = None
         self._embed_model_id = ""
         self._episodic = None
+        # 两阶段接线的默认值：memory 关闭时 _init_advanced_memory 不跑，
+        # 但 start() 仍会调 _resolve_embed_and_index，这些属性须先就位。
+        self._embed_backend = config.memory.embedding_backend
+        self._embed_candidate: tuple[Any | None, str | None] = (None, None)
+        self._contradiction_detector = None
         if config.memory.enabled:
             self._init_advanced_memory(config, storage)
 
@@ -525,80 +533,28 @@ class AgentLoop:
         self.consolidator.set_forgetting_curve(forgetting)
         self.consolidator.set_archival_manager(archival)
 
+        # 阶段 A：只挑候选 provider（不发网络、不构造索引、不构造依赖向量的消费者）。
+        # 最终 backend 由 start() 内的探针在 _resolve_embed_and_index 定案，
+        # VectorIndex / embed_fn / 矛盾检测 / HybridRetriever / reflection 一并在那时构造。
+        # 阶段 A 后至 start() 前，_vector_index / _embed_fn 保持 None 是安全的
+        # （下游消费者与 retrieval.py 均有 None 判断），生产环境处理事件必经 start()。
         vector_index = None
         embed_fn = None
         self._local_embedder = None
         self._embed_model_id = ""
+        self._embed_backend = config.memory.embedding_backend
+        self._embed_candidate = (None, None)
+        # 依赖向量的消费者推迟到阶段 B 构造；阶段 A 先把属性初始化好，
+        # 使 __init__ 后续（_register_tools / _context_stage / prefetcher）拿到确定的初值。
+        self._contradiction_detector = None
+        self._hybrid_retriever = None
         if config.memory.vector_enabled and storage:
             emb_model = config.memory.embedding_model or None
-            # Prefer the main provider when it supports embeddings; otherwise
-            # route to any registered embed-capable provider; otherwise fall
-            # back to the local fastembed model so vector search works with
-            # zero configuration (spec 2026-07-02).
-            if self.provider.supports_embed():
-                embed_provider: Any = self.provider
-            elif self.router is not None:
-                embed_provider, routed_model = self.router.find_embed_provider(
-                    emb_model or ""
-                )
-                if embed_provider is not None:
-                    emb_model = routed_model or emb_model
-                    logger.info(
-                        "Main provider lacks embeddings; routing embedding via {}",
-                        type(embed_provider).__name__,
-                    )
-            else:
-                embed_provider = None
-
-            embed_fn, self._embed_model_id, self._local_embedder = resolve_embed_fallback(
-                embed_provider, emb_model, config.memory.local_embedding_model,
+            self._embed_candidate = pick_embed_candidate(
+                self._embed_backend, self.provider, self.router, emb_model,
             )
-
-            from echo_agent.memory.vectors import VectorIndex
-            vector_index = VectorIndex(
-                storage,
-                dimensions=config.memory.vector_dimensions,
-                model_id=self._embed_model_id,
-            )
-            self.memory.set_vector_index(vector_index)
-
         self._vector_index = vector_index
         self._embed_fn = embed_fn
-        if episodic is not None and embed_fn is not None and vector_index is not None:
-            episodic.attach_embedding(embed_fn, vector_index)
-        self.memory.set_embed_fn(embed_fn)
-        self.consolidator.set_embed_fn(embed_fn)
-
-        self._contradiction_detector = None
-        if config.memory.contradiction_detection and storage:
-            from echo_agent.memory.contradiction import ContradictionDetector
-            detector = ContradictionDetector(storage, vector_index, store=self.memory)
-            self._contradiction_detector = detector
-            self.consolidator.set_contradiction_detector(detector)
-            self.consolidator.set_auto_resolve_contradictions(
-                config.memory.auto_resolve_contradictions
-            )
-
-        if config.memory.reflection_enabled:
-            from echo_agent.memory.reflection import ReflectionEngine
-            self.consolidator.set_reflection(ReflectionEngine(
-                self.memory,
-                llm_call=self.provider.chat_with_retry,
-                contradiction_detector=self._contradiction_detector,
-            ))
-
-        def entries_fn() -> list:
-            return list(self.memory._entries.values())
-
-        self._hybrid_retriever = HybridRetriever(
-            entries_fn=entries_fn,
-            vector_index=vector_index,
-            forgetting=forgetting,
-            embed_fn=embed_fn,
-            embed_timeout=config.memory.embed_timeout_seconds,
-            visibility_fn=self.memory.is_visible_in_session,
-        )
-        self.memory.set_retriever(self._hybrid_retriever)
 
     def _setup_delegation(self) -> None:
         if not self.config.multi_agent.enabled:
@@ -660,8 +616,140 @@ class AgentLoop:
             return self._local_embedder.dimensions
         return 1536
 
+    async def _resolve_embed_and_index(self, storage: Any) -> None:
+        """阶段 B：探针定案 backend，构造 VectorIndex 与依赖它的消费者。
+
+        由 start() 在向量初始化前调用。provider 模式探针失败抛 RuntimeError（不回退），
+        auto 模式探针失败静默回退 fastembed，local 模式（候选恒为 None）直接走本地兜底。
+        """
+        config = self.config
+        # memory.enabled 关闭时,阶段 A 的 _init_advanced_memory 整段被跳过,
+        # 原实现下不存在任何向量索引/消费者,这里同样短路以保持行为一致。
+        if not config.memory.enabled:
+            return
+        if not (config.memory.vector_enabled and storage):
+            return
+        candidate, emb_model = self._embed_candidate
+        embed_fn = None
+        self._embed_model_id = ""
+        self._local_embedder = None
+        probe_dim = 0
+
+        use_provider = False
+        if candidate is not None:
+            dim = await probe_embed_provider(
+                candidate, emb_model, config.memory.embed_timeout_seconds,
+            )
+            if dim > 0:
+                use_provider = True
+                probe_dim = dim
+            elif self._embed_backend == "provider":
+                raise RuntimeError(
+                    "memory.embedding_backend=provider but the embedding probe "
+                    "failed; fix the endpoint or switch to auto/local."
+                )
+            else:
+                use_provider = False  # auto：静默回退 fastembed
+        elif self._embed_backend == "provider":
+            # provider 模式却没挑到任何 embed 候选（主 provider 无 embed 能力且无路由）：
+            # 契约要求强制 provider、不回退，这里同样报错而非静默降级。
+            raise RuntimeError(
+                "memory.embedding_backend=provider but no embed-capable provider "
+                "is available; register one or switch to auto/local."
+            )
+
+        if use_provider:
+            # _ProviderEmbedFn 失败返回 []（非 None），且连续失败熔断，止损后靠重启重决策。
+            embed_fn = _ProviderEmbedFn(candidate, emb_model)
+            self._embed_model_id = (
+                f"{type(candidate).__name__.lower()}:{emb_model or 'default'}"
+            )
+        else:
+            embed_fn, self._embed_model_id, self._local_embedder = resolve_embed_fallback(
+                None, emb_model, config.memory.local_embedding_model,
+            )
+
+        from echo_agent.memory.vectors import VectorIndex
+        # 维度优先用探针实测值（config.vector_dimensions 默认 0=自动跟随），
+        # 让索引在首个向量入库前就知道正确维度。
+        vector_index = VectorIndex(
+            storage,
+            dimensions=probe_dim or config.memory.vector_dimensions,
+            model_id=self._embed_model_id,
+        )
+        self._vector_index = vector_index
+        self._embed_fn = embed_fn
+        self.memory.set_vector_index(vector_index)
+        self.memory.set_embed_fn(embed_fn)
+        self.consolidator.set_embed_fn(embed_fn)
+        if self._episodic is not None and embed_fn is not None:
+            self._episodic.attach_embedding(embed_fn, vector_index)
+        self._wire_vector_consumers(vector_index, embed_fn)
+
+    def _wire_vector_consumers(self, vector_index: Any, embed_fn: Any) -> None:
+        """构造依赖最终 vector_index/embed_fn 的消费者（矛盾检测/reflection/混合检索），
+        并把 __init__ 阶段以 None 占位的持有者（context_stage / memory 工具 / prefetcher）
+        重新指向最终对象——这些持有者在 __init__ 里按值捕获引用，不重指会永久停在 None。"""
+        config = self.config
+        storage = self._storage
+        forgetting = self.memory.forgetting_curve
+
+        if config.memory.contradiction_detection and storage:
+            from echo_agent.memory.contradiction import ContradictionDetector
+            detector = ContradictionDetector(storage, vector_index, store=self.memory)
+            self._contradiction_detector = detector
+            self.consolidator.set_contradiction_detector(detector)
+            self.consolidator.set_auto_resolve_contradictions(
+                config.memory.auto_resolve_contradictions
+            )
+            # memory 工具在 _register_tools 时以 None 建成，这里补上检测器引用。
+            mem_tool = self.tools.get("memory")
+            if mem_tool is not None and hasattr(mem_tool, "_contradiction_detector"):
+                mem_tool._contradiction_detector = detector
+
+        if config.memory.reflection_enabled:
+            from echo_agent.memory.reflection import ReflectionEngine
+            self.consolidator.set_reflection(ReflectionEngine(
+                self.memory,
+                llm_call=self.provider.chat_with_retry,
+                contradiction_detector=self._contradiction_detector,
+            ))
+
+        from echo_agent.memory.retrieval import HybridRetriever
+
+        def entries_fn() -> list:
+            return list(self.memory._entries.values())
+
+        self._hybrid_retriever = HybridRetriever(
+            entries_fn=entries_fn,
+            vector_index=vector_index,
+            forgetting=forgetting,
+            embed_fn=embed_fn,
+            embed_timeout=config.memory.embed_timeout_seconds,
+            visibility_fn=self.memory.is_visible_in_session,
+        )
+        self.memory.set_retriever(self._hybrid_retriever)
+        # context_stage 在 __init__ 里按值持有了 None，这里重指最终检索器。
+        self._context_stage._hybrid_retriever = self._hybrid_retriever
+        # prefetcher 只在存在检索器时才有意义；__init__ 时检索器为 None 故未建，
+        # 这里补建并重指 response_stage，使回复后预取重新生效。
+        from echo_agent.memory.prefetch import RetrievalPrefetcher
+
+        def _knowledge_fetch(query: str, user_id: str) -> str:
+            results = self.knowledge.search(
+                query, limit=config.knowledge.max_results, user_id=user_id
+            )
+            return self.knowledge.format_results(results)
+
+        self._prefetcher = RetrievalPrefetcher(
+            self._hybrid_retriever, self._put_retrieval_cache, limit=5,
+            knowledge_fetch=_knowledge_fetch if self.knowledge else None,
+        )
+        self._response_stage._prefetcher = self._prefetcher
+
     async def start(self) -> None:
         self._running = True
+        await self._resolve_embed_and_index(self._storage)
         if self._vector_index is not None:
             # Order matters: purge orphan rows BEFORE the index loads (so they
             # never enter the matrix), then queue re-embeds for entries whose
