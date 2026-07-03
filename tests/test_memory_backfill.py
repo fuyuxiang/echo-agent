@@ -144,7 +144,7 @@ async def test_merge_reembeds_when_content_changes(store_with_index):
 async def test_merge_no_reembed_when_content_same(store_with_index):
     """合并未改内容（仅元数据）时不应产生无谓的重嵌队列项。"""
     store, index = store_with_index
-    e = store.add(MemoryEntry(
+    store.add(MemoryEntry(
         type=MemoryType.USER, key="k", content="同样内容", source="user_stated",
     ))
     await store.flush_pending_embeds()
