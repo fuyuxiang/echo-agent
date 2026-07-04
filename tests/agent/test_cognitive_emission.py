@@ -116,6 +116,29 @@ async def test_inference_stage_emits_tool_call_and_cost():
 
 
 @pytest.mark.asyncio
+async def test_emit_tool_call_carries_id_and_meta():
+    # Task 6: the cognition frame must carry tool_call_id (pairs running↔done),
+    # result_meta (producer-supplied counts) and duration_ms so the cli renders
+    # a Chinese, in-progress-flipping tool line.
+    cap = _CapEmitter()
+    stage = InferenceStage.__new__(InferenceStage)
+    stage._cog = cap
+    ev = InboundEvent.text_message(
+        channel="gateway:cli", sender_id="u", chat_id="c", text="hi"
+    )
+    await stage._emit_tool_call(
+        ev, "read_file", {"path": "a.py"}, "ok", "line1\nline2",
+        tool_call_id="tc_1", result_meta={"total_lines": 42}, duration_ms=7,
+    )
+    data = cap.calls[-1][1]
+    assert data["tool_call_id"] == "tc_1"
+    assert data["result_meta"] == {"total_lines": 42}
+    assert data["status"] == "ok"
+    assert data["name"] == "read_file"
+    assert data["duration_ms"] == 7
+
+
+@pytest.mark.asyncio
 async def test_inference_stage_cost_and_tool_noop_without_emitter():
     stage = InferenceStage.__new__(InferenceStage)
     stage._cog = None

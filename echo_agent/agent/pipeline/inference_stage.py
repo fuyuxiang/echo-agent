@@ -181,8 +181,18 @@ class InferenceStage:
         if ctx.activity is not None and not out.metadata.get("_drop"):
             ctx.activity.mark_visible_feedback()
 
-    async def _emit_tool_call(self, event, name, params, status, result_summary) -> None:
-        """Surface a tool invocation to the cognition stream (cli-gated)."""
+    async def _emit_tool_call(
+        self, event, name, params, status, result_summary,
+        *, tool_call_id: str = "", result_meta: dict | None = None,
+        duration_ms: int | None = None,
+    ) -> None:
+        """Surface a tool invocation to the cognition stream (cli-gated).
+
+        Emitted twice per call, paired by tool_call_id: once with
+        status="running" before execution, once with the terminal status.
+        result_meta carries producer-supplied counts (line/hit/entry totals)
+        computed on the full result before truncation — the client turns them
+        into Chinese words and must never recount the truncated result_text."""
         # Gate before slicing params: IM channels skip the comprehension too.
         if self._cog is None or not self._cog.active(event):
             return
@@ -190,7 +200,9 @@ class InferenceStage:
         await self._cog.emit(
             event, "tool_call",
             {"name": name, "params": safe_params, "status": status,
-             "result_summary": str(result_summary)[:300]},
+             "tool_call_id": tool_call_id, "result_meta": result_meta,
+             "result_text": str(result_summary)[:300],
+             "duration_ms": duration_ms},
             f"🔧 {name} · {status}",
         )
 
@@ -699,11 +711,14 @@ class InferenceStage:
                     await self._emit_tool_call(
                         ctx.event, d.tool_call.name, d.tool_call.arguments,
                         "err", f"{type(res).__name__}: {res}"[:500],
+                        tool_call_id=d.tool_call.id,
                     )
                 else:
                     await self._emit_tool_call(
                         ctx.event, d.tool_call.name, d.tool_call.arguments,
                         "ok" if res.success else "err", res.text,
+                        tool_call_id=d.tool_call.id,
+                        result_meta=dict(res.metadata) if res.metadata else None,
                     )
 
         # serial group (runs after concurrent batch; preserves read-before-write
@@ -753,6 +768,9 @@ class InferenceStage:
                 await self._emit_tool_call(
                     ctx.event, tool_call.name, tool_call.arguments,
                     "ok" if result.success else "err", result.text,
+                    tool_call_id=tool_call.id,
+                    result_meta=dict(result.metadata) if result.metadata else None,
+                    duration_ms=_tool_duration_ms,
                 )
                 if ctx.activity is not None:
                     ctx.activity.exit_tool()
@@ -772,6 +790,7 @@ class InferenceStage:
                 await self._emit_tool_call(
                     ctx.event, tool_call.name, tool_call.arguments,
                     "err", f"{type(exc).__name__}: {exc}"[:500],
+                    tool_call_id=tool_call.id,
                 )
                 results[d.index] = exc
                 break
