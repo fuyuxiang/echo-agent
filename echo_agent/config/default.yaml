@@ -9,12 +9,6 @@
 tools:
   web:
     enabled: true
-checkpoint:
-  enabled: true
-  store_path: "~/.echo-agent/checkpoints/store"
-  max_snapshots_per_workspace: 20
-  max_total_size_mb: 500
-  max_file_size_mb: 10
 execution:
   defaultExecutor: local
   networkPolicy: allow
