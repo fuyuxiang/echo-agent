@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import os
+
 from textual.widgets import Static
 
 from echo_agent.cli.tui.protocol import CogEvent
@@ -12,8 +14,6 @@ _ICON = {
     "tool_call": "🔧", "approval_request": "⚠️", "cost_update": "💰",
     "heartbeat": "⏳", "evolution": "🧬",
 }
-
-import os
 
 _TOOL_VERB = {
     "read_file": "读取", "write_file": "写入", "edit_file": "编辑",
