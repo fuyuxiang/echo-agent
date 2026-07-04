@@ -2199,6 +2199,51 @@ class SchedulerConfig(_Base):
     )
 
 
+# ── Checkpoint configs ───────────────────────────────────────────────────────
+
+class CheckpointConfig(_Base):
+    enabled: bool = Field(
+        default=True,
+        json_schema_extra={
+            "status": "effective", "ref": "checkpoint/manager.py",
+            "desc_zh": "是否开启编辑前影子git快照安全网（探测不到git时自动降级）",
+            "desc_en": "Enable pre-edit shadow-git checkpoint safety net (auto-degrades if git missing)",
+        },
+    )
+    store_path: str = Field(
+        default="~/.echo-agent/checkpoints/store",
+        json_schema_extra={
+            "status": "effective", "ref": "checkpoint/store.py",
+            "desc_zh": "影子git仓库存放路径",
+            "desc_en": "Path to the shadow git store",
+        },
+    )
+    max_snapshots_per_workspace: int = Field(
+        default=20,
+        json_schema_extra={
+            "status": "effective", "ref": "checkpoint/manager.py",
+            "desc_zh": "每个工作区保留的最大快照数量",
+            "desc_en": "Max snapshots retained per workspace",
+        },
+    )
+    max_total_size_mb: int = Field(
+        default=500,
+        json_schema_extra={
+            "status": "effective", "ref": "checkpoint/manager.py",
+            "desc_zh": "整个store的总大小上限（MB），超出触发gc",
+            "desc_en": "Total store size cap in MB; exceeding triggers gc",
+        },
+    )
+    max_file_size_mb: int = Field(
+        default=10,
+        json_schema_extra={
+            "status": "effective", "ref": "checkpoint/store.py",
+            "desc_zh": "单文件超过此大小（MB）不纳入快照",
+            "desc_en": "Files larger than this (MB) are excluded from snapshots",
+        },
+    )
+
+
 # ── Storage configs ──────────────────────────────────────────────────────────
 
 class StorageConfig(_Base):
@@ -3214,6 +3259,7 @@ class Config(_Base):
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     multi_agent: MultiAgentConfig = Field(default_factory=MultiAgentConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
+    checkpoint: CheckpointConfig = Field(default_factory=CheckpointConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
