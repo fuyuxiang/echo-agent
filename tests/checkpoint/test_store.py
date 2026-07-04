@@ -168,3 +168,29 @@ async def test_restore_handles_unicode_filename(tmp_path: Path):
     restored = await store.restore(ws, s1)
     assert "报告.txt" in restored
     assert (ws / "报告.txt").read_text() == "v1"
+
+
+@pytest.mark.asyncio
+async def test_prune_keeps_only_max_snapshots(tmp_path: Path):
+    store = ShadowGitStore(tmp_path / "store")
+    await store.ensure_initialized()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    for i in range(5):
+        (ws / "a.txt").write_text(f"v{i}")
+        await store.take_snapshot(ws, f"snap {i}")
+    dropped = await store.prune(ws, max_snapshots=2)
+    assert dropped == 3
+    snaps = await store.list_snapshots(ws)
+    assert len(snaps) == 2
+
+
+@pytest.mark.asyncio
+async def test_total_size_mb_positive_after_snapshot(tmp_path: Path):
+    store = ShadowGitStore(tmp_path / "store")
+    await store.ensure_initialized()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "a.txt").write_text("hello")
+    await store.take_snapshot(ws, "s")
+    assert await store.total_size_mb() > 0

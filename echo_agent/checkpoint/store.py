@@ -173,3 +173,46 @@ class ShadowGitStore:
         if paths:
             await self._run_git(["checkout", sha, "--", *paths], workspace=ws)
         return paths
+
+    async def prune(self, workspace: Path, max_snapshots: int) -> int:
+        ws = Path(workspace).expanduser().resolve()
+        ref = self.ref_for(ws)
+        _, out, _ = await self._run_git(
+            ["log", ref, "--pretty=format:%H"], workspace=ws, check=False
+        )
+        shas = [s for s in out.split("\n") if s.strip()]
+        if len(shas) <= max_snapshots:
+            return 0
+        # git log is newest-first. History is linear, so we can't keep the newest
+        # N by moving the ref backward (that keeps the OLDEST N). Re-root instead:
+        # rebuild the newest max_snapshots commits so the oldest kept one drops its
+        # parent, orphaning everything older (gc reclaims those objects later).
+        keep = shas[:max_snapshots]  # newest-first
+        new_parent: str | None = None
+        for sha in reversed(keep):  # oldest kept first
+            _, tree, _ = await self._run_git(
+                ["rev-parse", f"{sha}^{{tree}}"], workspace=ws
+            )
+            _, subject, _ = await self._run_git(
+                ["log", "-1", "--pretty=format:%s", sha], workspace=ws
+            )
+            parent_args = ["-p", new_parent] if new_parent else []
+            _, new_sha, _ = await self._run_git(
+                ["commit-tree", tree.strip(), *parent_args, "-m", subject], workspace=ws
+            )
+            new_parent = new_sha.strip()
+        await self._run_git(["update-ref", ref, new_parent], workspace=ws)
+        return len(shas) - max_snapshots
+
+    async def total_size_mb(self) -> float:
+        total = 0
+        for p in self._store.rglob("*"):
+            try:
+                if p.is_file():
+                    total += p.stat().st_size
+            except OSError:
+                continue
+        return total / (1024 * 1024)
+
+    async def gc(self) -> None:
+        await self._run_git(["gc", "--auto", "--quiet"], check=False)
