@@ -12,7 +12,7 @@ from echo_agent.cli.tui.transcript import TranscriptView
 from echo_agent.cli.tui.prompt_input import PromptInput
 from echo_agent.cli.tui.status_bar import StatusBar
 from echo_agent.cli.tui.blocks import ApprovalBlock
-from echo_agent.cli.tui.completion import filter_commands
+from echo_agent.cli.tui.completion import completion_insert, filter_commands
 from echo_agent.cli.tui.protocol import CogEvent, approve_command, deny_command
 
 
@@ -160,6 +160,9 @@ class EchoTUI(App):
         self.query_one("#placeholder").display = message.is_empty
         panel = self.query_one("#slash_panel", OptionList)
         matches = filter_commands(message.text)
+        # Keep the ordered match list so PanelNav/PanelAccept can map the
+        # OptionList highlight index back to the concrete SlashCommand.
+        self._panel_matches = matches
         if matches:
             panel.clear_options()
             for c in matches:
@@ -167,10 +170,48 @@ class EchoTUI(App):
                 panel.add_option(
                     f"{c.name} [dim]{c.arg_template}[/dim]  {c.desc} [{tag}]"
                 )
+            # Refiltering resets the highlight; the user must re-enter the panel
+            # with Up/Down, keeping Enter on submit until they actively select.
+            panel.highlighted = None
             panel.display = True
         else:
             panel.display = False
         self.query_one(PromptInput).set_panel_open(bool(matches))
+
+    # --- completion panel keyboard wiring ---
+    def on_prompt_input_panel_nav(
+        self, message: PromptInput.PanelNav
+    ) -> None:
+        panel = self.query_one("#slash_panel", OptionList)
+        if panel.display is False or panel.option_count == 0:
+            return
+        if message.direction > 0:
+            panel.action_cursor_down()
+        else:
+            panel.action_cursor_up()
+
+    def on_prompt_input_panel_accept(
+        self, message: PromptInput.PanelAccept
+    ) -> None:
+        panel = self.query_one("#slash_panel", OptionList)
+        idx = panel.highlighted
+        matches = getattr(self, "_panel_matches", [])
+        if idx is None or not (0 <= idx < len(matches)):
+            return
+        pi = self.query_one(PromptInput)
+        pi.apply_completion(completion_insert(matches[idx]))
+        self._close_panel()
+
+    def on_prompt_input_panel_close(
+        self, message: PromptInput.PanelClose
+    ) -> None:
+        self._close_panel()
+
+    def _close_panel(self) -> None:
+        panel = self.query_one("#slash_panel", OptionList)
+        panel.display = False
+        panel.highlighted = None
+        self.query_one(PromptInput).set_panel_open(False)
 
     # --- keybindings ---
     def action_toggle_memory(self) -> None:

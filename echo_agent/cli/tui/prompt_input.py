@@ -54,14 +54,45 @@ class PromptInput(TextArea):
         self._resize()
         self.post_message(self.ContentChanged(self.is_empty, self.text))
 
+    class PanelNav(Message):
+        """Ask the app to move the completion-panel highlight. Sent only while
+        the panel is open and the user presses Up/Down."""
+
+        def __init__(self, direction: int) -> None:
+            self.direction = direction   # -1 up, +1 down
+            super().__init__()
+
+    class PanelAccept(Message):
+        """Ask the app to complete the actively-highlighted command."""
+
+    class PanelClose(Message):
+        """Ask the app to close the completion panel (Escape)."""
+
     def _panel_open(self) -> bool:
-        # Overridden view: the app owns the panel; default False keeps the pure
-        # keymap correct for the standalone widget. App layer sets this via
-        # set_panel_open() when a completion panel is showing.
-        return getattr(self, "_panel_open_flag", False)
+        # decide_key treats "panel open" as "the user is actively navigating the
+        # panel". The panel merely being visible (auto-popped as they type) must
+        # NOT hijack Enter — that is the Critical fix: Enter only completes once
+        # the user has stepped into the panel with Up/Down. Escape is the one
+        # panel key allowed while merely visible, handled directly in _on_key.
+        return getattr(self, "_panel_visible", False) and getattr(
+            self, "_panel_active_selection", False
+        )
 
     def set_panel_open(self, value: bool) -> None:
-        self._panel_open_flag = value
+        # App layer reports panel *visibility* on every content change. When the
+        # panel hides (or refilters), any active selection is dropped so Enter
+        # falls back to submit again.
+        self._panel_visible = value
+        if not value:
+            self._panel_active_selection = False
+
+    def apply_completion(self, completed: str) -> None:
+        """Replace the buffer with a completed command and park the cursor at
+        the end (the parameter position for arg-taking commands). Clears the
+        active-selection flag so the next Enter submits."""
+        self._panel_active_selection = False
+        self.text = completed
+        self.move_cursor(self.document.end)
 
     def _submit(self) -> None:
         text = self.text.strip()
@@ -82,6 +113,31 @@ class PromptInput(TextArea):
             self.text = self._history[self._hist_idx]
 
     def _on_key(self, event) -> None:
+        # While the completion panel is *visible* (regardless of active
+        # selection), a few keys drive the panel instead of the editor:
+        #   Esc            -> close the panel (text preserved)
+        #   Up/Down        -> step into / move the panel highlight (activates it)
+        #   Enter/Tab      -> complete ONLY if a selection is active; otherwise
+        #                     fall through so Enter still submits (Critical fix).
+        if getattr(self, "_panel_visible", False):
+            if event.key == "escape":
+                event.prevent_default(); event.stop()
+                self._panel_active_selection = False
+                self.post_message(self.PanelClose())
+                return
+            if event.key in ("up", "down"):
+                event.prevent_default(); event.stop()
+                self._panel_active_selection = True
+                self.post_message(
+                    self.PanelNav(1 if event.key == "down" else -1)
+                )
+                return
+            if event.key in ("enter", "tab") and getattr(
+                self, "_panel_active_selection", False
+            ):
+                event.prevent_default(); event.stop()
+                self.post_message(self.PanelAccept())
+                return
         row = self.cursor_location[0]
         last_row = self.document.line_count - 1
         ctx = KeyContext(

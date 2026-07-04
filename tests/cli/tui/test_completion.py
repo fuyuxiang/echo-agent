@@ -43,3 +43,10 @@ def test_insert_arg_command_keeps_trailing_space():
 def test_insert_noarg_command_no_trailing_space():
     cmd = next(c for c in COMMANDS if c.name == "/approvals")
     assert completion_insert(cmd) == "/approvals"
+
+
+def test_filter_stops_once_name_finalized_by_space():
+    # Once the user is typing arguments the name-completion list must be empty,
+    # so the panel does not reopen over "/approve <id>".
+    assert filter_commands("/approve ") == []
+    assert filter_commands("/approve 5") == []

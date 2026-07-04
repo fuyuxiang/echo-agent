@@ -28,7 +28,11 @@ COMMANDS: tuple[SlashCommand, ...] = (
 def filter_commands(text: str) -> list[SlashCommand]:
     if not text.startswith("/"):
         return []
-    prefix = text.split(maxsplit=1)[0].lower()
+    # A space means the command name is finalized and the user has moved on to
+    # arguments (e.g. "/approve 5") — the name-completion panel must not reopen.
+    if any(ch.isspace() for ch in text):
+        return []
+    prefix = text.lower()
     return [c for c in COMMANDS if c.name.startswith(prefix)]
 
 
