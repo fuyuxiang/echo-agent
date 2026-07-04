@@ -81,10 +81,12 @@ class ShadowGitStore:
         # Stage everything, then unstage oversize blobs.
         await self._run_git(["add", "-A"], workspace=ws)
         limit = max_file_size_mb * 1024 * 1024
+        # -z emits raw NUL-separated names; without it git C-quotes non-ASCII
+        # names (e.g. Chinese), so ws / name would be a bogus quoted path.
         _, staged, _ = await self._run_git(
-            ["diff", "--cached", "--name-only"], workspace=ws, check=False
+            ["diff", "--cached", "--name-only", "-z"], workspace=ws, check=False
         )
-        for name in [n for n in staged.split("\n") if n.strip()]:
+        for name in [n for n in staged.split("\x00") if n.strip()]:
             fp = ws / name
             try:
                 if fp.is_file() and fp.stat().st_size > limit:

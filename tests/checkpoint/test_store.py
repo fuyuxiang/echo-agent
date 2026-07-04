@@ -87,3 +87,21 @@ async def test_take_snapshot_excludes_oversize_file(tmp_path: Path):
     names = set(out.split())
     assert "small.txt" in names
     assert "big.bin" not in names
+
+
+@pytest.mark.asyncio
+async def test_take_snapshot_excludes_oversize_unicode_file(tmp_path: Path):
+    store = ShadowGitStore(tmp_path / "store")
+    await store.ensure_initialized()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "小文件.txt").write_text("ok")
+    (ws / "大文件.bin").write_bytes(b"x" * (2 * 1024 * 1024))
+    sha = await store.take_snapshot(ws, "中文超大文件", max_file_size_mb=1)
+    assert sha is not None
+    rc, out, _ = await store._run_git(
+        ["ls-tree", "-r", "--name-only", "-z", sha], workspace=ws, check=False
+    )
+    names = {n for n in out.split("\x00") if n.strip()}
+    assert "小文件.txt" in names
+    assert "大文件.bin" not in names
