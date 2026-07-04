@@ -1,7 +1,9 @@
 import pytest
 
+from echo_agent.cli.tui.app import EchoTUI
 from echo_agent.cli.tui.blocks import humanize_tool, pick_object, summarize_result
 from echo_agent.cli.tui.protocol import CogEvent
+from echo_agent.cli.tui.transcript import TranscriptView
 
 
 def test_humanize_known_and_unknown():
@@ -110,3 +112,33 @@ async def test_add_tool_call_flips_in_place():
         assert tv.tool_block_count == 2
         tv.clear()
         assert tv.tool_block_count == 0
+
+
+@pytest.mark.asyncio
+async def test_on_cognitive_routes_tool_call(monkeypatch):
+    # A tool_call CogEvent must be routed to add_tool_call (in-place flip),
+    # not the generic add_cognitive stream.
+    calls = {"tool": 0, "generic": 0}
+    orig_tool = TranscriptView.add_tool_call
+    orig_generic = TranscriptView.add_cognitive
+
+    def spy_tool(self, ev):
+        calls["tool"] += 1
+        return orig_tool(self, ev)
+
+    def spy_generic(self, ev):
+        calls["generic"] += 1
+        return orig_generic(self, ev)
+
+    monkeypatch.setattr(TranscriptView, "add_tool_call", spy_tool)
+    monkeypatch.setattr(TranscriptView, "add_cognitive", spy_generic)
+
+    app = EchoTUI()
+    async with app.run_test():
+        app.on_cognitive(_tool_ev("tc_1", "running"))
+        assert calls["tool"] == 1
+        assert calls["generic"] == 0
+        # A non-tool cognitive event still flows through add_cognitive.
+        app.on_cognitive(CogEvent("thinking", "e2", "in_1", {}, "想一下"))
+        assert calls["tool"] == 1
+        assert calls["generic"] == 1

@@ -123,6 +123,11 @@ class EchoTUI(App):
             # above), otherwise tool-heavy turns spam 💰 blocks.
             self.query_one(StatusBar).set_cost(ev.data.get("total_cost", 0.0))
             return
+        if ev.cog_type == "tool_call":
+            # Tool lines flip in place (running -> done) via a dedicated block,
+            # keyed by tool_call_id. The generic cognitive block can't pair frames.
+            self._tv.add_tool_call(ev)
+            return
         self._tv.add_cognitive(ev)
 
     def on_error(self, msg: str) -> None:
