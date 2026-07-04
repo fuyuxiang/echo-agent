@@ -5,6 +5,9 @@ zero deps) + RuffChecker (semantic diagnostics when ruff is on PATH).
 """
 from __future__ import annotations
 
+import asyncio
+import json
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -54,3 +57,55 @@ class PyCompileChecker:
             # e.g. source containing null bytes — surface as a syntax-level error
             return [Diagnostic(severity="error", line=1, col=1, code="E999",
                                message=f"SyntaxError: {e}")]
+
+
+class RuffChecker:
+    """Semantic diagnostics for .py files via the ruff CLI, when available.
+
+    Availability is probed once at construction. If ruff is not on PATH,
+    ``can_check`` returns False and the checker is a silent no-op — the
+    PyCompileChecker floor still runs.
+    """
+
+    def __init__(self) -> None:
+        self._ruff = shutil.which("ruff")
+
+    def can_check(self, path: Path) -> bool:
+        return self._ruff is not None and path.suffix == ".py"
+
+    async def check(self, path: Path) -> list[Diagnostic]:
+        if self._ruff is None:
+            return []
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self._ruff, "check", "--output-format=json", "--force-exclude", str(path),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            out, _err = await proc.communicate()
+        except Exception as e:  # ruff vanished / spawn failed → fail-open
+            logger.debug("RuffChecker subprocess failed (fail-open): {}", e)
+            return []
+        text = out.decode("utf-8", "replace").strip()
+        if not text:
+            return []
+        try:
+            items = json.loads(text)
+        except json.JSONDecodeError as e:
+            logger.debug("RuffChecker json parse failed (fail-open): {}", e)
+            return []
+        diags: list[Diagnostic] = []
+        for it in items:
+            loc = it.get("location") or {}
+            diags.append(Diagnostic(
+                severity="error",  # ruff findings are all reported at error weight in v1
+                line=int(loc.get("row", 1) or 1),
+                col=int(loc.get("column", 1) or 1),
+                code=str(it.get("code") or "RUFF"),
+                message=str(it.get("message") or ""),
+            ))
+        return diags
+
+
+def default_checkers() -> list[Checker]:
+    """First-release registry: Python syntax floor + optional ruff semantic layer."""
+    return [PyCompileChecker(), RuffChecker()]
