@@ -53,6 +53,9 @@ class ShadowGitStore:
     ) -> tuple[int, str, str]:
         env = self._env_for(workspace) if workspace is not None else dict(os.environ)
         if workspace is None:
+            # Store-level commands must never inherit an external work tree/index.
+            env.pop("GIT_WORK_TREE", None)
+            env.pop("GIT_INDEX_FILE", None)
             env["GIT_DIR"] = str(self._store)
         proc = await asyncio.create_subprocess_exec(
             "git", *args, env=env,
