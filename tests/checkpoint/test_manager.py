@@ -62,3 +62,40 @@ async def test_ensure_checkpoint_failopen_on_store_error(tmp_path: Path, monkeyp
     mgr.new_turn("t")
     # must not raise
     assert await mgr.ensure_checkpoint("r") is None
+
+
+@pytest.mark.asyncio
+async def test_transient_failure_allows_retry_same_turn(tmp_path: Path, monkeypatch):
+    mgr = await _mgr(tmp_path)
+    (mgr._workspace / "a.txt").write_text("v1")
+    mgr.new_turn("t")
+
+    calls = {"n": 0}
+    real = mgr._store.take_snapshot
+
+    async def flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("transient git error")
+        return await real(*a, **k)
+
+    monkeypatch.setattr(mgr._store, "take_snapshot", flaky)
+    # first attempt fails open, turn not marked -> second attempt succeeds
+    assert await mgr.ensure_checkpoint("r1") is None
+    assert await mgr.ensure_checkpoint("r2") is not None
+
+
+@pytest.mark.asyncio
+async def test_ensure_checkpoint_returns_valid_sha_after_prune(tmp_path: Path):
+    max_snapshots = 3
+    mgr = await _mgr(tmp_path, max_snapshots=max_snapshots)
+    last_sha: str | None = None
+    for i in range(max_snapshots + 2):
+        (mgr._workspace / "a.txt").write_text(f"v{i}")
+        mgr.new_turn(f"turn-{i}")
+        last_sha = await mgr.ensure_checkpoint(f"r{i}")
+    assert last_sha is not None
+    # prune re-roots kept commits; the returned sha must still be owned by the
+    # ref, so show/restore accept it instead of raising via _assert_owned.
+    await mgr.show(last_sha)  # must not raise
+    await mgr.restore(last_sha)  # must not raise
