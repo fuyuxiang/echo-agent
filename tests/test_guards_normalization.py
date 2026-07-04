@@ -332,4 +332,3 @@ class TestUnattendedDecision:
         )
         assert decision.action == "ask"
         assert decision.pattern_key == "recursive_delete"
-

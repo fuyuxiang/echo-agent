@@ -39,8 +39,8 @@ class GuardFinding:
 
 
 # Top-level directories whose recursive deletion has no recovery path. The list
-# is deliberately small: only roots that
-# brick the host. Recoverable mounts such as /tmp, /app, /opt are intentionally
+# is deliberately small: only roots that brick the host. Recoverable mounts
+# such as /tmp, /app, /opt are intentionally
 # absent — they fall through to the recursive_delete soft-ask, where approval
 # can still pass them, instead of being dead-blocked with no human override.
 _ROOT_RM_DIRS = "home|root|etc|usr|var|bin|sbin|boot|lib|sys|proc|dev"

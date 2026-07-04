@@ -18,6 +18,11 @@ from echo_agent.cli.tui.protocol import CogEvent, approve_command, deny_command
 
 class EchoTUI(App):
     CSS_PATH = "app.tcss"
+    # Textual focuses the first can_focus widget in DOM order on mount, which is
+    # TranscriptView (a VerticalScroll) — it would silently swallow printable
+    # keys, so the prompt never showed typed text. Declaring AUTO_FOCUS hands
+    # focus to PromptInput on mount, the framework-native way to fix this.
+    AUTO_FOCUS = "PromptInput"
 
     BINDINGS = [
         Binding("ctrl+r", "toggle_memory", "记忆", show=False),
