@@ -79,12 +79,16 @@ class PromptInput(TextArea):
         )
 
     def set_panel_open(self, value: bool) -> None:
-        # App layer reports panel *visibility* on every content change. When the
-        # panel hides (or refilters), any active selection is dropped so Enter
-        # falls back to submit again.
+        # App layer reports panel *visibility* on every content change. Any
+        # content change means the user is typing (not navigating with the
+        # arrows), so the active selection is dropped unconditionally — mirroring
+        # the app layer resetting the panel highlight to None on every refilter.
+        # This closes the narrow path where the panel stays visible but the
+        # highlight was reset: active=True + highlighted=None used to swallow
+        # Enter. Pressing Down re-activates it (no content change between
+        # Down and the following Tab/Enter), so arrow-then-complete still works.
         self._panel_visible = value
-        if not value:
-            self._panel_active_selection = False
+        self._panel_active_selection = False
 
     def apply_completion(self, completed: str) -> None:
         """Replace the buffer with a completed command and park the cursor at

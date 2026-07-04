@@ -93,6 +93,36 @@ async def test_enter_without_arrow_submits_local_command():
 
 
 @pytest.mark.asyncio
+async def test_arrow_then_more_typing_then_enter_submits():
+    # Narrow regression of the Critical fix: type "/cl", press Down (activates
+    # the panel selection, highlighted=0), then keep typing "ear" so the text
+    # becomes "/clear". The content change refilters and resets highlighted to
+    # None, but the active-selection flag must also drop so Enter falls back to
+    # submit. Before the fix, Enter was swallowed (active=True, highlighted=None)
+    # and /clear never executed.
+    sent = []
+    async def fake_send(t): sent.append(t)
+    app = EchoTUI(send_coro=fake_send)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        tv = app.query_one(TranscriptView)
+        tv.add_user("旧消息")
+        pi = app.query_one(PromptInput)
+        pi.focus()
+        pi.text = "/cl"
+        pi.move_cursor(pi.document.end)      # type at the tail, not position 0
+        await pilot.pause()
+        assert app.query_one("#slash_panel").display is True
+        await pilot.press("down")            # active selection, highlighted=0
+        await pilot.press("e", "a", "r")     # text -> "/clear", refilter resets
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert len(tv.children) == 0         # /clear executed
+        assert sent == []                    # local command not sent upstream
+
+
+@pytest.mark.asyncio
 async def test_arrow_then_tab_completes_and_not_sent():
     sent = []
     async def fake_send(t): sent.append(t)
