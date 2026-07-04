@@ -178,6 +178,16 @@ class TestListDirTool:
         result = await tool.execute({"path": "nonexist"}, _ctx())
         assert result.success is False
 
+    @pytest.mark.asyncio
+    async def test_list_dir_reports_count(self, tmp_path):
+        (tmp_path / "a.txt").touch()
+        (tmp_path / "b.txt").touch()
+        (tmp_path / "sub").mkdir()
+        tool = self._make(str(tmp_path))
+        result = await tool.execute({"path": "."}, _ctx())
+        assert result.success is True
+        assert result.metadata["count"] == 3
+
 
 # ===========================================================================
 # 3. ImageGenTool

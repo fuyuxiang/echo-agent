@@ -172,7 +172,7 @@ class ListDirTool(Tool):
                 full = os.path.join(target, entry)
                 kind = "dir" if os.path.isdir(full) else "file"
                 lines.append(f"{kind}\t{entry}")
-            return ToolResult(output="\n".join(lines))
+            return ToolResult(output="\n".join(lines), metadata={"count": len(lines)})
         except Exception as e:
             return ToolResult(success=False, error=str(e))
 
