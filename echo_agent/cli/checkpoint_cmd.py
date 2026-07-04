@@ -45,7 +45,11 @@ def run_checkpoint_command(
         if not sha:
             print("Usage: echo-agent checkpoint show <commit>")
             sys.exit(1)
-        print(asyncio.run(mgr.show(sha)))
+        try:
+            print(asyncio.run(mgr.show(sha)))
+        except ValueError as e:
+            print(f"错误: {e}")
+            sys.exit(1)
     elif action == "restore":
         if not sha:
             print("Usage: echo-agent checkpoint restore <commit>")
@@ -55,7 +59,11 @@ def run_checkpoint_command(
             if reply.strip().lower() not in {"y", "yes"}:
                 print("Aborted.")
                 return
-        restored = asyncio.run(mgr.restore(sha))
+        try:
+            restored = asyncio.run(mgr.restore(sha))
+        except ValueError as e:
+            print(f"错误: {e}")
+            sys.exit(1)
         print(f"Restored {len(restored)} file(s): {', '.join(restored) or '(none)'}")
     elif action == "prune":
         dropped = asyncio.run(mgr.prune_now())
