@@ -179,10 +179,15 @@ async def test_prune_keeps_only_max_snapshots(tmp_path: Path):
     for i in range(5):
         (ws / "a.txt").write_text(f"v{i}")
         await store.take_snapshot(ws, f"snap {i}")
+    before = {s["subject"]: s["ts"] for s in await store.list_snapshots(ws)}
     dropped = await store.prune(ws, max_snapshots=2)
     assert dropped == 3
     snaps = await store.list_snapshots(ws)
     assert len(snaps) == 2
+    # re-root must preserve each kept snapshot's original ts, not collapse them
+    # all to the prune moment.
+    for s in snaps:
+        assert s["ts"] == before[s["subject"]]
 
 
 @pytest.mark.asyncio

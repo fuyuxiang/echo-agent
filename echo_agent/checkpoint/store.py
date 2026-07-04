@@ -49,7 +49,8 @@ class ShadowGitStore:
         self._initialized = True
 
     async def _run_git(
-        self, args: list[str], workspace: Path | None = None, check: bool = True
+        self, args: list[str], workspace: Path | None = None, check: bool = True,
+        extra_env: dict[str, str] | None = None,
     ) -> tuple[int, str, str]:
         env = self._env_for(workspace) if workspace is not None else dict(os.environ)
         if workspace is None:
@@ -57,6 +58,7 @@ class ShadowGitStore:
             env.pop("GIT_WORK_TREE", None)
             env.pop("GIT_INDEX_FILE", None)
             env["GIT_DIR"] = str(self._store)
+        env.update(extra_env or {})
         proc = await asyncio.create_subprocess_exec(
             "git", *args, env=env,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
@@ -175,6 +177,12 @@ class ShadowGitStore:
         return paths
 
     async def prune(self, workspace: Path, max_snapshots: int) -> int:
+        """Keep only the newest max_snapshots commits, dropping older ones.
+
+        WARNING: this REWRITES the SHAs of the kept snapshots (re-root rebuild),
+        so callers must NOT cache commit hashes obtained before prune. After
+        prune, re-run list_snapshots to fetch the new SHAs.
+        """
         ws = Path(workspace).expanduser().resolve()
         ref = self.ref_for(ws)
         _, out, _ = await self._run_git(
@@ -187,18 +195,26 @@ class ShadowGitStore:
         # N by moving the ref backward (that keeps the OLDEST N). Re-root instead:
         # rebuild the newest max_snapshots commits so the oldest kept one drops its
         # parent, orphaning everything older (gc reclaims those objects later).
+        # Pass through each original author/committer date so list_snapshots ts
+        # stays faithful instead of collapsing to the prune moment.
         keep = shas[:max_snapshots]  # newest-first
         new_parent: str | None = None
         for sha in reversed(keep):  # oldest kept first
             _, tree, _ = await self._run_git(
                 ["rev-parse", f"{sha}^{{tree}}"], workspace=ws
             )
-            _, subject, _ = await self._run_git(
-                ["log", "-1", "--pretty=format:%s", sha], workspace=ws
+            _, meta, _ = await self._run_git(
+                ["log", "-1", "--pretty=format:%at%x1f%ct%x1f%s", sha], workspace=ws
             )
+            at, ct, subject = meta.split("\x1f", 2)
             parent_args = ["-p", new_parent] if new_parent else []
             _, new_sha, _ = await self._run_git(
-                ["commit-tree", tree.strip(), *parent_args, "-m", subject], workspace=ws
+                ["commit-tree", tree.strip(), *parent_args, "-m", subject],
+                workspace=ws,
+                extra_env={
+                    "GIT_AUTHOR_DATE": f"{at} +0000",
+                    "GIT_COMMITTER_DATE": f"{ct} +0000",
+                },
             )
             new_parent = new_sha.strip()
         await self._run_git(["update-ref", ref, new_parent], workspace=ws)
