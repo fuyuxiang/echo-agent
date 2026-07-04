@@ -42,3 +42,48 @@ def test_env_for_isolates_from_user_git(tmp_path: Path):
     assert "GIT_INDEX_FILE" in env
     # index file is per-workspace, lives inside the store, not the workspace
     assert str((tmp_path / "store").resolve()) in env["GIT_INDEX_FILE"]
+
+
+@pytest.mark.asyncio
+async def test_take_snapshot_commits_and_returns_hash(tmp_path: Path):
+    store = ShadowGitStore(tmp_path / "store")
+    await store.ensure_initialized()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "a.txt").write_text("hello")
+    sha = await store.take_snapshot(ws, "before write_file")
+    assert sha and len(sha) >= 7
+    # ref now points at the commit
+    rc, out, _ = await store._run_git(["rev-parse", store.ref_for(ws)], check=False)
+    assert out.strip() == sha
+
+
+@pytest.mark.asyncio
+async def test_take_snapshot_skips_when_no_change(tmp_path: Path):
+    store = ShadowGitStore(tmp_path / "store")
+    await store.ensure_initialized()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "a.txt").write_text("hello")
+    first = await store.take_snapshot(ws, "first")
+    assert first is not None
+    second = await store.take_snapshot(ws, "no change")
+    assert second is None
+
+
+@pytest.mark.asyncio
+async def test_take_snapshot_excludes_oversize_file(tmp_path: Path):
+    store = ShadowGitStore(tmp_path / "store")
+    await store.ensure_initialized()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "small.txt").write_text("ok")
+    (ws / "big.bin").write_bytes(b"x" * (2 * 1024 * 1024))
+    sha = await store.take_snapshot(ws, "with big", max_file_size_mb=1)
+    assert sha is not None
+    rc, out, _ = await store._run_git(
+        ["ls-tree", "-r", "--name-only", sha], workspace=ws, check=False
+    )
+    names = set(out.split())
+    assert "small.txt" in names
+    assert "big.bin" not in names

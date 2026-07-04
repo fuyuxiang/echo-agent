@@ -66,3 +66,50 @@ class ShadowGitStore:
         if check and rc != 0:
             raise RuntimeError(f"git {' '.join(args)} failed ({rc}): {err.decode(errors='replace')}")
         return rc, out.decode(errors="replace"), err.decode(errors="replace")
+
+    async def take_snapshot(
+        self, workspace: Path, message: str, max_file_size_mb: int = 10
+    ) -> str | None:
+        ws = Path(workspace).expanduser().resolve()
+        ref = self.ref_for(ws)
+        # Load previous tip into this workspace's index (empty tree if first run).
+        rc, _, _ = await self._run_git(["rev-parse", "--verify", ref], workspace=ws, check=False)
+        if rc == 0:
+            await self._run_git(["read-tree", ref], workspace=ws)
+        else:
+            await self._run_git(["read-tree", "--empty"], workspace=ws)
+        # Stage everything, then unstage oversize blobs.
+        await self._run_git(["add", "-A"], workspace=ws)
+        limit = max_file_size_mb * 1024 * 1024
+        _, staged, _ = await self._run_git(
+            ["diff", "--cached", "--name-only"], workspace=ws, check=False
+        )
+        for name in [n for n in staged.split("\n") if n.strip()]:
+            fp = ws / name
+            try:
+                if fp.is_file() and fp.stat().st_size > limit:
+                    await self._run_git(["rm", "--cached", "--", name], workspace=ws, check=False)
+            except OSError:
+                continue
+        # Write the staged tree, then compare it against the parent commit's tree.
+        _, tree, _ = await self._run_git(["write-tree"], workspace=ws)
+        tree = tree.strip()
+        parent_args: list[str] = []
+        rc_ref, parent, _ = await self._run_git(
+            ["rev-parse", "--verify", ref], workspace=ws, check=False
+        )
+        if rc_ref == 0:
+            parent = parent.strip()
+            # diff-tree --quiet exits 0 when the trees are identical -> no change, skip.
+            rc_id, _, _ = await self._run_git(
+                ["diff-tree", "--quiet", parent, tree], workspace=ws, check=False
+            )
+            if rc_id == 0:
+                return None
+            parent_args = ["-p", parent]
+        _, sha, _ = await self._run_git(
+            ["commit-tree", tree, *parent_args, "-m", message], workspace=ws
+        )
+        sha = sha.strip()
+        await self._run_git(["update-ref", ref, sha], workspace=ws)
+        return sha
