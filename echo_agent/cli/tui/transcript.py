@@ -40,6 +40,14 @@ class TranscriptView(VerticalScroll):
     def heartbeat_count(self) -> int:
         return len(self._heartbeats)
 
+    def clear(self) -> None:
+        """Remove all mounted blocks and reset the per-turn indexes.
+        Used by the client-local /clear command — screen only, session intact."""
+        self.remove_children()
+        self._heartbeats.clear()
+        self._last_memory = None
+        self._last_thinking = None
+
     def add_user(self, text: str) -> UserTurn:
         w = UserTurn(text)
         self.mount(w)
