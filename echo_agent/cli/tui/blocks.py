@@ -118,8 +118,6 @@ class CognitiveBlock(Static):
             lines.append(f"    · {it.get('content','')} {badge}".rstrip())
         if self.ev.cog_type == "thinking" and d.get("text"):
             lines.append(f"    {d['text']}")
-        if self.ev.cog_type == "tool_call":
-            lines.append(f"    params={d.get('params')} → {d.get('result_summary','')}")
         return "\n".join(lines)
 
     def toggle(self) -> None:
