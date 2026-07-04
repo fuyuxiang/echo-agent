@@ -1,4 +1,7 @@
+import pytest
+
 from echo_agent.cli.tui.blocks import humanize_tool, pick_object, summarize_result
+from echo_agent.cli.tui.protocol import CogEvent
 
 
 def test_humanize_known_and_unknown():
@@ -72,10 +75,6 @@ def test_tool_block_detail_has_params_and_result():
     detail = b.render_detail()
     assert "参数" in detail and "a.py" in detail
     assert "结果" in detail
-
-
-import pytest
-from echo_agent.cli.tui.protocol import CogEvent
 
 
 def _tool_ev(tcid, status, name="read_file", **data):
