@@ -176,7 +176,7 @@ class EchoTUI(App):
             panel.display = True
         else:
             panel.display = False
-        self.query_one(PromptInput).set_panel_open(bool(matches))
+        self.query_one(PromptInput).set_panel_visible(bool(matches))
 
     # --- completion panel keyboard wiring ---
     def on_prompt_input_panel_nav(
@@ -211,7 +211,7 @@ class EchoTUI(App):
         panel = self.query_one("#slash_panel", OptionList)
         panel.display = False
         panel.highlighted = None
-        self.query_one(PromptInput).set_panel_open(False)
+        self.query_one(PromptInput).set_panel_visible(False)
 
     # --- keybindings ---
     def action_toggle_memory(self) -> None:

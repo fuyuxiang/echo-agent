@@ -1,6 +1,8 @@
 """Pure key-decision state machine for PromptInput. No Textual imports — the
-widget passes a snapshot (KeyContext) and applies the returned action. Priority:
-panel open > history browse > plain edit."""
+widget passes a snapshot (KeyContext) and applies the returned action. This is
+the single authority for key priority: panel (while visible) > history browse >
+plain edit. The widget only executes the side effect for whatever action it
+returns; it does not re-decide priority itself."""
 
 from __future__ import annotations
 
@@ -13,22 +15,27 @@ class KeyContext:
     text: str
     cursor_row: int
     last_row: int
-    panel_open: bool
+    panel_visible: bool          # completion panel is on screen
+    panel_active: bool           # user has stepped into it with Up/Down
     hist_idx: int
     hist_len: int
 
 
 def decide_key(ctx: KeyContext) -> str:
-    if ctx.panel_open:
+    # Panel keys take priority whenever the panel is *visible*, so Up/Down drive
+    # the highlight (and Escape closes it) instead of the editor/history. The one
+    # exception is Enter/Tab: those complete only once a selection is active;
+    # otherwise they fall through so Enter still submits (the Critical fix) and
+    # Tab reaches the editor. This keeps the whole priority ladder in one place.
+    if ctx.panel_visible:
         if ctx.key == "up":
             return "panel_prev"
         if ctx.key == "down":
             return "panel_next"
-        if ctx.key in ("enter", "tab"):
-            return "panel_accept"
         if ctx.key == "escape":
             return "panel_close"
-        return "passthrough"
+        if ctx.key in ("enter", "tab") and ctx.panel_active:
+            return "panel_accept"
     if ctx.key == "enter":
         return "submit"
     if ctx.key == "shift+enter":

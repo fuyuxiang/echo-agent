@@ -25,6 +25,11 @@ class PromptInput(TextArea):
         self._history: list[str] = []
         self._hist_idx = 0          # == len(history) means "not browsing / draft"
         self._draft = ""
+        # Completion-panel state, read by _on_key when building the KeyContext:
+        #   _panel_visible — the panel is on screen (auto-popped as the user types)
+        #   _panel_active  — the user has stepped into it with Up/Down
+        self._panel_visible = False
+        self._panel_active = False
 
     class Submitted(Message):
         def __init__(self, text: str) -> None:
@@ -42,8 +47,10 @@ class PromptInput(TextArea):
         return self.text.strip() == ""
 
     def on_mount(self) -> None:
+        # Border is set once in app.tcss (`PromptInput { border: none }`); no
+        # need to repeat it here. The sizing pass still runs so the box starts
+        # at one row instead of TextArea's default tall height.
         super().on_mount()
-        self.styles.border = ("none", "transparent")
         self._resize()
 
     def _resize(self) -> None:
@@ -68,17 +75,14 @@ class PromptInput(TextArea):
     class PanelClose(Message):
         """Ask the app to close the completion panel (Escape)."""
 
-    def _panel_open(self) -> bool:
-        # decide_key treats "panel open" as "the user is actively navigating the
-        # panel". The panel merely being visible (auto-popped as they type) must
-        # NOT hijack Enter — that is the Critical fix: Enter only completes once
-        # the user has stepped into the panel with Up/Down. Escape is the one
-        # panel key allowed while merely visible, handled directly in _on_key.
-        return getattr(self, "_panel_visible", False) and getattr(
-            self, "_panel_active_selection", False
-        )
+    def _has_active_panel_selection(self) -> bool:
+        # True only once the user has stepped into the visible panel with Up/Down.
+        # decide_key uses this to gate Enter/Tab completion: the panel merely
+        # being visible (auto-popped as they type) must NOT hijack Enter — that
+        # is the Critical fix.
+        return self._panel_active
 
-    def set_panel_open(self, value: bool) -> None:
+    def set_panel_visible(self, value: bool) -> None:
         # App layer reports panel *visibility* on every content change. Any
         # content change means the user is typing (not navigating with the
         # arrows), so the active selection is dropped unconditionally — mirroring
@@ -88,13 +92,13 @@ class PromptInput(TextArea):
         # Enter. Pressing Down re-activates it (no content change between
         # Down and the following Tab/Enter), so arrow-then-complete still works.
         self._panel_visible = value
-        self._panel_active_selection = False
+        self._panel_active = False
 
     def apply_completion(self, completed: str) -> None:
         """Replace the buffer with a completed command and park the cursor at
         the end (the parameter position for arg-taking commands). Clears the
         active-selection flag so the next Enter submits."""
-        self._panel_active_selection = False
+        self._panel_active = False
         self.text = completed
         self.move_cursor(self.document.end)
 
@@ -117,40 +121,19 @@ class PromptInput(TextArea):
             self.text = self._history[self._hist_idx]
 
     def _on_key(self, event) -> None:
-        # While the completion panel is *visible* (regardless of active
-        # selection), a few keys drive the panel instead of the editor:
-        #   Esc            -> close the panel (text preserved)
-        #   Up/Down        -> step into / move the panel highlight (activates it)
-        #   Enter/Tab      -> complete ONLY if a selection is active; otherwise
-        #                     fall through so Enter still submits (Critical fix).
-        if getattr(self, "_panel_visible", False):
-            if event.key == "escape":
-                event.prevent_default()
-                event.stop()
-                self._panel_active_selection = False
-                self.post_message(self.PanelClose())
-                return
-            if event.key in ("up", "down"):
-                event.prevent_default()
-                event.stop()
-                self._panel_active_selection = True
-                self.post_message(
-                    self.PanelNav(1 if event.key == "down" else -1)
-                )
-                return
-            if event.key in ("enter", "tab") and getattr(
-                self, "_panel_active_selection", False
-            ):
-                event.prevent_default()
-                event.stop()
-                self.post_message(self.PanelAccept())
-                return
+        # decide_key is the single authority for key priority; _on_key just
+        # snapshots the current state and executes the side effect for whatever
+        # action comes back. panel_visible/panel_active let decide_key own the
+        # panel-vs-editor decision (Up/Down/Esc drive the panel while it is
+        # visible; Enter/Tab complete only once a selection is active, else fall
+        # through to submit — the Critical fix).
         row = self.cursor_location[0]
         last_row = self.document.line_count - 1
         ctx = KeyContext(
             key=event.key, text=self.text, cursor_row=row, last_row=last_row,
-            panel_open=self._panel_open(), hist_idx=self._hist_idx,
-            hist_len=len(self._history),
+            panel_visible=self._panel_visible,
+            panel_active=self._has_active_panel_selection(),
+            hist_idx=self._hist_idx, hist_len=len(self._history),
         )
         action = decide_key(ctx)
         if action == "submit":
@@ -177,5 +160,26 @@ class PromptInput(TextArea):
             self._hist_idx = history_next(self._hist_idx, len(self._history))
             self._apply_history()
             return
-        # panel_* actions are handled by the app layer (Task 6); passthrough
-        # lets TextArea move the cursor normally.
+        if action in ("panel_prev", "panel_next"):
+            event.prevent_default()
+            event.stop()
+            # Stepping into the panel with an arrow activates the selection so
+            # the following Enter/Tab completes.
+            self._panel_active = True
+            self.post_message(
+                self.PanelNav(1 if action == "panel_next" else -1)
+            )
+            return
+        if action == "panel_accept":
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.PanelAccept())
+            return
+        if action == "panel_close":
+            event.prevent_default()
+            event.stop()
+            self._panel_active = False
+            self.post_message(self.PanelClose())
+            return
+        # passthrough lets TextArea handle the key normally (cursor moves, Tab
+        # while the panel is visible-but-inactive, printable characters, …).
