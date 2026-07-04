@@ -41,11 +41,6 @@ Echo Agent 是一个可自托管的长期运行 AI Agent。与一次性问答不
 # 安装
 pip install "echo-agent[all]"
 
-# 配置模型 API Key（任选其一）
-export OPENAI_API_KEY="sk-..."
-# 也支持 ANTHROPIC_API_KEY / GOOGLE_API_KEY / OPENROUTER_API_KEY，
-# 以及 AWS Bedrock（使用标准 AWS 凭证）
-
 # 交互式配置向导（数据默认存放在 ~/.echo-agent）
 echo-agent setup
 
