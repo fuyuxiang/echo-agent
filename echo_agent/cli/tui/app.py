@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.containers import Horizontal
+from textual.widgets import Static
 
 from echo_agent.cli.tui.transcript import TranscriptView
 from echo_agent.cli.tui.prompt_input import PromptInput
@@ -14,6 +16,8 @@ from echo_agent.cli.tui.protocol import CogEvent, approve_command, deny_command
 
 
 class EchoTUI(App):
+    CSS_PATH = "app.tcss"
+
     BINDINGS = [
         Binding("ctrl+r", "toggle_memory", "记忆", show=False),
         Binding("ctrl+o", "toggle_thinking", "思考", show=False),
@@ -44,7 +48,10 @@ class EchoTUI(App):
 
     def compose(self) -> ComposeResult:
         yield TranscriptView()
-        yield PromptInput()
+        with Horizontal(id="input_row"):
+            yield Static("❯", id="prompt_sigil")
+            yield PromptInput()
+        yield Static("输入消息…", id="placeholder")
         yield StatusBar()
 
     def on_mount(self) -> None:
@@ -133,6 +140,11 @@ class EchoTUI(App):
         self._tv.add_user(message.text)
         if self._send is not None:
             await self._send(message.text)
+
+    def on_prompt_input_content_changed(
+        self, message: PromptInput.ContentChanged
+    ) -> None:
+        self.query_one("#placeholder").display = message.is_empty
 
     # --- keybindings ---
     def action_toggle_memory(self) -> None:

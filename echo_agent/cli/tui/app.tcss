@@ -1,0 +1,34 @@
+/* echo_agent/cli/tui/app.tcss — three-zone layout: transcript fills, input
+   row docks with auto height and divider lines, status bar pinned to bottom. */
+TranscriptView {
+    height: 1fr;
+}
+
+#input_row {
+    height: auto;
+    max-height: 10;
+    min-height: 1;
+    border-top: solid grey;
+    border-bottom: solid grey;
+}
+
+#prompt_sigil {
+    width: 2;
+    color: $accent;
+}
+
+PromptInput {
+    height: auto;
+    border: none;
+}
+
+#placeholder {
+    height: 1;
+    color: grey;
+    padding-left: 2;
+}
+
+StatusBar {
+    height: 1;
+    dock: bottom;
+}
