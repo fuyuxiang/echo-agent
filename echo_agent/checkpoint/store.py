@@ -135,16 +135,18 @@ class ShadowGitStore:
 
     async def changed_paths(self, workspace: Path, sha: str) -> list[str]:
         ws = Path(workspace).expanduser().resolve()
+        # -z keeps non-ASCII names raw; without it git C-quotes them (e.g.
+        # Chinese -> "\346..."), and restore's checkout pathspec would miss.
         rc, out, _ = await self._run_git(
-            ["diff-tree", "--no-commit-id", "--name-only", "-r", f"{sha}^", sha],
+            ["diff-tree", "--no-commit-id", "--name-only", "-z", "-r", f"{sha}^", sha],
             workspace=ws, check=False,
         )
         if rc != 0:
             # no parent (first commit): list all files in the tree
             _, out, _ = await self._run_git(
-                ["ls-tree", "-r", "--name-only", sha], workspace=ws
+                ["ls-tree", "-r", "--name-only", "-z", sha], workspace=ws
             )
-        return [n for n in out.split("\n") if n.strip()]
+        return [n for n in out.split("\x00") if n.strip()]
 
     async def show_snapshot(self, workspace: Path, sha: str) -> str:
         ws = Path(workspace).expanduser().resolve()

@@ -153,3 +153,18 @@ async def test_restore_rejects_foreign_sha(tmp_path: Path):
     await store.take_snapshot(ws, "first")
     with pytest.raises(ValueError):
         await store.restore(ws, "0" * 40)
+
+
+@pytest.mark.asyncio
+async def test_restore_handles_unicode_filename(tmp_path: Path):
+    store = ShadowGitStore(tmp_path / "store")
+    await store.ensure_initialized()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "报告.txt").write_text("v1")
+    s1 = await store.take_snapshot(ws, "first")
+    (ws / "报告.txt").write_text("v2-broken")
+    await store.take_snapshot(ws, "second")
+    restored = await store.restore(ws, s1)
+    assert "报告.txt" in restored
+    assert (ws / "报告.txt").read_text() == "v1"
