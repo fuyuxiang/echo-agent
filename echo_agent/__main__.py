@@ -197,6 +197,14 @@ def _build_parser() -> argparse.ArgumentParser:
     config_parser.add_argument("-c", "--config", help="Path to config file")
     config_parser.add_argument("-w", "--workspace", help="Workspace directory")
 
+    # checkpoint
+    cp_parser = subparsers.add_parser("checkpoint", help="Inspect and roll back file checkpoints")
+    cp_parser.add_argument("action", choices=["list", "show", "restore", "prune"], help="Checkpoint action")
+    cp_parser.add_argument("sha", nargs="?", default="", help="Commit SHA (for show/restore)")
+    cp_parser.add_argument("-c", "--config", help="Path to config file")
+    cp_parser.add_argument("-w", "--workspace", help="Workspace directory")
+    cp_parser.add_argument("-y", "--yes", action="store_true", help="Skip restore confirmation")
+
     # top-level flags for backward compat
     parser.add_argument("-c", "--config", help="Path to config file", dest="top_config")
     parser.add_argument("-w", "--workspace", help="Workspace directory", dest="top_workspace")
@@ -310,6 +318,17 @@ def _dispatch() -> None:
             workspace=args.workspace or args.top_workspace,
         )
         _sys.exit(rc)
+
+    if args.command == "checkpoint":
+        from echo_agent.cli.checkpoint_cmd import run_checkpoint_command
+        run_checkpoint_command(
+            args.action,
+            sha=args.sha,
+            config_path=args.config or args.top_config,
+            workspace=args.workspace or args.top_workspace,
+            yes=args.yes,
+        )
+        return
 
     if args.command == "cli":
         from echo_agent.cli import attach_client
