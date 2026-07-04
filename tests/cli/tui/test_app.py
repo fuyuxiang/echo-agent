@@ -116,17 +116,20 @@ async def test_app_cost_update_only_updates_status_bar():
 async def test_bridge_into_app_end_to_end():
     from echo_agent.cli.tui.app import EchoTUI
     from echo_agent.cli.tui.bridge import WSBridge
-    from echo_agent.cli.tui.blocks import CognitiveBlock
+    from echo_agent.cli.tui.blocks import ToolCallBlock
     app = EchoTUI()
     async with app.run_test() as pilot:
         bridge = WSBridge(app)
+        # tool_call frames route to a dedicated ToolCallBlock (running->done
+        # flip keyed by tool_call_id), not the generic CognitiveBlock.
         bridge.dispatch({"type": "message", "message_kind": "cognitive",
                          "text": "🔧 edit · ok",
                          "metadata": {"cog_type": "tool_call", "cog_event_id": "e1",
                                       "_inbound_event_id": "in1",
-                                      "data": {"name": "edit", "status": "ok"}}})
+                                      "data": {"name": "edit", "status": "ok",
+                                               "tool_call_id": "tc_e1"}}})
         await pilot.pause()
-        assert len(app.query(CognitiveBlock)) == 1
+        assert len(app.query(ToolCallBlock)) == 1
 
 
 @pytest.mark.asyncio
