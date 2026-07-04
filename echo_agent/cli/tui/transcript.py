@@ -11,6 +11,7 @@ from echo_agent.cli.tui.blocks import (
     AgentReply,
     ApprovalBlock,
     CognitiveBlock,
+    ToolCallBlock,
     UserTurn,
 )
 from echo_agent.cli.tui.protocol import CogEvent
@@ -33,6 +34,7 @@ class TranscriptView(VerticalScroll):
     def __init__(self) -> None:
         super().__init__()
         self._heartbeats: dict[str, _Heartbeat] = {}
+        self._tool_blocks: dict[str, ToolCallBlock] = {}
         self._last_memory: CognitiveBlock | None = None
         self._last_thinking: CognitiveBlock | None = None
 
@@ -45,6 +47,7 @@ class TranscriptView(VerticalScroll):
         Used by the client-local /clear command — screen only, session intact."""
         self.remove_children()
         self._heartbeats.clear()
+        self._tool_blocks.clear()
         self._last_memory = None
         self._last_thinking = None
 
@@ -65,6 +68,33 @@ class TranscriptView(VerticalScroll):
             self._last_memory = b
         elif ev.cog_type == "thinking":
             self._last_thinking = b
+        return b
+
+    @property
+    def tool_block_count(self) -> int:
+        return len(self._tool_blocks)
+
+    def add_tool_call(self, ev: CogEvent) -> ToolCallBlock:
+        """Mount a tool line on the first (running) frame; flip it in place on
+        the paired done frame. Keyed by tool_call_id, mirroring heartbeat_line."""
+        d = ev.data
+        tcid = str(d.get("tool_call_id", ev.cog_event_id))
+        existing = self._tool_blocks.get(tcid)
+        if existing is not None:
+            existing.mark_done(
+                d.get("status", "ok"), d.get("result_meta"),
+                str(d.get("result_text", "")), d.get("duration_ms"),
+            )
+            return existing
+        b = ToolCallBlock(
+            tcid, d.get("name", "tool"), d.get("params") or {},
+            status=d.get("status", "running"),
+            result_meta=d.get("result_meta"),
+            result_text=str(d.get("result_text", "")),
+            duration_ms=d.get("duration_ms"),
+        )
+        self._tool_blocks[tcid] = b
+        self.mount(b)
         return b
 
     def add_approval(

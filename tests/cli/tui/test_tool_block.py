@@ -72,3 +72,42 @@ def test_tool_block_detail_has_params_and_result():
     detail = b.render_detail()
     assert "参数" in detail and "a.py" in detail
     assert "结果" in detail
+
+
+import pytest
+from echo_agent.cli.tui.protocol import CogEvent
+
+
+def _tool_ev(tcid, status, name="read_file", **data):
+    d = {"tool_call_id": tcid, "name": name, "params": {"path": "a.py"},
+         "status": status, **data}
+    return CogEvent("tool_call", f"evt_{tcid}_{status}", "in_1", d, "")
+
+
+@pytest.mark.asyncio
+async def test_add_tool_call_flips_in_place():
+    from textual.app import App
+    from echo_agent.cli.tui.transcript import TranscriptView
+
+    class T(App):
+        def compose(self):
+            yield TranscriptView()
+
+    app = T()
+    async with app.run_test():
+        tv = app.query_one(TranscriptView)
+        b1 = tv.add_tool_call(_tool_ev("tc_1", "running"))
+        assert b1.status == "running"
+        assert tv.tool_block_count == 1
+        # 同一 id 的完成事件：原地翻转，不新增
+        b2 = tv.add_tool_call(
+            _tool_ev("tc_1", "ok", result_meta={"total_lines": 42}, result_text="x")
+        )
+        assert b2 is b1
+        assert b1.status == "ok"
+        assert tv.tool_block_count == 1
+        # 不同 id：新增
+        tv.add_tool_call(_tool_ev("tc_2", "running"))
+        assert tv.tool_block_count == 2
+        tv.clear()
+        assert tv.tool_block_count == 0
