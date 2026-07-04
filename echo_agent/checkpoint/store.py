@@ -115,3 +115,59 @@ class ShadowGitStore:
         sha = sha.strip()
         await self._run_git(["update-ref", ref, sha], workspace=ws)
         return sha
+
+    async def list_snapshots(self, workspace: Path, limit: int = 50) -> list[dict]:
+        ws = Path(workspace).expanduser().resolve()
+        ref = self.ref_for(ws)
+        rc, _, _ = await self._run_git(["rev-parse", "--verify", ref], workspace=ws, check=False)
+        if rc != 0:
+            return []
+        _, out, _ = await self._run_git(
+            ["log", ref, f"-{limit}", "--pretty=format:%H%x1f%ct%x1f%s"], workspace=ws
+        )
+        snaps: list[dict] = []
+        for line in [ln for ln in out.split("\n") if ln.strip()]:
+            sha, ts, subject = line.split("\x1f", 2)
+            files = len(await self.changed_paths(ws, sha))
+            snaps.append({"sha": sha, "short": sha[:10], "ts": int(ts),
+                          "subject": subject, "files": files})
+        return snaps
+
+    async def changed_paths(self, workspace: Path, sha: str) -> list[str]:
+        ws = Path(workspace).expanduser().resolve()
+        rc, out, _ = await self._run_git(
+            ["diff-tree", "--no-commit-id", "--name-only", "-r", f"{sha}^", sha],
+            workspace=ws, check=False,
+        )
+        if rc != 0:
+            # no parent (first commit): list all files in the tree
+            _, out, _ = await self._run_git(
+                ["ls-tree", "-r", "--name-only", sha], workspace=ws
+            )
+        return [n for n in out.split("\n") if n.strip()]
+
+    async def show_snapshot(self, workspace: Path, sha: str) -> str:
+        ws = Path(workspace).expanduser().resolve()
+        await self._assert_owned(ws, sha)
+        _, out, _ = await self._run_git(["show", sha], workspace=ws)
+        return out
+
+    async def _assert_owned(self, workspace: Path, sha: str) -> None:
+        ref = self.ref_for(workspace)
+        rc, _, _ = await self._run_git(
+            ["merge-base", "--is-ancestor", sha, ref], workspace=workspace, check=False
+        )
+        # is-ancestor exits 0 when sha is reachable from ref
+        _, tip, _ = await self._run_git(["rev-parse", "--verify", ref], workspace=workspace, check=False)
+        if rc != 0 and sha != tip.strip():
+            raise ValueError(f"checkpoint {sha[:10]} does not belong to this workspace")
+
+    async def restore(self, workspace: Path, sha: str) -> list[str]:
+        ws = Path(workspace).expanduser().resolve()
+        await self._assert_owned(ws, sha)
+        # pre-rollback snapshot so the rollback itself is undoable
+        await self.take_snapshot(ws, f"before restore {sha[:10]}")
+        paths = await self.changed_paths(ws, sha)
+        if paths:
+            await self._run_git(["checkout", sha, "--", *paths], workspace=ws)
+        return paths

@@ -105,3 +105,51 @@ async def test_take_snapshot_excludes_oversize_unicode_file(tmp_path: Path):
     names = {n for n in out.split("\x00") if n.strip()}
     assert "小文件.txt" in names
     assert "大文件.bin" not in names
+
+
+@pytest.mark.asyncio
+async def test_list_and_changed_paths(tmp_path: Path):
+    store = ShadowGitStore(tmp_path / "store")
+    await store.ensure_initialized()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "a.txt").write_text("v1")
+    s1 = await store.take_snapshot(ws, "first")
+    (ws / "a.txt").write_text("v2")
+    (ws / "b.txt").write_text("new")
+    s2 = await store.take_snapshot(ws, "second")
+    snaps = await store.list_snapshots(ws)
+    assert [s["sha"] for s in snaps][:2] == [s2, s1]
+    changed = await store.changed_paths(ws, s2)
+    assert set(changed) == {"a.txt", "b.txt"}
+
+
+@pytest.mark.asyncio
+async def test_restore_only_touches_changed_files(tmp_path: Path):
+    store = ShadowGitStore(tmp_path / "store")
+    await store.ensure_initialized()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "a.txt").write_text("v1")
+    s1 = await store.take_snapshot(ws, "first")
+    (ws / "a.txt").write_text("v2-broken")
+    await store.take_snapshot(ws, "second")
+    # user later creates an unrelated file after the snapshot we roll back to
+    (ws / "unrelated.txt").write_text("keep me")
+    restored = await store.restore(ws, s1)
+    assert (ws / "a.txt").read_text() == "v1"
+    assert restored == ["a.txt"]
+    # unrelated file untouched
+    assert (ws / "unrelated.txt").read_text() == "keep me"
+
+
+@pytest.mark.asyncio
+async def test_restore_rejects_foreign_sha(tmp_path: Path):
+    store = ShadowGitStore(tmp_path / "store")
+    await store.ensure_initialized()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "a.txt").write_text("v1")
+    await store.take_snapshot(ws, "first")
+    with pytest.raises(ValueError):
+        await store.restore(ws, "0" * 40)
