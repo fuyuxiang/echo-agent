@@ -139,6 +139,30 @@ async def test_emit_tool_call_carries_id_and_meta():
 
 
 @pytest.mark.asyncio
+async def test_running_frame_precedes_done_same_id():
+    # Task 7: a full tool execution emits two tool_call frames paired by the
+    # same tool_call_id — running first, terminal status second. This locks the
+    # running↔done id/order contract; the real execution wiring is verified
+    # manually.
+    cap = _CapEmitter()
+    stage = InferenceStage.__new__(InferenceStage)
+    stage._cog = cap
+    ev = InboundEvent.text_message(
+        channel="gateway:cli", sender_id="u", chat_id="c", text="hi"
+    )
+    await stage._emit_tool_call(
+        ev, "read_file", {"path": "a.py"}, "running", "", tool_call_id="tc_9",
+    )
+    await stage._emit_tool_call(
+        ev, "read_file", {"path": "a.py"}, "ok", "x", tool_call_id="tc_9",
+        result_meta={"total_lines": 3},
+    )
+    frames = [c[1] for c in cap.calls if c[1].get("name") == "read_file"]
+    assert [f["tool_call_id"] for f in frames] == ["tc_9", "tc_9"]
+    assert [f["status"] for f in frames] == ["running", "ok"]
+
+
+@pytest.mark.asyncio
 async def test_inference_stage_cost_and_tool_noop_without_emitter():
     stage = InferenceStage.__new__(InferenceStage)
     stage._cog = None

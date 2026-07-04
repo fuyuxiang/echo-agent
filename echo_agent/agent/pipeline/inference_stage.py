@@ -680,6 +680,13 @@ class InferenceStage:
 
             async def _run_one(d):
                 async with sem:
+                    # Emit a "running" frame before execution so the cli TUI can
+                    # flip this tool line into an in-progress state; the terminal
+                    # frame below shares tool_call_id to pair with it.
+                    await self._emit_tool_call(
+                        ctx.event, d.tool_call.name, d.tool_call.arguments,
+                        "running", "", tool_call_id=d.tool_call.id,
+                    )
                     result = await self._tools.execute(
                         d.tool_call.name, d.tool_call.arguments, d.exec_ctx)
                     # post_tool_call hook — kept consistent with the serial group
@@ -744,6 +751,13 @@ class InferenceStage:
             if ctx.activity is not None:
                 ctx.activity.enter_tool(tool_call.name)
             await self._emit_tool_event(ctx, _tool_start_meta)
+            # Emit a "running" frame before execution so the cli TUI can flip
+            # this tool line into an in-progress state; the terminal frame below
+            # shares tool_call_id to pair with it.
+            await self._emit_tool_call(
+                ctx.event, tool_call.name, tool_call.arguments,
+                "running", "", tool_call_id=tool_call.id,
+            )
 
             try:
                 result = await self._tools.execute(
