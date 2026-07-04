@@ -147,6 +147,13 @@ async def bootstrap(
     await plugin_manager.discover_and_load()
     agent.set_plugin_manager(plugin_manager)
 
+    # Checkpoint safety net — snapshot workspace before write tools (fail-open)
+    try:
+        from echo_agent.checkpoint.hook import install_checkpoint
+        install_checkpoint(config, ws, plugin_manager.hooks)
+    except Exception as e:
+        logger.debug("checkpoint install failed (fail-open): {}", e)
+
     # Self-evolving skill harness
     if config.evolution.enabled:
         try:
