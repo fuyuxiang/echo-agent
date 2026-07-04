@@ -127,6 +127,65 @@ class CognitiveBlock(Static):
         self.update(self.render_detail() if self.expanded else self.render_summary())
 
 
+class ToolCallBlock(Static):
+    """One tool invocation. Flips in place from running (🔧 … ) to done
+    (🔧 … · summary ✓/✗). Paired across the two frames by tool_call_id."""
+
+    def __init__(
+        self,
+        tool_call_id: str,
+        name: str,
+        params: dict,
+        status: str = "running",
+        result_meta: dict | None = None,
+        result_text: str = "",
+        duration_ms: int | None = None,
+    ) -> None:
+        self.tool_call_id = tool_call_id
+        # Stored as tool_name to avoid clashing with Textual Widget's read-only
+        # `name` property (which has no setter).
+        self.tool_name = name
+        self.params = params or {}
+        self.status = status
+        self.result_meta = result_meta
+        self.result_text = result_text
+        self.duration_ms = duration_ms
+        self.expanded = False
+        super().__init__(self.render_summary())
+
+    def render_summary(self) -> str:
+        head = f"🔧 {humanize_tool(self.tool_name)} {pick_object(self.tool_name, self.params)}".rstrip()
+        if self.status == "running":
+            return f"{head} …"
+        mark = "✓" if self.status == "ok" else "✗"
+        summary = summarize_result(
+            self.tool_name, self.result_meta, self.result_text, self.status == "ok"
+        )
+        return f"{head} · {summary} {mark}"
+
+    def render_detail(self) -> str:
+        lines = [self.render_summary()]
+        if self.params:
+            joined = ", ".join(f"{k}={_clip(v, 60)}" for k, v in self.params.items())
+            lines.append(f"    ↳ 参数 {joined}")
+        if self.result_text:
+            lines.append(f"    ↳ 结果 {_clip(self.result_text, 200)}")
+        return "\n".join(lines)
+
+    def mark_done(
+        self, status: str, result_meta: dict | None, result_text: str, duration_ms: int | None
+    ) -> None:
+        self.status = status
+        self.result_meta = result_meta
+        self.result_text = result_text
+        self.duration_ms = duration_ms
+        self.update(self.render_detail() if self.expanded else self.render_summary())
+
+    def toggle(self) -> None:
+        self.expanded = not self.expanded
+        self.update(self.render_detail() if self.expanded else self.render_summary())
+
+
 class ApprovalBlock(Static):
     def __init__(self, request_id: str, action: str, params: dict, risk: str) -> None:
         self.request_id = request_id

@@ -33,3 +33,42 @@ def test_summarize_result_uses_meta_not_text():
     # None/缺键/空文本都不崩
     assert isinstance(summarize_result("read_file", None, "", True), str)
     assert isinstance(summarize_result("read_file", {}, "", True), str)
+
+
+def test_tool_block_running_then_done_flip():
+    from echo_agent.cli.tui.blocks import ToolCallBlock
+
+    b = ToolCallBlock("tc_1", "read_file", {"path": "x/inference_stage.py"})
+    running = b.render_summary()
+    assert "🔧" in running and "读取" in running and "inference_stage.py" in running
+    assert running.endswith("…")           # 进行中：尾部省略号
+    assert "✓" not in running
+
+    b.mark_done("ok", {"total_lines": 300}, "…preview…", 320)
+    done = b.render_summary()
+    assert done.endswith("✓")
+    assert "300 行" in done
+    assert "…" not in done                  # 完成后去掉省略号
+
+
+def test_tool_block_error_shows_cross():
+    from echo_agent.cli.tui.blocks import ToolCallBlock
+
+    b = ToolCallBlock("tc_2", "exec", {"command": "rm -rf /tmp/x"})
+    b.mark_done("err", None, "Error: boom", 10)
+    s = b.render_summary()
+    assert s.endswith("✗")
+    assert "失败" in s
+
+
+def test_tool_block_detail_has_params_and_result():
+    from echo_agent.cli.tui.blocks import ToolCallBlock
+
+    b = ToolCallBlock("tc_3", "read_file", {"path": "a.py", "limit": 300})
+    b.mark_done("ok", {"total_lines": 42}, "line1\nline2", 5)
+    assert b.expanded is False
+    b.toggle()
+    assert b.expanded is True
+    detail = b.render_detail()
+    assert "参数" in detail and "a.py" in detail
+    assert "结果" in detail
