@@ -6,12 +6,13 @@ from __future__ import annotations
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
-from textual.widgets import Static
+from textual.widgets import OptionList, Static
 
 from echo_agent.cli.tui.transcript import TranscriptView
 from echo_agent.cli.tui.prompt_input import PromptInput
 from echo_agent.cli.tui.status_bar import StatusBar
 from echo_agent.cli.tui.blocks import ApprovalBlock
+from echo_agent.cli.tui.completion import filter_commands
 from echo_agent.cli.tui.protocol import CogEvent, approve_command, deny_command
 
 
@@ -48,6 +49,9 @@ class EchoTUI(App):
 
     def compose(self) -> ComposeResult:
         yield TranscriptView()
+        panel = OptionList(id="slash_panel")
+        panel.display = False
+        yield panel
         with Horizontal(id="input_row"):
             yield Static("❯", id="prompt_sigil")
             yield PromptInput()
@@ -137,14 +141,36 @@ class EchoTUI(App):
     async def on_prompt_input_submitted(
         self, message: PromptInput.Submitted
     ) -> None:
-        self._tv.add_user(message.text)
+        text = message.text
+        # Local commands execute inside the TUI and are never sent upstream;
+        # server commands (/approve, /deny, /approvals) fall through to send.
+        if text == "/clear":
+            self._tv.clear()
+            return
+        if text == "/quit":
+            self.exit()
+            return
+        self._tv.add_user(text)
         if self._send is not None:
-            await self._send(message.text)
+            await self._send(text)
 
     def on_prompt_input_content_changed(
         self, message: PromptInput.ContentChanged
     ) -> None:
         self.query_one("#placeholder").display = message.is_empty
+        panel = self.query_one("#slash_panel", OptionList)
+        matches = filter_commands(message.text)
+        if matches:
+            panel.clear_options()
+            for c in matches:
+                tag = "本地" if c.scope == "local" else "服务端"
+                panel.add_option(
+                    f"{c.name} [dim]{c.arg_template}[/dim]  {c.desc} [{tag}]"
+                )
+            panel.display = True
+        else:
+            panel.display = False
+        self.query_one(PromptInput).set_panel_open(bool(matches))
 
     # --- keybindings ---
     def action_toggle_memory(self) -> None:

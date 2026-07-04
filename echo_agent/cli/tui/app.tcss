@@ -32,3 +32,9 @@ StatusBar {
     height: 1;
     dock: bottom;
 }
+
+#slash_panel {
+    height: auto;
+    max-height: 6;
+    border: round grey;
+}
