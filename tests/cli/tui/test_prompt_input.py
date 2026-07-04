@@ -72,3 +72,21 @@ async def test_down_restores_draft_at_end():
         await pilot.press("down")     # 走回草稿
         await pilot.pause()
         assert pi.text == "草稿中"
+
+
+@pytest.mark.asyncio
+async def test_down_keeps_draft_when_not_browsing():
+    # 回归：发送一条历史后敲新草稿（未进入历史浏览），光标在行尾按 down
+    # 不应把草稿抹掉
+    app = _Host()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        pi = app.query_one(PromptInput)
+        pi.text = "历史项"
+        await pilot.press("enter")
+        await pilot.pause()
+        pi.text = "新草稿还没发"        # 未发送、也未按 up 进入浏览
+        pi.move_cursor(pi.document.end)  # 光标移到行尾
+        await pilot.press("down")
+        await pilot.pause()
+        assert pi.text == "新草稿还没发"

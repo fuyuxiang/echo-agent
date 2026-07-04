@@ -35,7 +35,12 @@ def decide_key(ctx: KeyContext) -> str:
         return "newline"
     if ctx.key == "up" and ctx.cursor_row == 0 and ctx.hist_len > 0:
         return "history_prev"
-    if ctx.key == "down" and ctx.cursor_row == ctx.last_row and ctx.hist_len > 0:
+    if (
+        ctx.key == "down"
+        and ctx.cursor_row == ctx.last_row
+        and ctx.hist_len > 0
+        and ctx.hist_idx < ctx.hist_len
+    ):
         return "history_next"
     return "passthrough"
 

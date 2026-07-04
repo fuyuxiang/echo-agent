@@ -40,6 +40,14 @@ def test_down_passes_through_when_not_last_row():
     assert decide_key(_ctx(key="down", cursor_row=1, last_row=3, hist_len=2)) == "passthrough"
 
 
+def test_down_passes_through_when_not_browsing_history():
+    # 未浏览历史（hist_idx == hist_len），光标在最后一行、历史非空时按 down
+    # 不应触发 history_next，否则会把用户新敲的草稿抹掉
+    assert decide_key(
+        _ctx(key="down", cursor_row=3, last_row=3, hist_idx=2, hist_len=2)
+    ) == "passthrough"
+
+
 def test_esc_closes_panel_when_open():
     assert decide_key(_ctx(key="escape", panel_open=True)) == "panel_close"
 
