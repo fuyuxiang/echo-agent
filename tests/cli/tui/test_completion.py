@@ -1,5 +1,5 @@
 from echo_agent.cli.tui.completion import (
-    COMMANDS, SlashCommand, completion_insert, filter_commands,
+    COMMANDS, completion_insert, filter_commands,
 )
 
 

@@ -125,12 +125,14 @@ class PromptInput(TextArea):
         #                     fall through so Enter still submits (Critical fix).
         if getattr(self, "_panel_visible", False):
             if event.key == "escape":
-                event.prevent_default(); event.stop()
+                event.prevent_default()
+                event.stop()
                 self._panel_active_selection = False
                 self.post_message(self.PanelClose())
                 return
             if event.key in ("up", "down"):
-                event.prevent_default(); event.stop()
+                event.prevent_default()
+                event.stop()
                 self._panel_active_selection = True
                 self.post_message(
                     self.PanelNav(1 if event.key == "down" else -1)
@@ -139,7 +141,8 @@ class PromptInput(TextArea):
             if event.key in ("enter", "tab") and getattr(
                 self, "_panel_active_selection", False
             ):
-                event.prevent_default(); event.stop()
+                event.prevent_default()
+                event.stop()
                 self.post_message(self.PanelAccept())
                 return
         row = self.cursor_location[0]
@@ -151,22 +154,26 @@ class PromptInput(TextArea):
         )
         action = decide_key(ctx)
         if action == "submit":
-            event.prevent_default(); event.stop()
+            event.prevent_default()
+            event.stop()
             self._submit()
             return
         if action == "newline":
-            event.prevent_default(); event.stop()
+            event.prevent_default()
+            event.stop()
             self.insert("\n")
             return
         if action == "history_prev":
-            event.prevent_default(); event.stop()
+            event.prevent_default()
+            event.stop()
             if self._hist_idx == len(self._history):
                 self._draft = self.text
             self._hist_idx = history_prev(self._hist_idx, len(self._history))
             self._apply_history()
             return
         if action == "history_next":
-            event.prevent_default(); event.stop()
+            event.prevent_default()
+            event.stop()
             self._hist_idx = history_next(self._hist_idx, len(self._history))
             self._apply_history()
             return
