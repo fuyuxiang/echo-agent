@@ -6,7 +6,6 @@ redirected into tmp_path. No real service is ever installed.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
