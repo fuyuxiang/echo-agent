@@ -58,6 +58,14 @@ class ShadowGitStore:
             env.pop("GIT_WORK_TREE", None)
             env.pop("GIT_INDEX_FILE", None)
             env["GIT_DIR"] = str(self._store)
+        # Stamp a fixed identity so commit-tree never depends on the caller's
+        # global git config (CI runners, containers, and fresh machines have
+        # none -> "Author identity unknown"). This store is internal-only, so a
+        # constant identity keeps snapshots self-contained and reproducible.
+        env.setdefault("GIT_AUTHOR_NAME", "echo-agent")
+        env.setdefault("GIT_AUTHOR_EMAIL", "checkpoint@echo-agent.local")
+        env.setdefault("GIT_COMMITTER_NAME", "echo-agent")
+        env.setdefault("GIT_COMMITTER_EMAIL", "checkpoint@echo-agent.local")
         env.update(extra_env or {})
         proc = await asyncio.create_subprocess_exec(
             "git", *args, env=env,
