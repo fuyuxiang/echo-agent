@@ -18,18 +18,28 @@ class _FakeContext:
 
 
 class _FakeBrowser:
+    def __init__(self):
+        self.closed = False
+
     async def new_context(self):
         return _FakeContext()
 
+    async def close(self):
+        self.closed = True
+
 
 class _FakePW:
+    def __init__(self):
+        self.stopped = False
+        self._browser = _FakeBrowser()
+
     class chromium:
         @staticmethod
         async def launch(**kwargs):
             return _FakeBrowser()
 
     async def stop(self):
-        pass
+        self.stopped = True
 
 
 async def _fake_start():
@@ -94,3 +104,28 @@ async def test_close_all_empties():
     await m.open()
     await m.close_all()
     assert m.get_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_close_all_stops_browser_and_playwright():
+    m = BrowserSessionManager()
+    await m.open()
+    browser = m._browser
+    pw = m._pw
+    assert browser is not None and pw is not None
+    await m.close_all()
+    assert browser.closed is True
+    assert pw.stopped is True
+    assert m._browser is None
+    assert m._pw is None
+
+
+@pytest.mark.asyncio
+async def test_close_all_reopens_after_stop():
+    # After close_all resets the process handles, a fresh open must re-bootstrap.
+    m = BrowserSessionManager()
+    await m.open()
+    await m.close_all()
+    sid = await m.open()
+    assert m.get(sid) is not None
+    assert m._browser is not None and m._pw is not None

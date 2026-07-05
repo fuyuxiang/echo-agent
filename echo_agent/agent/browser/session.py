@@ -64,6 +64,21 @@ class BrowserSessionManager:
     async def close_all(self) -> None:
         for sid in list(self._sessions.keys()):
             await self.close(sid)
+        # Tear down the shared browser process and playwright driver too;
+        # closing only contexts leaked the Chromium/driver processes on every
+        # in-process restart. Reset to None so the next open() re-bootstraps.
+        if self._browser is not None:
+            try:
+                await self._browser.close()
+            except Exception as e:
+                logger.debug("browser close raised (ignored): {}", e)
+        if self._pw is not None:
+            try:
+                await self._pw.stop()
+            except Exception as e:
+                logger.debug("playwright stop raised (ignored): {}", e)
+        self._browser = None
+        self._pw = None
 
     async def _reap_idle(self, idle_timeout_sec: float) -> None:
         now = time.monotonic()
