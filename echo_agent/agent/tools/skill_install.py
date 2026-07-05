@@ -7,6 +7,7 @@ and copies into the SkillStore user directory.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import shutil
 import tempfile
@@ -21,6 +22,10 @@ from echo_agent.dependencies.lazy_deps import install_authorized
 from echo_agent.skills.store import SkillStore, parse_frontmatter
 
 _TIMEOUT = 60
+# Bound the recursive SKILL.md search so a mistakenly broad local source
+# (e.g. a home directory) cannot walk unbounded even off the event loop.
+_MAX_SCAN_ENTRIES = 20_000
+_MAX_COPY_FILES = 2_000
 _GIT_URL_RE = re.compile(
     r"^(https?://[^\s]+\.git|git@[^\s]+\.git|https?://github\.com/[^\s]+|https?://gitlab\.com/[^\s]+)$"
 )
@@ -97,8 +102,18 @@ def _find_skill_md(base: str, subdirectory: str) -> tuple[Path | None, str]:
     skill_md = root / "SKILL.md"
     if skill_md.exists():
         return root, ""
-    for candidate in root.rglob("SKILL.md"):
-        return candidate.parent, ""
+    # Bounded recursive scan: prune vendored dirs and cap total entries so a
+    # broad source can't walk the whole filesystem.
+    _SKIP = {".git", "__pycache__", "node_modules", ".venv", "venv"}
+    scanned = 0
+
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP]
+        if "SKILL.md" in filenames:
+            return Path(dirpath), ""
+        scanned += len(filenames) + len(dirnames)
+        if scanned > _MAX_SCAN_ENTRIES:
+            return None, "No SKILL.md found within scan limit"
     return None, "No SKILL.md found in source"
 
 
@@ -184,6 +199,49 @@ class SkillInstallTool(Tool):
     def __init__(self, store: SkillStore):
         self._store = store
 
+    def _materialize(
+        self, fetched: str, subdirectory: str, name_override: str
+    ) -> tuple[str, dict, str]:
+        """Blocking: locate SKILL.md, register the skill, copy support files.
+
+        Runs on a worker thread (see execute). Returns (skill_name, frontmatter,
+        error); on error skill_name is "" and frontmatter is {}.
+        """
+        skill_dir, err = _find_skill_md(fetched, subdirectory)
+        if err:
+            return "", {}, err
+
+        skill_name, err = _resolve_name(skill_dir, name_override)
+        if err:
+            return "", {}, err
+
+        skill_md = skill_dir / "SKILL.md"
+        content = skill_md.read_text(encoding="utf-8")
+        fm, _ = parse_frontmatter(content)
+        category = fm.get("category", "")
+
+        install_err = self._store.create_skill(skill_name, content, category=category)
+        if install_err and "already exists" in install_err:
+            install_err = self._store.update_skill(skill_name, content)
+        if install_err:
+            return "", {}, install_err
+
+        copied = 0
+        for subdir_name in ("references", "templates", "scripts", "assets"):
+            src_sub = skill_dir / subdir_name
+            if not src_sub.is_dir():
+                continue
+            for f in src_sub.rglob("*"):
+                if not f.is_file():
+                    continue
+                copied += 1
+                if copied > _MAX_COPY_FILES:
+                    return "", {}, f"Too many support files (>{_MAX_COPY_FILES}); refusing to copy"
+                rel = str(f.relative_to(skill_dir))
+                self._store.write_file(skill_name, rel, f.read_text(encoding="utf-8"))
+
+        return skill_name, fm, ""
+
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         source = params["source"]
         location = params["location"]
@@ -205,35 +263,14 @@ class SkillInstallTool(Tool):
             if err:
                 return ToolResult(success=False, error=err)
 
-            skill_dir, err = _find_skill_md(fetched, subdirectory)
-            if err:
-                return ToolResult(success=False, error=err)
-
-            skill_name, err = _resolve_name(skill_dir, name_override)
-            if err:
-                return ToolResult(success=False, error=err)
-
-            skill_md = skill_dir / "SKILL.md"
-            fm, _ = parse_frontmatter(skill_md.read_text(encoding="utf-8"))
-            category = fm.get("category", "")
-
-            install_err = self._store.create_skill(
-                skill_name,
-                skill_md.read_text(encoding="utf-8"),
-                category=category,
+            # The scan + read + copy sequence is all blocking filesystem work.
+            # Offload it to a worker thread so the event loop (channel polling,
+            # healthz, other sessions) stays responsive during install.
+            skill_name, fm, err = await asyncio.to_thread(
+                self._materialize, fetched, subdirectory, name_override
             )
-            if install_err and "already exists" in install_err:
-                install_err = self._store.update_skill(skill_name, skill_md.read_text(encoding="utf-8"))
-            if install_err:
-                return ToolResult(success=False, error=install_err)
-
-            for subdir_name in ("references", "templates", "scripts", "assets"):
-                src_sub = skill_dir / subdir_name
-                if src_sub.is_dir():
-                    for f in src_sub.rglob("*"):
-                        if f.is_file():
-                            rel = str(f.relative_to(skill_dir))
-                            self._store.write_file(skill_name, rel, f.read_text(encoding="utf-8"))
+            if err:
+                return ToolResult(success=False, error=err)
 
             install_results: list[str] = []
             if run_install:
@@ -253,4 +290,5 @@ class SkillInstallTool(Tool):
             logger.error("Skill install failed: {}", e)
             return ToolResult(success=False, error=f"Install failed: {e}")
         finally:
-            shutil.rmtree(tmpdir, ignore_errors=True)
+            # Cleanup can walk a large cloned repo; keep it off the loop too.
+            await asyncio.to_thread(shutil.rmtree, tmpdir, ignore_errors=True)

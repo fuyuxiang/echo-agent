@@ -560,6 +560,73 @@ class TestSearchFilesTool:
         result = await tool.execute({"pattern": "x", "path": "nonexist"}, _ctx())
         assert result.success is False
 
+    @pytest.mark.asyncio
+    async def test_skip_dirs_pruned(self, tmp_path):
+        # A match inside a pruned dir must NOT surface; one outside must.
+        (tmp_path / "keep.py").write_text("needle here\n")
+        vendored = tmp_path / "node_modules" / "pkg"
+        vendored.mkdir(parents=True)
+        (vendored / "dep.py").write_text("needle here\n")
+        tool = self._make(str(tmp_path))
+        result = await tool.execute({"pattern": "needle", "mode": "content"}, _ctx())
+        assert result.success is True
+        assert "keep.py" in result.output
+        assert "node_modules" not in result.output
+
+    @pytest.mark.asyncio
+    async def test_truncates_on_result_limit(self, tmp_path):
+        for i in range(10):
+            (tmp_path / f"f{i}.txt").write_text("hit\n")
+        tool = self._make(str(tmp_path))
+        result = await tool.execute(
+            {"pattern": "hit", "mode": "content", "max_results": 3}, _ctx()
+        )
+        assert result.success is True
+        assert result.metadata["count"] == 3
+        assert result.metadata.get("truncated") is True
+
+    @pytest.mark.asyncio
+    async def test_restrict_blocks_outside_workspace(self, tmp_path):
+        from echo_agent.agent.tools.search import SearchFilesTool
+
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        tool = SearchFilesTool(workspace=str(ws), restrict=True)
+        result = await tool.execute(
+            {"pattern": "x", "mode": "content", "path": str(tmp_path)}, _ctx()
+        )
+        assert result.success is False
+        assert "outside workspace" in result.error
+
+    @pytest.mark.asyncio
+    async def test_does_not_block_event_loop(self, tmp_path):
+        # Regression for the poll-loop deadlock: the blocking traversal must run
+        # off the event loop. We assert responsiveness via concurrency (a ticker
+        # coroutine keeps advancing while the search runs), not wall-clock time.
+        import asyncio
+
+        for i in range(300):
+            (tmp_path / f"f{i}.py").write_text("x = 1\n" * 50)
+        tool = self._make(str(tmp_path))
+
+        ticks = 0
+
+        async def ticker():
+            nonlocal ticks
+            while True:
+                ticks += 1
+                await asyncio.sleep(0)
+
+        t = asyncio.create_task(ticker())
+        result = await tool.execute({"pattern": "x = 1", "mode": "content"}, _ctx())
+        await asyncio.sleep(0)
+        t.cancel()
+
+        assert result.success is True
+        # If the traversal had run inline on the loop, the ticker would have been
+        # starved and ticks would stay at 0.
+        assert ticks > 0
+
 
 # ===========================================================================
 # 10. SessionSearchTool

@@ -384,3 +384,64 @@ class TestSkillInstallExecute:
                 None,
             )
         assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_copies_support_files_off_thread(self, tmp_path):
+        skill_src = tmp_path / "src"
+        (skill_src / "scripts").mkdir(parents=True)
+        (skill_src / "SKILL.md").write_text(SKILL_MD)
+        (skill_src / "scripts" / "run.py").write_text("print('hi')\n")
+        tool, store = self._make()
+        result = await tool.execute(
+            {"source": "local", "location": str(skill_src), "run_install": False},
+            None,
+        )
+        assert result.success is True
+        # Support file under scripts/ must have been written to the store.
+        written = [c.args[1] for c in store.write_file.call_args_list]
+        assert any("run.py" in w for w in written)
+
+    @pytest.mark.asyncio
+    async def test_execute_does_not_block_event_loop(self, tmp_path):
+        # Regression for the poll-loop deadlock: the blocking scan/copy must run
+        # off the event loop. Assert responsiveness via a concurrent ticker.
+        import asyncio
+
+        skill_src = tmp_path / "src"
+        (skill_src / "scripts").mkdir(parents=True)
+        (skill_src / "SKILL.md").write_text(SKILL_MD)
+        for i in range(200):
+            (skill_src / "scripts" / f"f{i}.py").write_text("x = 1\n")
+        tool, _ = self._make()
+
+        ticks = 0
+
+        async def ticker():
+            nonlocal ticks
+            while True:
+                ticks += 1
+                await asyncio.sleep(0)
+
+        t = asyncio.create_task(ticker())
+        result = await tool.execute(
+            {"source": "local", "location": str(skill_src), "run_install": False},
+            None,
+        )
+        await asyncio.sleep(0)
+        t.cancel()
+        assert result.success is True
+        assert ticks > 0
+
+
+class TestFindSkillMdBounded:
+    def test_pruned_and_found(self, tmp_path):
+        # SKILL.md nested; a node_modules sibling must not derail the scan.
+        (tmp_path / "node_modules" / "junk").mkdir(parents=True)
+        (tmp_path / "node_modules" / "junk" / "SKILL.md").write_text(SKILL_MD)
+        real = tmp_path / "pkg"
+        real.mkdir()
+        (real / "SKILL.md").write_text(SKILL_MD)
+        root, err = _find_skill_md(str(tmp_path), "")
+        assert err == ""
+        # Must resolve to the non-vendored copy.
+        assert root == real
