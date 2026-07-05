@@ -45,18 +45,19 @@ class CloudWhisperBackend:
             return ""
         url = f"{self._base_url}/audio/transcriptions"
         try:
-            data = aiohttp.FormData()
-            data.add_field("file", path.open("rb"), filename=path.name)
-            data.add_field("model", self._model)
-            timeout = aiohttp.ClientTimeout(total=self._timeout_sec)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(
-                    url, data=data, headers={"Authorization": f"Bearer {self._api_key}"}
-                ) as resp:
-                    if resp.status == 200:
-                        result = await resp.json()
-                        return (result.get("text") or "").strip()
-                    logger.debug("cloud transcribe non-200 ({}): {}", resp.status, await resp.text())
+            with path.open("rb") as fh:
+                data = aiohttp.FormData()
+                data.add_field("file", fh, filename=path.name)
+                data.add_field("model", self._model)
+                timeout = aiohttp.ClientTimeout(total=self._timeout_sec)
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.post(
+                        url, data=data, headers={"Authorization": f"Bearer {self._api_key}"}
+                    ) as resp:
+                        if resp.status == 200:
+                            result = await resp.json()
+                            return (result.get("text") or "").strip()
+                        logger.debug("cloud transcribe non-200 ({}): {}", resp.status, await resp.text())
         except Exception as e:  # fail-open
             logger.debug("cloud transcribe failed (fail-open): {}", e)
         return ""
