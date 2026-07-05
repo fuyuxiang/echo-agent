@@ -2324,6 +2324,22 @@ class MediaUnderstandingConfig(_Base):
             "desc_en": "Local faster-whisper model size (tiny/base/small/...)",
         },
     )
+    transcription_base_url: str = Field(
+        default="https://api.groq.com/openai/v1",
+        json_schema_extra={
+            "status": "effective", "ref": "agent/media/understanding/registry.py",
+            "desc_zh": "云转写端点 base_url（OpenAI 兼容 /audio/transcriptions）",
+            "desc_en": "Cloud transcription endpoint base_url (OpenAI-compatible)",
+        },
+    )
+    transcription_model: str = Field(
+        default="whisper-large-v3",
+        json_schema_extra={
+            "status": "effective", "ref": "agent/media/understanding/registry.py",
+            "desc_zh": "云转写模型名",
+            "desc_en": "Cloud transcription model name",
+        },
+    )
 
 
 # ── Storage configs ──────────────────────────────────────────────────────────

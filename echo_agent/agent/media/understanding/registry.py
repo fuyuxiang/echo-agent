@@ -14,17 +14,18 @@ from echo_agent.agent.media.understanding.audio import (
 from echo_agent.agent.media.understanding.base import MediaUnderstanding
 
 
-def _select_backend(provider: str, api_key: str, model_size: str) -> Any:
+def _select_backend(provider: str, api_key: str, model_size: str,
+                    base_url: str, model: str) -> Any:
     """Return a TranscribeBackend per provider policy, or None if unavailable."""
     want_cloud = provider in ("auto", "cloud") and _cloud_available(api_key)
     want_local = provider in ("auto", "local") and _local_available()
     if provider == "cloud":
-        return CloudWhisperBackend(api_key) if _cloud_available(api_key) else None
+        return CloudWhisperBackend(api_key, base_url=base_url, model=model) if _cloud_available(api_key) else None
     if provider == "local":
         return LocalWhisperBackend(model_size) if _local_available() else None
     # auto: cloud first, then local
     if want_cloud:
-        return CloudWhisperBackend(api_key)
+        return CloudWhisperBackend(api_key, base_url=base_url, model=model)
     if want_local:
         return LocalWhisperBackend(model_size)
     return None
@@ -38,6 +39,8 @@ def default_understanders(config: Any, *, transcription_api_key: str = "") -> li
         getattr(config, "audio_provider", "auto"),
         transcription_api_key,
         getattr(config, "local_model_size", "base"),
+        getattr(config, "transcription_base_url", "https://api.groq.com/openai/v1"),
+        getattr(config, "transcription_model", "whisper-large-v3"),
     )
     if backend is None:
         logger.debug("no transcribe backend available; audio understanding disabled")

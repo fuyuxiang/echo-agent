@@ -8,6 +8,8 @@ def test_defaults():
     assert c.min_audio_size_kb == 1.0
     assert c.max_audio_size_kb == 25000
     assert c.local_model_size == "base"
+    assert c.transcription_base_url == "https://api.groq.com/openai/v1"
+    assert c.transcription_model == "whisper-large-v3"
 
 
 def test_mounted_on_config():
