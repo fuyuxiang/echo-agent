@@ -64,3 +64,54 @@ async def test_tick_marks_last_checked(tmp_path: Path):
     # not due again immediately
     n2 = await run_inspection_tick(store, _Cfg(), bus, now_sec=1200)
     assert n2 == 0
+
+
+class _RaisingBus:
+    async def publish_inbound(self, event):
+        raise RuntimeError("bus exploded")
+
+
+class _RejectingBus:
+    def __init__(self):
+        self.published = []
+
+    async def publish_inbound(self, event):
+        self.published.append(event)
+        return False
+
+
+@pytest.mark.asyncio
+async def test_tick_failopen_on_publish_exception(tmp_path: Path):
+    store = _store_with_items(
+        tmp_path, "## 官网\n- interval: 10m\n- check: 访问 x.com\n"
+    )
+    n = await run_inspection_tick(store, _Cfg(), _RaisingBus(), now_sec=1000)
+    assert n == 0
+    # state must NOT be marked checked (item stays due for retry)
+    assert store.load_state().get("官网", {}).get("last_checked_at") is None
+
+
+@pytest.mark.asyncio
+async def test_tick_failopen_on_bus_rejection(tmp_path: Path):
+    store = _store_with_items(
+        tmp_path, "## 官网\n- interval: 10m\n- check: 访问 x.com\n"
+    )
+    n = await run_inspection_tick(store, _Cfg(), _RejectingBus(), now_sec=1000)
+    assert n == 0
+    assert store.load_state().get("官网", {}).get("last_checked_at") is None
+
+
+@pytest.mark.asyncio
+async def test_tick_failopen_on_load_error(tmp_path: Path, monkeypatch):
+    store = _store_with_items(
+        tmp_path, "## 官网\n- interval: 10m\n- check: 访问 x.com\n"
+    )
+
+    def _boom():
+        raise RuntimeError("load exploded")
+
+    monkeypatch.setattr(store, "load_items", _boom)
+    bus = _Bus()
+    n = await run_inspection_tick(store, _Cfg(), bus, now_sec=1000)
+    assert n == 0
+    assert bus.published == []
