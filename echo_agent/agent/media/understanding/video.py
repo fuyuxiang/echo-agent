@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import base64
 import re
 import subprocess
 from pathlib import Path
+from typing import Any, Protocol
 
 from loguru import logger
 
@@ -95,3 +97,41 @@ def extract_audio_track(path: Path, *, out_path: Path | None = None) -> Path | N
     if out.exists() and out.stat().st_size > 0:
         return out
     return None
+
+
+class VisionBackend(Protocol):
+    async def caption(self, frame_paths: list[Path]) -> str: ...
+
+
+def _encode_frame(path: Path) -> dict[str, Any]:
+    from echo_agent.channels.qqbot_media import image_mime_for
+    mime = image_mime_for(str(path))
+    b64 = base64.b64encode(path.read_bytes()).decode()
+    return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
+
+
+class LLMVisionBackend:
+    """Caption video frames via a multimodal LLM provider."""
+
+    def __init__(self, provider: Any, *, model: str = "",
+                 prompt: str = "简要描述这段视频的画面内容。") -> None:
+        self._provider = provider
+        self._model = model
+        self._prompt = prompt
+
+    async def caption(self, frame_paths: list[Path]) -> str:
+        frames = [p for p in frame_paths if p.is_file()]
+        if not frames:
+            return ""
+        try:
+            content: list[dict[str, Any]] = [_encode_frame(p) for p in frames]
+            content.append({"type": "text", "text": self._prompt})
+            messages = [{"role": "user", "content": content}]
+            resp = await self._provider.chat_with_retry(messages=messages, model=self._model or None)
+            if getattr(resp, "finish_reason", "") == "error":
+                logger.warning("vision caption failed (fail-open): {}", resp.content)
+                return ""
+            return (resp.content or "").strip()
+        except Exception as e:  # fail-open
+            logger.warning("vision caption failed (fail-open): {}", e)
+            return ""
