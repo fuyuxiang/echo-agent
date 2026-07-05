@@ -2281,6 +2281,51 @@ class ValidationConfig(_Base):
     )
 
 
+# ── Media understanding configs ──────────────────────────────────────────────
+
+class MediaUnderstandingConfig(_Base):
+    audio_enabled: bool = Field(
+        default=True,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/media/understanding/registry.py",
+            "desc_zh": "是否开启入站音频/语音转写（provider 探测不到时自动降级）",
+            "desc_en": "Enable inbound audio/voice transcription (auto-degrades if no provider)",
+        },
+    )
+    audio_provider: str = Field(
+        default="auto",
+        json_schema_extra={
+            "status": "effective", "ref": "agent/media/understanding/registry.py",
+            "desc_zh": "转写后端：auto(探测) / cloud(云) / local(本地 faster-whisper)",
+            "desc_en": "Transcribe backend: auto (probe) / cloud / local (faster-whisper)",
+        },
+    )
+    min_audio_size_kb: float = Field(
+        default=1.0,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/media/understanding/audio.py",
+            "desc_zh": "小于此大小(KB)的音频跳过转写（噪音/误触）",
+            "desc_en": "Audio smaller than this (KB) skips transcription",
+        },
+    )
+    max_audio_size_kb: int = Field(
+        default=25000,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/media/understanding/audio.py",
+            "desc_zh": "大于此大小(KB)的音频跳过转写（控成本）",
+            "desc_en": "Audio larger than this (KB) skips transcription",
+        },
+    )
+    local_model_size: str = Field(
+        default="base",
+        json_schema_extra={
+            "status": "effective", "ref": "agent/media/understanding/audio.py",
+            "desc_zh": "本地 faster-whisper 模型规格（tiny/base/small/...）",
+            "desc_en": "Local faster-whisper model size (tiny/base/small/...)",
+        },
+    )
+
+
 # ── Storage configs ──────────────────────────────────────────────────────────
 
 class StorageConfig(_Base):
@@ -3298,6 +3343,7 @@ class Config(_Base):
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     checkpoint: CheckpointConfig = Field(default_factory=CheckpointConfig)
     validation: ValidationConfig = Field(default_factory=ValidationConfig)
+    media_understanding: MediaUnderstandingConfig = Field(default_factory=MediaUnderstandingConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
