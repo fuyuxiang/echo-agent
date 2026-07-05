@@ -55,3 +55,25 @@ async def test_caption_uses_configured_model(tmp_path: Path):
     prov = _Provider(_Resp("ok"))
     await LLMVisionBackend(prov, model="gpt-4o").caption([f])
     assert prov.calls[0]["model"] == "gpt-4o"
+
+
+@pytest.mark.asyncio
+async def test_caption_empty_model_passed_as_none(tmp_path: Path):
+    f = tmp_path / "a.frame.1.jpg"
+    f.write_bytes(b"\xff\xd8\xff jpeg")
+    prov = _Provider(_Resp("ok"))
+    await LLMVisionBackend(prov).caption([f])  # default model=""
+    assert prov.calls[0]["model"] is None
+
+
+@pytest.mark.asyncio
+async def test_caption_failopen_on_provider_exception(tmp_path: Path):
+    f = tmp_path / "a.frame.1.jpg"
+    f.write_bytes(b"\xff\xd8\xff jpeg")
+
+    class _BoomProvider:
+        async def chat_with_retry(self, **kwargs):
+            raise RuntimeError("provider exploded")
+
+    assert await LLMVisionBackend(_BoomProvider()).caption([f]) == ""
+
