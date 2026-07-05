@@ -56,3 +56,38 @@ async def test_no_understander_leaves_audio_as_reference(tmp_path: Path):
     block = ContentBlock(type=ContentType.VOICE, url="https://x/a.ogg", mime_type="audio/ogg")
     resolved = await cb.resolve_inbound_media([block], channel="weixin")
     assert resolved[0].get("transcribed_text", "") == ""  # message not dropped
+
+
+class _RaisingUnderstander(_StubUnderstander):
+    async def understand(self, path, block):
+        self.seen.append(Path(path))
+        raise RuntimeError("boom")
+
+
+class _MissingPathCache:
+    def __init__(self, tmp_path: Path):
+        self._tmp = tmp_path
+
+    async def download(self, url, platform):
+        return self._tmp / "does_not_exist.ogg"  # path handed back but never written
+
+
+@pytest.mark.asyncio
+async def test_understander_exception_is_failopen(tmp_path: Path):
+    u = _RaisingUnderstander()
+    cb = ContextBuilder(tmp_path, media_cache=_StubCache(tmp_path), understanders=[u])
+    block = ContentBlock(type=ContentType.VOICE, url="https://x/a.ogg", mime_type="audio/ogg")
+    resolved = await cb.resolve_inbound_media([block], channel="weixin")
+    assert resolved[0].get("transcribed_text", "") == ""  # fail-open: no text, no raise
+    assert len(u.seen) == 1  # understander was invoked but its failure was swallowed
+
+
+@pytest.mark.asyncio
+async def test_download_failure_keeps_reference(tmp_path: Path):
+    u = _StubUnderstander()
+    cb = ContextBuilder(tmp_path, media_cache=_MissingPathCache(tmp_path), understanders=[u])
+    block = ContentBlock(type=ContentType.VOICE, url="https://x/a.ogg", mime_type="audio/ogg")
+    resolved = await cb.resolve_inbound_media([block], channel="weixin")
+    assert resolved  # message not dropped
+    assert resolved[0].get("transcribed_text", "") == ""  # download failed → no transcript
+    assert u.seen == []  # path not a file → understand never called
