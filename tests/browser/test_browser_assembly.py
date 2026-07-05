@@ -29,12 +29,13 @@ class _FakeLocator:
 
 class _FakePage:
     def __init__(self):
-        # Two interactive elements: the accessibility tree order (ok, cancel)
-        # must line up positionally with query_selector_all's order so @e1→ok
-        # and @e2→cancel. Keeping the same locator instances across calls lets
-        # the test observe which one was actually clicked.
+        # Two interactive elements. With the single-traversal snapshot builder,
+        # @e1 → get_by_role('button', name='ok') and @e2 → name='cancel'. The
+        # fake get_by_role hands back the matching locator instance so the test
+        # can observe which one was actually clicked.
         self._ok = _FakeLocator("ok")
         self._cancel = _FakeLocator("cancel")
+        self.url = ""
 
     async def goto(self, url, **k):
         self.url = url
@@ -49,8 +50,19 @@ class _FakePage:
     def accessibility(self):
         return self._AX()
 
-    async def query_selector_all(self, selector):
-        return [self._ok, self._cancel]
+    def get_by_role(self, role, name=None):
+        loc = self._ok if name == "ok" else self._cancel
+        return _NthWrapper(loc)
+
+
+class _NthWrapper:
+    """get_by_role(...).nth(k) returns the underlying locator."""
+
+    def __init__(self, loc):
+        self._loc = loc
+
+    def nth(self, k):
+        return self._loc
 
 
 @pytest.mark.asyncio
@@ -108,7 +120,34 @@ def _async_val(v):
     return _c()
 
 
+def _browser_tool_names(config):
+    from pathlib import Path
+
+    from echo_agent.agent.tools import discover_tools
+    from echo_agent.bus.queue import MessageBus
+    tools = discover_tools(config=config, workspace=Path("/tmp/ws_browser_gate"),
+                           bus=MessageBus())
+    return [t for t in tools if t.name == "browser"]
+
+
+def test_assembly_includes_browser_when_enabled():
+    from echo_agent.config.schema import Config
+    # network must be allowed AND browser enabled for the tool to mount
+    config = Config(tools={"browser": {"enabled": True}},
+                    execution={"network_policy": "allow"})
+    assert _browser_tool_names(config), "browser tool should mount when enabled + network allowed"
+
+
 def test_assembly_skips_when_disabled():
-    from echo_agent.agent.tools import discover_tools  # noqa: F401
-    # smoke: disabled config yields no browser tool — asserted indirectly in Step 3 wiring
-    assert BrowserTool.name == "browser"
+    from echo_agent.config.schema import Config
+    config = Config(tools={"browser": {"enabled": False}},
+                    execution={"network_policy": "allow"})
+    assert _browser_tool_names(config) == [], "browser tool must not mount when disabled"
+
+
+def test_assembly_skips_when_network_deny():
+    from echo_agent.config.schema import Config
+    # enabled but network denied → gated off
+    config = Config(tools={"browser": {"enabled": True}},
+                    execution={"network_policy": "deny"})
+    assert _browser_tool_names(config) == [], "browser tool must not mount under network deny"
