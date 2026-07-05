@@ -189,6 +189,75 @@ class TestSpawnTool:
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
 
+    @pytest.mark.asyncio
+    async def test_spawn_publishes_correct_channel(self):
+        """Background task completion must publish InboundEvent with the
+        channel derived from session_key, not hardcoded 'system'."""
+        provider = MagicMock()
+        provider.chat_with_retry = AsyncMock(
+            return_value=MagicMock(content="weather result")
+        )
+        bus = MagicMock()
+        bus.publish_inbound = AsyncMock(return_value=True)
+        tool = SpawnTool(provider=provider, bus=bus)
+
+        ctx = _ctx(session_key="weixin:o9cq8004abc@im.wechat")
+        result = await tool.execute({"task": "query weather"}, ctx)
+        assert result.success is True
+
+        pending = list(tool._tasks.values())
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        bus.publish_inbound.assert_called_once()
+        event = bus.publish_inbound.call_args[0][0]
+        assert event.channel == "weixin"
+        assert event.chat_id == "o9cq8004abc@im.wechat"
+        assert event.session_key == "weixin:o9cq8004abc@im.wechat"
+        assert "weather result" in event.text
+
+    @pytest.mark.asyncio
+    async def test_spawn_publishes_gateway_channel(self):
+        """Gateway-prefixed session keys must parse correctly."""
+        provider = MagicMock()
+        provider.chat_with_retry = AsyncMock(
+            return_value=MagicMock(content="done")
+        )
+        bus = MagicMock()
+        bus.publish_inbound = AsyncMock(return_value=True)
+        tool = SpawnTool(provider=provider, bus=bus)
+
+        ctx = _ctx(session_key="gateway:weixin:wxid_123")
+        await tool.execute({"task": "do thing"}, ctx)
+
+        pending = list(tool._tasks.values())
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        event = bus.publish_inbound.call_args[0][0]
+        assert event.channel == "gateway:weixin"
+        assert event.chat_id == "wxid_123"
+
+    @pytest.mark.asyncio
+    async def test_spawn_no_ctx_falls_back_to_system(self):
+        """When no context is available, channel falls back to 'system'."""
+        provider = MagicMock()
+        provider.chat_with_retry = AsyncMock(
+            return_value=MagicMock(content="done")
+        )
+        bus = MagicMock()
+        bus.publish_inbound = AsyncMock(return_value=True)
+        tool = SpawnTool(provider=provider, bus=bus)
+
+        await tool.execute({"task": "orphan task"}, None)
+
+        pending = list(tool._tasks.values())
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        event = bus.publish_inbound.call_args[0][0]
+        assert event.channel == "system"
+
     def test_execution_mode(self):
         tool = SpawnTool(provider=MagicMock(), bus=None)
         assert tool.execution_mode({}) == "side_effect"

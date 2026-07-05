@@ -215,6 +215,10 @@ class ChannelManager:
             event.metadata["_drop"] = True
             return
         if not channel:
+            logger.warning(
+                "Outbound dropped: no channel registered for channel={!r} chat_id={} event_id={}",
+                event.channel, str(event.chat_id)[:16], event.metadata.get("_inbound_event_id", ""),
+            )
             return
         # If a heartbeat already occupies a message on an editable channel, seal
         # the final answer into that same message so the turn uses one slot total.

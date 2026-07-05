@@ -379,11 +379,20 @@ class SpawnTool(Tool):
 
             if self._bus:
                 from echo_agent.bus.events import InboundEvent
+                from echo_agent.scheduler.delivery import target_from_session_key
+
+                if ctx and ctx.session_key:
+                    channel, chat_id = target_from_session_key(ctx.session_key)
+                else:
+                    channel, chat_id = "", ""
+                channel = channel or "system"
+                chat_id = chat_id or "system"
+
                 announce = InboundEvent.text_message(
-                    channel="system", sender_id="system",
-                    chat_id=ctx.session_key.split(":")[1] if ctx else "system",
+                    channel=channel, sender_id="system",
+                    chat_id=chat_id,
                     text=f"[Background task {task_id} completed]\n\n{result}",
-                    session_key_override=ctx.session_key if ctx else "system:system",
+                    session_key_override=ctx.session_key if ctx else f"{channel}:{chat_id}",
                 )
                 await self._bus.publish_inbound(announce)
         except Exception as e:
