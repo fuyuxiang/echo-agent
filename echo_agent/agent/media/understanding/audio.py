@@ -7,6 +7,8 @@ from typing import Any, Protocol
 import aiohttp
 from loguru import logger
 
+from echo_agent.agent.media.understanding.base import UnderstandResult
+
 
 class TranscribeBackend(Protocol):
     async def transcribe(self, path: Path) -> str: ...
@@ -90,3 +92,59 @@ class LocalWhisperBackend:
         except Exception as e:  # fail-open
             logger.debug("local transcribe failed (fail-open): {}", e)
             return ""
+
+
+_AUDIO_TYPES = {"audio", "voice"}
+
+
+class AudioTranscriber:
+    """MediaUnderstanding impl: transcribe inbound audio/voice to text."""
+
+    def __init__(
+        self,
+        backend: TranscribeBackend,
+        *,
+        min_size_kb: float = 1.0,
+        max_size_kb: int = 25000,
+    ) -> None:
+        self._backend = backend
+        self._min_size_kb = min_size_kb
+        self._max_size_kb = max_size_kb
+
+    def can_handle(self, block: Any) -> bool:
+        btype = getattr(getattr(block, "type", None), "value", None) or str(getattr(block, "type", ""))
+        if btype in _AUDIO_TYPES:
+            return True
+        mime = getattr(block, "mime_type", "") or ""
+        return mime.startswith("audio/")
+
+    @staticmethod
+    def _sidecar(path: Path) -> Path:
+        return path.with_suffix(path.suffix + ".transcript.txt")
+
+    async def understand(self, path: Path, block: Any) -> UnderstandResult:
+        empty = UnderstandResult(text="", kind="transcript")
+        try:
+            if not path.exists():
+                return empty
+            # sidecar cache: reuse a prior transcript for the same cached file
+            sidecar = self._sidecar(path)
+            if sidecar.exists():
+                cached = sidecar.read_text(encoding="utf-8")
+                if cached:
+                    return UnderstandResult(text=cached, kind="transcript", metadata={"cached": "1"})
+            # preflight on file size (always available; duration gating lives in backend)
+            size_kb = path.stat().st_size / 1024
+            if size_kb < self._min_size_kb or size_kb > self._max_size_kb:
+                return empty
+            text = await self._backend.transcribe(path)
+            if not text:
+                return empty
+            try:
+                sidecar.write_text(text, encoding="utf-8")
+            except Exception as e:  # cache write failure must not block
+                logger.debug("transcript cache write failed (ignored): {}", e)
+            return UnderstandResult(text=text, kind="transcript")
+        except Exception as e:  # fail-open: never break message handling
+            logger.debug("audio understand failed (fail-open): {}", e)
+            return empty
