@@ -17,17 +17,13 @@ async def navigate(session: Any, url: str, *, timeout_sec: int = 30,
     try:
         await session.page.goto(url, timeout=timeout_sec * 1000)
     except Exception as e:
+        # The context-level route interceptor aborts SSRF targets (main nav,
+        # redirect hops, subresources) with net::ERR_BLOCKED_BY_CLIENT, which
+        # surfaces here as a goto failure. Distinguish it from a genuine network
+        # error so the model gets an actionable reason.
+        if "ERR_BLOCKED_BY_CLIENT" in str(e):
+            return "navigation blocked: 目标地址被拦截（SSRF 防护）"
         return f"navigation failed: {e}"
-    if not allow_private:
-        # Re-check the FINAL url after all redirects. The browser follows 30x
-        # hops itself and resolves DNS on its own, so the initial check does
-        # not cover redirect-to-internal or DNS-rebinding. This is the hard
-        # guard against a public URL bouncing to 169.254.169.254 etc.
-        final_url = getattr(session.page, "url", "") or url
-        final_error = await check_url_ssrf(final_url)
-        if final_error:
-            return ("navigation blocked: redirected to non-public address "
-                    f"({final_error})")
     return ""
 
 

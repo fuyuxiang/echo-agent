@@ -56,25 +56,6 @@ async def test_navigate_allows_public(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_navigate_blocks_redirect_to_internal(monkeypatch):
-    # Initial URL passes SSRF, but the page follows a 30x to an internal
-    # address (page.url). The final-URL recheck must block and NOT return the
-    # page content as a success.
-    def _check(url):
-        # public initial URL allowed, internal redirect target blocked
-        if "169.254.169.254" in url:
-            return _async_return("blocked: link-local address")
-        return _async_return(None)
-
-    monkeypatch.setattr(act_mod, "check_url_ssrf", _check)
-    s = _session()
-    s.page._redirect_to = "http://169.254.169.254/latest/meta-data/"
-    err = await act_mod.navigate(s, "https://public.example.com")
-    assert err != ""
-    assert "redirect" in err.lower() or "blocked" in err.lower()
-
-
-@pytest.mark.asyncio
 async def test_navigate_allow_private_skips_recheck(monkeypatch):
     # allow_private=True must skip both initial and final-URL checks entirely.
     def _boom(url):  # pragma: no cover - must never be called
@@ -126,3 +107,41 @@ def _async_return(value):
     async def _coro():
         return value
     return _coro()
+
+
+# --- Task 2: navigate() drops the final-url recheck and maps interceptor
+# aborts (net::ERR_BLOCKED_BY_CLIENT) to an SSRF message. The context-level
+# route interceptor (Task 1) already covers redirect hops, so goto() failing
+# with ERR_BLOCKED_BY_CLIENT is the SSRF signal here.
+class _AbortFakePage:
+    def __init__(self, goto_exc=None, url="https://example.com/"):
+        self._goto_exc = goto_exc
+        self.url = url
+
+    async def goto(self, url, timeout=0):
+        if self._goto_exc:
+            raise self._goto_exc
+        return None
+
+
+class _AbortFakeSession:
+    def __init__(self, page):
+        self.page = page
+
+
+@pytest.mark.asyncio
+async def test_navigate_blocked_request_maps_to_ssrf_message(monkeypatch):
+    # pre-check must pass so the goto() abort path is exercised
+    monkeypatch.setattr(act_mod, "check_url_ssrf", lambda url: _async_return(None))
+    page = _AbortFakePage(
+        goto_exc=Exception("net::ERR_BLOCKED_BY_CLIENT at http://127.0.0.1"))
+    err = await act_mod.navigate(_AbortFakeSession(page), "https://public.example/redir")
+    assert "SSRF" in err or "拦截" in err
+
+
+@pytest.mark.asyncio
+async def test_navigate_other_failure_stays_navigation_failed(monkeypatch):
+    monkeypatch.setattr(act_mod, "check_url_ssrf", lambda url: _async_return(None))
+    page = _AbortFakePage(goto_exc=Exception("net::ERR_NAME_NOT_RESOLVED"))
+    err = await act_mod.navigate(_AbortFakeSession(page), "https://public.example/")
+    assert err.startswith("navigation failed")
