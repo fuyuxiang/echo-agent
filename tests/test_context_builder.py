@@ -461,6 +461,37 @@ class TestBuildMessages:
         user_content = msgs[-1]["content"]
         assert "QQ Media Tags" in user_content
 
+    def test_build_messages_video_kind_label(self, tmp_path: Path):
+        cb = ContextBuilder(workspace=tmp_path)
+        media = [{
+            "type": "video", "url": "/tmp/v.mp4", "name": "clip.mp4",
+            "transcribed_text": "画面：一只猫\n语音：喵", "understood_kind": "video",
+        }]
+        msgs = cb.build_messages(history=[], current_message="看这个", media=media)
+        text = msgs[-1]["content"][0]["text"]
+        assert "[视频内容: clip.mp4]" in text
+        assert "一只猫" in text
+
+    def test_build_messages_transcript_kind_label(self, tmp_path: Path):
+        cb = ContextBuilder(workspace=tmp_path)
+        media = [{
+            "type": "voice", "url": "/tmp/a.amr", "name": "voice.amr",
+            "transcribed_text": "你好", "understood_kind": "transcript",
+        }]
+        msgs = cb.build_messages(history=[], current_message="听这个", media=media)
+        text = msgs[-1]["content"][0]["text"]
+        assert "[语音转写: voice.amr]" in text
+
+    def test_build_messages_missing_kind_defaults_to_transcript(self, tmp_path: Path):
+        cb = ContextBuilder(workspace=tmp_path)
+        media = [{
+            "type": "voice", "url": "/tmp/a.amr", "name": "voice.amr",
+            "transcribed_text": "你好",  # no understood_kind
+        }]
+        msgs = cb.build_messages(history=[], current_message="听这个", media=media)
+        text = msgs[-1]["content"][0]["text"]
+        assert "[语音转写: voice.amr]" in text
+
 
 class TestBuildCapabilitiesContext:
     """Capabilities are derived from the live tool registry, not memory."""

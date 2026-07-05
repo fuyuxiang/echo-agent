@@ -287,6 +287,7 @@ class ContextBuilder:
                 res = await matched.understand(path, items[idx])
                 if res.text:
                     resolved[idx]["transcribed_text"] = res.text
+                    resolved[idx]["understood_kind"] = res.kind
             except Exception as e:  # fail-open
                 logger.debug("understander failed (fail-open): {}", e)
         return resolved
@@ -408,7 +409,9 @@ class ContextBuilder:
                     transcript = item.get("transcribed_text", "")
                     extracted = item.get("extracted_text", "")
                     if transcript:
-                        file_notes.append(f"[语音转写: {name}]\n{transcript}")
+                        kind = item.get("understood_kind", "transcript")
+                        label = "视频内容" if kind == "video" else "语音转写"
+                        file_notes.append(f"[{label}: {name}]\n{transcript}")
                     elif extracted and item.get("truncated"):
                         units = item.get("unit_count", "")
                         file_notes.append(
@@ -552,6 +555,7 @@ class ContextBuilder:
                     "truncated": entry.get("truncated", ""),
                     "unit_count": entry.get("unit_count", ""),
                     "transcribed_text": entry.get("transcribed_text", ""),
+                    "understood_kind": entry.get("understood_kind", ""),
                 })
         return normalized
 
