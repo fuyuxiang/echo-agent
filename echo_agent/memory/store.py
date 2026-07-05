@@ -288,6 +288,31 @@ class MemoryStore:
                         continue
                     vec_id = await self._vector_index.add(entry_id, embedding)
                     if vec_id:
+                        # add() also yields: update()/merge may have rewritten
+                        # (and _reload_type swapped) this entry DURING the add.
+                        # Re-verify before committing — otherwise we'd attach
+                        # this old-content vector to the now-new entry and leak
+                        # the just-added vec_id (the re-queued item's old_vec_id
+                        # was captured before this flush, so replaced_old never
+                        # reclaims it).
+                        entry = self._entries.get(entry_id)
+                        current = (
+                            f"{entry.key} {entry.content}"
+                            if entry is not None and entry.key
+                            else (entry.content if entry is not None else None)
+                        )
+                        if entry is None or self._content_hash(current) != content_hash:
+                            # Stale: the vector we just added is an orphan. Remove
+                            # it and drop THIS (old-hash) item; the freshly-queued
+                            # item carries the new hash and survives for retry.
+                            try:
+                                await self._vector_index.remove(vec_id)
+                            except Exception as e:
+                                logger.warning(
+                                    "Failed to remove orphan vector {}: {}", vec_id, e
+                                )
+                            processed.add((entry_id, content_hash))
+                            continue
                         entry.embedding_id = vec_id
                         assigned.setdefault(entry.type, {})[entry_id] = vec_id
                         processed.add((entry_id, content_hash))
