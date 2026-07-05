@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
 from loguru import logger
+
+# Matches the "Duration: HH:MM:SS.ss" line ffmpeg prints to stderr for any input.
+_DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
 
 
 def _get_ffmpeg_exe() -> str:
@@ -18,6 +22,29 @@ def _ffmpeg_available() -> bool:
         return False
 
 
+def _probe_duration(exe: str, path: Path) -> float | None:
+    """Best-effort media duration in seconds; None if it can't be determined.
+
+    Runs `ffmpeg -i <path>` and scrapes the "Duration:" line from stderr. Never
+    raises: any failure returns None so callers can fall back (fail-open).
+    """
+    try:
+        proc = subprocess.run(
+            [exe, "-i", str(path)],
+            capture_output=True, timeout=60, check=False,
+        )
+    except Exception:
+        return None
+    stderr = proc.stderr
+    if isinstance(stderr, (bytes, bytearray)):
+        stderr = stderr.decode("utf-8", "replace")
+    m = _DURATION_RE.search(stderr or "")
+    if not m:
+        return None
+    total = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+    return total if total > 0 else None
+
+
 def extract_frames(path: Path, count: int, *, out_dir: Path | None = None) -> list[Path]:
     """Uniformly sample `count` frames to jpg files; [] on failure (fail-open)."""
     if count < 1:
@@ -26,12 +53,20 @@ def extract_frames(path: Path, count: int, *, out_dir: Path | None = None) -> li
     pattern = str(target_dir / f"{path.stem}.frame.%d.jpg")
     try:
         exe = _get_ffmpeg_exe()
-        # Uniform sampling: the `thumbnail=n=` filter picks a representative frame
-        # per N-frame batch; combined with -frames:v it caps the total. This avoids
-        # needing to probe duration first while spreading picks across the clip.
+        duration = _probe_duration(exe, path)
+        if duration and duration > 0:
+            # True uniform sampling: emit one frame every duration/count seconds
+            # (fps = count/duration) so the `count` frames are spread evenly over
+            # the whole clip; -frames:v caps the count against rounding overrun.
+            vf = f"fps={count}/{duration}"
+        else:
+            # Duration unknown: fall back to thumbnail (one representative frame
+            # per batch) so we still return frames rather than nothing. Frames may
+            # skew toward the start, but the call stays non-empty (fail-open).
+            vf = "thumbnail"
         cmd = [
             exe, "-y", "-i", str(path),
-            "-vf", "thumbnail",
+            "-vf", vf,
             "-frames:v", str(count),
             "-vsync", "0",
             pattern,
