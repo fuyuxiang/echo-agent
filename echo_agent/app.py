@@ -154,6 +154,13 @@ async def bootstrap(
     except Exception as e:
         logger.debug("checkpoint install failed (fail-open): {}", e)
 
+    # Post-write validation — lint the written file, feed errors back (fail-open)
+    try:
+        from echo_agent.validation.hook import install_validation
+        install_validation(config, ws, plugin_manager.hooks)
+    except Exception as e:
+        logger.debug("validation install failed (fail-open): {}", e)
+
     # Self-evolving skill harness
     if config.evolution.enabled:
         try:
