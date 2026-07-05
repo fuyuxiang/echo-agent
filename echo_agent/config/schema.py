@@ -2244,6 +2244,43 @@ class CheckpointConfig(_Base):
     )
 
 
+# ── Validation configs ───────────────────────────────────────────────────────
+
+class ValidationConfig(_Base):
+    enabled: bool = Field(
+        default=True,
+        json_schema_extra={
+            "status": "effective", "ref": "validation/__init__.py",
+            "desc_zh": "是否开启写后增量校验反馈（检查器探测不到时自动降级）",
+            "desc_en": "Enable post-write incremental validation feedback (auto-degrades if checkers missing)",
+        },
+    )
+    timeout_sec: float = Field(
+        default=5.0,
+        json_schema_extra={
+            "status": "effective", "ref": "validation/validator.py",
+            "desc_zh": "单个文件校验的超时上限（秒），超时静默跳过",
+            "desc_en": "Per-file validation timeout in seconds; times out silently",
+        },
+    )
+    max_diagnostics: int = Field(
+        default=10,
+        json_schema_extra={
+            "status": "effective", "ref": "validation/validator.py",
+            "desc_zh": "追加到工具结果的诊断条数上限",
+            "desc_en": "Max diagnostics appended to the tool result",
+        },
+    )
+    max_file_size_kb: int = Field(
+        default=512,
+        json_schema_extra={
+            "status": "effective", "ref": "validation/validator.py",
+            "desc_zh": "超过此大小（KB）的文件跳过校验",
+            "desc_en": "Files larger than this (KB) skip validation",
+        },
+    )
+
+
 # ── Storage configs ──────────────────────────────────────────────────────────
 
 class StorageConfig(_Base):
@@ -3260,6 +3297,7 @@ class Config(_Base):
     multi_agent: MultiAgentConfig = Field(default_factory=MultiAgentConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     checkpoint: CheckpointConfig = Field(default_factory=CheckpointConfig)
+    validation: ValidationConfig = Field(default_factory=ValidationConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
