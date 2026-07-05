@@ -87,8 +87,15 @@ async def test_cloud_transcribe_failopen_on_non_200(tmp_path: Path, monkeypatch)
             return False
 
     monkeypatch.setattr(audio_mod.aiohttp, "ClientSession", _Session)
-    out = await CloudWhisperBackend("sk-x").transcribe(f)
+
+    records: list[str] = []
+    handler_id = audio_mod.logger.add(lambda m: records.append(m.record["level"].name), level="WARNING")
+    try:
+        out = await CloudWhisperBackend("sk-x").transcribe(f)
+    finally:
+        audio_mod.logger.remove(handler_id)
     assert out == ""
+    assert "WARNING" in records
 
 
 @pytest.mark.asyncio

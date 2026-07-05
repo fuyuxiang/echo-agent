@@ -59,9 +59,9 @@ class CloudWhisperBackend:
                         if resp.status == 200:
                             result = await resp.json()
                             return (result.get("text") or "").strip()
-                        logger.debug("cloud transcribe non-200 ({}): {}", resp.status, await resp.text())
+                        logger.warning("cloud transcribe non-200 ({}): {}", resp.status, await resp.text())
         except Exception as e:  # fail-open
-            logger.debug("cloud transcribe failed (fail-open): {}", e)
+            logger.warning("cloud transcribe failed (fail-open): {}", e)
         return ""
 
 
