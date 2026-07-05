@@ -2432,6 +2432,14 @@ class MediaUnderstandingConfig(_Base):
             "desc_en": "Video larger than this (KB) skips understanding (~200MB cost guard)",
         },
     )
+    video_ffmpeg_concurrency: int = Field(
+        default=2,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/media/understanding/video.py",
+            "desc_zh": "同时运行的 ffmpeg 抽帧/抽音轨进程数上限（防多视频打爆 CPU）",
+            "desc_en": "Max concurrent ffmpeg processes for video frame/audio extraction",
+        },
+    )
     transcription_base_url: str = Field(
         default="https://api.groq.com/openai/v1",
         json_schema_extra={

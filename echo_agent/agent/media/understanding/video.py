@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import re
 import subprocess
@@ -141,18 +142,28 @@ class LLMVisionBackend:
 
 _VIDEO_TYPES = {"video"}
 
+_ffmpeg_semaphore = asyncio.Semaphore(2)
+
+
+def set_ffmpeg_concurrency(n: int) -> None:
+    """Reset the process-wide cap on concurrent ffmpeg subprocesses. ffmpeg is a
+    whole-machine resource, so the limit is module-level, not per-instance."""
+    global _ffmpeg_semaphore
+    _ffmpeg_semaphore = asyncio.Semaphore(max(1, n))
+
 
 class VideoUnderstander:
     """MediaUnderstanding impl: caption frames + transcribe audio track."""
 
     def __init__(self, vision: Any, transcribe: Any | None, *,
                  frame_count: int = 4, min_size_kb: float = 1.0,
-                 max_size_kb: int = 204800) -> None:
+                 max_size_kb: int = 204800, ffmpeg_concurrency: int = 2) -> None:
         self._vision = vision
         self._transcribe = transcribe
         self._frame_count = frame_count
         self._min_size_kb = min_size_kb
         self._max_size_kb = max_size_kb
+        set_ffmpeg_concurrency(ffmpeg_concurrency)
 
     def can_handle(self, block: Any) -> bool:
         btype = getattr(getattr(block, "type", None), "value", None) or str(getattr(block, "type", ""))
@@ -179,16 +190,21 @@ class VideoUnderstander:
             size_kb = path.stat().st_size / 1024
             if size_kb < self._min_size_kb or size_kb > self._max_size_kb:
                 return empty
-            # frame path (vision)
+            # frame path (vision) — ffmpeg runs off the event loop, capped by the
+            # process-wide semaphore so N concurrent videos can't fork N ffmpegs.
             caption = ""
-            frames = extract_frames(path, self._frame_count)
+            async with _ffmpeg_semaphore:
+                frames = await asyncio.to_thread(
+                    extract_frames, path, self._frame_count
+                )
             temp_files.extend(frames)
             if frames:
                 caption = await self._vision.caption(frames)
             # audio track path (transcribe)
             transcript = ""
             if self._transcribe is not None:
-                track = extract_audio_track(path)
+                async with _ffmpeg_semaphore:
+                    track = await asyncio.to_thread(extract_audio_track, path)
                 if track is not None:
                     temp_files.append(track)
                     transcript = await self._transcribe.transcribe(track)

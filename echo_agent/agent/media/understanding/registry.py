@@ -71,6 +71,7 @@ def default_understanders(config: Any, *, transcription_api_key: str = "",
             frame_count=getattr(config, "video_frame_count", 4),
             min_size_kb=getattr(config, "min_video_size_kb", 1.0),
             max_size_kb=getattr(config, "max_video_size_kb", 204800),
+            ffmpeg_concurrency=getattr(config, "video_ffmpeg_concurrency", 2),
         ))
     elif getattr(config, "video_enabled", False):
         logger.debug("video understanding unavailable (ffmpeg or vision provider missing)")
