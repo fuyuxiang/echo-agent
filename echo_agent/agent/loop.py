@@ -182,6 +182,22 @@ async def probe_embed_provider(provider, model, timeout) -> int:
     return len(vec) if vec else 0
 
 
+def _should_publish_reply(event: InboundEvent, final_text: str) -> bool:
+    """Reply convergence gate. Normal rounds always publish (behaviour unchanged).
+
+    Inspection rounds (metadata _inspection=True) are silenced when the agent's
+    final reply is empty or carries the INSPECT_OK sentinel — honouring the
+    "no news, stay silent" contract. The sentinel check only applies to
+    inspection rounds, so ordinary replies that happen to contain the literal
+    "INSPECT_OK" are never suppressed.
+    """
+    if not event.metadata.get("_inspection"):
+        return True
+    from echo_agent.agent.inspection.policy import should_deliver
+
+    return should_deliver(final_text)
+
+
 class AgentLoop:
     """Core processing engine that ties all subsystems together."""
 
@@ -1013,7 +1029,7 @@ class AgentLoop:
                     else:
                         final_text = response_text
 
-                if final_text:
+                if final_text and _should_publish_reply(event, final_text):
                     out = OutboundEvent.from_text_with_media(
                         channel=event.channel, chat_id=event.chat_id, text=final_text, reply_to_id=event.reply_to_id,
                     )
