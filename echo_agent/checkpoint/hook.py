@@ -10,7 +10,7 @@ from echo_agent.checkpoint import git_available, set_checkpoint_manager
 from echo_agent.checkpoint.manager import CheckpointManager
 from echo_agent.checkpoint.store import ShadowGitStore
 
-WRITE_TOOLS: frozenset[str] = frozenset({"write_file", "edit", "patch"})
+WRITE_TOOLS: frozenset[str] = frozenset({"write_file", "edit_file", "patch"})
 
 
 def make_pre_tool_checkpoint_hook(mgr: CheckpointManager):

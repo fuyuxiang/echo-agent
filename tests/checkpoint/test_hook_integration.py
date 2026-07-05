@@ -43,6 +43,16 @@ async def test_hook_ignores_non_write_tool(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_hook_snapshots_before_edit_file_tool(tmp_path: Path):
+    # regression: the real edit tool is named "edit_file", not "edit"
+    mgr = await _mgr(tmp_path)
+    (mgr._workspace / "a.txt").write_text("v1")
+    cb = make_pre_tool_checkpoint_hook(mgr)
+    await cb("edit_file", {"path": "a.txt", "old_string": "v1", "new_string": "v2"}, _Ctx(trace_id="t1"))
+    assert len(await mgr.list_snapshots()) == 1
+
+
+@pytest.mark.asyncio
 async def test_hook_dedups_across_write_tools_same_turn(tmp_path: Path):
     mgr = await _mgr(tmp_path)
     (mgr._workspace / "a.txt").write_text("v1")
