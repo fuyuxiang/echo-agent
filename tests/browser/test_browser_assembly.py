@@ -74,6 +74,7 @@ async def test_full_open_navigate_click_close(monkeypatch):
     # fake the browser bootstrap
     class _Ctx:
         async def new_page(self): return fake_page
+        async def route(self, *a, **k): pass
         async def close(self): pass
     class _Br:
         async def new_context(self): return _Ctx()

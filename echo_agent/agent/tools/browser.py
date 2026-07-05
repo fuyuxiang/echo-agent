@@ -67,7 +67,10 @@ class BrowserTool(Tool):
         if action == "open":
             if not self._mgr._enforce_limit(self._cfg.max_sessions):
                 return ToolResult(success=False, error="会话已达上限，请先 close 一个会话")
-            sid = await self._mgr.open(headless=self._cfg.headless)
+            sid = await self._mgr.open(
+                headless=self._cfg.headless,
+                allow_private=self._cfg.allow_private_addresses,
+            )
             return ToolResult(output=f"browser session opened: {sid}")
 
         if action == "close":
