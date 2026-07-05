@@ -3394,6 +3394,57 @@ class HeartbeatConfig(_Base):
     )
 
 
+class InspectionConfig(_Base):
+    enabled: bool = Field(
+        default=False,
+        json_schema_extra={
+            "status": "effective", "ref": "app.py",
+            "desc_zh": "是否开启主动巡检（默认关；需在 INSPECT.md 声明巡检项）",
+            "desc_en": "Enable proactive inspection (default off; declare items in INSPECT.md)",
+        },
+    )
+    tick_interval_sec: int = Field(
+        default=300,
+        json_schema_extra={
+            "status": "effective", "ref": "app.py",
+            "desc_zh": "巡检节拍器扫描到期项的间隔（秒），非每项巡检频率",
+            "desc_en": "Inspection tick interval (seconds) for scanning due items",
+        },
+    )
+    inspect_file: str = Field(
+        default="INSPECT.md",
+        json_schema_extra={
+            "status": "effective", "ref": "agent/inspection/store.py",
+            "desc_zh": "巡检清单文件名（workspace 相对路径）",
+            "desc_en": "Inspection checklist filename (workspace-relative)",
+        },
+    )
+    max_items_per_tick: int = Field(
+        default=5,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/inspection/store.py",
+            "desc_zh": "单次节拍最多投给 agent 的到期巡检项数",
+            "desc_en": "Max due items dispatched to the agent per tick",
+        },
+    )
+    deliver_channel: str = Field(
+        default="",
+        json_schema_extra={
+            "status": "effective", "ref": "app.py",
+            "desc_zh": "巡检告警投递通道（空则用注册时的 session 兜底）",
+            "desc_en": "Inspection alert delivery channel (empty falls back to registering session)",
+        },
+    )
+    deliver_chat_id: str = Field(
+        default="",
+        json_schema_extra={
+            "status": "effective", "ref": "app.py",
+            "desc_zh": "巡检告警投递会话 id（空则用注册时的 session 兜底）",
+            "desc_en": "Inspection alert delivery chat id (empty falls back to registering session)",
+        },
+    )
+
+
 class AgentBehaviorConfig(_Base):
     """High-level agent loop tuning surfaced by the setup wizard.
 
@@ -3415,6 +3466,7 @@ class AgentBehaviorConfig(_Base):
         default_factory=ToolConcurrencyConfig,
     )
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
+    inspection: InspectionConfig = Field(default_factory=InspectionConfig)
 
 
 class CostConfig(_Base):
