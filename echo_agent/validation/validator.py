@@ -56,12 +56,14 @@ class Validator:
 
     @staticmethod
     def _dedup(diags: list[Diagnostic]) -> list[Diagnostic]:
-        seen: dict[tuple[int, int, str], Diagnostic] = {}
+        # Collapse by position only: compile and ruff report the same syntax
+        # error at the same (line, col) but with different message text, so a
+        # message-sensitive key would never collapse them. Last writer wins, so
+        # the more specific checker later in the registry (ruff) overrides the
+        # syntax floor (PyCompile) at a shared position.
+        seen: dict[tuple[int, int], Diagnostic] = {}
         for d in diags:
-            key = (d.line, d.col, d.message.strip().lower())
-            # first writer wins; checker order in the registry decides precedence
-            if key not in seen:
-                seen[key] = d
+            seen[(d.line, d.col)] = d
         return list(seen.values())
 
     def format_diagnostics(self, diags: list[Diagnostic], filename: str) -> str:

@@ -115,9 +115,17 @@ class RuffChecker:
         except json.JSONDecodeError as e:
             logger.debug("RuffChecker json parse failed (fail-open): {}", e)
             return []
+        if not isinstance(items, list):
+            # ruff normally emits a JSON array; anything else is unexpected shape
+            logger.debug("RuffChecker got non-list JSON (fail-open): {}", type(items).__name__)
+            return []
         diags: list[Diagnostic] = []
         for it in items:
-            loc = it.get("location") or {}
+            if not isinstance(it, dict):
+                continue  # skip malformed entry, keep the rest
+            loc = it.get("location")
+            if not isinstance(loc, dict):
+                loc = {}
             diags.append(Diagnostic(
                 severity="error",  # ruff findings are all reported at error weight in v1
                 line=int(loc.get("row", 1) or 1),

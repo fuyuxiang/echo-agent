@@ -23,14 +23,37 @@ class _StubChecker:
 async def test_merges_and_dedups_across_checkers(tmp_path: Path):
     f = tmp_path / "a.py"
     f.write_text("x=1\n", encoding="utf-8")
-    dup = Diagnostic("error", 1, 1, "E999", "SyntaxError: invalid syntax")
-    c1 = _StubChecker(".py", [dup])
-    c2 = _StubChecker(".py", [Diagnostic("error", 1, 1, "E999", "syntaxerror: invalid syntax"), Diagnostic("error", 5, 2, "F821", "undefined name")])
-    v = Validator(checkers=[c1, c2])
+    # compile and ruff both flag the same syntax error at 1:1 but with different
+    # message/code text — a message-sensitive key would keep both.
+    compile_diag = _StubChecker(".py", [Diagnostic("error", 1, 1, "E999", "SyntaxError: invalid syntax")])
+    ruff_diag = _StubChecker(".py", [
+        Diagnostic("error", 1, 1, "invalid-syntax", "Expected a parameter or the end of the parameter list"),
+        Diagnostic("error", 5, 2, "F821", "undefined name"),
+    ])
+    v = Validator(checkers=[compile_diag, ruff_diag])
     diags = await v.validate(f)
-    # (line,col,normalized-message) dedup collapses the two E999 into one → 2 total
+    # (line,col) dedup collapses the two 1:1 diagnostics into one → 2 total
     assert len(diags) == 2
     assert diags[0].line == 1 and diags[1].line == 5  # sorted by (line,col)
+    # last writer wins: ruff (later in the registry) overrides the compile floor
+    assert diags[0].code == "invalid-syntax"
+    assert diags[0].message == "Expected a parameter or the end of the parameter list"
+
+
+@pytest.mark.asyncio
+async def test_dedup_merges_distinct_errors_at_same_position(tmp_path: Path):
+    # Documented trade-off: two genuinely different errors at the same (line,col)
+    # collapse to the later one. Acceptable because in practice a shared position
+    # means the same underlying syntax error phrased two ways.
+    f = tmp_path / "a.py"
+    f.write_text("x=1\n", encoding="utf-8")
+    c = _StubChecker(".py", [
+        Diagnostic("error", 3, 4, "E1", "first error"),
+        Diagnostic("error", 3, 4, "E2", "second error"),
+    ])
+    diags = await Validator(checkers=[c]).validate(f)
+    assert len(diags) == 1
+    assert diags[0].code == "E2"
 
 
 @pytest.mark.asyncio

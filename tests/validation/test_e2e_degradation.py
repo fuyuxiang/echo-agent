@@ -1,4 +1,5 @@
 """End-to-end: real checkers + real validator + hook, plus fail-open paths."""
+import shutil
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,8 @@ from echo_agent.tools.base import ToolResult
 from echo_agent.validation.checkers import default_checkers
 from echo_agent.validation.hook import make_post_tool_validation_hook
 from echo_agent.validation.validator import Validator
+
+_HAS_RUFF = shutil.which("ruff") is not None
 
 
 def _real_hook(workspace: Path):
@@ -23,7 +26,12 @@ async def test_e2e_syntax_error_feeds_back(tmp_path: Path):
     hr = await hook(result, "write_file", {"path": "bad.py"}, None)
     assert hr is not None
     assert "写后校验发现" in hr.modified.output
-    assert "E999" in hr.modified.output
+    if _HAS_RUFF:
+        # ruff overrides the compile floor at the shared position (line,col dedup)
+        assert "invalid-syntax" in hr.modified.output
+    else:
+        # compile floor alone surfaces the syntax error as E999
+        assert "E999" in hr.modified.output
 
 
 @pytest.mark.asyncio
