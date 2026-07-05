@@ -1144,6 +1144,65 @@ class WebToolConfig(_Base):
     )
 
 
+class BrowserToolConfig(_Base):
+    enabled: bool = Field(
+        default=True,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/tools/__init__.py",
+            "desc_zh": "是否开启浏览器自动化工具（默认开，未装 playwright/chromium 时 is_ready 探测自动降级不装配）",
+            "desc_en": "Enable browser automation tool (default on; auto-degrades if playwright/chromium missing)",
+        },
+    )
+    max_sessions: int = Field(
+        default=3,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/browser/session.py",
+            "desc_zh": "并发浏览器会话上限",
+            "desc_en": "Max concurrent browser sessions",
+        },
+    )
+    session_idle_timeout_sec: int = Field(
+        default=300,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/browser/session.py",
+            "desc_zh": "浏览器会话空闲多久(秒)后自动回收",
+            "desc_en": "Idle seconds before a browser session is reaped",
+        },
+    )
+    max_snapshot_chars: int = Field(
+        default=8000,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/browser/snapshot.py",
+            "desc_zh": "可访问性快照文本截断上限(字符)",
+            "desc_en": "Accessibility snapshot text truncation limit (chars)",
+        },
+    )
+    headless: bool = Field(
+        default=True,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/browser/session.py",
+            "desc_zh": "无头模式（服务器环境必需）",
+            "desc_en": "Headless mode (required on servers)",
+        },
+    )
+    nav_timeout_sec: int = Field(
+        default=30,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/browser/actions.py",
+            "desc_zh": "单次页面导航超时(秒)",
+            "desc_en": "Per-navigation timeout (seconds)",
+        },
+    )
+    allow_private_addresses: bool = Field(
+        default=False,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/browser/actions.py",
+            "desc_zh": "是否允许导航到内网地址（默认拦截，复用 SSRF 口径）",
+            "desc_en": "Allow navigating to private addresses (default blocked, reuses SSRF policy)",
+        },
+    )
+
+
 class ImageGenConfig(_Base):
     backend: str = Field(
         default="openai",
@@ -1395,6 +1454,7 @@ class ToolsConfig(_Base):
     )
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
     web: WebToolConfig = Field(default_factory=WebToolConfig)
+    browser: BrowserToolConfig = Field(default_factory=BrowserToolConfig)
     restrict_to_workspace: bool = Field(
         default=False,
         json_schema_extra={
