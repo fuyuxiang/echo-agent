@@ -124,10 +124,19 @@ async def test_concurrent_failure_isolated():
 
 @pytest.mark.asyncio
 async def test_concurrent_actually_parallel():
-    started = []
+    # Measure observed concurrency directly instead of wall-clock time: a
+    # serial run tops out at 1 in-flight tool, a parallel run reaches 2. This
+    # proves the property deterministically without a load-sensitive timing
+    # threshold (a slow CI runner's loop overhead used to trip a bare elapsed
+    # assertion even though the tools genuinely overlapped).
+    running = 0
+    max_running = 0
     async def _exec(name, args, ctx):
-        started.append(args["path"])
-        await asyncio.sleep(0.1)
+        nonlocal running, max_running
+        running += 1
+        max_running = max(max_running, running)
+        await asyncio.sleep(0.05)
+        running -= 1
         return MagicMock(success=True, text="ok", error=None)
     reg = MagicMock()
     reg.has = MagicMock(return_value=False)
@@ -136,12 +145,9 @@ async def test_concurrent_actually_parallel():
     stage = _stage(reg, max_concurrent=4)
     stage._provider.chat_stream_with_retry = _two_reads_then_stop()
     ctx = _ctx()
-    loop = asyncio.get_event_loop()
-    t0 = loop.time()
     await stage._run_tool_loop(ctx, ctx.messages)
-    elapsed = loop.time() - t0
-    # two 0.1s tools concurrently ≈ 0.1s, not 0.2s
-    assert elapsed < 0.18
+    # both read-only tools were in flight at the same time
+    assert max_running == 2
 
 
 @pytest.mark.asyncio
