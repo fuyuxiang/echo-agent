@@ -4,7 +4,7 @@ from typing import Any
 
 from loguru import logger
 
-from echo_agent.agent.browser.snapshot import build_snapshot
+from echo_agent.agent.browser.snapshot import build_snapshot_with_locators
 from echo_agent.agent.tools.web import check_url_ssrf
 
 
@@ -18,6 +18,16 @@ async def navigate(session: Any, url: str, *, timeout_sec: int = 30,
         await session.page.goto(url, timeout=timeout_sec * 1000)
     except Exception as e:
         return f"navigation failed: {e}"
+    if not allow_private:
+        # Re-check the FINAL url after all redirects. The browser follows 30x
+        # hops itself and resolves DNS on its own, so the initial check does
+        # not cover redirect-to-internal or DNS-rebinding. This is the hard
+        # guard against a public URL bouncing to 169.254.169.254 etc.
+        final_url = getattr(session.page, "url", "") or url
+        final_error = await check_url_ssrf(final_url)
+        if final_error:
+            return ("navigation blocked: redirected to non-public address "
+                    f"({final_error})")
     return ""
 
 
@@ -54,25 +64,13 @@ async def screenshot(session: Any) -> bytes:
 async def refresh_snapshot(session: Any, *, max_chars: int = 8000) -> str:
     """Rebuild the snapshot text AND populate session.ref_map with locators.
 
-    build_snapshot yields (text, {ref: node_index}); we map each ref to a
-    Playwright locator via the page's ARIA-role query so click/type can act on
-    it. The nth interactive node of role R is located by get_by_role(R).nth(k).
+    build_snapshot_with_locators yields (text, {ref: locator}) from a single
+    AX-tree traversal, so the @eN in the text and the locator that click/type
+    will drive are guaranteed to come from the same node. No separate DOM query
+    is used, which is what previously let radio/menuitem-style roles shift refs.
     """
-    text, index_map = await build_snapshot(session.page, max_chars=max_chars)
-    # index_map values are 1-based encounter order across all interactive nodes;
-    # we resolve each to a locator by global interactive index using a flat query.
-    ref_map: dict[str, Any] = {}
-    try:
-        # locate all interactive elements in DOM order to match snapshot order
-        handles = await session.page.query_selector_all(
-            "a, button, input, select, textarea, [role=button], [role=link], "
-            "[role=textbox], [role=checkbox], [role=combobox], [role=tab]"
-        )
-        for ref, idx in index_map.items():
-            pos = idx - 1
-            if 0 <= pos < len(handles):
-                ref_map[ref] = handles[pos]
-    except Exception as e:
-        logger.debug("ref locator mapping failed (refs will be stale): {}", e)
+    text, ref_map = await build_snapshot_with_locators(
+        session.page, max_chars=max_chars
+    )
     session.ref_map = ref_map
     return text

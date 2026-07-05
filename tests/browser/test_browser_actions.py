@@ -19,9 +19,14 @@ class _FakeLocator:
 class _FakePage:
     def __init__(self):
         self.goto_url = None
+        # url after all redirects; defaults to the requested URL unless a
+        # redirect target is injected to simulate a 30x hop.
+        self._redirect_to = None
+        self.url = ""
 
     async def goto(self, url, **kwargs):
         self.goto_url = url
+        self.url = self._redirect_to or url
 
     async def screenshot(self, **kwargs):
         return b"PNGDATA"
@@ -48,6 +53,38 @@ async def test_navigate_allows_public(monkeypatch):
     err = await act_mod.navigate(s, "https://example.com")
     assert err == ""
     assert s.page.goto_url == "https://example.com"
+
+
+@pytest.mark.asyncio
+async def test_navigate_blocks_redirect_to_internal(monkeypatch):
+    # Initial URL passes SSRF, but the page follows a 30x to an internal
+    # address (page.url). The final-URL recheck must block and NOT return the
+    # page content as a success.
+    def _check(url):
+        # public initial URL allowed, internal redirect target blocked
+        if "169.254.169.254" in url:
+            return _async_return("blocked: link-local address")
+        return _async_return(None)
+
+    monkeypatch.setattr(act_mod, "check_url_ssrf", _check)
+    s = _session()
+    s.page._redirect_to = "http://169.254.169.254/latest/meta-data/"
+    err = await act_mod.navigate(s, "https://public.example.com")
+    assert err != ""
+    assert "redirect" in err.lower() or "blocked" in err.lower()
+
+
+@pytest.mark.asyncio
+async def test_navigate_allow_private_skips_recheck(monkeypatch):
+    # allow_private=True must skip both initial and final-URL checks entirely.
+    def _boom(url):  # pragma: no cover - must never be called
+        raise AssertionError("check_url_ssrf should not run when allow_private")
+
+    monkeypatch.setattr(act_mod, "check_url_ssrf", _boom)
+    s = _session()
+    s.page._redirect_to = "http://10.0.0.1/"
+    err = await act_mod.navigate(s, "http://10.0.0.1/", allow_private=True)
+    assert err == ""
 
 
 @pytest.mark.asyncio
