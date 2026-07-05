@@ -8,6 +8,8 @@ from typing import Any, Protocol
 
 from loguru import logger
 
+from echo_agent.agent.media.understanding.base import UnderstandResult
+
 # Matches the "Duration: HH:MM:SS.ss" line ffmpeg prints to stderr for any input.
 _DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
 
@@ -135,3 +137,81 @@ class LLMVisionBackend:
         except Exception as e:  # fail-open
             logger.warning("vision caption failed (fail-open): {}", e)
             return ""
+
+
+_VIDEO_TYPES = {"video"}
+
+
+class VideoUnderstander:
+    """MediaUnderstanding impl: caption frames + transcribe audio track."""
+
+    def __init__(self, vision: Any, transcribe: Any | None, *,
+                 frame_count: int = 4, min_size_kb: float = 1.0,
+                 max_size_kb: int = 204800) -> None:
+        self._vision = vision
+        self._transcribe = transcribe
+        self._frame_count = frame_count
+        self._min_size_kb = min_size_kb
+        self._max_size_kb = max_size_kb
+
+    def can_handle(self, block: Any) -> bool:
+        btype = getattr(getattr(block, "type", None), "value", None) or str(getattr(block, "type", ""))
+        if btype in _VIDEO_TYPES:
+            return True
+        mime = getattr(block, "mime_type", "") or ""
+        return mime.startswith("video/")
+
+    @staticmethod
+    def _sidecar(path: Path) -> Path:
+        return path.with_suffix(path.suffix + ".video.txt")
+
+    async def understand(self, path: Path, block: Any) -> UnderstandResult:
+        empty = UnderstandResult(text="", kind="video")
+        temp_files: list[Path] = []
+        try:
+            if not path.exists():
+                return empty
+            sidecar = self._sidecar(path)
+            if sidecar.exists():
+                cached = sidecar.read_text(encoding="utf-8")
+                if cached:
+                    return UnderstandResult(text=cached, kind="video", metadata={"cached": "1"})
+            size_kb = path.stat().st_size / 1024
+            if size_kb < self._min_size_kb or size_kb > self._max_size_kb:
+                return empty
+            # frame path (vision)
+            caption = ""
+            frames = extract_frames(path, self._frame_count)
+            temp_files.extend(frames)
+            if frames:
+                caption = await self._vision.caption(frames)
+            # audio track path (transcribe)
+            transcript = ""
+            if self._transcribe is not None:
+                track = extract_audio_track(path)
+                if track is not None:
+                    temp_files.append(track)
+                    transcript = await self._transcribe.transcribe(track)
+            # assemble: any track present → inject
+            parts = []
+            if caption:
+                parts.append(f"画面：{caption}")
+            if transcript:
+                parts.append(f"语音：{transcript}")
+            text = "\n".join(parts)
+            if not text:
+                return empty
+            try:
+                sidecar.write_text(text, encoding="utf-8")
+            except Exception as e:
+                logger.debug("video transcript cache write failed (ignored): {}", e)
+            return UnderstandResult(text=text, kind="video")
+        except Exception as e:  # fail-open
+            logger.warning("video understand failed (fail-open): {}", e)
+            return empty
+        finally:
+            for f in temp_files:
+                try:
+                    f.unlink(missing_ok=True)
+                except Exception:
+                    pass
