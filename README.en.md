@@ -44,19 +44,12 @@ Requirements: Python 3.11+, at least one model API key.
 # Install
 pip install "echo-agent[all]"
 
-# Configure a model API key (any one of these)
-export OPENAI_API_KEY="sk-..."
-# ANTHROPIC_API_KEY / GOOGLE_API_KEY / OPENROUTER_API_KEY are also supported,
-# as well as AWS Bedrock (via standard AWS credentials)
-
-# Interactive setup wizard (data lives in ~/.echo-agent by default)
+# Interactive setup wizard (prompts for your model API key; data lives in ~/.echo-agent by default)
 echo-agent setup
 
-# Run
+# Run an interactive conversation
 echo-agent run
 ```
-
-> Inspect configuration with the CLI: `echo-agent config explain <key>` for a single option (description, type, default and allowed values), `echo-agent config dump` to view the active configuration (secrets are redacted), and `echo-agent config validate` to check a config file.
 
 <details>
 <summary>China mirror / Windows / one-liner script</summary>
@@ -69,21 +62,59 @@ pip install "echo-agent[all]" -i https://mirrors.aliyun.com/pypi/simple/
 ```powershell
 # Windows (PowerShell)
 pip install "echo-agent[all]"
-$env:OPENAI_API_KEY = "sk-..."
 echo-agent setup
 echo-agent run
 ```
 
 ```bash
 # One-liner install script (Linux / macOS / WSL2 only; installs from source
-# into ~/.echo-agent and can register a systemd service — review before running)
+# into ~/.echo-agent and can register a background service — review before running)
 curl -fsSL -o install.sh https://raw.githubusercontent.com/fuyuxiang/echo-agent/master/scripts/install.sh
 less install.sh && bash install.sh
 ```
 
 </details>
 
-> Resident gateway: start it in the foreground with `echo-agent gateway` (or have systemd/launchd manage it — `echo-agent service install` registers a systemd service). Once the gateway is running, you can attach on the same machine with `echo-agent cli` as a thin client, opening a separate session that talks to the same resident agent. Local loopback only (127.0.0.1); remote addresses are not supported — use ssh for remote access.
+### Common commands
+
+```bash
+echo-agent run              # Interactive conversation (terminal TUI)
+echo-agent setup            # Setup wizard (models, channels, permissions; safe to rerun)
+echo-agent status           # Show current configuration status
+echo-agent gateway          # Run the resident gateway in the foreground
+echo-agent gateway install  # Register the gateway as a background service (recommended, see below)
+echo-agent cli              # Attach to the local resident gateway as a thin client
+echo-agent cost             # Show cost attribution report
+```
+
+> Inspect configuration with the CLI: `echo-agent config explain <key>` for a single option (description, type, default and allowed values), `echo-agent config dump` to view the active configuration (secrets are redacted), and `echo-agent config validate` to check a config file.
+
+### Running as a background service
+
+Both `echo-agent run` and `echo-agent gateway` are foreground processes — they exit when the terminal closes. For a 24/7 resident agent, register the gateway as a system service (a user-level LaunchAgent on macOS, a user-level systemd unit on Linux; no root required, auto-start at login, auto-restart on crash):
+
+```bash
+echo-agent gateway install    # register the background service
+echo-agent gateway start      # start it
+echo-agent gateway status     # check whether it is running
+echo-agent gateway logs -f    # follow the logs
+echo-agent gateway restart    # restart (run once after upgrading echo-agent)
+echo-agent gateway stop       # stop it
+echo-agent gateway uninstall  # unregister
+```
+
+Once the gateway is running, attach from any local terminal with `echo-agent cli` to talk to the same resident agent (separate session, shared memory). The gateway listens on local loopback only (127.0.0.1); remote addresses are not supported — use ssh for remote access.
+
+<details>
+<summary>Linux notes / systemd-less environments / legacy command</summary>
+
+- **Keep running after logout** (Linux user services stop with the login session by default): `sudo loginctl enable-linger $USER`
+- **Multi-user servers**: `echo-agent gateway install --system` registers a system-wide systemd unit (requires sudo)
+- **No systemd** (WSL without systemd, containers, etc.): keep the foreground process alive with tmux or nohup, e.g. `tmux new -s echo-agent 'echo-agent gateway'`
+- **Stale service file after an upgrade**: `echo-agent gateway status` warns about it; rewrite with `echo-agent gateway install --force`
+- The old `echo-agent service` command still works but is deprecated — use `echo-agent gateway <action>` instead
+
+</details>
 
 > Local security boundary: a zero-config loopback gateway (`allowlist` mode + empty list) serves only two kinds of client — `echo-agent cli` (which carries a `cli:` identity) and native clients that send no browser `Origin` (scripts/SDKs). Browser requests carrying a cross-site `Origin` (including the bundled playground page) are rejected, to stop a malicious web page from driving the local agent via the browser (CSRF). To let a browser/playground in, set `gateway.auth.mode=open`, add the user to `gateway.auth.allowed_users`, or (for a webview desktop client, etc.) add its Origin to `gateway.auth.allowed_origins`.
 

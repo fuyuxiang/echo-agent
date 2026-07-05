@@ -472,6 +472,12 @@ async def run_gateway(
         logger.error(bind_err)
         return
 
+    # Mark this process as the gateway so `echo-agent gateway stop/restart`
+    # issued from inside it (agent exec tool) can refuse — with the service
+    # manager's KeepAlive/Restart=always that would be a kill/respawn loop.
+    import os as _os
+    _os.environ["_ECHO_AGENT_GATEWAY"] = "1"
+
     overrides: dict[str, Any] = {"workspace": workspace} if workspace else {}
     # Force gateway on and tighten the security profile *before* bootstrap so the
     # agent loop registers tools under the effective gateway policy. Applying

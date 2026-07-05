@@ -123,12 +123,26 @@ def _build_parser() -> argparse.ArgumentParser:
     cost_parser.add_argument("--days", type=int, default=7,
                              help="Trend window in days (default: 7)")
 
-    # gateway
-    gw_parser = subparsers.add_parser("gateway", help="Start the gateway server")
+    # gateway — foreground run (default) or service lifecycle management
+    gw_parser = subparsers.add_parser(
+        "gateway",
+        help="Run the gateway in the foreground, or manage it as a system service",
+    )
+    gw_parser.add_argument(
+        "action", nargs="?", default=None,
+        choices=["install", "uninstall", "start", "stop", "restart", "status", "logs"],
+        help="Service action (omit to run the gateway in the foreground)",
+    )
     gw_parser.add_argument("-c", "--config", help="Path to config file")
     gw_parser.add_argument("-w", "--workspace", help="Workspace directory")
-    gw_parser.add_argument("--host", help="Gateway host")
-    gw_parser.add_argument("--port", type=int, help="Gateway port")
+    gw_parser.add_argument("--host", help="Gateway host (foreground run only)")
+    gw_parser.add_argument("--port", type=int, help="Gateway port (foreground run only)")
+    gw_parser.add_argument("--system", action="store_true",
+                           help="Manage a system-scope service instead of a user-scope one (Linux)")
+    gw_parser.add_argument("--force", action="store_true",
+                           help="Rewrite the service file even if one is already installed")
+    gw_parser.add_argument("-f", "--follow", action="store_true",
+                           help="Follow log output (logs action)")
 
     # cli — thin client attaching to a running local gateway
     cli_parser = subparsers.add_parser(
@@ -149,8 +163,11 @@ def _build_parser() -> argparse.ArgumentParser:
     eval_parser.add_argument("-c", "--config", help="Path to config file")
     eval_parser.add_argument("-w", "--workspace", help="Workspace directory")
 
-    # service
-    svc_parser = subparsers.add_parser("service", help="Manage systemd service (Linux)")
+    # service — deprecated alias for `gateway <action>` (kept for install.sh
+    # and existing user scripts; maps to the legacy Linux system-scope unit)
+    svc_parser = subparsers.add_parser(
+        "service", help="[deprecated] Use `echo-agent gateway <action>` instead"
+    )
     svc_parser.add_argument("action", choices=["install", "uninstall", "start", "stop", "restart", "status", "logs"], help="Service action")
     svc_parser.add_argument("-w", "--workspace", help="Workspace directory (used by install)")
 
@@ -245,6 +262,16 @@ def _dispatch() -> None:
         return
 
     if args.command == "gateway":
+        if args.action:
+            from echo_agent.cli.service import run_service_action
+            run_service_action(
+                args.action,
+                workspace=args.workspace or args.top_workspace,
+                system=args.system,
+                force=args.force,
+                follow=args.follow,
+            )
+            return
         from echo_agent.app import run_gateway
         try:
             asyncio.run(run_gateway(config_path=args.config or args.top_config, host=args.host, port=args.port, workspace=args.workspace or args.top_workspace))

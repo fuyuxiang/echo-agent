@@ -393,7 +393,7 @@ run_setup_wizard() {
 }
 
 setup_service() {
-    if [ "$OS" != "linux" ]; then
+    if [ "$OS" != "linux" ] && [ "$OS" != "macos" ]; then
         return 0
     fi
 
@@ -401,20 +401,20 @@ setup_service() {
     if [ ! -x "$echo_cmd" ]; then
         return 0
     fi
-    if ! "$echo_cmd" service --help >/dev/null 2>&1; then
-        log_warn "Installed echo-agent does not support systemd service management; skipping service registration."
+    if ! "$echo_cmd" gateway --help >/dev/null 2>&1; then
+        log_warn "Installed echo-agent does not support gateway service management; skipping service registration."
         log_info "Update the installed code and rerun the installer to enable service management."
         return 0
     fi
 
     echo ""
-    if prompt_yes_no "Register Echo Agent as a systemd service (auto-start on boot)?" "yes"; then
-        "$echo_cmd" service install -w "$ECHO_HOME"
+    if prompt_yes_no "Register the Echo Agent gateway as a background service (auto-start on login)?" "yes"; then
+        "$echo_cmd" gateway install -w "$ECHO_HOME"
         if prompt_yes_no "Start the service now?" "yes"; then
-            "$echo_cmd" service start
+            "$echo_cmd" gateway start
         fi
     else
-        log_info "You can register later with: echo-agent service install"
+        log_info "You can register later with: echo-agent gateway install"
     fi
 }
 
@@ -435,8 +435,9 @@ print_success() {
     echo "  echo-agent          Start CLI"
     echo "  echo-agent setup    Run setup wizard"
     echo "  echo-agent status   Show current config status"
-    echo "  echo-agent gateway  Start gateway server"
-    echo "  echo-agent service  Manage systemd service (Linux)"
+    echo "  echo-agent gateway  Start gateway server (foreground)"
+    echo "  echo-agent gateway install|start|stop|status|logs"
+    echo "                      Manage the gateway as a background service"
     echo ""
     echo -e "${CYAN}${BOLD}Command link:${NC}"
     echo "  $(get_command_link_dir)/echo-agent"
