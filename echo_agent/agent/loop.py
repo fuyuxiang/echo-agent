@@ -245,6 +245,7 @@ class AgentLoop:
         understanders = default_understanders(
             config.media_understanding,
             transcription_api_key=config.channels.transcription_api_key,
+            vision_provider=provider,
         )
         self.context = ContextBuilder(
             workspace,

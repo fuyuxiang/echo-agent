@@ -12,6 +12,11 @@ from echo_agent.agent.media.understanding.audio import (
     _local_available,
 )
 from echo_agent.agent.media.understanding.base import MediaUnderstanding
+from echo_agent.agent.media.understanding.video import (
+    LLMVisionBackend,
+    VideoUnderstander,
+    _ffmpeg_available,
+)
 
 
 def _select_backend(provider: str, api_key: str, model_size: str,
@@ -31,22 +36,43 @@ def _select_backend(provider: str, api_key: str, model_size: str,
     return None
 
 
-def default_understanders(config: Any, *, transcription_api_key: str = "") -> list[MediaUnderstanding]:
+def default_understanders(config: Any, *, transcription_api_key: str = "",
+                          vision_provider: Any = None) -> list[MediaUnderstanding]:
     """Assemble the ordered understander list from config + backend probing."""
-    if not getattr(config, "audio_enabled", False):
-        return []
-    backend = _select_backend(
-        getattr(config, "audio_provider", "auto"),
-        transcription_api_key,
-        getattr(config, "local_model_size", "base"),
-        getattr(config, "transcription_base_url", "https://api.groq.com/openai/v1"),
-        getattr(config, "transcription_model", "whisper-large-v3"),
-    )
-    if backend is None:
-        logger.debug("no transcribe backend available; audio understanding disabled")
-        return []
-    return [AudioTranscriber(
-        backend,
-        min_size_kb=getattr(config, "min_audio_size_kb", 1.0),
-        max_size_kb=getattr(config, "max_audio_size_kb", 25000),
-    )]
+    understanders: list[MediaUnderstanding] = []
+
+    transcribe_backend = None
+    if getattr(config, "audio_enabled", False):
+        transcribe_backend = _select_backend(
+            getattr(config, "audio_provider", "auto"),
+            transcription_api_key,
+            getattr(config, "local_model_size", "base"),
+            getattr(config, "transcription_base_url", "https://api.groq.com/openai/v1"),
+            getattr(config, "transcription_model", "whisper-large-v3"),
+        )
+        if transcribe_backend is not None:
+            understanders.append(AudioTranscriber(
+                transcribe_backend,
+                min_size_kb=getattr(config, "min_audio_size_kb", 1.0),
+                max_size_kb=getattr(config, "max_audio_size_kb", 25000),
+            ))
+        else:
+            logger.debug("no transcribe backend available; audio understanding disabled")
+
+    if getattr(config, "video_enabled", False) and _ffmpeg_available() and vision_provider is not None:
+        vision = LLMVisionBackend(
+            vision_provider,
+            model=getattr(config, "video_vision_model", ""),
+            prompt=getattr(config, "video_vision_prompt", "简要描述这段视频的画面内容。"),
+        )
+        understanders.append(VideoUnderstander(
+            vision,
+            transcribe_backend,  # reuse audio's backend for the video's audio track (may be None)
+            frame_count=getattr(config, "video_frame_count", 4),
+            min_size_kb=getattr(config, "min_video_size_kb", 1.0),
+            max_size_kb=getattr(config, "max_video_size_kb", 204800),
+        ))
+    elif getattr(config, "video_enabled", False):
+        logger.debug("video understanding unavailable (ffmpeg or vision provider missing)")
+
+    return understanders
