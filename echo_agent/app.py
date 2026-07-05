@@ -275,6 +275,40 @@ def install_signal_handler(shutdown: asyncio.Event) -> None:
             pass
 
 
+def _is_supervised() -> bool:
+    """Best-effort: is this process managed by a supervisor that respawns it?
+
+    systemd sets INVOCATION_ID; our launchd/systemd unit templates set
+    _ECHO_AGENT_SUPERVISED=1. If neither is present we assume a foreground run,
+    where a self-exit would leave the service dead — so the watchdog degrades to
+    warn-only rather than exiting.
+    """
+    import os
+    return bool(os.environ.get("INVOCATION_ID") or os.environ.get("_ECHO_AGENT_SUPERVISED"))
+
+
+def build_loop_watchdog(ctx: "BootstrapResult") -> "Any | None":
+    """Construct a LoopWatchdog from config, or None when disabled."""
+    obs = ctx.config.observability
+    if not getattr(obs, "loop_watchdog_enabled", True):
+        return None
+    from echo_agent.observability.loop_watchdog import LoopWatchdog
+    from echo_agent.observability.restart_guard import RestartGuard
+
+    guard = RestartGuard(
+        ctx.workspace / "data" / "watchdog_restarts.json",
+        max_restarts=obs.loop_watchdog_max_restarts_per_hour,
+    )
+    return LoopWatchdog(
+        warn_seconds=obs.loop_watchdog_warn_seconds,
+        kill_seconds=obs.loop_watchdog_kill_seconds,
+        check_interval_seconds=obs.loop_watchdog_check_interval_seconds,
+        restart_guard=guard,
+        supervised=_is_supervised(),
+        dump_path=ctx.workspace / ctx.config.storage.logs_dir / "loop_freeze.log",
+    )
+
+
 class AppRuntime:
     """Owns the ordered start/stop lifecycle of all optional components.
 
@@ -370,13 +404,18 @@ async def run(config_path: str | None = None, workspace: str | None = None) -> N
 
     install_signal_handler(shutdown)
     runtime = AppRuntime(ctx, shutdown_event=shutdown)
+    watchdog = build_loop_watchdog(ctx)
     try:
         if not await runtime.start():
             return
+        if watchdog is not None:
+            watchdog.start()
         logger.info("Echo Agent ready — channels: {}", ctx.channels.active_channels)
         await shutdown.wait()
         logger.info("Shutting down...")
     finally:
+        if watchdog is not None:
+            await watchdog.stop()
         await runtime.stop()
     logger.info("Echo Agent stopped")
 
@@ -497,11 +536,16 @@ async def run_gateway(
 
     install_signal_handler(shutdown)
     runtime = AppRuntime(ctx, shutdown_event=shutdown)
+    watchdog = build_loop_watchdog(ctx)
 
     try:
         if not await runtime.start():
             return
+        if watchdog is not None:
+            watchdog.start()
         logger.info("Gateway listening on {}:{}", ctx.config.gateway.host, ctx.config.gateway.port)
         await shutdown.wait()
     finally:
+        if watchdog is not None:
+            await watchdog.stop()
         await runtime.stop()

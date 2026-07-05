@@ -2562,6 +2562,46 @@ class ObservabilityConfig(_Base):
             "desc_en": "OpenTelemetry metrics export interval (ms)",
         },
     )
+    loop_watchdog_enabled: bool = Field(
+        default=True,
+        json_schema_extra={
+            "status": "effective", "ref": "observability/loop_watchdog.py:44",
+            "desc_zh": "是否启用事件循环看门狗(检测 loop 冻结并自杀重启)",
+            "desc_en": "Enable the event-loop watchdog (detects a frozen loop and self-exits for respawn)",
+        },
+    )
+    loop_watchdog_warn_seconds: float = Field(
+        default=5.0,
+        json_schema_extra={
+            "status": "effective", "ref": "observability/loop_watchdog.py:52",
+            "desc_zh": "事件循环停滞多少秒后告警并转储线程栈",
+            "desc_en": "Seconds of loop stall before warning and dumping thread stacks",
+        },
+    )
+    loop_watchdog_kill_seconds: float = Field(
+        default=30.0,
+        json_schema_extra={
+            "status": "effective", "ref": "observability/loop_watchdog.py:53",
+            "desc_zh": "事件循环冻结多少秒后自杀退出以便 supervisor 重启",
+            "desc_en": "Seconds of loop freeze before self-exiting for supervisor respawn",
+        },
+    )
+    loop_watchdog_check_interval_seconds: float = Field(
+        default=5.0,
+        json_schema_extra={
+            "status": "effective", "ref": "observability/loop_watchdog.py:54",
+            "desc_zh": "看门狗线程检查心跳的间隔(秒)",
+            "desc_en": "Interval (s) at which the watchdog thread checks the heartbeat",
+        },
+    )
+    loop_watchdog_max_restarts_per_hour: int = Field(
+        default=5,
+        json_schema_extra={
+            "status": "effective", "ref": "observability/restart_guard.py:26",
+            "desc_zh": "一小时内看门狗自杀重启次数上限,超过则熔断不再自杀",
+            "desc_en": "Max watchdog self-exits per hour before the circuit breaker suspends restarts",
+        },
+    )
 
 
 # ── Compression configs ──────────────────────────────────────────────────────

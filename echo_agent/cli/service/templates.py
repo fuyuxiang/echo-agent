@@ -30,6 +30,11 @@ def render_launchd_plist(argv: list[str], workdir: str, log_path: str) -> str:
     </array>
     <key>WorkingDirectory</key>
     <string>{escape(workdir)}</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>_ECHO_AGENT_SUPERVISED</key>
+        <string>1</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -66,6 +71,7 @@ Wants=network-online.target
 Type=simple
 {user_line}ExecStart={exec_start}
 WorkingDirectory={workdir}
+Environment=_ECHO_AGENT_SUPERVISED=1
 Restart=always
 RestartSec=5
 KillSignal=SIGTERM
