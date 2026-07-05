@@ -67,6 +67,10 @@ def discover_tools(
                 proxy=config.tools.web.proxy,
                 timeout_seconds=config.tools.web.timeout_seconds,
             ))
+    if config.tools.browser.enabled and config.execution.network_policy != "deny":
+        from echo_agent.agent.tools.browser import BrowserTool
+        from echo_agent.agent.browser.session import manager as browser_manager
+        tools.append(BrowserTool(config=config.tools.browser, manager=browser_manager))
     tools.append(MessageTool(publish_fn=bus.publish_outbound))
 
     from echo_agent.agent.tools.send_file import SendFileTool

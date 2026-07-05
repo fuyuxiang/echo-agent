@@ -869,6 +869,11 @@ class AgentLoop:
             await self._plugin_manager.shutdown()
         if self.mcp_manager:
             await self.mcp_manager.stop_all()
+        try:
+            from echo_agent.agent.browser.session import manager as _browser_manager
+            await _browser_manager.close_all()
+        except Exception as e:
+            logger.debug("browser manager close_all raised (ignored): {}", e)
         # All background work is spawned via ``_spawn_background`` and owned by
         # the scheduler; ``aclose`` cancels discardable tasks and flushes durable
         # ones. This is the single shutdown path for background work.
