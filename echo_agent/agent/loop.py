@@ -241,11 +241,17 @@ class AgentLoop:
             cache_dir=workspace / config.gateway.media_cache_dir,
             max_size_mb=config.gateway.media_cache_max_mb,
         )
+        from echo_agent.agent.media.understanding import default_understanders
+        understanders = default_understanders(
+            config.media_understanding,
+            transcription_api_key=config.channels.transcription_api_key,
+        )
         self.context = ContextBuilder(
             workspace,
             media_cache=media_cache,
             doc_enabled=config.tools.inbound_document_enabled,
             doc_max_chars=config.tools.inbound_document_max_chars,
+            understanders=understanders,
         )
         self.compressor = ConversationCompressor(
             config=config.compression,

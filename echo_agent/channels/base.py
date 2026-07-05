@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import aiohttp
 from loguru import logger
 
 from echo_agent.bus.events import InboundEvent, OutboundEvent, ContentBlock, ContentType, PollRequest
@@ -256,24 +255,12 @@ class BaseChannel(ABC):
             return None
 
     async def transcribe_audio(self, file_path: str | Path) -> str:
-        """Transcribe audio file via Groq Whisper API."""
-        api_key = self.transcription_api_key
-        if not api_key:
+        """Transcribe an audio file via the shared cloud whisper backend.
+
+        Kept as a thin delegator; inbound transcription now flows through
+        ContextBuilder + the media.understanding package, not this method.
+        """
+        from echo_agent.agent.media.understanding.audio import CloudWhisperBackend
+        if not self.transcription_api_key:
             return ""
-        path = Path(file_path)
-        if not path.exists():
-            return ""
-        try:
-            url = "https://api.groq.com/openai/v1/audio/transcriptions"
-            data = aiohttp.FormData()
-            data.add_field("file", path.open("rb"), filename=path.name)
-            data.add_field("model", "whisper-large-v3")
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, data=data, headers={"Authorization": f"Bearer {api_key}"}) as resp:
-                    if resp.status == 200:
-                        result = await resp.json()
-                        return result.get("text", "")
-                    logger.warning("Transcription failed ({}): {}", resp.status, await resp.text())
-        except Exception as e:
-            logger.error("Audio transcription error: {}", e)
-        return ""
+        return await CloudWhisperBackend(self.transcription_api_key).transcribe(Path(file_path))
