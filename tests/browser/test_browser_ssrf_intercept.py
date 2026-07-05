@@ -76,3 +76,31 @@ async def test_host_cache_hit_skips_second_check(monkeypatch):
     await _ssrf_route_handler(session, FakeRoute("https://example.com/a"))
     await _ssrf_route_handler(session, FakeRoute("https://example.com/b"))
     assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_data_url_continues_without_ssrf_check(monkeypatch):
+    """data: URLs are inline payloads, not a network SSRF vector — they must
+    pass through untouched and never consult the SSRF resolver."""
+    async def boom(url):
+        raise AssertionError("check_url_ssrf must not be called for data: URLs")
+    monkeypatch.setattr(sess_mod, "check_url_ssrf", boom)
+    session = _mk_session()
+    route = FakeRoute("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB")
+    await _ssrf_route_handler(session, route)
+    assert route.continued is True
+    assert route.aborted_with is None
+
+
+@pytest.mark.asyncio
+async def test_blob_url_continues_without_ssrf_check(monkeypatch):
+    """blob: URLs reference in-page objects, not a network destination — they
+    must pass through untouched and never consult the SSRF resolver."""
+    async def boom(url):
+        raise AssertionError("check_url_ssrf must not be called for blob: URLs")
+    monkeypatch.setattr(sess_mod, "check_url_ssrf", boom)
+    session = _mk_session()
+    route = FakeRoute("blob:https://example.com/550e8400-e29b-41d4-a716-446655440000")
+    await _ssrf_route_handler(session, route)
+    assert route.continued is True
+    assert route.aborted_with is None

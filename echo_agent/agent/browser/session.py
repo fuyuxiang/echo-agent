@@ -38,6 +38,13 @@ async def _ssrf_route_handler(session: BrowserSession, route: Any) -> None:
         await route.continue_()
         return
     url = route.request.url
+    # Non-network schemes (data:/blob:/about:) are inline payloads or in-page
+    # object references, not SSRF vectors. resolve_and_validate rejects any
+    # non-http(s) scheme, so gating them here keeps inline images/media/workers
+    # from being wrongly aborted and breaking page rendering.
+    if urllib.parse.urlsplit(url).scheme not in ("http", "https"):
+        await route.continue_()
+        return
     host = urllib.parse.urlsplit(url).hostname or url
     now = time.monotonic()
     cached = session.ssrf_cache.get(host)
