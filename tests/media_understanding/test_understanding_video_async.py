@@ -1,5 +1,5 @@
 import asyncio
-from pathlib import Path
+import threading
 import pytest
 from echo_agent.agent.media.understanding import video as vmod
 from echo_agent.agent.media.understanding.video import VideoUnderstander
@@ -41,15 +41,20 @@ async def test_understand_does_not_block_event_loop(tmp_path, monkeypatch):
 async def test_ffmpeg_concurrency_capped(tmp_path, monkeypatch):
     vmod.set_ffmpeg_concurrency(2)
     peak = {"cur": 0, "max": 0}
-    lock = asyncio.Lock()
+    # tracking_extract runs in a worker thread via asyncio.to_thread, so use a
+    # threading.Lock (not asyncio.Lock) to synchronize the peak-counter mutations.
+    lock = threading.Lock()
 
     def tracking_extract(path, count, *, out_dir=None):
         import time as _t
-        # increment via thread-safe-ish coarse tracking
-        peak["cur"] += 1
-        peak["max"] = max(peak["max"], peak["cur"])
+        # synchronize the increment / max-update across worker threads
+        with lock:
+            peak["cur"] += 1
+            peak["max"] = max(peak["max"], peak["cur"])
+        # sleep OUTSIDE the lock so workers actually overlap and the cap is tested
         _t.sleep(0.2)
-        peak["cur"] -= 1
+        with lock:
+            peak["cur"] -= 1
         return []
 
     monkeypatch.setattr(vmod, "extract_frames", tracking_extract)
