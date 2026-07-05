@@ -113,14 +113,36 @@ async def bootstrap(
         provider = StubProvider(stub_message)
         router.register_provider("stub", provider)
 
-    from echo_agent.scheduler.service import Scheduler
+    from echo_agent.scheduler.service import Scheduler, ScheduledJob, TriggerKind
     scheduler: Scheduler | None = None
     if config.scheduler.enabled:
+        inspection_runner = None
+        insp_cfg = config.agent.inspection
+        if insp_cfg.enabled:
+            from echo_agent.agent.inspection.store import InspectStore
+            from echo_agent.agent.inspection.tick import run_inspection_tick
+            insp_store = InspectStore(
+                ws / insp_cfg.inspect_file,
+                ws / "data" / "inspect_state.json",
+            )
+
+            async def inspection_runner():
+                await run_inspection_tick(insp_store, insp_cfg, bus)
+
         scheduler = Scheduler(
             store_path=ws / "data" / "scheduler.json",
-            on_job=build_scheduled_job_handler(bus),
+            on_job=build_scheduled_job_handler(bus, inspection_runner=inspection_runner),
             max_concurrent=config.scheduler.max_concurrent_jobs,
         )
+        if insp_cfg.enabled and not any(
+            j.name == "__inspection_tick__" for j in scheduler.list_jobs()
+        ):
+            scheduler.add_job(ScheduledJob(
+                name="__inspection_tick__",
+                trigger=TriggerKind.INTERVAL,
+                interval_ms=insp_cfg.tick_interval_sec * 1000,
+                payload={"_inspection_tick": True},
+            ))
 
     from echo_agent.tasks.manager import TaskManager
     from echo_agent.tasks.workflow import WorkflowEngine

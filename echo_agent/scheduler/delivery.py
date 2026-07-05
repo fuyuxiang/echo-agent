@@ -61,8 +61,12 @@ def inbound_event_from_job(job: Any) -> InboundEvent:
     )
 
 
-def build_scheduled_job_handler(bus: Any) -> Callable[[Any], Awaitable[None]]:
+def build_scheduled_job_handler(bus: Any, *, inspection_runner: Any = None) -> Callable[[Any], Awaitable[None]]:
     async def _on_job(job: Any) -> None:
+        payload = job.payload if isinstance(job.payload, dict) else {}
+        if payload.get("_inspection_tick") and inspection_runner is not None:
+            await inspection_runner()
+            return
         accepted = await bus.publish_inbound(inbound_event_from_job(job))
         if not accepted:
             raise RuntimeError(
