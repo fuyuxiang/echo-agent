@@ -9,5 +9,6 @@ from echo_agent.agent.media.understanding.base import (
     MediaUnderstanding,
     UnderstandResult,
 )
+from echo_agent.agent.media.understanding.registry import default_understanders
 
-__all__ = ["MediaUnderstanding", "UnderstandResult"]
+__all__ = ["MediaUnderstanding", "UnderstandResult", "default_understanders"]

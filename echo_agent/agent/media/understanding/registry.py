@@ -1,0 +1,49 @@
+from __future__ import annotations
+
+from typing import Any
+
+from loguru import logger
+
+from echo_agent.agent.media.understanding.audio import (
+    AudioTranscriber,
+    CloudWhisperBackend,
+    LocalWhisperBackend,
+    _cloud_available,
+    _local_available,
+)
+from echo_agent.agent.media.understanding.base import MediaUnderstanding
+
+
+def _select_backend(provider: str, api_key: str, model_size: str) -> Any:
+    """Return a TranscribeBackend per provider policy, or None if unavailable."""
+    want_cloud = provider in ("auto", "cloud") and _cloud_available(api_key)
+    want_local = provider in ("auto", "local") and _local_available()
+    if provider == "cloud":
+        return CloudWhisperBackend(api_key) if _cloud_available(api_key) else None
+    if provider == "local":
+        return LocalWhisperBackend(model_size) if _local_available() else None
+    # auto: cloud first, then local
+    if want_cloud:
+        return CloudWhisperBackend(api_key)
+    if want_local:
+        return LocalWhisperBackend(model_size)
+    return None
+
+
+def default_understanders(config: Any, *, transcription_api_key: str = "") -> list[MediaUnderstanding]:
+    """Assemble the ordered understander list from config + backend probing."""
+    if not getattr(config, "audio_enabled", False):
+        return []
+    backend = _select_backend(
+        getattr(config, "audio_provider", "auto"),
+        transcription_api_key,
+        getattr(config, "local_model_size", "base"),
+    )
+    if backend is None:
+        logger.debug("no transcribe backend available; audio understanding disabled")
+        return []
+    return [AudioTranscriber(
+        backend,
+        min_size_kb=getattr(config, "min_audio_size_kb", 1.0),
+        max_size_kb=getattr(config, "max_audio_size_kb", 25000),
+    )]

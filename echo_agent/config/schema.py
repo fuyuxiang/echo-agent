@@ -2287,7 +2287,7 @@ class MediaUnderstandingConfig(_Base):
     audio_enabled: bool = Field(
         default=True,
         json_schema_extra={
-            "status": "effective", "ref": "agent/media/understanding/__init__.py",
+            "status": "effective", "ref": "agent/media/understanding/registry.py",
             "desc_zh": "是否开启入站音频/语音转写（provider 探测不到时自动降级）",
             "desc_en": "Enable inbound audio/voice transcription (auto-degrades if no provider)",
         },
@@ -2295,7 +2295,7 @@ class MediaUnderstandingConfig(_Base):
     audio_provider: str = Field(
         default="auto",
         json_schema_extra={
-            "status": "effective", "ref": "agent/media/understanding/__init__.py",
+            "status": "effective", "ref": "agent/media/understanding/registry.py",
             "desc_zh": "转写后端：auto(探测) / cloud(云) / local(本地 faster-whisper)",
             "desc_en": "Transcribe backend: auto (probe) / cloud / local (faster-whisper)",
         },
