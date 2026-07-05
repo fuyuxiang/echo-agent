@@ -2324,6 +2324,54 @@ class MediaUnderstandingConfig(_Base):
             "desc_en": "Local faster-whisper model size (tiny/base/small/...)",
         },
     )
+    video_enabled: bool = Field(
+        default=True,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/media/understanding/registry.py",
+            "desc_zh": "是否开启入站视频理解（抽帧+音轨；provider/ffmpeg 探测不到自动降级）",
+            "desc_en": "Enable inbound video understanding (frames + audio; auto-degrades)",
+        },
+    )
+    video_frame_count: int = Field(
+        default=4,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/media/understanding/video.py",
+            "desc_zh": "视频均匀抽帧数（喂 vision 模型）",
+            "desc_en": "Number of frames uniformly sampled from a video",
+        },
+    )
+    video_vision_model: str = Field(
+        default="",
+        json_schema_extra={
+            "status": "effective", "ref": "agent/media/understanding/video.py",
+            "desc_zh": "视频画面描述的 vision 模型覆盖（空=用 provider 默认模型）",
+            "desc_en": "Vision model override for video captioning (empty = provider default)",
+        },
+    )
+    video_vision_prompt: str = Field(
+        default="简要描述这段视频的画面内容。",
+        json_schema_extra={
+            "status": "effective", "ref": "agent/media/understanding/video.py",
+            "desc_zh": "视频抽帧描述的提示词",
+            "desc_en": "Prompt for video frame captioning",
+        },
+    )
+    min_video_size_kb: float = Field(
+        default=1.0,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/media/understanding/video.py",
+            "desc_zh": "小于此大小(KB)的视频跳过理解",
+            "desc_en": "Video smaller than this (KB) skips understanding",
+        },
+    )
+    max_video_size_kb: int = Field(
+        default=204800,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/media/understanding/video.py",
+            "desc_zh": "大于此大小(KB)的视频跳过理解（≈200MB，成本护栏）",
+            "desc_en": "Video larger than this (KB) skips understanding (~200MB cost guard)",
+        },
+    )
     transcription_base_url: str = Field(
         default="https://api.groq.com/openai/v1",
         json_schema_extra={
