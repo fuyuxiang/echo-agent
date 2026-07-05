@@ -105,6 +105,27 @@ async def test_cloud_transcribe_failopen_on_missing_file(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_cloud_transcribe_warns_on_exception(tmp_path: Path, monkeypatch):
+    f = tmp_path / "a.wav"
+    f.write_bytes(b"RIFFfake")
+
+    class _Boom:
+        def __init__(self, *a, **k):
+            raise RuntimeError("connection exploded")
+
+    monkeypatch.setattr(audio_mod.aiohttp, "ClientSession", _Boom)
+
+    records: list[str] = []
+    handler_id = audio_mod.logger.add(lambda m: records.append(m.record["level"].name), level="WARNING")
+    try:
+        out = await CloudWhisperBackend("sk-x").transcribe(f)
+    finally:
+        audio_mod.logger.remove(handler_id)
+    assert out == ""
+    assert "WARNING" in records
+
+
+@pytest.mark.asyncio
 async def test_local_transcribe_joins_segments(tmp_path: Path, monkeypatch):
     f = tmp_path / "a.wav"
     f.write_bytes(b"RIFFfake")
