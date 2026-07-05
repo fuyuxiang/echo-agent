@@ -183,12 +183,14 @@ class ContextBuilder:
     _RUNTIME_TAG = "[Runtime Context]"
 
     def __init__(self, workspace: Path, agent_name: str = "Echo", media_cache: Any = None,
-                 doc_enabled: bool = True, doc_max_chars: int = 8000):
+                 doc_enabled: bool = True, doc_max_chars: int = 8000,
+                 understanders: "list[Any] | None" = None):
         self.workspace = workspace
         self.agent_name = agent_name
         self._media_cache = media_cache
         self._doc_enabled = doc_enabled
         self._doc_max_chars = doc_max_chars
+        self._understanders = understanders or []
 
     def _get_media_cache(self) -> Any:
         """Return the media cache, building a workspace-local fallback only when the
@@ -220,6 +222,7 @@ class ContextBuilder:
         are decrypted in-place before being handed to the model."""
         resolved: list[dict[str, str]] = []
         download_targets: list[tuple[int, str, str]] = []
+        understand_targets: list[tuple[int, Any]] = []
         for idx, block in enumerate(items):
             btype = getattr(block.type, "value", str(block.type))
             url = block.url
@@ -234,6 +237,13 @@ class ContextBuilder:
                 "original_url": url,
             }
             resolved.append(entry)
+            if btype != "image":
+                matched = next((u for u in self._understanders if u.can_handle(block)), None)
+                if matched is not None and url:
+                    if url.startswith(("http://", "https://")):
+                        download_targets.append((idx, url, aes_key))
+                    understand_targets.append((idx, matched))
+                    continue  # understander owns this block; skip file/doc branches
             downloadable = {"image"} | ({"file"} if self._doc_enabled else set())
             if btype in downloadable and url.startswith(("http://", "https://")):
                 download_targets.append((idx, url, aes_key))
@@ -267,6 +277,18 @@ class ContextBuilder:
                 resolved[idx]["url"] = str(result)
                 if resolved[idx]["type"] == "file":
                     self._attach_extracted_text(resolved[idx], result)
+
+        for idx, matched in understand_targets:
+            local = resolved[idx].get("url", "")
+            path = Path(local)
+            if not path.is_file():
+                continue  # download failed → leave as reference, message not dropped
+            try:
+                res = await matched.understand(path, items[idx])
+                if res.text:
+                    resolved[idx]["transcribed_text"] = res.text
+            except Exception as e:  # fail-open
+                logger.debug("understander failed (fail-open): {}", e)
         return resolved
 
     def _attach_extracted_text(self, entry: dict[str, str], path: Any) -> None:
@@ -383,8 +405,11 @@ class ContextBuilder:
                     else:
                         file_notes.append(f"[附件] 类型=image 名称={name} 路径={url}")
                 else:
+                    transcript = item.get("transcribed_text", "")
                     extracted = item.get("extracted_text", "")
-                    if extracted and item.get("truncated"):
+                    if transcript:
+                        file_notes.append(f"[语音转写: {name}]\n{transcript}")
+                    elif extracted and item.get("truncated"):
                         units = item.get("unit_count", "")
                         file_notes.append(
                             f"[文档: {name}]\n{extracted}\n"
@@ -526,6 +551,7 @@ class ContextBuilder:
                     "extracted_text": entry.get("extracted_text", ""),
                     "truncated": entry.get("truncated", ""),
                     "unit_count": entry.get("unit_count", ""),
+                    "transcribed_text": entry.get("transcribed_text", ""),
                 })
         return normalized
 
