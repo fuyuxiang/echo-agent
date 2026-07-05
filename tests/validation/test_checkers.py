@@ -1,9 +1,11 @@
 # tests/validation/test_checkers.py
+import asyncio
 import shutil
 from pathlib import Path
 
 import pytest
 
+from echo_agent.validation import checkers as checkers_mod
 from echo_agent.validation.checkers import (
     Diagnostic,
     PyCompileChecker,
@@ -78,3 +80,46 @@ async def test_ruff_clean_file_returns_no_diagnostics(tmp_path: Path):
     f.write_text("x = 1\nprint(x)\n", encoding="utf-8")
     diags = await RuffChecker().check(f)
     assert diags == []
+
+
+class _HangingProc:
+    """Fake subprocess whose communicate() never completes, recording kill/wait."""
+
+    def __init__(self) -> None:
+        self.killed = False
+        self.waited = False
+
+    async def communicate(self):
+        await asyncio.Future()  # never resolves → outer wait_for must cancel it
+        raise AssertionError("communicate should have been cancelled")  # pragma: no cover
+
+    def kill(self) -> None:
+        self.killed = True
+
+    async def wait(self) -> int:
+        self.waited = True
+        return -9
+
+
+@pytest.mark.asyncio
+async def test_ruff_check_kills_subprocess_on_cancel(tmp_path: Path, monkeypatch):
+    """A cancelled communicate() (e.g. outer wait_for timeout) must reap the child."""
+    f = tmp_path / "slow.py"
+    f.write_text("x = 1\n", encoding="utf-8")
+
+    fake = _HangingProc()
+
+    async def _fake_spawn(*args, **kwargs):
+        return fake
+
+    monkeypatch.setattr(checkers_mod.asyncio, "create_subprocess_exec", _fake_spawn)
+
+    checker = RuffChecker()
+    # force can_check-independent path: pretend ruff is present
+    checker._ruff = "/usr/bin/ruff"
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(checker.check(f), timeout=0.05)
+
+    assert fake.killed is True
+    assert fake.waited is True

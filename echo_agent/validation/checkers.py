@@ -30,6 +30,18 @@ class Checker(Protocol):
     async def check(self, path: Path) -> list[Diagnostic]: ...
 
 
+async def _reap(proc: asyncio.subprocess.Process) -> None:
+    """Terminate and collect a subprocess so a cancelled check leaves no orphan."""
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        return  # already exited — nothing to reap
+    try:
+        await proc.wait()
+    except ProcessLookupError:
+        pass
+
+
 class PyCompileChecker:
     """Syntax floor for .py files using the stdlib compiler. Always available."""
 
@@ -81,10 +93,20 @@ class RuffChecker:
                 self._ruff, "check", "--output-format=json", "--force-exclude", str(path),
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
-            out, _err = await proc.communicate()
         except Exception as e:  # ruff vanished / spawn failed → fail-open
-            logger.debug("RuffChecker subprocess failed (fail-open): {}", e)
+            logger.debug("RuffChecker spawn failed (fail-open): {}", e)
             return []
+        # Spawn succeeded: any early exit (esp. CancelledError from an outer
+        # wait_for timeout) must reap the child so it can't become an orphan.
+        try:
+            out, _err = await proc.communicate()
+        except Exception as e:  # communicate failed → fail-open, but still reap
+            logger.debug("RuffChecker communicate failed (fail-open): {}", e)
+            await _reap(proc)
+            return []
+        except BaseException:  # includes CancelledError → reap, then propagate
+            await _reap(proc)
+            raise
         text = out.decode("utf-8", "replace").strip()
         if not text:
             return []
