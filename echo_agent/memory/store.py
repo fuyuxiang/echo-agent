@@ -15,6 +15,7 @@ using built-in safety properties:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -179,8 +180,8 @@ class MemoryStore:
         self._vector_index = None  # set externally via set_vector_index()
         self._retriever = None  # set externally via set_retriever()
         self._embed_fn = None  # async callable: str -> list[float]
-        # (entry_id, text, old_vec_id) triples awaiting embedding
-        self._pending_embeds: list[tuple[str, str, str]] = []
+        # (entry_id, text, old_vec_id, content_hash) tuples awaiting embedding
+        self._pending_embeds: list[tuple[str, str, str, str]] = []
         # Serializes flush_pending_embeds: multiple triggers (startup backfill +
         # post-reply, both via the background scheduler) can otherwise run
         # concurrently, snapshot the same entry_id, and each add() a vector for
@@ -210,6 +211,10 @@ class MemoryStore:
     def set_retriever(self, retriever):
         self._retriever = retriever
 
+    @staticmethod
+    def _content_hash(text: str) -> str:
+        return hashlib.blake2b(text.encode("utf-8"), digest_size=8).hexdigest()
+
     def _queue_embed(self, entry: MemoryEntry, old_vec_id: str = "") -> None:
         if not (self._embed_fn and self._vector_index):
             return
@@ -220,7 +225,9 @@ class MemoryStore:
         if getattr(self._embed_fn, "tripped", False):
             return
         text = f"{entry.key} {entry.content}" if entry.key else entry.content
-        self._pending_embeds.append((entry.id, text, old_vec_id))
+        self._pending_embeds.append(
+            (entry.id, text, old_vec_id, self._content_hash(text))
+        )
 
     async def flush_pending_embeds(self) -> int:
         """Generate embeddings for queued entries and add to vector index. Returns count.
@@ -247,34 +254,54 @@ class MemoryStore:
             return 0
         batch = list(self._pending_embeds)
         count = 0
-        processed: set[str] = set()
+        processed: set[tuple[str, str]] = set()
         assigned: dict[MemoryType, dict[str, str]] = {}
         replaced_old: list[str] = []
-        for entry_id, text, old_vec_id in batch:
+        for entry_id, text, old_vec_id, content_hash in batch:
             entry = self._entries.get(entry_id)
             if entry is None:
                 # Source entry was deleted/forgotten while queued — nothing to
-                # embed, so drop it from the queue rather than retrying forever.
-                processed.add(entry_id)
+                # embed, so drop this exact item rather than retrying forever.
+                processed.add((entry_id, content_hash))
                 continue
             try:
                 embedding = await self._embed_fn(text)
                 if embedding:
+                    # The await above yields; update()/merge may have rewritten
+                    # this entry and re-queued a fresh item (and _reload_type
+                    # swaps the object), so re-fetch and compare hashes. Only
+                    # commit the vector if the entry's CURRENT content still
+                    # matches what we embedded.
+                    entry = self._entries.get(entry_id)
+                    if entry is None:
+                        processed.add((entry_id, content_hash))
+                        continue
+                    current = f"{entry.key} {entry.content}" if entry.key else entry.content
+                    if self._content_hash(current) != content_hash:
+                        # Stale: the entry was rewritten (and re-queued) while we
+                        # embedded the old text. Don't attach this old vector to
+                        # the new content, and don't remove old_vec_id (no new
+                        # vector was committed). Mark THIS (old-hash) item handled
+                        # so it drops — the freshly-queued item carries a
+                        # different (id, new_hash) and survives for the next flush.
+                        processed.add((entry_id, content_hash))
+                        continue
                     vec_id = await self._vector_index.add(entry_id, embedding)
                     if vec_id:
                         entry.embedding_id = vec_id
                         assigned.setdefault(entry.type, {})[entry_id] = vec_id
-                        processed.add(entry_id)
+                        processed.add((entry_id, content_hash))
                         count += 1
                         if old_vec_id and old_vec_id != vec_id:
                             replaced_old.append(old_vec_id)
             except Exception as e:
                 logger.debug("Embedding generation failed for {}: {}", entry_id, e)
-        # Drop only the entries we actually handled; keep failures (and any
-        # entries enqueued concurrently during the awaits above) for retry.
+        # Drop only exactly-handled items (matched by id AND content hash);
+        # failures and concurrently-enqueued items (different hash) stay for retry.
         if processed:
             self._pending_embeds = [
-                item for item in self._pending_embeds if item[0] not in processed
+                item for item in self._pending_embeds
+                if (item[0], item[3]) not in processed
             ]
         # New vector landed — drop the superseded old row so the index and the
         # vectors table don't accumulate orphans on every content update.
