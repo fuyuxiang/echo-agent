@@ -47,6 +47,11 @@ class TTSTool(Tool):
 
     async def _edge_tts(self, text: str, voice: str, output: Path) -> ToolResult:
         try:
+            from echo_agent.dependencies.lazy_deps import ensure, FeatureUnavailable
+            ensure("skill.tts-voice", prompt=False)
+        except FeatureUnavailable as e:
+            return ToolResult(success=False, error=str(e))
+        try:
             import edge_tts
         except ImportError:
             return ToolResult(success=False, error="edge-tts not installed: pip install edge-tts")
