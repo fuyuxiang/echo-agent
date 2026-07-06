@@ -44,6 +44,17 @@ def inbound_event_from_job(job: Any) -> InboundEvent:
         target_chat_id = f"cron:{job.id}"
         session_key_override = f"cron:{job.id}"
 
+    # A scheduled job runs with no human at the keyboard, so mark it unattended
+    # (otherwise the approval gate would route EXEC/DANGEROUS calls to a manual
+    # prompt that never gets answered — the job would hang or fail at fire time).
+    # The job exists in the scheduler store only because its creation went
+    # through the DANGEROUS-tier cronjob approval, so it carries a per-job
+    # authorization that lets the unattended resolver allow its work — scoped to
+    # this job, without loosening the global unattended policy for anything else.
+    # `unattended_authorized` defaults on but can be set False to force deny.
+    payload_dict = job.payload if isinstance(job.payload, dict) else {}
+    authorized = payload_dict.get("unattended_authorized", True)
+
     return InboundEvent(
         event_type=EventType.CRON,
         channel=target_channel,
@@ -57,20 +68,26 @@ def inbound_event_from_job(job: Any) -> InboundEvent:
             "source_session_key": source_session_key or session_key_override or "",
             "deliver_channel": target_channel,
             "deliver_chat_id": target_chat_id,
+            "_unattended": True,
+            "_cron_authorized": bool(authorized),
         },
     )
 
 
-def build_scheduled_job_handler(bus: Any, *, inspection_runner: Any = None) -> Callable[[Any], Awaitable[None]]:
-    async def _on_job(job: Any) -> None:
+def build_scheduled_job_handler(bus: Any, *, inspection_runner: Any = None) -> Callable[[Any], Awaitable[str | None]]:
+    async def _on_job(job: Any) -> str | None:
         payload = job.payload if isinstance(job.payload, dict) else {}
         if payload.get("_inspection_tick") and inspection_runner is not None:
             await inspection_runner()
-            return
+            return "inspection"
         accepted = await bus.publish_inbound(inbound_event_from_job(job))
         if not accepted:
             raise RuntimeError(
                 f"Scheduled job {job.id} was rejected by the bus (queue full or shutting down)"
             )
+        # "queued", not "success": the agent run and any user-facing delivery
+        # happen asynchronously after the event is accepted. The scheduler's
+        # last_status must not overstate this to a completed delivery.
+        return "queued"
 
     return _on_job

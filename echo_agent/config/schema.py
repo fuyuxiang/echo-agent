@@ -2014,6 +2014,14 @@ class MemoryConfig(_Base):
             "desc_en": "Query-embedding timeout (seconds); falls back to keyword search on timeout",
         },
     )
+    embed_load_timeout_seconds: float = Field(
+        default=60.0,
+        json_schema_extra={
+            "status": "effective", "ref": "memory/local_embed.py",
+            "desc_zh": "本地嵌入模型首次加载/下载的超时(秒),超时即标记失败并降级为关键词检索,避免下载挂起拖垮进程",
+            "desc_en": "Local embedding model first-load/download timeout (seconds); on timeout the embedder is marked failed and degrades to keyword search, preventing a hung download from starving the process",
+        },
+    )
     contradiction_scan_on_store: bool = Field(
         default=False,
         json_schema_extra={

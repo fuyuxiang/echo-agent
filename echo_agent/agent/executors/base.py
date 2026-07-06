@@ -147,15 +147,28 @@ class SandboxExecutor(BaseExecutor):
                 ".venv",
                 "node_modules",
                 "data/logs",
+                # Bundled runtime dirs are hundreds of MB and never needed inside
+                # the sandbox; copying them synchronously froze the event loop.
+                "runtime",
+                "python",
             )
-            shutil.copytree(self._source_workspace, self._workdir, dirs_exist_ok=True, ignore=ignore)
+            # copytree walks the whole workspace synchronously; even with the
+            # ignore list a large tree can block the loop thread for seconds, so
+            # run it off-loop.
+            await asyncio.to_thread(
+                shutil.copytree,
+                self._source_workspace,
+                self._workdir,
+                dirs_exist_ok=True,
+                ignore=ignore,
+            )
         else:
             self._workdir.mkdir(parents=True, exist_ok=True)
         logger.info("Sandbox created at {}", self._sandbox_dir)
 
     async def teardown(self) -> None:
         if self._sandbox_dir and self._sandbox_dir.exists():
-            shutil.rmtree(self._sandbox_dir, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, self._sandbox_dir, ignore_errors=True)
 
     async def execute(self, request: ExecRequest) -> ExecResponse:
         if not self._sandbox_dir:

@@ -29,6 +29,32 @@ to be reminded at a time, use `cronjob` — optionally also recording a note via
 the script. For a background one-off that must take effect, `spawn_task` can run
 the `cronjob` call for you.
 
+### Jobs that produce a file (audio/image/document)
+
+When the scheduled command generates an artifact the user must receive (e.g. a
+voice briefing), make the delivery happen inside the same tool call — do not
+assume a later step will send it. For audio use `text_to_speech(..., deliver=true)`
+(see the tts-voice skill); for other files call `send_file` explicitly with the
+target channel/chat. An unattended cron run may end right after producing the
+file, so "generate then hope it gets sent" silently drops the artifact.
+
+### After creating a job: confirm, then stop
+
+Once `cronjob(action="create")` returns, you are done. Send the user ONE
+confirmation with the concrete facts and end the turn:
+
+- job id, the schedule, and the next fire time (from the create result)
+- if a delivery target was inferred, say so; if the create result carried the
+  "⚠️ 无法确定投递目标" warning, relay it and ask for target_channel/target_chat_id.
+
+Do NOT try to "prove delivery works" by exercising the agent's own plumbing —
+reading `gateway/server.py`, `a2a/server.py`, or curling internal endpoints like
+`/v1/chat` or `/api/v1/message` is not verification, it's a rabbit hole that
+burns the turn and leaves the user with no reply. If you genuinely need to sanity
+-check the schedule, use `cronjob(action="list")`; trigger a real run at most
+once and only if the user asked. The scheduled job itself is the delivery test —
+it will fire on schedule.
+
 ## Quick Commands
 
 | Action | Example |

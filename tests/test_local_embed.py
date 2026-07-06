@@ -63,3 +63,22 @@ async def test_embed_returns_none_when_fastembed_missing():
         e = LocalEmbedder("BAAI/bge-small-zh-v1.5")
         assert e.available is False
         assert await e.embed("text") is None
+
+
+@pytest.mark.asyncio
+async def test_embed_degrades_on_load_hang():
+    """下载挂起（不抛异常、只是卡住）也应在超时后降级为 None，而不是永久挂起。"""
+    import time
+
+    def _hang(*_a, **_k):
+        time.sleep(10)  # 模拟卡死的下载
+        return MagicMock()
+
+    fake_mod = MagicMock(TextEmbedding=MagicMock(side_effect=_hang))
+    with patch.dict(sys.modules, {"fastembed": fake_mod}):
+        # 极短超时，确认 wait_for 生效并标记失败
+        e = LocalEmbedder("BAAI/bge-small-zh-v1.5", load_timeout_seconds=0.1)
+        assert await e.embed("text") is None
+        assert e._load_failed is True
+        # 失败后不再触发新的加载
+        assert await e.embed("again") is None

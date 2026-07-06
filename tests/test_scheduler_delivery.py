@@ -41,6 +41,36 @@ async def test_scheduler_job_handler_publishes_cron_event_to_source_chat() -> No
 
 
 @pytest.mark.asyncio
+async def test_handler_returns_queued_not_success() -> None:
+    """publish_inbound 只代表入队，handler 应返回 'queued' 而非声称已完成。"""
+    bus = MessageBus()
+    handler = build_scheduled_job_handler(bus)
+    job = ScheduledJob(
+        id="job2",
+        name="briefing",
+        payload={"command": "早报", "source_session_key": "weixin:wxid_9"},
+    )
+    status = await handler(job)
+    assert status == "queued"
+
+
+@pytest.mark.asyncio
+async def test_run_job_records_queued_status(tmp_path) -> None:
+    """_run_job 应如实记录 handler 返回的状态，而不是硬编码 success。"""
+    scheduler = Scheduler(
+        store_path=tmp_path / "scheduler.json",
+        on_job=build_scheduled_job_handler(MessageBus()),
+    )
+    job = ScheduledJob(
+        id="job3", name="b", cron_expr="*/5 * * * *",
+        payload={"command": "x", "source_session_key": "weixin:w"},
+    )
+    await scheduler._run_job(job)
+    assert job.last_status == "queued"
+    assert job.run_count == 1
+
+
+@pytest.mark.asyncio
 async def test_cronjob_create_records_current_chat_delivery(tmp_path) -> None:
     scheduler = Scheduler(store_path=tmp_path / "scheduler.json")
     tool = CronjobTool(scheduler)
@@ -64,3 +94,24 @@ async def test_cronjob_create_records_current_chat_delivery(tmp_path) -> None:
         "deliver_channel": "weixin",
         "deliver_chat_id": "wxid_123",
     }
+
+
+@pytest.mark.asyncio
+async def test_cronjob_create_warns_when_no_delivery_target(tmp_path) -> None:
+    """无法解析投递目标时,创建仍成功但必须显式告警,不静默吞产出。"""
+    scheduler = Scheduler(store_path=tmp_path / "scheduler.json")
+    tool = CronjobTool(scheduler)
+
+    # 会话键无法推导出 channel/chat_id(空键),且未显式指定 target
+    result = await tool.execute(
+        {
+            "action": "create",
+            "name": "orphan",
+            "schedule": "*/5 * * * *",
+            "command": "生成早报",
+        },
+        ToolExecutionContext(session_key=""),
+    )
+
+    assert result.success
+    assert "警告" in result.output or "⚠️" in result.output

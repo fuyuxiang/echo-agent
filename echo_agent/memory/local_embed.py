@@ -10,6 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import importlib.util
+import os
+import sys
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from loguru import logger
@@ -28,17 +32,28 @@ _DEFAULT_MODEL = "BAAI/bge-small-zh-v1.5"
 class LocalEmbedder:
     """fastembed-backed local embedder with lazy load and graceful failure."""
 
-    def __init__(self, model_name: str = _DEFAULT_MODEL):
+    def __init__(self, model_name: str = _DEFAULT_MODEL, load_timeout_seconds: float = 60.0):
         self._model_name = model_name
         self._model: Any | None = None
         self._load_failed = False
         self._load_lock = asyncio.Lock()
+        self._load_timeout = load_timeout_seconds
+        # Dedicated single-thread pool so a hung model download never occupies a
+        # worker in the shared default executor (which also serves session IO,
+        # provider streaming, etc.). A stuck download stays isolated here.
+        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="local-embed")
 
     @property
     def available(self) -> bool:
+        # If fastembed is already imported, it's obviously available. Otherwise
+        # probe with find_spec, which locates the module WITHOUT importing it
+        # (and its heavy onnxruntime/tokenizers deps), so calling this on the
+        # loop thread at startup no longer stalls the loop.
+        if sys.modules.get("fastembed") is not None:
+            return True
         try:
-            return importlib.import_module("fastembed") is not None
-        except ImportError:
+            return importlib.util.find_spec("fastembed") is not None
+        except (ImportError, ValueError):
             return False
 
     @property
@@ -51,6 +66,10 @@ class LocalEmbedder:
 
     def _load_model_sync(self) -> Any | None:
         try:
+            # Bound the underlying HF socket so a slow/dead mirror fails fast at
+            # the transport layer instead of relying solely on the outer
+            # wait_for (which cannot interrupt a blocked C-level socket read).
+            os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "30")
             fastembed = importlib.import_module("fastembed")
             return fastembed.TextEmbedding(model_name=self._model_name)
         except Exception as e:
@@ -76,7 +95,27 @@ class LocalEmbedder:
         if self._model is None:
             async with self._load_lock:
                 if self._model is None and not self._load_failed:
-                    model = await loop.run_in_executor(None, self._load_model_sync)
+                    try:
+                        # wait_for bounds the load: a hung network download would
+                        # otherwise hold the lock forever and never set
+                        # _load_failed, leaving the "download hangs" failure mode
+                        # uncovered (only exceptions were handled before).
+                        model = await asyncio.wait_for(
+                            loop.run_in_executor(self._pool, self._load_model_sync),
+                            timeout=self._load_timeout,
+                        )
+                    except (asyncio.TimeoutError, TimeoutError):
+                        # The executor thread may still be stuck downloading, but
+                        # it is isolated in our dedicated single-thread pool, so
+                        # it cannot starve the shared default executor. Mark the
+                        # embedder dead so we never wait on it again this process.
+                        self._load_failed = True
+                        logger.warning(
+                            "Local embedding model '{}' load timed out after {}s; "
+                            "memory retrieval degrades to keyword-only for this process",
+                            self._model_name, self._load_timeout,
+                        )
+                        return None
                     if model is None:
                         # Do not retry the download on every message — one
                         # failure marks the embedder dead for this process.
@@ -84,7 +123,7 @@ class LocalEmbedder:
                         return None
                     self._model = model
         try:
-            return await loop.run_in_executor(None, self._embed_sync, text)
+            return await loop.run_in_executor(self._pool, self._embed_sync, text)
         except Exception as e:
             logger.debug("Local embedding failed: {}", e)
             return None

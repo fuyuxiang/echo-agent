@@ -67,3 +67,18 @@ python3 scripts/generate_briefing.py --dry-run
 ## Scheduling
 
 Add to Echo Agent's cron channel for automatic daily delivery. The cron expression `0 8 * * *` fires at 8:00 AM daily.
+
+Create the job with the `cronjob` tool. If the briefing produces a file (e.g. a
+voice version), deliver it inside the same run — for audio use
+`text_to_speech(..., deliver=true)`, for other files call `send_file` with the
+target channel/chat. An unattended run may end right after generating the file,
+so a "generate now, send later" split silently drops it.
+
+### After creating the job: confirm, then stop
+
+When `cronjob(action="create")` returns, send the user ONE confirmation — job id,
+schedule, next fire time — and end the turn. Do NOT "verify delivery" by reading
+`gateway/server.py` / `a2a/server.py` or curling internal endpoints
+(`/v1/chat`, `/api/v1/message`); that is not a delivery test, it just burns the
+turn and leaves the user without a reply. To sanity-check, use
+`cronjob(action="list")`; the scheduled fire is the real delivery.

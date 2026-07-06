@@ -70,6 +70,24 @@ python3 scripts/text_to_speech.py "长文本内容..." --voice zh-CN-YunxiNeural
 python3 scripts/text_to_speech.py --list-voices zh
 ```
 
+## Delivering the audio (important for scheduled/unattended tasks)
+
+Generating an mp3 does NOT send it. When the user should actually receive the
+audio (e.g. a cron-triggered morning briefing), use the built-in
+`text_to_speech` tool with `deliver=true` so synthesis and delivery happen in
+one step:
+
+```
+text_to_speech(text="北京今天多云…", voice="zh-CN-XiaoxiaoNeural", deliver=true)
+```
+
+With `deliver=true` the tool sends the file to the current chat automatically
+(target inferred from the session, or override with `deliver_channel` /
+`deliver_chat_id`). Do NOT rely on a separate follow-up `send_file` call inside
+a scheduled job — an unattended run may end after synthesis and the audio would
+never reach the user.
+
+
 ## Long Text Handling
 
 Edge-TTS handles long text automatically. For very long content (>5000 chars), the script splits into chunks and concatenates audio files.

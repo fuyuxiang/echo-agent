@@ -168,3 +168,42 @@ class TestPersistence:
         if store_file.exists():
             data = json.loads(store_file.read_text())
             assert "exec:ls" not in data.get("permanent", [])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Family-wildcard (SESSION_ALL) — "approve all exec for this session"
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestFamilyWildcard:
+    def test_wildcard_matches_any_command_in_family(self):
+        al = ApprovalAllowlist()
+        al.approve("s1", "exec:*", ApprovalLevel.SESSION_ALL)
+        # The prompted command AND later, differently-named ones all pass.
+        assert al.is_approved("s1", "exec:pip") is True
+        assert al.is_approved("s1", "exec:ffprobe") is True
+        assert al.is_approved("s1", "exec:find") is True
+
+    def test_wildcard_does_not_cross_families(self):
+        al = ApprovalAllowlist()
+        al.approve("s1", "exec:*", ApprovalLevel.SESSION_ALL)
+        # code: and tool: families are untouched by an exec wildcard.
+        assert al.is_approved("s1", "code:python") is False
+        assert al.is_approved("s1", "tool:cronjob") is False
+
+    def test_wildcard_is_session_scoped(self):
+        al = ApprovalAllowlist()
+        al.approve("s1", "exec:*", ApprovalLevel.SESSION_ALL)
+        # A different session does not inherit the grant.
+        assert al.is_approved("s2", "exec:pip") is False
+
+    def test_wildcard_not_written_to_disk(self, tmp_path):
+        store_file = tmp_path / "allowlist.json"
+        al = ApprovalAllowlist(store_path=store_file)
+        al.approve("s1", "exec:*", ApprovalLevel.SESSION_ALL)
+        # SESSION_ALL is in-memory only; nothing lands in the permanent store.
+        if store_file.exists():
+            data = json.loads(store_file.read_text())
+            assert "exec:*" not in data.get("permanent", [])
+        al2 = ApprovalAllowlist(store_path=store_file)
+        assert al2.is_approved("s1", "exec:pip") is False

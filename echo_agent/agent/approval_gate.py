@@ -134,15 +134,23 @@ class ApprovalGate:
         if not self._approval_required(tool_name, guard, risk):
             return _approved()
 
-        # Step 10: Allowlist check (EXEC level)
+        # Step 10: Allowlist check (EXEC and DANGEROUS)
+        # The write path (ApprovalAllowlist.approve) records an "always" grant for
+        # ANY risk level, but historically this read path only honoured it for
+        # EXEC — so a permanent grant for a DANGEROUS tool (e.g. tool:cronjob) was
+        # written to disk yet never matched, and the user kept getting re-prompted
+        # despite choosing "always". Honour the grant for DANGEROUS too. The
+        # Step-1 static guard has already hard-blocked genuinely destructive
+        # patterns above, so this respects the user's explicit persistent consent
+        # without weakening those hard blocks.
         session_key = event.session_key if event else ""
         pattern_key = build_pattern_key(tool_name, arguments)
-        if risk == RiskLevel.EXEC and self._allowlist.is_approved(session_key, pattern_key):
+        if risk in (RiskLevel.EXEC, RiskLevel.DANGEROUS) and self._allowlist.is_approved(session_key, pattern_key):
             return _approved()
 
         # Step 11: Unattended mode check
         if self._is_unattended(event, channel):
-            return self._resolve_unattended(tool_name, risk, session_key, pattern_key, guard)
+            return self._resolve_unattended(tool_name, risk, session_key, pattern_key, guard, event)
 
         # Step 12: Smart approval (EXEC level only)
         if risk == RiskLevel.EXEC and approval_cfg.mode == "smart" and self._provider:
@@ -172,7 +180,7 @@ class ApprovalGate:
         approved_actions = self._approved_actions(tool_name, guard)
         return await self._manual_approval_flow(
             tool_name, arguments, sender_id, channel, event, running,
-            guard, approved_actions, session_key, pattern_key,
+            guard, approved_actions, session_key, pattern_key, risk,
         )
 
     # PLACEHOLDER_METHODS
@@ -198,6 +206,7 @@ class ApprovalGate:
         approved_actions: frozenset[str],
         session_key: str,
         pattern_key: str,
+        risk: RiskLevel = RiskLevel.EXEC,
     ) -> ApprovalCheck:
         approval_req = self._approval.request_approval(
             tool_name, tool_name=tool_name, params=arguments, user_id=sender_id,
@@ -212,7 +221,7 @@ class ApprovalGate:
 
         if event is not None:
             await self._publish_approval_request(
-                event, approval_req.id, tool_name, guard, pattern_key, arguments
+                event, approval_req.id, tool_name, guard, pattern_key, arguments, risk
             )
 
         if not running and self._is_interactive_channel(channel):
@@ -231,7 +240,7 @@ class ApprovalGate:
         )
         if decided and decided.status == ApprovalStatus.APPROVED:
             level = self._parse_approval_level(decided.reason)
-            self._allowlist.approve(session_key, pattern_key, level)
+            self._record_approval(session_key, pattern_key, level)
             return ApprovalCheck(approved_actions=approved_actions)
         if decided and decided.status == ApprovalStatus.DENIED:
             return ApprovalCheck(ToolResult(
@@ -255,6 +264,26 @@ class ApprovalGate:
 
     # PLACEHOLDER_HELPERS
 
+    @staticmethod
+    def _describe_action(tool_name: str, arguments: dict[str, Any] | None) -> str:
+        """A one-line, human-readable summary of what is about to run.
+
+        For shell/code tools the actual command/snippet is what the user needs to
+        judge risk — the bare tool name ('exec') tells them nothing. Truncated so
+        a huge heredoc can't flood the chat."""
+        args = arguments or {}
+        raw = ""
+        if tool_name in ("exec", "process"):
+            raw = str(args.get("command", "")).strip()
+        elif tool_name == "execute_code":
+            lang = str(args.get("language", "")).strip()
+            raw = f"[{lang}] " + str(args.get("code", "")).strip()
+        if not raw:
+            # Fall back to a compact key=value view of the args.
+            raw = ", ".join(f"{k}={str(v)[:60]}" for k, v in args.items()) or tool_name
+        raw = " ".join(raw.split())  # collapse newlines/whitespace to one line
+        return raw if len(raw) <= 200 else raw[:200] + " …(截断)"
+
     async def _publish_approval_request(
         self,
         event: InboundEvent,
@@ -263,17 +292,42 @@ class ApprovalGate:
         guard: GuardDecision,
         pattern_key: str,
         arguments: dict[str, Any] | None = None,
+        risk: RiskLevel = RiskLevel.EXEC,
     ) -> None:
-        reason = guard.reason or "approval policy requires confirmation"
-        text = (
-            f"⚠️ 需要确认执行: {tool_name}\n"
-            f"原因: {reason}\n\n"
-            f"回复:\n"
-            f"  /approve {request_id} — 允许本次\n"
-            f"  /approve {request_id} session — 本会话内允许同类操作\n"
-            f"  /approve {request_id} always — 永久允许同类操作\n"
-            f"  /deny {request_id} [原因] — 拒绝"
+        reason = guard.reason or "审批策略要求确认"
+        action = self._describe_action(tool_name, arguments)
+        # The scope wording is written out in full so the user knows exactly what
+        # each choice grants — the old "同类操作" was ambiguous about whether it
+        # meant this one command or every command.
+        family = pattern_key.split(":", 1)[0] if ":" in pattern_key else ""
+        cmd_name = pattern_key.split(":", 1)[1] if ":" in pattern_key else pattern_key
+        lines = [
+            f"⚠️ 需要确认执行  (风险: {risk.value.upper()})",
+            f"工具: {tool_name}",
+            f"操作: {action}",
+            f"原因: {reason}",
+            "",
+            "回复其一:",
+            f"  /approve {request_id}          仅本次",
+        ]
+        # "approve all" only makes sense (and is only honoured) for EXEC-family
+        # shell work — don't advertise it for DANGEROUS tools like cronjob.
+        if family in self._SESSION_ALL_FAMILIES:
+            lines.append(
+                f"  /approve {request_id} all      本轮任务全放行:本会话内所有命令自动执行(推荐,省去逐条确认)"
+            )
+            lines.append(
+                f"  /approve {request_id} session  本会话内只放行相同命令({cmd_name})"
+            )
+        else:
+            lines.append(
+                f"  /approve {request_id} session  本会话内放行相同操作"
+            )
+        lines.append(
+            f"  /approve {request_id} always   永久放行相同操作({cmd_name}),写入磁盘"
         )
+        lines.append(f"  /deny {request_id} [原因]      拒绝")
+        text = "\n".join(lines)
         out = OutboundEvent.text_reply(
             channel=event.channel,
             chat_id=event.chat_id,
@@ -334,10 +388,29 @@ class ApprovalGate:
         return channel in {"cron", "scheduler"}
 
     def _resolve_unattended(
-        self, tool_name: str, risk: RiskLevel, session_key: str, pattern_key: str, guard: GuardDecision,
+        self, tool_name: str, risk: RiskLevel, session_key: str, pattern_key: str,
+        guard: GuardDecision, event: InboundEvent | None = None,
     ) -> ApprovalCheck:
         policy = self._config.permissions.approval.unattended_policy
         approved = self._approved_actions(tool_name, guard)
+
+        # Per-job authorization: a cron job only lands in the scheduler because
+        # its creation passed the DANGEROUS-tier cronjob approval, which is the
+        # human's up-front consent to let this specific job run unattended. When
+        # the fired event carries that authorization we allow its WRITE/EXEC work
+        # regardless of the global unattended_policy — the Step-1 static guard has
+        # already hard-blocked genuinely destructive patterns (rm -rf, fork bombs,
+        # denied network, etc.) above, so this is not a blanket exec bypass.
+        #
+        # DANGEROUS stays denied even when authorized: that prevents an unattended
+        # job from creating more cron jobs / installing skills with no human in
+        # the loop (a privilege-escalation / recursion vector). The authorization
+        # is scoped to the job's own work, not to spawning new privileged state.
+        if event is not None and event.metadata.get("_cron_authorized"):
+            if risk in (RiskLevel.WRITE, RiskLevel.EXEC):
+                return ApprovalCheck(approved_actions=approved)
+            # DANGEROUS (and anything else) falls through to the deny below.
+
         if policy == "allow_safe":
             if risk == RiskLevel.WRITE:
                 return ApprovalCheck(approved_actions=approved)
@@ -357,12 +430,40 @@ class ApprovalGate:
             actions.add(guard.approval_action)
         return frozenset(actions)
 
+    # Only these families can be granted session-wide via "approve all". They map
+    # to EXEC-risk shell work (build_pattern_key emits exec:/code:/process:). A
+    # "tool:*" wildcard is deliberately NOT allowed — that would blanket-approve
+    # DANGEROUS tools (cronjob, skill install, spawn) for the session, the exact
+    # privilege-escalation / recursion vector the unattended path guards against.
+    _SESSION_ALL_FAMILIES = frozenset({"exec", "code", "process"})
+
+    def _record_approval(self, session_key: str, pattern_key: str, level: ApprovalLevel) -> None:
+        """Persist the user's decision at the requested scope.
+
+        For SESSION_ALL we widen the recorded key to a family wildcard (exec:*)
+        so later, differently-named commands in the same session run without a
+        fresh prompt. If the family isn't an EXEC-family one, we fall back to a
+        plain SESSION grant of the exact key — never a broad wildcard.
+        """
+        if level == ApprovalLevel.SESSION_ALL:
+            family = pattern_key.split(":", 1)[0] if ":" in pattern_key else ""
+            if family in self._SESSION_ALL_FAMILIES:
+                self._allowlist.approve(session_key, f"{family}:*", ApprovalLevel.SESSION_ALL)
+                return
+            # Non-exec family (e.g. tool:cronjob): downgrade to an exact
+            # session grant so "all" can't broaden a DANGEROUS tool.
+            self._allowlist.approve(session_key, pattern_key, ApprovalLevel.SESSION)
+            return
+        self._allowlist.approve(session_key, pattern_key, level)
+
     @staticmethod
     def _parse_approval_level(reason: str) -> ApprovalLevel:
         if reason:
             lower = reason.strip().lower()
             if lower == "always":
                 return ApprovalLevel.ALWAYS
+            if lower in ("all", "session-all", "session_all", "task"):
+                return ApprovalLevel.SESSION_ALL
             if lower == "session":
                 return ApprovalLevel.SESSION
         return ApprovalLevel.ONCE

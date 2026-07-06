@@ -176,6 +176,71 @@ async def test_dynamic_exec_tool_requires_approval_when_unattended():
 
 
 @pytest.mark.asyncio
+async def test_cron_authorized_allows_exec_unattended():
+    """P1-6: 携带 per-job 授权的 cron 事件在无人值守下放行 EXEC(全局仍 deny)。"""
+    cfg = load_config()
+    cfg.permissions.approval.mode = "manual"
+    cfg.permissions.approval.unattended_policy = "deny"
+    bus = MessageBus()
+    gate = _make_gate(cfg, bus)
+
+    event = InboundEvent(
+        channel="weixin", sender_id="cron", chat_id="c1",
+        content=[ContentBlock(type=ContentType.TEXT, text="生成天气语音")],
+        metadata={"_unattended": True, "_cron_authorized": True},
+    )
+    check = await gate.check(
+        "exec", {"command": "edge-tts --text hi -o a.mp3"},
+        "cron", channel="weixin", event=event, running=True,
+    )
+    assert check.denial is None
+    assert check.approved_actions  # 非空,工具自身 guard 可放行
+
+
+@pytest.mark.asyncio
+async def test_cron_authorized_still_denies_dangerous_unattended():
+    """P1-6: 即便授权,DANGEROUS(如再建 cron)在无人值守下仍拒,防递归提权。"""
+    cfg = load_config()
+    cfg.permissions.approval.mode = "manual"
+    cfg.permissions.approval.unattended_policy = "deny"
+    bus = MessageBus()
+    gate = _make_gate(cfg, bus)
+
+    event = InboundEvent(
+        channel="weixin", sender_id="cron", chat_id="c1",
+        content=[ContentBlock(type=ContentType.TEXT, text="x")],
+        metadata={"_unattended": True, "_cron_authorized": True},
+    )
+    check = await gate.check(
+        "cronjob", {"action": "create", "name": "n", "schedule": "* * * * *", "command": "c"},
+        "cron", channel="weixin", event=event, running=True,
+    )
+    assert check.denial is not None
+    assert "unattended" in (check.denial.error or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_cron_unauthorized_denies_exec_unattended():
+    """P1-6: 未携带授权标记的无人值守 EXEC 仍被拒(deny 策略下)。"""
+    cfg = load_config()
+    cfg.permissions.approval.mode = "manual"
+    cfg.permissions.approval.unattended_policy = "deny"
+    bus = MessageBus()
+    gate = _make_gate(cfg, bus)
+
+    event = InboundEvent(
+        channel="weixin", sender_id="cron", chat_id="c1",
+        content=[ContentBlock(type=ContentType.TEXT, text="x")],
+        metadata={"_unattended": True},  # 无 _cron_authorized
+    )
+    check = await gate.check(
+        "exec", {"command": "edge-tts --text hi -o a.mp3"},
+        "cron", channel="weixin", event=event, running=True,
+    )
+    assert check.denial is not None
+
+
+@pytest.mark.asyncio
 async def test_smart_unavailable_sets_notify_user():
     cfg = load_config()
     cfg.permissions.approval.mode = "smart"
@@ -194,3 +259,30 @@ async def test_smart_unavailable_sets_notify_user():
     assert check.denial is not None
     assert check.notify_user is True
     assert check.notice == notice_for(REASON_APPROVAL_UNAVAILABLE)
+
+
+# ── "approve all" scope recording ──────────────────────────────────────────────
+
+from echo_agent.permissions.allowlist import ApprovalLevel  # noqa: E402
+
+
+def test_record_approval_all_grants_exec_family_wildcard():
+    cfg = load_config()
+    gate = _make_gate(cfg, MessageBus())
+    # User replied "/approve <id> all" on an exec:pip prompt.
+    gate._record_approval("sess1", "exec:pip", ApprovalLevel.SESSION_ALL)
+    # Later, differently-named exec commands in the same session are now allowed.
+    assert gate._allowlist.is_approved("sess1", "exec:pip") is True
+    assert gate._allowlist.is_approved("sess1", "exec:ffprobe") is True
+    # Other families are NOT swept in.
+    assert gate._allowlist.is_approved("sess1", "code:python") is False
+
+
+def test_record_approval_all_on_dangerous_tool_does_not_broaden():
+    cfg = load_config()
+    gate = _make_gate(cfg, MessageBus())
+    # "all" chosen on a DANGEROUS tool:cronjob prompt must NOT grant tool:* —
+    # only the exact key, at session scope (no privilege-escalation blanket).
+    gate._record_approval("sess1", "tool:cronjob", ApprovalLevel.SESSION_ALL)
+    assert gate._allowlist.is_approved("sess1", "tool:cronjob") is True
+    assert gate._allowlist.is_approved("sess1", "tool:skill_install") is False

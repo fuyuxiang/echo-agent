@@ -59,7 +59,18 @@ class CronjobTool(Tool):
                 payload=payload,
             )
             created = self._scheduler.add_job(job)
-            return ToolResult(output=f"Created job '{name}' (id={created.id}): {schedule}", metadata={"job_id": created.id})
+            out = f"Created job '{name}' (id={created.id}): {schedule}"
+            if not target_channel or not target_chat_id:
+                # No resolvable delivery target: the job will run but any user-
+                # facing output falls back to the cron pseudo-channel and is
+                # dropped. Surface this instead of silently creating a job whose
+                # results the user will never receive.
+                out += (
+                    "\n⚠️ 警告：无法确定投递目标(缺少 target_channel/target_chat_id，"
+                    "且当前会话无法推导)。该任务会按时执行,但产出不会发送给任何人。"
+                    "如需收到结果,请在创建时指定 target_channel 和 target_chat_id。"
+                )
+            return ToolResult(output=out, metadata={"job_id": created.id})
 
         if action == "list":
             jobs = self._scheduler.list_jobs()

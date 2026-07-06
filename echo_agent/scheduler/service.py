@@ -330,8 +330,14 @@ class Scheduler:
         job.run_count += 1
         try:
             if self._on_job:
-                await self._on_job(job)
-                job.last_status = "success"
+                # The handler returns what actually happened. For bus-dispatched
+                # jobs this is "queued" — the event was accepted into the bus but
+                # the agent runs (and any delivery) asynchronously afterwards.
+                # Recording "success" here would be a false signal: it would only
+                # ever mean "enqueued", masking downstream execution/delivery
+                # failures. Honour the handler's own status instead.
+                status = await self._on_job(job)
+                job.last_status = status or "queued"
                 job.last_error = ""
             else:
                 job.last_status = "skipped"

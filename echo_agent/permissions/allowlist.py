@@ -16,6 +16,12 @@ class ApprovalLevel(str, Enum):
     ONCE = "once"
     SESSION = "session"
     ALWAYS = "always"
+    # Session-wide grant for an entire tool family (e.g. every exec command in
+    # this session), not just the one command that was prompted. In-memory only:
+    # never written to disk, cleared on restart / clear_session. The gate
+    # translates this into a family-wildcard key (exec:*) recorded at SESSION
+    # scope, so it reuses the same storage/matching as an ordinary session grant.
+    SESSION_ALL = "session_all"
 
 
 class ApprovalAllowlist:
@@ -30,19 +36,37 @@ class ApprovalAllowlist:
             self._load()
 
     def is_approved(self, session_key: str, pattern_key: str) -> bool:
-        """Check if a pattern is approved at any level."""
+        """Check if a pattern is approved at any level.
+
+        Besides an exact match, a family-wildcard grant (e.g. ``exec:*``) matches
+        any key in that family (``exec:pip``, ``exec:ffprobe``, ...). The family
+        is the prefix before the first ``:`` in the pattern key, mirroring
+        build_pattern_key's ``<family>:<name>`` shape. Wildcards are only ever
+        recorded at SESSION scope, so this is what makes "approve all exec for
+        this session" cover later, differently-named commands.
+        """
         with self._lock:
             if pattern_key in self._permanent:
                 return True
             session_set = self._session_approved.get(session_key, set())
-            return pattern_key in session_set
+            if pattern_key in session_set:
+                return True
+            if ":" in pattern_key:
+                family_wildcard = pattern_key.split(":", 1)[0] + ":*"
+                if family_wildcard in session_set:
+                    return True
+            return False
 
     def approve(self, session_key: str, pattern_key: str, level: ApprovalLevel = ApprovalLevel.ONCE) -> None:
         """Record an approval at the specified persistence level."""
         if level == ApprovalLevel.ONCE:
             return
         with self._lock:
-            if level == ApprovalLevel.SESSION:
+            # SESSION_ALL persists exactly like SESSION (in-memory, per session);
+            # the only difference is the pattern_key the gate hands us — a family
+            # wildcard such as "exec:*" instead of a single "exec:pip". Never
+            # written to disk, so a broad session grant evaporates on restart.
+            if level in (ApprovalLevel.SESSION, ApprovalLevel.SESSION_ALL):
                 self._session_approved.setdefault(session_key, set()).add(pattern_key)
             elif level == ApprovalLevel.ALWAYS:
                 self._permanent.add(pattern_key)
