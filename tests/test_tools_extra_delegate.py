@@ -191,14 +191,14 @@ class TestSpawnTool:
 
     @pytest.mark.asyncio
     async def test_spawn_publishes_correct_channel(self):
-        """Background task completion must publish InboundEvent with the
+        """Background task completion must publish OutboundEvent with the
         channel derived from session_key, not hardcoded 'system'."""
         provider = MagicMock()
         provider.chat_with_retry = AsyncMock(
             return_value=MagicMock(content="weather result")
         )
         bus = MagicMock()
-        bus.publish_inbound = AsyncMock(return_value=True)
+        bus.publish_outbound = AsyncMock(return_value=True)
         tool = SpawnTool(provider=provider, bus=bus)
 
         ctx = _ctx(session_key="weixin:o9cq8004abc@im.wechat")
@@ -209,12 +209,12 @@ class TestSpawnTool:
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
 
-        bus.publish_inbound.assert_called_once()
-        event = bus.publish_inbound.call_args[0][0]
+        bus.publish_outbound.assert_called_once()
+        event = bus.publish_outbound.call_args[0][0]
         assert event.channel == "weixin"
         assert event.chat_id == "o9cq8004abc@im.wechat"
-        assert event.session_key == "weixin:o9cq8004abc@im.wechat"
         assert "weather result" in event.text
+        assert event.metadata.get("_background_result") is True
 
     @pytest.mark.asyncio
     async def test_spawn_publishes_gateway_channel(self):
@@ -224,7 +224,7 @@ class TestSpawnTool:
             return_value=MagicMock(content="done")
         )
         bus = MagicMock()
-        bus.publish_inbound = AsyncMock(return_value=True)
+        bus.publish_outbound = AsyncMock(return_value=True)
         tool = SpawnTool(provider=provider, bus=bus)
 
         ctx = _ctx(session_key="gateway:weixin:wxid_123")
@@ -234,7 +234,7 @@ class TestSpawnTool:
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
 
-        event = bus.publish_inbound.call_args[0][0]
+        event = bus.publish_outbound.call_args[0][0]
         assert event.channel == "gateway:weixin"
         assert event.chat_id == "wxid_123"
 
@@ -246,7 +246,7 @@ class TestSpawnTool:
             return_value=MagicMock(content="done")
         )
         bus = MagicMock()
-        bus.publish_inbound = AsyncMock(return_value=True)
+        bus.publish_outbound = AsyncMock(return_value=True)
         tool = SpawnTool(provider=provider, bus=bus)
 
         await tool.execute({"task": "orphan task"}, None)
@@ -255,7 +255,7 @@ class TestSpawnTool:
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
 
-        event = bus.publish_inbound.call_args[0][0]
+        event = bus.publish_outbound.call_args[0][0]
         assert event.channel == "system"
 
     def test_execution_mode(self):

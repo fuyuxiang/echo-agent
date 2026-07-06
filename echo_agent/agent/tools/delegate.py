@@ -378,7 +378,7 @@ class SpawnTool(Tool):
             logger.info("Background task {} completed: {}", task_id, result[:100])
 
             if self._bus:
-                from echo_agent.bus.events import InboundEvent
+                from echo_agent.bus.events import OutboundEvent
                 from echo_agent.scheduler.delivery import target_from_session_key
 
                 if ctx and ctx.session_key:
@@ -388,13 +388,13 @@ class SpawnTool(Tool):
                 channel = channel or "system"
                 chat_id = chat_id or "system"
 
-                announce = InboundEvent.text_message(
-                    channel=channel, sender_id="system",
+                announce = OutboundEvent.from_text_with_media(
+                    channel=channel,
                     chat_id=chat_id,
                     text=f"[Background task {task_id} completed]\n\n{result}",
-                    session_key_override=ctx.session_key if ctx else f"{channel}:{chat_id}",
                 )
-                await self._bus.publish_inbound(announce)
+                announce.metadata["_background_result"] = True
+                await self._bus.publish_outbound(announce)
         except Exception as e:
             logger.error("Background task {} failed: {}", task_id, e)
         finally:
