@@ -32,7 +32,78 @@ WORKER_BLOCKED_TOOLS = frozenset({
     "cronjob",
 })
 
+# spawn_task runs a self-contained background agent whose whole purpose is to
+# "go land one thing" on the user's behalf (write a file, register a cron job,
+# run a command). Unlike delegate workers — which report findings back to the
+# orchestrator — a spawned worker IS the actor, so it is allowed to schedule
+# cron jobs. spawn/delegate/clarify are still blocked: they are the recursion
+# vectors (a spawned worker must not spawn again — that was the message storm
+# c2afd52 tried to kill). message/notify stay blocked so the worker cannot talk
+# to the user directly; its result is delivered once, by SpawnTool itself.
+SPAWN_BLOCKED_TOOLS = frozenset({
+    "delegate_task",
+    "spawn_task",
+    "clarify",
+    "message",
+    "notify",
+})
+
 _MAX_TOOL_RESULT_CHARS = 16000
+
+
+def build_worker_tool_executor(
+    *,
+    tool_registry: Any,
+    approval_gate: Any,
+    credentials: Any,
+    parent_ctx: ToolExecutionContext | None,
+    allowed_tools: set[str],
+    depth: int,
+) -> Any:
+    """Build a tool executor that runs worker tool calls through the real
+    ToolRegistry, gated by the approval flow and contained to ``allowed_tools``.
+
+    Shared by DelegateTool (orchestrator workers) and SpawnTool (background
+    workers) so both honour the exact same approval/containment contract.
+    """
+
+    async def _execute(tool_name: str, tool_call: ToolCallRequest, index: int) -> str:
+        if tool_name not in allowed_tools:
+            return f"Error: Tool '{tool_name}' is not available for this worker."
+
+        approval_check = await approval_gate.check(
+            tool_name,
+            tool_call.arguments,
+            parent_ctx.user_id if parent_ctx else "",
+            channel="",
+            event=None,
+            running=True,
+        )
+        if approval_check.denial:
+            return f"Error: {approval_check.denial.error or approval_check.denial.text}"
+
+        from echo_agent.agent.tools.base import build_idempotency_key
+        trace_id = parent_ctx.trace_id if parent_ctx else uuid.uuid4().hex[:12]
+        worker_ctx = ToolExecutionContext(
+            execution_id=uuid.uuid4().hex[:12],
+            trace_id=trace_id,
+            session_key=parent_ctx.session_key if parent_ctx else "",
+            user_id=parent_ctx.user_id if parent_ctx else "",
+            agent_id=f"worker_{depth}",
+            attempt_index=0,
+            idempotency_key=build_idempotency_key(trace_id, tool_name, index, tool_call.arguments),
+            parent_execution_id=f"worker:{tool_name}:{depth}",
+            credentials=credentials.get_for_tool(tool_name) if credentials else {},
+            approved_actions=approval_check.approved_actions,
+            allowed_tools=frozenset(allowed_tools),
+        )
+        result = await tool_registry.execute(tool_name, tool_call.arguments, worker_ctx)
+        text = result.text
+        if len(text) > _MAX_TOOL_RESULT_CHARS:
+            text = text[:_MAX_TOOL_RESULT_CHARS] + "\n...(truncated)"
+        return text
+
+    return _execute
 
 
 class DelegateTool(Tool):
@@ -266,43 +337,14 @@ class DelegateTool(Tool):
     def _make_tool_executor(
         self, parent_ctx: ToolExecutionContext | None, allowed_tools: set[str], depth: int
     ) -> Any:
-        async def _execute(tool_name: str, tool_call: ToolCallRequest, index: int) -> str:
-            if tool_name not in allowed_tools:
-                return f"Error: Tool '{tool_name}' is not available for this worker."
-
-            approval_check = await self._approval_gate.check(
-                tool_name,
-                tool_call.arguments,
-                parent_ctx.user_id if parent_ctx else "",
-                channel="",
-                event=None,
-                running=True,
-            )
-            if approval_check.denial:
-                return f"Error: {approval_check.denial.error or approval_check.denial.text}"
-
-            from echo_agent.agent.tools.base import build_idempotency_key
-            trace_id = parent_ctx.trace_id if parent_ctx else uuid.uuid4().hex[:12]
-            worker_ctx = ToolExecutionContext(
-                execution_id=uuid.uuid4().hex[:12],
-                trace_id=trace_id,
-                session_key=parent_ctx.session_key if parent_ctx else "",
-                user_id=parent_ctx.user_id if parent_ctx else "",
-                agent_id=f"worker_{depth}",
-                attempt_index=0,
-                idempotency_key=build_idempotency_key(trace_id, tool_name, index, tool_call.arguments),
-                parent_execution_id=f"worker:{tool_name}:{depth}",
-                credentials=self._credentials.get_for_tool(tool_name) if self._credentials else {},
-                approved_actions=approval_check.approved_actions,
-                allowed_tools=frozenset(allowed_tools),
-            )
-            result = await self._tool_registry.execute(tool_name, tool_call.arguments, worker_ctx)
-            text = result.text
-            if len(text) > _MAX_TOOL_RESULT_CHARS:
-                text = text[:_MAX_TOOL_RESULT_CHARS] + "\n...(truncated)"
-            return text
-
-        return _execute
+        return build_worker_tool_executor(
+            tool_registry=self._tool_registry,
+            approval_gate=self._approval_gate,
+            credentials=self._credentials,
+            parent_ctx=parent_ctx,
+            allowed_tools=allowed_tools,
+            depth=depth,
+        )
 
     @staticmethod
     def _format_results(results: list[WorkerResult], total_duration: float) -> str:
@@ -326,25 +368,59 @@ class DelegateTool(Tool):
 
 
 class SpawnTool(Tool):
-    """Spawn a background task that runs asynchronously."""
+    """Spawn a background worker agent that runs asynchronously WITH tools.
+
+    Unlike a bare chat completion, the spawned worker executes real tool calls
+    (exec, write_file, cronjob, ...) through the shared ToolRegistry, gated by
+    the same approval flow delegate workers use. It is the actor for the task,
+    not a planner: its final result reflects side effects actually performed,
+    so a spawned "set a daily reminder" task really writes scheduler.json.
+    """
 
     name = "spawn_task"
     description = (
-        "Spawn a background task that runs asynchronously. "
-        "Returns immediately with a task ID. The result will be announced when complete."
+        "Spawn a background worker that runs asynchronously and CAN use tools "
+        "(run commands, write files, schedule cron jobs). Returns immediately "
+        "with a task ID; the real result is delivered when the worker finishes. "
+        "Use for fire-and-forget work that must actually take effect in the "
+        "background. The worker cannot spawn or delegate further."
     )
     parameters = {
         "type": "object",
         "properties": {
-            "task": {"type": "string", "description": "Description of the task to run in background."},
-            "context": {"type": "string", "description": "Additional context for the background agent."},
+            "task": {"type": "string", "description": "Description of the task to run in background. Include the expected concrete outcome (e.g. 'schedule a 6:30 daily job')."},
+            "context": {"type": "string", "description": "Additional context for the background worker."},
         },
         "required": ["task"],
     }
+    risk_level = "exec"
 
-    def __init__(self, provider: LLMProvider, bus: Any = None):
+    def __init__(
+        self,
+        provider: LLMProvider,
+        bus: Any = None,
+        *,
+        tool_registry: Any = None,
+        approval_gate: Any = None,
+        credentials: Any = None,
+        model_router: Any | None = None,
+        default_model: str = "",
+        max_iterations: int = 12,
+        timeout_seconds: float = 300.0,
+    ):
         self._provider = provider
         self._bus = bus
+        self._tool_registry = tool_registry
+        self._approval_gate = approval_gate
+        self._credentials = credentials
+        self._default_model = default_model
+        self._max_iterations = max_iterations
+        self._timeout_seconds = timeout_seconds
+        self._executor = WorkerExecutor(
+            provider=provider,
+            model_router=model_router,
+            default_model=default_model,
+        )
         self._tasks: dict[str, asyncio.Task] = {}
 
     def execution_mode(self, params: dict[str, Any]) -> str:
@@ -358,44 +434,95 @@ class SpawnTool(Tool):
         async_task = asyncio.create_task(self._run_background(task_id, task_desc, extra, ctx))
         self._tasks[task_id] = async_task
         return ToolResult(
-            output=f"Background task '{task_id}' started. Result will be announced when complete.",
+            output=f"Background task '{task_id}' started. The result will be delivered when the worker finishes.",
             metadata={"task_id": task_id},
         )
 
-    async def _run_background(self, task_id: str, task: str, context: str, ctx: ToolExecutionContext | None) -> None:
-        system = "You are a background agent. Complete the task and provide a concise result."
-        if context:
-            system += f"\n\nContext:\n{context}"
-
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": task},
+    def _worker_tools(self) -> tuple[set[str], list[dict[str, Any]]]:
+        """Resolve the tool set and schemas the background worker may use."""
+        if not self._tool_registry:
+            return set(), []
+        allowed = set(self._tool_registry.ready_tool_names) - SPAWN_BLOCKED_TOOLS
+        tool_defs = [
+            schema for schema in self._tool_registry.get_ready_definitions()
+            if schema.get("function", {}).get("name") in allowed
         ]
+        return allowed, tool_defs
 
+    async def _run_background(self, task_id: str, task: str, context: str, ctx: ToolExecutionContext | None) -> None:
         try:
-            resp = await self._provider.chat_with_retry(messages=messages)
-            result = resp.content or "(no response)"
+            result = await self._execute_worker(task_id, task, context, ctx)
             logger.info("Background task {} completed: {}", task_id, result[:100])
-
-            if self._bus:
-                from echo_agent.bus.events import OutboundEvent
-                from echo_agent.scheduler.delivery import target_from_session_key
-
-                if ctx and ctx.session_key:
-                    channel, chat_id = target_from_session_key(ctx.session_key)
-                else:
-                    channel, chat_id = "", ""
-                channel = channel or "system"
-                chat_id = chat_id or "system"
-
-                announce = OutboundEvent.from_text_with_media(
-                    channel=channel,
-                    chat_id=chat_id,
-                    text=f"[Background task {task_id} completed]\n\n{result}",
-                )
-                announce.metadata["_background_result"] = True
-                await self._bus.publish_outbound(announce)
+            await self._announce(task_id, result, ctx)
         except Exception as e:
             logger.error("Background task {} failed: {}", task_id, e)
+            await self._announce(task_id, f"任务执行失败：{e}", ctx)
         finally:
             self._tasks.pop(task_id, None)
+
+    async def _execute_worker(self, task_id: str, task: str, context: str, ctx: ToolExecutionContext | None) -> str:
+        # No tool registry wired (e.g. multi-agent disabled path): fall back to a
+        # plain completion so the tool still answers, but say so honestly.
+        if not self._tool_registry or not self._approval_gate:
+            resp = await self._provider.chat_with_retry(messages=[
+                {"role": "system", "content": "You are a background agent. Complete the task and provide a concise result."},
+                {"role": "user", "content": f"{task}\n\n{context}".strip()},
+            ])
+            return resp.content or "(no response)"
+
+        allowed_tools, tool_defs = self._worker_tools()
+        tool_executor = build_worker_tool_executor(
+            tool_registry=self._tool_registry,
+            approval_gate=self._approval_gate,
+            credentials=self._credentials,
+            parent_ctx=ctx,
+            allowed_tools=allowed_tools,
+            depth=1,
+        )
+        instructions = (
+            "You are a background worker executing a task on the user's behalf. "
+            "You MUST actually perform the work using the available tools — do not "
+            "merely describe a plan. After acting, verify the effect took place "
+            "(e.g. read back the file/row you wrote) and report the concrete result. "
+            "If a required tool is unavailable or denied, say so plainly; never "
+            "claim success you did not achieve."
+        )
+        if context:
+            instructions += f"\n\nContext:\n{context}"
+
+        worker_result = await self._executor.run(
+            task_index=0,
+            goal=task,
+            system_prompt=instructions,
+            tool_defs=tool_defs,
+            tool_executor=tool_executor,
+            max_iterations=self._max_iterations,
+            timeout_seconds=self._timeout_seconds,
+        )
+        output = worker_result.output or "(no result)"
+        if worker_result.status != "completed":
+            output = f"[{worker_result.status}] {output}"
+            if worker_result.error:
+                output += f"\n{worker_result.error}"
+        return output
+
+    async def _announce(self, task_id: str, result: str, ctx: ToolExecutionContext | None) -> None:
+        if not self._bus:
+            return
+        from echo_agent.bus.events import OutboundEvent
+        from echo_agent.scheduler.delivery import target_from_session_key
+
+        if ctx and ctx.session_key:
+            channel, chat_id = target_from_session_key(ctx.session_key)
+        else:
+            channel, chat_id = "", ""
+        channel = channel or "system"
+        chat_id = chat_id or "system"
+
+        announce = OutboundEvent.from_text_with_media(
+            channel=channel,
+            chat_id=chat_id,
+            text=f"[Background task {task_id} completed]\n\n{result}",
+        )
+        announce.metadata["_background_result"] = True
+        await self._bus.publish_outbound(announce)

@@ -119,10 +119,11 @@ def discover_tools(
             network_policy=config.execution.network_policy,
         ))
 
+    # NOTE: spawn_task is NOT registered here. It needs the approval gate and
+    # credential manager to run its background worker's tool calls safely, and
+    # those are only available later — so it is constructed in
+    # AgentLoop._setup_delegation alongside delegate_task.
     if provider:
-        from echo_agent.agent.tools.delegate import SpawnTool
-        tools.append(SpawnTool(provider=provider, bus=bus))
-
         from echo_agent.agent.tools.vision import VisionTool
         tools.append(VisionTool(provider=provider, workspace=ws))
 

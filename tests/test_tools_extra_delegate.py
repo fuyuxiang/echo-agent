@@ -11,6 +11,7 @@ from echo_agent.agent.tools.base import ToolExecutionContext
 from echo_agent.agent.tools.delegate import (
     DelegateTool,
     SpawnTool,
+    SPAWN_BLOCKED_TOOLS,
     WORKER_BLOCKED_TOOLS,
 )
 from echo_agent.agent.multi_agent.models import WorkerProfile, WorkerResult
@@ -192,7 +193,10 @@ class TestSpawnTool:
     @pytest.mark.asyncio
     async def test_spawn_publishes_correct_channel(self):
         """Background task completion must publish OutboundEvent with the
-        channel derived from session_key, not hardcoded 'system'."""
+        channel derived from session_key, not hardcoded 'system'.
+
+        No tool_registry is wired here, so this exercises the degraded
+        completion path (see _execute_worker fallback)."""
         provider = MagicMock()
         provider.chat_with_retry = AsyncMock(
             return_value=MagicMock(content="weather result")
@@ -261,3 +265,93 @@ class TestSpawnTool:
     def test_execution_mode(self):
         tool = SpawnTool(provider=MagicMock(), bus=None)
         assert tool.execution_mode({}) == "side_effect"
+
+    def test_spawn_blocklist_allows_cronjob_blocks_recursion(self):
+        # cronjob must be allowed (a spawned task lands scheduled work), while
+        # the recursion/user-messaging vectors stay blocked.
+        assert "cronjob" not in SPAWN_BLOCKED_TOOLS
+        assert "spawn_task" in SPAWN_BLOCKED_TOOLS
+        assert "delegate_task" in SPAWN_BLOCKED_TOOLS
+        assert "message" in SPAWN_BLOCKED_TOOLS
+
+    def test_worker_tools_excludes_blocked(self):
+        registry = MagicMock()
+        registry.ready_tool_names = {"exec", "cronjob", "write_file", "spawn_task", "message"}
+        registry.get_ready_definitions.return_value = [
+            {"type": "function", "function": {"name": n}}
+            for n in ["exec", "cronjob", "write_file", "spawn_task", "message"]
+        ]
+        tool = SpawnTool(provider=MagicMock(), bus=None, tool_registry=registry,
+                         approval_gate=MagicMock(), credentials=MagicMock())
+        allowed, defs = tool._worker_tools()
+        assert "cronjob" in allowed
+        assert "exec" in allowed
+        assert "spawn_task" not in allowed
+        assert "message" not in allowed
+        names = {d["function"]["name"] for d in defs}
+        assert "spawn_task" not in names
+        assert "cronjob" in names
+
+    @pytest.mark.asyncio
+    async def test_spawn_actually_runs_worker_and_delivers_real_result(self):
+        """With a tool registry wired, spawn must drive the WorkerExecutor
+        (real tool loop) and deliver its concrete result — not a bare
+        completion. This is the regression guard against 'fake completion'."""
+        registry = MagicMock()
+        registry.ready_tool_names = {"cronjob", "exec"}
+        registry.get_ready_definitions.return_value = [
+            {"type": "function", "function": {"name": "cronjob"}},
+        ]
+        bus = MagicMock()
+        bus.publish_outbound = AsyncMock(return_value=True)
+        tool = SpawnTool(
+            provider=MagicMock(), bus=bus, tool_registry=registry,
+            approval_gate=MagicMock(), credentials=MagicMock(),
+        )
+        # Drive through the real worker path but stub the LLM loop itself.
+        tool._executor.run = AsyncMock(return_value=WorkerResult(
+            task_index=0, status="completed",
+            output="已创建每天6:30的天气播报定时任务 (job scheduled)",
+            iterations=2, tool_calls=1, duration_seconds=0.2,
+        ))
+
+        ctx = _ctx(session_key="weixin:abc@im.wechat")
+        await tool.execute({"task": "每天6:30播报天气"}, ctx)
+        pending = list(tool._tasks.values())
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        # The worker executor was actually invoked (not chat_with_retry).
+        tool._executor.run.assert_awaited_once()
+        # And the delivered text carries the worker's real result.
+        event = bus.publish_outbound.call_args[0][0]
+        assert "job scheduled" in event.text
+        assert event.metadata.get("_background_result") is True
+
+    @pytest.mark.asyncio
+    async def test_spawn_reports_incomplete_status_honestly(self):
+        """A worker that did not complete must surface that in the delivered
+        text rather than masquerading as success."""
+        registry = MagicMock()
+        registry.ready_tool_names = {"cronjob"}
+        registry.get_ready_definitions.return_value = []
+        bus = MagicMock()
+        bus.publish_outbound = AsyncMock(return_value=True)
+        tool = SpawnTool(
+            provider=MagicMock(), bus=bus, tool_registry=registry,
+            approval_gate=MagicMock(), credentials=MagicMock(),
+        )
+        tool._executor.run = AsyncMock(return_value=WorkerResult(
+            task_index=0, status="failed", output="",
+            error="cronjob requires approval but no user is available",
+            iterations=1, tool_calls=0, duration_seconds=0.1,
+        ))
+
+        await tool.execute({"task": "schedule something"}, _ctx(session_key="cli:c1"))
+        pending = list(tool._tasks.values())
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        event = bus.publish_outbound.call_args[0][0]
+        assert "failed" in event.text
+        assert "requires approval" in event.text

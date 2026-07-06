@@ -9,7 +9,25 @@ metadata:
 
 # Reminder
 
-Set timed reminders and manage todos. Uses Echo Agent's built-in cron channel and SQLite storage.
+Set timed reminders and manage todos.
+
+## IMPORTANT: how a reminder actually fires
+
+A row in `reminders.db` is just a note — nothing scans it or delivers it. To make
+a reminder that *actually fires and gets delivered*, you MUST create a scheduled
+job with the **`cronjob` tool**, which persists to the scheduler and is delivered
+through the active channel by Echo Agent's scheduler service:
+
+```
+cronjob(action="create", name="weekly-report",
+        schedule="0 9 * * 1", command="提醒你写周报")
+```
+
+The `reminder_store.py` script below is only a lightweight local note-taking
+list (list/done/delete). It has NO delivery path on its own. If the user wants
+to be reminded at a time, use `cronjob` — optionally also recording a note via
+the script. For a background one-off that must take effect, `spawn_task` can run
+the `cronjob` call for you.
 
 ## Quick Commands
 
@@ -23,7 +41,8 @@ Set timed reminders and manage todos. Uses Echo Agent's built-in cron channel an
 
 ## Time Parsing
 
-Natural language to cron expression mapping:
+Natural language to cron expression mapping. Feed the resulting expression into
+the `cronjob` tool's `schedule` argument:
 
 | Input | Cron Expression |
 |-------|----------------|
@@ -34,9 +53,11 @@ Natural language to cron expression mapping:
 | 2小时后 | one-shot timer |
 | 工作日下午5点 | `0 17 * * 1-5` |
 
-## Storage
+## Local note storage (no delivery)
 
-Reminders stored in SQLite: `~/.echo-agent/reminders.db`
+The script keeps a local note list in SQLite: `~/.echo-agent/reminders.db`.
+This is bookkeeping only — creating a row here does NOT schedule or deliver
+anything. Timed delivery is the `cronjob` tool's job (see top of this doc).
 
 ```sql
 CREATE TABLE reminders (
@@ -50,7 +71,7 @@ CREATE TABLE reminders (
 );
 ```
 
-## Script Usage
+## Script Usage (local notes only — does not schedule delivery)
 
 ```bash
 python3 scripts/reminder_store.py add "写周报" --cron "0 9 * * 1"
@@ -60,6 +81,9 @@ python3 scripts/reminder_store.py delete 5
 python3 scripts/reminder_store.py due  # show due reminders
 ```
 
-## Integration with Cron Channel
+## Delivery
 
-Echo Agent's cron channel checks for due reminders and delivers through active channels (Telegram/WeChat/etc).
+Delivery is handled by the scheduler, not by this script. When you create a job
+with the `cronjob` tool, the scheduler fires it on schedule and routes the
+message through the active channel (Telegram/WeChat/etc). The `reminder_store.py`
+script never delivers anything by itself.

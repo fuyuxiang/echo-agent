@@ -626,6 +626,22 @@ class AgentLoop:
             default_model=self._default_model,
         )
         self.tools.register(delegate_tool)
+
+        # spawn_task shares delegate's execution engine so its background worker
+        # runs real tool calls (exec/write_file/cronjob) through the approval
+        # flow, instead of being a tool-less completion that only "plans".
+        from echo_agent.agent.tools.delegate import SpawnTool
+        spawn_tool = SpawnTool(
+            provider=self.provider,
+            bus=self.bus,
+            tool_registry=self.tools,
+            approval_gate=self.approval_gate,
+            credentials=self.credentials,
+            model_router=self.router,
+            default_model=self._default_model,
+            max_iterations=self.config.multi_agent.max_iterations,
+        )
+        self.tools.register(spawn_tool)
         logger.info("Delegation enabled with {} worker templates", len(worker_registry.list()))
 
     def set_plugin_manager(self, manager: Any) -> None:
