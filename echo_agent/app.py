@@ -445,14 +445,46 @@ def _gateway_profile_override(config_path: str | None) -> dict[str, Any]:
     filtering see ``public_gateway`` — otherwise high-risk tools (exec,
     write_file, patch, workflow, ...) would already be registered and would
     remain callable, since native tools have no per-call profile gate."""
-    from echo_agent.config.loader import profile_explicitly_set
+    from echo_agent.config.loader import (
+        _load_yaml_file,
+        profile_explicitly_set,
+        resolve_config_file,
+    )
 
     if profile_explicitly_set(config_path):
         return {}
-    logger.warning(
-        "Gateway 入口未显式配置 security.profile，已默认切到 public_gateway 收紧档；"
-        "如需放开请在配置中显式设置 security.profile"
-    )
+
+    # If the user asked for a broad tool profile (full/coding) but left
+    # security.profile implicit, the public_gateway downgrade will silently strip
+    # exec/write_file/execute_code/patch — the tools that profile was meant to
+    # grant. Surface that conflict loudly rather than as a soft "已收紧" note, and
+    # point at the exact fix. (This is the failure that made a document-generation
+    # task come back empty with no clue why.)
+    tools_profile = ""
+    try:
+        path = resolve_config_file(config_path)
+        user_yaml = _load_yaml_file(path if path and path.exists() else None)
+        tools_section = user_yaml.get("tools")
+        if isinstance(tools_section, dict):
+            tools_profile = str(tools_section.get("profile") or "")
+    except Exception as e:  # best-effort: never let the warning path break boot
+        logger.debug("Could not read tools.profile for gateway conflict check: {}", e)
+
+    if tools_profile in ("full", "coding"):
+        logger.warning(
+            "配置冲突：tools.profile={} 想启用全部/编码类工具，但 Gateway 入口未显式配置 "
+            "security.profile，已默认切到 public_gateway 收紧档，会关闭 "
+            "exec/execute_code/write_file/edit_file/patch/process 等高危工具——"
+            "full/coding 的相应能力将失效。如需恢复：在配置中显式设置 "
+            "security.profile: personal_cli（私人自用，全工具生效），或保留 "
+            "public_gateway 并在 tools.also_allow 里按名单单独放行所需工具。",
+            tools_profile,
+        )
+    else:
+        logger.warning(
+            "Gateway 入口未显式配置 security.profile，已默认切到 public_gateway 收紧档；"
+            "如需放开请在配置中显式设置 security.profile"
+        )
     return {"security": {"profile": "public_gateway"}}
 
 

@@ -64,6 +64,7 @@ MESSAGES = {
         "tools": "Tools",
         "channel": "Messaging Channels",
         "gateway": "Gateway & Network",
+        "security": "Security Profile",
         "observability": "Observability",
         "evolution": "Self-Evolution",
         "cost": "Cost Budget",
@@ -208,6 +209,22 @@ MESSAGES = {
         "open_exposed_fix": "Rebind to 127.0.0.1 (loopback only)? Choose No to switch to allowlist/pairing and set a token.",
         "host_pinned": "Host set to 127.0.0.1.",
         "saved": "Gateway: {host}:{port}, auth={mode}",
+    },
+    "security": {
+        "header": "Security Profile",
+        "intro": "The security profile decides who can trigger high-risk tools (run commands, write files, "
+                 "install skills). It is written explicitly to the config so the gateway entrypoint cannot "
+                 "silently tighten it and disable tools behind your back.",
+        "gateway_intro": "Gateway is enabled (a resident, possibly public entrypoint). Choose its trust level:",
+        "deployment": "Gateway trust level:",
+        "deploy_personal": "Personal — only I talk to it (all tools available)",
+        "deploy_public": "Public — strangers can message it (high-risk tools off by default, safer)",
+        "public_hint": "Public chosen: exec/execute_code/write_file/patch are off by default. "
+                       "To reopen specific ones, add them by name under tools.also_allow.",
+        "personal_hint": "Personal chosen: the tools in tools.profile take full effect and are no longer "
+                         "implicitly downgraded by the gateway.",
+        "no_gateway": "Gateway disabled; security profile defaults to personal_cli (all local tools).",
+        "saved": "Security profile: security.profile={profile}",
     },
     "observability": {
         "header": "Observability",

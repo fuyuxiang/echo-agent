@@ -64,6 +64,7 @@ MESSAGES = {
         "tools": "工具",
         "channel": "消息渠道",
         "gateway": "网关与网络",
+        "security": "安全档",
         "observability": "可观测性",
         "evolution": "自进化技能",
         "cost": "成本预算",
@@ -208,6 +209,20 @@ MESSAGES = {
         "open_exposed_fix": "改绑到 127.0.0.1（仅本机）？选“否”请改用白名单/配对模式以配置 token。",
         "host_pinned": "已将 host 改为 127.0.0.1。",
         "saved": "Gateway：{host}:{port}，认证={mode}",
+    },
+    "security": {
+        "header": "安全档",
+        "intro": "安全档决定谁能触发高危工具（执行命令、写文件、装技能）。这一档会显式写入配置，"
+                 "避免网关启动时被隐式收紧而悄悄关掉工具。",
+        "gateway_intro": "检测到已启用网关（对外/常驻入口）。请选择这个入口的信任级别：",
+        "deployment": "网关信任级别：",
+        "deploy_personal": "私人自用 — 只有我自己会对它说话（全部工具可用）",
+        "deploy_public": "对外开放 — 陌生人也能发消息（默认关闭高危工具，更安全）",
+        "public_hint": "已选对外开放：exec/execute_code/write_file/patch 等默认关闭。"
+                       "若某几个确需放开，在配置 tools.also_allow 里按名单单独添加。",
+        "personal_hint": "已选私人自用：tools.profile 里配的工具将完整生效，不再被网关隐式降级。",
+        "no_gateway": "未启用网关，安全档默认设为 personal_cli（本地全工具）。",
+        "saved": "安全档：security.profile={profile}",
     },
     "observability": {
         "header": "可观测性",

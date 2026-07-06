@@ -66,3 +66,38 @@ def test_override_tightens_when_not_explicit():
 def test_override_empty_when_explicit(tmp_path):
     cfg = _write_yaml(tmp_path, "security:\n  profile: personal_cli\n")
     assert _gateway_profile_override(config_path=str(cfg)) == {}
+
+
+def test_override_still_tightens_with_full_tools_profile(tmp_path):
+    # tools.profile: full but no explicit security.profile → still downgraded,
+    # and the conflict warning path (full/coding branch) is exercised.
+    cfg = _write_yaml(tmp_path, "tools:\n  profile: full\n")
+    assert _gateway_profile_override(config_path=str(cfg)) == {
+        "security": {"profile": "public_gateway"}
+    }
+
+
+def _capture_loguru(func) -> list[str]:
+    """Run func() with a temporary loguru sink and return captured messages."""
+    from loguru import logger
+
+    messages: list[str] = []
+    sink_id = logger.add(lambda m: messages.append(m.record["message"]), level="WARNING")
+    try:
+        func()
+    finally:
+        logger.remove(sink_id)
+    return messages
+
+
+def test_override_conflict_warns_on_full_profile(tmp_path):
+    cfg = _write_yaml(tmp_path, "tools:\n  profile: full\n")
+    msgs = _capture_loguru(lambda: _gateway_profile_override(config_path=str(cfg)))
+    # The loud conflict warning names the fix, not the soft "已收紧" note.
+    assert any("配置冲突" in m and "also_allow" in m for m in msgs)
+
+
+def test_override_soft_note_when_no_broad_profile(tmp_path):
+    cfg = _write_yaml(tmp_path, "tools:\n  profile: minimal\n")
+    msgs = _capture_loguru(lambda: _gateway_profile_override(config_path=str(cfg)))
+    assert not any("配置冲突" in m for m in msgs)

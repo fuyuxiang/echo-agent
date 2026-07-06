@@ -631,6 +631,50 @@ def setup_gateway(config: dict) -> None:
     print_success(t("gateway.saved", host=gw["host"], port=gw["port"], mode=t(f"gateway.auth_{auth_keys[a_idx]}")))
 
 
+# ── Section 9: Security profile ──────────────────────────────────────────────
+
+def setup_security(config: dict) -> None:
+    """Pin ``security.profile`` explicitly.
+
+    Without an explicit profile the gateway entrypoint (``echo-agent gateway``,
+    which is also how the installed service runs) silently tightens to
+    ``public_gateway`` and disables high-risk tools (exec/write_file/execute_code)
+    even when ``tools.profile: full`` is set — the failure mode that made a whole
+    document-generation task come back empty. Writing the key here makes the
+    choice visible and stops the implicit downgrade
+    (see ``config.loader.profile_explicitly_set``)."""
+    _print_section_header("security")
+    print_info(t("security.intro"))
+    print()
+
+    sec = _ensure_dict(config, "security")
+    gateway_enabled = bool((config.get("gateway", {}) or {}).get("enabled"))
+
+    if not gateway_enabled:
+        # No public entrypoint — full local tools are the sane default. Still
+        # write the key so the value is explicit and stable across reinstalls.
+        sec["profile"] = "personal_cli"
+        print_info(t("security.no_gateway"))
+        print_success(t("security.saved", profile=sec["profile"]))
+        return
+
+    print_info(t("security.gateway_intro"))
+    deploy_keys = ["personal_cli", "public_gateway"]
+    deploy_labels = [t("security.deploy_personal"), t("security.deploy_public")]
+    cur = sec.get("profile", "personal_cli")
+    # Default highlight is personal_cli (index 0) — the common self-hosted case.
+    default_idx = deploy_keys.index(cur) if cur in deploy_keys else 0
+    d_idx = prompt_choice(t("security.deployment"), deploy_labels, default=default_idx)
+    sec["profile"] = deploy_keys[d_idx]
+
+    if sec["profile"] == "public_gateway":
+        print_warning(t("security.public_hint"))
+    else:
+        print_info(t("security.personal_hint"))
+
+    print_success(t("security.saved", profile=sec["profile"]))
+
+
 # ── Section 9: Observability ─────────────────────────────────────────────────
 
 def setup_observability(config: dict) -> None:
@@ -851,6 +895,7 @@ SETUP_SECTIONS: list[tuple[str, Callable[[dict], None]]] = [
     ("tools", setup_tools),
     ("channel", setup_channels),
     ("gateway", setup_gateway),
+    ("security", setup_security),
     ("observability", setup_observability),
     ("evolution", setup_evolution),
     ("cost", setup_cost),
@@ -876,6 +921,8 @@ SECTION_ALIASES: dict[str, str] = {
     "channels": "channel",
     "gateway": "gateway",
     "network": "gateway",
+    "security": "security",
+    "profile": "security",
     "observability": "observability",
     "logging": "observability",
     "evolution": "evolution",
