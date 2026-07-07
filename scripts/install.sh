@@ -267,6 +267,43 @@ install_deps() {
     log_success "Dependencies installed"
 }
 
+build_dashboard() {
+    cd "$INSTALL_DIR"
+
+    if ! command -v node >/dev/null 2>&1; then
+        log_warn "Node.js not found, skipping Dashboard build."
+        log_info "Dashboard requires Node.js >= 20 and pnpm."
+        log_info "Install Node.js then run: cd $INSTALL_DIR/web && pnpm install && pnpm build"
+        return 0
+    fi
+
+    NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
+    if [ "$NODE_MAJOR" -lt 20 ]; then
+        log_warn "Node.js version $(node -v) too old (need >= 20), skipping Dashboard build."
+        log_info "Upgrade Node.js then run: cd $INSTALL_DIR/web && pnpm install && pnpm build"
+        return 0
+    fi
+
+    if ! command -v pnpm >/dev/null 2>&1; then
+        log_info "Installing pnpm..."
+        npm install -g pnpm 2>/dev/null || corepack enable pnpm 2>/dev/null || {
+            log_warn "Cannot install pnpm, skipping Dashboard build."
+            log_info "Install pnpm then run: cd $INSTALL_DIR/web && pnpm install && pnpm build"
+            return 0
+        }
+    fi
+
+    log_info "Building Dashboard frontend..."
+    cd "$INSTALL_DIR/web"
+    pnpm install --frozen-lockfile 2>/dev/null || pnpm install
+    if pnpm build; then
+        log_success "Dashboard built successfully"
+    else
+        log_warn "Dashboard build failed. The agent will work without the web UI."
+        log_info "Fix issues then run: cd $INSTALL_DIR/web && pnpm build"
+    fi
+}
+
 get_command_link_dir() {
     if [ -n "$ECHO_COMMAND_LINK_DIR" ]; then
         echo "$ECHO_COMMAND_LINK_DIR"
@@ -439,6 +476,9 @@ print_success() {
     echo "  echo-agent gateway install|start|stop|status|logs"
     echo "                      Manage the gateway as a background service"
     echo ""
+    echo -e "${CYAN}${BOLD}Dashboard:${NC}"
+    echo "  http://localhost:58123/"
+    echo ""
     echo -e "${CYAN}${BOLD}Command link:${NC}"
     echo "  $(get_command_link_dir)/echo-agent"
     echo ""
@@ -464,6 +504,7 @@ main() {
     clone_repo
     setup_venv
     install_deps
+    build_dashboard
     setup_path
     prepare_home
     run_setup_wizard

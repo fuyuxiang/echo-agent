@@ -2846,7 +2846,7 @@ class GatewayConfig(_Base):
         },
     )
     port: int = Field(
-        default=9000,
+        default=58123,
         json_schema_extra={
             "status": "effective", "ref": "gateway/server.py:129",
             "desc_zh": "网关监听端口",
