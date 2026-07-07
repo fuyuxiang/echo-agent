@@ -62,14 +62,19 @@ def inbound_event_from_job(job: Any) -> InboundEvent:
         chat_id=target_chat_id,
         content=[ContentBlock(type=ContentType.TEXT, text=command)],
         session_key_override=session_key_override,
+        # Trust signals go on the typed fields, not metadata: this is the only
+        # producer allowed to grant them, and putting them on first-class fields
+        # means no external channel payload can forge them (base._build_event
+        # never sets these). The approval gate reads event.unattended /
+        # event.cron_authorized directly.
+        unattended=True,
+        cron_authorized=bool(authorized),
         metadata={
             "job_id": job.id,
             "job_name": job.name,
             "source_session_key": source_session_key or session_key_override or "",
             "deliver_channel": target_channel,
             "deliver_chat_id": target_chat_id,
-            "_unattended": True,
-            "_cron_authorized": bool(authorized),
         },
     )
 
@@ -85,9 +90,12 @@ def build_scheduled_job_handler(bus: Any, *, inspection_runner: Any = None) -> C
             raise RuntimeError(
                 f"Scheduled job {job.id} was rejected by the bus (queue full or shutting down)"
             )
-        # "queued", not "success": the agent run and any user-facing delivery
-        # happen asynchronously after the event is accepted. The scheduler's
-        # last_status must not overstate this to a completed delivery.
+        # "queued", not "success": at this point the event is only accepted onto
+        # the bus; the agent run and any user-facing delivery happen
+        # asynchronously afterwards. The loop later calls
+        # Scheduler.record_run_outcome to overwrite this with the terminal
+        # "completed"/"error" once the turn finishes, so a job that never runs
+        # or crashes downstream is no longer masked as a success.
         return "queued"
 
     return _on_job

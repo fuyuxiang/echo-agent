@@ -166,7 +166,7 @@ async def test_dynamic_exec_tool_requires_approval_when_unattended():
         sender_id="u1",
         chat_id="c1",
         content=[ContentBlock(type=ContentType.TEXT, text="go")],
-        metadata={"_unattended": True},
+        unattended=True,
     )
     check = await gate.check(
         "mcp_x_destructive", {}, "u1", channel="cron", event=event, running=True,
@@ -187,7 +187,7 @@ async def test_cron_authorized_allows_exec_unattended():
     event = InboundEvent(
         channel="weixin", sender_id="cron", chat_id="c1",
         content=[ContentBlock(type=ContentType.TEXT, text="生成天气语音")],
-        metadata={"_unattended": True, "_cron_authorized": True},
+        unattended=True, cron_authorized=True,
     )
     check = await gate.check(
         "exec", {"command": "edge-tts --text hi -o a.mp3"},
@@ -209,7 +209,7 @@ async def test_cron_authorized_still_denies_dangerous_unattended():
     event = InboundEvent(
         channel="weixin", sender_id="cron", chat_id="c1",
         content=[ContentBlock(type=ContentType.TEXT, text="x")],
-        metadata={"_unattended": True, "_cron_authorized": True},
+        unattended=True, cron_authorized=True,
     )
     check = await gate.check(
         "cronjob", {"action": "create", "name": "n", "schedule": "* * * * *", "command": "c"},
@@ -231,7 +231,7 @@ async def test_cron_unauthorized_denies_exec_unattended():
     event = InboundEvent(
         channel="weixin", sender_id="cron", chat_id="c1",
         content=[ContentBlock(type=ContentType.TEXT, text="x")],
-        metadata={"_unattended": True},  # 无 _cron_authorized
+        unattended=True,  # 无 cron_authorized
     )
     check = await gate.check(
         "exec", {"command": "edge-tts --text hi -o a.mp3"},

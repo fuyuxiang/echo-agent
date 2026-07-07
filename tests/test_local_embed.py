@@ -65,6 +65,30 @@ async def test_embed_returns_none_when_fastembed_missing():
         assert await e.embed("text") is None
 
 
+def test_close_is_idempotent_and_releases_pool():
+    """close() 回收线程池，可重复调用，且之后 available 池已释放。"""
+    e = LocalEmbedder("BAAI/bge-small-zh-v1.5")
+    assert e._pool is not None
+    e.close()
+    assert e._pool is None
+    assert e._load_failed is True
+    # 二次调用不抛异常（幂等）
+    e.close()
+
+
+@pytest.mark.asyncio
+async def test_embed_returns_none_after_close():
+    """close() 之后 embed() 安全降级为 None，不会向已关闭的池提交任务。"""
+    fake_model = MagicMock()
+    import numpy as np
+    fake_model.embed.return_value = iter([np.array([0.1, 0.2], dtype=np.float32)])
+    fake_mod = MagicMock(TextEmbedding=MagicMock(return_value=fake_model))
+    with patch.dict(sys.modules, {"fastembed": fake_mod}):
+        e = LocalEmbedder("BAAI/bge-small-zh-v1.5")
+        e.close()
+        assert await e.embed("text") is None
+
+
 @pytest.mark.asyncio
 async def test_embed_degrades_on_load_hang():
     """下载挂起（不抛异常、只是卡住）也应在超时后降级为 None，而不是永久挂起。"""

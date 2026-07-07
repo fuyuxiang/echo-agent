@@ -76,6 +76,16 @@ class InboundEvent:
     metadata: dict[str, Any] = field(default_factory=dict)
     gateway_metadata: dict[str, Any] = field(default_factory=dict)
     is_group: bool = False
+    # Trust signals that gate the approval path. These are FIRST-CLASS typed
+    # fields, deliberately NOT metadata keys: metadata is populated by external
+    # channels from untrusted caller input, so a signal living there can be
+    # forged (a webhook body carrying {"_cron_authorized": true}) to bypass EXEC
+    # approval. Only trusted internal producers (scheduler/delivery.py) construct
+    # an InboundEvent with these set; the shared channel builder (base._build_event)
+    # never assigns them, so a caller cannot reach them by any payload. See the
+    # approval gate's _is_unattended / _resolve_unattended for the consumers.
+    unattended: bool = False       # no human at the keyboard (scheduled/cron run)
+    cron_authorized: bool = False  # this specific job passed the up-front cronjob approval
 
     @property
     def session_key(self) -> str:

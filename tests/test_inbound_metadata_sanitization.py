@@ -70,6 +70,10 @@ def test_build_event_strips_underscore_keys():
     assert "_cron_authorized" not in event.metadata
     assert "_drop" not in event.metadata
     assert event.metadata.get("chat_type") == "private"
+    # Tier-2 invariant: the trust signals are typed fields the channel builder
+    # never assigns, so no caller payload — metadata or otherwise — can flip them.
+    assert event.unattended is False
+    assert event.cron_authorized is False
 
 
 def test_build_event_none_metadata_is_safe():
@@ -88,9 +92,12 @@ async def test_spoofed_cron_authorization_via_channel_is_denied():
     """End-to-end: a channel-built event carrying spoofed authorization flags
     must NOT bypass EXEC approval under unattended_policy="deny".
 
-    This is the exact attack the sanitization closes: without the strip, the
-    same metadata reaching the gate (see test_approval_gate_e2e
-    ::test_cron_authorized_allows_exec_unattended) approves the EXEC call.
+    Two independent barriers close this now: (1) base._build_event strips the
+    "_" metadata namespace, and (2) the gate reads the typed event.unattended /
+    event.cron_authorized fields, which the channel builder never sets — so even
+    if a spoofed key survived, it would not be consulted. Contrast with
+    test_approval_gate_e2e::test_cron_authorized_allows_exec_unattended, where a
+    trusted producer sets the typed fields and the same EXEC is approved.
     """
     cfg = load_config()
     cfg.permissions.approval.mode = "manual"

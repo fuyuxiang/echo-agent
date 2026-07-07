@@ -270,6 +270,22 @@ class Scheduler:
     def list_jobs(self) -> list[ScheduledJob]:
         return list(self._jobs.values())
 
+    async def record_run_outcome(self, job_id: str, status: str, error: str = "") -> None:
+        """Write back the real end-to-end outcome of a dispatched job run.
+
+        _run_job only knows the event was *queued* onto the bus; the agent turn
+        (and any user-facing delivery) completes asynchronously afterwards, in
+        the loop. This lets that downstream completion update last_status to a
+        truthful terminal value ("completed" / "error") instead of leaving it
+        stuck at "queued". No-op if the job is gone (e.g. a run-once job already
+        pruned) so a late writeback can never resurrect scheduler state."""
+        job = self._jobs.get(job_id)
+        if job is None:
+            return
+        job.last_status = status
+        job.last_error = error
+        await self._save_async()
+
     async def trigger_job(self, job_id: str) -> bool:
         job = self._jobs.get(job_id)
         if not job or not job.enabled or job.status in (JobStatus.CANCELLED, JobStatus.COMPLETED):

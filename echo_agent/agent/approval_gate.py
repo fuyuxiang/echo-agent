@@ -383,7 +383,12 @@ class ApprovalGate:
         return channel in {"cli", "direct", "", "gateway:cli"}
 
     def _is_unattended(self, event: InboundEvent | None, channel: str) -> bool:
-        if event and event.metadata.get("_unattended"):
+        # Read the typed trust field, never metadata: only a trusted producer
+        # (scheduler/delivery.py) can set event.unattended, whereas metadata is
+        # attacker-influenced on external channels. The channel fallback keeps
+        # the bare cron/scheduler pseudo-channels unattended even if a caller
+        # somehow constructed the event without the flag.
+        if event and event.unattended:
             return True
         return channel in {"cron", "scheduler"}
 
@@ -406,7 +411,7 @@ class ApprovalGate:
         # job from creating more cron jobs / installing skills with no human in
         # the loop (a privilege-escalation / recursion vector). The authorization
         # is scoped to the job's own work, not to spawning new privileged state.
-        if event is not None and event.metadata.get("_cron_authorized"):
+        if event is not None and event.cron_authorized:
             if risk in (RiskLevel.WRITE, RiskLevel.EXEC):
                 return ApprovalCheck(approved_actions=approved)
             # DANGEROUS (and anything else) falls through to the deny below.

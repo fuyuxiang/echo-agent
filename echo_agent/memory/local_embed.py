@@ -127,3 +127,17 @@ class LocalEmbedder:
         except Exception as e:
             logger.debug("Local embedding failed: {}", e)
             return None
+
+    def close(self) -> None:
+        """Release the dedicated thread pool.
+
+        Idempotent and safe to call during shutdown. A thread still stuck in a
+        hung model download cannot be force-killed, so we do NOT wait for it
+        (wait=False) — otherwise stop() could block for the life of that
+        download. cancel_futures drops any not-yet-started work. Marking the
+        embedder failed makes any late embed() call return None instead of
+        submitting to a pool that is (or is about to be) shut down."""
+        self._load_failed = True
+        pool, self._pool = self._pool, None
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)

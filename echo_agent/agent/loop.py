@@ -25,7 +25,7 @@ from echo_agent.agent.pipeline.inference_stage import InferenceStage
 from echo_agent.agent.pipeline.response_stage import ResponseStage, _is_ephemeral_session
 from echo_agent.agent.tools.circuit_breaker import ToolCircuitBreaker
 from echo_agent.agent.tools.registry import ToolRegistry
-from echo_agent.bus.events import InboundEvent, OutboundEvent
+from echo_agent.bus.events import EventType, InboundEvent, OutboundEvent
 from echo_agent.bus.queue import MessageBus
 from echo_agent.config.schema import Config
 from echo_agent.cost.budget import CostTracker
@@ -413,6 +413,9 @@ class AgentLoop:
         self._bg_scheduler = BackgroundScheduler(config.execution.max_background_tasks)
         self._state_lock = asyncio.Lock()
         self._plugin_manager: Any = None
+        # Kept so a finished CRON turn can write its real outcome back to the job
+        # (see _on_inbound); the scheduler otherwise only ever sees "queued".
+        self._scheduler = scheduler
         self._register_tools(scheduler=scheduler, task_manager=task_manager, workflow_engine=workflow_engine)
         self._setup_delegation()
 
@@ -911,6 +914,12 @@ class AgentLoop:
         # the scheduler; ``aclose`` cancels discardable tasks and flushes durable
         # ones. This is the single shutdown path for background work.
         await self._bg_scheduler.aclose(timeout=10.0)
+        # Release the local embedder's dedicated thread pool, if one was built.
+        if self._local_embedder is not None:
+            try:
+                self._local_embedder.close()
+            except Exception as e:
+                logger.debug("Local embedder close raised (ignored): {}", e)
         logger.info("Agent loop stopped")
 
     def _spawn_background(self, coro: Any, *, tier: Any = None) -> None:
@@ -983,6 +992,28 @@ class AgentLoop:
             filtered[name] = cfg
         return filtered
 
+    async def _record_cron_outcome(self, event: InboundEvent, status: str, error: str = "") -> None:
+        """For a fired CRON job, write the turn's terminal outcome back to the
+        scheduler so last_status reflects reality instead of staying "queued".
+
+        "completed" means the agent turn finished and its reply was published to
+        the bus — NOT a confirmed channel delivery receipt (that would need the
+        SendResult to propagate back from the channel, which is out of scope
+        here). This is still strictly more truthful than the enqueue-time
+        "queued". No-op for non-cron events or when no scheduler is wired."""
+        # getattr guard: some code paths (and tests) build AgentLoop via
+        # __new__, bypassing __init__ where _scheduler is set.
+        scheduler = getattr(self, "_scheduler", None)
+        if scheduler is None or event.event_type != EventType.CRON:
+            return
+        job_id = str(event.metadata.get("job_id") or "")
+        if not job_id:
+            return
+        try:
+            await scheduler.record_run_outcome(job_id, status, error)
+        except Exception as e:
+            logger.debug("Cron outcome writeback failed for job {}: {}", job_id, e)
+
     async def _on_inbound(self, event: InboundEvent) -> None:
         """入站事件处理入口，负责追踪、错误处理和响应发布。"""
         if not self._running:
@@ -1054,6 +1085,7 @@ class AgentLoop:
                     out.metadata["_inbound_event_id"] = event.event_id
                     await self.bus.publish_outbound(out)
                 self.tracer.end_span(span, metadata={"response_len": len(response_text or "")})
+                await self._record_cron_outcome(event, "completed")
             except Exception as e:
                 logger.error("Processing failed for event {}: {}", event.event_id, e)
                 self.tracer.end_span(span, error=str(e))
@@ -1063,6 +1095,7 @@ class AgentLoop:
                 error_out.metadata = dict(event.metadata)
                 error_out.metadata["_inbound_event_id"] = event.event_id
                 await self.bus.publish_outbound(error_out)
+                await self._record_cron_outcome(event, "error", str(e))
             finally:
                 await heartbeat.stop()
                 self.tracer.flush_trace(trace_id)
