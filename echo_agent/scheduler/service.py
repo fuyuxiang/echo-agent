@@ -168,6 +168,10 @@ class Scheduler:
         except Exception as e:
             logger.warning("Failed to load scheduler state: {}", e)
 
+    def save_state(self) -> None:
+        """Persist current job state to disk."""
+        self._save()
+
     def _save(self) -> None:
         self._write_payload(self._build_payload())
 

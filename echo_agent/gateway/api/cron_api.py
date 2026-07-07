@@ -73,6 +73,7 @@ class CronAPI:
         if "payload" in body:
             job.payload = body["payload"]
 
+        self._scheduler().save_state()
         return web.json_response({"job": self._job_to_dict(job)})
 
     async def delete_job(self, request: web.Request) -> web.Response:
