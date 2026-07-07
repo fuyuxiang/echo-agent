@@ -184,5 +184,6 @@ class WorkflowEngine:
                 max_retries=step.retry_max,
                 metadata={"step_id": step.id, "tool_name": step.tool_name, "tool_params": step.tool_params},
             )
+            await self._tasks.transition(task.id, TaskStatus.QUEUED)
             wf.step_tasks[step.id] = task.id
             wf.current_step = step.id

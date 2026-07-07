@@ -55,7 +55,7 @@ class TestTaskStatus:
 
     def test_all_members(self):
         names = {s.name for s in TaskStatus}
-        assert names == {"PENDING", "QUEUED", "RUNNING", "SUCCESS", "FAILED", "CANCELLED", "SUSPENDED"}
+        assert names == {"PENDING", "QUEUED", "RUNNING", "BLOCKED", "REVIEW", "SUCCESS", "FAILED", "CANCELLED", "SUSPENDED"}
 
     def test_terminal_statuses(self):
         assert TERMINAL_TASK_STATUSES == {TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.CANCELLED}
@@ -192,6 +192,7 @@ class TestTaskManagerTransition:
     async def test_valid_transition_pending_to_running(self):
         mgr = TaskManager(_make_storage())
         t = await mgr.create("t")
+        await mgr.transition(t.id, TaskStatus.QUEUED)
         t2 = await mgr.transition(t.id, TaskStatus.RUNNING)
         assert t2.status == TaskStatus.RUNNING
         assert t2.started_at != ""
@@ -200,7 +201,9 @@ class TestTaskManagerTransition:
     async def test_running_to_success_sets_completed_at(self):
         mgr = TaskManager(_make_storage())
         t = await mgr.create("t")
+        await mgr.transition(t.id, TaskStatus.QUEUED)
         await mgr.transition(t.id, TaskStatus.RUNNING)
+        await mgr.transition(t.id, TaskStatus.REVIEW)
         t2 = await mgr.transition(t.id, TaskStatus.SUCCESS, result="done")
         assert t2.status == TaskStatus.SUCCESS
         assert t2.completed_at != ""
@@ -210,6 +213,7 @@ class TestTaskManagerTransition:
     async def test_running_to_failed_with_error(self):
         mgr = TaskManager(_make_storage())
         t = await mgr.create("t")
+        await mgr.transition(t.id, TaskStatus.QUEUED)
         await mgr.transition(t.id, TaskStatus.RUNNING)
         t2 = await mgr.transition(t.id, TaskStatus.FAILED, error="boom")
         assert t2.status == TaskStatus.FAILED
@@ -233,7 +237,9 @@ class TestTaskManagerTransition:
     async def test_terminal_to_anything_raises(self):
         mgr = TaskManager(_make_storage())
         t = await mgr.create("t")
+        await mgr.transition(t.id, TaskStatus.QUEUED)
         await mgr.transition(t.id, TaskStatus.RUNNING)
+        await mgr.transition(t.id, TaskStatus.REVIEW)
         await mgr.transition(t.id, TaskStatus.SUCCESS)
         with pytest.raises(ValueError, match="Invalid transition"):
             await mgr.transition(t.id, TaskStatus.RUNNING)
@@ -242,6 +248,7 @@ class TestTaskManagerTransition:
     async def test_started_at_set_only_once(self):
         mgr = TaskManager(_make_storage())
         t = await mgr.create("t")
+        await mgr.transition(t.id, TaskStatus.QUEUED)
         t2 = await mgr.transition(t.id, TaskStatus.RUNNING)
         first_started = t2.started_at
         await mgr.transition(t.id, TaskStatus.SUSPENDED)
@@ -254,6 +261,7 @@ class TestTaskManagerRetry:
     async def test_retry_from_failed(self):
         mgr = TaskManager(_make_storage())
         t = await mgr.create("t", max_retries=3)
+        await mgr.transition(t.id, TaskStatus.QUEUED)
         await mgr.transition(t.id, TaskStatus.RUNNING)
         await mgr.transition(t.id, TaskStatus.FAILED, error="err")
         t2 = await mgr.retry(t.id)
@@ -273,6 +281,7 @@ class TestTaskManagerRetry:
     async def test_retry_exceeds_max_raises(self):
         mgr = TaskManager(_make_storage())
         t = await mgr.create("t", max_retries=1)
+        await mgr.transition(t.id, TaskStatus.QUEUED)
         await mgr.transition(t.id, TaskStatus.RUNNING)
         await mgr.transition(t.id, TaskStatus.FAILED)
         await mgr.retry(t.id)  # retry_count=1
@@ -302,6 +311,7 @@ class TestTaskManagerCancel:
     async def test_cancel_running(self):
         mgr = TaskManager(_make_storage())
         t = await mgr.create("t")
+        await mgr.transition(t.id, TaskStatus.QUEUED)
         await mgr.transition(t.id, TaskStatus.RUNNING)
         t2 = await mgr.cancel(t.id)
         assert t2.status == TaskStatus.CANCELLED
@@ -310,7 +320,9 @@ class TestTaskManagerCancel:
     async def test_cancel_already_terminal_raises(self):
         mgr = TaskManager(_make_storage())
         t = await mgr.create("t")
+        await mgr.transition(t.id, TaskStatus.QUEUED)
         await mgr.transition(t.id, TaskStatus.RUNNING)
+        await mgr.transition(t.id, TaskStatus.REVIEW)
         await mgr.transition(t.id, TaskStatus.SUCCESS)
         with pytest.raises(ValueError, match="Invalid transition"):
             await mgr.cancel(t.id)
@@ -347,6 +359,7 @@ class TestTaskManagerList:
         mgr = TaskManager(_make_storage())
         await mgr.create("a")
         t2 = await mgr.create("b")
+        await mgr.transition(t2.id, TaskStatus.QUEUED)
         await mgr.transition(t2.id, TaskStatus.RUNNING)
         running = await mgr.list_by_status(TaskStatus.RUNNING)
         assert len(running) == 1
@@ -470,6 +483,7 @@ class TestWorkflowEngineAdvance:
         # Complete step_0's task
         tid0 = wf.step_tasks["step_0"]
         await tm.transition(tid0, TaskStatus.RUNNING)
+        await tm.transition(tid0, TaskStatus.REVIEW)
         await tm.transition(tid0, TaskStatus.SUCCESS)
         wf = await engine.advance(wf.id)
         assert "step_1" in wf.step_tasks
@@ -483,6 +497,7 @@ class TestWorkflowEngineAdvance:
         for step_id in ("step_0", "step_1"):
             tid = wf.step_tasks[step_id]
             await tm.transition(tid, TaskStatus.RUNNING)
+            await tm.transition(tid, TaskStatus.REVIEW)
             await tm.transition(tid, TaskStatus.SUCCESS)
         wf = await engine.advance(wf.id)
         assert wf.status == WorkflowStatus.SUCCESS
@@ -506,6 +521,7 @@ class TestWorkflowEngineAdvance:
         for step_id in ("step_0", "step_1"):
             tid = wf.step_tasks[step_id]
             await tm.transition(tid, TaskStatus.RUNNING)
+            await tm.transition(tid, TaskStatus.REVIEW)
             await tm.transition(tid, TaskStatus.SUCCESS)
         wf = await engine.advance(wf.id)
         assert wf.status == WorkflowStatus.SUCCESS
@@ -527,9 +543,11 @@ class TestWorkflowEngineOnTaskComplete:
         wf = await engine.start(wf.id)
         tid0 = wf.step_tasks["step_0"]
         await tm.transition(tid0, TaskStatus.RUNNING)
+        await tm.transition(tid0, TaskStatus.REVIEW)
         await tm.transition(tid0, TaskStatus.SUCCESS)
         tid1 = wf.step_tasks["step_1"]
         await tm.transition(tid1, TaskStatus.RUNNING)
+        await tm.transition(tid1, TaskStatus.REVIEW)
         await tm.transition(tid1, TaskStatus.SUCCESS)
         await engine.on_task_complete(tid1)
         wf = await engine.get(wf.id)
@@ -607,6 +625,7 @@ class TestWorkflowEngineCancel:
         # Complete one task first
         tid0 = wf.step_tasks["step_0"]
         await tm.transition(tid0, TaskStatus.RUNNING)
+        await tm.transition(tid0, TaskStatus.REVIEW)
         await tm.transition(tid0, TaskStatus.SUCCESS)
         wf = await engine.cancel(wf.id)
         t0 = await tm.get(tid0)
@@ -667,6 +686,7 @@ class TestWorkflowDAGExecution:
         # Complete step_0
         tid0 = wf.step_tasks["step_0"]
         await tm.transition(tid0, TaskStatus.RUNNING)
+        await tm.transition(tid0, TaskStatus.REVIEW)
         await tm.transition(tid0, TaskStatus.SUCCESS)
         wf = await engine.advance(wf.id)
         assert "step_1" in wf.step_tasks
@@ -675,6 +695,7 @@ class TestWorkflowDAGExecution:
         # Complete step_1
         tid1 = wf.step_tasks["step_1"]
         await tm.transition(tid1, TaskStatus.RUNNING)
+        await tm.transition(tid1, TaskStatus.REVIEW)
         await tm.transition(tid1, TaskStatus.SUCCESS)
         wf = await engine.advance(wf.id)
         assert "step_2" in wf.step_tasks
@@ -682,6 +703,7 @@ class TestWorkflowDAGExecution:
         # Complete step_2
         tid2 = wf.step_tasks["step_2"]
         await tm.transition(tid2, TaskStatus.RUNNING)
+        await tm.transition(tid2, TaskStatus.REVIEW)
         await tm.transition(tid2, TaskStatus.SUCCESS)
         wf = await engine.advance(wf.id)
         assert wf.status == WorkflowStatus.SUCCESS

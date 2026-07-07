@@ -15,6 +15,8 @@ class TaskStatus(str, Enum):
     PENDING = "pending"
     QUEUED = "queued"
     RUNNING = "running"
+    BLOCKED = "blocked"
+    REVIEW = "review"
     SUCCESS = "success"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -22,9 +24,14 @@ class TaskStatus(str, Enum):
 
 
 VALID_TASK_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
-    TaskStatus.PENDING: {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCELLED},
+    TaskStatus.PENDING: {TaskStatus.QUEUED, TaskStatus.CANCELLED},
     TaskStatus.QUEUED: {TaskStatus.RUNNING, TaskStatus.CANCELLED},
-    TaskStatus.RUNNING: {TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.SUSPENDED},
+    TaskStatus.RUNNING: {
+        TaskStatus.REVIEW, TaskStatus.BLOCKED, TaskStatus.FAILED,
+        TaskStatus.SUSPENDED, TaskStatus.CANCELLED,
+    },
+    TaskStatus.BLOCKED: {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCELLED},
+    TaskStatus.REVIEW: {TaskStatus.SUCCESS, TaskStatus.QUEUED},
     TaskStatus.SUSPENDED: {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCELLED},
     TaskStatus.FAILED: {TaskStatus.QUEUED},  # retry
     TaskStatus.SUCCESS: set(),
@@ -46,10 +53,17 @@ class TaskRecord:
     id: str = field(default_factory=lambda: _gen_id("t"))
     workflow_id: str = ""
     parent_task_id: str = ""
+    board_id: str = "default"
     title: str = ""
     description: str = ""
     status: TaskStatus = TaskStatus.PENDING
     priority: int = 5
+    labels: list[str] = field(default_factory=list)
+    assignee: str = ""
+    source: str = ""
+    session_id: str = ""
+    blocked_reason: str = ""
+    review_summary: str = ""
     result: str = ""
     error: str = ""
     retry_count: int = 0
@@ -63,9 +77,12 @@ class TaskRecord:
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id, "workflow_id": self.workflow_id,
-            "parent_task_id": self.parent_task_id,
+            "parent_task_id": self.parent_task_id, "board_id": self.board_id,
             "title": self.title, "description": self.description,
             "status": self.status.value, "priority": self.priority,
+            "labels": self.labels, "assignee": self.assignee,
+            "source": self.source, "session_id": self.session_id,
+            "blocked_reason": self.blocked_reason, "review_summary": self.review_summary,
             "result": self.result, "error": self.error,
             "retry_count": self.retry_count, "max_retries": self.max_retries,
             "created_at": self.created_at, "updated_at": self.updated_at,
@@ -78,9 +95,14 @@ class TaskRecord:
         return cls(
             id=d["id"], workflow_id=d.get("workflow_id", ""),
             parent_task_id=d.get("parent_task_id", ""),
+            board_id=d.get("board_id", "default"),
             title=d.get("title", ""), description=d.get("description", ""),
             status=TaskStatus(d.get("status", "pending")),
             priority=d.get("priority", 5),
+            labels=d.get("labels", []), assignee=d.get("assignee", ""),
+            source=d.get("source", ""), session_id=d.get("session_id", ""),
+            blocked_reason=d.get("blocked_reason", ""),
+            review_summary=d.get("review_summary", ""),
             result=d.get("result", ""), error=d.get("error", ""),
             retry_count=d.get("retry_count", 0), max_retries=d.get("max_retries", 3),
             created_at=d.get("created_at", ""), updated_at=d.get("updated_at", ""),

@@ -56,7 +56,14 @@ class StorageBackend(ABC):
         pass
 
     @abstractmethod
-    async def list_tasks(self, workflow_id: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
+    async def list_tasks(
+        self,
+        workflow_id: str | None = None,
+        status: str | None = None,
+        board_id: str | None = None,
+        assignee: str | None = None,
+        label: str | None = None,
+    ) -> list[dict[str, Any]]:
         pass
 
     @abstractmethod

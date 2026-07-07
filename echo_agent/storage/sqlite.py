@@ -385,7 +385,14 @@ class SQLiteBackend(StorageBackend):
             logger.error("Failed to load task '{}': {}", task_id, e)
             return None
 
-    async def list_tasks(self, workflow_id: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
+    async def list_tasks(
+        self,
+        workflow_id: str | None = None,
+        status: str | None = None,
+        board_id: str | None = None,
+        assignee: str | None = None,
+        label: str | None = None,
+    ) -> list[dict[str, Any]]:
         db = await self._ensure_connection()
         try:
             clauses: list[str] = []
@@ -396,11 +403,20 @@ class SQLiteBackend(StorageBackend):
             if status:
                 clauses.append("status=?")
                 params.append(status)
+            if board_id:
+                clauses.append("json_extract(data, '$.board_id')=?")
+                params.append(board_id)
+            if assignee:
+                clauses.append("json_extract(data, '$.assignee')=?")
+                params.append(assignee)
             where = " WHERE " + " AND ".join(clauses) if clauses else ""
             rows = await db.execute_fetchall(
                 f"SELECT data FROM tasks{where} ORDER BY updated_at DESC", params,
             )
-            return [json.loads(r[0]) for r in rows]
+            results = [json.loads(r[0]) for r in rows]
+            if label:
+                results = [r for r in results if label in r.get("labels", [])]
+            return results
         except Exception as e:
             logger.error("Failed to list tasks: {}", e)
             return []
