@@ -1,7 +1,5 @@
 # tests/test_ws_dashboard.py
 import asyncio
-import json
-from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock
 
 import aiohttp

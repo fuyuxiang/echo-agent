@@ -6,12 +6,10 @@ and a broadcast helper callable from other modules.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Any, TYPE_CHECKING
 
 from aiohttp import web, WSMsgType
-from loguru import logger
 
 if TYPE_CHECKING:
     from echo_agent.gateway.server import GatewayServer
@@ -80,7 +78,7 @@ class DashboardWebSocket:
         ch = channel or event_type.split("_")[0] + "s"
         message = json.dumps({"type": event_type, "payload": payload})
         dead: list[str] = []
-        for cid, client in self._clients.items():
+        for cid, client in list(self._clients.items()):
             if ch in client.subscriptions:
                 try:
                     await client.ws.send_str(message)
