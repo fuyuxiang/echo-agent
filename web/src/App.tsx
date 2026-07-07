@@ -5,6 +5,9 @@ import { Overview } from "./pages/Overview";
 import { Kanban } from "./pages/Kanban";
 import { Sessions } from "./pages/Sessions";
 import { Memory } from "./pages/Memory";
+import { Skills } from "./pages/Skills";
+import { Knowledge } from "./pages/Knowledge";
+import { Channels } from "./pages/Channels";
 
 function Placeholder({ name }: { name: string }) {
   return <div className="text-xl font-bold">{name}</div>;
@@ -19,9 +22,9 @@ export function App() {
           <Route index element={<Overview />} />
           <Route path="sessions" element={<Sessions />} />
           <Route path="memory" element={<Memory />} />
-          <Route path="skills" element={<Placeholder name="技能管理" />} />
-          <Route path="knowledge" element={<Placeholder name="知识库" />} />
-          <Route path="channels" element={<Placeholder name="通道管理" />} />
+          <Route path="skills" element={<Skills />} />
+          <Route path="knowledge" element={<Knowledge />} />
+          <Route path="channels" element={<Channels />} />
           <Route path="cron" element={<Placeholder name="定时任务" />} />
           <Route path="kanban" element={<Kanban />} />
           <Route path="logs" element={<Placeholder name="日志" />} />
