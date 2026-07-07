@@ -112,6 +112,7 @@ packages = ["echo_agent"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "skills" = "echo_agent/_bundled/skills"
+"web/dist" = "echo_agent/_bundled/dashboard"
 
 [tool.hatch.build.targets.sdist]
 include = [

@@ -209,7 +209,7 @@ class GatewayServer:
         app = self._app
         assert app is not None
 
-        app.router.add_get("/", self._handle_playground)
+        app.router.add_get("/playground", self._handle_playground)
         app.router.add_post(f"{prefix}/message", self._handle_message)
         app.router.add_get(f"{prefix}/health", self._handle_health)
         app.router.add_get(f"{prefix}/sessions", self._handle_list_sessions)
@@ -239,6 +239,9 @@ class GatewayServer:
         if self._agent_loop:
             from echo_agent.gateway.api import register_management_routes
             register_management_routes(app, prefix, self)
+
+        # Dashboard SPA catch-all — must be last so it doesn't shadow API routes
+        app.router.add_get("/{path:.*}", self._handle_dashboard)
 
     # ── HTTP handlers ────────────────────────────────────────────────────────
 
@@ -367,6 +370,41 @@ class GatewayServer:
 
     def _playground_path(self) -> Path:
         return Path(__file__).resolve().parent / "static" / "index.html"
+
+    def _resolve_dashboard_dir(self) -> Path | None:
+        """Locate the dashboard SPA build directory.
+
+        Checks two candidates in order:
+        1. Bundled in wheel: echo_agent/_bundled/dashboard/
+        2. Development: web/dist/ relative to project root (../../web/dist from server.py)
+        """
+        candidates = [
+            Path(__file__).resolve().parent.parent / "_bundled" / "dashboard",
+            Path(__file__).resolve().parent.parent.parent / "web" / "dist",
+        ]
+        for p in candidates:
+            if (p / "index.html").exists():
+                return p
+        return None
+
+    async def _handle_dashboard(self, request: web.Request) -> web.Response:
+        """Serve dashboard SPA with fallback to index.html for client-side routing."""
+        dashboard_dir = self._resolve_dashboard_dir()
+        if dashboard_dir is None:
+            return await self._handle_playground(request)
+
+        req_path = request.match_info.get("path", "")
+        if req_path:
+            file_path = dashboard_dir / req_path
+            # Prevent path traversal
+            try:
+                file_path = file_path.resolve()
+                if file_path.is_file() and str(file_path).startswith(str(dashboard_dir.resolve())):
+                    return web.FileResponse(file_path)
+            except (OSError, ValueError):
+                pass
+        # SPA fallback — serve index.html for all unmatched paths
+        return web.FileResponse(dashboard_dir / "index.html")
 
     def _authenticate_and_check_rate_limit(
         self, platform: str, user_id: str, chat_id: str, *, trusted: bool = False,
