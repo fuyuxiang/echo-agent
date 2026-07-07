@@ -51,7 +51,7 @@ def test_non_browser_request_allowed_when_enabled(tmp_path):
 
 def test_same_origin_allowed_when_enabled(tmp_path):
     auth = _auth(tmp_path, allowed_origins=["http://trusted.app"])
-    assert auth.is_origin_allowed("http://127.0.0.1:9000", "same-origin") is True
+    assert auth.is_origin_allowed("http://127.0.0.1:58123", "same-origin") is True
 
 
 def test_cross_site_rejected_when_enabled(tmp_path):
@@ -104,7 +104,7 @@ def test_admin_csrf_allows_same_origin_and_native():
     gw, _ = _make_gateway()
     # Same-origin playground fetch and native clients (no browser headers) pass.
     assert gw._check_csrf(
-        _csrf_request({"Origin": "http://127.0.0.1:9000", "Sec-Fetch-Site": "same-origin"}),
+        _csrf_request({"Origin": "http://127.0.0.1:58123", "Sec-Fetch-Site": "same-origin"}),
         action="shutdown",
     ) is None
     assert gw._check_csrf(_csrf_request({}), action="shutdown") is None

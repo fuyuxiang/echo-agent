@@ -40,7 +40,7 @@ def test_resolve_defaults_falls_back_on_load_failure(monkeypatch):
     monkeypatch.setattr("echo_agent.config.loader.load_config", _boom)
     host, port, ws_path, token = attach_client.resolve_defaults(None, None)
     assert host == "127.0.0.1"
-    assert port == 9000
+    assert port == 58123
     assert ws_path == "/ws"
     assert token == ""
 

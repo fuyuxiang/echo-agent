@@ -227,7 +227,7 @@ def resolve_defaults(
         token = gw.auth.api_tokens[0] if gw.auth.api_tokens else ""
         return "127.0.0.1", int(gw.port), gw.ws_path, token
     except Exception:
-        return "127.0.0.1", 9000, "/ws", ""
+        return "127.0.0.1", 58123, "/ws", ""
 
 
 def run_cli_attach(

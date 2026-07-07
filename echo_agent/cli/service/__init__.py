@@ -67,7 +67,7 @@ def _status_without_service() -> None:
         config = load_config(config_path=resolve_config_file(None))
         host, port = config.gateway.host, config.gateway.port
     except Exception:
-        host, port = "127.0.0.1", 9000
+        host, port = "127.0.0.1", 58123
     if not port:
         # port=0 is the ephemeral sentinel — nothing meaningful to probe.
         print("Gateway port is dynamic (gateway.port=0); cannot probe for a running instance.")

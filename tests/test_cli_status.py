@@ -73,7 +73,7 @@ def _fake_config(providers=None, default_model="gpt-4o",
     for n, enabled in (channel_overrides or {}).items():
         setattr(channels, n, SimpleNamespace(enabled=enabled))
     models = SimpleNamespace(providers=providers or [], default_model=default_model)
-    gateway = SimpleNamespace(enabled=gateway_enabled, host="0.0.0.0", port=9000)
+    gateway = SimpleNamespace(enabled=gateway_enabled, host="0.0.0.0", port=58123)
     return SimpleNamespace(
         models=models, channels=channels, gateway=gateway, workspace=workspace,
     )
@@ -111,7 +111,7 @@ def test_show_status_with_providers_and_channels(tmp_path, capsys):
     assert "openai" in out
     assert "gpt-4o" in out
     assert "telegram" in out
-    assert "Enabled on 0.0.0.0:9000" in out
+    assert "Enabled on 0.0.0.0:58123" in out
 
 
 def test_show_status_config_file_missing_on_disk(capsys):

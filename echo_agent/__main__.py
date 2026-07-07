@@ -148,7 +148,7 @@ def _build_parser() -> argparse.ArgumentParser:
     cli_parser = subparsers.add_parser(
         "cli", help="Attach to a running local gateway as a thin client"
     )
-    cli_parser.add_argument("--port", type=int, default=None, help="Gateway port (default: from config / 9000)")
+    cli_parser.add_argument("--port", type=int, default=None, help="Gateway port (default: from config / 58123)")
     cli_parser.add_argument("--token", default=None, help="API token (default: from gateway config)")
     cli_parser.add_argument("--user", default="local", help="Client user id for the cli: session (default: local)")
     cli_parser.add_argument("-c", "--config", help="Path to config file")

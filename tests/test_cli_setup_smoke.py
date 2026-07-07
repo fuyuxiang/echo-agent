@@ -120,7 +120,7 @@ def test_capability_check_full_config():
     config = {
         "models": {"providers": [{"name": "openai"}]},
         "channels": {"telegram": {"enabled": True}, "cli": {"enabled": True}},
-        "gateway": {"enabled": True, "host": "0.0.0.0", "port": 9000},
+        "gateway": {"enabled": True, "host": "0.0.0.0", "port": 58123},
         "tools": {"profile": "full", "mcp_servers": {"x": {}}},
         "observability": {"log_level": "DEBUG", "otel_enabled": True,
                           "otel_endpoint": "http://otel:4317"},

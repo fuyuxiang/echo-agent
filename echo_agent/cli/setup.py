@@ -588,11 +588,11 @@ def setup_gateway(config: dict) -> None:
         return
 
     gw["host"] = prompt(f"  {t('gateway.host')}", default=str(gw.get("host", "0.0.0.0")))
-    port_str = prompt(f"  {t('gateway.port')}", default=str(gw.get("port", 9000)))
+    port_str = prompt(f"  {t('gateway.port')}", default=str(gw.get("port", 58123)))
     try:
         gw["port"] = int(port_str)
     except ValueError:
-        gw["port"] = 9000
+        gw["port"] = 58123
         print_warning(t("common.invalid"))
 
     auth = _ensure_dict(gw, "auth")
@@ -965,7 +965,7 @@ def _capability_check(config: dict) -> list[tuple[str, bool, str]]:
 
     gw = config.get("gateway", {}) or {}
     if gw.get("enabled"):
-        checks.append((t("doctor.gateway_on", host=gw.get("host", "0.0.0.0"), port=gw.get("port", 9000)), True, ""))
+        checks.append((t("doctor.gateway_on", host=gw.get("host", "0.0.0.0"), port=gw.get("port", 58123)), True, ""))
     else:
         checks.append((t("doctor.gateway_off"), False, ""))
 

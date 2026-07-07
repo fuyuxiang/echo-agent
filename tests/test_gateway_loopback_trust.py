@@ -247,7 +247,7 @@ def test_cross_site_browser_false_for_native_client(tmp_path) -> None:
 
 def test_cross_site_browser_false_for_same_origin(tmp_path) -> None:
     auth = _auth(tmp_path)
-    assert auth.is_cross_site_browser("http://127.0.0.1:9000", "same-origin") is False
+    assert auth.is_cross_site_browser("http://127.0.0.1:58123", "same-origin") is False
     assert auth.is_cross_site_browser("", "none") is False
 
 

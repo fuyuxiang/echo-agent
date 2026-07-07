@@ -38,15 +38,15 @@ async def test_connect_ws_raises_no_gateway_on_refused():
 def test_diagnose_gateway_disabled(tmp_path):
     cfg = tmp_path / "off.yaml"
     cfg.write_text("gateway:\n  enabled: false\n")
-    msg = diagnose_no_gateway("ws://127.0.0.1:9000/ws", str(cfg), None)
+    msg = diagnose_no_gateway("ws://127.0.0.1:58123/ws", str(cfg), None)
     assert "gateway.enabled=false" in msg
     assert "true" in msg  # points the user at the fix
 
 
 def test_diagnose_gateway_enabled_unreachable(tmp_path):
     cfg = tmp_path / "on.yaml"
-    cfg.write_text("gateway:\n  enabled: true\n  host: 127.0.0.1\n  port: 9000\n")
-    msg = diagnose_no_gateway("ws://127.0.0.1:9000/ws", str(cfg), None)
+    cfg.write_text("gateway:\n  enabled: true\n  host: 127.0.0.1\n  port: 58123\n")
+    msg = diagnose_no_gateway("ws://127.0.0.1:58123/ws", str(cfg), None)
     assert "gateway.enabled=true" in msg
 
 
@@ -187,7 +187,7 @@ async def test_run_client_passes_handshake_session_key_into_tui(monkeypatch):
     monkeypatch.setattr(ac, "_require_textual", lambda: None)
 
     rc = await ac.run_client(
-        host="127.0.0.1", port=9000, ws_path="/ws", user_id="local", token="",
+        host="127.0.0.1", port=58123, ws_path="/ws", user_id="local", token="",
     )
     assert rc == 0
     assert captured["session_key"] == "cli:server-side"
@@ -207,7 +207,7 @@ def test_run_cli_attach_missing_textual_prints_install_hint_not_gateway(
 
     monkeypatch.setattr(attach_client, "_require_textual", boom)
     rc = attach_client.run_cli_attach(
-        host="127.0.0.1", port=9000, ws_path="/ws", user_id="u1", token="",
+        host="127.0.0.1", port=58123, ws_path="/ws", user_id="u1", token="",
     )
     out = capsys.readouterr().out
     assert rc == 1
