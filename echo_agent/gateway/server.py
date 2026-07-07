@@ -34,6 +34,7 @@ from echo_agent.gateway.rate_limiter import RateLimiter
 from echo_agent.gateway.router import DeliveryRouter
 from echo_agent.gateway.session_context import set_session_vars, clear_session_vars
 from echo_agent.gateway.session_policy import SessionResetPolicy
+from echo_agent.gateway.ws_dashboard import DashboardWebSocket
 from echo_agent.gateway.ws_session import resolve_client_session_key
 from echo_agent.session.manager import SessionManager
 
@@ -86,6 +87,7 @@ class GatewayServer:
         self.editor = ProgressiveEditor(bus)
         self.session_policy = SessionResetPolicy(config.session_policy)
         self.health = GatewayHealthProvider(self)
+        self._dashboard_ws = DashboardWebSocket(self)
         self._bus.subscribe_outbound_global(self._handle_outbound)
 
         for name, plat_cfg in config.platforms.items():
@@ -216,6 +218,7 @@ class GatewayServer:
         app.router.add_post(f"{prefix}/pair/verify", self._handle_pair_verify)
         app.router.add_get(f"{prefix}/stats", self._handle_stats)
         app.router.add_get(self._config.ws_path, self._handle_websocket)
+        app.router.add_get("/ws/dashboard", self._dashboard_ws.handle)
 
         if self._a2a_config and self._a2a_config.enabled and self._agent_loop:
             from echo_agent.a2a.server import A2AServer
