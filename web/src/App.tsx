@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import { Login } from "./pages/Login";
+import { Overview } from "./pages/Overview";
 
 function Placeholder({ name }: { name: string }) {
   return <div className="text-xl font-bold">{name}</div>;
@@ -12,7 +13,7 @@ export function App() {
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route element={<Layout />}>
-          <Route index element={<Placeholder name="概览" />} />
+          <Route index element={<Overview />} />
           <Route path="sessions" element={<Placeholder name="会话管理" />} />
           <Route path="memory" element={<Placeholder name="记忆管理" />} />
           <Route path="skills" element={<Placeholder name="技能管理" />} />
