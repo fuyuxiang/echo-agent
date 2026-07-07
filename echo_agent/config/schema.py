@@ -400,11 +400,19 @@ class QQBotChannelConfig(_Base):
         },
     )
     markdown_support: bool = Field(
-        default=False,
+        default=True,
         json_schema_extra={
             "status": "effective", "ref": "channels/qqbot.py:88",
-            "desc_zh": "是否启用 Markdown 消息支持",
-            "desc_en": "Enable Markdown message support",
+            "desc_zh": "是否以 QQ 原生 Markdown(msg_type=2)发送并保留加粗/代码等行内标记。"
+                       "默认开启;若机器人未开通原生 Markdown 权限,首条消息会被拒并自动降级为"
+                       "纯文本重发,该会话后续对该目标直接走纯文本(24 小时后重新探测)。"
+                       "无论开关如何,表格/标题/分隔线都会降级为可读纯文本。关闭则始终发纯文本",
+            "desc_en": "Send as QQ native Markdown (msg_type=2) and keep inline markers "
+                       "like bold/code. On by default; if the bot lacks native Markdown "
+                       "permission, the first message is rejected and auto-retried as plain "
+                       "text, and later messages to that target skip markdown (re-probed "
+                       "after 24h). Tables/headings/HR are downgraded to readable plain text "
+                       "regardless. When off, always sends plain text",
         },
     )
     media_enabled: bool = Field(

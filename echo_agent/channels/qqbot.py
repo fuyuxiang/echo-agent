@@ -35,7 +35,7 @@ from echo_agent.channels.qqbot_media import (
     upload_media,
 )
 from echo_agent.config.schema import QQBotChannelConfig
-from echo_agent.utils.text import split_message
+from echo_agent.utils.text import normalize_markdown, split_message
 
 _API_BASE = "https://api.sgroup.qq.com"
 _SANDBOX_API = "https://sandbox.api.sgroup.qq.com"
@@ -47,6 +47,12 @@ _DEDUP_TTL = 300
 _SEND_RETRIES = 3
 _RECONNECT_BACKOFFS = [2, 5, 10, 30, 60]
 _RATE_LIMIT_BACKOFF = 300  # 5 minutes when rate-limited by REST API
+# QQ has no stable error code for "markdown not permitted" — the API replies
+# with plain-text words. Detect those, then cache the verdict per target so we
+# probe markdown once instead of failing+retrying on every message. TTL lets a
+# bot that later gets the permission granted re-probe automatically.
+_MD_DENIED_MARKERS = ("markdown", "不允许", "无权限", "not allow", "permission")
+_MD_UNSUPPORTED_TTL = 86400  # 24h: re-probe markdown capability after a day
 _AT_MENTION_RE = re.compile(r"<@!?\d+>\s*")
 
 
@@ -103,6 +109,10 @@ class QQBotChannel(BaseChannel):
         self._seen_messages: OrderedDict[str, float] = OrderedDict()
         self._chat_type_map: OrderedDict[str, str] = OrderedDict()
         self._max_chat_type_entries = 10000
+        # Targets known to reject native markdown → expiry ts. Populated on the
+        # first denied send so later messages go straight to plain text.
+        self._md_unsupported: OrderedDict[str, float] = OrderedDict()
+        self._max_md_unsupported_entries = 10000
         # Media support
         self._media_enabled = config.media_enabled
         self._parse_tags = config.media_parse_tags
@@ -188,6 +198,42 @@ class QQBotChannel(BaseChannel):
         while len(self._chat_type_map) > self._max_chat_type_entries:
             self._chat_type_map.popitem(last=False)
 
+    def _markdown_allowed(self, chat_id: str, msg_type: str) -> bool:
+        """Whether this send should use QQ native markdown (msg_type=2).
+
+        Guild ``channel`` messages are plain content and never use markdown.
+        A target that previously rejected markdown is skipped until its cache
+        entry expires, so we don't re-fail on every message.
+        """
+        if not self._markdown or msg_type == "channel":
+            return False
+        expiry = self._md_unsupported.get(chat_id)
+        if expiry is not None:
+            if time.time() < expiry:
+                return False
+            # Entry expired: drop it and re-probe markdown this send.
+            self._md_unsupported.pop(chat_id, None)
+        return True
+
+    def _mark_markdown_unsupported(self, chat_id: str) -> None:
+        self._md_unsupported[chat_id] = time.time() + _MD_UNSUPPORTED_TTL
+        self._md_unsupported.move_to_end(chat_id)
+        while len(self._md_unsupported) > self._max_md_unsupported_entries:
+            self._md_unsupported.popitem(last=False)
+
+    @staticmethod
+    def _is_markdown_denied(body: str) -> bool:
+        """Heuristic: does a 400/403 body indicate markdown isn't permitted?
+
+        QQ returns no stable code for this, so we match on the words it uses.
+        Requiring "markdown" to co-occur with a denial word avoids treating an
+        unrelated permission error as a markdown problem.
+        """
+        low = body.lower()
+        if "markdown" not in low:
+            return False
+        return any(marker in low for marker in _MD_DENIED_MARKERS if marker != "markdown")
+
     # ── Send ─────────────────────────────────────────────────────────────────
 
     async def send(self, event: OutboundEvent) -> SendResult | None:
@@ -225,7 +271,15 @@ class QQBotChannel(BaseChannel):
         for i, item in enumerate(send_queue):
             reply = msg_id if i == 0 else ""
             if item.kind == "text":
-                chunks = self._split_text(item.content)
+                # Downgrade GFM before splitting so QQ never shows raw markers
+                # (msg_type=0) or unsupported tables/headings/HR (msg_type=2).
+                # keep_inline follows the same capability check _send_chunk uses
+                # (global flag + channel type + per-target denial cache), so a
+                # target known to reject markdown gets inline markers stripped
+                # up front rather than leaking raw ** after the send downgrades.
+                keep_inline = self._markdown_allowed(chat_id, msg_type)
+                normalized = normalize_markdown(item.content, keep_inline=keep_inline)
+                chunks = self._split_text(normalized)
                 for j, chunk in enumerate(chunks):
                     r = reply if j == 0 else ""
                     ok = await self._send_chunk(chat_id, chunk, msg_type, r)
@@ -341,22 +395,18 @@ class QQBotChannel(BaseChannel):
 
     async def _send_chunk(self, chat_id: str, text: str, msg_type: str, reply_to: str) -> bool:
         seq = self._next_msg_seq()
+        using_markdown = self._markdown_allowed(chat_id, msg_type)
         if msg_type == "channel":
             url = f"{self._api_base}/channels/{chat_id}/messages"
             payload: dict[str, Any] = {"content": text}
             if reply_to:
                 payload["msg_id"] = reply_to
-        elif msg_type == "c2c":
-            url = f"{self._api_base}/v2/users/{chat_id}/messages"
-            if self._markdown:
-                payload = {"markdown": {"content": text}, "msg_type": 2, "msg_seq": seq}
-            else:
-                payload = {"content": text, "msg_type": 0, "msg_seq": seq}
-            if reply_to:
-                payload["msg_id"] = reply_to
         else:
-            url = f"{self._api_base}/v2/groups/{chat_id}/messages"
-            if self._markdown:
+            if msg_type == "c2c":
+                url = f"{self._api_base}/v2/users/{chat_id}/messages"
+            else:
+                url = f"{self._api_base}/v2/groups/{chat_id}/messages"
+            if using_markdown:
                 payload = {"markdown": {"content": text}, "msg_type": 2, "msg_seq": seq}
             else:
                 payload = {"content": text, "msg_type": 0, "msg_seq": seq}
@@ -366,6 +416,7 @@ class QQBotChannel(BaseChannel):
         attempt = 0
         token_refreshes = 0
         msg_id_drops = 0
+        md_downgrades = 0
         while attempt < _SEND_RETRIES:
             try:
                 async with self._session.post(url, json=payload, headers=self._auth_headers()) as resp:
@@ -394,6 +445,31 @@ class QQBotChannel(BaseChannel):
                         logger.info("QQBot token expired during send, refreshing")
                         self._token_expires = 0
                         await self._refresh_token()
+                        continue
+                    if (
+                        resp.status in (400, 403)
+                        and using_markdown
+                        and self._is_markdown_denied(body)
+                    ):
+                        # Bot lacks native-markdown permission for this target.
+                        # Downgrade this send to plain text and remember the
+                        # target so later messages skip markdown entirely. This
+                        # is a payload fixup, so it doesn't consume the retry
+                        # budget; cap it so a persistent 400 can't loop.
+                        if md_downgrades >= 1:
+                            logger.warning("QQBot markdown downgrade already attempted; giving up")
+                            return False
+                        md_downgrades += 1
+                        self._mark_markdown_unsupported(chat_id)
+                        using_markdown = False
+                        plain = normalize_markdown(text, keep_inline=False)
+                        payload = {"content": plain, "msg_type": 0, "msg_seq": seq}
+                        if reply_to:
+                            payload["msg_id"] = reply_to
+                        logger.info(
+                            "QQBot markdown not permitted for {}, downgrading to plain text",
+                            chat_id,
+                        )
                         continue
                     if resp.status in (400, 403, 404):
                         logger.warning("QQBot send permanent error ({}): {}", resp.status, body[:200])

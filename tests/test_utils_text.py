@@ -6,6 +6,7 @@ from __future__ import annotations
 from echo_agent.utils.text import (
     estimate_tokens,
     html_to_text,
+    normalize_markdown,
     split_message,
     strip_thinking,
 )
@@ -132,4 +133,138 @@ class TestHtmlToText:
     def test_strips_tags(self):
         result = html_to_text("<div><span>text</span></div>")
         assert result == "text"
+
+
+# ---------------------------------------------------------------------------
+# normalize_markdown
+# ---------------------------------------------------------------------------
+
+class TestNormalizeMarkdown:
+    def test_empty(self):
+        assert normalize_markdown("") == ""
+
+    def test_plain_strips_inline(self):
+        text = "This is **bold** and *italic* and `code` here"
+        assert normalize_markdown(text) == "This is bold and italic and code here"
+
+    def test_keep_inline_preserves_markers(self):
+        text = "This is **bold** and `code`"
+        assert normalize_markdown(text, keep_inline=True) == text
+
+    def test_link_plain(self):
+        assert normalize_markdown("see [docs](http://x.com)") == "see docs"
+
+    def test_link_keep_inline(self):
+        # Links are kept verbatim when inline markers are preserved (QQ renders them).
+        assert normalize_markdown("see [docs](http://x.com)", keep_inline=True) == (
+            "see [docs](http://x.com)"
+        )
+
+    def test_heading_removed_both_modes(self):
+        assert normalize_markdown("## Title\nbody") == "Title\nbody"
+        assert normalize_markdown("## Title\nbody", keep_inline=True) == "Title\nbody"
+
+    def test_heading_with_inline(self):
+        assert normalize_markdown("### **Big** header") == "Big header"
+
+    def test_hr_removed(self):
+        assert normalize_markdown("above\n---\nbelow") == "above\nbelow"
+        assert normalize_markdown("a\n***\nb") == "a\nb"
+
+    def test_table_to_fields(self):
+        text = (
+            "| Name | Age |\n"
+            "|------|-----|\n"
+            "| Alice | 30 |\n"
+            "| Bob | 25 |"
+        )
+        result = normalize_markdown(text)
+        assert "Name: Alice" in result
+        assert "Age: 30" in result
+        assert "Name: Bob" in result
+        assert "Age: 25" in result
+        assert "|" not in result
+
+    def test_table_colon_aligned_separator(self):
+        text = (
+            "| A | B |\n"
+            "|:--|--:|\n"
+            "| 1 | 2 |"
+        )
+        result = normalize_markdown(text)
+        assert "A: 1" in result
+        assert "B: 2" in result
+
+    def test_table_short_separator(self):
+        # A 1-dash separator is valid GFM and must be recognized.
+        text = "| X | Y |\n|-|-|\n| a | b |"
+        result = normalize_markdown(text)
+        assert "X: a" in result
+        assert "Y: b" in result
+
+    def test_table_strips_inline_in_cells_plain(self):
+        text = "| Name |\n|------|\n| **Alice** |"
+        result = normalize_markdown(text)
+        assert "Name: Alice" in result
+        assert "*" not in result
+
+    def test_table_keeps_inline_in_cells(self):
+        text = "| Name |\n|------|\n| **Alice** |"
+        result = normalize_markdown(text, keep_inline=True)
+        assert "Name: **Alice**" in result
+
+    def test_table_followed_by_text(self):
+        text = "| A |\n|---|\n| 1 |\n\nafter table"
+        result = normalize_markdown(text)
+        assert "A: 1" in result
+        assert "after table" in result
+
+    def test_escaped_pipe_in_cell(self):
+        text = "| Expr | Val |\n|------|-----|\n| a \\| b | 3 |"
+        result = normalize_markdown(text)
+        assert "Expr: a | b" in result
+        assert "Val: 3" in result
+
+    def test_code_fence_passthrough_plain(self):
+        text = "```python\nx = **not bold**\n```"
+        result = normalize_markdown(text)
+        # Content inside the fence is untouched, even in plain mode.
+        assert "x = **not bold**" in result
+        assert "```python" in result
+
+    def test_pipe_line_inside_fence_not_table(self):
+        text = "```\n| not | a | table |\n```"
+        result = normalize_markdown(text)
+        assert "| not | a | table |" in result
+
+    def test_pseudo_table_without_separator_preserved(self):
+        # A single pipe row without a separator is not a real table; the
+        # content must survive (stripped in plain mode), not be dropped.
+        text = "| just | pipes |"
+        result = normalize_markdown(text)
+        assert "just" in result and "pipes" in result
+
+    def test_collapses_blank_lines(self):
+        text = "a\n\n\n\nb"
+        assert normalize_markdown(text) == "a\n\nb"
+
+    def test_realistic_mixed_document(self):
+        text = (
+            "## 报告\n"
+            "这是 **重点** 内容\n\n"
+            "| 项目 | 状态 |\n"
+            "|------|------|\n"
+            "| 部署 | 完成 |\n\n"
+            "---\n"
+            "结束"
+        )
+        result = normalize_markdown(text)
+        assert "报告" in result
+        assert "这是 重点 内容" in result
+        assert "项目: 部署" in result
+        assert "状态: 完成" in result
+        assert "结束" in result
+        assert "|" not in result
+        assert "#" not in result
+        assert "---" not in result
 
