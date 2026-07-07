@@ -270,6 +270,26 @@ class Scheduler:
     def list_jobs(self) -> list[ScheduledJob]:
         return list(self._jobs.values())
 
+    def get_job(self, job_id: str) -> ScheduledJob | None:
+        return self._jobs.get(job_id)
+
+    def get_run_history(self, job_id: str, limit: int = 10) -> list[dict[str, Any]]:
+        """Return recent run info for a job (derived from current state).
+
+        The scheduler does not persist a full run log today; return a
+        summary based on the last execution so callers have something
+        to display. A future iteration can persist per-run records.
+        """
+        job = self._jobs.get(job_id)
+        if not job or not job.last_run_ms:
+            return []
+        return [{
+            "ts": job.last_run_ms,
+            "status": job.last_status or "unknown",
+            "error": job.last_error,
+            "run_count": job.run_count,
+        }]
+
     async def record_run_outcome(self, job_id: str, status: str, error: str = "") -> None:
         """Write back the real end-to-end outcome of a dispatched job run.
 
