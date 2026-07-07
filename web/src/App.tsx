@@ -3,6 +3,7 @@ import { Layout } from "./components/Layout";
 import { Login } from "./pages/Login";
 import { Overview } from "./pages/Overview";
 import { Kanban } from "./pages/Kanban";
+import { Sessions } from "./pages/Sessions";
 
 function Placeholder({ name }: { name: string }) {
   return <div className="text-xl font-bold">{name}</div>;
@@ -15,7 +16,7 @@ export function App() {
         <Route path="/login" element={<Login />} />
         <Route element={<Layout />}>
           <Route index element={<Overview />} />
-          <Route path="sessions" element={<Placeholder name="会话管理" />} />
+          <Route path="sessions" element={<Sessions />} />
           <Route path="memory" element={<Placeholder name="记忆管理" />} />
           <Route path="skills" element={<Placeholder name="技能管理" />} />
           <Route path="knowledge" element={<Placeholder name="知识库" />} />
