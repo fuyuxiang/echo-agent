@@ -8,10 +8,10 @@ import { Memory } from "./pages/Memory";
 import { Skills } from "./pages/Skills";
 import { Knowledge } from "./pages/Knowledge";
 import { Channels } from "./pages/Channels";
-
-function Placeholder({ name }: { name: string }) {
-  return <div className="text-xl font-bold">{name}</div>;
-}
+import { Cron } from "./pages/Cron";
+import { Logs } from "./pages/Logs";
+import { Config } from "./pages/Config";
+import { Analytics } from "./pages/Analytics";
 
 export function App() {
   return (
@@ -25,11 +25,11 @@ export function App() {
           <Route path="skills" element={<Skills />} />
           <Route path="knowledge" element={<Knowledge />} />
           <Route path="channels" element={<Channels />} />
-          <Route path="cron" element={<Placeholder name="定时任务" />} />
+          <Route path="cron" element={<Cron />} />
           <Route path="kanban" element={<Kanban />} />
-          <Route path="logs" element={<Placeholder name="日志" />} />
-          <Route path="config" element={<Placeholder name="配置" />} />
-          <Route path="analytics" element={<Placeholder name="统计" />} />
+          <Route path="logs" element={<Logs />} />
+          <Route path="config" element={<Config />} />
+          <Route path="analytics" element={<Analytics />} />
         </Route>
       </Routes>
     </BrowserRouter>
