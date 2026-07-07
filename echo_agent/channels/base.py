@@ -139,6 +139,20 @@ class BaseChannel(ABC):
             logger.warning("Access denied for sender {} on channel {}", sender_id, self.name)
             raise PermissionError(f"sender {sender_id} is not allowed on channel {self.name}")
 
+        # Inbound metadata is untrusted input (a webhook body, an IM payload,
+        # etc.). Internal control keys are namespaced with a leading underscore
+        # (_unattended, _cron_authorized, _drop, ...) and some of them gate the
+        # approval path — so a channel that forwarded a caller-supplied key like
+        # {"_cron_authorized": true} could bypass EXEC approval. Strip the "_"
+        # namespace here, the single choke point every external channel routes
+        # through. This mirrors the outbound _public_metadata filter, making the
+        # "_ keys are internal-only" invariant symmetric on both directions.
+        # Trusted internal producers (scheduler/delivery.py, cron.py,
+        # gateway/server.py) construct InboundEvent directly and are unaffected.
+        safe_metadata = {
+            k: v for k, v in (metadata or {}).items() if not str(k).startswith("_")
+        }
+
         content_blocks = [ContentBlock(type=ContentType.TEXT, text=text)]
         for item in (media or []):
             name = item.get("name", "")
@@ -165,7 +179,7 @@ class BaseChannel(ABC):
             reply_to_is_own=reply_to_is_own,
             thread_id=thread_id,
             session_key_override=session_key,
-            metadata=metadata or {},
+            metadata=safe_metadata,
             is_group=is_group,
         )
 
