@@ -114,6 +114,8 @@ class InferenceStage:
         plan_run_store: Any = None,
         cost_tracker: Any = None,
         cognitive_emitter: "CognitiveEmitter | None" = None,
+        compressor: Any = None,
+        memory_store: Any = None,
     ):
         self._config = config
         self._bus = bus
@@ -135,6 +137,8 @@ class InferenceStage:
         self._plan_run_store = plan_run_store
         self._cost_tracker = cost_tracker
         self._cog = cognitive_emitter
+        self._compressor = compressor
+        self._memory_store = memory_store
         # Read-only tool concurrency config (Task 2 added the fields, marked
         # effective). getattr fallbacks because some test configs are MagicMock.
         _tc = getattr(getattr(config, "agent", None), "tool_concurrency", None)
@@ -206,14 +210,33 @@ class InferenceStage:
             f"🔧 {name} · {status}",
         )
 
-    async def _emit_cost(self, event, turn_tokens, turn_cost, total_cost) -> None:
+    async def _emit_cost(self, event, turn_tokens, turn_cost, total_cost,
+                         model: str = "", messages: list | None = None) -> None:
         """Surface a cost update to the cognition stream (cli-gated)."""
         if self._cog is None:
             return
+        context_used = 0
+        context_max = 0
+        compressor = getattr(self, "_compressor", None)
+        if compressor is not None:
+            context_max = getattr(compressor, "context_window_tokens", 0) or 0
+            if messages:
+                context_used = compressor.estimate_tokens(messages)
+        memory_count = 0
+        memory_store = getattr(self, "_memory_store", None)
+        if memory_store is not None:
+            try:
+                memory_count = len(memory_store.list_all())
+            except Exception:
+                pass
         await self._cog.emit(
             event, "cost_update",
             {"turn_tokens": int(turn_tokens), "turn_cost": round(turn_cost, 4),
-             "total_cost": round(total_cost, 4)},
+             "total_cost": round(total_cost, 4),
+             "model": model,
+             "context_used": context_used,
+             "context_max": context_max,
+             "memory_count": memory_count},
             f"💰 ${round(total_cost, 4)}",
         )
 
@@ -471,6 +494,8 @@ class InferenceStage:
                     event, _turn_tokens,
                     self._cost_tracker.spent_usd - _cost_before,
                     self._cost_tracker.spent_usd,
+                    model=route_decision.model,
+                    messages=messages,
                 )
 
             issues = self._inference.validate_response(response)

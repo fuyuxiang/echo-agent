@@ -481,6 +481,8 @@ class AgentLoop:
             plan_run_store=self._plan_run_store,
             cost_tracker=self._cost_tracker,
             cognitive_emitter=self.cognitive_emitter,
+            compressor=self.compressor,
+            memory_store=self.memory,
         )
         # Retrieval prefetcher: after each reply ResponseStage fires this on the
         # DISCARDABLE tier to warm the next turn's cache. Needs _hybrid_retriever

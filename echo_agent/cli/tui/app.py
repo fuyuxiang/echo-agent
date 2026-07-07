@@ -101,6 +101,7 @@ class EchoTUI(App):
         if r is None:
             r = self._tv.start_reply()
         r.set_final(text)
+        self.query_one(StatusBar).stop_turn_timer()
 
     def on_cognitive(self, ev: CogEvent) -> None:
         if ev.cog_type == "heartbeat":
@@ -118,10 +119,18 @@ class EchoTUI(App):
             self.set_focus(None)
             return
         if ev.cog_type == "cost_update":
-            # Cost only refreshes the status bar; it must not enter the
-            # transcript stream (symmetric with heartbeat/approval_request
-            # above), otherwise tool-heavy turns spam 💰 blocks.
-            self.query_one(StatusBar).set_cost(ev.data.get("total_cost", 0.0))
+            bar = self.query_one(StatusBar)
+            bar.set_cost(ev.data.get("total_cost", 0.0))
+            if ev.data.get("model"):
+                bar.set_model(ev.data["model"])
+            ctx_used = ev.data.get("context_used", 0)
+            ctx_max = ev.data.get("context_max", 0)
+            if ctx_max:
+                bar.set_context(ctx_used, ctx_max)
+            mem = ev.data.get("memory_count")
+            if mem is not None:
+                bar.set_memory_count(mem)
+            bar.stop_turn_timer()
             return
         if ev.cog_type == "tool_call":
             # Tool lines flip in place (running -> done) via a dedicated block,
@@ -161,6 +170,7 @@ class EchoTUI(App):
             self.exit()
             return
         self._tv.add_user(text)
+        self.query_one(StatusBar).start_turn_timer()
         if self._send is not None:
             await self._send(text)
 
