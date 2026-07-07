@@ -23,7 +23,7 @@ def api(mock_server):
 
 @pytest.mark.asyncio
 async def test_list_cron_jobs(mock_server, api):
-    from echo_agent.scheduler.service import ScheduledJob, TriggerKind, JobStatus
+    from echo_agent.scheduler.service import ScheduledJob, TriggerKind
     job = ScheduledJob(id="j1", name="daily_check", trigger=TriggerKind.CRON, cron_expr="0 9 * * *")
     mock_server._agent_loop.scheduler.list_jobs = MagicMock(return_value=[job])
 

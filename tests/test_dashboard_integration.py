@@ -5,10 +5,6 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer, TestClient
 
 from echo_agent.gateway.api.tasks import TasksAPI
-from echo_agent.gateway.api.sessions import SessionsAPI
-from echo_agent.gateway.api.cron_api import CronAPI
-from echo_agent.gateway.api.logs import LogsAPI
-from echo_agent.gateway.api.analytics import AnalyticsAPI
 from echo_agent.tasks.models import TaskStatus, TaskRecord, VALID_TASK_TRANSITIONS
 
 

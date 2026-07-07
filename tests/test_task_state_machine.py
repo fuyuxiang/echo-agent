@@ -1,5 +1,4 @@
 # tests/test_task_state_machine.py
-import pytest
 from echo_agent.tasks.models import TaskStatus, VALID_TASK_TRANSITIONS, TaskRecord
 
 

@@ -28,9 +28,9 @@ class LogsAPI:
         logs = list(self._server._agent_loop.log_buffer)
 
         if level:
-            logs = [l for l in logs if l.get("level") == level.upper()]
+            logs = [entry for entry in logs if entry.get("level") == level.upper()]
         if search:
-            logs = [l for l in logs if search.lower() in l.get("message", "").lower()]
+            logs = [entry for entry in logs if search.lower() in entry.get("message", "").lower()]
 
         total = len(logs)
         logs = logs[offset:offset + limit]
