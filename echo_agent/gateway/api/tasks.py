@@ -1,7 +1,6 @@
 # echo_agent/gateway/api/tasks.py
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -93,10 +92,13 @@ class TasksAPI:
             return guard
 
         task_id = request.match_info["id"]
+        task = await self._manager().get(task_id)
+        if not task:
+            return web.json_response({"error": "not found"}, status=404)
         try:
             await self._manager().cancel(task_id)
         except ValueError as e:
-            return web.json_response({"error": str(e)}, status=404)
+            return web.json_response({"error": str(e)}, status=409)
         return web.json_response({"status": "deleted"})
 
     async def transition_task(self, request: web.Request) -> web.Response:
