@@ -212,8 +212,9 @@ class GatewayServer:
         app.router.add_get("/playground", self._handle_playground)
         app.router.add_post(f"{prefix}/message", self._handle_message)
         app.router.add_get(f"{prefix}/health", self._handle_health)
-        app.router.add_get(f"{prefix}/sessions", self._handle_list_sessions)
         app.router.add_delete(f"{prefix}/sessions/{{key}}", self._handle_reset_session)
+        # Note: GET /sessions is registered by register_management_routes when
+        # _agent_loop is available; fallback registered below for standalone mode.
         app.router.add_post(f"{prefix}/pair", self._handle_pair_generate)
         app.router.add_post(f"{prefix}/pair/verify", self._handle_pair_verify)
         app.router.add_get(f"{prefix}/stats", self._handle_stats)
@@ -239,6 +240,8 @@ class GatewayServer:
         if self._agent_loop:
             from echo_agent.gateway.api import register_management_routes
             register_management_routes(app, prefix, self)
+        else:
+            app.router.add_get(f"{prefix}/sessions", self._handle_list_sessions)
 
         # Dashboard SPA catch-all — must be last so it doesn't shadow API routes
         app.router.add_get("/{path:.*}", self._handle_dashboard)

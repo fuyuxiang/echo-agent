@@ -183,8 +183,6 @@ class ApprovalGate:
             guard, approved_actions, session_key, pattern_key, risk,
         )
 
-    # PLACEHOLDER_METHODS
-
     async def _run_smart_approval(
         self, tool_name: str, arguments: dict[str, Any], guard: GuardDecision,
     ) -> str:
@@ -261,8 +259,6 @@ class ApprovalGate:
             notify_user=True,
             notice=notice_for(REASON_APPROVAL_TIMEOUT, tool=tool_name, request_id=approval_req.id),
         )
-
-    # PLACEHOLDER_HELPERS
 
     @staticmethod
     def _describe_action(tool_name: str, arguments: dict[str, Any] | None) -> str:

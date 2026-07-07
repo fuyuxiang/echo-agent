@@ -40,7 +40,7 @@ class DashboardWebSocket:
 
                     if data.get("type") == "auth":
                         token = data.get("token", "")
-                        if self._server.auth.validate_token(token):
+                        if self._server.auth.authenticate_token(token):
                             authenticated = True
                             self._clients[client_id] = client
                             await ws.send_json({"type": "auth_ok"})
@@ -69,13 +69,29 @@ class DashboardWebSocket:
 
         return ws
 
+    _EVENT_CHANNEL_MAP: dict[str, str] = {
+        "task": "tasks",
+        "session": "sessions",
+        "cron": "cron",
+        "memory": "memory",
+        "skill": "skills",
+        "channel": "channels",
+        "log": "logs",
+        "analytics": "analytics",
+        "knowledge": "knowledge",
+    }
+
     async def broadcast(self, event_type: str, payload: dict[str, Any], channel: str | None = None) -> None:
         """Broadcast an event to all subscribed dashboard clients.
 
-        Channel is inferred from event_type (e.g. "task_created" -> "tasks")
-        unless explicitly provided.
+        Channel is resolved from a static mapping of event prefix → subscription
+        channel name, unless explicitly provided.
         """
-        ch = channel or event_type.split("_")[0] + "s"
+        if channel:
+            ch = channel
+        else:
+            prefix = event_type.split("_")[0] if "_" in event_type else event_type
+            ch = self._EVENT_CHANNEL_MAP.get(prefix, prefix)
         message = json.dumps({"type": event_type, "payload": payload})
         dead: list[str] = []
         for cid, client in list(self._clients.items()):

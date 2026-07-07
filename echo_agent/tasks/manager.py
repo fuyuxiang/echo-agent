@@ -100,9 +100,15 @@ class TaskManager:
         task = await self.get(task_id)
         if not task:
             raise ValueError(f"Task '{task_id}' not found")
-        for key in ("title", "description", "priority", "metadata", "labels", "assignee", "blocked_reason", "review_summary"):
+        for key in ("title", "description", "priority", "labels", "assignee", "blocked_reason", "review_summary"):
             if key in fields:
                 setattr(task, key, fields[key])
+        if "metadata" in fields:
+            incoming = fields["metadata"]
+            if isinstance(incoming, dict):
+                task.metadata = {**task.metadata, **incoming}
+            else:
+                task.metadata = incoming
         task.updated_at = _now()
         await self._storage.store_task(task.id, task.to_dict())
         return task

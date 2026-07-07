@@ -37,11 +37,21 @@ class CronAPI:
         if guard is not None:
             return guard
 
-        body = await request.json()
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+
         name = body.get("name", "")
         cron_expr = body.get("cron_expr", "")
         if not cron_expr:
             return web.json_response({"error": "cron_expr is required"}, status=400)
+
+        try:
+            from croniter import croniter
+            croniter(cron_expr)
+        except (ValueError, KeyError, TypeError) as e:
+            return web.json_response({"error": f"invalid cron_expr: {e}"}, status=400)
 
         job = ScheduledJob(
             name=name,
@@ -58,11 +68,21 @@ class CronAPI:
             return guard
 
         job_id = request.match_info["id"]
-        body = await request.json()
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON body"}, status=400)
 
         job = self._scheduler().get_job(job_id)
         if not job:
             return web.json_response({"error": "not found"}, status=404)
+
+        if "cron_expr" in body:
+            try:
+                from croniter import croniter
+                croniter(body["cron_expr"])
+            except (ValueError, KeyError, TypeError) as e:
+                return web.json_response({"error": f"invalid cron_expr: {e}"}, status=400)
 
         if "name" in body:
             job.name = body["name"]
@@ -104,7 +124,10 @@ class CronAPI:
             return guard
 
         job_id = request.match_info["id"]
-        limit = int(request.query.get("limit", "10"))
+        try:
+            limit = int(request.query.get("limit", "10"))
+        except (ValueError, TypeError):
+            return web.json_response({"error": "invalid limit parameter"}, status=400)
         runs = self._scheduler().get_run_history(job_id, limit=limit)
         return web.json_response({"runs": runs})
 

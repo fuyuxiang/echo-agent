@@ -28,8 +28,11 @@ class MemoryAPI:
         mem_type = request.query.get("type")
         tier = request.query.get("tier")
         session_key = request.query.get("session_key")
-        offset = int(request.query.get("offset", "0"))
-        limit = int(request.query.get("limit", "50"))
+        try:
+            offset = int(request.query.get("offset", "0"))
+            limit = int(request.query.get("limit", "50"))
+        except (ValueError, TypeError):
+            return web.json_response({"error": "invalid offset/limit parameter"}, status=400)
 
         from echo_agent.memory.types import MemoryType
         mt = MemoryType(mem_type) if mem_type else None

@@ -17,7 +17,7 @@ async def dashboard_ws_url():
     server_mock = MagicMock()
     server_mock.auth = MagicMock()
     # Default: token validation returns True
-    server_mock.auth.validate_token = MagicMock(return_value=True)
+    server_mock.auth.authenticate_token = MagicMock(return_value=True)
 
     dws = DashboardWebSocket(server_mock)
 
@@ -45,7 +45,7 @@ async def dashboard_ws_url():
 async def test_ws_dashboard_auth_required(dashboard_ws_url):
     """Auth with invalid token should return auth_error."""
     info = dashboard_ws_url
-    info["server_mock"].auth.validate_token = MagicMock(return_value=False)
+    info["server_mock"].auth.authenticate_token = MagicMock(return_value=False)
 
     async with aiohttp.ClientSession() as s:
         async with s.ws_connect(info["url"]) as ws:

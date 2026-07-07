@@ -296,8 +296,17 @@ install_node() {
     esac
 
     local node_dir="$ECHO_HOME/node"
-    local base_url="https://nodejs.org/dist/v${NODE_VERSION}.0.0"
-    local pkg_name="node-v${NODE_VERSION}.0.0-${node_os}-${arch}"
+    # Resolve the latest LTS version for the major version instead of hardcoding
+    # a patch release that may not exist or contain known vulnerabilities.
+    local node_full_ver=""
+    node_full_ver=$(curl -sSf --connect-timeout 5 "https://nodejs.org/dist/latest-v${NODE_VERSION}.x/" 2>/dev/null \
+        | grep -oE "node-v${NODE_VERSION}\.[0-9]+\.[0-9]+" | head -1 | sed 's/node-//')
+    if [ -z "$node_full_ver" ]; then
+        node_full_ver="v${NODE_VERSION}.0.0"
+        log_warn "Could not resolve latest Node ${NODE_VERSION}.x version, falling back to ${node_full_ver}"
+    fi
+    local base_url="https://nodejs.org/dist/${node_full_ver}"
+    local pkg_name="node-${node_full_ver}-${node_os}-${arch}"
     local tmp_dir
     tmp_dir="$(mktemp -d)"
 

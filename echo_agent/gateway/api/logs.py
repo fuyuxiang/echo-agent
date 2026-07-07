@@ -22,8 +22,11 @@ class LogsAPI:
 
         level = request.query.get("level")
         search = request.query.get("q")
-        limit = int(request.query.get("limit", "200"))
-        offset = int(request.query.get("offset", "0"))
+        try:
+            limit = int(request.query.get("limit", "200"))
+            offset = int(request.query.get("offset", "0"))
+        except (ValueError, TypeError):
+            return web.json_response({"error": "invalid limit/offset parameter"}, status=400)
 
         logs = list(self._server._agent_loop.log_buffer)
 

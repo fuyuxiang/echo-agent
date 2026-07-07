@@ -400,11 +400,14 @@ class Scheduler:
         if not _HAS_FCNTL:
             return True
         lock_path = self._lock_dir / f"{job_id}.lock"
+        fd = None
         try:
             fd = open(lock_path, "w")
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return fd
         except (IOError, OSError):
+            if fd is not None:
+                fd.close()
             return None
 
     def _release_lock(self, lock_fd: Any) -> None:

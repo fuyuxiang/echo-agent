@@ -1,3 +1,5 @@
+import { useAuthStore } from "../stores/auth";
+
 type Listener = (event: { type: string; payload: unknown }) => void;
 
 export class DashboardWS {
@@ -28,7 +30,12 @@ export class DashboardWS {
     };
 
     this.ws.onclose = () => {
-      this.reconnectTimer = window.setTimeout(() => this.connect(token, this.channels), 3000);
+      const currentToken = useAuthStore.getState().token;
+      if (!currentToken) return;
+      this.reconnectTimer = window.setTimeout(
+        () => this.connect(currentToken, this.channels),
+        3000,
+      );
     };
   }
 

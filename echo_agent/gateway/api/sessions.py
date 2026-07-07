@@ -34,7 +34,10 @@ class SessionsAPI:
             return guard
 
         key = request.match_info["key"]
-        limit = int(request.query.get("limit", "100"))
+        try:
+            limit = int(request.query.get("limit", "100"))
+        except (ValueError, TypeError):
+            return web.json_response({"error": "invalid limit parameter"}, status=400)
 
         session = await self._server.session_manager.get_or_create(key)
         messages = session.get_history(max_messages=limit)

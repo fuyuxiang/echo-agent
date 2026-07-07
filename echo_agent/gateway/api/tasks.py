@@ -44,7 +44,11 @@ class TasksAPI:
         if guard is not None:
             return guard
 
-        body = await request.json()
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+
         title = body.get("title", "")
         if not title:
             return web.json_response({"error": "title is required"}, status=400)
@@ -77,7 +81,11 @@ class TasksAPI:
             return guard
 
         task_id = request.match_info["id"]
-        body = await request.json()
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+
         allowed = {"title", "description", "priority", "labels", "assignee", "blocked_reason", "review_summary", "metadata"}
         fields = {k: v for k, v in body.items() if k in allowed}
         try:
@@ -107,7 +115,11 @@ class TasksAPI:
             return guard
 
         task_id = request.match_info["id"]
-        body = await request.json()
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+
         to_status = body.get("to")
         if not to_status:
             return web.json_response({"error": "'to' status is required"}, status=400)
