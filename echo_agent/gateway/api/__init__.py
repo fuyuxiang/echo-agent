@@ -23,6 +23,7 @@ def register_management_routes(app: web.Application, prefix: str, server: Gatewa
     from echo_agent.gateway.api.config import ConfigAPI
     from echo_agent.gateway.api.lifecycle import LifecycleAPI
     from echo_agent.gateway.api.tasks import TasksAPI
+    from echo_agent.gateway.api.sessions import SessionsAPI
 
     memory_api = MemoryAPI(server)
     skills_api = SkillsAPI(server)
@@ -32,6 +33,7 @@ def register_management_routes(app: web.Application, prefix: str, server: Gatewa
     config_api = ConfigAPI(server)
     lifecycle_api = LifecycleAPI(server)
     tasks_api = TasksAPI(server)
+    sessions_api = SessionsAPI(server)
 
     app.router.add_get(f"{prefix}/memory", memory_api.list_entries)
     app.router.add_get(f"{prefix}/memory/stats", memory_api.stats)
@@ -69,3 +71,6 @@ def register_management_routes(app: web.Application, prefix: str, server: Gatewa
     app.router.add_put(f"{prefix}/tasks/{{id}}", tasks_api.update_task)
     app.router.add_delete(f"{prefix}/tasks/{{id}}", tasks_api.delete_task)
     app.router.add_post(f"{prefix}/tasks/{{id}}/transition", tasks_api.transition_task)
+
+    app.router.add_get(f"{prefix}/sessions", sessions_api.list_sessions)
+    app.router.add_get(f"{prefix}/sessions/{{key}}/history", sessions_api.get_history)
