@@ -25,6 +25,8 @@ def register_management_routes(app: web.Application, prefix: str, server: Gatewa
     from echo_agent.gateway.api.tasks import TasksAPI
     from echo_agent.gateway.api.sessions import SessionsAPI
     from echo_agent.gateway.api.cron_api import CronAPI
+    from echo_agent.gateway.api.logs import LogsAPI
+    from echo_agent.gateway.api.analytics import AnalyticsAPI
 
     memory_api = MemoryAPI(server)
     skills_api = SkillsAPI(server)
@@ -36,6 +38,8 @@ def register_management_routes(app: web.Application, prefix: str, server: Gatewa
     tasks_api = TasksAPI(server)
     sessions_api = SessionsAPI(server)
     cron_api = CronAPI(server)
+    logs_api = LogsAPI(server)
+    analytics_api = AnalyticsAPI(server)
 
     app.router.add_get(f"{prefix}/memory", memory_api.list_entries)
     app.router.add_get(f"{prefix}/memory/stats", memory_api.stats)
@@ -83,3 +87,8 @@ def register_management_routes(app: web.Application, prefix: str, server: Gatewa
     app.router.add_delete(f"{prefix}/cron/{{id}}", cron_api.delete_job)
     app.router.add_post(f"{prefix}/cron/{{id}}/trigger", cron_api.trigger_job)
     app.router.add_get(f"{prefix}/cron/{{id}}/runs", cron_api.get_runs)
+
+    app.router.add_get(f"{prefix}/logs", logs_api.list_logs)
+    app.router.add_get(f"{prefix}/analytics/tokens", analytics_api.token_usage)
+    app.router.add_get(f"{prefix}/analytics/skills", analytics_api.skill_usage)
+    app.router.add_get(f"{prefix}/analytics/channels", analytics_api.channel_usage)
