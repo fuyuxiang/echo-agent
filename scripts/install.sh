@@ -3,6 +3,11 @@
 
 set -e
 
+# --- Environment sanitization ---
+unset PYTHONPATH PYTHONHOME
+export UV_NO_CONFIG=1
+
+# --- Colors ---
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
@@ -11,39 +16,42 @@ MAGENTA='\033[0;35m'
 NC='\033[0m'
 BOLD='\033[1m'
 
+# --- Constants ---
 REPO_URL_SSH="git@github.com:fuyuxiang/echo-agent.git"
 REPO_URL_HTTPS="https://github.com/fuyuxiang/echo-agent.git"
 ECHO_HOME="${ECHO_HOME:-$HOME/.echo-agent}"
 INSTALL_DIR="${ECHO_INSTALL_DIR:-$ECHO_HOME/echo-agent}"
 ECHO_COMMAND_LINK_DIR="${ECHO_COMMAND_LINK_DIR:-}"
 PYTHON_VERSION="3.11"
+NODE_VERSION="22"
 BRANCH="master"
 RUN_SETUP=true
+HAS_NODE=false
+DASHBOARD_BUILT=false
 
+# --- Interactive detection ---
 if [ -t 0 ]; then
     IS_INTERACTIVE=true
 else
     IS_INTERACTIVE=false
 fi
 
+# --- Error trap ---
+on_error() {
+    echo ""
+    log_error "Installation failed at line $1"
+    log_info "You can re-run this script to resume (completed steps will be skipped)."
+    log_info "For help: https://github.com/fuyuxiang/echo-agent/issues"
+}
+trap 'on_error $LINENO' ERR
+
+# --- CLI argument parsing ---
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --skip-setup)
-            RUN_SETUP=false
-            shift
-            ;;
-        --branch)
-            BRANCH="$2"
-            shift 2
-            ;;
-        --dir)
-            INSTALL_DIR="$2"
-            shift 2
-            ;;
-        --echo-home)
-            ECHO_HOME="$2"
-            shift 2
-            ;;
+        --skip-setup) RUN_SETUP=false; shift ;;
+        --branch) BRANCH="$2"; shift 2 ;;
+        --dir) INSTALL_DIR="$2"; shift 2 ;;
+        --echo-home) ECHO_HOME="$2"; shift 2 ;;
         -h|--help)
             echo "Echo Agent Installer"
             echo ""
@@ -64,16 +72,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-print_banner() {
-    echo ""
-    echo -e "${MAGENTA}${BOLD}"
-    echo "┌─────────────────────────────────────────────────────────┐"
-    echo "│                 Echo Agent Installer                   │"
-    echo "├─────────────────────────────────────────────────────────┤"
-    echo "│  Self-hosted AI agent runtime for your own workspace.  │"
-    echo "└─────────────────────────────────────────────────────────┘"
-    echo -e "${NC}"
-}
+# =============================================================================
+# Logging helpers
+# =============================================================================
 
 log_info() {
     echo -e "${CYAN}→${NC} $1"
@@ -124,6 +125,36 @@ prompt_yes_no() {
     esac
 }
 
+# =============================================================================
+# Utility functions
+# =============================================================================
+
+run_with_timeout() {
+    local timeout_sec="$1"; shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$timeout_sec" "$@"
+    elif command -v gtimeout >/dev/null 2>&1; then
+        gtimeout "$timeout_sec" "$@"
+    else
+        "$@"
+    fi
+}
+
+# =============================================================================
+# Pre-flight checks
+# =============================================================================
+
+print_banner() {
+    echo ""
+    echo -e "${MAGENTA}${BOLD}"
+    echo "┌─────────────────────────────────────────────────────────┐"
+    echo "│                 Echo Agent Installer                   │"
+    echo "├─────────────────────────────────────────────────────────┤"
+    echo "│  Self-hosted AI agent runtime for your own workspace.  │"
+    echo "└─────────────────────────────────────────────────────────┘"
+    echo -e "${NC}"
+}
+
 detect_os() {
     case "$(uname -s)" in
         Linux*)
@@ -145,6 +176,22 @@ detect_os() {
     log_success "Detected: $OS"
 }
 
+check_network() {
+    log_info "Checking network connectivity..."
+    local all_ok=true
+
+    for url in "https://pypi.org/simple/" "https://github.com" "https://nodejs.org"; do
+        if ! curl -sSf --connect-timeout 5 --max-time 10 "$url" >/dev/null 2>&1; then
+            log_warn "Cannot reach $url — some steps may fail."
+            all_ok=false
+        fi
+    done
+
+    if [ "$all_ok" = true ]; then
+        log_success "Network connectivity OK"
+    fi
+}
+
 check_git() {
     log_info "Checking Git..."
     if command -v git >/dev/null 2>&1; then
@@ -159,6 +206,10 @@ check_git() {
     fi
     exit 1
 }
+
+# =============================================================================
+# Install tools (uv, Python, Node)
+# =============================================================================
 
 install_uv() {
     log_info "Checking uv..."
@@ -213,6 +264,123 @@ check_python() {
     log_success "$($PYTHON_PATH --version)"
 }
 
+node_version_ok() {
+    local ver="${1#v}"
+    local major="${ver%%.*}"
+    [ "$major" -ge 20 ] 2>/dev/null
+}
+
+install_node() {
+    log_info "Installing Node.js v${NODE_VERSION} LTS..."
+
+    local arch
+    case "$(uname -m)" in
+        x86_64)  arch="x64" ;;
+        aarch64) arch="arm64" ;;
+        arm64)   arch="arm64" ;;
+        armv7l)  arch="armv7l" ;;
+        *)
+            log_warn "Unsupported architecture $(uname -m) for Node.js auto-install."
+            return 1
+            ;;
+    esac
+
+    local node_os
+    case "$OS" in
+        linux)  node_os="linux" ;;
+        macos)  node_os="darwin" ;;
+        *)
+            log_warn "Unsupported OS for Node.js auto-install."
+            return 1
+            ;;
+    esac
+
+    local node_dir="$ECHO_HOME/node"
+    local base_url="https://nodejs.org/dist/v${NODE_VERSION}.0.0"
+    local pkg_name="node-v${NODE_VERSION}.0.0-${node_os}-${arch}"
+    local tmp_dir
+    tmp_dir="$(mktemp -d)"
+
+    local downloaded=false
+    # Prefer .tar.xz, fallback to .tar.gz
+    for ext in "tar.xz" "tar.gz"; do
+        local url="${base_url}/${pkg_name}.${ext}"
+        log_info "Downloading ${pkg_name}.${ext}..."
+        if run_with_timeout 120 curl -fSL --progress-bar "$url" -o "$tmp_dir/node.${ext}" 2>/dev/null; then
+            mkdir -p "$node_dir"
+            if [ "$ext" = "tar.xz" ]; then
+                tar -xJf "$tmp_dir/node.${ext}" -C "$tmp_dir"
+            else
+                tar -xzf "$tmp_dir/node.${ext}" -C "$tmp_dir"
+            fi
+            # Move contents into node_dir
+            rm -rf "$node_dir"
+            mv "$tmp_dir/$pkg_name" "$node_dir"
+            downloaded=true
+            break
+        fi
+    done
+
+    rm -rf "$tmp_dir"
+
+    if [ "$downloaded" = false ]; then
+        log_warn "Failed to download Node.js. Dashboard build will be skipped."
+        return 1
+    fi
+
+    # Symlink node/npm/npx to the command link dir
+    local link_dir
+    link_dir="$(get_command_link_dir)"
+    mkdir -p "$link_dir"
+    ln -sf "$node_dir/bin/node" "$link_dir/node"
+    ln -sf "$node_dir/bin/npm" "$link_dir/npm"
+    ln -sf "$node_dir/bin/npx" "$link_dir/npx"
+
+    HAS_NODE=true
+    export PATH="$node_dir/bin:$PATH"
+    log_success "Node.js $("$node_dir/bin/node" -v) installed to $node_dir"
+}
+
+check_node() {
+    log_info "Checking Node.js..."
+
+    # Check system node
+    if command -v node >/dev/null 2>&1; then
+        local sys_ver
+        sys_ver="$(node -v 2>/dev/null || echo "")"
+        if node_version_ok "$sys_ver"; then
+            HAS_NODE=true
+            log_success "System Node.js $sys_ver"
+            return 0
+        fi
+    fi
+
+    # Check managed node
+    local managed_node="$ECHO_HOME/node/bin/node"
+    if [ -x "$managed_node" ]; then
+        local managed_ver
+        managed_ver="$("$managed_node" -v 2>/dev/null || echo "")"
+        if node_version_ok "$managed_ver"; then
+            HAS_NODE=true
+            export PATH="$ECHO_HOME/node/bin:$PATH"
+            log_success "Managed Node.js $managed_ver at $ECHO_HOME/node/"
+            return 0
+        fi
+    fi
+
+    # Neither found — install
+    if install_node; then
+        return 0
+    fi
+
+    HAS_NODE=false
+    log_warn "Node.js >= 20 not available. Dashboard build will be skipped."
+}
+
+# =============================================================================
+# Repository & environment setup
+# =============================================================================
+
 clone_repo() {
     mkdir -p "$ECHO_HOME"
     log_info "Preparing repository in $INSTALL_DIR..."
@@ -238,19 +406,32 @@ clone_repo() {
 
     log_info "Trying SSH clone..."
     if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
-        git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
+        run_with_timeout 120 git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
         log_success "Cloned via SSH"
         return 0
     fi
 
     log_info "SSH unavailable, trying HTTPS..."
-    git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"
+    run_with_timeout 120 git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"
     log_success "Cloned via HTTPS"
 }
 
 setup_venv() {
     cd "$INSTALL_DIR"
-    log_info "Creating virtual environment..."
+    log_info "Setting up virtual environment..."
+
+    # Idempotent: if venv exists and Python version matches, skip rebuild
+    if [ -d "venv" ] && [ -x "venv/bin/python" ]; then
+        local existing_ver
+        existing_ver="$(venv/bin/python --version 2>/dev/null | awk '{print $2}' || echo "")"
+        local required_major_minor="${PYTHON_VERSION}"
+        if echo "$existing_ver" | grep -q "^${required_major_minor}"; then
+            log_success "Virtual environment already exists (Python $existing_ver)"
+            return 0
+        fi
+        log_info "Python version mismatch ($existing_ver vs ${required_major_minor}*), rebuilding venv..."
+    fi
+
     rm -rf venv
     "$UV_CMD" venv venv --python "$PYTHON_PATH"
     log_success "Virtual environment ready"
@@ -260,9 +441,9 @@ install_deps() {
     cd "$INSTALL_DIR"
     export VIRTUAL_ENV="$INSTALL_DIR/venv"
     log_info "Installing Echo Agent dependencies..."
-    if ! "$UV_CMD" pip install -e ".[all]"; then
+    if ! run_with_timeout 300 "$UV_CMD" pip install -e ".[all]"; then
         log_warn "Full install failed, falling back to base install."
-        "$UV_CMD" pip install -e "."
+        run_with_timeout 300 "$UV_CMD" pip install -e "."
     fi
     log_success "Dependencies installed"
 }
@@ -270,39 +451,52 @@ install_deps() {
 build_dashboard() {
     cd "$INSTALL_DIR"
 
-    if ! command -v node >/dev/null 2>&1; then
-        log_warn "Node.js not found, skipping Dashboard build."
-        log_info "Dashboard requires Node.js >= 20 and pnpm."
-        log_info "Install Node.js then run: cd $INSTALL_DIR/web && pnpm install && pnpm build"
+    if [ "$HAS_NODE" = false ]; then
+        log_warn "Skipping Dashboard build (no Node.js available)."
+        log_info "Install Node.js >= 20 then run: cd $INSTALL_DIR/web && pnpm install && pnpm build"
         return 0
     fi
 
-    NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
-    if [ "$NODE_MAJOR" -lt 20 ]; then
-        log_warn "Node.js version $(node -v) too old (need >= 20), skipping Dashboard build."
-        log_info "Upgrade Node.js then run: cd $INSTALL_DIR/web && pnpm install && pnpm build"
-        return 0
-    fi
-
+    # Ensure pnpm is available
     if ! command -v pnpm >/dev/null 2>&1; then
         log_info "Installing pnpm..."
-        npm install -g pnpm 2>/dev/null || corepack enable pnpm 2>/dev/null || {
-            log_warn "Cannot install pnpm, skipping Dashboard build."
-            log_info "Install pnpm then run: cd $INSTALL_DIR/web && pnpm install && pnpm build"
-            return 0
-        }
+        if command -v corepack >/dev/null 2>&1; then
+            corepack enable pnpm 2>/dev/null || npm install -g pnpm 2>/dev/null || {
+                log_warn "Cannot install pnpm, skipping Dashboard build."
+                log_info "Install pnpm then run: cd $INSTALL_DIR/web && pnpm install && pnpm build"
+                return 0
+            }
+        else
+            npm install -g pnpm 2>/dev/null || {
+                log_warn "Cannot install pnpm, skipping Dashboard build."
+                log_info "Install pnpm then run: cd $INSTALL_DIR/web && pnpm install && pnpm build"
+                return 0
+            }
+        fi
     fi
 
     log_info "Building Dashboard frontend..."
     cd "$INSTALL_DIR/web"
-    pnpm install --frozen-lockfile 2>/dev/null || pnpm install
-    if pnpm build; then
+
+    if ! run_with_timeout 180 pnpm install --frozen-lockfile 2>/dev/null; then
+        if ! run_with_timeout 180 pnpm install; then
+            log_warn "pnpm install failed. Dashboard build skipped."
+            return 0
+        fi
+    fi
+
+    if run_with_timeout 120 pnpm build; then
+        DASHBOARD_BUILT=true
         log_success "Dashboard built successfully"
     else
         log_warn "Dashboard build failed. The agent will work without the web UI."
         log_info "Fix issues then run: cd $INSTALL_DIR/web && pnpm build"
     fi
 }
+
+# =============================================================================
+# Path & symlinks
+# =============================================================================
 
 get_command_link_dir() {
     if [ -n "$ECHO_COMMAND_LINK_DIR" ]; then
@@ -404,6 +598,10 @@ setup_path() {
     export PATH="$link_dir:$PATH"
 }
 
+# =============================================================================
+# Post-install setup
+# =============================================================================
+
 prepare_home() {
     mkdir -p "$ECHO_HOME"
     log_success "Home directory ready: $ECHO_HOME"
@@ -479,6 +677,19 @@ print_success() {
     echo -e "${CYAN}${BOLD}Dashboard:${NC}"
     echo "  http://localhost:58123/"
     echo ""
+
+    if [ "$DASHBOARD_BUILT" != true ]; then
+        echo -e "${YELLOW}${BOLD}Note:${NC} Dashboard was not built."
+        echo "  To build manually: cd $INSTALL_DIR/web && pnpm install && pnpm build"
+        echo ""
+    fi
+
+    if [ -x "$ECHO_HOME/node/bin/node" ]; then
+        echo -e "${CYAN}${BOLD}Managed Node.js:${NC}"
+        echo "  $ECHO_HOME/node/bin/node ($("$ECHO_HOME/node/bin/node" -v 2>/dev/null || echo 'unknown'))"
+        echo ""
+    fi
+
     echo -e "${CYAN}${BOLD}Command link:${NC}"
     echo "  $(get_command_link_dir)/echo-agent"
     echo ""
@@ -495,15 +706,21 @@ print_success() {
     echo "  echo-agent setup -w /path/to/workspace"
 }
 
+# =============================================================================
+# Main
+# =============================================================================
+
 main() {
     print_banner
     detect_os
+    check_network
     check_git
     install_uv
     check_python
     clone_repo
     setup_venv
     install_deps
+    check_node
     build_dashboard
     setup_path
     prepare_home
