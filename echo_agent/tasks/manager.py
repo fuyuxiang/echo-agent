@@ -30,12 +30,20 @@ class TaskManager:
         priority: int = 5,
         max_retries: int = 3,
         metadata: dict[str, Any] | None = None,
+        labels: list[str] | None = None,
+        assignee: str = "",
+        source: str = "",
+        board_id: str = "default",
     ) -> TaskRecord:
         task = TaskRecord(
             title=title, description=description,
             workflow_id=workflow_id, parent_task_id=parent_task_id,
             priority=priority, max_retries=max_retries,
             metadata=metadata or {},
+            labels=labels or [],
+            assignee=assignee,
+            source=source,
+            board_id=board_id,
         )
         await self._storage.store_task(task.id, task.to_dict())
         logger.info("Task created: {} '{}'", task.id, title)
@@ -92,7 +100,7 @@ class TaskManager:
         task = await self.get(task_id)
         if not task:
             raise ValueError(f"Task '{task_id}' not found")
-        for key in ("title", "description", "priority", "metadata"):
+        for key in ("title", "description", "priority", "metadata", "labels", "assignee", "blocked_reason", "review_summary"):
             if key in fields:
                 setattr(task, key, fields[key])
         task.updated_at = _now()
@@ -105,4 +113,16 @@ class TaskManager:
 
     async def list_by_workflow(self, workflow_id: str) -> list[TaskRecord]:
         rows = await self._storage.list_tasks(workflow_id=workflow_id)
+        return [TaskRecord.from_dict(r) for r in rows]
+
+    async def list_by_filters(
+        self,
+        status: str | None = None,
+        assignee: str | None = None,
+        label: str | None = None,
+        board_id: str | None = None,
+    ) -> list[TaskRecord]:
+        rows = await self._storage.list_tasks(
+            status=status, board_id=board_id, assignee=assignee, label=label
+        )
         return [TaskRecord.from_dict(r) for r in rows]
