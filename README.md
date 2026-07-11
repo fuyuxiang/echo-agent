@@ -178,10 +178,3 @@ PR 前请确保 lint 和测试通过（CI 会在 PR 上自动运行同样的检�
 ## 协议
 
 [MIT License](LICENSE)
-
----
-
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=fuyuxiang/echo-agent&type=Date)](https://star-history.com/#fuyuxiang/echo-agent&Date)

@@ -182,10 +182,3 @@ Please ensure lint and tests pass before submitting a PR (CI runs the same check
 ## License
 
 [MIT License](LICENSE)
-
----
-
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=fuyuxiang/echo-agent&type=Date)](https://star-history.com/#fuyuxiang/echo-agent&Date)
