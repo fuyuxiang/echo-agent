@@ -71,6 +71,20 @@ def test_model_section_allowlist_includes_chosen_dynamic_model():
     assert "openai/gpt-4o" in prov["models"]   # fallback models retained too
 
 
+def test_model_section_preserves_existing_routes():
+    # A pre-existing models.routes block must survive a re-run of the model
+    # section, which only replaces defaultModel + providers.
+    cfg = {"models": {"routes": [{"task": "code", "model": "gpt-4o"}]}}
+    with patch(f"{_S}.ui.select_grouped", return_value="openai"), \
+         patch(f"{_S}.ui.password", return_value="sk-x"), \
+         patch(f"{_S}.list_models", return_value=[]), \
+         patch(f"{_S}.ui.select", return_value="gpt-4o"), \
+         patch(f"{_S}.verify_model", return_value=mv.VerifyResult("ok")):
+        setup_mod.setup_model(cfg)
+    assert cfg["models"]["routes"] == [{"task": "code", "model": "gpt-4o"}]
+    assert cfg["models"]["defaultModel"] == "gpt-4o"
+
+
 def test_model_section_custom_prompts_api_base():
     cfg = {}
     with patch(f"{_S}.ui.select_grouped", return_value="custom"), \

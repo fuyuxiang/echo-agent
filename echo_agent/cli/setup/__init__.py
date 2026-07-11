@@ -183,7 +183,11 @@ def setup_model(config: dict) -> None:
             models_list.append(default_model)
         provider_entry["models"] = models_list
 
-    config["models"] = {"defaultModel": default_model, "providers": [provider_entry]}
+    # Only update defaultModel/providers so any existing models.routes (and
+    # other keys) survive a re-run of just the model section.
+    models_block = _ensure_dict(config, "models")
+    models_block["defaultModel"] = default_model
+    models_block["providers"] = [provider_entry]
     ui.note(t("model.saved", provider=entry.label, model=default_model), "success")
 
 
