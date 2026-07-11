@@ -24,39 +24,45 @@ _TARGET = "echo_agent.cli.setup"
 
 
 def _patch_prompts(answers: dict[str, str], yes_no: dict[str, bool], choices: dict[str, int]):
-    """Build the (prompt, prompt_yes_no, prompt_choice) replacements.
+    """Build the (ui.text, ui.confirm, ui.select) replacements.
+
+    ``setup_evolution`` now drives its questions through the ``ui`` layer:
+    free text via ``ui.text``, yes/no via ``ui.confirm`` and single-choice via
+    ``ui.select`` (through the module-level ``_choice`` helper, which maps the
+    returned value string back to an int index). So the fake ``ui.select``
+    returns ``str(index)`` for a matched needle.
 
     Each lookup falls back to a passthrough default — anything we forget to
-    patch raises ``KeyError`` so missing assumptions surface immediately.
+    patch surfaces immediately as a wrong config value.
     """
 
     seen_prompt: list[tuple[str, str]] = []
     seen_yn: list[tuple[str, bool]] = []
     seen_choice: list[tuple[str, int]] = []
 
-    def _prompt(question, default="", password=False):
-        seen_prompt.append((question, default))
+    def _text(message, default=""):
+        seen_prompt.append((message, default))
         # Match by suffix, so "  Trajectory threshold" matches "threshold".
         for needle, value in answers.items():
-            if needle in question:
+            if needle in message:
                 return value
         return default
 
-    def _yn(question, default=True):
-        seen_yn.append((question, default))
+    def _confirm(message, default=True):
+        seen_yn.append((message, default))
         for needle, value in yes_no.items():
-            if needle in question:
+            if needle in message:
                 return value
         return default
 
-    def _choice(question, choices_list, default=0):
-        seen_choice.append((question, default))
+    def _select(message, choices_list, default=""):
+        seen_choice.append((message, default))
         for needle, value in choices.items():
-            if needle in question:
-                return value
+            if needle in message:
+                return str(value)
         return default
 
-    return _prompt, _yn, _choice, seen_prompt, seen_yn, seen_choice
+    return _text, _confirm, _select, seen_prompt, seen_yn, seen_choice
 
 
 def test_evolution_registered_in_section_registry():
@@ -75,9 +81,9 @@ def test_setup_evolution_disabled_path_keeps_record_default(tmp_path: Path):
         yes_no={"Enable self-evolution": False},
         choices={},
     )
-    with patch(f"{_TARGET}.prompt", p), \
-         patch(f"{_TARGET}.prompt_yes_no", yn), \
-         patch(f"{_TARGET}.prompt_choice", ch):
+    with patch(f"{_TARGET}.ui.text", p), \
+         patch(f"{_TARGET}.ui.confirm", yn), \
+         patch(f"{_TARGET}.ui.select", ch):
         run_setup_evolution(config)
 
     assert config["evolution"]["enabled"] is False
@@ -112,9 +118,9 @@ def test_setup_evolution_threshold_path(tmp_path: Path):
             "Trigger mode": 1,  # threshold
         },
     )
-    with patch(f"{_TARGET}.prompt", p), \
-         patch(f"{_TARGET}.prompt_yes_no", yn), \
-         patch(f"{_TARGET}.prompt_choice", ch):
+    with patch(f"{_TARGET}.ui.text", p), \
+         patch(f"{_TARGET}.ui.confirm", yn), \
+         patch(f"{_TARGET}.ui.select", ch):
         run_setup_evolution(config)
 
     evo = config["evolution"]
@@ -161,9 +167,9 @@ def test_setup_evolution_scheduled_path(tmp_path: Path):
         },
         choices={"Trigger mode": 2},  # scheduled
     )
-    with patch(f"{_TARGET}.prompt", p), \
-         patch(f"{_TARGET}.prompt_yes_no", yn), \
-         patch(f"{_TARGET}.prompt_choice", ch):
+    with patch(f"{_TARGET}.ui.text", p), \
+         patch(f"{_TARGET}.ui.confirm", yn), \
+         patch(f"{_TARGET}.ui.select", ch):
         run_setup_evolution(config)
 
     evo = config["evolution"]
@@ -197,9 +203,9 @@ def test_setup_evolution_invalid_regression_keeps_old_value(tmp_path: Path):
         },
         choices={"Trigger mode": 1},
     )
-    with patch(f"{_TARGET}.prompt", p), \
-         patch(f"{_TARGET}.prompt_yes_no", yn), \
-         patch(f"{_TARGET}.prompt_choice", ch):
+    with patch(f"{_TARGET}.ui.text", p), \
+         patch(f"{_TARGET}.ui.confirm", yn), \
+         patch(f"{_TARGET}.ui.select", ch):
         run_setup_evolution(config)
 
     # Old value is preserved when the new value is invalid.
@@ -231,9 +237,9 @@ def test_setup_evolution_does_not_overwrite_existing_dataset(tmp_path: Path):
         },
         choices={"Trigger mode": 1},
     )
-    with patch(f"{_TARGET}.prompt", p), \
-         patch(f"{_TARGET}.prompt_yes_no", yn), \
-         patch(f"{_TARGET}.prompt_choice", ch):
+    with patch(f"{_TARGET}.ui.text", p), \
+         patch(f"{_TARGET}.ui.confirm", yn), \
+         patch(f"{_TARGET}.ui.select", ch):
         run_setup_evolution(config)
 
     # The pre-existing dataset must be untouched.

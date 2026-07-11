@@ -38,9 +38,6 @@ from echo_agent.cli import ui
 from echo_agent.cli.i18n import detect_locale, get_locale, set_locale, t
 from echo_agent.cli.prompt import (
     is_interactive,
-    prompt,
-    prompt_checklist,
-    prompt_choice,
     prompt_yes_no,
 )
 from echo_agent.cli.setup import providers as provider_catalog
@@ -98,6 +95,21 @@ def _ensure_dict(parent: dict, key: str) -> dict:
     return value
 
 
+def _choice(question: str, labels: list[str], default: int = 0) -> int:
+    """Ask a single-choice question via ``ui.select`` and return the index.
+
+    Wraps ``ui.select`` so the many ``prompt_choice(q, labels, default=i)``
+    call-sites can migrate to the arrow-key UI without changing the int-index
+    logic each section already relies on.
+    """
+    picked = ui.select(
+        question,
+        [(str(i), label, "") for i, label in enumerate(labels)],
+        default=str(default),
+    )
+    return int(picked)
+
+
 # ── Section 1: Language ───────────────────────────────────────────────────────
 
 def setup_language(config: dict) -> None:
@@ -106,7 +118,7 @@ def setup_language(config: dict) -> None:
     print_info(t("language.auto_detected", label=auto_label))
     choices = [t("language.english"), t("language.chinese")]
     default = 0 if get_locale() == "en" else 1
-    idx = prompt_choice(t("language.prompt"), choices, default=default)
+    idx = _choice(t("language.prompt"), choices, default=default)
     chosen = "en" if idx == 0 else "zh"
     set_locale(chosen)
     _ensure_dict(config, "ui")["locale"] = chosen
@@ -231,13 +243,13 @@ def setup_permissions(config: dict) -> None:
     mode_keys = ["smart", "manual", "off"]
     mode_labels = [t(f"permissions.mode_{k}") for k in mode_keys]
     default_mode_idx = mode_keys.index(current_mode) if current_mode in mode_keys else 0
-    mode_idx = prompt_choice(t("permissions.mode_prompt"), mode_labels, default=default_mode_idx)
+    mode_idx = _choice(t("permissions.mode_prompt"), mode_labels, default=default_mode_idx)
     chosen_mode = mode_keys[mode_idx]
     approval["mode"] = chosen_mode
 
     if chosen_mode == "smart":
         existing_smart_model = approval.get("smart_model", "") or approval.get("smartModel", "")
-        smart_model = prompt(f"  {t('permissions.smart_model')}", default=existing_smart_model)
+        smart_model = ui.text(f"  {t('permissions.smart_model')}", default=existing_smart_model)
         if smart_model:
             approval["smart_model"] = smart_model
         else:
@@ -248,13 +260,13 @@ def setup_permissions(config: dict) -> None:
     unattended_labels = [t(f"permissions.unattended_{k}") for k in unattended_keys]
     current_unatt = approval.get("unattended_policy") or approval.get("unattendedPolicy") or "deny"
     default_unatt_idx = unattended_keys.index(current_unatt) if current_unatt in unattended_keys else 0
-    unatt_idx = prompt_choice(t("permissions.unattended"), unattended_labels, default=default_unatt_idx)
+    unatt_idx = _choice(t("permissions.unattended"), unattended_labels, default=default_unatt_idx)
     approval["unattended_policy"] = unattended_keys[unatt_idx]
 
     cli_auto_default = approval.get("cli_auto_approve")
     if cli_auto_default is None:
         cli_auto_default = approval.get("cliAutoApprove", True)
-    approval["cli_auto_approve"] = prompt_yes_no(t("permissions.cli_auto"), default=bool(cli_auto_default))
+    approval["cli_auto_approve"] = ui.confirm(t("permissions.cli_auto"), default=bool(cli_auto_default))
 
     print_success(t("permissions.saved", mode=t(f"permissions.mode_{chosen_mode}")))
 
@@ -271,25 +283,25 @@ def setup_terminal(config: dict) -> None:
     backend_labels = [t(f"terminal.{k}") for k in backend_keys]
     current_backend = execution.get("default_executor") or execution.get("defaultExecutor") or "sandbox"
     default_idx = backend_keys.index(current_backend) if current_backend in backend_keys else 1
-    idx = prompt_choice(t("terminal.select"), backend_labels, default=default_idx)
+    idx = _choice(t("terminal.select"), backend_labels, default=default_idx)
     chosen = backend_keys[idx]
     execution["default_executor"] = chosen
 
     if chosen == "container":
         existing_image = execution.get("container_image") or execution.get("containerImage") or ""
-        image = prompt(f"  {t('terminal.container_image')}", default=existing_image or "python:3.11-slim")
+        image = ui.text(f"  {t('terminal.container_image')}", default=existing_image or "python:3.11-slim")
         execution["container_image"] = image
     elif chosen == "remote":
-        execution["remote_host"] = prompt(f"  {t('terminal.remote_host')}", default=execution.get("remote_host", ""))
-        execution["remote_user"] = prompt(f"  {t('terminal.remote_user')}", default=execution.get("remote_user", "root"))
+        execution["remote_host"] = ui.text(f"  {t('terminal.remote_host')}", default=execution.get("remote_host", ""))
+        execution["remote_user"] = ui.text(f"  {t('terminal.remote_user')}", default=execution.get("remote_user", "root"))
         existing_key = execution.get("remote_key_path") or execution.get("remoteKeyPath") or ""
-        execution["remote_key_path"] = prompt(f"  {t('terminal.remote_key')}", default=existing_key)
+        execution["remote_key_path"] = ui.text(f"  {t('terminal.remote_key')}", default=existing_key)
 
     network_keys = ["allow", "deny", "restricted"]
     network_labels = [t(f"terminal.network_{k}") for k in network_keys]
     current_net = execution.get("network_policy") or execution.get("networkPolicy") or "deny"
     default_net = network_keys.index(current_net) if current_net in network_keys else 1
-    net_idx = prompt_choice(t("terminal.network"), network_labels, default=default_net)
+    net_idx = _choice(t("terminal.network"), network_labels, default=default_net)
     execution["network_policy"] = network_keys[net_idx]
 
     tools = _ensure_dict(config, "tools")
@@ -298,7 +310,7 @@ def setup_terminal(config: dict) -> None:
     sec_labels = [t(f"terminal.exec_security_{k}") for k in sec_keys]
     current_sec = exec_cfg.get("security", "allowlist")
     default_sec = sec_keys.index(current_sec) if current_sec in sec_keys else 1
-    sec_idx = prompt_choice(t("terminal.exec_security"), sec_labels, default=default_sec)
+    sec_idx = _choice(t("terminal.exec_security"), sec_labels, default=default_sec)
     exec_cfg["security"] = sec_keys[sec_idx]
 
     print_success(t("terminal.saved", backend=t(f"terminal.{chosen}"), network=t(f"terminal.network_{network_keys[net_idx]}")))
@@ -314,7 +326,7 @@ def setup_agent(config: dict) -> None:
     agent = _ensure_dict(config, "agent")
     current_iter = int(agent.get("max_iterations") or agent.get("maxIterations") or 40)
     print_info(t("agent.max_iter_hint"))
-    raw = prompt(f"  {t('agent.max_iter')}", default=str(current_iter))
+    raw = ui.text(f"  {t('agent.max_iter')}", default=str(current_iter))
     try:
         agent["max_iterations"] = max(1, int(raw))
     except ValueError:
@@ -322,11 +334,11 @@ def setup_agent(config: dict) -> None:
         agent["max_iterations"] = current_iter
 
     compression = _ensure_dict(config, "compression")
-    compression["enabled"] = prompt_yes_no(t("agent.compression_enabled"), default=bool(compression.get("enabled", True)))
+    compression["enabled"] = ui.confirm(t("agent.compression_enabled"), default=bool(compression.get("enabled", True)))
     if compression["enabled"]:
         current_thr = float(compression.get("trigger_ratio") or compression.get("triggerRatio") or 0.7)
         print_info(t("agent.compression_threshold_hint"))
-        raw = prompt(f"  {t('agent.compression_threshold')}", default=f"{current_thr:.2f}")
+        raw = ui.text(f"  {t('agent.compression_threshold')}", default=f"{current_thr:.2f}")
         try:
             value = float(raw)
             if 0.5 <= value <= 0.95:
@@ -342,18 +354,18 @@ def setup_agent(config: dict) -> None:
     reset_labels = [t(f"agent.session_reset_{k}") for k in reset_keys]
     current_reset = sp.get("mode", "idle")
     default_reset = reset_keys.index(current_reset) if current_reset in reset_keys else 1
-    reset_idx = prompt_choice(t("agent.session_reset"), reset_labels, default=default_reset)
+    reset_idx = _choice(t("agent.session_reset"), reset_labels, default=default_reset)
     sp["mode"] = reset_keys[reset_idx]
     if reset_keys[reset_idx] in ("idle", "both"):
         cur_idle = int(sp.get("idleTimeoutMinutes") or sp.get("idle_timeout_minutes") or 1440)
-        raw = prompt(f"  {t('agent.idle_minutes')}", default=str(cur_idle))
+        raw = ui.text(f"  {t('agent.idle_minutes')}", default=str(cur_idle))
         try:
             sp["idleTimeoutMinutes"] = max(1, int(raw))
         except ValueError:
             sp["idleTimeoutMinutes"] = cur_idle
     if reset_keys[reset_idx] in ("daily", "both"):
         cur_hr = int(sp.get("dailyResetHour") or sp.get("daily_reset_hour") or 4)
-        raw = prompt(f"  {t('agent.daily_hour')}", default=str(cur_hr))
+        raw = ui.text(f"  {t('agent.daily_hour')}", default=str(cur_hr))
         try:
             v = int(raw)
             sp["dailyResetHour"] = v if 0 <= v <= 23 else cur_hr
@@ -361,9 +373,9 @@ def setup_agent(config: dict) -> None:
             sp["dailyResetHour"] = cur_hr
 
     planning = _ensure_dict(config, "planning")
-    planning["enabled"] = prompt_yes_no(t("agent.planning_enabled"), default=bool(planning.get("enabled", True)))
+    planning["enabled"] = ui.confirm(t("agent.planning_enabled"), default=bool(planning.get("enabled", True)))
     memory = _ensure_dict(config, "memory")
-    memory["enabled"] = prompt_yes_no(t("agent.memory_enabled"), default=bool(memory.get("enabled", True)))
+    memory["enabled"] = ui.confirm(t("agent.memory_enabled"), default=bool(memory.get("enabled", True)))
 
     print_success(t("agent.saved"))
 
@@ -387,7 +399,7 @@ def setup_tools(config: dict) -> None:
     # exposed tool set even though they're registered and approved.
     current_profile = tools.get("profile", "full")
     default_profile = profile_keys.index(current_profile) if current_profile in profile_keys else profile_keys.index("full")
-    p_idx = prompt_choice(t("tools.profile"), profile_labels, default=default_profile)
+    p_idx = _choice(t("tools.profile"), profile_labels, default=default_profile)
     tools["profile"] = profile_keys[p_idx]
 
     pre_selected: list[int] = []
@@ -415,7 +427,12 @@ def setup_tools(config: dict) -> None:
     pre_selected = sorted(set(pre_selected))
 
     labels = [t(f"tools.{k}") for k in TOOL_OPTIONS]
-    selected = prompt_checklist(t("tools.checklist"), labels, pre_selected=pre_selected)
+    selected_vals = ui.multiselect(
+        t("tools.checklist"),
+        [(str(i), label, "") for i, label in enumerate(labels)],
+        preselected=[str(i) for i in pre_selected],
+    )
+    selected = [int(v) for v in selected_vals]
     chosen = {TOOL_OPTIONS[i] for i in selected}
 
     if "web" in chosen:
@@ -423,16 +440,16 @@ def setup_tools(config: dict) -> None:
         web["enabled"] = True
         provider_choices = ["brave", "tavily", "serpapi", "searxng"]
         cur_prov = web.get("search_provider") or web.get("searchProvider") or "brave"
-        prov_idx = prompt_choice(t("tools.web_provider"), provider_choices,
-                                 default=provider_choices.index(cur_prov) if cur_prov in provider_choices else 0)
+        prov_idx = _choice(t("tools.web_provider"), provider_choices,
+                           default=provider_choices.index(cur_prov) if cur_prov in provider_choices else 0)
         web["search_provider"] = provider_choices[prov_idx]
         existing_key = web.get("search_api_key") or web.get("searchApiKey") or ""
         if existing_key:
-            new_key = prompt(f"  {t('tools.web_api_key')} [****{t('common.saved')}]", password=True)
+            new_key = ui.password(f"  {t('tools.web_api_key')} [****{t('common.saved')}]")
             if new_key:
                 web["search_api_key"] = new_key
         else:
-            new_key = prompt(f"  {t('tools.web_api_key')}", password=True)
+            new_key = ui.password(f"  {t('tools.web_api_key')}")
             if new_key:
                 web["search_api_key"] = new_key
     else:
@@ -444,51 +461,51 @@ def setup_tools(config: dict) -> None:
         backend_options = [t("tools.image_backend_openai"), t("tools.image_backend_fal")]
         backend_values = ["openai", "fal"]
         cur_backend = ig.get("backend", "openai")
-        b_idx = prompt_choice(t("tools.image_backend"), backend_options,
-                              default=backend_values.index(cur_backend) if cur_backend in backend_values else 0)
+        b_idx = _choice(t("tools.image_backend"), backend_options,
+                        default=backend_values.index(cur_backend) if cur_backend in backend_values else 0)
         ig["backend"] = backend_values[b_idx]
 
         if backend_values[b_idx] == "fal":
             existing = ig.get("fal_key") or ig.get("falKey") or ""
             if existing:
-                new_key = prompt(f"  {t('tools.image_fal_key')} [****{t('common.saved')}]", password=True)
+                new_key = ui.password(f"  {t('tools.image_fal_key')} [****{t('common.saved')}]")
                 if new_key:
                     ig["fal_key"] = new_key
             else:
-                new_key = prompt(f"  {t('tools.image_fal_key')}", password=True)
+                new_key = ui.password(f"  {t('tools.image_fal_key')}")
                 if new_key:
                     ig["fal_key"] = new_key
-            ig["fal_model"] = prompt(f"  {t('tools.image_fal_model')}", default=ig.get("fal_model") or ig.get("falModel") or "fal-ai/flux/schnell")
+            ig["fal_model"] = ui.text(f"  {t('tools.image_fal_model')}", default=ig.get("fal_model") or ig.get("falModel") or "fal-ai/flux/schnell")
         else:
             existing = ig.get("api_key") or ig.get("apiKey") or ""
             if existing:
-                new_key = prompt(f"  {t('tools.image_api_key')} [****{t('common.saved')}]", password=True)
+                new_key = ui.password(f"  {t('tools.image_api_key')} [****{t('common.saved')}]")
                 if new_key:
                     ig["api_key"] = new_key
             else:
-                new_key = prompt(f"  {t('tools.image_api_key')}", password=True)
+                new_key = ui.password(f"  {t('tools.image_api_key')}")
                 if new_key:
                     ig["api_key"] = new_key
-            ig["api_base"] = prompt(f"  {t('tools.image_api_base')}", default=ig.get("api_base") or ig.get("apiBase") or "https://api.openai.com/v1")
-            ig["model"] = prompt(f"  {t('tools.image_model')}", default=ig.get("model", "dall-e-3"))
+            ig["api_base"] = ui.text(f"  {t('tools.image_api_base')}", default=ig.get("api_base") or ig.get("apiBase") or "https://api.openai.com/v1")
+            ig["model"] = ui.text(f"  {t('tools.image_model')}", default=ig.get("model", "dall-e-3"))
 
     if "tts" in chosen:
         tts = _ensure_dict(tools, "tts")
         backends = ["edge", "openai", "elevenlabs"]
         cur_backend = tts.get("default_backend") or tts.get("defaultBackend") or "edge"
-        b_idx = prompt_choice(t("tools.tts_backend"), backends,
-                              default=backends.index(cur_backend) if cur_backend in backends else 0)
+        b_idx = _choice(t("tools.tts_backend"), backends,
+                        default=backends.index(cur_backend) if cur_backend in backends else 0)
         tts["default_backend"] = backends[b_idx]
         if backends[b_idx] == "openai":
             existing = tts.get("openai_api_key") or tts.get("openaiApiKey") or ""
             if existing:
-                new_key = prompt(f"  {t('tools.tts_openai_key')} [****{t('common.saved')}]", password=True)
+                new_key = ui.password(f"  {t('tools.tts_openai_key')} [****{t('common.saved')}]")
                 if new_key:
                     tts["openai_api_key"] = new_key
             else:
-                tts["openai_api_key"] = prompt(f"  {t('tools.tts_openai_key')}", password=True)
-            tts["openai_api_base"] = prompt(f"  {t('tools.tts_openai_base')}", default=tts.get("openai_api_base", "https://api.openai.com/v1"))
-            tts["model"] = prompt(f"  {t('tools.tts_model')}", default=tts.get("model", "tts-1"))
+                tts["openai_api_key"] = ui.password(f"  {t('tools.tts_openai_key')}")
+            tts["openai_api_base"] = ui.text(f"  {t('tools.tts_openai_base')}", default=tts.get("openai_api_base", "https://api.openai.com/v1"))
+            tts["model"] = ui.text(f"  {t('tools.tts_model')}", default=tts.get("model", "tts-1"))
 
     code_exec = _ensure_dict(tools, "code_exec")
     code_exec["enabled"] = "code_exec" in chosen
@@ -538,7 +555,12 @@ def setup_channels(config: dict) -> None:
             pre_selected.append(i)
 
     channel_names = [c[1] for c in CHANNEL_DEFS]
-    selected = prompt_checklist(t("channels.checklist"), channel_names, pre_selected=pre_selected or None)
+    selected_vals = ui.multiselect(
+        t("channels.checklist"),
+        [(str(i), name, "") for i, name in enumerate(channel_names)],
+        preselected=[str(i) for i in pre_selected],
+    )
+    selected = [int(v) for v in selected_vals]
     if not selected:
         print_info(t("channels.no_extra"))
         return
@@ -556,14 +578,17 @@ def setup_channels(config: dict) -> None:
 
         for field_key, field_label in fields:
             secret = any(s in field_key.lower() for s in ("key", "secret", "token", "password"))
-            value = prompt(f"  {field_label}", default=ch.get(field_key, ""), password=secret)
+            if secret:
+                value = ui.password(f"  {field_label}")
+            else:
+                value = ui.text(f"  {field_label}", default=ch.get(field_key, ""))
             if value:
                 ch[field_key] = value
 
         if ch_key in ("telegram", "discord", "slack", "qqbot", "email", "weixin", "dingtalk"):
             existing_allow = ch.get("allow_from") or ch.get("allowFrom") or []
             allow_default = ",".join(existing_allow) if isinstance(existing_allow, list) else str(existing_allow or "")
-            allow_raw = prompt(f"  {t('channels.allow_from')}", default=allow_default)
+            allow_raw = ui.text(f"  {t('channels.allow_from')}", default=allow_default)
             if allow_raw:
                 ch["allow_from"] = [s.strip() for s in allow_raw.split(",") if s.strip()]
             else:
@@ -572,7 +597,7 @@ def setup_channels(config: dict) -> None:
                 print_warning(t("channels.allow_warn"))
 
             home_existing = ch.get("home_channel") or ch.get("homeChannel") or ""
-            home = prompt(f"  {t('channels.home_channel')}", default=home_existing)
+            home = ui.text(f"  {t('channels.home_channel')}", default=home_existing)
             if home:
                 ch["home_channel"] = home
 
@@ -587,12 +612,12 @@ def setup_gateway(config: dict) -> None:
     print()
 
     gw = _ensure_dict(config, "gateway")
-    gw["enabled"] = prompt_yes_no(t("gateway.enable"), default=bool(gw.get("enabled", False)))
+    gw["enabled"] = ui.confirm(t("gateway.enable"), default=bool(gw.get("enabled", False)))
     if not gw["enabled"]:
         return
 
-    gw["host"] = prompt(f"  {t('gateway.host')}", default=str(gw.get("host", "0.0.0.0")))
-    port_str = prompt(f"  {t('gateway.port')}", default=str(gw.get("port", 58123)))
+    gw["host"] = ui.text(f"  {t('gateway.host')}", default=str(gw.get("host", "0.0.0.0")))
+    port_str = ui.text(f"  {t('gateway.port')}", default=str(gw.get("port", 58123)))
     try:
         gw["port"] = int(port_str)
     except ValueError:
@@ -604,7 +629,7 @@ def setup_gateway(config: dict) -> None:
     auth_labels = [t(f"gateway.auth_{k}") for k in auth_keys]
     cur_auth = auth.get("mode", "allowlist")
     default_auth = auth_keys.index(cur_auth) if cur_auth in auth_keys else 1
-    a_idx = prompt_choice(t("gateway.auth_mode"), auth_labels, default=default_auth)
+    a_idx = _choice(t("gateway.auth_mode"), auth_labels, default=default_auth)
     auth["mode"] = auth_keys[a_idx]
 
     # An "open" (no-token) gateway bound to a non-loopback host is refused at
@@ -614,7 +639,7 @@ def setup_gateway(config: dict) -> None:
     host_norm = str(gw["host"]).strip()
     if auth_keys[a_idx] == "open" and host_norm not in ("127.0.0.1", "localhost", "::1", ""):
         print_warning(t("gateway.open_exposed_warn", host=host_norm))
-        if prompt_yes_no(t("gateway.open_exposed_fix"), default=True):
+        if ui.confirm(t("gateway.open_exposed_fix"), default=True):
             gw["host"] = "127.0.0.1"
             print_info(t("gateway.host_pinned"))
         else:
@@ -625,7 +650,7 @@ def setup_gateway(config: dict) -> None:
     if auth_keys[a_idx] in ("allowlist", "pairing"):
         existing_tokens = auth.get("api_tokens") or auth.get("apiTokens") or []
         token_default = existing_tokens[0] if existing_tokens else ""
-        token = prompt(f"  {t('gateway.api_token')}", default=token_default, password=True)
+        token = ui.password(f"  {t('gateway.api_token')}") or token_default
         if not token:
             import secrets
             token = secrets.token_urlsafe(32)
@@ -668,7 +693,7 @@ def setup_security(config: dict) -> None:
     cur = sec.get("profile", "personal_cli")
     # Default highlight is personal_cli (index 0) — the common self-hosted case.
     default_idx = deploy_keys.index(cur) if cur in deploy_keys else 0
-    d_idx = prompt_choice(t("security.deployment"), deploy_labels, default=default_idx)
+    d_idx = _choice(t("security.deployment"), deploy_labels, default=default_idx)
     sec["profile"] = deploy_keys[d_idx]
 
     if sec["profile"] == "public_gateway":
@@ -690,17 +715,17 @@ def setup_observability(config: dict) -> None:
     log_choices = ["INFO", "DEBUG", "WARNING", "ERROR"]
     cur_level = (obs.get("log_level") or obs.get("logLevel") or "INFO").upper()
     default_log = log_choices.index(cur_level) if cur_level in log_choices else 0
-    l_idx = prompt_choice(t("observability.log_level"), log_choices, default=default_log)
+    l_idx = _choice(t("observability.log_level"), log_choices, default=default_log)
     obs["log_level"] = log_choices[l_idx]
 
-    obs["trace_enabled"] = prompt_yes_no(t("observability.trace"), default=bool(obs.get("trace_enabled", True)))
+    obs["trace_enabled"] = ui.confirm(t("observability.trace"), default=bool(obs.get("trace_enabled", True)))
 
-    otel_on = prompt_yes_no(t("observability.otel"), default=bool(obs.get("otel_enabled", False)))
+    otel_on = ui.confirm(t("observability.otel"), default=bool(obs.get("otel_enabled", False)))
     obs["otel_enabled"] = otel_on
     if otel_on:
-        obs["otel_endpoint"] = prompt(f"  {t('observability.otel_endpoint')}",
+        obs["otel_endpoint"] = ui.text(f"  {t('observability.otel_endpoint')}",
                                        default=obs.get("otel_endpoint") or obs.get("otelEndpoint") or "http://localhost:4317")
-        obs["otel_service_name"] = prompt(f"  {t('observability.otel_service')}",
+        obs["otel_service_name"] = ui.text(f"  {t('observability.otel_service')}",
                                            default=obs.get("otel_service_name") or obs.get("otelServiceName") or "echo-agent")
 
     print_success(t("observability.saved",
@@ -727,7 +752,7 @@ def setup_evolution(config: dict) -> None:
 
     evo = _ensure_dict(config, "evolution")
 
-    enabled = prompt_yes_no(
+    enabled = ui.confirm(
         t("evolution.enabled"),
         default=bool(evo.get("enabled", False)),
     )
@@ -746,13 +771,13 @@ def setup_evolution(config: dict) -> None:
         else 0
     )
     print_info(t("evolution.trigger_hint"))
-    t_idx = prompt_choice(t("evolution.trigger"), trigger_labels, default=default_trigger)
+    t_idx = _choice(t("evolution.trigger"), trigger_labels, default=default_trigger)
     trigger = _EVOLUTION_TRIGGER_KEYS[t_idx]
     evo["trigger_mode"] = trigger
 
     if trigger == "threshold":
         cur = int(evo.get("threshold_trajectories") or evo.get("thresholdTrajectories") or 50)
-        raw = prompt(f"  {t('evolution.threshold')}", default=str(cur))
+        raw = ui.text(f"  {t('evolution.threshold')}", default=str(cur))
         try:
             evo["threshold_trajectories"] = max(1, int(raw))
         except ValueError:
@@ -760,22 +785,22 @@ def setup_evolution(config: dict) -> None:
             evo["threshold_trajectories"] = cur
     elif trigger == "scheduled":
         cur = evo.get("cron_expression") or evo.get("cronExpression") or "0 4 * * *"
-        raw = prompt(f"  {t('evolution.cron')}", default=cur)
+        raw = ui.text(f"  {t('evolution.cron')}", default=cur)
         evo["cron_expression"] = raw or cur
 
     # Eval dataset path
     cur_dataset = evo.get("eval_dataset_path") or evo.get("evalDatasetPath") or "data/eval/baseline.yaml"
-    raw = prompt(f"  {t('evolution.dataset_path')}", default=cur_dataset)
+    raw = ui.text(f"  {t('evolution.dataset_path')}", default=cur_dataset)
     evo["eval_dataset_path"] = raw or cur_dataset
 
     # Strict / regression policy
-    evo["require_strict_improvement"] = prompt_yes_no(
+    evo["require_strict_improvement"] = ui.confirm(
         t("evolution.strict"),
         default=bool(evo.get("require_strict_improvement", True)),
     )
     cur_thr = float(evo.get("regression_threshold") or evo.get("regressionThreshold") or 0.05)
     print_info(t("evolution.regression_hint"))
-    raw = prompt(f"  {t('evolution.regression')}", default=f"{cur_thr:.2f}")
+    raw = ui.text(f"  {t('evolution.regression')}", default=f"{cur_thr:.2f}")
     try:
         v = float(raw)
         if 0.0 <= v <= 0.5:
@@ -786,43 +811,43 @@ def setup_evolution(config: dict) -> None:
         print_warning(t("common.invalid"))
 
     # Operational knobs
-    evo["candidate_review_required"] = prompt_yes_no(
+    evo["candidate_review_required"] = ui.confirm(
         t("evolution.review_required"),
         default=bool(evo.get("candidate_review_required", False)),
     )
     cur_cand = int(evo.get("max_candidates_per_run") or evo.get("maxCandidatesPerRun") or 3)
-    raw = prompt(f"  {t('evolution.max_candidates')}", default=str(cur_cand))
+    raw = ui.text(f"  {t('evolution.max_candidates')}", default=str(cur_cand))
     try:
         evo["max_candidates_per_run"] = max(1, int(raw))
     except ValueError:
         evo["max_candidates_per_run"] = cur_cand
 
     cur_retain = int(evo.get("trajectory_retention_days") or evo.get("trajectoryRetentionDays") or 30)
-    raw = prompt(f"  {t('evolution.retention_days')}", default=str(cur_retain))
+    raw = ui.text(f"  {t('evolution.retention_days')}", default=str(cur_retain))
     try:
         evo["trajectory_retention_days"] = max(0, int(raw))
     except ValueError:
         evo["trajectory_retention_days"] = cur_retain
 
-    evo["redact_args"] = prompt_yes_no(
+    evo["redact_args"] = ui.confirm(
         t("evolution.redact_args"),
         default=bool(evo.get("redact_args", True)),
     )
-    evo["record_trajectories"] = prompt_yes_no(
+    evo["record_trajectories"] = ui.confirm(
         t("evolution.record"),
         default=bool(evo.get("record_trajectories", True)),
     )
 
     # Eval execution knobs (used by PromotionGate)
     cur_par = int(evo.get("eval_parallel") or evo.get("evalParallel") or 2)
-    raw = prompt(f"  {t('evolution.eval_parallel')}", default=str(cur_par))
+    raw = ui.text(f"  {t('evolution.eval_parallel')}", default=str(cur_par))
     try:
         evo["eval_parallel"] = max(1, int(raw))
     except ValueError:
         evo["eval_parallel"] = cur_par
 
     cur_to = int(evo.get("eval_timeout_seconds") or evo.get("evalTimeoutSeconds") or 60)
-    raw = prompt(f"  {t('evolution.eval_timeout')}", default=str(cur_to))
+    raw = ui.text(f"  {t('evolution.eval_timeout')}", default=str(cur_to))
     try:
         evo["eval_timeout_seconds"] = max(1, int(raw))
     except ValueError:
@@ -864,14 +889,14 @@ def setup_cost(config: dict) -> None:
     print()
 
     cost = _ensure_dict(config, "cost")
-    enabled = prompt_yes_no(t("cost.enable"), default=bool(cost.get("enabled", False)))
+    enabled = ui.confirm(t("cost.enable"), default=bool(cost.get("enabled", False)))
     cost["enabled"] = enabled
     if not enabled:
         print_success(t("cost.saved_disabled"))
         return
 
     cur_budget = float(cost.get("daily_budget_usd") or cost.get("dailyBudgetUsd") or 0.0)
-    raw = prompt(f"  {t('cost.daily_budget')}", default=f"{cur_budget:.2f}")
+    raw = ui.text(f"  {t('cost.daily_budget')}", default=f"{cur_budget:.2f}")
     try:
         budget = float(raw)
         if not math.isfinite(budget):
@@ -1058,21 +1083,24 @@ def _print_summary(config: dict, config_path: Path) -> None:
     print(color(f"  ◆ {t('summary.header')}", Colors.CYAN, Colors.BOLD))
     models = config.get("models", {}) or {}
     providers = models.get("providers", []) or []
-    if providers:
-        print_info(f"  {t('summary.provider')}: {providers[0].get('name', '?')}")
-    print_info(f"  {t('summary.model')}: {models.get('defaultModel') or models.get('default_model') or '-'}")
+    model_name = models.get("defaultModel") or models.get("default_model") or "-"
+    prov_name = providers[0].get("name", "?") if providers else "?"
+    print_info(f"  {t('summary.model')}: {prov_name} · {model_name}")
+
     enabled = [k for k, v in (config.get("channels", {}) or {}).items()
                if isinstance(v, dict) and v.get("enabled") and k != "cli"]
     if enabled:
-        print_info(f"  {t('summary.channels')}: {t('summary.channels_cli_plus', names=', '.join(enabled))}")
+        print_info(f"  {t('summary.channels')}: {', '.join(enabled)}")
     else:
-        print_info(f"  {t('summary.channels')}: {t('summary.channels_cli_only')}")
+        print_info(f"  {t('summary.channels')}: {t('summary.channels_cli_only')}  → echo-agent setup channel")
+
+    if not (config.get("gateway", {}) or {}).get("enabled"):
+        print_info(f"  {t('summary.gateway_off')}  → echo-agent gateway install")
+
     print_info(f"  {t('summary.config_file')}: {config_path}")
     print()
     print(color(f"  {t('summary.next_steps')}", Colors.CYAN))
-    print(color(t("summary.next_run"), Colors.GREEN))
-    print(color(t("summary.next_setup"), Colors.GREEN))
-    print(color(t("summary.next_status"), Colors.GREEN))
+    print(color("  echo-agent run", Colors.GREEN))
     print()
 
 
@@ -1181,49 +1209,48 @@ def run_setup_wizard(
     if flow is None and is_existing:
         print()
         print_success(t("menu.existing_detected"))
-        menu = [
-            t("menu.existing_quick"),
-            t("menu.existing_full"),
-            *[t("menu.existing_section", label=t(f"section.{key}")) for key, _ in SETUP_SECTIONS],
-            t("section.doctor"),
-            t("menu.exit"),
+        menu_choices: list[ui.Choice] = [
+            ("quickstart", t("menu.existing_quick"), ""),
+            ("full", t("menu.existing_full"), ""),
+            *[(f"section:{key}", t("menu.existing_section", label=t(f"section.{key}")), "")
+              for key, _ in SETUP_SECTIONS],
+            ("doctor", t("section.doctor"), ""),
+            ("exit", t("menu.exit"), ""),
         ]
-        choice = prompt_choice(t("menu.existing_what"), menu)
-        if choice == len(menu) - 1:
+        choice = ui.select(t("menu.existing_what"), menu_choices, default="quickstart")
+        if choice == "exit":
             print_info(t("menu.exit_hint"))
             return
-        if choice == 0:
+        if choice == "quickstart":
             flow = "quickstart"
-        elif choice == 1:
+        elif choice == "full":
             flow = "full"
-        elif choice == len(menu) - 2:
+        elif choice == "doctor":
             setup_doctor(config)
             return
         else:
-            section_idx = choice - 2
-            key, func = SETUP_SECTIONS[section_idx]
+            key = choice.split(":", 1)[1]
+            func = section_map[key]
             func(config)
             path = save_config(config, config_target)
             print_success(t("summary.section_saved", label=t(f"section.{key}"), path=path))
             return
 
-    if flow is None:
-        idx = prompt_choice(t("menu.first_run"), [
-            t("menu.first_run_quick"),
-            t("menu.first_run_full"),
-        ])
-        flow = "quickstart" if idx == 0 else "full"
+    if flow is None and not is_existing:
+        flow = ui.select(t("menu.first_run"), [
+            ("quickstart", t("menu.first_run_quick"), ""),
+            ("full", t("menu.first_run_full"), ""),
+        ], default="quickstart")
 
     if flow == "quickstart":
+        setup_language(config)
         setup_model(config)
-        print()
-        if prompt_yes_no(t("channels.configure_now"), default=False):
-            setup_channels(config)
+        setup_permissions(config)
         path = save_config(config, config_target)
         _ensure_credential_key(_resolve_workspace(config))
         setup_doctor(config)
         _print_summary(config, path)
-        print_success(t("summary.complete"))
+        ui.outro(t("summary.complete"))
         return
 
     for _key, func in SETUP_SECTIONS:
