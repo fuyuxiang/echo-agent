@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from echo_agent.cli.i18n import set_locale
+from echo_agent.cli.i18n import get_locale, set_locale
 from echo_agent.cli.setup import (
     SECTION_ALIASES,
     SETUP_SECTIONS,
@@ -17,6 +17,17 @@ from echo_agent.cli.setup import setup_evolution as run_setup_evolution
 # Pin locale to English so prompt-text matching is deterministic regardless
 # of the developer's machine.
 set_locale("en")
+
+
+@pytest.fixture(autouse=True)
+def _restore_locale():
+    """Restore the process-global locale so this file never leaks a non-English
+    locale into other locale-sensitive tests."""
+    saved = get_locale()
+    try:
+        yield
+    finally:
+        set_locale(saved)
 
 # Path to the prompt helpers we need to patch. We patch on the module that
 # defines ``setup_evolution`` so the patches are applied to its closure.
