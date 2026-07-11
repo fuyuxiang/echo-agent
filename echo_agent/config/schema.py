@@ -3384,7 +3384,7 @@ class UIConfig(_Base):
     locale: Literal["en", "zh", "auto"] = Field(
         default="auto",
         json_schema_extra={
-            "status": "effective", "ref": "cli/setup.py:1054",
+            "status": "effective", "ref": "cli/setup/__init__.py:127",
             "desc_zh": "界面语言",
             "desc_en": "Interface language",
         },
