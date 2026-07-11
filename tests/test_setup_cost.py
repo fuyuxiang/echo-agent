@@ -5,13 +5,26 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-from echo_agent.cli.i18n import set_locale
+import pytest
+
+from echo_agent.cli.i18n import get_locale, set_locale
 from echo_agent.cli.setup import SECTION_ALIASES, SETUP_SECTIONS
 from echo_agent.cli.setup import setup_cost as run_setup_cost
 
 set_locale("en")
 
 _TARGET = "echo_agent.cli.setup"
+
+
+@pytest.fixture(autouse=True)
+def _restore_locale():
+    """Restore the process-global locale so this file never leaks a non-English
+    locale into other locale-sensitive tests."""
+    saved = get_locale()
+    try:
+        yield
+    finally:
+        set_locale(saved)
 
 
 def _patch_prompts(answers: dict[str, str], yes_no: dict[str, bool]):
