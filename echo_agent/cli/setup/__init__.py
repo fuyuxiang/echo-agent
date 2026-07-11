@@ -34,6 +34,7 @@ from echo_agent.cli.colors import (
     print_success,
     print_warning,
 )
+from echo_agent.cli import ui
 from echo_agent.cli.i18n import detect_locale, get_locale, set_locale, t
 from echo_agent.cli.prompt import (
     is_interactive,
@@ -42,30 +43,14 @@ from echo_agent.cli.prompt import (
     prompt_choice,
     prompt_yes_no,
 )
+from echo_agent.cli.setup import providers as provider_catalog
+from echo_agent.cli.setup.model_verify import VerifyResult, list_models, verify_model
+from echo_agent.cli.setup.providers import find as find_provider, grouped_catalog
 from echo_agent.config.loader import find_local_config_file, resolve_config_file, save_config
 from echo_agent.runtime_paths import default_config_path
 
 
-# ── Provider / channel presets ────────────────────────────────────────────────
-
-PROVIDERS: list[tuple[str, str, list[str]]] = [
-    ("openai", "OpenAI", [
-        "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o1", "o3-mini",
-    ]),
-    ("anthropic", "Anthropic", [
-        "claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-haiku-4-5-20251001",
-    ]),
-    ("gemini", "Google Gemini", [
-        "gemini-2.5-pro", "gemini-2.5-flash",
-    ]),
-    ("openrouter", "OpenRouter", [
-        "openai/gpt-4o", "anthropic/claude-sonnet-4-20250514", "google/gemini-2.5-pro",
-    ]),
-    ("bedrock", "AWS Bedrock", [
-        "anthropic.claude-sonnet-4-20250514-v1:0", "anthropic.claude-haiku-4-5-20251001-v1:0",
-    ]),
-    ("custom", "Custom (OpenAI-compatible)", []),
-]
+# ── Channel presets ────────────────────────────────────────────────────────────
 
 CHANNEL_DEFS: list[tuple[str, str, list[tuple[str, str]]]] = [
     ("telegram", "Telegram", [("token", "Bot token")]),
@@ -132,85 +117,104 @@ def setup_language(config: dict) -> None:
 
 def setup_model(config: dict) -> None:
     _print_section_header("model")
-    print_info(t("model.intro"))
-    print()
+    ui.note(t("model.intro"), "info")
 
-    models_block = _ensure_dict(config, "models")
-    existing_providers = models_block.get("providers", []) or []
-    existing_provider = existing_providers[0] if existing_providers else {}
-    existing_name = existing_provider.get("name", "")
-    existing_key = existing_provider.get("apiKey", "") or existing_provider.get("api_key", "")
-    existing_base = existing_provider.get("apiBase", "") or existing_provider.get("api_base", "")
-    existing_model = models_block.get("defaultModel", "") or models_block.get("default_model", "")
+    groups = [
+        (t(f"provider.group.{gid}"),
+         [(e.id, t_provider_label(e), _models_hint(e)) for e in entries])
+        for gid, entries in grouped_catalog()
+    ]
+    existing = ((config.get("models", {}) or {}).get("providers") or [{}])[0]
+    default_id = _detect_catalog_id(existing)
+    entry_id = ui.select_grouped(t("model.select_provider"), groups, default=default_id)
+    entry = find_provider(entry_id)
 
-    provider_default = 0
-    for i, (key, _label, _models) in enumerate(PROVIDERS):
-        if key == existing_name or (existing_name == "openai" and key == "custom" and existing_base):
-            provider_default = i
-            break
-
-    provider_names = [p[1] for p in PROVIDERS]
-    idx = prompt_choice(t("model.select_provider"), provider_names, default=provider_default)
-    provider_key, provider_label, preset_models = PROVIDERS[idx]
+    api_base = entry.api_base
+    if entry.needs_api_base:
+        api_base = ui.text(f"  {t('model.api_base')}", default=existing.get("apiBase", "") or api_base)
 
     api_key = ""
-    api_base = ""
-    if provider_key == "bedrock":
-        print_info(t("model.bedrock_hint"))
-    elif provider_key == "custom":
-        api_base = prompt(f"  {t('model.api_base')}", default=existing_base)
-        if existing_key:
-            api_key = prompt(f"  {t('model.api_key_kept')}", password=True)
-            if not api_key:
-                api_key = existing_key
-        else:
-            api_key = prompt(f"  {t('model.api_key')}", password=True)
-    else:
-        if existing_key and existing_name == provider_key:
-            api_key = prompt(f"  {provider_label} {t('model.api_key_kept')}", password=True)
-            if not api_key:
-                api_key = existing_key
-        else:
-            api_key = prompt(f"  {provider_label} {t('model.api_key')}", password=True)
-            if not api_key:
-                print_warning(t("model.api_key_missing"))
+    if entry.dialect != "bedrock":
+        api_key = ui.password(f"  {entry.label} {t('model.api_key')}")
+        if not api_key and existing.get("apiKey") and _detect_catalog_id(existing) == entry_id:
+            api_key = existing.get("apiKey", "")
 
-    if preset_models:
-        custom_idx = len(preset_models)
-        model_default = custom_idx
-        if existing_model in preset_models:
-            model_default = preset_models.index(existing_model)
-        model_choices = preset_models + [t("model.model_custom")]
-        model_idx = prompt_choice(t("model.model_select"), model_choices, default=model_default)
-        if model_idx == custom_idx:
-            default_model = prompt(f"  {t('model.model_name')}", default=existing_model)
-        else:
-            default_model = preset_models[model_idx]
+    models = []
+    if entry.models_endpoint:
+        with ui.spinner(t("model.fetching")):
+            models = list_models(entry, api_key, api_base)
+    if not models:
+        models = list(entry.fallback_models)
+
+    if models:
+        choices = [(m, m, "") for m in models] + [("__custom__", t("model.model_custom"), "")]
+        picked = ui.select(t("model.model_select"), choices, default=models[0])
+        default_model = ui.text(f"  {t('model.model_name')}") if picked == "__custom__" else picked
     else:
         default_model = ""
         while not default_model:
-            default_model = prompt(f"  {t('model.model_name')}", default=existing_model)
-            if not default_model:
-                print_warning(t("model.model_required_custom"))
+            default_model = ui.text(f"  {t('model.model_name')}")
 
-    while not default_model:
-        print_warning(t("model.model_required"))
-        default_model = prompt(f"  {t('model.model_name')}", default=existing_model)
+    if default_model and entry.dialect != "bedrock":
+        with ui.spinner(t("model.verifying")):
+            result = verify_model(entry.dialect, api_key, api_base, default_model)
+        default_model, api_key = _handle_verify(result, entry, api_key, api_base, default_model)
 
-    actual_name = provider_key if provider_key != "custom" else "openai"
-    provider_entry: dict[str, Any] = {"name": actual_name}
+    provider_entry: dict[str, Any] = {"name": entry.dialect}
     if api_key:
         provider_entry["apiKey"] = api_key
     if api_base:
         provider_entry["apiBase"] = api_base
-    if preset_models:
-        provider_entry["models"] = preset_models
+    if entry.fallback_models and entry.dialect not in ("openai",):
+        provider_entry["models"] = list(entry.fallback_models)
 
-    config["models"] = {
-        "defaultModel": default_model,
-        "providers": [provider_entry],
-    }
-    print_success(t("model.saved", provider=provider_label, model=default_model))
+    config["models"] = {"defaultModel": default_model, "providers": [provider_entry]}
+    ui.note(t("model.saved", provider=entry.label, model=default_model), "success")
+
+
+def t_provider_label(entry) -> str:
+    return entry.label  # labels are already localized brand names
+
+
+def _models_hint(entry) -> str:
+    return ", ".join(entry.fallback_models[:2])
+
+
+def _detect_catalog_id(existing: dict) -> str:
+    name = (existing.get("name") or "").lower()
+    base = existing.get("apiBase") or ""
+    for e in provider_catalog.CATALOG:
+        if e.dialect == name and (not e.api_base or e.api_base == base):
+            return e.id
+    return "openai"
+
+
+def _handle_verify(result: "VerifyResult", entry, api_key, api_base, model):
+    if result.status == "ok":
+        ui.note(t("model.verify_ok", model=model), "success")
+        return model, api_key
+    if result.status == "unreachable":
+        ui.note(t("model.verify_unreachable"), "warning")
+        return model, api_key
+    # error: offer retry-key / change-model / skip
+    ui.note(t("model.verify_error", detail=result.detail), "error")
+    action = ui.select(t("model.verify_action"), [
+        ("retry", t("model.verify_retry_key"), ""),
+        ("change", t("model.verify_change_model"), ""),
+        ("skip", t("model.verify_skip"), ""),
+    ], default="retry")
+    if action == "skip":
+        return model, api_key
+    if action == "retry":
+        new_key = ui.password(f"  {entry.label} {t('model.api_key')}")
+        with ui.spinner(t("model.verifying")):
+            res2 = verify_model(entry.dialect, new_key, api_base, model)
+        return _handle_verify(res2, entry, new_key, api_base, model)
+    # change model
+    new_model = ui.text(f"  {t('model.model_name')}")
+    with ui.spinner(t("model.verifying")):
+        res2 = verify_model(entry.dialect, api_key, api_base, new_model)
+    return _handle_verify(res2, entry, api_key, api_base, new_model)
 
 
 # ── Section 3: Permissions & Approval ────────────────────────────────────────
