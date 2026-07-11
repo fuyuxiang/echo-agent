@@ -35,7 +35,7 @@ Echo Agent 是一个可自托管的长期运行 AI Agent。与一次性问答不
 
 ## 快速开始
 
-环境要求：Python 3.11+，至少一个模型 API Key。
+环境要求：Python 3.11+，至少一个模型 API Key。.
 
 ```bash
 # 安装
