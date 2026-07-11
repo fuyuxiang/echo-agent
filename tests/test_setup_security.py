@@ -19,19 +19,27 @@ _TARGET = "echo_agent.cli.setup"
 
 
 def _patch_prompts(choices: dict[str, int]):
-    def _prompt(question, default="", password=False):
+    """Return ui.* replacements.
+
+    ``setup_security`` drives its one choice through ``ui.select`` (via the
+    module-level ``_choice`` helper), which returns the *value* string; the
+    helper maps that back to an int index. So the fake ``ui.select`` returns
+    ``str(index)`` for a matched needle, else the passed-in default value.
+    """
+
+    def _text(message, default=""):
         return default
 
-    def _yn(question, default=True):
+    def _confirm(message, default=True):
         return default
 
-    def _choice(question, choices_list, default=0):
+    def _select(message, choices_list, default=""):
         for needle, value in choices.items():
-            if needle in question:
-                return value
+            if needle in message:
+                return str(value)
         return default
 
-    return _prompt, _yn, _choice
+    return _text, _confirm, _select
 
 
 def test_security_registered_in_section_registry():
@@ -45,10 +53,10 @@ def test_security_registered_in_section_registry():
 
 def test_no_gateway_defaults_to_personal_cli():
     config: dict = {"gateway": {"enabled": False}}
-    p, yn, ch = _patch_prompts(choices={})
-    with patch(f"{_TARGET}.prompt", p), \
-         patch(f"{_TARGET}.prompt_yes_no", yn), \
-         patch(f"{_TARGET}.prompt_choice", ch):
+    txt, cf, sel = _patch_prompts(choices={})
+    with patch(f"{_TARGET}.ui.text", txt), \
+         patch(f"{_TARGET}.ui.confirm", cf), \
+         patch(f"{_TARGET}.ui.select", sel):
         run_setup_security(config)
     assert config["security"]["profile"] == "personal_cli"
 
@@ -56,20 +64,20 @@ def test_no_gateway_defaults_to_personal_cli():
 def test_gateway_personal_choice_writes_personal_cli():
     config: dict = {"gateway": {"enabled": True}}
     # Choice index 0 == personal_cli (the default highlight).
-    p, yn, ch = _patch_prompts(choices={"trust level": 0})
-    with patch(f"{_TARGET}.prompt", p), \
-         patch(f"{_TARGET}.prompt_yes_no", yn), \
-         patch(f"{_TARGET}.prompt_choice", ch):
+    txt, cf, sel = _patch_prompts(choices={"trust level": 0})
+    with patch(f"{_TARGET}.ui.text", txt), \
+         patch(f"{_TARGET}.ui.confirm", cf), \
+         patch(f"{_TARGET}.ui.select", sel):
         run_setup_security(config)
     assert config["security"]["profile"] == "personal_cli"
 
 
 def test_gateway_public_choice_writes_public_gateway():
     config: dict = {"gateway": {"enabled": True}}
-    p, yn, ch = _patch_prompts(choices={"trust level": 1})
-    with patch(f"{_TARGET}.prompt", p), \
-         patch(f"{_TARGET}.prompt_yes_no", yn), \
-         patch(f"{_TARGET}.prompt_choice", ch):
+    txt, cf, sel = _patch_prompts(choices={"trust level": 1})
+    with patch(f"{_TARGET}.ui.text", txt), \
+         patch(f"{_TARGET}.ui.confirm", cf), \
+         patch(f"{_TARGET}.ui.select", sel):
         run_setup_security(config)
     assert config["security"]["profile"] == "public_gateway"
 
@@ -78,9 +86,9 @@ def test_profile_key_always_written():
     """The core invariant: whatever the path, security.profile ends up explicit."""
     for gw_enabled, choice in [(False, {}), (True, {"trust level": 0}), (True, {"trust level": 1})]:
         config: dict = {"gateway": {"enabled": gw_enabled}}
-        p, yn, ch = _patch_prompts(choices=choice)
-        with patch(f"{_TARGET}.prompt", p), \
-             patch(f"{_TARGET}.prompt_yes_no", yn), \
-             patch(f"{_TARGET}.prompt_choice", ch):
+        txt, cf, sel = _patch_prompts(choices=choice)
+        with patch(f"{_TARGET}.ui.text", txt), \
+             patch(f"{_TARGET}.ui.confirm", cf), \
+             patch(f"{_TARGET}.ui.select", sel):
             run_setup_security(config)
         assert config.get("security", {}).get("profile") in ("personal_cli", "public_gateway")
