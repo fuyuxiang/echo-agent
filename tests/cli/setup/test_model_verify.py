@@ -65,3 +65,48 @@ def test_verify_model_unreachable():
     with patch(f"{_T}.create_provider", side_effect=httpx.ConnectError("no route")):
         res = mv.verify_model("openai", "sk-x", "", "gpt-4o")
     assert res.status == "unreachable"
+
+
+def _fake_provider_returning(content, finish_reason):
+    fake_provider = MagicMock()
+
+    async def _chat(*a, **k):
+        resp = MagicMock()
+        resp.finish_reason = finish_reason
+        resp.content = content
+        return resp
+
+    fake_provider.chat_with_retry = _chat
+    return fake_provider
+
+
+def test_verify_model_error_response_preserves_detail():
+    # chat_with_retry never raises; it returns an error LLMResponse.
+    fake_provider = _fake_provider_returning("Error: 401 Unauthorized", "error")
+    with patch(f"{_T}.create_provider", return_value=fake_provider):
+        res = mv.verify_model("openai", "bad", "", "gpt-4o")
+    assert res.status == "error"
+    assert "401" in res.detail
+
+
+def test_verify_model_timeout_response_is_unreachable():
+    fake_provider = _fake_provider_returning("Error: request timed out after 8s", "error")
+    with patch(f"{_T}.create_provider", return_value=fake_provider):
+        res = mv.verify_model("openai", "sk-x", "", "gpt-4o")
+    assert res.status == "unreachable"
+    assert "timed out" in res.detail
+
+
+def test_verify_model_stop_response_is_ok():
+    fake_provider = _fake_provider_returning("pong", "stop")
+    with patch(f"{_T}.create_provider", return_value=fake_provider):
+        res = mv.verify_model("openai", "sk-x", "", "gpt-4o")
+    assert res.status == "ok"
+
+
+def test_classify_error_detail():
+    assert mv._classify_error_detail("Error: 401 Unauthorized") == "error"
+    assert mv._classify_error_detail("Error: request timed out after 8s") == "unreachable"
+    assert mv._classify_error_detail("Connection refused") == "unreachable"
+    assert mv._classify_error_detail("getaddrinfo failed") == "unreachable"
+    assert mv._classify_error_detail("") == "error"

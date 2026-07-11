@@ -69,6 +69,24 @@ class VerifyResult:
 _UNREACHABLE = (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout,
                 httpx.TimeoutException, ConnectionError, TimeoutError)
 
+# Substrings (case-insensitive) that mark an error as a connectivity/timeout
+# failure rather than a provider-side (auth/quota/bad-request) error.
+_UNREACHABLE_HINTS = ("timed out", "timeout", "connect", "connection", "network",
+                      "unreachable", "dns", "getaddrinfo")
+
+
+def _classify_error_detail(content: str) -> str:
+    """Classify an error LLMResponse's content into "unreachable" or "error".
+
+    ``chat_with_retry`` never raises; it returns ``finish_reason="error"`` with
+    the failure text in ``content``. Connectivity/timeout failures map to
+    "unreachable", everything else (auth, quota, bad request) to "error".
+    """
+    text = (content or "").lower()
+    if any(hint in text for hint in _UNREACHABLE_HINTS):
+        return "unreachable"
+    return "error"
+
 
 def verify_model(dialect: str, api_key: str, api_base: str, model: str) -> VerifyResult:
     try:
@@ -86,7 +104,8 @@ def verify_model(dialect: str, api_key: str, api_base: str, model: str) -> Verif
                 messages=[{"role": "user", "content": "ping"}], model=model,
             )
             if getattr(resp, "finish_reason", "") == "error":
-                return VerifyResult("error", "provider returned error")
+                content = getattr(resp, "content", "") or ""
+                return VerifyResult(_classify_error_detail(content), content)
             return VerifyResult("ok")
         except _UNREACHABLE as e:
             return VerifyResult("unreachable", str(e))
