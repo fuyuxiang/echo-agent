@@ -178,7 +178,10 @@ def setup_model(config: dict) -> None:
     if api_base:
         provider_entry["apiBase"] = api_base
     if entry.fallback_models and entry.dialect not in ("openai",):
-        provider_entry["models"] = list(entry.fallback_models)
+        models_list = list(entry.fallback_models)
+        if default_model and default_model not in models_list:
+            models_list.append(default_model)
+        provider_entry["models"] = models_list
 
     config["models"] = {"defaultModel": default_model, "providers": [provider_entry]}
     ui.note(t("model.saved", provider=entry.label, model=default_model), "success")

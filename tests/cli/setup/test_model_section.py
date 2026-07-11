@@ -52,6 +52,25 @@ def test_model_section_verify_error_can_skip():
     assert cfg["models"]["providers"][0]["apiKey"] == "bad"
 
 
+def test_model_section_allowlist_includes_chosen_dynamic_model():
+    # openrouter: dialect != "openai" so a models allowlist IS written. The
+    # chosen model is a dynamically-listed one NOT in fallback_models; it must
+    # still land in provider_entry["models"] so the router can match it.
+    cfg = {}
+    dynamic = "meta-llama/llama-3.3-70b-instruct"
+    with patch(f"{_S}.ui.select_grouped", return_value="openrouter"), \
+         patch(f"{_S}.ui.password", return_value="sk-or"), \
+         patch(f"{_S}.list_models", return_value=[dynamic, "openai/gpt-4o"]), \
+         patch(f"{_S}.ui.select", return_value=dynamic), \
+         patch(f"{_S}.verify_model", return_value=mv.VerifyResult("ok")):
+        setup_mod.setup_model(cfg)
+    prov = cfg["models"]["providers"][0]
+    assert prov["name"] == "openrouter"
+    assert cfg["models"]["defaultModel"] == dynamic
+    assert dynamic in prov["models"]           # chosen model present in allowlist
+    assert "openai/gpt-4o" in prov["models"]   # fallback models retained too
+
+
 def test_model_section_custom_prompts_api_base():
     cfg = {}
     with patch(f"{_S}.ui.select_grouped", return_value="custom"), \
