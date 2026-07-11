@@ -85,6 +85,21 @@ MESSAGES = {
         "model_required_custom": "Custom Provider 必须指定一个模型名。",
         "bedrock_hint": "Bedrock 使用 AWS 环境凭证（AWS_ACCESS_KEY_ID 等）。",
         "saved": "Provider：{provider}，Model：{model}",
+        "fetching": "正在拉取可用模型…",
+        "verifying": "正在校验模型可用性…",
+        "verify_ok": "已验证 · {model} 可用",
+        "verify_unreachable": "无法连网校验，已保存配置，稍后可 echo-agent setup model 重试",
+        "verify_error": "校验失败：{detail}",
+        "verify_action": "怎么处理？",
+        "verify_retry_key": "重新填写 API Key",
+        "verify_change_model": "换一个模型",
+        "verify_skip": "跳过校验，继续",
+    },
+    "provider": {
+        "group": {
+            "mainstream": "主流厂商", "domestic": "国内厂商", "aggregator": "聚合路由",
+            "local": "本地部署", "cloud": "云平台", "custom": "其他",
+        },
     },
     "permissions": {
         "header": "权限与审批",
@@ -296,6 +311,7 @@ MESSAGES = {
     },
     "summary": {
         "header": "配置摘要",
+        "gateway_off": "网关：未启用",
         "provider": "Provider",
         "model": "默认模型",
         "channels": "渠道",

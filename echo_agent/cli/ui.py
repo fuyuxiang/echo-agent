@@ -107,7 +107,7 @@ def password(message: str) -> str:
         ans = _q.password(message).ask()
         if ans is None:
             sys.exit(0)
-        return ans
+        return ans.strip()
     return prompt(message, password=True)
 
 
