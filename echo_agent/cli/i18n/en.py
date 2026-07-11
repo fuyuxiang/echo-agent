@@ -85,6 +85,21 @@ MESSAGES = {
         "model_required_custom": "A model name is required for custom providers.",
         "bedrock_hint": "Bedrock uses AWS credentials from environment (AWS_ACCESS_KEY_ID, etc.)",
         "saved": "Provider: {provider}, Model: {model}",
+        "fetching": "Fetching available models…",
+        "verifying": "Verifying model…",
+        "verify_ok": "Verified · {model} is available",
+        "verify_unreachable": "Couldn't reach the network to verify; config saved, retry later with echo-agent setup model",
+        "verify_error": "Verification failed: {detail}",
+        "verify_action": "What next?",
+        "verify_retry_key": "Re-enter API key",
+        "verify_change_model": "Pick another model",
+        "verify_skip": "Skip verification, continue",
+    },
+    "provider": {
+        "group": {
+            "mainstream": "Mainstream", "domestic": "China", "aggregator": "Aggregators",
+            "local": "Local", "cloud": "Cloud", "custom": "Other",
+        },
     },
     "permissions": {
         "header": "Permissions & Approval",
@@ -298,6 +313,7 @@ MESSAGES = {
     },
     "summary": {
         "header": "Setup Summary",
+        "gateway_off": "Gateway: disabled",
         "provider": "Provider",
         "model": "Default model",
         "channels": "Channels",

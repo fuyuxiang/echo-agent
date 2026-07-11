@@ -1,7 +1,7 @@
 """Tests for echo_agent.cli.ui — questionary wrapper with prompt.py fallback."""
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from echo_agent.cli import ui
 
@@ -52,6 +52,18 @@ def test_password_fallback_uses_prompt_password():
          patch(f"{_T}.prompt", return_value="secret") as p:
         assert ui.password("key?") == "secret"
     assert p.call_args.kwargs.get("password") is True
+
+
+def test_password_rich_strips_surrounding_whitespace():
+    # rich (questionary) backend must strip pasted keys just like the fallback.
+    fake_q = MagicMock()
+    fake_q.password.return_value.ask.return_value = "  sk-abc123\n"
+    with patch(f"{_T}._q", fake_q), \
+         patch(f"{_T}._HAS_Q", True), \
+         patch(f"{_T}.is_interactive", return_value=True):
+        assert ui.use_rich() is True
+        assert ui.password("key?") == "sk-abc123"
+    fake_q.password.assert_called_once_with("key?")
 
 
 def test_note_does_not_crash():
