@@ -39,6 +39,7 @@ dependencies = [
     "croniter>=1.4",
     "numpy>=1.24",
     "fastembed>=0.4",
+    "questionary>=2.0",
 ]
 
 [project.urls]
