@@ -78,7 +78,7 @@ class LLMResponse:
 @dataclass(frozen=True)
 class GenerationParams:
     temperature: float = 0.7
-    max_tokens: int = 4096
+    max_tokens: int = 8192
     top_p: float = 1.0
     reasoning_effort: str | None = None
 

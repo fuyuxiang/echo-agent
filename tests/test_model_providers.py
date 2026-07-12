@@ -302,10 +302,20 @@ class TestOpenAIReasoningPromotion:
         assert resp.content == "hi"
         assert resp.reasoning_content == "thinking..."
 
-    def test_no_promote_when_finish_not_stop(self):
+    def test_promote_when_finish_length(self):
+        # A reasoning model that burned its whole budget on reasoning leaves
+        # content empty with finish_reason="length"; the truncated reasoning
+        # is the only recoverable answer material and must be promoted.
         provider = self._provider()
         resp = provider._parse_response(
             _fake_openai_resp(content="", reasoning="partial", finish_reason="length")
+        )
+        assert resp.content == "partial"
+
+    def test_no_promote_when_finish_error(self):
+        provider = self._provider()
+        resp = provider._parse_response(
+            _fake_openai_resp(content="", reasoning="partial", finish_reason="error")
         )
         assert resp.content == "" or resp.content is None
 

@@ -952,7 +952,7 @@ class ModelRouteConfig(_Base):
         },
     )
     max_tokens: int = Field(
-        default=4096,
+        default=8192,
         json_schema_extra={
             "status": "effective", "ref": "agent/pipeline/inference_stage.py:615",
             "desc_zh": "该路由生成的最大 token 数",

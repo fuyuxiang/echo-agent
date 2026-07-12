@@ -243,9 +243,12 @@ class OpenAIProvider(LLMProvider):
     def _promote_reasoning(content: str | None, reasoning: str | None, finish_reason: str) -> str | None:
         # Some third-party proxies put the final answer into reasoning_content
         # while leaving content empty. Recover it — but only when content is
-        # truly empty and the model finished normally, so a real reasoning
-        # model's thinking trace is never mistaken for the answer.
-        if not content and finish_reason == "stop" and reasoning:
+        # truly empty, so a real reasoning model's thinking trace is never
+        # mistaken for the answer when actual content exists. "length" is
+        # included: a reasoning model that burned its whole token budget on
+        # reasoning leaves content empty, and the truncated reasoning is the
+        # only recoverable answer material for the turn.
+        if not content and finish_reason in ("stop", "length") and reasoning:
             return reasoning
         return content
 

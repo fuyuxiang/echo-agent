@@ -26,7 +26,7 @@ class RouteDecision:
     fallback_chain: list[str] = field(default_factory=list)
     reason: str = ""
     context_window: int = 65536
-    max_tokens: int = 4096
+    max_tokens: int = 8192
     temperature: float = 0.7
 
 
@@ -118,7 +118,7 @@ class ModelRouter:
         return RouteDecision(
             model=self._config.default_model,
             reason="default model",
-            max_tokens=4096,
+            max_tokens=8192,
         )
 
     def route_candidates(
