@@ -75,6 +75,12 @@ CATALOG: list[ProviderCatalogEntry] = [
         fallback_models=["glm-4-plus", "glm-4-air", "glm-4-flash"],
         models_endpoint="https://open.bigmodel.cn/api/paas/v4/models",
     ),
+    ProviderCatalogEntry(
+        id="minimax", label="MiniMax", group="domestic", dialect="openai",
+        api_base="https://api.minimaxi.com/v1", api_key_env_vars=("MINIMAX_API_KEY",),
+        fallback_models=["MiniMax-Text-01", "abab6.5s-chat"],
+        models_endpoint="https://api.minimaxi.com/v1/models",
+    ),
     # ── aggregator ──
     ProviderCatalogEntry(
         id="openrouter", label="OpenRouter", group="aggregator", dialect="openrouter",
