@@ -11,6 +11,8 @@ from __future__ import annotations
 REASON_APPROVAL_UNAVAILABLE = "approval_unavailable"
 REASON_APPROVAL_TIMEOUT = "approval_timeout"
 REASON_REPEAT_BLOCKED = "repeat_blocked"
+REASON_OUTPUT_TRUNCATED = "output_truncated"
+REASON_LOOP_EXHAUSTED = "loop_exhausted"
 
 GENERIC_FALLBACK_TEXT = (
     "⚠️ 处理你的请求时遇到问题,已中止。可以稍后重试或换个说法。"
@@ -33,6 +35,15 @@ def notice_for(reason: str, *, tool: str = "", request_id: str = "") -> str:
     if reason == REASON_REPEAT_BLOCKED:
         return (
             "⚠️ 我多次尝试同一操作未成功,已停止。可能是工具或服务异常,请稍后重试。"
+        )
+    if reason == REASON_OUTPUT_TRUNCATED:
+        return (
+            "⚠️ 回复内容超出单次输出上限被截断。可以让我继续说完,或把问题拆小一些。"
+        )
+    if reason == REASON_LOOP_EXHAUSTED:
+        return (
+            "⚠️ 这个任务步骤较多,本轮未完全做完,以上是目前的进展。"
+            "可以回复「继续」让我接着做,或缩小任务范围。"
         )
     return GENERIC_FALLBACK_TEXT
 

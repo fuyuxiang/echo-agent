@@ -11,7 +11,12 @@ from typing import Any, TYPE_CHECKING
 
 from loguru import logger
 
-from echo_agent.agent.degraded_notice import REASON_REPEAT_BLOCKED, notice_for
+from echo_agent.agent.degraded_notice import (
+    REASON_LOOP_EXHAUSTED,
+    REASON_OUTPUT_TRUNCATED,
+    REASON_REPEAT_BLOCKED,
+    notice_for,
+)
 from echo_agent.agent.pipeline.tool_concurrency import (
     ToolPlan,
     extract_paths,
@@ -393,6 +398,11 @@ class InferenceStage:
         _repeat_tracker: dict[str, int] = {}
         loop_exhausted = True
         budget_halted = False
+        # Degraded-convergence controls: force_no_tools strips tools from the
+        # NEXT call (set by the truncation retry below); truncation_retried
+        # bounds that retry to once per pass.
+        force_no_tools = False
+        truncation_retried = False
 
         # Read nudge counters from session (do NOT write back — run() owns that)
         _skill_iters = session.metadata.get("_nudge_tool_iters_skill", 0)
@@ -418,6 +428,25 @@ class InferenceStage:
                 t for t in tool_defs
                 if t.get("function", {}).get("name") not in unavailable
             ] if unavailable else tool_defs
+
+            if force_no_tools:
+                active_tool_defs = []
+            elif iteration == self._max_iterations - 1 and iteration > 0 and active_tool_defs:
+                # Final-answer forcing: the last iteration must produce a
+                # conclusion instead of yet another tool round. Without this,
+                # exhausting the loop discards the entire turn's work and the
+                # user gets a generic failure. Strip tools, tell the model to
+                # wrap up, and flag the turn as not fully converged.
+                active_tool_defs = []
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "[系统] 已达到本轮工具调用上限,不能再调用工具。"
+                        "请基于已收集到的信息直接给出最终结论;"
+                        "如果任务尚未完成,请说明当前进展和剩余缺口。"
+                    ),
+                })
+                counters.degraded_notices.append(notice_for(REASON_LOOP_EXHAUSTED))
 
             llm_span = self._tracer.start_span(trace_id, f"llm_{iteration}", "llm_call", "llm_call")
 
@@ -506,6 +535,40 @@ class InferenceStage:
                 logger.warning("LLM returned error in iteration {}: {}", iteration, response.content)
                 if not response_text:
                     response_text = "I encountered an issue processing your request. Please try again."
+                loop_exhausted = False
+                break
+
+            if response.finish_reason == "length":
+                # Output hit max_tokens. Provider-level reasoning promotion may
+                # already have recovered text into content; whatever we have is
+                # partial. Never treat this as a clean stop.
+                logger.warning(
+                    "LLM output truncated at max_tokens in iteration {} (model {}, content_len {})",
+                    iteration, route_decision.model, len(response.content or ""),
+                )
+                if response.content:
+                    # Deliver the partial answer with a truncation notice
+                    # instead of discarding it.
+                    response_text = response.content
+                    counters.degraded_notices.append(notice_for(REASON_OUTPUT_TRUNCATED))
+                    loop_exhausted = False
+                    break
+                if not truncation_retried:
+                    # Nothing recoverable — retry once without tools, asking
+                    # for a bounded plain-text conclusion. One extra call
+                    # salvages the whole turn's collected context.
+                    truncation_retried = True
+                    force_no_tools = True
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "[系统] 你上一次的回复超出输出长度上限且未产生任何正文。"
+                            "请不要调用工具,直接用简短的篇幅给出最终结论。"
+                        ),
+                    })
+                    continue
+                # Retry also truncated empty — give up with the truncation notice.
+                counters.degraded_notices.append(notice_for(REASON_OUTPUT_TRUNCATED))
                 loop_exhausted = False
                 break
 

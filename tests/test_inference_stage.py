@@ -525,6 +525,101 @@ def test_loopresult_has_degraded_notices_default():
     assert r.degraded_notices == []
 
 
+class TestInferenceStageLengthTruncation:
+    """finish_reason='length' — 截断分层处理：保部分正文 / 降级重试 / 兜底。"""
+
+    @pytest.mark.asyncio
+    async def test_partial_content_kept_with_truncation_notice(self):
+        from echo_agent.agent.degraded_notice import notice_for, REASON_OUTPUT_TRUNCATED
+        provider = AsyncMock()
+        provider.chat_stream_with_retry = AsyncMock(
+            return_value=LLMResponse(content="部分答案...", finish_reason="length")
+        )
+        stage, _bus = _make_stage(provider=provider)
+        ctx = _make_ctx()
+
+        result = await stage.run(ctx)
+
+        assert result.response_text == "部分答案..."
+        assert notice_for(REASON_OUTPUT_TRUNCATED) in result.degraded_notices
+        # No retry: the partial answer is delivered as-is.
+        assert provider.chat_stream_with_retry.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_empty_truncation_retries_once_without_tools(self):
+        provider = AsyncMock()
+        provider.chat_stream_with_retry = AsyncMock(side_effect=[
+            LLMResponse(content="", finish_reason="length"),
+            LLMResponse(content="简短结论", finish_reason="stop"),
+        ])
+        stage, _bus = _make_stage(provider=provider)
+        ctx = _make_ctx(tool_defs=[{"function": {"name": "exec"}}])
+
+        result = await stage.run(ctx)
+
+        assert result.response_text == "简短结论"
+        assert provider.chat_stream_with_retry.call_count == 2
+        # The retry call must strip tools so the whole budget goes to text.
+        retry_kwargs = provider.chat_stream_with_retry.call_args_list[1].kwargs
+        assert retry_kwargs["tools"] is None
+
+    @pytest.mark.asyncio
+    async def test_double_truncation_gives_up_with_notice(self):
+        from echo_agent.agent.degraded_notice import notice_for, REASON_OUTPUT_TRUNCATED
+        provider = AsyncMock()
+        provider.chat_stream_with_retry = AsyncMock(
+            return_value=LLMResponse(content="", finish_reason="length")
+        )
+        stage, _bus = _make_stage(provider=provider)
+        ctx = _make_ctx()
+
+        result = await stage.run(ctx)
+
+        # Retried once, then gave up — exactly 2 calls, truncation notice attached.
+        assert provider.chat_stream_with_retry.call_count == 2
+        assert notice_for(REASON_OUTPUT_TRUNCATED) in result.degraded_notices
+
+
+class TestInferenceStageFinalAnswerForcing:
+    """最后一轮强制收敛：去掉 tools 逼模型给结论，而不是白跑整轮。"""
+
+    @pytest.mark.asyncio
+    async def test_last_iteration_strips_tools_and_gets_conclusion(self):
+        from echo_agent.agent.degraded_notice import notice_for, REASON_LOOP_EXHAUSTED
+        tc = ToolCallRequest(id="call_1", name="tool_a", arguments={"x": "1"})
+
+        provider = AsyncMock()
+
+        def _respond(**kwargs):
+            if kwargs.get("tools"):
+                return LLMResponse(content="", tool_calls=[tc], finish_reason="tool_calls")
+            return LLMResponse(content="目前进展:已完成 A,缺 B。", finish_reason="stop")
+
+        provider.chat_stream_with_retry = AsyncMock(side_effect=lambda **kw: _respond(**kw))
+
+        tools_reg = MagicMock()
+        tool_result = MagicMock(success=True, text="ok", error=None, metadata={})
+        tools_reg.execute = AsyncMock(return_value=tool_result)
+        tools_reg.has = MagicMock(return_value=False)
+
+        stage, _bus = _make_stage(provider=provider, tools=tools_reg, max_iterations=3)
+        ctx = _make_ctx(tool_defs=[{"function": {"name": "tool_a"}}])
+
+        result = await stage.run(ctx)
+
+        # The forced final call produced a real conclusion, not the fallback.
+        assert result.response_text == "目前进展:已完成 A,缺 B。"
+        assert notice_for(REASON_LOOP_EXHAUSTED) in result.degraded_notices
+        # Last call had tools stripped.
+        last_kwargs = provider.chat_stream_with_retry.call_args_list[-1].kwargs
+        assert last_kwargs["tools"] is None
+        # A convergence instruction was injected for the final call.
+        assert any(
+            m.get("role") == "user" and "工具调用上限" in str(m.get("content", ""))
+            for m in ctx.messages
+        )
+
+
 def test_inferenceresult_has_degraded_notices_default():
     from echo_agent.agent.pipeline.types import InferenceResult
     r = InferenceResult()

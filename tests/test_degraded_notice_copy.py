@@ -4,6 +4,8 @@ from echo_agent.agent.degraded_notice import (
     GENERIC_FALLBACK_TEXT,
     REASON_APPROVAL_TIMEOUT,
     REASON_APPROVAL_UNAVAILABLE,
+    REASON_LOOP_EXHAUSTED,
+    REASON_OUTPUT_TRUNCATED,
     REASON_REPEAT_BLOCKED,
     combine_notices,
     is_generic_fallback,
@@ -32,6 +34,18 @@ def test_notice_approval_timeout_tells_user_to_retrigger():
 def test_notice_repeat_blocked_is_chinese():
     text = notice_for(REASON_REPEAT_BLOCKED)
     assert "多次尝试" in text
+
+
+def test_notice_output_truncated_is_chinese():
+    text = notice_for(REASON_OUTPUT_TRUNCATED)
+    assert text.startswith("⚠️")
+    assert "截断" in text
+
+
+def test_notice_loop_exhausted_tells_user_to_continue():
+    text = notice_for(REASON_LOOP_EXHAUSTED)
+    assert text.startswith("⚠️")
+    assert "继续" in text
 
 
 def test_notice_unknown_reason_falls_back():
