@@ -38,7 +38,12 @@ async def test_private_url_is_aborted_before_send():
 
 
 @pytest.mark.asyncio
-async def test_public_url_continues():
+async def test_public_url_continues(monkeypatch):
+    # Stub the resolver so the test doesn't depend on live DNS for example.com
+    # (offline / sandboxed CI would otherwise see it blocked as unresolvable).
+    async def allow(url):
+        return None
+    monkeypatch.setattr(sess_mod, "check_url_ssrf", allow)
     session = _mk_session()
     route = FakeRoute("https://example.com/")
     await _ssrf_route_handler(session, route)
