@@ -1246,14 +1246,21 @@ def run_setup_wizard(
             print_success(t("summary.section_saved", label=t(f"section.{key}"), path=path))
             return
 
+    language_done = False
     if flow is None and not is_existing:
+        # Language is a meta-setting: choose it before the first_run choice (and
+        # everything after) so the whole wizard renders in the user's language
+        # instead of an auto-detected guess.
+        setup_language(config)
+        language_done = True
         flow = ui.select(t("menu.first_run"), [
             ("quickstart", t("menu.first_run_quick"), ""),
             ("full", t("menu.first_run_full"), ""),
         ], default="quickstart")
 
     if flow == "quickstart":
-        setup_language(config)
+        if not language_done:
+            setup_language(config)
         setup_model(config)
         setup_permissions(config)
         path = save_config(config, config_target)
@@ -1264,6 +1271,8 @@ def run_setup_wizard(
         return
 
     for _key, func in SETUP_SECTIONS:
+        if _key == "language" and language_done:
+            continue  # already chosen before the first_run menu
         func(config)
 
     path = save_config(config, config_target)
