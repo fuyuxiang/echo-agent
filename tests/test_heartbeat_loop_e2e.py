@@ -30,7 +30,14 @@ async def test_heartbeat_fires_during_long_work_and_sealed_after():
     # thinking would never bump the seq and would correctly emit zero beats.
     activity.enter_tool("web_search")
     await hb.start(activity)
-    await asyncio.sleep(0.05)            # simulate long work
+    # Wait for the first beat by polling rather than a fixed sleep window: on a
+    # loaded CI runner the freshly-scheduled _run task may not reach its first
+    # iteration within a hardcoded 50ms, which previously made this flaky. The
+    # 2s ceiling only bounds a genuine failure; the happy path resolves in ~1ms.
+    for _ in range(200):
+        if bus.events:
+            break
+        await asyncio.sleep(0.01)
     fired = len(bus.events)
     await hb.stop()                      # final answer -> seal
     await asyncio.sleep(0.05)

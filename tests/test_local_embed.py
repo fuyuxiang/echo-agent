@@ -92,17 +92,26 @@ async def test_embed_returns_none_after_close():
 @pytest.mark.asyncio
 async def test_embed_degrades_on_load_hang():
     """下载挂起（不抛异常、只是卡住）也应在超时后降级为 None，而不是永久挂起。"""
-    import time
+    import threading
+
+    # The hang is gated on an Event we release in `finally`, not a fixed sleep.
+    # This lets the load thread block long enough for wait_for to time out, then
+    # exit immediately — so the non-daemon pool thread is never left sleeping to
+    # be joined at interpreter exit (which previously added ~10s of wall time).
+    release = threading.Event()
 
     def _hang(*_a, **_k):
-        time.sleep(10)  # 模拟卡死的下载
+        release.wait(timeout=5)  # unblocked by finally; bounded so it can't wedge CI
         return MagicMock()
 
     fake_mod = MagicMock(TextEmbedding=MagicMock(side_effect=_hang))
-    with patch.dict(sys.modules, {"fastembed": fake_mod}):
-        # 极短超时，确认 wait_for 生效并标记失败
-        e = LocalEmbedder("BAAI/bge-small-zh-v1.5", load_timeout_seconds=0.1)
-        assert await e.embed("text") is None
-        assert e._load_failed is True
-        # 失败后不再触发新的加载
-        assert await e.embed("again") is None
+    try:
+        with patch.dict(sys.modules, {"fastembed": fake_mod}):
+            # 极短超时，确认 wait_for 生效并标记失败
+            e = LocalEmbedder("BAAI/bge-small-zh-v1.5", load_timeout_seconds=0.05)
+            assert await e.embed("text") is None
+            assert e._load_failed is True
+            # 失败后不再触发新的加载
+            assert await e.embed("again") is None
+    finally:
+        release.set()  # let the stuck load thread finish so it isn't joined at exit

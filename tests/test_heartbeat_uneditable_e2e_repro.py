@@ -56,7 +56,13 @@ async def test_uneditable_channel_receives_heartbeat_through_bus():
     activity.enter_tool("web_search")
 
     await hb.start(activity)
-    await asyncio.sleep(0.15)
+    # Poll for the beat to propagate bus -> manager -> channel rather than
+    # trusting a fixed 150ms window, which can miss on a loaded CI runner. The
+    # 2s ceiling only bounds a real failure; normally this resolves in ~1ms.
+    for _ in range(200):
+        if ch.sent:
+            break
+        await asyncio.sleep(0.01)
     await hb.stop()
 
     assert len(ch.sent) >= 1, f"no heartbeat reached weixin; sent={ch.sent} typings={ch.typings}"
