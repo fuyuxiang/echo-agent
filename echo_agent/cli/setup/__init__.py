@@ -362,8 +362,8 @@ def setup_agent(config: dict) -> None:
     sp = _ensure_dict(gateway, "sessionPolicy")
     reset_keys = ["both", "idle", "daily", "none"]
     reset_labels = [t(f"agent.session_reset_{k}") for k in reset_keys]
-    current_reset = sp.get("mode", "idle")
-    default_reset = reset_keys.index(current_reset) if current_reset in reset_keys else 1
+    current_reset = sp.get("mode", "both")
+    default_reset = reset_keys.index(current_reset) if current_reset in reset_keys else reset_keys.index("both")
     reset_idx = _choice(t("agent.session_reset"), reset_labels, default=default_reset)
     sp["mode"] = reset_keys[reset_idx]
     if reset_keys[reset_idx] in ("idle", "both"):
