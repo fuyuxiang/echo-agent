@@ -100,6 +100,7 @@ MESSAGES = {
             "mainstream": "主流厂商", "domestic": "国内厂商", "aggregator": "聚合路由",
             "local": "本地 / 自定义", "cloud": "云平台",
         },
+        "custom_label": "自定义（OpenAI 兼容）",
     },
     "permissions": {
         "header": "权限与审批",

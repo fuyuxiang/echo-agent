@@ -77,6 +77,8 @@ CATALOG: list[ProviderCatalogEntry] = [
     ),
     ProviderCatalogEntry(
         id="minimax", label="MiniMax", group="domestic", dialect="openai",
+        # minimaxi.com (extra "i") is the mainland-China endpoint; the
+        # international one is api.minimax.io. Keys are not interchangeable.
         api_base="https://api.minimaxi.com/v1", api_key_env_vars=("MINIMAX_API_KEY",),
         fallback_models=["MiniMax-Text-01", "abab6.5s-chat"],
         models_endpoint="https://api.minimaxi.com/v1/models",
@@ -114,9 +116,10 @@ CATALOG: list[ProviderCatalogEntry] = [
     ),
     # custom lives in the "local" group: like LM Studio / vLLM it's a
     # user-supplied OpenAI-compatible endpoint, so it needs no separator of
-    # its own.
+    # its own. Its display name is localized via t("provider.custom_label");
+    # this label is only the fallback for non-i18n contexts.
     ProviderCatalogEntry(
-        id="custom", label="自定义（OpenAI 兼容）", group="local", dialect="openai",
+        id="custom", label="Custom (OpenAI-compatible)", group="local", dialect="openai",
         needs_api_base=True, fallback_models=[],
     ),
 ]

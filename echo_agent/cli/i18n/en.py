@@ -100,6 +100,7 @@ MESSAGES = {
             "mainstream": "Mainstream", "domestic": "China", "aggregator": "Aggregators",
             "local": "Local / Custom", "cloud": "Cloud",
         },
+        "custom_label": "Custom (OpenAI-compatible)",
     },
     "permissions": {
         "header": "Permissions & Approval",

@@ -133,7 +133,10 @@ def setup_model(config: dict) -> None:
 
     groups = [
         (t(f"provider.group.{gid}"),
-         [(e.id, t_provider_label(e), _models_hint(e)) for e in entries])
+         # No per-entry hint: provider selection is only about picking a vendor;
+         # the very next step lists real models (fetched live), and hints blow
+         # out the line width (truncating long entries like Bedrock).
+         [(e.id, t_provider_label(e), "") for e in entries])
         for gid, entries in grouped_catalog()
     ]
     existing = ((config.get("models", {}) or {}).get("providers") or [{}])[0]
@@ -147,7 +150,7 @@ def setup_model(config: dict) -> None:
 
     api_key = ""
     if entry.dialect != "bedrock":
-        api_key = ui.password(f"  {entry.label} {t('model.api_key')}")
+        api_key = ui.password(f"  {t_provider_label(entry)} {t('model.api_key')}")
         if not api_key and existing.get("apiKey") and _detect_catalog_id(existing) == entry_id:
             api_key = existing.get("apiKey", "")
 
@@ -188,18 +191,15 @@ def setup_model(config: dict) -> None:
     models_block = _ensure_dict(config, "models")
     models_block["defaultModel"] = default_model
     models_block["providers"] = [provider_entry]
-    ui.note(t("model.saved", provider=entry.label, model=default_model), "success")
+    ui.note(t("model.saved", provider=t_provider_label(entry), model=default_model), "success")
 
 
 def t_provider_label(entry) -> str:
-    return entry.label  # labels are already localized brand names
-
-
-def _models_hint(entry) -> str:
-    # Provider selection is only about picking a vendor; the very next step
-    # lists real models (fetched live). Model examples here are redundant noise
-    # and blow out the line width (truncating long entries like Bedrock).
-    return ""
+    # Brand names are locale-neutral; only the generic "custom" entry needs
+    # translating, so it goes through the i18n bundle.
+    if entry.id == "custom":
+        return t("provider.custom_label")
+    return entry.label
 
 
 def _detect_catalog_id(existing: dict) -> str:
@@ -228,7 +228,7 @@ def _handle_verify(result: "VerifyResult", entry, api_key, api_base, model):
     if action == "skip":
         return model, api_key
     if action == "retry":
-        new_key = ui.password(f"  {entry.label} {t('model.api_key')}")
+        new_key = ui.password(f"  {t_provider_label(entry)} {t('model.api_key')}")
         with ui.spinner(t("model.verifying")):
             res2 = verify_model(entry.dialect, new_key, api_base, model)
         return _handle_verify(res2, entry, new_key, api_base, model)
