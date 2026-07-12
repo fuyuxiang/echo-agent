@@ -5,7 +5,7 @@ from echo_agent.cli.i18n import set_locale, t
 
 _KEYS = [
     "provider.group.mainstream", "provider.group.domestic", "provider.group.aggregator",
-    "provider.group.local", "provider.group.cloud", "provider.group.custom",
+    "provider.group.local", "provider.group.cloud",
     "model.fetching", "model.verifying", "model.verify_ok", "model.verify_unreachable",
     "model.verify_error", "model.verify_action", "model.verify_retry_key",
     "model.verify_change_model", "model.verify_skip",

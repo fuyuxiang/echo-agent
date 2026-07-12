@@ -98,7 +98,7 @@ MESSAGES = {
     "provider": {
         "group": {
             "mainstream": "主流厂商", "domestic": "国内厂商", "aggregator": "聚合路由",
-            "local": "本地部署", "cloud": "云平台", "custom": "其他",
+            "local": "本地 / 自定义", "cloud": "云平台",
         },
     },
     "permissions": {

@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 # group ids -> i18n label keys are resolved by the caller via t("provider.group.<id>")
-GROUP_ORDER = ["mainstream", "domestic", "aggregator", "local", "cloud", "custom"]
+GROUP_ORDER = ["mainstream", "domestic", "aggregator", "local", "cloud"]
 
 
 @dataclass(frozen=True)
@@ -112,9 +112,11 @@ CATALOG: list[ProviderCatalogEntry] = [
         fallback_models=["anthropic.claude-sonnet-4-20250514-v1:0",
                          "anthropic.claude-haiku-4-5-20251001-v1:0"],
     ),
-    # ── custom ──
+    # custom lives in the "local" group: like LM Studio / vLLM it's a
+    # user-supplied OpenAI-compatible endpoint, so it needs no separator of
+    # its own.
     ProviderCatalogEntry(
-        id="custom", label="自定义（OpenAI 兼容）", group="custom", dialect="openai",
+        id="custom", label="自定义（OpenAI 兼容）", group="local", dialect="openai",
         needs_api_base=True, fallback_models=[],
     ),
 ]

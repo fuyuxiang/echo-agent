@@ -29,6 +29,27 @@ except Exception:  # pragma: no cover - import guard
     _HAS_Q = False
 
 
+# Shared visual identity for every interactive prompt. Centralized here so the
+# whole setup wizard looks consistent — tweak once, all menus follow.
+_POINTER = "❯"
+_QMARK = "◆"
+
+if _HAS_Q:
+    _STYLE = _q.Style([
+        ("qmark", "fg:#00afaf bold"),          # leading marker (cyan)
+        ("question", "bold"),                  # the prompt text
+        ("pointer", "fg:#00afaf bold"),        # arrow on the focused row
+        ("highlighted", "fg:#00afaf bold"),    # focused choice label
+        ("selected", "fg:#00af5f"),            # chosen value (green)
+        ("separator", "fg:#6c6c6c bold"),      # group headers (dim, weighty)
+        ("answer", "fg:#00afaf bold"),         # echoed answer after submit
+        ("instruction", "fg:#6c6c6c"),         # (Use arrow keys) hint
+        ("disabled", "fg:#6c6c6c italic"),
+    ])
+else:  # pragma: no cover - import guard
+    _STYLE = None
+
+
 def use_rich() -> bool:
     return _HAS_Q and is_interactive()
 
@@ -49,7 +70,8 @@ def select(message: str, choices: list[Choice], default: str = "") -> str:
         opts = [_q.Choice(title=lbl if not hint else f"{lbl}  ({hint})", value=v)
                 for v, lbl, hint in choices]
         default_val = default or choices[0][0]
-        ans = _q.select(message, choices=opts, default=default_val).ask()
+        ans = _q.select(message, choices=opts, default=default_val,
+                        style=_STYLE, pointer=_POINTER, qmark=_QMARK).ask()
         if ans is None:
             sys.exit(0)
         return ans
@@ -65,7 +87,8 @@ def select_grouped(message: str, groups: list[tuple[str, list[Choice]]], default
             for v, lbl, hint in gchoices:
                 opts.append(_q.Choice(title=lbl if not hint else f"{lbl}  ({hint})", value=v))
         default_val = default or (groups[0][1][0][0] if groups and groups[0][1] else "")
-        ans = _q.select(message, choices=opts, default=default_val).ask()
+        ans = _q.select(message, choices=opts, default=default_val,
+                        style=_STYLE, pointer=_POINTER, qmark=_QMARK).ask()
         if ans is None:
             sys.exit(0)
         return ans
@@ -84,7 +107,8 @@ def multiselect(message: str, choices: list[Choice], preselected: list[str] | No
     if use_rich():
         opts = [_q.Choice(title=lbl if not hint else f"{lbl}  ({hint})", value=v, checked=v in pre)
                 for v, lbl, hint in choices]
-        ans = _q.checkbox(message, choices=opts).ask()
+        ans = _q.checkbox(message, choices=opts, style=_STYLE,
+                          pointer=_POINTER, qmark=_QMARK).ask()
         if ans is None:
             sys.exit(0)
         return list(ans)
@@ -95,7 +119,7 @@ def multiselect(message: str, choices: list[Choice], preselected: list[str] | No
 
 def text(message: str, default: str = "") -> str:
     if use_rich():
-        ans = _q.text(message, default=default).ask()
+        ans = _q.text(message, default=default, style=_STYLE, qmark=_QMARK).ask()
         if ans is None:
             sys.exit(0)
         return ans.strip() or default
@@ -104,7 +128,7 @@ def text(message: str, default: str = "") -> str:
 
 def password(message: str) -> str:
     if use_rich():
-        ans = _q.password(message).ask()
+        ans = _q.password(message, style=_STYLE, qmark=_QMARK).ask()
         if ans is None:
             sys.exit(0)
         return ans.strip()
@@ -113,7 +137,7 @@ def password(message: str) -> str:
 
 def confirm(message: str, default: bool = True) -> bool:
     if use_rich():
-        ans = _q.confirm(message, default=default).ask()
+        ans = _q.confirm(message, default=default, style=_STYLE, qmark=_QMARK).ask()
         if ans is None:
             sys.exit(0)
         return bool(ans)
