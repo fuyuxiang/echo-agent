@@ -98,7 +98,7 @@ MESSAGES = {
     "provider": {
         "group": {
             "mainstream": "Mainstream", "domestic": "China", "aggregator": "Aggregators",
-            "local": "Local", "cloud": "Cloud", "custom": "Other",
+            "local": "Local / Custom", "cloud": "Cloud",
         },
     },
     "permissions": {
