@@ -42,4 +42,6 @@ def test_summary_lists_enable_commands_for_missing(capsys):
            "gateway": {"enabled": False}}
     setup_mod._print_summary(cfg, __import__("pathlib").Path("/tmp/x.yaml"))
     out = capsys.readouterr().out
-    assert "echo-agent run" in out
+    assert "echo-agent setup" in out
+    assert "echo-agent status" in out
+    assert "start the agent" in out

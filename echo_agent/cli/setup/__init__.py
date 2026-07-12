@@ -1110,7 +1110,9 @@ def _print_summary(config: dict, config_path: Path) -> None:
     print_info(f"  {t('summary.config_file')}: {config_path}")
     print()
     print(color(f"  {t('summary.next_steps')}", Colors.CYAN))
-    print(color("  echo-agent run", Colors.GREEN))
+    print(color(t("summary.next_run"), Colors.GREEN))
+    print(color(t("summary.next_setup"), Colors.GREEN))
+    print(color(t("summary.next_status"), Colors.GREEN))
     print()
 
 
