@@ -34,22 +34,65 @@ def test_decrypt_rejects_wrong_corp_id():
         decrypt_message(aes_key, "wrongcorp", cipher)
 
 
-def test_decrypt_malformed_short_cipher_raises_value_error():
-    """A too-short plaintext must surface as ValueError, not IndexError/struct.error.
+def _encrypt_raw(aes_key_b64: str, raw: bytes) -> str:
+    """AES-CBC encrypt an arbitrary already-padded plaintext block.
 
-    decrypt_message promises ValueError on format errors; the caller in
-    WeComChannel._webhook only catches (ET.ParseError, ValueError), so any
-    other exception type would escape as a 500.
+    Unlike _encrypt (which builds a well-formed header+payload+PKCS7), this lets
+    a test drive decrypt_message's post-decrypt validation branches directly by
+    controlling the exact stripped-plaintext length.
+    """
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    key = base64.b64decode(aes_key_b64 + "=")
+    enc = Cipher(algorithms.AES(key), modes.CBC(key[:16])).encryptor()
+    return base64.b64encode(enc.update(raw) + enc.finalize()).decode()
+
+
+def test_decrypt_short_header_raises_value_error():
+    """Plaintext that survives PKCS7 stripping but is <20 bytes must raise
+    ValueError at the header-length check (wecom_crypto.py:42), not IndexError/
+    struct.error. The caller only catches ValueError, so a leak would 500.
+
+    Construct a 32-byte block padded with pad=13 so 32-13=19 bytes remain — a
+    non-empty plaintext that is still one byte short of the 20-byte header. This
+    genuinely reaches the header check, unlike an all-0x10 block which strips to
+    0 bytes and trips the earlier 'empty plaintext' guard instead.
     """
     aes_key = base64.b64encode(os.urandom(32)).decode().rstrip("=")
-    key = base64.b64decode(aes_key + "=")
-    # Encrypt a sub-20-byte plaintext block (valid PKCS7 padding, but no header).
-    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-    raw = b"\x10" * 16  # 16 bytes -> after stripping pad(16) leaves 0 bytes
-    enc = Cipher(algorithms.AES(key), modes.CBC(key[:16])).encryptor()
-    cipher = base64.b64encode(enc.update(raw) + enc.finalize()).decode()
-    with pytest.raises(ValueError):
+    pad = 13
+    raw = os.urandom(32 - pad) + bytes([pad]) * pad  # strips to 19 bytes
+    cipher = _encrypt_raw(aes_key, raw)
+    with pytest.raises(ValueError, match="too short"):
         decrypt_message(aes_key, "corp", cipher)
+
+
+def test_decrypt_empty_plaintext_raises_value_error():
+    """An empty ciphertext decrypts to zero bytes and raises ValueError at the
+    empty-plaintext guard (wecom_crypto.py:35), before any padding read. This
+    guard runs on the pre-strip block, so it is reachable only via empty input,
+    not via padding that happens to consume a non-empty block."""
+    aes_key = base64.b64encode(os.urandom(32)).decode().rstrip("=")
+    with pytest.raises(ValueError, match="empty plaintext"):
+        decrypt_message(aes_key, "corp", "")
+
+
+def test_decrypt_invalid_padding_raises_value_error():
+    """A trailing pad byte outside 1..32 must raise ValueError at the padding
+    check (wecom_crypto.py:38), not slice into the plaintext incorrectly."""
+    aes_key = base64.b64encode(os.urandom(32)).decode().rstrip("=")
+    raw = os.urandom(31) + bytes([0])  # pad byte 0 is invalid (< 1)
+    cipher = _encrypt_raw(aes_key, raw)
+    with pytest.raises(ValueError, match="invalid padding"):
+        decrypt_message(aes_key, "corp", cipher)
+
+
+def test_decrypt_rejects_bad_key_length():
+    """An encoding_aes_key that does not decode to 32 bytes raises ValueError at
+    the key-length guard (wecom_crypto.py:28), before any cipher work. 24 raw
+    bytes decode cleanly under the source's ``key + "="`` convention yet are the
+    wrong length for AES-256."""
+    short_key = base64.b64encode(os.urandom(24)).decode().rstrip("=")  # -> 24 bytes
+    with pytest.raises(ValueError, match="32 bytes"):
+        decrypt_message(short_key, "corp", base64.b64encode(os.urandom(32)).decode())
 
 
 def test_verify_signature_sorts_four_tuple():

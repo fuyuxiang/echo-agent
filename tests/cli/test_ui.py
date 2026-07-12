@@ -63,7 +63,10 @@ def test_password_rich_strips_surrounding_whitespace():
          patch(f"{_T}.is_interactive", return_value=True):
         assert ui.use_rich() is True
         assert ui.password("key?") == "sk-abc123"
-    fake_q.password.assert_called_once_with("key?")
+    # questionary is called with the shared style/qmark; only assert the prompt
+    # message is forwarded positionally, not the exact styling kwargs.
+    fake_q.password.assert_called_once()
+    assert fake_q.password.call_args.args == ("key?",)
 
 
 def test_note_does_not_crash():

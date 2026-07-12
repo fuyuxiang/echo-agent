@@ -416,6 +416,9 @@ class AgentLoop:
         # Kept so a finished CRON turn can write its real outcome back to the job
         # (see _on_inbound); the scheduler otherwise only ever sees "queued".
         self._scheduler = scheduler
+        # Retained for the dashboard task API (gateway/api/tasks.py); previously
+        # only forwarded into tool discovery and never held on the instance.
+        self._task_manager = task_manager
         self._register_tools(scheduler=scheduler, task_manager=task_manager, workflow_engine=workflow_engine)
         self._setup_delegation()
 
@@ -670,6 +673,37 @@ class AgentLoop:
     @property
     def is_running(self) -> bool:
         return self._running
+
+    # ── Public accessors for the dashboard/gateway API ───────────────────────
+    # These back the read paths in gateway/api/{analytics,cron_api,tasks,logs}.
+    # The underlying state is held privately; exposing it via properties keeps a
+    # stable public contract without leaking mutation access to internals.
+
+    @property
+    def cost_tracker(self) -> Any:
+        """CostTracker backing the analytics API (daily/skill/channel usage)."""
+        return self._cost_tracker
+
+    @property
+    def scheduler(self) -> Any:
+        """Cron scheduler backing the cron API; None when scheduling is off."""
+        return self._scheduler
+
+    @property
+    def task_manager(self) -> Any:
+        """TaskManager backing the tasks API; None when no manager was wired."""
+        return self._task_manager
+
+    @property
+    def log_buffer(self) -> Any:
+        """Recent structured log records backing the logs API.
+
+        Sourced from the process-global buffer, so it reflects all logging
+        regardless of which subsystem emitted it.
+        """
+        from echo_agent.observability.log_buffer import get_log_buffer
+
+        return get_log_buffer()
 
     def _resolved_vector_dimensions(self) -> int:
         """Dimension for knowledge attach: explicit config wins, then the live

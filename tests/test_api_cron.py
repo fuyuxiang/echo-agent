@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 from aiohttp import web
 from aiohttp.test_utils import TestServer, TestClient
 
+from echo_agent.agent.loop import AgentLoop
 from echo_agent.gateway.api.cron_api import CronAPI
 
 
@@ -11,7 +12,9 @@ from echo_agent.gateway.api.cron_api import CronAPI
 def mock_server():
     server = MagicMock()
     server._require_api_token = MagicMock(return_value=None)
-    server._agent_loop = MagicMock()
+    # spec_set=AgentLoop so assigning an attribute the loop does not expose
+    # raises AttributeError here — catching contract drift the API would hit.
+    server._agent_loop = MagicMock(spec_set=AgentLoop)
     server._agent_loop.scheduler = MagicMock()
     return server
 

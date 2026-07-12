@@ -22,8 +22,13 @@ from loguru import logger
 
 
 def configure_logging(level: str) -> None:
+    from echo_agent.observability.log_buffer import install_log_buffer
+
     logger.remove()
     logger.add(sys.stderr, level=level, format="<green>{time:HH:mm:ss}</green> | <level>{level:<7}</level> | {message}")
+    # Buffer records in memory so the dashboard's /api/logs endpoint has history
+    # to serve; the stderr sink alone keeps nothing queryable.
+    install_log_buffer(level=level)
 
 
 @dataclass
