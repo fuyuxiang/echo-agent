@@ -196,7 +196,10 @@ def t_provider_label(entry) -> str:
 
 
 def _models_hint(entry) -> str:
-    return ", ".join(entry.fallback_models[:2])
+    # Provider selection is only about picking a vendor; the very next step
+    # lists real models (fetched live). Model examples here are redundant noise
+    # and blow out the line width (truncating long entries like Bedrock).
+    return ""
 
 
 def _detect_catalog_id(existing: dict) -> str:
