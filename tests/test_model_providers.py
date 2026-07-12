@@ -294,7 +294,9 @@ class TestOpenAIReasoningPromotion:
         provider = self._provider()
         resp = provider._parse_response(_fake_openai_resp(content="", reasoning="real answer"))
         assert resp.content == "real answer"
-        assert resp.reasoning_content == "real answer"
+        # Promotion moves the text: the reasoning slot must be cleared so the
+        # same text is not emitted twice (thinking event + answer body).
+        assert resp.reasoning_content is None
 
     def test_no_promote_when_content_present(self):
         provider = self._provider()
@@ -311,6 +313,7 @@ class TestOpenAIReasoningPromotion:
             _fake_openai_resp(content="", reasoning="partial", finish_reason="length")
         )
         assert resp.content == "partial"
+        assert resp.reasoning_content is None
 
     def test_no_promote_when_finish_error(self):
         provider = self._provider()
@@ -378,7 +381,9 @@ class TestOpenAIStreamReasoning:
         provider._client.chat.completions.create = AsyncMock(return_value=_FakeStream(chunks))
         resp = await provider.chat_stream(messages=[{"role": "user", "content": "hi"}])
         assert resp.content == "real answer"
-        assert resp.reasoning_content == "real answer"
+        # Promotion moves the text — reasoning is cleared to prevent the same
+        # text being shown twice (thinking event + answer body).
+        assert resp.reasoning_content is None
 
     @pytest.mark.asyncio
     async def test_stream_keeps_content_when_present(self):

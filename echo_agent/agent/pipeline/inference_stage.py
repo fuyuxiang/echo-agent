@@ -56,6 +56,10 @@ class _LoopResult:
     # True when the daily cost budget halted the loop mid-task. The task is
     # NOT complete, so run() must not mark pending plan steps done.
     budget_halted: bool = False
+    # True when the final iteration had to force a conclusion (tools stripped
+    # at the iteration ceiling). The turn produced an answer, but the TASK is
+    # not done — run() must keep the plan resumable, same as budget_halted.
+    forced_convergence: bool = False
     should_review_skills: bool = False
     should_review_memory: bool = False
     skill_iters: int = 0
@@ -323,6 +327,9 @@ class InferenceStage:
                     total_tool_calls=loop_result.total_tool_calls + second.total_tool_calls,
                     loop_exhausted=second.loop_exhausted,
                     budget_halted=second.budget_halted,
+                    # The rerun supersedes the first pass: if IT converged
+                    # normally the turn is fine; only its own forcing counts.
+                    forced_convergence=second.forced_convergence,
                     should_review_skills=loop_result.should_review_skills or second.should_review_skills,
                     should_review_memory=loop_result.should_review_memory or second.should_review_memory,
                     skill_iters=second.skill_iters,
@@ -358,16 +365,21 @@ class InferenceStage:
         ):
             try:
                 plan = ctx.execution_plan
-                if (
-                    loop_result.response_text
-                    and not loop_result.loop_exhausted
-                    and not loop_result.budget_halted
-                ):
+                # forced_convergence means the loop hit its iteration ceiling
+                # and squeezed out a conclusion — the ANSWER exists but the
+                # TASK is unfinished. Treat it like exhaustion: leave pending
+                # steps pending and store the run as resumable.
+                task_incomplete = (
+                    loop_result.loop_exhausted
+                    or loop_result.budget_halted
+                    or loop_result.forced_convergence
+                )
+                if loop_result.response_text and not task_incomplete:
                     for step in plan.steps:
                         if step.status == StepStatus.PENDING:
                             plan.mark_step_complete(step.index, "")
                 status = "complete" if plan.is_complete else "running"
-                if loop_result.loop_exhausted or loop_result.budget_halted:
+                if task_incomplete:
                     status = "exhausted"
                 await self._plan_run_store.update(ctx.plan_run_id, plan, status=status)
             except Exception as e:
@@ -400,9 +412,13 @@ class InferenceStage:
         budget_halted = False
         # Degraded-convergence controls: force_no_tools strips tools from the
         # NEXT call (set by the truncation retry below); truncation_retried
-        # bounds that retry to once per pass.
+        # bounds that retry to once per pass. forcing_final marks the last
+        # iteration's forced-conclusion call; forced_convergence records that
+        # the pass ended that way so run() keeps the plan resumable.
         force_no_tools = False
         truncation_retried = False
+        forcing_final = False
+        forced_convergence = False
 
         # Read nudge counters from session (do NOT write back — run() owns that)
         _skill_iters = session.metadata.get("_nudge_tool_iters_skill", 0)
@@ -435,9 +451,14 @@ class InferenceStage:
                 # Final-answer forcing: the last iteration must produce a
                 # conclusion instead of yet another tool round. Without this,
                 # exhausting the loop discards the entire turn's work and the
-                # user gets a generic failure. Strip tools, tell the model to
-                # wrap up, and flag the turn as not fully converged.
+                # user gets a generic failure. Strip tools and tell the model
+                # to wrap up. The LOOP_EXHAUSTED notice is appended only when
+                # this forced call actually delivers content — attaching it
+                # here would pair "以上是目前的进展" with a turn that may end
+                # in a budget halt or provider error and show no progress.
                 active_tool_defs = []
+                forcing_final = True
+                forced_convergence = True
                 messages.append({
                     "role": "user",
                     "content": (
@@ -446,7 +467,6 @@ class InferenceStage:
                         "如果任务尚未完成,请说明当前进展和剩余缺口。"
                     ),
                 })
-                counters.degraded_notices.append(notice_for(REASON_LOOP_EXHAUSTED))
 
             llm_span = self._tracer.start_span(trace_id, f"llm_{iteration}", "llm_call", "llm_call")
 
@@ -551,12 +571,17 @@ class InferenceStage:
                     # instead of discarding it.
                     response_text = response.content
                     counters.degraded_notices.append(notice_for(REASON_OUTPUT_TRUNCATED))
+                    if forcing_final:
+                        counters.degraded_notices.append(notice_for(REASON_LOOP_EXHAUSTED))
                     loop_exhausted = False
                     break
-                if not truncation_retried:
+                if not truncation_retried and iteration + 1 < self._max_iterations:
                     # Nothing recoverable — retry once without tools, asking
                     # for a bounded plain-text conclusion. One extra call
-                    # salvages the whole turn's collected context.
+                    # salvages the whole turn's collected context. Requires a
+                    # remaining iteration: on the last one, continue would fall
+                    # off the range and the injected instruction would never
+                    # be answered, so give up below instead.
                     truncation_retried = True
                     force_no_tools = True
                     messages.append({
@@ -567,7 +592,8 @@ class InferenceStage:
                         ),
                     })
                     continue
-                # Retry also truncated empty — give up with the truncation notice.
+                # Retry also truncated empty (or no iterations left to retry
+                # in) — give up with the truncation notice.
                 counters.degraded_notices.append(notice_for(REASON_OUTPUT_TRUNCATED))
                 loop_exhausted = False
                 break
@@ -576,7 +602,15 @@ class InferenceStage:
                 response_text = response.content
 
             if not response.has_tool_calls:
-                if ctx.execution_plan and not ctx.execution_plan.is_complete:
+                if forcing_final:
+                    # The forced final call delivered its conclusion — now the
+                    # "以上是目前的进展" notice is truthful. Gate on actual
+                    # text so an empty forced reply doesn't claim progress
+                    # that was never shown. The plan stays NOT complete: the
+                    # model was cut off, not finished.
+                    if response_text:
+                        counters.degraded_notices.append(notice_for(REASON_LOOP_EXHAUSTED))
+                elif ctx.execution_plan and not ctx.execution_plan.is_complete:
                     ctx.execution_plan.is_complete = True
                 if ctx.activity is not None:
                     ctx.activity.set_generating()
@@ -618,6 +652,7 @@ class InferenceStage:
             total_tool_calls=counters.total_tool_calls,
             loop_exhausted=loop_exhausted,
             budget_halted=budget_halted,
+            forced_convergence=forced_convergence,
             should_review_skills=counters.should_review_skills,
             should_review_memory=counters.should_review_memory,
             skill_iters=counters.skill_iters,

@@ -100,7 +100,7 @@ class BedrockProvider(LLMProvider):
         params: dict[str, Any] = {
             "model": target,
             "messages": converted,
-            "max_tokens": kwargs.get("max_tokens", 4096),
+            "max_tokens": kwargs.get("max_tokens", self.generation.max_tokens),
         }
         if system_blocks:
             params["system"] = system_blocks
@@ -138,7 +138,7 @@ class BedrockProvider(LLMProvider):
         if tools:
             params["toolConfig"] = self._to_converse_tools(tools)
 
-        config: dict[str, Any] = {"maxTokens": kwargs.get("max_tokens", 4096)}
+        config: dict[str, Any] = {"maxTokens": kwargs.get("max_tokens", self.generation.max_tokens)}
         temp = kwargs.get("temperature", self.generation.temperature)
         if temp is not None:
             config["temperature"] = temp
@@ -210,7 +210,7 @@ class BedrockProvider(LLMProvider):
         params: dict[str, Any] = {
             "model": model,
             "messages": converted,
-            "max_tokens": kwargs.get("max_tokens", 4096),
+            "max_tokens": kwargs.get("max_tokens", self.generation.max_tokens),
         }
         if system_blocks:
             params["system"] = system_blocks
@@ -256,7 +256,7 @@ class BedrockProvider(LLMProvider):
         if tools:
             params["toolConfig"] = self._to_converse_tools(tools)
 
-        config: dict[str, Any] = {"maxTokens": kwargs.get("max_tokens", 4096)}
+        config: dict[str, Any] = {"maxTokens": kwargs.get("max_tokens", self.generation.max_tokens)}
         temp = kwargs.get("temperature", self.generation.temperature)
         if temp is not None:
             config["temperature"] = temp

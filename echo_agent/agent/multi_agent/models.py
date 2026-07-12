@@ -18,7 +18,7 @@ class WorkerProfile:
     model: str = ""
     provider: str = ""
     max_iterations: int = 12
-    max_tokens: int = 4096
+    max_tokens: int = 8192
     temperature: float = 0.4
 
 

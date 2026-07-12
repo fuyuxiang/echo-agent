@@ -579,6 +579,28 @@ class TestInferenceStageLengthTruncation:
         assert provider.chat_stream_with_retry.call_count == 2
         assert notice_for(REASON_OUTPUT_TRUNCATED) in result.degraded_notices
 
+    @pytest.mark.asyncio
+    async def test_empty_truncation_on_last_iteration_skips_retry(self):
+        """最后一轮空截断没有剩余迭代可重试：立即放弃并附截断提示，
+        不留下永远得不到回应的孤立 [系统] 重试指令。"""
+        from echo_agent.agent.degraded_notice import notice_for, REASON_OUTPUT_TRUNCATED
+        provider = AsyncMock()
+        provider.chat_stream_with_retry = AsyncMock(
+            return_value=LLMResponse(content="", finish_reason="length")
+        )
+        stage, _bus = _make_stage(provider=provider, max_iterations=1)
+        ctx = _make_ctx()
+
+        result = await stage.run(ctx)
+
+        # No retry attempted — the range is exhausted, so exactly 1 call.
+        assert provider.chat_stream_with_retry.call_count == 1
+        assert notice_for(REASON_OUTPUT_TRUNCATED) in result.degraded_notices
+        # The retry instruction must NOT be injected when it can never be answered.
+        assert not any(
+            "超出输出长度上限" in str(m.get("content", "")) for m in ctx.messages
+        )
+
 
 class TestInferenceStageFinalAnswerForcing:
     """最后一轮强制收敛：去掉 tools 逼模型给结论，而不是白跑整轮。"""
@@ -618,6 +640,115 @@ class TestInferenceStageFinalAnswerForcing:
             m.get("role") == "user" and "工具调用上限" in str(m.get("content", ""))
             for m in ctx.messages
         )
+
+    @pytest.mark.asyncio
+    async def test_forced_convergence_keeps_plan_resumable(self):
+        """强制收敛产出的是"答案"而非"任务完成"：plan 不得被标 complete，
+        plan_run 必须存成 exhausted，pending 步骤保持 pending 以便续跑。"""
+        from echo_agent.agent.planning.models import Plan, PlanStep, StepStatus, StrategyType
+
+        tc = ToolCallRequest(id="call_1", name="tool_a", arguments={"x": "1"})
+        provider = AsyncMock()
+
+        def _respond(**kwargs):
+            if kwargs.get("tools"):
+                return LLMResponse(content="", tool_calls=[tc], finish_reason="tool_calls")
+            return LLMResponse(content="目前进展:已完成 A,缺 B。", finish_reason="stop")
+
+        provider.chat_stream_with_retry = AsyncMock(side_effect=lambda **kw: _respond(**kw))
+
+        tools_reg = MagicMock()
+        tools_reg.execute = AsyncMock(return_value=MagicMock(success=True, text="ok", error=None, metadata={}))
+        tools_reg.has = MagicMock(return_value=False)
+
+        stage, _bus = _make_stage(provider=provider, tools=tools_reg, max_iterations=3)
+
+        captured = {}
+
+        async def _capture_update(run_id, plan, status=None):
+            captured["status"] = status
+            captured["plan"] = plan
+
+        plan_run_store = MagicMock()
+        plan_run_store.update = AsyncMock(side_effect=_capture_update)
+        stage._plan_run_store = plan_run_store
+
+        ctx = _make_ctx(tool_defs=[{"function": {"name": "tool_a"}}])
+        ctx.execution_plan = Plan(
+            strategy=StrategyType.PLAN_EXECUTE,
+            steps=[PlanStep(index=0, description="a"), PlanStep(index=1, description="b")],
+            goal="multi",
+        )
+        ctx.plan_run_id = "run_001"
+
+        result = await stage.run(ctx)
+
+        # The answer was delivered, but the task is unfinished:
+        assert result.response_text == "目前进展:已完成 A,缺 B。"
+        assert not ctx.execution_plan.is_complete
+        assert captured["status"] == "exhausted"
+        assert all(s.status == StepStatus.PENDING for s in captured["plan"].steps)
+
+    @pytest.mark.asyncio
+    async def test_forced_final_empty_reply_no_progress_notice(self):
+        """强制收敛调用没产出正文时，不能附加"以上是目前的进展"——
+        用户根本没看到任何进展，该提示与事实不符。"""
+        from echo_agent.agent.degraded_notice import notice_for, REASON_LOOP_EXHAUSTED
+
+        tc = ToolCallRequest(id="call_1", name="tool_a", arguments={"x": "1"})
+        provider = AsyncMock()
+
+        def _respond(**kwargs):
+            if kwargs.get("tools"):
+                return LLMResponse(content="", tool_calls=[tc], finish_reason="tool_calls")
+            return LLMResponse(content="", finish_reason="stop")
+
+        provider.chat_stream_with_retry = AsyncMock(side_effect=lambda **kw: _respond(**kw))
+
+        tools_reg = MagicMock()
+        tools_reg.execute = AsyncMock(return_value=MagicMock(success=True, text="ok", error=None, metadata={}))
+        tools_reg.has = MagicMock(return_value=False)
+
+        stage, _bus = _make_stage(provider=provider, tools=tools_reg, max_iterations=3)
+        ctx = _make_ctx(tool_defs=[{"function": {"name": "tool_a"}}])
+
+        result = await stage.run(ctx)
+
+        assert notice_for(REASON_LOOP_EXHAUSTED) not in result.degraded_notices
+        # The generic safety-net fallback still guarantees a reply.
+        assert result.response_text
+
+    @pytest.mark.asyncio
+    async def test_forced_final_truncated_partial_gets_both_notices(self):
+        """强制收敛调用自身被截断但有部分正文：截断提示 + 进展提示都要有。"""
+        from echo_agent.agent.degraded_notice import (
+            notice_for,
+            REASON_LOOP_EXHAUSTED,
+            REASON_OUTPUT_TRUNCATED,
+        )
+
+        tc = ToolCallRequest(id="call_1", name="tool_a", arguments={"x": "1"})
+        provider = AsyncMock()
+
+        def _respond(**kwargs):
+            if kwargs.get("tools"):
+                return LLMResponse(content="", tool_calls=[tc], finish_reason="tool_calls")
+            return LLMResponse(content="部分进展...", finish_reason="length")
+
+        provider.chat_stream_with_retry = AsyncMock(side_effect=lambda **kw: _respond(**kw))
+
+        tools_reg = MagicMock()
+        tools_reg.execute = AsyncMock(return_value=MagicMock(success=True, text="ok", error=None, metadata={}))
+        tools_reg.has = MagicMock(return_value=False)
+
+        stage, _bus = _make_stage(provider=provider, tools=tools_reg, max_iterations=3)
+        ctx = _make_ctx(tool_defs=[{"function": {"name": "tool_a"}}])
+
+        result = await stage.run(ctx)
+
+        assert result.response_text == "部分进展..."
+        assert notice_for(REASON_OUTPUT_TRUNCATED) in result.degraded_notices
+        assert notice_for(REASON_LOOP_EXHAUSTED) in result.degraded_notices
 
 
 def test_inferenceresult_has_degraded_notices_default():

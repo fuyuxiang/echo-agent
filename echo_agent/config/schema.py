@@ -2186,7 +2186,7 @@ class WorkerProfileConfig(_Base):
         },
     )
     max_tokens: int = Field(
-        default=4096,
+        default=8192,
         json_schema_extra={
             "status": "effective", "ref": "agent/multi_agent/registry.py:29",
             "desc_zh": "子代理生成最大 token 数",

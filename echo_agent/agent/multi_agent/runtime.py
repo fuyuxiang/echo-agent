@@ -40,7 +40,7 @@ class WorkerExecutor:
         tool_defs: list[dict[str, Any]],
         tool_executor: ToolExecutorFn,
         max_iterations: int = 12,
-        max_tokens: int = 4096,
+        max_tokens: int = 8192,
         temperature: float = 0.4,
         model: str = "",
         timeout_seconds: float = 300.0,

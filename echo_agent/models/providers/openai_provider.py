@@ -132,7 +132,7 @@ class OpenAIProvider(LLMProvider):
 
         reasoning_text = "".join(reasoning_parts) if reasoning_parts else None
         content_text = "".join(text_parts) if text_parts else None
-        content_text = self._promote_reasoning(content_text, reasoning_text, finish_reason)
+        content_text, reasoning_text = self._promote_reasoning(content_text, reasoning_text, finish_reason)
 
         return LLMResponse(
             content=content_text,
@@ -209,7 +209,7 @@ class OpenAIProvider(LLMProvider):
 
         reasoning = getattr(msg, "reasoning_content", None)
         finish_reason = choice.finish_reason or "stop"
-        content = self._promote_reasoning(msg.content, reasoning, finish_reason)
+        content, reasoning = self._promote_reasoning(msg.content, reasoning, finish_reason)
 
         return LLMResponse(
             content=content,
@@ -240,7 +240,9 @@ class OpenAIProvider(LLMProvider):
         return reasoning if isinstance(reasoning, str) else ""
 
     @staticmethod
-    def _promote_reasoning(content: str | None, reasoning: str | None, finish_reason: str) -> str | None:
+    def _promote_reasoning(
+        content: str | None, reasoning: str | None, finish_reason: str,
+    ) -> tuple[str | None, str | None]:
         # Some third-party proxies put the final answer into reasoning_content
         # while leaving content empty. Recover it — but only when content is
         # truly empty, so a real reasoning model's thinking trace is never
@@ -248,9 +250,12 @@ class OpenAIProvider(LLMProvider):
         # included: a reasoning model that burned its whole token budget on
         # reasoning leaves content empty, and the truncated reasoning is the
         # only recoverable answer material for the turn.
+        # Returns (content, reasoning). On promotion the reasoning slot is
+        # cleared: the same text must not surface twice downstream (once as a
+        # thinking event, once as the answer body).
         if not content and finish_reason in ("stop", "length") and reasoning:
-            return reasoning
-        return content
+            return reasoning, None
+        return content, reasoning
 
     @staticmethod
     def _merge_tool_delta(tool_parts: dict[int, dict[str, Any]], tc: Any) -> None:
