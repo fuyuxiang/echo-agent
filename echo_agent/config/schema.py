@@ -2010,6 +2010,14 @@ class MemoryConfig(_Base):
             "desc_en": "Local fastembed fallback model when no embed-capable provider exists; empty string disables the fallback",
         },
     )
+    hf_embedding_endpoint: str = Field(
+        default="https://hf-mirror.com",
+        json_schema_extra={
+            "status": "effective", "ref": "memory/local_embed.py",
+            "desc_zh": "本地嵌入模型(fastembed)的 HuggingFace 下载源,默认走 hf-mirror.com 镜像以适配国内网络;设为官方源填 https://huggingface.co,空串则不覆盖已有 HF_ENDPOINT 环境变量",
+            "desc_en": "HuggingFace download endpoint for the local fastembed model; defaults to the hf-mirror.com mirror for CN networks. Set to https://huggingface.co for the official source, or empty to leave any existing HF_ENDPOINT env var untouched",
+        },
+    )
     # Latency budget for the per-message query-embedding round-trip in hybrid
     # retrieval. On timeout retrieval degrades to keyword-only for that turn.
     # Raise this if your embedding endpoint is on a high-latency network and

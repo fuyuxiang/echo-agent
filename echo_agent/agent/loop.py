@@ -125,7 +125,9 @@ class _ProviderEmbedFn:
         return []
 
 
-def resolve_embed_fallback(embed_provider, emb_model, local_model_name, local_load_timeout=60.0):
+def resolve_embed_fallback(
+    embed_provider, emb_model, local_model_name, local_load_timeout=60.0, hf_endpoint=""
+):
     """Resolve the embedding tier: provider-backed when available, else the
     local fastembed fallback (zero-config vector search), else nothing.
 
@@ -139,7 +141,9 @@ def resolve_embed_fallback(embed_provider, emb_model, local_model_name, local_lo
 
     if local_model_name:
         from echo_agent.memory.local_embed import LocalEmbedder
-        local = LocalEmbedder(local_model_name, load_timeout_seconds=local_load_timeout)
+        local = LocalEmbedder(
+            local_model_name, load_timeout_seconds=local_load_timeout, hf_endpoint=hf_endpoint
+        )
         if local.available:
             logger.info(
                 "No embed-capable provider; using local embedding fallback '{}'",
@@ -771,6 +775,7 @@ class AgentLoop:
             embed_fn, self._embed_model_id, self._local_embedder = resolve_embed_fallback(
                 None, emb_model, config.memory.local_embedding_model,
                 local_load_timeout=config.memory.embed_load_timeout_seconds,
+                hf_endpoint=config.memory.hf_embedding_endpoint,
             )
 
         from echo_agent.memory.vectors import VectorIndex

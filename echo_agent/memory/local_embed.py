@@ -32,12 +32,20 @@ _DEFAULT_MODEL = "BAAI/bge-small-zh-v1.5"
 class LocalEmbedder:
     """fastembed-backed local embedder with lazy load and graceful failure."""
 
-    def __init__(self, model_name: str = _DEFAULT_MODEL, load_timeout_seconds: float = 60.0):
+    def __init__(
+        self,
+        model_name: str = _DEFAULT_MODEL,
+        load_timeout_seconds: float = 60.0,
+        hf_endpoint: str = "",
+    ):
         self._model_name = model_name
         self._model: Any | None = None
         self._load_failed = False
         self._load_lock = asyncio.Lock()
         self._load_timeout = load_timeout_seconds
+        # HuggingFace download mirror (e.g. https://hf-mirror.com for CN
+        # networks). Empty string leaves any existing HF_ENDPOINT untouched.
+        self._hf_endpoint = hf_endpoint
         # Dedicated single-thread pool so a hung model download never occupies a
         # worker in the shared default executor (which also serves session IO,
         # provider streaming, etc.). A stuck download stays isolated here.
@@ -70,6 +78,10 @@ class LocalEmbedder:
             # the transport layer instead of relying solely on the outer
             # wait_for (which cannot interrupt a blocked C-level socket read).
             os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "30")
+            # Route the model download through the configured mirror. setdefault
+            # so an operator-provided HF_ENDPOINT env var always wins.
+            if self._hf_endpoint:
+                os.environ.setdefault("HF_ENDPOINT", self._hf_endpoint)
             fastembed = importlib.import_module("fastembed")
             return fastembed.TextEmbedding(model_name=self._model_name)
         except Exception as e:

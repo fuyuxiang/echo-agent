@@ -47,6 +47,51 @@ async def test_embed_uses_fastembed_and_caches_model():
 
 
 @pytest.mark.asyncio
+async def test_hf_endpoint_injected_before_load(monkeypatch):
+    """配置的镜像地址在加载模型前 setdefault 到 HF_ENDPOINT。"""
+    monkeypatch.delenv("HF_ENDPOINT", raising=False)
+    import numpy as np
+    fake_model = MagicMock()
+    fake_model.embed.return_value = iter([np.array([0.1], dtype=np.float32)])
+    fake_mod = MagicMock(TextEmbedding=MagicMock(return_value=fake_model))
+    with patch.dict(sys.modules, {"fastembed": fake_mod}):
+        import os
+        e = LocalEmbedder("BAAI/bge-small-zh-v1.5", hf_endpoint="https://hf-mirror.com")
+        await e.embed("text")
+        assert os.environ.get("HF_ENDPOINT") == "https://hf-mirror.com"
+
+
+@pytest.mark.asyncio
+async def test_hf_endpoint_does_not_override_env(monkeypatch):
+    """操作者已设 HF_ENDPOINT 时，配置默认值不覆盖(setdefault 语义)。"""
+    monkeypatch.setenv("HF_ENDPOINT", "https://custom.example")
+    import numpy as np
+    fake_model = MagicMock()
+    fake_model.embed.return_value = iter([np.array([0.1], dtype=np.float32)])
+    fake_mod = MagicMock(TextEmbedding=MagicMock(return_value=fake_model))
+    with patch.dict(sys.modules, {"fastembed": fake_mod}):
+        import os
+        e = LocalEmbedder("BAAI/bge-small-zh-v1.5", hf_endpoint="https://hf-mirror.com")
+        await e.embed("text")
+        assert os.environ.get("HF_ENDPOINT") == "https://custom.example"
+
+
+@pytest.mark.asyncio
+async def test_empty_hf_endpoint_leaves_env_untouched(monkeypatch):
+    """空串 endpoint 不写入 HF_ENDPOINT。"""
+    monkeypatch.delenv("HF_ENDPOINT", raising=False)
+    import numpy as np
+    fake_model = MagicMock()
+    fake_model.embed.return_value = iter([np.array([0.1], dtype=np.float32)])
+    fake_mod = MagicMock(TextEmbedding=MagicMock(return_value=fake_model))
+    with patch.dict(sys.modules, {"fastembed": fake_mod}):
+        import os
+        e = LocalEmbedder("BAAI/bge-small-zh-v1.5", hf_endpoint="")
+        await e.embed("text")
+        assert "HF_ENDPOINT" not in os.environ
+
+
+@pytest.mark.asyncio
 async def test_embed_returns_none_on_load_failure():
     fake_mod = MagicMock(TextEmbedding=MagicMock(side_effect=RuntimeError("download failed")))
     with patch.dict(sys.modules, {"fastembed": fake_mod}):
