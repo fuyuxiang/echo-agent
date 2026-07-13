@@ -44,4 +44,31 @@ def test_all_eight_types_present():
     assert COG_TYPES == frozenset({
         "memory_recalled", "memory_written", "thinking", "tool_call",
         "approval_request", "cost_update", "heartbeat", "evolution",
+        "clarify_request",
     })
+
+
+def test_clarify_request_frame_parses():
+    from echo_agent.cli.tui.protocol import parse_cog_frame
+    payload = {
+        "message_kind": "cognitive",
+        "text": "选哪个?",
+        "metadata": {
+            "cog_type": "clarify_request",
+            "cog_event_id": "evt_abc",
+            "_inbound_event_id": "in_1",
+            "data": {"clarify_id": "c123", "question": "选哪个?", "options": ["A", "B"]},
+        },
+    }
+    ev = parse_cog_frame(payload)
+    assert ev is not None
+    assert ev.cog_type == "clarify_request"
+    assert ev.data["clarify_id"] == "c123"
+    assert ev.data["options"] == ["A", "B"]
+
+
+def test_clarify_command_encoding():
+    from echo_agent.cli.tui.protocol import clarify_command
+    assert clarify_command("c123", "A") == "/clarify c123 A"
+    # 自由文本原样保留(含空格)
+    assert clarify_command("c123", "都不要,用 C") == "/clarify c123 都不要,用 C"

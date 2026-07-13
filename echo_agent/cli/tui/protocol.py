@@ -9,6 +9,7 @@ from dataclasses import dataclass
 COG_TYPES = frozenset({
     "memory_recalled", "memory_written", "thinking", "tool_call",
     "approval_request", "cost_update", "heartbeat", "evolution",
+    "clarify_request",
 })
 
 
@@ -43,6 +44,12 @@ def approve_command(request_id: str, level: str = "") -> str:
 
 def deny_command(request_id: str, reason: str = "") -> str:
     return f"/deny {request_id} {reason}".strip()
+
+
+def clarify_command(clarify_id: str, answer: str) -> str:
+    # answer is passed through verbatim — resolve() does no validation, the
+    # model sees the user's raw choice or free-text.
+    return f"/clarify {clarify_id} {answer}"
 
 
 class CogDedup:
