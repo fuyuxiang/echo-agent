@@ -11,6 +11,7 @@ from typing import Any, TYPE_CHECKING
 
 from loguru import logger
 
+from echo_agent.agent.cognitive_emitter import should_emit_cognitive
 from echo_agent.agent.degraded_notice import (
     REASON_LOOP_EXHAUSTED,
     REASON_OUTPUT_TRUNCATED,
@@ -125,6 +126,7 @@ class InferenceStage:
         cognitive_emitter: "CognitiveEmitter | None" = None,
         compressor: Any = None,
         memory_store: Any = None,
+        clarify_manager: Any = None,
     ):
         self._config = config
         self._bus = bus
@@ -148,6 +150,7 @@ class InferenceStage:
         self._cog = cognitive_emitter
         self._compressor = compressor
         self._memory_store = memory_store
+        self._clarify = clarify_manager
         # Read-only tool concurrency config (Task 2 added the fields, marked
         # effective). getattr fallbacks because some test configs are MagicMock.
         _tc = getattr(getattr(config, "agent", None), "tool_concurrency", None)
@@ -157,6 +160,26 @@ class InferenceStage:
     def set_hook_registry(self, registry: Any) -> None:
         """Inject the plugin hook registry (attached after bootstrap)."""
         self._hook_registry = registry
+
+    async def _prepare_clarify(self, tool_call: Any, event: Any) -> None:
+        """Before a CLI clarify runs: register a pending request, inject its id
+        into the tool arguments, and emit a clarify_request frame so the TUI can
+        render the choices. The tool then blocks on ClarifyManager.wait_for_answer.
+        Only fires on the CLI channel (same gate as frame emission)."""
+        if tool_call.name != "clarify" or self._clarify is None:
+            return
+        if not should_emit_cognitive(event.channel):
+            return
+        question = tool_call.arguments.get("question", "")
+        options = tool_call.arguments.get("options", []) or []
+        req = self._clarify.request(question, options, user_id=getattr(event, "sender_id", ""))
+        tool_call.arguments["_clarify_id"] = req.id
+        if self._cog is not None:
+            await self._cog.emit(
+                event, "clarify_request",
+                {"clarify_id": req.id, "question": question, "options": options},
+                question,
+            )
 
     async def _emit_progress(self, ctx: PipelineContext, text: str, *, tool_hint: bool = False) -> None:
         if not ctx.publish_response:
@@ -881,6 +904,7 @@ class InferenceStage:
                 ctx.event, tool_call.name, tool_call.arguments,
                 "running", "", tool_call_id=tool_call.id,
             )
+            await self._prepare_clarify(tool_call, ctx.event)
 
             try:
                 result = await self._tools.execute(

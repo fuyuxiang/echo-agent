@@ -492,6 +492,7 @@ class AgentLoop:
             cognitive_emitter=self.cognitive_emitter,
             compressor=self.compressor,
             memory_store=self.memory,
+            clarify_manager=self.clarify,
         )
         # Retrieval prefetcher: after each reply ResponseStage fires this on the
         # DISCARDABLE tier to warm the next turn's cache. Needs _hybrid_retriever
