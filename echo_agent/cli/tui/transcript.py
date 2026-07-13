@@ -10,6 +10,7 @@ from textual.containers import VerticalScroll
 from echo_agent.cli.tui.blocks import (
     AgentReply,
     ApprovalBlock,
+    ChoiceBlock,
     CognitiveBlock,
     ToolCallBlock,
     UserTurn,
@@ -101,6 +102,13 @@ class TranscriptView(VerticalScroll):
         self, request_id: str, action: str, params: dict, risk: str
     ) -> ApprovalBlock:
         b = ApprovalBlock(request_id, action, params, risk)
+        self.mount(b)
+        return b
+
+    def add_clarify(
+        self, clarify_id: str, question: str, options: list[str]
+    ) -> ChoiceBlock:
+        b = ChoiceBlock(clarify_id, question, options)
         self.mount(b)
         return b
 

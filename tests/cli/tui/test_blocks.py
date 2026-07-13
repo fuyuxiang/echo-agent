@@ -1,7 +1,7 @@
 import pytest
 
 from echo_agent.cli.tui.protocol import CogEvent
-from echo_agent.cli.tui.blocks import CognitiveBlock, ApprovalBlock, UserTurn
+from echo_agent.cli.tui.blocks import CognitiveBlock, ApprovalBlock, UserTurn, ChoiceBlock
 
 
 def _ev(cog_type, data, summary):
@@ -132,3 +132,67 @@ async def test_status_bar_setters_update_render():
         assert "断开" in text
         sb.set_connection(True)
         assert "连接" in str(sb.render())
+
+
+def test_choice_block_renders_numbered_options():
+    b = ChoiceBlock("c1", "用哪个方案?", ["方案A", "方案B", "方案C"])
+    body = b.render_body()
+    assert "用哪个方案?" in body
+    assert "1. 方案A" in body
+    assert "2. 方案B" in body
+    assert "3. 方案C" in body
+    assert "按数字" in body  # 操作提示存在
+
+
+def test_choice_block_empty_options_is_free_input_only():
+    b = ChoiceBlock("c2", "请描述你的需求", [])
+    body = b.render_body()
+    assert "请描述你的需求" in body
+    assert "1." not in body
+    assert "请输入回答" in body
+
+
+def test_choice_block_number_mapping():
+    b = ChoiceBlock("c1", "q", ["A", "B"])
+    assert b.option_for_number(1) == "A"
+    assert b.option_for_number(2) == "B"
+    assert b.option_for_number(3) is None
+    assert b.option_for_number(0) is None
+
+
+def test_choice_block_highlight_move_and_clamp():
+    b = ChoiceBlock("c1", "q", ["A", "B", "C"])
+    assert b.highlighted == 0
+    b.move(1)
+    assert b.highlighted == 1
+    assert b.highlighted_option() == "B"
+    b.move(-5)                    # 下越界钳制
+    assert b.highlighted == 0
+    b.move(99)                    # 上越界钳制
+    assert b.highlighted == 2
+
+
+def test_choice_block_mark_switches_render():
+    b = ChoiceBlock("c1", "q", ["A", "B"])
+    assert b.answer is None
+    b.mark("A")
+    assert b.answer == "A"
+    assert "已选" in b.render_body()
+    assert "A" in b.render_body()
+
+
+@pytest.mark.asyncio
+async def test_transcript_add_clarify_mounts_block():
+    from textual.app import App
+    from echo_agent.cli.tui.transcript import TranscriptView
+
+    class T(App):
+        def compose(self):
+            yield TranscriptView()
+
+    app = T()
+    async with app.run_test():
+        tv = app.query_one(TranscriptView)
+        blk = tv.add_clarify("c1", "选哪个?", ["A", "B"])
+        assert blk.clarify_id == "c1"
+        assert blk.options == ["A", "B"]

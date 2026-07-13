@@ -204,3 +204,49 @@ class ApprovalBlock(Static):
     def mark(self, decision: str) -> None:
         self.decision = decision
         self.update(self._body())
+
+
+class ChoiceBlock(Static):
+    """A clarify prompt: a question plus optional numbered choices. The user
+    picks by number, arrows+enter, or free text. Rendering is a pure method so
+    it is unit-testable without a live screen (like ApprovalBlock)."""
+
+    def __init__(self, clarify_id: str, question: str, options: list[str]) -> None:
+        self.clarify_id = clarify_id
+        self.question = question
+        self.options = list(options or [])
+        self.highlighted = 0
+        self.answer: str | None = None
+        super().__init__(self.render_body())
+
+    def render_body(self) -> str:
+        if self.answer is not None:
+            return f"❓ {self.question} — 已选:{self.answer}"
+        if not self.options:
+            return f"❓ {self.question}\n    (请输入回答)"
+        lines = [f"❓ {self.question}"]
+        for i, opt in enumerate(self.options):
+            marker = "›" if i == self.highlighted else " "
+            lines.append(f"  {marker} {i + 1}. {opt}")
+        lines.append("    (按数字选择 · ↑↓ 移动后回车 · 或直接输入其他答案)")
+        return "\n".join(lines)
+
+    def move(self, delta: int) -> None:
+        if not self.options:
+            return
+        self.highlighted = max(0, min(len(self.options) - 1, self.highlighted + delta))
+        self.update(self.render_body())
+
+    def option_for_number(self, n: int) -> str | None:
+        if not self.options or n < 1 or n > len(self.options):
+            return None
+        return self.options[n - 1]
+
+    def highlighted_option(self) -> str | None:
+        if not self.options:
+            return None
+        return self.options[self.highlighted]
+
+    def mark(self, answer: str) -> None:
+        self.answer = answer
+        self.update(self.render_body())
