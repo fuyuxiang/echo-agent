@@ -38,14 +38,22 @@ def test_is_clarify_command_detection(tmp_path):
 async def test_handle_clarify_resolves_pending(tmp_path):
     loop = _make_loop(tmp_path)
     req = loop.clarify.request("选哪个?", ["A", "B"], user_id="u1")
+
+    async def wait_side():
+        return await loop.clarify.wait_for_answer(req.id)
+
+    import asyncio
+    waiter = asyncio.create_task(wait_side())
+    await asyncio.sleep(0.01)
+    # A multi-word free-text answer must be preserved verbatim (split maxsplit=2).
     event = InboundEvent.text_message(
         channel="gateway:cli", chat_id="c", sender_id="u1",
-        text=f"/clarify {req.id} 方案B",
+        text=f"/clarify {req.id} 方案 B 都行",
     )
     reply = await loop._handle_clarify_command(event)
     assert reply is not None
-    # resolve 写入答案(含空格的自由文本保留)
-    assert loop.clarify.get(req.id) is None or loop.clarify.get(req.id).answer == "方案B"
+    answer = await asyncio.wait_for(waiter, timeout=1.0)
+    assert answer == "方案 B 都行"
 
 
 @pytest.mark.asyncio
