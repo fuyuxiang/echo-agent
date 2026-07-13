@@ -214,12 +214,19 @@ class EchoTUI(App):
         # printable digit would otherwise be captured here first.
         if ch in "123456789":
             return
+        self._enter_clarify_free_input(ch)
+        event.prevent_default()
+        event.stop()
+
+    def _enter_clarify_free_input(self, char: str) -> None:
+        # Seed a free-text clarify answer: focus the prompt, mark the next
+        # submit as a clarify answer, and insert the first character. Shared by
+        # on_key (printable non-digit) and the out-of-range digit fallback in
+        # action_clarify_pick.
         pi = self.query_one(PromptInput)
         self._clarify_free_input = True
         pi.focus()
-        pi.insert(ch)
-        event.prevent_default()
-        event.stop()
+        pi.insert(char)
 
     # --- input ---
     async def on_prompt_input_submitted(
@@ -359,6 +366,10 @@ class EchoTUI(App):
             return
         opt = blk.option_for_number(number)
         if opt is None:
+            # Out-of-range digit: don't swallow the key. Fall back to free-text
+            # input, seeding the digit as the first character so answers that
+            # start with a number remain possible.
+            self._enter_clarify_free_input(str(number))
             return
         await self._answer_clarify(opt)
 

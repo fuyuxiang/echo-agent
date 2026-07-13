@@ -78,6 +78,46 @@ async def test_free_text_input_routes_to_clarify_answer():
 
 
 @pytest.mark.asyncio
+async def test_out_of_range_number_falls_back_to_free_input():
+    sent: list[str] = []
+
+    async def fake_send(text):
+        sent.append(text)
+
+    app = EchoTUI(send_coro=fake_send, session_key="s1")
+    async with app.run_test() as pilot:
+        from echo_agent.cli.tui.prompt_input import PromptInput
+        app.on_cognitive(_clarify_ev("c1", "选哪个?", ["方案A", "方案B"]))
+        await pilot.press("5")  # 越界:只有 2 个选项
+        await pilot.pause()
+        # 未发送任何命令,pending 仍在,已降级进入自由输入
+        assert sent == []
+        assert app._pending_clarify is not None
+        assert app._clarify_free_input is True
+        pi = app.query_one(PromptInput)
+        assert app.focused is pi
+        assert "5" in pi.text
+
+
+@pytest.mark.asyncio
+async def test_out_of_range_number_then_typing_sends_free_answer():
+    sent: list[str] = []
+
+    async def fake_send(text):
+        sent.append(text)
+
+    app = EchoTUI(send_coro=fake_send, session_key="s1")
+    async with app.run_test() as pilot:
+        app.on_cognitive(_clarify_ev("c1", "选哪个?", ["方案A", "方案B"]))
+        await pilot.press("5")     # 越界 -> 自由输入首字符
+        await pilot.press("6")     # 继续打字
+        await pilot.press("enter")
+        await pilot.pause()
+        assert sent == ["/clarify c1 56"]
+        assert app._pending_clarify is None
+
+
+@pytest.mark.asyncio
 async def test_number_keys_pass_through_when_no_pending_clarify():
     sent: list[str] = []
 
