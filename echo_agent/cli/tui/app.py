@@ -11,9 +11,11 @@ from textual.widgets import OptionList, Static
 from echo_agent.cli.tui.transcript import TranscriptView
 from echo_agent.cli.tui.prompt_input import PromptInput
 from echo_agent.cli.tui.status_bar import StatusBar
-from echo_agent.cli.tui.blocks import ApprovalBlock
+from echo_agent.cli.tui.blocks import ApprovalBlock, ChoiceBlock
 from echo_agent.cli.tui.completion import completion_insert, filter_commands
-from echo_agent.cli.tui.protocol import CogEvent, approve_command, deny_command
+from echo_agent.cli.tui.protocol import (
+    CogEvent, approve_command, deny_command, clarify_command,
+)
 
 
 class EchoTUI(App):
@@ -37,6 +39,21 @@ class EchoTUI(App):
         Binding("y", "approve", "批准", show=False),
         Binding("n", "deny", "拒绝", show=False),
         Binding("a", "approve_always", "始终允许", show=False),
+        # Clarify selection keys. Gated by check_action so they only fire while
+        # a clarify is pending; otherwise they pass through to the focused
+        # PromptInput (typing a digit into the prompt).
+        Binding("1", "clarify_pick(1)", show=False),
+        Binding("2", "clarify_pick(2)", show=False),
+        Binding("3", "clarify_pick(3)", show=False),
+        Binding("4", "clarify_pick(4)", show=False),
+        Binding("5", "clarify_pick(5)", show=False),
+        Binding("6", "clarify_pick(6)", show=False),
+        Binding("7", "clarify_pick(7)", show=False),
+        Binding("8", "clarify_pick(8)", show=False),
+        Binding("9", "clarify_pick(9)", show=False),
+        Binding("up", "clarify_move(-1)", show=False),
+        Binding("down", "clarify_move(1)", show=False),
+        Binding("enter", "clarify_accept", show=False),
     ]
 
     def __init__(self, send_coro=None, session_key: str = "") -> None:
@@ -51,6 +68,13 @@ class EchoTUI(App):
         # outstanding. Phase B runs concurrently but only for read-only,
         # non-conflicting tools that never raise an approval_request.
         self._pending_approval: ApprovalBlock | None = None
+        # Single pending-clarify slot: clarify is serialized (the agent blocks
+        # on wait_for_answer, so no second clarify can arrive mid-wait).
+        self._pending_clarify: ChoiceBlock | None = None
+        # True while a clarify is pending and the user has started typing a
+        # free-text answer — the next PromptInput submit is a clarify answer,
+        # not an ordinary turn.
+        self._clarify_free_input = False
 
     def compose(self) -> ComposeResult:
         yield TranscriptView()
@@ -82,6 +106,13 @@ class EchoTUI(App):
                 and self._pending_approval.decision is None
             )
             return True if pending else None
+        if action in ("clarify_pick", "clarify_move", "clarify_accept"):
+            # Only while a clarify is pending AND the prompt is not focused
+            # (blurred on mount of the block). When the user has stepped into
+            # free-text input the prompt is focused again, so these bindings
+            # yield to normal typing/submit.
+            active = self._pending_clarify is not None and self.focused is None
+            return True if active else None
         return True
 
     @property
@@ -116,6 +147,17 @@ class EchoTUI(App):
                 d.get("params", {}), d.get("risk", ""))
             # Blur the prompt so App-level y/n/a bindings are not filtered out
             # by the focused TextArea (textual 8.2.8 check_consume_key).
+            self.set_focus(None)
+            return
+        if ev.cog_type == "clarify_request":
+            d = ev.data
+            self._pending_clarify = self._tv.add_clarify(
+                d.get("clarify_id", ""), d.get("question", ""),
+                d.get("options", []) or [],
+            )
+            self._clarify_free_input = False
+            # Blur the prompt so App-level number/arrow bindings win over the
+            # focused TextArea (textual 8.2.8 check_consume_key).
             self.set_focus(None)
             return
         if ev.cog_type == "cost_update":
@@ -156,11 +198,39 @@ class EchoTUI(App):
         except Exception:
             pass
 
+    def on_key(self, event) -> None:
+        # Enter free-text clarify input: only while a clarify is pending and
+        # the prompt is blurred. A single printable character (not consumed by
+        # the number/arrow/enter bindings) focuses the prompt, seeds that char,
+        # and marks the next submit as a clarify answer.
+        if self._pending_clarify is None or self.focused is not None:
+            return
+        ch = event.character
+        if ch is None or not ch.isprintable() or ch == " ":
+            return
+        # Digits 1-9 are quick-select bindings (clarify_pick); yield to them so
+        # the binding fires instead of seeding a free-text answer. In textual
+        # 8.2.8 this App-level on_key runs before binding resolution, so a
+        # printable digit would otherwise be captured here first.
+        if ch in "123456789":
+            return
+        pi = self.query_one(PromptInput)
+        self._clarify_free_input = True
+        pi.focus()
+        pi.insert(ch)
+        event.prevent_default()
+        event.stop()
+
     # --- input ---
     async def on_prompt_input_submitted(
         self, message: PromptInput.Submitted
     ) -> None:
         text = message.text
+        # A clarify free-text answer is routed to the pending clarify, not sent
+        # as a new conversation turn.
+        if self._clarify_free_input and self._pending_clarify is not None:
+            await self._answer_clarify(text)
+            return
         # Local commands execute inside the TUI and are never sent upstream;
         # server commands (/approve, /deny, /approvals) fall through to send.
         if text == "/clear":
@@ -268,3 +338,38 @@ class EchoTUI(App):
 
     async def action_approve_always(self) -> None:
         await self._decide("approve", "session")
+
+    async def _answer_clarify(self, answer: str) -> None:
+        blk = self._pending_clarify
+        if blk is None or blk.answer is not None:
+            return
+        blk.mark(answer)
+        if self._send is not None:
+            await self._send(clarify_command(blk.clarify_id, answer))
+        self._pending_clarify = None
+        self._clarify_free_input = False
+        try:
+            self.query_one(PromptInput).focus()
+        except Exception:
+            pass
+
+    async def action_clarify_pick(self, number: int) -> None:
+        blk = self._pending_clarify
+        if blk is None:
+            return
+        opt = blk.option_for_number(number)
+        if opt is None:
+            return
+        await self._answer_clarify(opt)
+
+    def action_clarify_move(self, delta: int) -> None:
+        if self._pending_clarify is not None:
+            self._pending_clarify.move(delta)
+
+    async def action_clarify_accept(self) -> None:
+        blk = self._pending_clarify
+        if blk is None:
+            return
+        opt = blk.highlighted_option()
+        if opt is not None:
+            await self._answer_clarify(opt)
