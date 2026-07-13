@@ -27,10 +27,10 @@ def _ctx(**kwargs) -> ToolExecutionContext:
 
 class TestClarifyTool:
     def _make(self):
+        from echo_agent.agent.clarify_manager import ClarifyManager
         from echo_agent.agent.tools.clarify import ClarifyTool
 
-        bus = MagicMock()
-        return ClarifyTool(bus=bus)
+        return ClarifyTool(manager=ClarifyManager())
 
     @pytest.mark.asyncio
     async def test_basic_question(self):

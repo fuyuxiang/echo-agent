@@ -300,6 +300,8 @@ class AgentLoop:
             default_policy=config.permissions.approval.default_policy,
             store_path=workspace / "data" / "approvals.json",
         )
+        from echo_agent.agent.clarify_manager import ClarifyManager
+        self.clarify = ClarifyManager()
         self.inference = InferenceController()
         if config.permissions.approval.require_approval:
             from echo_agent.models.inference import InferenceConstraints
@@ -562,6 +564,7 @@ class AgentLoop:
             workflow_engine=workflow_engine,
             knowledge_index=self.knowledge,
             approval=self.approval,
+            clarify_manager=self.clarify,
         )
         for tool in all_tools:
             self.tools.register(tool)

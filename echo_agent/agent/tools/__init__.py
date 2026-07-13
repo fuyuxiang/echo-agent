@@ -31,6 +31,7 @@ def discover_tools(
     workflow_engine: Any = None,
     knowledge_index: Any = None,
     approval: Any = None,
+    clarify_manager: Any = None,
 ) -> list[Tool]:
     ws = str(workspace)
     restrict = config.tools.restrict_to_workspace
@@ -94,7 +95,8 @@ def discover_tools(
         tools.append(WorkflowTool(engine=workflow_engine))
 
     from echo_agent.agent.tools.clarify import ClarifyTool
-    tools.append(ClarifyTool(bus=bus))
+    if clarify_manager is not None:
+        tools.append(ClarifyTool(manager=clarify_manager))
 
     from echo_agent.agent.tools.notify import NotifyTool
     tools.append(NotifyTool(bus=bus))
