@@ -1086,6 +1086,23 @@ class AgentLoop:
                 out.metadata["_inbound_event_id"] = event.event_id
                 await self.bus.publish_outbound(out)
                 return
+        # Clarify answers, like approval decisions, are handled BEFORE acquiring
+        # the session lock — the blocked agent holds that lock while parked in
+        # wait_for_answer, so resolving must run on a lock-free path. Do not move
+        # this below sessions.acquire().
+        if self._is_clarify_command(event.text):
+            response_text = await self._handle_clarify_command(event)
+            if response_text is not None:
+                out = OutboundEvent.from_text_with_media(
+                    channel=event.channel,
+                    chat_id=event.chat_id,
+                    text=response_text,
+                    reply_to_id=event.reply_to_id,
+                )
+                out.metadata = dict(event.metadata)
+                out.metadata["_inbound_event_id"] = event.event_id
+                await self.bus.publish_outbound(out)
+                return
         session_lock = await self.sessions.acquire(event.session_key)
         async with session_lock:
             trace_id = uuid.uuid4().hex[:12]
@@ -1314,6 +1331,21 @@ class AgentLoop:
             return False
         command = stripped.split(maxsplit=1)[0].lower()
         return command in {"/approvals", "/approve", "/deny"}
+
+    def _is_clarify_command(self, text: str) -> bool:
+        return text.strip().split(maxsplit=1)[0].lower() == "/clarify" if text.strip() else False
+
+    async def _handle_clarify_command(self, event: InboundEvent) -> str | None:
+        # Format: /clarify <clarify_id> <answer...>  (answer may contain spaces)
+        parts = event.text.strip().split(maxsplit=2)
+        if len(parts) < 2:
+            return "用法:`/clarify <id> <答案>`"
+        clarify_id = parts[1]
+        answer = parts[2] if len(parts) >= 3 else ""
+        ok = self.clarify.resolve(clarify_id, answer)
+        if ok:
+            return f"已回复澄清请求 {clarify_id}。"
+        return f"澄清请求未找到或已处理:{clarify_id}"
 
     def _can_decide_approval(self, user_id: str, request: Any) -> bool:
         if user_id in (self.config.permissions.admin_users or []):
