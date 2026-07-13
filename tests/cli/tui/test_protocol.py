@@ -40,7 +40,7 @@ def test_dedup_reports_repeats():
     assert d.seen("evt_2") is False
 
 
-def test_all_eight_types_present():
+def test_cog_types_exact_membership():
     assert COG_TYPES == frozenset({
         "memory_recalled", "memory_written", "thinking", "tool_call",
         "approval_request", "cost_update", "heartbeat", "evolution",
