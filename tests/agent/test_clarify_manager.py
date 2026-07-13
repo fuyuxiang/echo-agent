@@ -46,7 +46,7 @@ async def test_sentinel_empty_answer_unblocks():
 
     async def interrupt():
         await asyncio.sleep(0.01)
-        mgr.resolve(req.id, "")  # 会话中断哨兵
+        mgr.resolve(req.id, "")  # session-interrupt sentinel
 
     task = asyncio.create_task(interrupt())
     answer = await mgr.wait_for_answer(req.id)
