@@ -821,6 +821,23 @@ class GatewayServer:
             # connection's teardown must not delete the later one's slot.
             if delivery_key and self._ws_clients.get(delivery_key) is websocket:
                 del self._ws_clients[delivery_key]
+            # Escape valve: a disconnect (/quit, Ctrl+C, dropped socket) must wake
+            # any clarify blocked on this session so the agent does not stay parked
+            # in wait_for_answer until the 24h registry backstop. Route it through
+            # the bus as an internal control command that the loop intercepts
+            # before the session lock. Best-effort — never let this break teardown.
+            if session_key:
+                try:
+                    cancel_event = InboundEvent.text_message(
+                        channel=f"gateway:{platform}",
+                        sender_id=user_id,
+                        chat_id=chat_id,
+                        text="/__clarify_cancel__",
+                        session_key_override=session_key,
+                    )
+                    await self._bus.publish_inbound(cancel_event)
+                except Exception as e:
+                    logger.warning("Clarify cancel on ws disconnect failed: {}", e)
 
         return websocket
 

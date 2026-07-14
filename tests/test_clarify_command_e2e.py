@@ -52,8 +52,9 @@ async def test_handle_clarify_resolves_pending(tmp_path):
     )
     reply = await loop._handle_clarify_command(event)
     assert reply is not None
-    answer = await asyncio.wait_for(waiter, timeout=1.0)
+    answer, interrupted = await asyncio.wait_for(waiter, timeout=1.0)
     assert answer == "方案 B 都行"
+    assert interrupted is False
 
 
 @pytest.mark.asyncio
@@ -83,5 +84,35 @@ async def test_clarify_answer_delivered_to_waiter(tmp_path):
         channel="gateway:cli", chat_id="c", sender_id="u1", text=f"/clarify {req.id} A",
     )
     await loop._handle_clarify_command(event)
-    answer = await asyncio.wait_for(waiter, timeout=1.0)
+    answer, interrupted = await asyncio.wait_for(waiter, timeout=1.0)
     assert answer == "A"
+    assert interrupted is False
+
+
+def test_cancel_command_detection(tmp_path):
+    loop = _make_loop(tmp_path)
+    assert loop._is_clarify_cancel_command("/__clarify_cancel__") is True
+    assert loop._is_clarify_cancel_command("/clarify x y") is False
+    assert loop._is_clarify_cancel_command("hi") is False
+
+
+@pytest.mark.asyncio
+async def test_cancel_command_interrupts_session_clarifies(tmp_path):
+    import asyncio
+    loop = _make_loop(tmp_path)
+    req = loop.clarify.request("q", ["A"], user_id="u1", session_key="gateway:cli")
+
+    async def wait_side():
+        return await loop.clarify.wait_for_answer(req.id)
+
+    waiter = asyncio.create_task(wait_side())
+    await asyncio.sleep(0.01)
+    event = InboundEvent.text_message(
+        channel="gateway:cli", chat_id="c", sender_id="u1",
+        text="/__clarify_cancel__",
+    )
+    event.session_key_override = "gateway:cli"
+    assert loop._is_clarify_cancel_command(event.text) is True
+    await loop._handle_clarify_cancel(event)
+    answer, interrupted = await asyncio.wait_for(waiter, timeout=1.0)
+    assert (answer, interrupted) == ("", True)

@@ -1104,6 +1104,13 @@ class AgentLoop:
                 out.metadata["_inbound_event_id"] = event.event_id
                 await self.bus.publish_outbound(out)
                 return
+        # Session-interrupt escape valve, handled BEFORE the session lock for the
+        # same reason as clarify answers: the agent blocked in wait_for_answer
+        # holds the lock, so the wake must run on a lock-free path. Synthesized by
+        # the gateway on ws disconnect; internal control command, no reply.
+        if self._is_clarify_cancel_command(event.text):
+            await self._handle_clarify_cancel(event)
+            return
         session_lock = await self.sessions.acquire(event.session_key)
         async with session_lock:
             trace_id = uuid.uuid4().hex[:12]
@@ -1335,6 +1342,18 @@ class AgentLoop:
 
     def _is_clarify_command(self, text: str) -> bool:
         return text.strip().split(maxsplit=1)[0].lower() == "/clarify" if text.strip() else False
+
+    _CLARIFY_CANCEL_CMD = "/__clarify_cancel__"
+
+    def _is_clarify_cancel_command(self, text: str) -> bool:
+        return text.strip() == self._CLARIFY_CANCEL_CMD
+
+    async def _handle_clarify_cancel(self, event: InboundEvent) -> None:
+        # Wake any clarify blocked on this session with the interrupt sentinel,
+        # so a disconnected/quit CLI does not leave the agent parked in
+        # wait_for_answer until the 24h registry backstop. Internal control
+        # command — no user-facing reply.
+        self.clarify.cancel_session(event.session_key)
 
     async def _handle_clarify_command(self, event: InboundEvent) -> str | None:
         # Format: /clarify <clarify_id> <answer...>  (answer may contain spaces)
