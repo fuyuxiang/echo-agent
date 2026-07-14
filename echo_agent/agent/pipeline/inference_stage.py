@@ -172,7 +172,11 @@ class InferenceStage:
             return
         question = tool_call.arguments.get("question", "")
         options = tool_call.arguments.get("options", []) or []
-        req = self._clarify.request(question, options, user_id=getattr(event, "sender_id", ""))
+        req = self._clarify.request(
+            question, options,
+            user_id=getattr(event, "sender_id", ""),
+            session_key=getattr(event, "session_key", ""),
+        )
         tool_call.arguments["_clarify_id"] = req.id
         if self._cog is not None:
             await self._cog.emit(

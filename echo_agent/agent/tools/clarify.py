@@ -65,14 +65,16 @@ class ClarifyTool(Tool):
             req = self._manager.request(question, options, user_id=(ctx.user_id if ctx else ""))
             clarify_id = req.id
 
-        answer = await self._manager.wait_for_answer(clarify_id)
-        if not answer:
-            # Empty answer = session interrupted / sentinel. Let the agent wrap up.
+        answer, interrupted = await self._manager.wait_for_answer(clarify_id)
+        if interrupted:
+            # Session was cancelled while waiting. Let the agent wrap up.
             return ToolResult(
                 success=True,
                 output="用户未回应(会话中断)。",
                 metadata={"type": "clarify", "clarify_id": clarify_id, "interrupted": True},
             )
+        # An empty-but-not-interrupted answer is a real (blank) user reply — hand
+        # it back as-is and let the model decide, rather than faking an interrupt.
         return ToolResult(
             output=answer,
             metadata={"type": "clarify", "clarify_id": clarify_id, "question": question},

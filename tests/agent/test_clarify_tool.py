@@ -64,3 +64,41 @@ def test_timeout_seconds_is_large():
     # registry wraps execute() in asyncio.wait_for(timeout=tool.timeout_seconds);
     # a CLI clarify may wait indefinitely, so the ceiling must be very high.
     assert ClarifyTool.timeout_seconds >= 3600
+
+
+@pytest.mark.asyncio
+async def test_interrupted_returns_notice():
+    mgr = ClarifyManager()
+    tool = ClarifyTool(manager=mgr)
+    req = mgr.request("q", ["A"], session_key="s1")
+    ctx = ToolExecutionContext(channel="gateway:cli", user_id="u1", session_key="s1")
+    params = {"question": "q", "options": ["A"], "_clarify_id": req.id}
+
+    async def cancel():
+        await asyncio.sleep(0.01)
+        mgr.cancel_session("s1")
+
+    t = asyncio.create_task(cancel())
+    result = await tool.execute(params, ctx)
+    await t
+    assert result.success is True
+    assert "会话中断" in result.output
+
+
+@pytest.mark.asyncio
+async def test_empty_user_answer_is_not_interrupt():
+    mgr = ClarifyManager()
+    tool = ClarifyTool(manager=mgr)
+    req = mgr.request("q", ["A"], session_key="s1")
+    ctx = ToolExecutionContext(channel="gateway:cli", user_id="u1", session_key="s1")
+    params = {"question": "q", "options": ["A"], "_clarify_id": req.id}
+
+    async def ans():
+        await asyncio.sleep(0.01)
+        mgr.resolve(req.id, "")
+
+    t = asyncio.create_task(ans())
+    result = await tool.execute(params, ctx)
+    await t
+    assert result.success is True
+    assert "会话中断" not in result.output   # 答空不再被误报为中断
