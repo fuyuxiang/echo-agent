@@ -2,6 +2,8 @@
 
 import time
 
+import pytest
+
 
 from echo_agent.agent.tools.circuit_breaker import CircuitState, ToolCircuitBreaker
 
@@ -116,3 +118,81 @@ class TestToolCircuitBreaker:
         assert cb.peek_available("tool_a") is True
         assert circuit.state == CircuitState.OPEN
         assert circuit.half_open_probes == 0
+
+
+class TestErrorKindClassification:
+    """ToolResult 错误分类:只有基础设施故障计入熔断。"""
+
+    def test_infra_kinds(self):
+        from echo_agent.tools.base import ToolResult
+        for kind in ("timeout", "dependency", "internal"):
+            assert ToolResult(success=False, error="x", error_kind=kind).is_infra_failure is True
+
+    def test_non_infra_kinds(self):
+        from echo_agent.tools.base import ToolResult
+        for kind in ("validation", "business", ""):
+            assert ToolResult(success=False, error="x", error_kind=kind).is_infra_failure is False
+
+    def test_success_is_never_infra_failure(self):
+        from echo_agent.tools.base import ToolResult
+        assert ToolResult(success=True, error_kind="internal").is_infra_failure is False
+
+    @pytest.mark.asyncio
+    async def test_registry_marks_validation(self):
+        from echo_agent.agent.tools.registry import ToolRegistry
+        from echo_agent.tools.base import Tool, ToolResult
+
+        class _T(Tool):
+            name = "t1"
+            description = "test"
+            parameters = {"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"]}
+
+            async def execute(self, params, ctx=None):
+                return ToolResult(output="ok")
+
+        reg = ToolRegistry()
+        reg.register(_T())
+        result = await reg.execute("t1", {})
+        assert result.success is False
+        assert result.error_kind == "validation"
+
+    @pytest.mark.asyncio
+    async def test_registry_marks_timeout(self):
+        import asyncio
+        from echo_agent.agent.tools.registry import ToolRegistry
+        from echo_agent.tools.base import Tool, ToolResult
+
+        class _Slow(Tool):
+            name = "slow"
+            description = "test"
+            parameters = {"type": "object", "properties": {}}
+            timeout_seconds = 0
+
+            async def execute(self, params, ctx=None):
+                await asyncio.sleep(1)
+                return ToolResult(output="ok")
+
+        reg = ToolRegistry()
+        reg.register(_Slow())
+        result = await reg.execute("slow", {})
+        assert result.success is False
+        assert result.error_kind == "timeout"
+
+    @pytest.mark.asyncio
+    async def test_registry_marks_internal_exception(self):
+        from echo_agent.agent.tools.registry import ToolRegistry
+        from echo_agent.tools.base import Tool
+
+        class _Boom(Tool):
+            name = "boom"
+            description = "test"
+            parameters = {"type": "object", "properties": {}}
+
+            async def execute(self, params, ctx=None):
+                raise RuntimeError("kaput")
+
+        reg = ToolRegistry()
+        reg.register(_Boom())
+        result = await reg.execute("boom", {})
+        assert result.success is False
+        assert result.error_kind == "internal"

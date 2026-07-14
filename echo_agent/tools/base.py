@@ -71,10 +71,27 @@ class ToolResult:
     output: str = ""
     error: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    # 结构化错误分类,熔断器据此决定是否计数:
+    #   validation — 参数校验失败(LLM 传错参),工具本身健康
+    #   business   — 业务性失败(记录不存在、权限不足等),工具本身健康
+    #   timeout    — 执行超时
+    #   dependency — 下游依赖故障(网络、外部 API)
+    #   internal   — 工具内部异常
+    # 只有 timeout/dependency/internal 属于基础设施故障,应触发熔断;
+    # validation/business 是正常交互的一部分,不能污染全局健康状态。
+    error_kind: str = ""
+
+    INFRA_ERROR_KINDS = frozenset({"timeout", "dependency", "internal"})
 
     @property
     def text(self) -> str:
         return self.output if self.success else f"Error: {self.error}"
+
+    @property
+    def is_infra_failure(self) -> bool:
+        """True 仅当失败源于基础设施(超时/依赖/内部异常)。未标注 error_kind 的
+        失败视为业务失败——宁可少熔断,不可让参数错误熔断掉所有会话的工具。"""
+        return not self.success and self.error_kind in self.INFRA_ERROR_KINDS
 
 
 class Tool(ABC):

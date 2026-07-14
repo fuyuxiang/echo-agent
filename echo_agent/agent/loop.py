@@ -44,11 +44,7 @@ from echo_agent.agent.streaming import (
     TokenStreamPublisher as _TokenStreamPublisher,
 )
 from echo_agent.agent.progress_heartbeat import ProgressHeartbeat, SharedActivityState
-from echo_agent.agent.degraded_notice import (
-    GENERIC_FALLBACK_TEXT,
-    combine_notices,
-    is_generic_fallback,
-)
+from echo_agent.agent.degraded_notice import GENERIC_FALLBACK_TEXT
 
 
 def _resolve_builtin_skills_dir(workspace: Path, configured_path: str) -> Path | None:
@@ -425,6 +421,9 @@ class AgentLoop:
         # Retained for the dashboard task API (gateway/api/tasks.py); previously
         # only forwarded into tool discovery and never held on the instance.
         self._task_manager = task_manager
+        # Retained so the REST transition endpoint can advance workflows after
+        # a terminal task transition — the same closing-the-loop hook TaskTool got.
+        self._workflow_engine = workflow_engine
         self._register_tools(scheduler=scheduler, task_manager=task_manager, workflow_engine=workflow_engine)
         self._setup_delegation()
 
@@ -461,6 +460,7 @@ class AgentLoop:
             bus=bus,
             retrieval_cache_get=self._get_retrieval_cache,
             retrieval_on_miss=config.memory.retrieval_on_miss,
+            retrieval_miss_timeout=config.memory.retrieval_miss_timeout_seconds,
             cache_ttl=config.memory.cache_ttl_seconds,
             cache_jaccard_min=config.memory.cache_jaccard_min,
             cognitive_emitter=self.cognitive_emitter,
@@ -566,6 +566,7 @@ class AgentLoop:
             knowledge_index=self.knowledge,
             approval=self.approval,
             clarify_manager=self.clarify,
+            memory_invalidate_fn=self._invalidate_memory_caches,
         )
         for tool in all_tools:
             self.tools.register(tool)
@@ -701,6 +702,11 @@ class AgentLoop:
     def task_manager(self) -> Any:
         """TaskManager backing the tasks API; None when no manager was wired."""
         return self._task_manager
+
+    @property
+    def workflow_engine(self) -> Any:
+        """WorkflowEngine for DAG advance on task completion; None when unwired."""
+        return self._workflow_engine
 
     @property
     def log_buffer(self) -> Any:
@@ -878,7 +884,6 @@ class AgentLoop:
         self._response_stage._prefetcher = self._prefetcher
 
     async def start(self) -> None:
-        self._running = True
         await self._resolve_embed_and_index(self._storage)
         if self._vector_index is not None:
             # Order matters: purge orphan rows BEFORE the index loads (so they
@@ -929,6 +934,11 @@ class AgentLoop:
             except Exception as e:
                 logger.warning("Skill candidate store schema init failed: {}", e)
         self.bus.subscribe_inbound(self._on_inbound)
+        # 置位必须在 subscribe_inbound 之后、且在所有可抛异常的初始化完成之后:
+        # 之前 _running=True 在 start() 首行,embedding 探针/索引初始化中途抛错时
+        # 健康检查(app.py 以 is_running 为 HEALTHY 判据)会对一个收不了消息的
+        # 半启动实例误报健康。
+        self._running = True
         if self._plugin_manager:
             await self._plugin_manager.hooks.dispatch("on_agent_start")
         if self.evolution is not None:
@@ -990,6 +1000,20 @@ class AgentLoop:
         async with self._state_lock:
             self._memory_snapshots.pop(session_key, None)
             self._memory_snapshot_ids.pop(session_key, None)
+
+    async def _invalidate_memory_caches(self, session_key: str, global_scope: bool = False) -> None:
+        """记忆写操作后的缓存失效:同时清快照与检索预取缓存,否则本轮删改的
+        条目仍会从冻结快照/TTL 内的 cached.scored 注入后续上下文。
+        environment 类型与矛盾裁决影响所有会话,须全局失效(global_scope)。"""
+        async with self._state_lock:
+            if global_scope:
+                self._memory_snapshots.clear()
+                self._memory_snapshot_ids.clear()
+                self._retrieval_cache.clear()
+            else:
+                self._memory_snapshots.pop(session_key, None)
+                self._memory_snapshot_ids.pop(session_key, None)
+                self._retrieval_cache.pop(session_key, None)
 
     async def _put_retrieval_cache(self, session_key: str, entry: Any) -> None:
         """检索预取缓存的唯一写入入口:复用统一 LRU(锁 + 上限),
@@ -1124,27 +1148,14 @@ class AgentLoop:
                 await heartbeat.start(activity)
                 result = await self._process_event(event, trace_id, publish_response=True, activity=activity)
                 response_text = result.response_text
-                notice = combine_notices(result.degraded_notices)
 
-                # Convergence point: the turn MUST deliver a meaningful message.
-                # 1) degraded event + no real answer  -> send the Chinese notice
-                # 2) degraded event + real answer not yet sent -> answer + notice
-                # 3) degraded event + real answer already streamed -> notice only
-                # 4) no degraded event, empty/generic answer -> generic Chinese
-                # 5) no degraded event, real answer -> unchanged behaviour
-                final_text = ""
-                if notice:
-                    if result.outbound_sent:
-                        final_text = notice
-                    elif is_generic_fallback(response_text):
-                        final_text = notice
-                    else:
-                        final_text = f"{response_text}\n\n{notice}"
-                elif not result.outbound_sent:
-                    if is_generic_fallback(response_text):
-                        final_text = GENERIC_FALLBACK_TEXT
-                    else:
-                        final_text = response_text
+                # Delivery point. Text convergence (degraded notices, English
+                # filler → Chinese fallback) already happened in
+                # ResponseStage.finalize BEFORE the session was persisted, so
+                # history, stream, and this publish all carry the same text.
+                # Here we only decide whether an outbound message is still
+                # needed: streamed turns already delivered it.
+                final_text = "" if result.outbound_sent else response_text
 
                 if final_text and _should_publish_reply(event, final_text):
                     out = OutboundEvent.from_text_with_media(

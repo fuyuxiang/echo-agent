@@ -228,10 +228,59 @@ async def test_context_uses_fresh_cache():
 
 
 @pytest.mark.asyncio
-async def test_cli_miss_degrades_to_empty():
+async def test_cli_miss_runs_bounded_retrieval():
+    # Degrade miss no longer skips retrieval — it runs a bounded (timeout-
+    # capped) sync retrieval. First turns / topic switches get memory now.
+    calls = []
+
+    def _probe(query):
+        calls.append(query)
+        return [(_Mem("k9", "bounded-hit"), 0.8)]
+
+    stage, captured, hybrid, memory = _make_context_stage(
+        cache={}, on_miss="degrade", on_retrieve=_probe
+    )
+    await _stage_build(stage, session_key="new", text="anything")
+    assert calls == ["anything"]
+    assert "bounded-hit" in captured["retrieval_context"]
+
+
+@pytest.mark.asyncio
+async def test_cli_miss_timeout_falls_back_to_keyword():
+    # Bounded retrieval exceeding its budget falls back to local keyword search.
+    import asyncio as _asyncio
+
+    kw_calls = []
+
     stage, captured, hybrid, memory = _make_context_stage(
         cache={}, on_miss="degrade"
     )
+    stage._retrieval_miss_timeout = 0.01
+
+    async def _slow_retrieve(text, limit=5, session_key="", episodes=None):
+        await _asyncio.sleep(1)
+        return []
+
+    hybrid.retrieve = AsyncMock(side_effect=_slow_retrieve)
+
+    def _kw(text, limit=5, session_key=""):
+        kw_calls.append(text)
+        return [(_Mem("kw", "keyword-fallback"), 0.5)]
+
+    memory.search_scored = MagicMock(side_effect=_kw)
+
+    await _stage_build(stage, session_key="new", text="anything")
+    assert kw_calls == ["anything"]
+    assert "keyword-fallback" in captured["retrieval_context"]
+
+
+@pytest.mark.asyncio
+async def test_cli_miss_zero_timeout_skips_entirely():
+    # retrieval_miss_timeout=0 preserves the legacy degrade: skip, no retrieval.
+    stage, captured, hybrid, memory = _make_context_stage(
+        cache={}, on_miss="degrade"
+    )
+    stage._retrieval_miss_timeout = 0.0
     await _stage_build(stage, session_key="new", text="anything")
     assert captured["retrieval_context"] == ""
     hybrid.retrieve.assert_not_called()
@@ -272,19 +321,24 @@ async def test_daemon_miss_syncs_via_memory_when_no_hybrid():
 
 @pytest.mark.asyncio
 async def test_stale_cache_misses_then_degrades():
-    # Same topic but expired TTL → miss → CLI degrade → empty, no retrieve.
+    # Same topic but expired TTL → miss → bounded sync retrieval (not the
+    # stale cache entry).
     entry = RetrievalCacheEntry(
         query_text="deploy gateway",
         query_tokens=query_tokens("deploy gateway"),
         scored=[(_Mem("k1", "stale!"), 0.9)],
         created_at=time.time() - 120,
     )
+
+    def _probe(query):
+        return [(_Mem("k2", "fresh-bounded"), 0.8)]
+
     stage, captured, hybrid, memory = _make_context_stage(
-        cache={"sess-1": entry}, on_miss="degrade"
+        cache={"sess-1": entry}, on_miss="degrade", on_retrieve=_probe
     )
     await _stage_build(stage, session_key="sess-1", text="deploy gateway")
-    assert captured["retrieval_context"] == ""
-    hybrid.retrieve.assert_not_called()
+    assert "stale!" not in captured["retrieval_context"]
+    assert "fresh-bounded" in captured["retrieval_context"]
 
 
 # --- ResponseStage post-reply prefetch trigger (Task 12) ---

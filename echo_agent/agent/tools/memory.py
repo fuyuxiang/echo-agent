@@ -6,10 +6,13 @@ project, and environment across sessions.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
 from echo_agent.memory.store import MemoryEntry, MemoryStore, MemoryType
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 
 class MemoryTool(Tool):
@@ -81,9 +84,17 @@ class MemoryTool(Tool):
         "required": ["action"],
     }
 
-    def __init__(self, store: MemoryStore, contradiction_detector: Any = None):
+    def __init__(
+        self,
+        store: MemoryStore,
+        contradiction_detector: Any = None,
+        invalidate_caches: "Callable[[str, bool], Awaitable[None]] | None" = None,
+    ):
         self._store = store
         self._contradiction_detector = contradiction_detector
+        # 写操作成功后的缓存失效回调 (session_key, global_scope) -> None。
+        # 不注入时退化为纯写 store(旧行为),由调用方决定是否需要一致性。
+        self._invalidate_caches = invalidate_caches
 
     def _resolve_entry(
         self,
@@ -123,11 +134,11 @@ class MemoryTool(Tool):
         session_key = ctx.session_key if ctx else ""
 
         if action == "add":
-            return self._add(params, mem_type, session_key)
+            result = self._add(params, mem_type, session_key)
         elif action == "replace":
-            return self._replace(params, mem_type, session_key)
+            result = self._replace(params, mem_type, session_key)
         elif action == "remove":
-            return self._remove(params, mem_type, session_key)
+            result = self._remove(params, mem_type, session_key)
         elif action == "search":
             return self._search(params, mem_type, session_key)
         elif action == "list":
@@ -135,8 +146,20 @@ class MemoryTool(Tool):
         elif action == "list_contradictions":
             return await self._list_contradictions()
         elif action == "resolve_contradiction":
-            return await self._resolve_contradiction(params)
-        return ToolResult(success=False, error=f"Unknown action '{action}'")
+            result = await self._resolve_contradiction(params)
+        else:
+            return ToolResult(success=False, error=f"Unknown action '{action}'")
+
+        # 写操作成功后立即失效快照/检索缓存,当轮生效——否则冻结快照与 TTL 内
+        # 的预取结果会跨多轮继续注入已删改的旧内容。environment 记忆和矛盾裁决
+        # 对所有会话可见,须全局失效。
+        if result.success and self._invalidate_caches is not None:
+            global_scope = (
+                mem_type == MemoryType.ENVIRONMENT
+                or action == "resolve_contradiction"
+            )
+            await self._invalidate_caches(session_key, global_scope)
+        return result
 
     def _add(self, params: dict[str, Any], mem_type: MemoryType, session_key: str) -> ToolResult:
         key = params.get("key", "")

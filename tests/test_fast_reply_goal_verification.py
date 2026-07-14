@@ -126,18 +126,30 @@ async def test_A_cache_hit_runs_zero_inline_retrieval():
 
 @pytest.mark.asyncio
 async def test_A_cli_degrade_miss_skips_retrieval_entirely():
-    """CLI 默认(degrade)下缓存未命中:快路径直接跳过检索,不阻塞、不内联。"""
+    """CLI 默认(degrade)下缓存未命中:检索变为有界同步(时间预算内),
+    knowledge/episodic 的独立内联扫描仍被跳过;timeout=0 保留完全跳过的
+    旧快路径。"""
     knowledge = MagicMock()
     knowledge.search_async = AsyncMock(side_effect=AssertionError("degrade 不应内联扫描"))
     episodic = MagicMock()
     episodic.search_episodes = AsyncMock(side_effect=AssertionError("degrade 不应查 episodic"))
 
+    # 默认预算:miss 走有界检索(单次 retrieve 调用,预算封顶不阻塞)
     stage, hybrid = _build_stage(
         cache={}, on_miss="degrade", knowledge=knowledge, episodic=episodic,
     )
     await _build(stage, session_key="new", text="anything", sender_id="u1")
+    assert hybrid.retrieve.await_count == 1
+    assert knowledge.search_async.call_count == 0
+    assert episodic.search_episodes.await_count == 0
 
-    assert hybrid.retrieve.await_count == 0
+    # timeout=0:旧的完全跳过快路径仍可配置
+    stage0, hybrid0 = _build_stage(
+        cache={}, on_miss="degrade", knowledge=knowledge, episodic=episodic,
+    )
+    stage0._retrieval_miss_timeout = 0.0
+    await _build(stage0, session_key="new", text="anything", sender_id="u1")
+    assert hybrid0.retrieve.await_count == 0
     assert knowledge.search_async.call_count == 0
     assert episodic.search_episodes.await_count == 0
 

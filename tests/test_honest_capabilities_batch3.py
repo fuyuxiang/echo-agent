@@ -222,8 +222,11 @@ def test_workflow_tool_describes_orchestration_only():
     from echo_agent.agent.tools.workflow import WorkflowTool
     desc = WorkflowTool.description.lower()
     assert "orchestrat" in desc
-    # 必须诚实声明不自动执行 step 工具
-    assert "does not execute" in desc or "external" in desc
+    # 必须诚实声明引擎不自动执行 step 工具——执行者是 agent 自己,
+    # 且要写清驱动协议(task start → 执行 → task complete 自动 advance)。
+    assert "only orchestrates" in desc
+    assert "you execute" in desc or "you are the executor" in desc
+    assert "task complete" in desc
 
 
 def test_sandbox_runtime_typed_checks_removed():

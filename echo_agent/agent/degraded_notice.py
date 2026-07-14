@@ -74,3 +74,33 @@ def combine_notices(notices: list[str]) -> str:
             seen.add(n)
             ordered.append(n)
     return "\n".join(ordered)
+
+
+def converge_response_text(
+    text: str,
+    notices: list[str],
+    *,
+    substitute_empty: bool = False,
+) -> str:
+    """Fold degraded notices into the answer and replace generic English
+    fillers with the Chinese fallback, BEFORE the text is persisted or sent.
+
+    This is the single convergence point: the session history, the stream
+    publisher, and the outbound publish must all carry the same text —
+    converging after persistence (the old loop-level gate) left an English
+    filler in history while the user received the Chinese notice.
+
+    substitute_empty: replace an empty answer with GENERIC_FALLBACK_TEXT.
+    Only enable on user-facing rounds — inspection/internal rounds rely on
+    empty text to stay silent.
+    """
+    notice = combine_notices(notices)
+    if notice:
+        if is_generic_fallback(text):
+            return notice
+        return f"{text}\n\n{notice}"
+    if (text or "").strip() in GENERIC_ENGLISH_FALLBACKS:
+        return GENERIC_FALLBACK_TEXT
+    if substitute_empty and not (text or "").strip():
+        return GENERIC_FALLBACK_TEXT
+    return text

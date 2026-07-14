@@ -156,7 +156,7 @@ class ToolRegistry:
 
         errors = tool.validate_params(params)
         if errors:
-            return ToolResult(success=False, error=f"Invalid parameters: {'; '.join(errors)}")
+            return ToolResult(success=False, error=f"Invalid parameters: {'; '.join(errors)}", error_kind="validation")
 
         exec_ctx = ctx or ToolExecutionContext(
             execution_id=uuid.uuid4().hex[:12],
@@ -209,10 +209,10 @@ class ToolRegistry:
                             self._replay_cache.popitem(last=False)
                 return result
             except asyncio.TimeoutError:
-                last_result = ToolResult(success=False, error=f"Tool '{name}' timed out after {tool.timeout_seconds}s")
+                last_result = ToolResult(success=False, error=f"Tool '{name}' timed out after {tool.timeout_seconds}s", error_kind="timeout")
                 logger.warning("Tool {} timed out (attempt {}/{})", name, attempt + 1, max_attempts)
             except Exception as e:
-                last_result = ToolResult(success=False, error=f"Tool '{name}' error: {e}")
+                last_result = ToolResult(success=False, error=f"Tool '{name}' error: {e}", error_kind="internal")
                 logger.error("Tool {} failed (attempt {}/{}): {}", name, attempt + 1, max_attempts, e)
             attempt += 1
 

@@ -73,13 +73,31 @@ class PlanRunStore:
             return None
         return self._row_to_run(rows[0])
 
-    async def get_resumable(self, session_key: str) -> Plan | None:
-        """Return the latest still-running plan for a session as a Plan, so an
-        interrupted multi-step task can be picked up where it left off."""
+    # 可续跑状态:running=上一轮中断(进程崩溃/异常),exhausted=迭代耗尽/预算
+    # 中止/强制收敛。写入方(inference_stage)把中断计划存成 exhausted,读取方
+    # 必须认它——之前只认 running,恰好把最需要恢复的耗尽计划排除在外。
+    _RESUMABLE_STATUSES = frozenset({"running", "exhausted"})
+
+    async def get_resumable(
+        self, session_key: str, *, max_age_seconds: float = 86400.0,
+    ) -> tuple[str, Plan] | None:
+        """Return (run_id, Plan) for the latest interrupted multi-step plan of
+        this session, so it can be picked up where it left off. Runs older than
+        max_age_seconds are not offered — a day-old goal is stale context, not
+        a task to silently resume."""
         run = await self.get_latest(session_key)
-        if run is None or run.get("status") != "running":
+        if run is None or run.get("status") not in self._RESUMABLE_STATUSES:
             return None
-        return run.get("plan")
+        plan = run.get("plan")
+        if plan is None:
+            return None
+        try:
+            updated = datetime.fromisoformat(run.get("updated_at", ""))
+            if (datetime.now() - updated).total_seconds() > max_age_seconds:
+                return None
+        except ValueError:
+            return None
+        return run.get("id", ""), plan
 
     @staticmethod
     def _row_to_run(row: dict[str, Any]) -> dict[str, Any]:

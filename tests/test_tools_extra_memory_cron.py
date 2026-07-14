@@ -245,3 +245,108 @@ class TestCronjobTool:
         result = await tool.execute({"action": "boom"}, _ctx())
         assert result.success is False
         assert "Unknown action" in result.error
+
+
+# ===========================================================================
+# MemoryTool — 写后缓存失效回调 (invalidate_caches)
+# ===========================================================================
+
+
+class TestMemoryToolCacheInvalidation:
+    def _make(self, tmp_path):
+        from echo_agent.agent.tools.memory import MemoryTool
+        from echo_agent.memory.store import MemoryStore
+
+        calls: list[tuple[str, bool]] = []
+
+        async def _invalidate(session_key: str, global_scope: bool) -> None:
+            calls.append((session_key, global_scope))
+
+        store = MemoryStore(memory_dir=tmp_path / "mem")
+        tool = MemoryTool(store=store, invalidate_caches=_invalidate)
+        return tool, store, calls
+
+    @pytest.mark.asyncio
+    async def test_add_user_memory_invalidates_session_scope(self, tmp_path):
+        tool, _, calls = self._make(tmp_path)
+        result = await tool.execute(
+            {"action": "add", "target": "user", "key": "k1", "content": "v1"},
+            _ctx(session_key="s1"),
+        )
+        assert result.success is True
+        assert calls == [("s1", False)]
+
+    @pytest.mark.asyncio
+    async def test_add_environment_memory_invalidates_globally(self, tmp_path):
+        tool, _, calls = self._make(tmp_path)
+        result = await tool.execute(
+            {"action": "add", "target": "environment", "key": "k1", "content": "v1"},
+            _ctx(session_key="s1"),
+        )
+        assert result.success is True
+        assert calls == [("s1", True)]
+
+    @pytest.mark.asyncio
+    async def test_remove_invalidates(self, tmp_path):
+        tool, _, calls = self._make(tmp_path)
+        await tool.execute(
+            {"action": "add", "target": "user", "key": "k1", "content": "v1"},
+            _ctx(session_key="s1"),
+        )
+        calls.clear()
+        result = await tool.execute(
+            {"action": "remove", "target": "user", "key": "k1"},
+            _ctx(session_key="s1"),
+        )
+        assert result.success is True
+        assert calls == [("s1", False)]
+
+    @pytest.mark.asyncio
+    async def test_replace_invalidates(self, tmp_path):
+        tool, _, calls = self._make(tmp_path)
+        await tool.execute(
+            {"action": "add", "target": "user", "key": "k1", "content": "v1"},
+            _ctx(session_key="s1"),
+        )
+        calls.clear()
+        result = await tool.execute(
+            {"action": "replace", "target": "user", "key": "k1", "content": "v2"},
+            _ctx(session_key="s1"),
+        )
+        assert result.success is True
+        assert calls == [("s1", False)]
+
+    @pytest.mark.asyncio
+    async def test_failed_write_does_not_invalidate(self, tmp_path):
+        tool, _, calls = self._make(tmp_path)
+        result = await tool.execute(
+            {"action": "remove", "target": "user", "key": "missing"},
+            _ctx(session_key="s1"),
+        )
+        assert result.success is False
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_read_actions_do_not_invalidate(self, tmp_path):
+        tool, _, calls = self._make(tmp_path)
+        await tool.execute(
+            {"action": "add", "target": "user", "key": "k1", "content": "v1"},
+            _ctx(session_key="s1"),
+        )
+        calls.clear()
+        await tool.execute({"action": "search", "query": "v1"}, _ctx(session_key="s1"))
+        await tool.execute({"action": "list", "target": "user"}, _ctx(session_key="s1"))
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_no_callback_is_noop(self, tmp_path):
+        from echo_agent.agent.tools.memory import MemoryTool
+        from echo_agent.memory.store import MemoryStore
+
+        store = MemoryStore(memory_dir=tmp_path / "mem")
+        tool = MemoryTool(store=store)
+        result = await tool.execute(
+            {"action": "add", "target": "user", "key": "k1", "content": "v1"},
+            _ctx(session_key="s1"),
+        )
+        assert result.success is True

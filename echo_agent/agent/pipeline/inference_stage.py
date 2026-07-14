@@ -26,7 +26,6 @@ from echo_agent.agent.pipeline.tool_concurrency import (
 from echo_agent.agent.pipeline.types import InferenceResult, PipelineContext
 from echo_agent.agent.tools.base import ToolExecutionContext, build_idempotency_key
 from echo_agent.agent.tools.circuit_breaker import ToolCircuitBreaker
-from echo_agent.agent.planning.models import StepStatus
 from echo_agent.agent.progress_heartbeat import ActivitySnapshot, friendly_activity
 from echo_agent.bus.events import OutboundEvent
 from echo_agent.cost.budget import BudgetExceeded
@@ -381,10 +380,12 @@ class InferenceStage:
         session.metadata["_nudge_turns_memory"] = _memory_turns
 
         # Persist plan execution state so progress is queryable and an
-        # interrupted long task can be resumed. The reflect loop above is the
-        # only execution feedback we have at turn granularity, so completing a
-        # turn without a replan request marks the plan's steps done; a
-        # should_replan turn leaves the plan running for the next turn.
+        # interrupted long task can be resumed. Honest status semantics: the
+        # only execution feedback we have is turn-granular (the reflect loop
+        # above), so the RUN status records the turn outcome — step statuses
+        # are NOT batch-faked to COMPLETED anymore. A step only ever flips
+        # status when something actually marks it (today: nothing does, so
+        # steps stay pending; the run-level status carries the truth).
         if (
             self._plan_run_store is not None
             and ctx.plan_run_id
@@ -394,20 +395,19 @@ class InferenceStage:
                 plan = ctx.execution_plan
                 # forced_convergence means the loop hit its iteration ceiling
                 # and squeezed out a conclusion — the ANSWER exists but the
-                # TASK is unfinished. Treat it like exhaustion: leave pending
-                # steps pending and store the run as resumable.
+                # TASK is unfinished. Treat it like exhaustion: keep the run
+                # resumable.
                 task_incomplete = (
                     loop_result.loop_exhausted
                     or loop_result.budget_halted
                     or loop_result.forced_convergence
                 )
-                if loop_result.response_text and not task_incomplete:
-                    for step in plan.steps:
-                        if step.status == StepStatus.PENDING:
-                            plan.mark_step_complete(step.index, "")
-                status = "complete" if plan.is_complete else "running"
                 if task_incomplete:
                     status = "exhausted"
+                elif loop_result.response_text:
+                    status = "complete"
+                else:
+                    status = "running"
                 await self._plan_run_store.update(ctx.plan_run_id, plan, status=status)
             except Exception as e:
                 logger.debug("Plan run update failed: {}", e)
@@ -752,6 +752,24 @@ class InferenceStage:
                 continue
             d.approved = True
 
+            # Circuit-breaker probe permit. Schema filtering above uses the
+            # side-effect-free peek, so the OPEN→HALF_OPEN transition and the
+            # half_open_max probe budget are enforced HERE, on the real call
+            # path — without this acquire the recovery state machine never
+            # runs and an opened circuit can only "recover" by accident.
+            # Runs serially in Phase A so probe accounting has no races.
+            if not self._circuit_breaker.is_available(tool_call.name):
+                d.verdict = "BLOCKED"
+                d.blocked_message = (
+                    f"[Blocked] Tool '{tool_call.name}' is temporarily disabled "
+                    "(circuit open after repeated failures). Try again later or "
+                    "use a different approach."
+                )
+                d.blocked_meta = {"success": False, "circuit_open": True}
+                logger.warning("Circuit breaker blocked tool call: {}", tool_call.name)
+                decisions.append(d)
+                continue
+
             # Repeat-call guard: count BEFORE executing so identical calls don't
             # keep firing side effects. The N-th identical call is short-circuited
             # with an error message instead.
@@ -1033,10 +1051,14 @@ class InferenceStage:
             counters.skill_iters += 1
             counters.memory_iters += 1
 
-            # Per-tool circuit breaker
+            # Per-tool circuit breaker. Only infrastructure failures (timeout/
+            # dependency/internal) count toward opening the circuit — validation
+            # and business failures are part of normal interaction; counting
+            # them lets one session's bad arguments disable the tool for every
+            # session (the breaker is process-global).
             if result.success:
                 self._circuit_breaker.record_success(tool_call.name)
-            else:
+            elif result.is_infra_failure:
                 self._circuit_breaker.record_failure(tool_call.name)
 
             if (self._nudge_interval > 0 and counters.skill_iters >= self._nudge_interval

@@ -133,4 +133,17 @@ class TasksAPI:
             task = await self._manager().transition(task_id, new_status)
         except ValueError as e:
             return web.json_response({"error": str(e)}, status=400)
+
+        # Terminal transition on a workflow step: advance the owning workflow
+        # so its next eligible steps get queued (same hook as TaskTool).
+        # Best-effort — the transition already persisted; a failed advance is
+        # recoverable via an explicit workflow advance.
+        engine = getattr(self._server._agent_loop, "workflow_engine", None)
+        if engine is not None and task.workflow_id and new_status in (
+            TaskStatus.SUCCESS, TaskStatus.FAILED,
+        ):
+            try:
+                await engine.on_task_complete(task.id)
+            except Exception:
+                pass
         return web.json_response({"task": task.to_dict()})

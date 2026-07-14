@@ -1859,8 +1859,16 @@ class MemoryConfig(_Base):
         default="degrade",
         json_schema_extra={
             "status": "effective", "ref": "agent/pipeline/context_stage.py:197",
-            "desc_zh": "检索缓存未命中时的行为:degrade=本轮跳过检索,sync=同步补检索",
-            "desc_en": "Behavior on retrieval cache miss: degrade=skip this turn, sync=fetch synchronously",
+            "desc_zh": "检索缓存未命中时的行为:degrade=有界同步检索(超时回退关键词),sync=完整同步检索",
+            "desc_en": "Behavior on retrieval cache miss: degrade=bounded sync retrieval with keyword fallback, sync=full synchronous retrieval",
+        },
+    )
+    retrieval_miss_timeout_seconds: float = Field(
+        default=0.8,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/pipeline/context_stage.py:197",
+            "desc_zh": "degrade 模式下缓存未命中时的同步检索时间预算(秒),超时回退本地关键词检索;0=完全跳过(旧行为)",
+            "desc_en": "Time budget (s) for bounded sync retrieval on cache miss in degrade mode; falls back to local keyword search on timeout; 0=skip entirely (legacy)",
         },
     )
     cache_ttl_seconds: float = Field(

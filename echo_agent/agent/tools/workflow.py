@@ -13,9 +13,12 @@ class WorkflowTool(Tool):
     name = "workflow"
     description = (
         "Orchestrate multi-step workflows with DAG-based step dependencies. "
-        "This engine ONLY orchestrates step state and dependency resolution — it "
-        "does NOT execute the steps' tools itself. Step execution must be driven "
-        "externally by calling 'advance'. "
+        "This engine ONLY orchestrates step state and dependency resolution — "
+        "YOU execute the steps: after 'start', queued step tasks appear in the "
+        "task tool carrying tool_name/tool_params in metadata. For each one: "
+        "task start → run that tool yourself → task complete (this auto-advances "
+        "the workflow and queues the next steps). Use 'advance' only to re-sync "
+        "state manually. "
         "Actions: create, start, status, advance, pause, resume, cancel, list."
     )
     parameters = {

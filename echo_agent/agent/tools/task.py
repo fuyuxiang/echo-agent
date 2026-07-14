@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from loguru import logger
+
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
 from echo_agent.tasks.manager import TaskManager
 from echo_agent.tasks.models import TaskStatus
@@ -14,7 +16,11 @@ class TaskTool(Tool):
     name = "task"
     description = (
         "Manage tasks with full lifecycle tracking. Actions: "
-        "create, list, get, start, complete, fail, cancel, retry, update."
+        "create, list, get, start, complete, fail, cancel, retry, update. "
+        "Workflow steps are queued as tasks carrying tool_name/tool_params in "
+        "metadata: YOU are the executor — 'start' the task, run the tool "
+        "yourself, then 'complete' (or 'fail') it; completing a workflow step "
+        "automatically advances its workflow to queue the next steps."
     )
     parameters = {
         "type": "object",
@@ -36,8 +42,25 @@ class TaskTool(Tool):
         "required": ["action"],
     }
 
-    def __init__(self, manager: TaskManager):
+    def __init__(self, manager: TaskManager, workflow_engine: Any = None):
         self._mgr = manager
+        # 步骤任务完成/失败后自动推进所属工作流(on_task_complete→advance)。
+        # 不注入时保持旧行为:完成任务不触碰工作流状态。
+        self._workflow_engine = workflow_engine
+
+    async def _advance_workflow(self, task: Any) -> None:
+        """Best-effort workflow advance after a terminal task transition. The
+        task state change has already been persisted — a failed advance must
+        not fail the tool call, it only delays DAG progress until the next
+        explicit 'workflow advance'."""
+        if self._workflow_engine is None or not getattr(task, "workflow_id", ""):
+            return
+        try:
+            await self._workflow_engine.on_task_complete(task.id)
+        except Exception as e:
+            logger.warning(
+                "Workflow advance after task {} failed: {}", task.id, e
+            )
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         action = params["action"]
@@ -76,11 +99,19 @@ class TaskTool(Tool):
                 return ToolResult(output=f"Task {task.id} started")
 
             if action == "complete":
+                # 状态机不允许 RUNNING→SUCCESS 直达(须经 REVIEW)。agent 视角的
+                # "complete"就是"做完了",自动补上 REVIEW 过渡——否则 complete
+                # 对 RUNNING 任务必然抛 Invalid transition,驱动闭环卡死。
+                task = await self._mgr.get(params["task_id"])
+                if task is not None and task.status == TaskStatus.RUNNING:
+                    await self._mgr.transition(params["task_id"], TaskStatus.REVIEW)
                 task = await self._mgr.transition(params["task_id"], TaskStatus.SUCCESS, result=params.get("result", ""))
+                await self._advance_workflow(task)
                 return ToolResult(output=f"Task {task.id} completed")
 
             if action == "fail":
                 task = await self._mgr.transition(params["task_id"], TaskStatus.FAILED, error=params.get("error", ""))
+                await self._advance_workflow(task)
                 return ToolResult(output=f"Task {task.id} failed")
 
             if action == "cancel":

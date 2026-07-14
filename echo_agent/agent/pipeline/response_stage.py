@@ -89,6 +89,22 @@ class ResponseStage:
         if ctx.intro_text:
             response_text = f"{ctx.intro_text}\n\n{response_text}" if response_text else ctx.intro_text
 
+        # Converge the final user-facing text BEFORE persisting or streaming:
+        # degraded notices and the English-filler→Chinese-fallback substitution
+        # must land in the session history, the stream, and the outbound
+        # publish identically. Converging later (the old loop-level gate) left
+        # an English filler in history while the user received the Chinese
+        # notice — the next turn's model context diverged from what the user saw.
+        # Inspection rounds keep empty text empty ("no news, stay silent").
+        if ctx.publish_response:
+            from echo_agent.agent.degraded_notice import converge_response_text
+            is_inspection = bool(event.metadata.get("_inspection"))
+            response_text = converge_response_text(
+                response_text,
+                list(result.degraded_notices),
+                substitute_empty=not is_inspection,
+            )
+
         session.add_message("assistant", response_text)
         await self._sessions.save(session)
 

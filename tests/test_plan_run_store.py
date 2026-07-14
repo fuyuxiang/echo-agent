@@ -107,15 +107,51 @@ async def test_resumable_returns_running_plan_only(tmp_path: Path):
         store = PlanRunStore(backend)
         plan = _plan()
         run_id = await store.create("sess1", "trace1", plan)
-        # Still running → resumable.
+        # Still running → resumable, returns (run_id, plan).
         resumable = await store.get_resumable("sess1")
         assert resumable is not None
-        assert resumable.goal == "ship the feature"
+        got_run_id, got_plan = resumable
+        assert got_run_id == run_id
+        assert got_plan.goal == "ship the feature"
         # Mark complete → no longer resumable.
         plan.mark_step_complete(0, "ok")
         plan.mark_step_complete(1, "ok")
         await store.update(run_id, plan)
         assert await store.get_resumable("sess1") is None
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_resumable_includes_exhausted_runs(tmp_path: Path):
+    # inference_stage 把中断计划存成 exhausted;get_resumable 必须认它——
+    # 之前只认 running,把最需要恢复的耗尽计划排除在外。
+    backend = SQLiteBackend(tmp_path / "s.db")
+    await backend.initialize()
+    try:
+        store = PlanRunStore(backend)
+        plan = _plan()
+        run_id = await store.create("sess1", "trace1", plan)
+        await store.update(run_id, plan, status="exhausted")
+        resumable = await store.get_resumable("sess1")
+        assert resumable is not None
+        got_run_id, got_plan = resumable
+        assert got_run_id == run_id
+        assert got_plan.goal == "ship the feature"
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_resumable_skips_stale_runs(tmp_path: Path):
+    backend = SQLiteBackend(tmp_path / "s.db")
+    await backend.initialize()
+    try:
+        store = PlanRunStore(backend)
+        plan = _plan()
+        await store.create("sess1", "trace1", plan)
+        # 一天前的旧任务是陈旧上下文,不应静默续跑。
+        assert await store.get_resumable("sess1", max_age_seconds=0.0) is None
     finally:
         await backend.close()
 
@@ -130,3 +166,17 @@ async def test_get_latest_none_for_unknown_session(tmp_path: Path):
         assert await store.get_resumable("nope") is None
     finally:
         await backend.close()
+
+
+def test_wants_resume_markers():
+    from echo_agent.agent.pipeline.context_stage import wants_resume
+
+    assert wants_resume("继续") is True
+    assert wants_resume("继续。") is True
+    assert wants_resume("接着做") is True
+    assert wants_resume("continue") is True
+    assert wants_resume("Resume") is True
+    # 完整的新问题即使含"继续"也不算继续指令
+    assert wants_resume("继续帮我查一下明天北京的天气怎么样") is False
+    assert wants_resume("帮我写个脚本") is False
+    assert wants_resume("") is False

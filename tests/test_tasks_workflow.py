@@ -707,3 +707,96 @@ class TestWorkflowDAGExecution:
         await tm.transition(tid2, TaskStatus.SUCCESS)
         wf = await engine.advance(wf.id)
         assert wf.status == WorkflowStatus.SUCCESS
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Part 4 — TaskTool 驱动闭环:complete 自动经 REVIEW 并推进工作流
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestTaskToolWorkflowLoop:
+    """LLM 即执行器:task complete 后 DAG 自动 advance,下一步自动入队。"""
+
+    def _setup(self):
+        from echo_agent.agent.tools.task import TaskTool
+
+        storage = _make_storage()
+        mgr = TaskManager(storage)
+        engine = WorkflowEngine(storage, mgr)
+        tool = TaskTool(manager=mgr, workflow_engine=engine)
+        return tool, mgr, engine
+
+    @pytest.mark.asyncio
+    async def test_complete_running_task_passes_through_review(self):
+        tool, mgr, _ = self._setup()
+        t = await mgr.create(title="step")
+        await mgr.transition(t.id, TaskStatus.QUEUED)
+        await mgr.transition(t.id, TaskStatus.RUNNING)
+        result = await tool.execute({"action": "complete", "task_id": t.id, "result": "done"})
+        assert result.success is True
+        assert (await mgr.get(t.id)).status == TaskStatus.SUCCESS
+
+    @pytest.mark.asyncio
+    async def test_complete_step_advances_workflow_and_queues_next(self):
+        tool, mgr, engine = self._setup()
+        wf = await engine.create("wf", [
+            {"id": "s1", "name": "first", "tool_name": "toolA"},
+            {"id": "s2", "name": "second", "tool_name": "toolB", "depends_on": ["s1"]},
+        ])
+        wf = await engine.start(wf.id)
+        t1_id = wf.step_tasks["s1"]
+        assert "s2" not in wf.step_tasks  # 依赖未满足,尚未入队
+
+        await tool.execute({"action": "start", "task_id": t1_id})
+        result = await tool.execute({"action": "complete", "task_id": t1_id, "result": "ok"})
+        assert result.success is True
+
+        wf = await engine.get(wf.id)
+        assert "s2" in wf.step_tasks  # complete 自动 advance,s2 已入队
+        t2 = await mgr.get(wf.step_tasks["s2"])
+        assert t2.status == TaskStatus.QUEUED
+
+    @pytest.mark.asyncio
+    async def test_fail_step_fails_workflow(self):
+        tool, mgr, engine = self._setup()
+        wf = await engine.create("wf", [
+            {"id": "s1", "name": "first", "tool_name": "toolA"},
+            {"id": "s2", "name": "second", "tool_name": "toolB", "depends_on": ["s1"]},
+        ])
+        wf = await engine.start(wf.id)
+        t1_id = wf.step_tasks["s1"]
+        await tool.execute({"action": "start", "task_id": t1_id})
+        await tool.execute({"action": "fail", "task_id": t1_id, "error": "boom"})
+        wf = await engine.get(wf.id)
+        assert wf.status == WorkflowStatus.FAILED
+
+    @pytest.mark.asyncio
+    async def test_all_steps_complete_marks_workflow_success(self):
+        tool, mgr, engine = self._setup()
+        wf = await engine.create("wf", [
+            {"id": "s1", "name": "first", "tool_name": "toolA"},
+            {"id": "s2", "name": "second", "tool_name": "toolB", "depends_on": ["s1"]},
+        ])
+        wf = await engine.start(wf.id)
+        t1_id = wf.step_tasks["s1"]
+        await tool.execute({"action": "start", "task_id": t1_id})
+        await tool.execute({"action": "complete", "task_id": t1_id})
+        wf = await engine.get(wf.id)
+        t2_id = wf.step_tasks["s2"]
+        await tool.execute({"action": "start", "task_id": t2_id})
+        await tool.execute({"action": "complete", "task_id": t2_id})
+        wf = await engine.get(wf.id)
+        assert wf.status == WorkflowStatus.SUCCESS
+
+    @pytest.mark.asyncio
+    async def test_no_engine_keeps_old_behavior(self):
+        from echo_agent.agent.tools.task import TaskTool
+
+        storage = _make_storage()
+        mgr = TaskManager(storage)
+        tool = TaskTool(manager=mgr)
+        t = await mgr.create(title="solo")
+        await mgr.transition(t.id, TaskStatus.QUEUED)
+        await mgr.transition(t.id, TaskStatus.RUNNING)
+        result = await tool.execute({"action": "complete", "task_id": t.id})
+        assert result.success is True
+        assert (await mgr.get(t.id)).status == TaskStatus.SUCCESS

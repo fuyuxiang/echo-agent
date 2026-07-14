@@ -59,11 +59,13 @@ def _event():
 
 @pytest.mark.asyncio
 async def test_empty_response_with_notice_sends_chinese(monkeypatch):
+    # Convergence now happens inside _process_event (ResponseStage.finalize),
+    # so the stub returns the already-converged text; the loop only delivers.
     loop, sent = _make_loop()
     notice = notice_for(REASON_APPROVAL_UNAVAILABLE)
 
     async def fake_process(event, trace_id, publish_response=False, activity=None):
-        return ProcessResult(response_text="", outbound_sent=False, degraded_notices=[notice])
+        return ProcessResult(response_text=notice, outbound_sent=False, degraded_notices=[notice])
 
     monkeypatch.setattr(loop, "_process_event", fake_process)
     monkeypatch.setattr(loop, "_is_approval_command", lambda t: False)
@@ -73,69 +75,66 @@ async def test_empty_response_with_notice_sends_chinese(monkeypatch):
     assert sent[0].is_final is True
 
 
-@pytest.mark.asyncio
-async def test_empty_response_no_notice_sends_generic_chinese(monkeypatch):
-    loop, sent = _make_loop()
-
-    async def fake_process(event, trace_id, publish_response=False, activity=None):
-        return ProcessResult(response_text="", outbound_sent=False, degraded_notices=[])
-
-    monkeypatch.setattr(loop, "_process_event", fake_process)
-    monkeypatch.setattr(loop, "_is_approval_command", lambda t: False)
-    await loop._on_inbound(_event())
-    assert len(sent) == 1
-    assert sent[0].text.startswith("⚠️")
+def test_converge_empty_with_notice_returns_notice():
+    from echo_agent.agent.degraded_notice import converge_response_text
+    notice = notice_for(REASON_APPROVAL_UNAVAILABLE)
+    assert converge_response_text("", [notice]) == notice
 
 
-@pytest.mark.asyncio
-async def test_generic_english_replaced_by_notice(monkeypatch):
-    loop, sent = _make_loop()
+def test_converge_empty_no_notice_substitutes_generic_chinese():
+    from echo_agent.agent.degraded_notice import (
+        GENERIC_FALLBACK_TEXT,
+        converge_response_text,
+    )
+    assert converge_response_text("", [], substitute_empty=True) == GENERIC_FALLBACK_TEXT
+    # Inspection/internal rounds keep empty text empty ("no news, stay silent").
+    assert converge_response_text("", [], substitute_empty=False) == ""
+
+
+def test_converge_generic_english_replaced_by_notice():
+    from echo_agent.agent.degraded_notice import converge_response_text
     notice = notice_for(REASON_APPROVAL_UNAVAILABLE)
     english = "I encountered an issue processing your request. Please try again or rephrase your question."
+    converged = converge_response_text(english, [notice])
+    assert english not in converged
+    assert notice in converged
 
-    async def fake_process(event, trace_id, publish_response=False, activity=None):
-        return ProcessResult(response_text=english, outbound_sent=False, degraded_notices=[notice])
 
-    monkeypatch.setattr(loop, "_process_event", fake_process)
-    monkeypatch.setattr(loop, "_is_approval_command", lambda t: False)
-    await loop._on_inbound(_event())
-    assert len(sent) == 1
-    assert english not in sent[0].text
-    assert notice_for(REASON_APPROVAL_UNAVAILABLE) in sent[0].text
+def test_converge_generic_english_no_notice_becomes_generic_chinese():
+    from echo_agent.agent.degraded_notice import (
+        GENERIC_FALLBACK_TEXT,
+        converge_response_text,
+    )
+    english = "I encountered an issue processing your request. Please try again."
+    assert converge_response_text(english, []) == GENERIC_FALLBACK_TEXT
+
+
+def test_converge_real_answer_combines_answer_and_notice():
+    from echo_agent.agent.degraded_notice import converge_response_text
+    notice = notice_for(REASON_APPROVAL_UNAVAILABLE)
+    converged = converge_response_text("真实回答", [notice])
+    assert "真实回答" in converged
+    assert notice in converged
+
+
+def test_converge_real_answer_no_notice_unchanged():
+    from echo_agent.agent.degraded_notice import converge_response_text
+    assert converge_response_text("真实回答", []) == "真实回答"
 
 
 @pytest.mark.asyncio
-async def test_real_answer_not_yet_sent_combines_answer_and_notice(monkeypatch):
+async def test_streamed_answer_not_republished(monkeypatch):
+    # Converged text was already delivered by the stream publisher
+    # (outbound_sent=True) — the loop must not publish a duplicate.
     loop, sent = _make_loop()
-    notice = notice_for(REASON_APPROVAL_UNAVAILABLE)
 
     async def fake_process(event, trace_id, publish_response=False, activity=None):
-        return ProcessResult(response_text="真实回答", outbound_sent=False, degraded_notices=[notice])
+        return ProcessResult(response_text="真实回答", outbound_sent=True, degraded_notices=[])
 
     monkeypatch.setattr(loop, "_process_event", fake_process)
     monkeypatch.setattr(loop, "_is_approval_command", lambda t: False)
     await loop._on_inbound(_event())
-    # answer not yet streamed; convergence point sends answer + notice in one message
-    assert len(sent) == 1
-    assert "真实回答" in sent[0].text
-    assert notice_for(REASON_APPROVAL_UNAVAILABLE) in sent[0].text
-
-
-@pytest.mark.asyncio
-async def test_real_answer_already_sent_appends_notice(monkeypatch):
-    loop, sent = _make_loop()
-    notice = notice_for(REASON_APPROVAL_UNAVAILABLE)
-
-    async def fake_process(event, trace_id, publish_response=False, activity=None):
-        return ProcessResult(response_text="真实回答", outbound_sent=True, degraded_notices=[notice])
-
-    monkeypatch.setattr(loop, "_process_event", fake_process)
-    monkeypatch.setattr(loop, "_is_approval_command", lambda t: False)
-    await loop._on_inbound(_event())
-    # main answer already streamed; notice delivered as a single follow-up
-    assert len(sent) == 1
-    assert notice_for(REASON_APPROVAL_UNAVAILABLE) in sent[0].text
-    assert "真实回答" not in sent[0].text
+    assert sent == []
 
 
 @pytest.mark.asyncio

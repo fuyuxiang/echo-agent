@@ -47,6 +47,20 @@ def filter_recall_by_snapshot(scored, snapshot_ids):
 
 _REPLY_SNIPPET_MAX = 500  # 被引用原文注入上限，过长截断，避免撑爆上下文
 
+# 「继续上一个任务」的意图标记。刻意保守:只有当用户消息基本只包含继续指令
+# (≤12 字符)时才续跑旧计划——一条新的完整问题即使包含"继续"一词,也应视为
+# 新任务走 create_plan。宁可漏续(用户可再说一次"继续"),不可错续。
+_RESUME_MARKERS = ("继续", "接着做", "接着来", "继续做", "continue", "resume", "go on")
+
+
+def wants_resume(text: str) -> bool:
+    """True when the user's message is essentially a bare continue command."""
+    stripped = (text or "").strip().strip("。.!！~～ ")
+    if not stripped or len(stripped) > 12:
+        return False
+    lowered = stripped.lower()
+    return any(lowered.startswith(m) for m in _RESUME_MARKERS)
+
 
 def build_user_message_with_reply(event: InboundEvent) -> str:
     """构造写入会话历史的用户消息文本，把被引用消息原文作为前缀注入。
@@ -101,6 +115,7 @@ class ContextStage:
         bus: Any = None,
         retrieval_cache_get: "Callable[[str], Any] | None" = None,
         retrieval_on_miss: str = "degrade",
+        retrieval_miss_timeout: float = 0.8,
         cache_ttl: float = 60.0,
         cache_jaccard_min: float = 0.3,
         cognitive_emitter: "CognitiveEmitter | None" = None,
@@ -126,6 +141,7 @@ class ContextStage:
         self._bus = bus
         self._retrieval_cache_get = retrieval_cache_get
         self._retrieval_on_miss = retrieval_on_miss
+        self._retrieval_miss_timeout = retrieval_miss_timeout
         self._cache_ttl = cache_ttl
         self._cache_jaccard_min = cache_jaccard_min
         self._cog = cognitive_emitter
@@ -189,6 +205,55 @@ class ContextStage:
         )
         context = self._knowledge.format_results(results)
         return results, context
+
+    async def _bounded_retrieve(self, event: InboundEvent, publish_response: bool) -> list | None:
+        """Degrade-mode cache miss: sync retrieval under a time budget.
+
+        Latency-first CLI still deserves memory on first turns and topic
+        switches — those are exactly the misses. Budget exceeded → local
+        keyword search (fast, no embedding call). Budget 0 → skip entirely
+        (the legacy degrade), keeping the old escape hatch configurable.
+        """
+        import asyncio
+
+        timeout = self._retrieval_miss_timeout
+        if timeout <= 0 or not self._hybrid_retriever:
+            if timeout > 0 and not self._hybrid_retriever:
+                # No retriever wired (vector off): keyword search IS the
+                # bounded path, and it's synchronous/fast already.
+                return self._memory.search_scored(
+                    event.text, limit=5, session_key=event.session_key
+                )
+            if publish_response and self._bus:
+                await self._emit_progress(
+                    event, {"progress_type": "memory_retrieval_skipped"}
+                )
+            return None
+        try:
+            return await asyncio.wait_for(
+                self._hybrid_retriever.retrieve(
+                    event.text, limit=8, session_key=event.session_key,
+                ),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.debug(
+                "Bounded retrieval timed out after {}s; keyword fallback", timeout
+            )
+            if publish_response and self._bus:
+                await self._emit_progress(
+                    event, {"progress_type": "memory_retrieval_degraded"}
+                )
+            try:
+                return self._memory.search_scored(
+                    event.text, limit=5, session_key=event.session_key
+                )
+            except Exception as e:
+                logger.debug("Keyword fallback failed: {}", e)
+                return None
+        except Exception as e:
+            logger.debug("Bounded retrieval failed: {}", e)
+            return None
 
     async def build(
         self,
@@ -287,9 +352,12 @@ class ContextStage:
         )
         if self._config.memory.enabled:
             # Prefer a fresh prefetched result (zero inline latency). On a miss,
-            # `retrieval_on_miss` decides: "sync" pays the retrieval latency this
-            # turn (accuracy-first daemon/gateway), "degrade" skips retrieval this
-            # turn (latency-first CLI) and emits a progress notice.
+            # `retrieval_on_miss` decides: "sync" pays full retrieval latency
+            # this turn (accuracy-first daemon/gateway); "degrade" runs a
+            # BOUNDED sync retrieval — a short time budget, falling back to
+            # local keyword search on timeout. First turns and topic switches
+            # are exactly when retrieval matters most; skipping entirely (the
+            # old degrade) made memory silently unavailable on those turns.
             scored = None
             if cache_fresh:
                 scored = cached.scored
@@ -306,11 +374,8 @@ class ContextStage:
                     scored = self._memory.search_scored(
                         event.text, limit=5, session_key=event.session_key
                     )
-            elif publish_response and self._bus:
-                # CLI degrade: no retrieval this turn — tell the user we skipped.
-                await self._emit_progress(
-                    event, {"progress_type": "memory_retrieval_skipped"}
-                )
+            else:
+                scored = await self._bounded_retrieve(event, publish_response)
             if scored:
                 scored = filter_recall_by_snapshot(scored, snapshot_ids)
             if scored:
@@ -449,6 +514,36 @@ class ContextStage:
         execution_plan = None
         plan_run_id = ""
         if self._planner and tool_defs:
+            # Resume path: an interrupted multi-step plan (exhausted iterations
+            # / budget halt / crash) + a bare "continue" from the user picks up
+            # the stored run instead of planning from scratch. Previously
+            # get_resumable() had no production caller — interrupted plans were
+            # persisted but every next message re-planned.
+            if self._plan_run_store is not None and wants_resume(event.text):
+                try:
+                    resumable = await self._plan_run_store.get_resumable(
+                        event.session_key
+                    )
+                except Exception as e:
+                    logger.debug("Resumable plan lookup failed: {}", e)
+                    resumable = None
+                if resumable is not None:
+                    plan_run_id, execution_plan = resumable
+                    plan_context = execution_plan.to_prompt()
+                    last_content = messages[-1]["content"]
+                    resume_note = (
+                        "[Plan — resumed]\n以下是上一轮未完成的计划及进度,"
+                        f"请从中断处继续:\n{plan_context}"
+                    )
+                    if isinstance(last_content, list):
+                        last_content[0]["text"] += f"\n\n{resume_note}"
+                    else:
+                        messages[-1]["content"] = f"{last_content}\n\n{resume_note}"
+                    logger.info(
+                        "Resuming plan run {} for session {}",
+                        plan_run_id, event.session_key,
+                    )
+        if self._planner and tool_defs and execution_plan is None:
             try:
                 token_est = len(event.text) // 4
                 execution_plan = await self._planner.create_plan(

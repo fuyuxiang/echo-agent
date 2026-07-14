@@ -32,6 +32,7 @@ def discover_tools(
     knowledge_index: Any = None,
     approval: Any = None,
     clarify_manager: Any = None,
+    memory_invalidate_fn: Any = None,
 ) -> list[Tool]:
     ws = str(workspace)
     restrict = config.tools.restrict_to_workspace
@@ -88,7 +89,7 @@ def discover_tools(
 
     if task_manager:
         from echo_agent.agent.tools.task import TaskTool
-        tools.append(TaskTool(manager=task_manager))
+        tools.append(TaskTool(manager=task_manager, workflow_engine=workflow_engine))
 
     if workflow_engine:
         from echo_agent.agent.tools.workflow import WorkflowTool
@@ -150,7 +151,11 @@ def discover_tools(
 
     if memory_store:
         from echo_agent.agent.tools.memory import MemoryTool
-        tools.append(MemoryTool(store=memory_store, contradiction_detector=contradiction_detector))
+        tools.append(MemoryTool(
+            store=memory_store,
+            contradiction_detector=contradiction_detector,
+            invalidate_caches=memory_invalidate_fn,
+        ))
 
     if knowledge_index:
         from echo_agent.agent.tools.knowledge import KnowledgeIndexTool, KnowledgeSearchTool
