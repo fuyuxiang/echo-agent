@@ -4,6 +4,10 @@
 set -e
 
 # --- Environment sanitization ---
+# UV_NO_CONFIG ignores uv config *files* only (uv.toml/pyproject), not env vars
+# or CLI flags. We select the index ourselves via probe_pypi_index + an explicit
+# --default-index flag, so a stray uv.toml can't override or slow the install;
+# users who want a specific source use ECHO_PYPI_INDEX / UV_DEFAULT_INDEX.
 unset PYTHONPATH PYTHONHOME
 export UV_NO_CONFIG=1
 
@@ -26,6 +30,23 @@ PYTHON_VERSION="3.11"
 NODE_VERSION="22"
 BRANCH="master"
 RUN_SETUP=true
+# Mirror probing: measure real latency to candidate PyPI indexes and use the
+# fastest one, instead of guessing by GeoIP/locale. Disable with --no-mirror-probe.
+MIRROR_PROBE=true
+DEPS_TIMEOUT="${ECHO_DEPS_TIMEOUT:-600}"
+# Candidate mirrors raced by probe_pypi_index (label|url). The official PyPI is
+# always kept as the extra fallback index so a mirror missing a package still
+# resolves. Users can skip probing entirely by exporting UV_DEFAULT_INDEX /
+# UV_INDEX_URL or ECHO_PYPI_INDEX before running.
+PYPI_OFFICIAL="https://pypi.org/simple"
+PYPI_MIRRORS=(
+    "tsinghua|https://pypi.tuna.tsinghua.edu.cn/simple"
+    "aliyun|https://mirrors.aliyun.com/pypi/simple"
+    "ustc|https://mirrors.ustc.edu.cn/pypi/simple"
+    "official|https://pypi.org/simple"
+)
+# Resolved by probe_pypi_index(); empty means "use uv defaults / user config".
+PYPI_INDEX=""
 HAS_NODE=false
 DASHBOARD_BUILT=false
 
@@ -52,17 +73,23 @@ while [[ $# -gt 0 ]]; do
         --branch) BRANCH="$2"; shift 2 ;;
         --dir) INSTALL_DIR="$2"; shift 2 ;;
         --echo-home) ECHO_HOME="$2"; shift 2 ;;
+        --no-mirror-probe) MIRROR_PROBE=false; shift ;;
         -h|--help)
             echo "Echo Agent Installer"
             echo ""
             echo "Usage: install.sh [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --skip-setup      Skip interactive setup wizard"
-            echo "  --branch NAME     Git branch to install (default: master)"
-            echo "  --dir PATH        Installation directory (default: ~/.echo-agent/echo-agent)"
-            echo "  --echo-home PATH  Echo home directory (default: ~/.echo-agent)"
-            echo "  -h, --help        Show this help"
+            echo "  --skip-setup       Skip interactive setup wizard"
+            echo "  --branch NAME      Git branch to install (default: master)"
+            echo "  --dir PATH         Installation directory (default: ~/.echo-agent/echo-agent)"
+            echo "  --echo-home PATH   Echo home directory (default: ~/.echo-agent)"
+            echo "  --no-mirror-probe  Skip PyPI mirror speed test; use uv defaults"
+            echo "  -h, --help         Show this help"
+            echo ""
+            echo "Environment:"
+            echo "  ECHO_PYPI_INDEX    Force a specific PyPI index URL (skips probing)"
+            echo "  ECHO_DEPS_TIMEOUT  Dependency install timeout in seconds (default: 600)"
             exit 0
             ;;
         *)
@@ -446,15 +473,94 @@ setup_venv() {
     log_success "Virtual environment ready"
 }
 
+# Measure round-trip latency to each candidate index and keep the fastest that
+# actually responds. We test real network quality rather than guessing location
+# from GeoIP/locale, so VPNs, corporate links and offline mirrors all behave
+# correctly. Sets PYPI_INDEX; leaves it empty if nothing responds.
+probe_pypi_index() {
+    # Honor an explicit user choice and skip probing entirely.
+    if [ -n "$ECHO_PYPI_INDEX" ]; then
+        PYPI_INDEX="$ECHO_PYPI_INDEX"
+        log_success "Using PyPI index from ECHO_PYPI_INDEX: $PYPI_INDEX"
+        return 0
+    fi
+    if [ -n "${UV_DEFAULT_INDEX:-}" ] || [ -n "${UV_INDEX_URL:-}" ]; then
+        log_info "Respecting UV_DEFAULT_INDEX/UV_INDEX_URL from environment; skipping mirror probe."
+        return 0
+    fi
+    if [ "$MIRROR_PROBE" != true ]; then
+        log_info "Mirror probe disabled; using uv default index."
+        return 0
+    fi
+
+    log_info "Probing PyPI mirrors for the fastest one..."
+    local best_label="" best_url="" best_time="999"
+    local entry label url t
+    for entry in "${PYPI_MIRRORS[@]}"; do
+        label="${entry%%|*}"
+        url="${entry#*|}"
+        # -o /dev/null: discard body; %{time_total}: full request time in seconds.
+        t="$(curl -sS -o /dev/null -w '%{time_total}' --connect-timeout 3 --max-time 5 \
+             "${url}/pip/" 2>/dev/null || echo "")"
+        if [ -z "$t" ]; then
+            log_warn "  $label: unreachable"
+            continue
+        fi
+        log_info "  $label: ${t}s"
+        # Numeric compare via awk (times are floats like 0.83).
+        if awk "BEGIN{exit !($t < $best_time)}"; then
+            best_time="$t"; best_label="$label"; best_url="$url"
+        fi
+    done
+
+    if [ -n "$best_url" ]; then
+        PYPI_INDEX="$best_url"
+        log_success "Fastest index: $best_label (${best_time}s) -> $PYPI_INDEX"
+    else
+        log_warn "No PyPI index responded; using uv default. Install may be slow."
+    fi
+}
+
 install_deps() {
     cd "$INSTALL_DIR"
     export VIRTUAL_ENV="$INSTALL_DIR/venv"
-    log_info "Installing Echo Agent dependencies..."
-    if ! run_with_timeout 300 "$UV_CMD" pip install -e ".[all]"; then
-        log_warn "Full install failed, falling back to base install."
-        run_with_timeout 300 "$UV_CMD" pip install -e "."
+
+    probe_pypi_index
+
+    # Build index args: chosen mirror as the default index, official PyPI kept as
+    # an extra fallback so packages missing on the mirror still resolve. Without
+    # this, uv's --default-index would hard-fail (404) on a mirror gap.
+    local index_args=()
+    if [ -n "$PYPI_INDEX" ]; then
+        index_args+=(--default-index "$PYPI_INDEX")
+        if [ "$PYPI_INDEX" != "$PYPI_OFFICIAL" ]; then
+            index_args+=(--index "$PYPI_OFFICIAL")
+        fi
     fi
-    log_success "Dependencies installed"
+
+    log_info "Installing Echo Agent dependencies (full)..."
+    if run_with_timeout "$DEPS_TIMEOUT" "$UV_CMD" pip install "${index_args[@]}" -e ".[all]"; then
+        log_success "Dependencies installed (full)"
+        return 0
+    fi
+
+    # Full extras are large (playwright, faiss-cpu, pymupdf, ...) and may time
+    # out on slow links. Fall back to the essential LLM SDKs so the setup wizard
+    # can still verify a model, rather than dropping to a base install with no
+    # provider SDK at all.
+    log_warn "Full install failed or timed out. Falling back to essential LLM providers..."
+    if run_with_timeout "$DEPS_TIMEOUT" "$UV_CMD" pip install "${index_args[@]}" -e ".[openai,anthropic,gemini]"; then
+        log_warn "Installed a REDUCED set (openai, anthropic, gemini)."
+        log_warn "Some features (browser, documents, vector, TUI) are unavailable."
+        log_info "To complete later: cd $INSTALL_DIR && ./venv/bin/uv pip install -e \".[all]\""
+        return 0
+    fi
+
+    log_warn "Provider install failed too. Falling back to BASE install (no LLM SDK)."
+    log_warn "The setup wizard's model verification will fail until you install a provider:"
+    log_warn "  cd $INSTALL_DIR && ./venv/bin/uv pip install -e \".[openai]\"   # or .[all]"
+    run_with_timeout "$DEPS_TIMEOUT" "$UV_CMD" pip install "${index_args[@]}" -e "."
+    log_success "Dependencies installed (base only)"
 }
 
 build_dashboard() {
