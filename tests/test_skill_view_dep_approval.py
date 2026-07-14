@@ -68,8 +68,8 @@ async def test_deps_satisfied_no_approval(monkeypatch):
     import echo_agent.agent.tools.skills as skills_mod
 
     monkeypatch.setattr(skills_mod, "_is_satisfied", lambda spec: True)
-    install_mock = MagicMock()
-    monkeypatch.setattr(skills_mod, "install_authorized", install_mock)
+    install_mock = AsyncMock()
+    monkeypatch.setattr(skills_mod, "install_authorized_async", install_mock)
 
     bus = MagicMock()
     bus.publish_outbound = AsyncMock()
@@ -91,11 +91,11 @@ async def test_missing_dep_approved_installs(monkeypatch):
     import echo_agent.agent.tools.skills as skills_mod
 
     monkeypatch.setattr(skills_mod, "_is_satisfied", lambda spec: False)
-    install_mock = MagicMock(return_value={
+    install_mock = AsyncMock(return_value={
         "success": True, "installed": ["openpyxl>=3.1"], "skipped": [],
         "rejected": [], "detail": "ok",
     })
-    monkeypatch.setattr(skills_mod, "install_authorized", install_mock)
+    monkeypatch.setattr(skills_mod, "install_authorized_async", install_mock)
 
     bus = MagicMock()
     bus.publish_outbound = AsyncMock()
@@ -131,8 +131,8 @@ async def test_missing_dep_denied_no_install(monkeypatch):
     import echo_agent.agent.tools.skills as skills_mod
 
     monkeypatch.setattr(skills_mod, "_is_satisfied", lambda spec: False)
-    install_mock = MagicMock()
-    monkeypatch.setattr(skills_mod, "install_authorized", install_mock)
+    install_mock = AsyncMock()
+    monkeypatch.setattr(skills_mod, "install_authorized_async", install_mock)
 
     bus = MagicMock()
     bus.publish_outbound = AsyncMock()
@@ -154,8 +154,8 @@ async def test_empty_channel_degrades(monkeypatch):
     import echo_agent.agent.tools.skills as skills_mod
 
     monkeypatch.setattr(skills_mod, "_is_satisfied", lambda spec: False)
-    install_mock = MagicMock()
-    monkeypatch.setattr(skills_mod, "install_authorized", install_mock)
+    install_mock = AsyncMock()
+    monkeypatch.setattr(skills_mod, "install_authorized_async", install_mock)
 
     bus = MagicMock()
     bus.publish_outbound = AsyncMock()
@@ -177,8 +177,8 @@ async def test_no_approval_injected_degrades(monkeypatch):
     import echo_agent.agent.tools.skills as skills_mod
 
     monkeypatch.setattr(skills_mod, "_is_satisfied", lambda spec: False)
-    install_mock = MagicMock()
-    monkeypatch.setattr(skills_mod, "install_authorized", install_mock)
+    install_mock = AsyncMock()
+    monkeypatch.setattr(skills_mod, "install_authorized_async", install_mock)
 
     tool = SkillViewTool(store=_store())
     result = await tool.execute({"name": "demo"}, _ctx())
@@ -195,11 +195,11 @@ async def test_trusted_cli_installs_without_approval(monkeypatch):
     import echo_agent.agent.tools.skills as skills_mod
 
     monkeypatch.setattr(skills_mod, "_is_satisfied", lambda spec: False)
-    install_mock = MagicMock(return_value={
+    install_mock = AsyncMock(return_value={
         "success": True, "installed": ["openpyxl>=3.1"], "skipped": [],
         "rejected": [], "detail": "ok",
     })
-    monkeypatch.setattr(skills_mod, "install_authorized", install_mock)
+    monkeypatch.setattr(skills_mod, "install_authorized_async", install_mock)
 
     bus = MagicMock()
     bus.publish_outbound = AsyncMock()
@@ -228,11 +228,11 @@ async def test_trusted_channel_installs_without_approval(monkeypatch):
     import echo_agent.agent.tools.skills as skills_mod
 
     monkeypatch.setattr(skills_mod, "_is_satisfied", lambda spec: False)
-    install_mock = MagicMock(return_value={
+    install_mock = AsyncMock(return_value={
         "success": True, "installed": ["openpyxl>=3.1"], "skipped": [],
         "rejected": [], "detail": "ok",
     })
-    monkeypatch.setattr(skills_mod, "install_authorized", install_mock)
+    monkeypatch.setattr(skills_mod, "install_authorized_async", install_mock)
 
     bus = MagicMock()
     bus.publish_outbound = AsyncMock()
@@ -258,11 +258,11 @@ async def test_untrusted_channel_still_requires_approval(monkeypatch):
     import echo_agent.agent.tools.skills as skills_mod
 
     monkeypatch.setattr(skills_mod, "_is_satisfied", lambda spec: False)
-    install_mock = MagicMock(return_value={
+    install_mock = AsyncMock(return_value={
         "success": True, "installed": ["openpyxl>=3.1"], "skipped": [],
         "rejected": [], "detail": "ok",
     })
-    monkeypatch.setattr(skills_mod, "install_authorized", install_mock)
+    monkeypatch.setattr(skills_mod, "install_authorized_async", install_mock)
 
     bus = MagicMock()
     bus.publish_outbound = AsyncMock()

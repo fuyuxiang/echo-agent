@@ -13,7 +13,7 @@ from loguru import logger
 
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
 from echo_agent.bus.events import OutboundEvent
-from echo_agent.dependencies.lazy_deps import _is_satisfied, install_authorized
+from echo_agent.dependencies.lazy_deps import _is_satisfied, install_authorized_async
 from echo_agent.permissions.manager import ApprovalStatus
 from echo_agent.skills.store import SkillStore
 
@@ -137,7 +137,7 @@ class SkillViewTool(Tool):
         # is controlled, not a bare install. Untrusted channels fall through
         # to the approval closed-loop below.
         if self._is_trusted_env(ctx.channel):
-            result = install_authorized(tuple(missing), source=f"skill_view_trusted:{name}")
+            result = await install_authorized_async(tuple(missing), source=f"skill_view_trusted:{name}")
             if result.get("success"):
                 installed = result.get("installed") or []
                 skipped = result.get("skipped") or []
@@ -181,7 +181,7 @@ class SkillViewTool(Tool):
                 "用户未授权安装,需授权后才能运行该技能脚本。"
             )
 
-        result = install_authorized(tuple(missing), source=f"skill_view:{name}")
+        result = await install_authorized_async(tuple(missing), source=f"skill_view:{name}")
         if result.get("success"):
             installed = result.get("installed") or []
             skipped = result.get("skipped") or []

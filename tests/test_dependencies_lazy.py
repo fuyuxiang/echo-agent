@@ -423,3 +423,67 @@ class TestInstallAuthorized:
         out = ld.install_authorized(("pkg",), source="test")
         assert out["success"] is False
         assert "pip exploded" in out["detail"]
+
+
+class TestAsyncWrappersDoNotBlockLoop:
+    """ensure_async / install_authorized_async 必须把同步 pip 安装丢到线程,
+    否则一次离线安装(最长 300s)会冻住事件循环,触发看门狗杀进程重启循环。"""
+
+    @pytest.mark.asyncio
+    async def test_ensure_async_keeps_loop_responsive(self, monkeypatch):
+        import asyncio
+        import threading
+
+        install_started = threading.Event()
+        release_install = threading.Event()
+
+        # 模拟一次"慢"安装:同步阻塞直到测试放行。若它跑在 loop 线程上,
+        # 下面的心跳协程将无法推进,heartbeats 计数会停在 0。
+        def blocking_install(specs, **kw):
+            install_started.set()
+            release_install.wait(timeout=5)
+            return ld._InstallResult(True, "ok", "")
+
+        # 安装前缺失、安装后满足:blocking_install 会 set install_started,
+        # 之后的 feature_missing 校验才返回空(否则 ensure 判"装完仍缺"报错)。
+        monkeypatch.setattr(ld, "feature_missing",
+                            lambda f: [] if install_started.is_set() else ["pkg==1.0"])
+        monkeypatch.setattr(ld, "_spec_is_safe", lambda s: True)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        monkeypatch.setattr(ld, "_venv_pip_install", blocking_install)
+        monkeypatch.setattr(ld, "SKILL_DEPS", {"skill.x": ("pkg==1.0",)})
+
+        heartbeats = 0
+
+        async def heartbeat():
+            nonlocal heartbeats
+            while not release_install.is_set():
+                heartbeats += 1
+                await asyncio.sleep(0.005)
+
+        hb = asyncio.create_task(heartbeat())
+        ensure_task = asyncio.create_task(ld.ensure_async("skill.x", prompt=False))
+
+        # 等安装在线程里真正开始,再让心跳空转一会儿。
+        await asyncio.sleep(0.05)
+        assert install_started.is_set(), "install should have started in a worker thread"
+        beats_during_install = heartbeats
+        assert beats_during_install > 0, "event loop was frozen during the blocking install"
+
+        release_install.set()
+        await ensure_task
+        hb.cancel()
+
+    @pytest.mark.asyncio
+    async def test_install_authorized_async_delegates(self, monkeypatch):
+        # 装前 missing、装后 satisfied(install_authorized 会二次校验可导入性)。
+        calls = {"n": 0}
+        def fake_satisfied(spec):
+            calls["n"] += 1
+            return calls["n"] > 1
+        monkeypatch.setattr(ld, "_is_satisfied", fake_satisfied)
+        monkeypatch.setattr(ld, "_venv_pip_install",
+                            lambda specs, **kw: ld._InstallResult(True, "ok", ""))
+        out = await ld.install_authorized_async(("pkg",), source="test")
+        assert out["success"] is True
+        assert out["installed"] == ["pkg"]

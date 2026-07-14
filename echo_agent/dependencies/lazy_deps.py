@@ -30,6 +30,7 @@ Usage in skill scripts:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -484,6 +485,32 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
         )
 
     logger.info("Lazy install complete for feature %r", feature)
+
+
+async def ensure_async(feature: str, *, prompt: bool = False) -> None:
+    """Async-safe :func:`ensure`. Runs the blocking pip install in a worker
+    thread so a slow/offline install cannot freeze the event loop.
+
+    ``ensure`` calls ``subprocess.run(..., timeout=300)`` synchronously; invoked
+    directly from a coroutine on the loop thread it blocks every other task
+    (message intake, heartbeats) for up to 300s — long enough for the loop
+    watchdog to declare a freeze and kill the process. Offline environments hit
+    this reliably: the install spins the full timeout before failing.
+
+    ``prompt`` defaults to False: a worker thread has no controlling TTY, so an
+    interactive ``input()`` prompt would never be answerable. Callers on the
+    loop are inherently non-interactive.
+    """
+    await asyncio.to_thread(ensure, feature, prompt=prompt)
+
+
+async def install_authorized_async(
+    specs: tuple[str, ...], *, source: str
+) -> dict[str, object]:
+    """Async-safe :func:`install_authorized`. Runs the blocking pip install in a
+    worker thread for the same reason as :func:`ensure_async` — the synchronous
+    version freezes the event loop for the duration of the install."""
+    return await asyncio.to_thread(install_authorized, specs, source=source)
 
 
 def active_features() -> list[str]:

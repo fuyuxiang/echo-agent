@@ -195,7 +195,9 @@ class FalImageGenTool(Tool):
         arguments = _build_payload(model_id, prompt, aspect_ratio)
 
         try:
-            fal = _load_fal_client()
+            # _load_fal_client() runs a blocking pip install (ensure) on first
+            # use; off-load to a thread so it can't freeze the event loop.
+            fal = await asyncio.to_thread(_load_fal_client)
         except ImportError:
             return ToolResult(
                 success=False,

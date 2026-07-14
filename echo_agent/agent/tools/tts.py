@@ -101,8 +101,8 @@ class TTSTool(Tool):
 
     async def _edge_tts(self, text: str, voice: str, output: Path) -> ToolResult:
         try:
-            from echo_agent.dependencies.lazy_deps import ensure, FeatureUnavailable
-            ensure("skill.tts-voice", prompt=False)
+            from echo_agent.dependencies.lazy_deps import ensure_async, FeatureUnavailable
+            await ensure_async("skill.tts-voice", prompt=False)
         except FeatureUnavailable as e:
             return ToolResult(success=False, error=str(e))
         try:

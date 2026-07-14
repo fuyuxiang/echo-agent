@@ -142,8 +142,8 @@ class SkillsAPI:
         specs = self._skill_pip_specs(name)
         if specs is None:
             return web.json_response({"error": "not found"}, status=404)
-        from echo_agent.dependencies.lazy_deps import install_authorized
-        result = install_authorized(tuple(specs), source=f"http:skill:{name}")
+        from echo_agent.dependencies.lazy_deps import install_authorized_async
+        result = await install_authorized_async(tuple(specs), source=f"http:skill:{name}")
         status = 200 if result.get("success") else 400
         return web.json_response(result, status=status)
 
