@@ -18,7 +18,10 @@ from typing import Any
 from loguru import logger
 
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
-from echo_agent.dependencies.lazy_deps import install_authorized_async
+from echo_agent.dependencies.lazy_deps import (
+    INSTALL_TIMEOUT_SECONDS,
+    install_authorized_async,
+)
 from echo_agent.skills.store import SkillStore, parse_frontmatter
 
 _TIMEOUT = 60
@@ -195,6 +198,12 @@ class SkillInstallTool(Tool):
         },
         "required": ["source", "location"],
     }
+
+    # May run one or more pip installs (each up to INSTALL_TIMEOUT_SECONDS on
+    # the serialized install executor) after fetching the source. Keep the
+    # registry's wait_for ceiling above a single install plus fetch overhead so
+    # a slow install runs to completion instead of being abandoned mid-write.
+    timeout_seconds = INSTALL_TIMEOUT_SECONDS + _TIMEOUT
 
     def __init__(self, store: SkillStore):
         self._store = store

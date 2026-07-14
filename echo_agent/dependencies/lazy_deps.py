@@ -37,11 +37,56 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# Single source of truth for how long one install may run. The blocking
+# subprocess is capped at this, and install-triggering tools set their
+# ``timeout_seconds`` at or above it (plus their own overhead) so the front-end
+# waits for the real outcome instead of abandoning a still-running install —
+# which used to leave pip mutating site-packages after the tool already
+# reported a timeout.
+INSTALL_TIMEOUT_SECONDS = 300
+
+# Serialize all installs into the shared venv. Concurrent installs (retries,
+# multiple sessions, several skills at once) would otherwise race on the same
+# site-packages and corrupt it. The async wrappers acquire this before touching
+# pip; the sync entry points stay lock-free for callers that manage their own
+# concurrency (CLI, tests).
+_install_lock: Optional[asyncio.Lock] = None
+
+# A dedicated single-worker executor keeps a slow/offline install off the
+# default asyncio thread pool, so it can never starve other ``to_thread`` work
+# (message intake, embeddings) even while it blocks for the full install window.
+_install_executor: Optional[ThreadPoolExecutor] = None
+_executor_guard = threading.Lock()
+
+
+def _get_install_lock() -> asyncio.Lock:
+    """Lazily create the install lock bound to the running loop.
+
+    Created on first use so the module imports cleanly with no running loop.
+    """
+    global _install_lock
+    if _install_lock is None:
+        _install_lock = asyncio.Lock()
+    return _install_lock
+
+
+def _get_install_executor() -> ThreadPoolExecutor:
+    global _install_executor
+    if _install_executor is None:
+        with _executor_guard:
+            if _install_executor is None:
+                _install_executor = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="lazy-install"
+                )
+    return _install_executor
 
 # =============================================================================
 # Allowlist of lazy-installable skill dependencies.
@@ -258,7 +303,9 @@ def _is_present(spec: str) -> bool:
 # =============================================================================
 
 
-def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _InstallResult:
+def _venv_pip_install(
+    specs: tuple[str, ...], *, timeout: int = INSTALL_TIMEOUT_SECONDS
+) -> _InstallResult:
     """Install specs into the active venv using uv → pip → ensurepip ladder."""
     if not specs:
         return _InstallResult(True, "", "")
@@ -500,17 +547,31 @@ async def ensure_async(feature: str, *, prompt: bool = False) -> None:
     ``prompt`` defaults to False: a worker thread has no controlling TTY, so an
     interactive ``input()`` prompt would never be answerable. Callers on the
     loop are inherently non-interactive.
+
+    Installs are serialized on :func:`_get_install_lock` and run on a dedicated
+    single-worker executor (:func:`_get_install_executor`), so concurrent
+    callers cannot race on the shared site-packages and a long install cannot
+    starve the default ``to_thread`` pool.
     """
-    await asyncio.to_thread(ensure, feature, prompt=prompt)
+    loop = asyncio.get_running_loop()
+    async with _get_install_lock():
+        await loop.run_in_executor(
+            _get_install_executor(), lambda: ensure(feature, prompt=prompt)
+        )
 
 
 async def install_authorized_async(
     specs: tuple[str, ...], *, source: str
 ) -> dict[str, object]:
-    """Async-safe :func:`install_authorized`. Runs the blocking pip install in a
-    worker thread for the same reason as :func:`ensure_async` — the synchronous
-    version freezes the event loop for the duration of the install."""
-    return await asyncio.to_thread(install_authorized, specs, source=source)
+    """Async-safe :func:`install_authorized`. Runs the blocking pip install on
+    the dedicated install executor under the shared install lock, for the same
+    reasons as :func:`ensure_async`."""
+    loop = asyncio.get_running_loop()
+    async with _get_install_lock():
+        return await loop.run_in_executor(
+            _get_install_executor(),
+            lambda: install_authorized(specs, source=source),
+        )
 
 
 def active_features() -> list[str]:

@@ -500,9 +500,11 @@ probe_pypi_index() {
         label="${entry%%|*}"
         url="${entry#*|}"
         # -o /dev/null: discard body; %{time_total}: full request time in seconds.
-        t="$(curl -sS -o /dev/null -w '%{time_total}' --connect-timeout 3 --max-time 5 \
-             "${url}/pip/" 2>/dev/null || echo "")"
-        if [ -z "$t" ]; then
+        # -f makes HTTP 4xx/5xx a failure and -L follows redirects; gate on curl's
+        # exit status, since %{time_total} is printed even when the request fails
+        # (a fast failure would otherwise look like the fastest mirror).
+        if ! t="$(curl -fsSL -o /dev/null -w '%{time_total}' --connect-timeout 3 --max-time 5 \
+             "${url}/pip/" 2>/dev/null)"; then
             log_warn "  $label: unreachable"
             continue
         fi
@@ -527,15 +529,15 @@ install_deps() {
 
     probe_pypi_index
 
-    # Build index args: chosen mirror as the default index, official PyPI kept as
-    # an extra fallback so packages missing on the mirror still resolve. Without
-    # this, uv's --default-index would hard-fail (404) on a mirror gap.
+    # Build index args: chosen mirror as an --index (higher priority), official
+    # PyPI kept as --default-index for fallback. uv always treats the
+    # default-index as LOWEST priority and stops at the first index that has a
+    # package (first-index strategy), so the mirror must be an --index to
+    # actually be preferred; a --default-index mirror would be bypassed by the
+    # official index on nearly every public package.
     local index_args=()
-    if [ -n "$PYPI_INDEX" ]; then
-        index_args+=(--default-index "$PYPI_INDEX")
-        if [ "$PYPI_INDEX" != "$PYPI_OFFICIAL" ]; then
-            index_args+=(--index "$PYPI_OFFICIAL")
-        fi
+    if [ -n "$PYPI_INDEX" ] && [ "$PYPI_INDEX" != "$PYPI_OFFICIAL" ]; then
+        index_args+=(--index "$PYPI_INDEX" --default-index "$PYPI_OFFICIAL")
     fi
 
     log_info "Installing Echo Agent dependencies (full)..."
@@ -552,13 +554,14 @@ install_deps() {
     if run_with_timeout "$DEPS_TIMEOUT" "$UV_CMD" pip install "${index_args[@]}" -e ".[openai,anthropic,gemini]"; then
         log_warn "Installed a REDUCED set (openai, anthropic, gemini)."
         log_warn "Some features (browser, documents, vector, TUI) are unavailable."
-        log_info "To complete later: cd $INSTALL_DIR && ./venv/bin/uv pip install -e \".[all]\""
+        log_info "To complete later, run:"
+        log_info "  cd $INSTALL_DIR && $UV_CMD pip install --python \"$INSTALL_DIR/venv/bin/python\" -e \".[all]\""
         return 0
     fi
 
     log_warn "Provider install failed too. Falling back to BASE install (no LLM SDK)."
     log_warn "The setup wizard's model verification will fail until you install a provider:"
-    log_warn "  cd $INSTALL_DIR && ./venv/bin/uv pip install -e \".[openai]\"   # or .[all]"
+    log_warn "  cd $INSTALL_DIR && $UV_CMD pip install --python \"$INSTALL_DIR/venv/bin/python\" -e \".[openai]\"   # or .[all]"
     run_with_timeout "$DEPS_TIMEOUT" "$UV_CMD" pip install "${index_args[@]}" -e "."
     log_success "Dependencies installed (base only)"
 }

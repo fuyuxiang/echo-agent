@@ -13,7 +13,11 @@ from loguru import logger
 
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
 from echo_agent.bus.events import OutboundEvent
-from echo_agent.dependencies.lazy_deps import _is_satisfied, install_authorized_async
+from echo_agent.dependencies.lazy_deps import (
+    INSTALL_TIMEOUT_SECONDS,
+    _is_satisfied,
+    install_authorized_async,
+)
 from echo_agent.permissions.manager import ApprovalStatus
 from echo_agent.skills.store import SkillStore
 
@@ -48,6 +52,12 @@ class SkillsListTool(Tool):
 class SkillViewTool(Tool):
     name = "skill_view"
     risk_level = "read_only"
+    # A view may trigger a dependency install: up to _DEP_APPROVAL_TIMEOUT_SECONDS
+    # waiting for consent, then up to INSTALL_TIMEOUT_SECONDS installing. The
+    # registry wraps execute() in asyncio.wait_for(timeout_seconds); it must sit
+    # above both so a legitimately slow install runs to completion instead of
+    # being abandoned mid-write (see lazy_deps.INSTALL_TIMEOUT_SECONDS).
+    timeout_seconds = _DEP_APPROVAL_TIMEOUT_SECONDS + INSTALL_TIMEOUT_SECONDS + 30
     description = (
         "View the full content of a skill (SKILL.md) or a specific supporting file. "
         "Without file_path, returns the full SKILL.md and lists linked files. "

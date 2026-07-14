@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.dependencies.lazy_deps import INSTALL_TIMEOUT_SECONDS
 from echo_agent.scheduler.delivery import target_from_session_key
 
 
@@ -30,7 +31,10 @@ class TTSTool(Tool):
         },
         "required": ["text"],
     }
-    timeout_seconds = 60
+    # First use may lazily install the edge-tts backend (up to
+    # INSTALL_TIMEOUT_SECONDS on the serialized executor) before synthesizing.
+    # Keep the registry's wait_for ceiling above that plus synthesis overhead.
+    timeout_seconds = INSTALL_TIMEOUT_SECONDS + 60
 
     def __init__(self, workspace: str, openai_api_key: str = "", openai_api_base: str = "", tts_model: str = "tts-1", default_backend: str = "", default_voice: str = "", publish_fn=None):
         self._workspace = Path(workspace)

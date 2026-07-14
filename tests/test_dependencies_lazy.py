@@ -436,10 +436,14 @@ class TestAsyncWrappersDoNotBlockLoop:
 
         install_started = threading.Event()
         release_install = threading.Event()
+        install_thread: dict[str, int] = {}
+        loop_thread_id = threading.get_ident()
 
-        # 模拟一次"慢"安装:同步阻塞直到测试放行。若它跑在 loop 线程上,
-        # 下面的心跳协程将无法推进,heartbeats 计数会停在 0。
+        # 模拟一次"慢"安装:同步阻塞直到测试放行。记录它实际运行的线程 ID,
+        # 用于直接断言它没有跑在事件循环线程上(否则退化成同步阻塞也能靠
+        # "安装前已积累的心跳数 > 0"蒙混过关)。
         def blocking_install(specs, **kw):
+            install_thread["id"] = threading.get_ident()
             install_started.set()
             release_install.wait(timeout=5)
             return ld._InstallResult(True, "ok", "")
@@ -464,15 +468,74 @@ class TestAsyncWrappersDoNotBlockLoop:
         hb = asyncio.create_task(heartbeat())
         ensure_task = asyncio.create_task(ld.ensure_async("skill.x", prompt=False))
 
-        # 等安装在线程里真正开始,再让心跳空转一会儿。
-        await asyncio.sleep(0.05)
+        # 等安装在线程里真正开始。用忙等而非固定 sleep,避免依赖调度时序。
+        for _ in range(200):
+            if install_started.is_set():
+                break
+            await asyncio.sleep(0.005)
         assert install_started.is_set(), "install should have started in a worker thread"
-        beats_during_install = heartbeats
-        assert beats_during_install > 0, "event loop was frozen during the blocking install"
+
+        # 关键断言一:安装必须运行在非事件循环线程上。若实现退化成
+        # 直接同步调用,install_thread["id"] 会等于 loop_thread_id。
+        assert install_thread["id"] != loop_thread_id, \
+            "install must run off the event-loop thread"
+
+        # 关键断言二:以"安装开始那一刻"为基线,验证安装仍在阻塞期间心跳
+        # 计数继续增长——证明循环在安装进行中依旧可推进,而不是靠安装前
+        # 积累的旧计数。
+        baseline = heartbeats
+        for _ in range(40):
+            if heartbeats > baseline:
+                break
+            await asyncio.sleep(0.005)
+        assert heartbeats > baseline, \
+            "event loop was frozen while the install was still blocking"
 
         release_install.set()
         await ensure_task
         hb.cancel()
+
+    @pytest.mark.asyncio
+    async def test_ensure_async_serializes_concurrent_installs(self, monkeypatch):
+        """并发的两次安装必须串行化,不能同时写同一个 site-packages。"""
+        import asyncio
+        import threading
+
+        concurrency = {"cur": 0, "max": 0}
+        lock = threading.Lock()
+
+        def blocking_install(specs, **kw):
+            with lock:
+                concurrency["cur"] += 1
+                concurrency["max"] = max(concurrency["max"], concurrency["cur"])
+            # 停留一会儿制造重叠窗口;若未串行化,max 会到 2。
+            release = threading.Event()
+            release.wait(timeout=0.1)
+            with lock:
+                concurrency["cur"] -= 1
+            return ld._InstallResult(True, "ok", "")
+
+        # 每个 spec 首次查询未安装(触发安装),之后视为已安装(装后校验通过)。
+        seen: set[str] = set()
+        seen_guard = threading.Lock()
+
+        def fake_satisfied(spec):
+            with seen_guard:
+                if spec in seen:
+                    return True
+                seen.add(spec)
+                return False
+
+        monkeypatch.setattr(ld, "_spec_is_safe", lambda s: True)
+        monkeypatch.setattr(ld, "_is_satisfied", fake_satisfied)
+        monkeypatch.setattr(ld, "_venv_pip_install", blocking_install)
+
+        await asyncio.gather(
+            ld.install_authorized_async(("pkg-a",), source="t1"),
+            ld.install_authorized_async(("pkg-b",), source="t2"),
+        )
+        assert concurrency["max"] == 1, \
+            "concurrent installs must be serialized on the shared venv"
 
     @pytest.mark.asyncio
     async def test_install_authorized_async_delegates(self, monkeypatch):
