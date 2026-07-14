@@ -16,7 +16,9 @@ class ClarifyRequest:
     question: str = ""
     options: list[str] = field(default_factory=list)
     user_id: str = ""
+    session_key: str = ""
     answer: str | None = None
+    interrupted: bool = False
 
 
 class ClarifyManager:
@@ -28,8 +30,10 @@ class ClarifyManager:
         self._pending: dict[str, ClarifyRequest] = {}
         self._waiters: dict[str, asyncio.Event] = {}
 
-    def request(self, question: str, options: list[str] | None = None, user_id: str = "") -> ClarifyRequest:
-        req = ClarifyRequest(question=question, options=list(options or []), user_id=user_id)
+    def request(self, question: str, options: list[str] | None = None,
+                user_id: str = "", session_key: str = "") -> ClarifyRequest:
+        req = ClarifyRequest(question=question, options=list(options or []),
+                             user_id=user_id, session_key=session_key)
         self._pending[req.id] = req
         return req
 
@@ -43,17 +47,35 @@ class ClarifyManager:
             waiter.set()
         return True
 
-    async def wait_for_answer(self, clarify_id: str) -> str:
+    async def wait_for_answer(self, clarify_id: str) -> tuple[str, bool]:
         req = self._pending.get(clarify_id)
         if req is None:
-            return ""
+            return "", False
+        # cancel_session may have interrupted this request before the caller
+        # started waiting; return the sentinel immediately instead of blocking
+        # on a waiter that will never be set again.
+        if req.interrupted:
+            self._pending.pop(clarify_id, None)
+            return (req.answer or ""), True
         waiter = self._waiters.setdefault(clarify_id, asyncio.Event())
         try:
             await waiter.wait()
         finally:
             self._waiters.pop(clarify_id, None)
             self._pending.pop(clarify_id, None)
-        return req.answer or ""
+        return (req.answer or ""), req.interrupted
+
+    def cancel_session(self, session_key: str) -> int:
+        count = 0
+        for cid, req in list(self._pending.items()):
+            if req.session_key == session_key:
+                req.interrupted = True
+                req.answer = ""
+                count += 1
+                waiter = self._waiters.get(cid)
+                if waiter is not None:
+                    waiter.set()
+        return count
 
     def get(self, clarify_id: str) -> ClarifyRequest | None:
         return self._pending.get(clarify_id)
