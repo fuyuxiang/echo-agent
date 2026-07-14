@@ -86,6 +86,14 @@ class InboundEvent:
     # approval gate's _is_unattended / _resolve_unattended for the consumers.
     unattended: bool = False       # no human at the keyboard (scheduled/cron run)
     cron_authorized: bool = False  # this specific job passed the up-front cronjob approval
+    # Internal control command (e.g. the synthesized clarify-cancel on ws
+    # disconnect). Like the trust signals above, this is a FIRST-CLASS typed
+    # field — NOT a metadata key — precisely because it bypasses the session
+    # rate limiter: a forgeable metadata flag would let an external payload
+    # skip throttling at will. Only trusted internal producers set it. Control
+    # events must still be handled BEFORE the session lock (see AgentLoop),
+    # since they exist to wake a turn that is holding that lock.
+    is_control: bool = False
 
     @property
     def session_key(self) -> str:

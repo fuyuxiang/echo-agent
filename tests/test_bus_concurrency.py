@@ -70,6 +70,41 @@ class TestBusConcurrency:
         assert len(rejected_replies) == 3
 
     @pytest.mark.asyncio
+    async def test_control_event_bypasses_rate_limiter(self):
+        # A control event (e.g. the clarify-cancel escape valve synthesized on
+        # ws disconnect) must reach the handler even when the session's rate
+        # bucket is fully drained — otherwise a user who just flooded the
+        # session leaves the agent parked until the 24h backstop.
+        bus = MessageBus(max_queue_size=100, max_concurrency=50)
+        limiter = SessionRateLimiter(rpm=60, burst=2)
+        bus.set_rate_limiter(limiter)
+
+        received = []
+
+        async def handler(event: InboundEvent) -> None:
+            received.append(event)
+
+        bus.subscribe_inbound(handler)
+        await bus.start()
+
+        # Drain the burst so any normal message would now be rejected.
+        for i in range(3):
+            await bus.publish_inbound(InboundEvent.text_message(
+                channel="test", sender_id="u1", chat_id="same_chat", text=f"msg{i}"
+            ))
+        # The control event must still get through.
+        await bus.publish_inbound(InboundEvent.text_message(
+            channel="test", sender_id="u1", chat_id="same_chat",
+            text="/__clarify_cancel__", is_control=True,
+        ))
+
+        await asyncio.sleep(0.3)
+        await bus.stop()
+
+        assert any(e.is_control for e in received)
+        assert received[-1].text == "/__clarify_cancel__"
+
+    @pytest.mark.asyncio
     async def test_no_rate_limiter_allows_all(self):
         bus = MessageBus(max_queue_size=100, max_concurrency=50)
 

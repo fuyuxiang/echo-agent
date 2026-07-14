@@ -159,7 +159,14 @@ class MessageBus:
             except asyncio.CancelledError:
                 break
 
-            if self._rate_limiter and not self._rate_limiter.try_acquire(event.session_key):
+            # Internal control commands (e.g. clarify-cancel synthesized on ws
+            # disconnect) MUST bypass the session rate limiter: they exist to
+            # wake a parked turn, and a user who just flooded the session is
+            # exactly the case where the escape valve is needed most. Gated on
+            # the trusted typed field, never a forgeable metadata key.
+            if event.is_control:
+                pass
+            elif self._rate_limiter and not self._rate_limiter.try_acquire(event.session_key):
                 logger.warning("Rate limited session {}", event.session_key)
                 rate_limit_reply = OutboundEvent.text_reply(
                     channel=event.channel,

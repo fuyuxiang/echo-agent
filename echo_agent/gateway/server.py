@@ -834,6 +834,10 @@ class GatewayServer:
                         chat_id=chat_id,
                         text="/__clarify_cancel__",
                         session_key_override=session_key,
+                        # Trusted internal producer: bypass the rate limiter so a
+                        # user who just flooded the session can't get this escape
+                        # valve dropped, leaving the agent parked until the 24h backstop.
+                        is_control=True,
                     )
                     await self._bus.publish_inbound(cancel_event)
                 except Exception as e:
