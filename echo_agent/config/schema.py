@@ -2516,6 +2516,17 @@ class MediaUnderstandingConfig(_Base):
 
 # ── Storage configs ──────────────────────────────────────────────────────────
 
+class RuntimeConfig(_Base):
+    single_instance: bool = Field(
+        default=True,
+        json_schema_extra={
+            "status": "effective", "ref": "app.py:AppRuntime.start",
+            "desc_zh": "同一 workspace 是否只允许运行一个消费通道的实例（防止后台服务与前台 run 重复消费、重复回复）；用 --force 可临时越过",
+            "desc_en": "Allow only one channel-consuming instance per workspace (prevents duplicate consumption/replies when a background service and a foreground run coexist); --force overrides it",
+        },
+    )
+
+
 class StorageConfig(_Base):
     database_path: str = Field(
         default="data/echo_agent.db",
@@ -3624,6 +3635,7 @@ class Config(_Base):
     checkpoint: CheckpointConfig = Field(default_factory=CheckpointConfig)
     validation: ValidationConfig = Field(default_factory=ValidationConfig)
     media_understanding: MediaUnderstandingConfig = Field(default_factory=MediaUnderstandingConfig)
+    runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)

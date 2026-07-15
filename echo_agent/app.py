@@ -327,16 +327,31 @@ class AppRuntime:
         self._gateway: Any = None
         self._started = False
         self._shutdown_event = shutdown_event
+        self._instance_lock: Any = None
 
     @property
     def gateway(self) -> Any:
         return self._gateway
 
-    async def start(self) -> bool:
+    async def start(self, single_instance: bool = False, force: bool = False, role: str = "run") -> bool:
         """Start all components. Returns False if there is nothing to serve
         (no active channels and gateway disabled), in which case the caller
-        should call ``stop()`` and exit."""
+        should call ``stop()`` and exit.
+
+        When ``single_instance`` is set (channel-consuming entrypoints ``run`` /
+        ``run_gateway``), acquire the workspace lock *before* any subsystem so a
+        second process against the same workspace bails out here instead of
+        starting a duplicate set of channel pollers. ``force`` overrides the
+        lock for users who deliberately want multiple instances. Config
+        ``runtime.single_instance=false`` disables the guard globally."""
         ctx = self._ctx
+        if single_instance and ctx.config.runtime.single_instance and not force:
+            from echo_agent.runtime_lock import acquire_instance_lock, InstanceLockError
+            try:
+                self._instance_lock = acquire_instance_lock(ctx.workspace, role=role)
+            except InstanceLockError as e:
+                logger.error(e.message)
+                return False
         self._started = True
         await ctx.bus.start()
         await ctx.agent.start()
@@ -385,6 +400,12 @@ class AppRuntime:
         await self._stop_step("agent", ctx.agent.stop())
         await self._stop_step("bus", ctx.bus.stop())
         await self._stop_step("storage", ctx.storage.close())
+        if self._instance_lock is not None:
+            try:
+                self._instance_lock.release()
+            except Exception as e:
+                logger.warning("Error releasing instance lock: {}", e)
+            self._instance_lock = None
 
     @staticmethod
     async def _stop_step(name: str, coro: Any) -> None:
@@ -396,7 +417,7 @@ class AppRuntime:
             logger.warning("Error stopping {}: {}", name, e)
 
 
-async def run(config_path: str | None = None, workspace: str | None = None) -> None:
+async def run(config_path: str | None = None, workspace: str | None = None, force: bool = False) -> None:
     """Run the full agent (``echo-agent run``)."""
     if config_path is None and workspace:
         from echo_agent.config.loader import resolve_config_file
@@ -411,7 +432,7 @@ async def run(config_path: str | None = None, workspace: str | None = None) -> N
     runtime = AppRuntime(ctx, shutdown_event=shutdown)
     watchdog = build_loop_watchdog(ctx)
     try:
-        if not await runtime.start():
+        if not await runtime.start(single_instance=True, force=force, role="run"):
             return
         if watchdog is not None:
             watchdog.start()
@@ -525,6 +546,7 @@ async def run_gateway(
     host: str | None = None,
     port: int | None = None,
     workspace: str | None = None,
+    force: bool = False,
 ) -> None:
     """Run in gateway mode (``echo-agent gateway``) — same lifecycle as ``run``
     with the gateway force-enabled, so health checks and the scheduler are
@@ -576,7 +598,7 @@ async def run_gateway(
     watchdog = build_loop_watchdog(ctx)
 
     try:
-        if not await runtime.start():
+        if not await runtime.start(single_instance=True, force=force, role="gateway"):
             return
         if watchdog is not None:
             watchdog.start()

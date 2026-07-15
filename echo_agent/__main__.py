@@ -97,6 +97,8 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser = subparsers.add_parser("run", help="Start the agent")
     run_parser.add_argument("-c", "--config", help="Path to config file")
     run_parser.add_argument("-w", "--workspace", help="Workspace directory")
+    run_parser.add_argument("--force", action="store_true",
+                            help="跳过同 workspace 单实例互斥，强制多开（会造成重复回复/并发写库风险）")
 
     # setup
     setup_parser = subparsers.add_parser("setup", help="Run the setup wizard")
@@ -274,7 +276,7 @@ def _dispatch() -> None:
             return
         from echo_agent.app import run_gateway
         try:
-            asyncio.run(run_gateway(config_path=args.config or args.top_config, host=args.host, port=args.port, workspace=args.workspace or args.top_workspace))
+            asyncio.run(run_gateway(config_path=args.config or args.top_config, host=args.host, port=args.port, workspace=args.workspace or args.top_workspace, force=args.force))
         except KeyboardInterrupt:
             pass
         return
@@ -387,7 +389,7 @@ def _dispatch() -> None:
 
     from echo_agent.app import run
     try:
-        asyncio.run(run(config_path=config_path, workspace=workspace))
+        asyncio.run(run(config_path=config_path, workspace=workspace, force=getattr(args, "force", False)))
     except KeyboardInterrupt:
         pass
 
