@@ -4,6 +4,17 @@ TranscriptView {
     height: 1fr;
 }
 
+/* User task title: a left accent bar + subtle boost background + blank lines
+   above/below, so each submitted task stands out and reads as a clear divider
+   between turns. Colors use theme variables so they adapt to light/dark. */
+UserTurn {
+    margin: 1 0;
+    padding: 0 1;
+    border-left: thick $accent;
+    background: $boost;
+    color: $text;
+}
+
 #input_row {
     height: auto;
     max-height: 10;
