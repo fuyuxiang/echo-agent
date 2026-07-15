@@ -43,14 +43,26 @@ class BootstrapResult:
     channels: Any = None
     scheduler: Any = None
     health: Any = None
+    instance_lock: Any = None
 
 
 async def bootstrap(
     config_path: str | None = None,
     overrides: dict[str, Any] | None = None,
     on_cli_exit: Callable[[], None] | None = None,
+    *,
+    single_instance: bool = False,
+    force: bool = False,
+    role: str = "run",
 ) -> BootstrapResult:
-    """Shared bootstrap: config → storage → providers → bus → agent → channels."""
+    """Shared bootstrap: config → storage → providers → bus → agent → channels.
+
+    When ``single_instance`` is set (the channel-consuming entrypoints), the
+    workspace lock is acquired *before* opening SQLite or running migrations, so
+    a second process against the same workspace bails out here instead of
+    concurrently initializing the database. On conflict this raises
+    :class:`InstanceLockError` before any resource is opened — nothing to leak.
+    ``force`` / ``runtime.single_instance=false`` disable the guard."""
     from echo_agent.agent.loop import AgentLoop
     from echo_agent.bus.queue import MessageBus
     from echo_agent.channels.manager import ChannelManager
@@ -72,6 +84,14 @@ async def bootstrap(
         workspace_value = workspace_base / workspace_value
     ws = workspace_value.resolve()
     ws.mkdir(parents=True, exist_ok=True)
+
+    # Acquire the single-instance lock before opening SQLite / running migrations
+    # so a duplicate process bails out here rather than concurrently initializing
+    # the database. Raising before any resource is opened means nothing to leak.
+    instance_lock: Any = None
+    if single_instance and config.runtime.single_instance and not force:
+        from echo_agent.runtime_lock import acquire_instance_lock
+        instance_lock = acquire_instance_lock(ws, role=role)
 
     storage = SQLiteBackend(ws / config.storage.database_path)
     await storage.initialize()
@@ -268,6 +288,7 @@ async def bootstrap(
         config=config, workspace=ws, storage=storage, bus=bus,
         router=router, provider=provider, agent=agent,
         channels=channels, scheduler=scheduler, health=health,
+        instance_lock=instance_lock,
     )
 
 
@@ -333,25 +354,16 @@ class AppRuntime:
     def gateway(self) -> Any:
         return self._gateway
 
-    async def start(self, single_instance: bool = False, force: bool = False, role: str = "run") -> bool:
+    async def start(self) -> bool:
         """Start all components. Returns False if there is nothing to serve
         (no active channels and gateway disabled), in which case the caller
         should call ``stop()`` and exit.
 
-        When ``single_instance`` is set (channel-consuming entrypoints ``run`` /
-        ``run_gateway``), acquire the workspace lock *before* any subsystem so a
-        second process against the same workspace bails out here instead of
-        starting a duplicate set of channel pollers. ``force`` overrides the
-        lock for users who deliberately want multiple instances. Config
-        ``runtime.single_instance=false`` disables the guard globally."""
+        The workspace single-instance lock is acquired in ``bootstrap`` (before
+        SQLite is opened), not here — this runtime only owns releasing it on
+        ``stop()`` via ``ctx.instance_lock``."""
         ctx = self._ctx
-        if single_instance and ctx.config.runtime.single_instance and not force:
-            from echo_agent.runtime_lock import acquire_instance_lock, InstanceLockError
-            try:
-                self._instance_lock = acquire_instance_lock(ctx.workspace, role=role)
-            except InstanceLockError as e:
-                logger.error(e.message)
-                return False
+        self._instance_lock = ctx.instance_lock
         self._started = True
         await ctx.bus.start()
         await ctx.agent.start()
@@ -424,7 +436,15 @@ async def run(config_path: str | None = None, workspace: str | None = None, forc
         config_path = str(resolve_config_file(search_dir=workspace) or "")
     overrides = {"workspace": workspace} if workspace else None
     shutdown = asyncio.Event()
-    ctx = await bootstrap(config_path=config_path, overrides=overrides, on_cli_exit=shutdown.set)
+    from echo_agent.runtime_lock import InstanceLockError
+    try:
+        ctx = await bootstrap(
+            config_path=config_path, overrides=overrides, on_cli_exit=shutdown.set,
+            single_instance=True, force=force, role="run",
+        )
+    except InstanceLockError as e:
+        logger.error(e.message)
+        return
 
     logger.info("Echo Agent starting — workspace: {}", ctx.workspace)
 
@@ -432,7 +452,7 @@ async def run(config_path: str | None = None, workspace: str | None = None, forc
     runtime = AppRuntime(ctx, shutdown_event=shutdown)
     watchdog = build_loop_watchdog(ctx)
     try:
-        if not await runtime.start(single_instance=True, force=force, role="run"):
+        if not await runtime.start():
             return
         if watchdog is not None:
             watchdog.start()
@@ -586,7 +606,15 @@ async def run_gateway(
     if profile_override:
         overrides["security"] = {**overrides.get("security", {}), **profile_override["security"]}
     shutdown = asyncio.Event()
-    ctx = await bootstrap(config_path=config_path, overrides=overrides or None, on_cli_exit=shutdown.set)
+    from echo_agent.runtime_lock import InstanceLockError
+    try:
+        ctx = await bootstrap(
+            config_path=config_path, overrides=overrides or None, on_cli_exit=shutdown.set,
+            single_instance=True, force=force, role="gateway",
+        )
+    except InstanceLockError as e:
+        logger.error(e.message)
+        return
     ctx.config.gateway.enabled = True
     if host:
         ctx.config.gateway.host = host
@@ -598,7 +626,7 @@ async def run_gateway(
     watchdog = build_loop_watchdog(ctx)
 
     try:
-        if not await runtime.start(single_instance=True, force=force, role="gateway"):
+        if not await runtime.start():
             return
         if watchdog is not None:
             watchdog.start()
