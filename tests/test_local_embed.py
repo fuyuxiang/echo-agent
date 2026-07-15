@@ -1,4 +1,5 @@
 """LocalEmbedder 惰性加载、model_id、降级行为测试（不真实下载模型）。"""
+import asyncio
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -116,7 +117,7 @@ def test_close_is_idempotent_and_releases_pool():
     assert e._pool is not None
     e.close()
     assert e._pool is None
-    assert e._load_failed is True
+    assert e._closed is True
     # 二次调用不抛异常（幂等）
     e.close()
 
@@ -135,28 +136,114 @@ async def test_embed_returns_none_after_close():
 
 
 @pytest.mark.asyncio
-async def test_embed_degrades_on_load_hang():
-    """下载挂起（不抛异常、只是卡住）也应在超时后降级为 None，而不是永久挂起。"""
+async def test_embed_degrades_on_load_hang_then_recovers():
+    """下载慢（超过单轮预算）时本轮降级为 None，但后台加载继续，完成后被后续调用透明拾取。"""
     import threading
 
-    # The hang is gated on an Event we release in `finally`, not a fixed sleep.
-    # This lets the load thread block long enough for wait_for to time out, then
-    # exit immediately — so the non-daemon pool thread is never left sleeping to
-    # be joined at interpreter exit (which previously added ~10s of wall time).
+    # The load blocks on an Event until we release it, simulating a slow download
+    # that exceeds a single message's budget. The first embed() waits only the
+    # tiny per-call budget and degrades to None WITHOUT killing the background
+    # load. After we release the event the model finishes loading and a later
+    # embed() picks it up — the download is never thrown away and restarted.
+    started = threading.Event()
     release = threading.Event()
 
-    def _hang(*_a, **_k):
-        release.wait(timeout=5)  # unblocked by finally; bounded so it can't wedge CI
-        return MagicMock()
+    import numpy as np
+    fake_model = MagicMock()
+    fake_model.embed.return_value = iter([np.array([0.5, 0.6], dtype=np.float32)])
 
-    fake_mod = MagicMock(TextEmbedding=MagicMock(side_effect=_hang))
-    try:
-        with patch.dict(sys.modules, {"fastembed": fake_mod}):
-            # 极短超时，确认 wait_for 生效并标记失败
-            e = LocalEmbedder("BAAI/bge-small-zh-v1.5", load_timeout_seconds=0.05)
-            assert await e.embed("text") is None
-            assert e._load_failed is True
-            # 失败后不再触发新的加载
-            assert await e.embed("again") is None
-    finally:
-        release.set()  # let the stuck load thread finish so it isn't joined at exit
+    def _slow_load(*_a, **_k):
+        started.set()
+        release.wait(timeout=5)  # bounded so it can't wedge CI
+        return fake_model
+
+    fake_mod = MagicMock(TextEmbedding=MagicMock(side_effect=_slow_load))
+    with patch.dict(sys.modules, {"fastembed": fake_mod}):
+        # Tiny per-call budget: the first turn degrades while the load runs on.
+        e = LocalEmbedder("BAAI/bge-small-zh-v1.5", load_timeout_seconds=0.05)
+        assert await e.embed("text") is None
+        assert e._closed is False  # not permanently disabled
+        assert started.is_set()    # background load did start
+        # Let the slow load finish, then a later call transparently uses it.
+        release.set()
+        for _ in range(200):  # poll until the background future resolves
+            vec = await e.embed("again")
+            if vec is not None:
+                break
+            await asyncio.sleep(0.01)
+        assert vec == pytest.approx([0.5, 0.6], abs=1e-6)
+        # The single background load was reused, not restarted per message.
+        assert fake_mod.TextEmbedding.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_load_failure_retries_after_backoff():
+    """加载失败后进入退避窗口，不逐条消息重试；退避到期后重新尝试并可成功。"""
+    import numpy as np
+    fake_model = MagicMock()
+    fake_model.embed.return_value = iter([np.array([0.1], dtype=np.float32)])
+    # First construction attempt fails, second succeeds.
+    fake_cls = MagicMock(side_effect=[RuntimeError("net down"), fake_model])
+    fake_mod = MagicMock(TextEmbedding=fake_cls)
+    with patch.dict(sys.modules, {"fastembed": fake_mod}):
+        e = LocalEmbedder(
+            "BAAI/bge-small-zh-v1.5", load_timeout_seconds=1.0,
+            max_load_attempts=5, retry_backoff_seconds=999.0,
+        )
+        assert await e.embed("text") is None
+        assert fake_cls.call_count == 1
+        # Within the backoff window: no new load attempt.
+        assert await e.embed("text") is None
+        assert fake_cls.call_count == 1
+        # Force the backoff to expire, then the next call retries and succeeds.
+        e._next_retry_at = 0.0
+        vec = await e.embed("text")
+        assert vec == pytest.approx([0.1], abs=1e-6)
+        assert fake_cls.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_load_stops_after_max_attempts():
+    """连续失败达到上限后本进程不再尝试加载（保持关键词检索直到重启）。"""
+    fake_cls = MagicMock(side_effect=RuntimeError("net down"))
+    fake_mod = MagicMock(TextEmbedding=fake_cls)
+    with patch.dict(sys.modules, {"fastembed": fake_mod}):
+        e = LocalEmbedder(
+            "BAAI/bge-small-zh-v1.5", load_timeout_seconds=1.0,
+            max_load_attempts=2, retry_backoff_seconds=0.0,
+        )
+        assert await e.embed("text") is None
+        assert await e.embed("text") is None
+        # Exhausted: further calls never construct again.
+        assert await e.embed("text") is None
+        assert fake_cls.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_cache_dir_passed_to_fastembed():
+    """配置的缓存目录透传给 fastembed，使安装期预取与运行期共用同一目录。"""
+    import numpy as np
+    fake_model = MagicMock()
+    fake_model.embed.return_value = iter([np.array([0.1], dtype=np.float32)])
+    fake_cls = MagicMock(return_value=fake_model)
+    fake_mod = MagicMock(TextEmbedding=fake_cls)
+    with patch.dict(sys.modules, {"fastembed": fake_mod}):
+        e = LocalEmbedder("BAAI/bge-small-zh-v1.5", cache_dir="/tmp/echo-models")
+        await e.embed("text")
+        _, kwargs = fake_cls.call_args
+        assert kwargs.get("cache_dir") == "/tmp/echo-models"
+
+
+@pytest.mark.asyncio
+async def test_no_cache_dir_omits_kwarg():
+    """未配置缓存目录时不传 cache_dir，保留 fastembed 默认行为。"""
+    import numpy as np
+    fake_model = MagicMock()
+    fake_model.embed.return_value = iter([np.array([0.1], dtype=np.float32)])
+    fake_cls = MagicMock(return_value=fake_model)
+    fake_mod = MagicMock(TextEmbedding=fake_cls)
+    with patch.dict(sys.modules, {"fastembed": fake_mod}):
+        e = LocalEmbedder("BAAI/bge-small-zh-v1.5", cache_dir="")
+        await e.embed("text")
+        _, kwargs = fake_cls.call_args
+        assert "cache_dir" not in kwargs

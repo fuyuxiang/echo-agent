@@ -122,7 +122,8 @@ class _ProviderEmbedFn:
 
 
 def resolve_embed_fallback(
-    embed_provider, emb_model, local_model_name, local_load_timeout=60.0, hf_endpoint=""
+    embed_provider, emb_model, local_model_name, local_load_timeout=60.0, hf_endpoint="",
+    cache_dir="", max_load_attempts=5, retry_backoff=30.0,
 ):
     """Resolve the embedding tier: provider-backed when available, else the
     local fastembed fallback (zero-config vector search), else nothing.
@@ -137,8 +138,11 @@ def resolve_embed_fallback(
 
     if local_model_name:
         from echo_agent.memory.local_embed import LocalEmbedder
+        resolved_cache = str(Path(cache_dir).expanduser()) if cache_dir else ""
         local = LocalEmbedder(
-            local_model_name, load_timeout_seconds=local_load_timeout, hf_endpoint=hf_endpoint
+            local_model_name, load_timeout_seconds=local_load_timeout,
+            hf_endpoint=hf_endpoint, cache_dir=resolved_cache,
+            max_load_attempts=max_load_attempts, retry_backoff_seconds=retry_backoff,
         )
         if local.available:
             logger.info(
@@ -786,6 +790,9 @@ class AgentLoop:
                 None, emb_model, config.memory.local_embedding_model,
                 local_load_timeout=config.memory.embed_load_timeout_seconds,
                 hf_endpoint=config.memory.hf_embedding_endpoint,
+                cache_dir=config.memory.local_embedding_cache_dir,
+                max_load_attempts=config.memory.local_embedding_max_load_attempts,
+                retry_backoff=config.memory.local_embedding_retry_backoff_seconds,
             )
 
         from echo_agent.memory.vectors import VectorIndex

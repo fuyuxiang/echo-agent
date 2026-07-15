@@ -566,6 +566,66 @@ install_deps() {
     log_success "Dependencies installed (base only)"
 }
 
+# Warm the local embedding model into a STABLE cache so first-run memory vector
+# search is an offline cache hit instead of a live download racing the runtime's
+# per-message budget. Prefetch runs with a generous budget and lets fastembed
+# fall back from the (often unreachable) HF mirror to its GCS source. This is
+# best-effort: a failure here never aborts the install — the runtime still works
+# in keyword-only mode and retries the download later with backoff.
+EMBED_MODEL="${ECHO_EMBED_MODEL:-BAAI/bge-small-zh-v1.5}"
+EMBED_CACHE_DIR="${ECHO_EMBED_CACHE_DIR:-$ECHO_HOME/models/fastembed}"
+EMBED_PREFETCH_TIMEOUT="${ECHO_EMBED_PREFETCH_TIMEOUT:-900}"
+
+prefetch_embedding_model() {
+    local venv_python="$INSTALL_DIR/venv/bin/python"
+    if [ ! -x "$venv_python" ]; then
+        log_warn "Skipping embedding model prefetch (venv python not found)."
+        return 0
+    fi
+    if [ -z "$EMBED_MODEL" ]; then
+        log_info "Embedding model prefetch disabled (ECHO_EMBED_MODEL empty)."
+        return 0
+    fi
+
+    log_info "Prefetching local embedding model '$EMBED_MODEL' into $EMBED_CACHE_DIR ..."
+    mkdir -p "$EMBED_CACHE_DIR"
+
+    # Tight HF timeouts so a dead mirror fails fast and fastembed reaches its GCS
+    # fallback within the budget. HF_ENDPOINT respects an operator override.
+    # Bounded by run_with_timeout as a hard ceiling; the trap is disarmed so a
+    # non-zero exit here is swallowed rather than failing the whole install.
+    trap - ERR
+    HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-15}" \
+    HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-15}" \
+    HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}" \
+    FASTEMBED_CACHE_PATH="$EMBED_CACHE_DIR" \
+    run_with_timeout "$EMBED_PREFETCH_TIMEOUT" "$venv_python" - "$EMBED_MODEL" "$EMBED_CACHE_DIR" <<'PYEOF'
+import sys
+model_name, cache_dir = sys.argv[1], sys.argv[2]
+try:
+    from fastembed import TextEmbedding
+    emb = TextEmbedding(model_name=model_name, cache_dir=cache_dir)
+    # Force a real inference so the ONNX weights are materialized, not just metadata.
+    next(iter(emb.embed(["预热"])), None)
+    print("ok")
+except Exception as e:  # noqa: BLE001 - best-effort prefetch, never fatal
+    print(f"prefetch failed: {e}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+    local rc=$?
+    trap 'on_error $LINENO' ERR
+
+    if [ "$rc" -eq 0 ]; then
+        log_success "Embedding model cached (offline-ready)."
+    else
+        log_warn "Embedding model prefetch failed or timed out (rc=$rc)."
+        log_warn "Memory vector search starts in keyword-only mode and retries the"
+        log_warn "download at runtime. To retry now:"
+        log_warn "  FASTEMBED_CACHE_PATH='$EMBED_CACHE_DIR' $INSTALL_DIR/venv/bin/python -c \"from fastembed import TextEmbedding; TextEmbedding(model_name='$EMBED_MODEL', cache_dir='$EMBED_CACHE_DIR')\""
+    fi
+    return 0
+}
+
 build_dashboard() {
     cd "$INSTALL_DIR"
 
@@ -838,6 +898,7 @@ main() {
     clone_repo
     setup_venv
     install_deps
+    prefetch_embedding_model
     check_node
     build_dashboard
     setup_path

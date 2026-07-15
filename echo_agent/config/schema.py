@@ -2046,6 +2046,30 @@ class MemoryConfig(_Base):
             "desc_en": "Local embedding model first-load/download timeout (seconds); on timeout the embedder is marked failed and degrades to keyword search, preventing a hung download from starving the process",
         },
     )
+    local_embedding_cache_dir: str = Field(
+        default="~/.echo-agent/models/fastembed",
+        json_schema_extra={
+            "status": "effective", "ref": "memory/local_embed.py",
+            "desc_zh": "本地嵌入模型(fastembed)的缓存目录,安装期预取与运行期共用同一目录以实现离线命中;默认落在 echo-home 下的稳定位置(而非易被系统清理的临时目录),空串则用 fastembed 默认(FASTEMBED_CACHE_PATH 或临时目录)",
+            "desc_en": "fastembed cache directory for the local embedding model; install-time prefetch and runtime share this path for offline cache hits. Defaults to a stable location under echo-home (not the volatile tempdir fastembed uses by default). Empty leaves fastembed's default (FASTEMBED_CACHE_PATH or tempdir) untouched",
+        },
+    )
+    local_embedding_max_load_attempts: int = Field(
+        default=5,
+        json_schema_extra={
+            "status": "effective", "ref": "memory/local_embed.py",
+            "desc_zh": "本地嵌入模型加载失败后的最大重试次数,超过则本进程保持关键词检索直到重启;避免一次网络抖动就永久降级",
+            "desc_en": "Max load attempts for the local embedding model before staying keyword-only until restart; prevents one network blip from permanently degrading the process",
+        },
+    )
+    local_embedding_retry_backoff_seconds: float = Field(
+        default=30.0,
+        json_schema_extra={
+            "status": "effective", "ref": "memory/local_embed.py",
+            "desc_zh": "本地嵌入模型加载失败后再次尝试前的退避等待(秒),避免失败后每条消息都反复触发加载",
+            "desc_en": "Backoff (seconds) before re-attempting a failed local embedding model load, so a failure does not re-trigger a load on every message",
+        },
+    )
     contradiction_scan_on_store: bool = Field(
         default=False,
         json_schema_extra={
