@@ -50,3 +50,25 @@ async def test_user_turn_has_visual_separation():
         s = w.styles
         assert s.margin.top == 1 and s.margin.bottom == 1   # 上下空行
         assert s.border_left[0] != ""                        # 左侧强调条存在
+
+
+@pytest.mark.asyncio
+async def test_echo_theme_registered_and_active():
+    # 现代极简主题作为设计 token 基础层，须在 on_mount 后生效
+    app = EchoTUI()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.theme == "echo"
+
+
+@pytest.mark.asyncio
+async def test_banner_mounted_on_first_screen():
+    # 进入时应展示品牌 banner，且带会话号
+    from echo_agent.cli.tui.blocks import Banner
+
+    app = EchoTUI(session_key="sess_x")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        banners = list(app.query(Banner))
+        assert len(banners) == 1
+        assert "sess_x" in banners[0].build_text()

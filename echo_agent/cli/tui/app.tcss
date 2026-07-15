@@ -4,6 +4,14 @@ TranscriptView {
     height: 1fr;
 }
 
+/* Brand banner on the first screen: a rounded panel with breathing room. */
+Banner {
+    margin: 1 1 0 1;
+    padding: 0 1;
+    border: round $primary;
+    color: $text;
+}
+
 /* User task title: a left accent bar + subtle boost background + blank lines
    above/below, so each submitted task stands out and reads as a clear divider
    between turns. Colors use theme variables so they adapt to light/dark. */
@@ -15,17 +23,44 @@ UserTurn {
     color: $text;
 }
 
+/* Reply and trace blocks: gentle left indent + a little vertical rhythm, so
+   each turn's reply/tool/thinking lines group cleanly under the task title
+   without heavy borders competing with UserTurn. */
+AgentReply {
+    padding: 0 1;
+    margin: 0 0 1 0;
+}
+
+ToolCallBlock, CognitiveBlock {
+    padding: 0 1;
+}
+
+ApprovalBlock {
+    margin: 1 0;
+    padding: 0 1;
+    border-left: thick $warning;
+    background: $boost;
+}
+
+ChoiceBlock {
+    margin: 1 0;
+    padding: 0 1;
+    border-left: thick $secondary;
+    background: $boost;
+}
+
 #input_row {
     height: auto;
     max-height: 10;
     min-height: 1;
-    border-top: solid grey;
-    border-bottom: solid grey;
+    border-top: solid $primary;
+    border-bottom: solid $primary;
 }
 
 #prompt_sigil {
     width: 2;
     color: $accent;
+    text-style: bold;
 }
 
 PromptInput {
@@ -35,7 +70,7 @@ PromptInput {
 
 #placeholder {
     height: 1;
-    color: grey;
+    color: $text-muted;
     padding-left: 2;
 }
 
@@ -49,5 +84,5 @@ StatusBar {
 #slash_panel {
     height: auto;
     max-height: 6;
-    border: round grey;
+    border: round $primary;
 }

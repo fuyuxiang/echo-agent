@@ -40,17 +40,25 @@ def test_summarize_result_uses_meta_not_text():
     assert isinstance(summarize_result("read_file", {}, "", True), str)
 
 
+def _plain(markup: str) -> str:
+    # Blocks render Textual console markup ([$var]…[/]) for colour; strip the
+    # tags and assert on the visible text only. A plain regex is enough here and
+    # avoids Rich's parser choking on Textual's $variable tags.
+    import re
+    return re.sub(r"\[/?[^\]]*\]", "", markup)
+
+
 def test_tool_block_running_then_done_flip():
     from echo_agent.cli.tui.blocks import ToolCallBlock
 
     b = ToolCallBlock("tc_1", "read_file", {"path": "x/inference_stage.py"})
-    running = b.render_summary()
+    running = _plain(b.render_summary())
     assert "🔧" in running and "读取" in running and "inference_stage.py" in running
     assert running.endswith("…")           # 进行中：尾部省略号
     assert "✓" not in running
 
-    b.mark_done("ok", {"total_lines": 300}, "…preview…", 320)
-    done = b.render_summary()
+    b.mark_done("ok", {"total_lines": 300}, "preview", 320)
+    done = _plain(b.render_summary())
     assert done.endswith("✓")
     assert "300 行" in done
     assert "…" not in done                  # 完成后去掉省略号
@@ -61,7 +69,7 @@ def test_tool_block_error_shows_cross():
 
     b = ToolCallBlock("tc_2", "exec", {"command": "rm -rf /tmp/x"})
     b.mark_done("err", None, "Error: boom", 10)
-    s = b.render_summary()
+    s = _plain(b.render_summary())
     assert s.endswith("✗")
     assert "失败" in s
 

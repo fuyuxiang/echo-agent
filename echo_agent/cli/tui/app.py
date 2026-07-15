@@ -6,6 +6,7 @@ from __future__ import annotations
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
+from textual.theme import Theme
 from textual.widgets import OptionList, Static
 
 from echo_agent.cli.tui.transcript import TranscriptView
@@ -15,6 +16,30 @@ from echo_agent.cli.tui.blocks import ApprovalBlock, ChoiceBlock
 from echo_agent.cli.tui.completion import completion_insert, filter_commands
 from echo_agent.cli.tui.protocol import (
     CogEvent, approve_command, deny_command, clarify_command,
+)
+
+# Modern-minimal design tokens. A single teal accent over a calm neutral-dark
+# surface — the palette every widget/CSS rule pulls from, so recolouring is a
+# one-place change and every block stays visually coherent. Registered as a
+# Textual theme so $primary/$accent/$surface/$boost resolve app-wide.
+ECHO_THEME = Theme(
+    name="echo",
+    primary="#4fd1c5",     # teal — user/accent bar, headings
+    secondary="#7f9cf5",   # indigo — cognitive (thinking/memory)
+    accent="#4fd1c5",
+    success="#68d391",     # green — tool ✓, connected
+    warning="#f6ad55",     # amber — approvals, mid gauge
+    error="#fc8181",       # soft red — tool ✗, disconnected
+    foreground="#e6edf3",
+    background="#0d1117",
+    surface="#161b22",
+    panel="#1c2128",
+    dark=True,
+    variables={
+        # Muted foreground for secondary text (tool operands, hints) so the
+        # eye lands on the primary content first.
+        "text-muted": "#8b949e",
+    },
 )
 
 
@@ -92,9 +117,22 @@ class EchoTUI(App):
         # connected. StatusBar is yielded in compose() and mounted by now, so
         # query_one is safe without a guard (unlike notify_disconnected, where
         # the socket may die before mount).
+        self.register_theme(ECHO_THEME)
+        self.theme = "echo"
+        self._mount_banner()
         bar = self.query_one(StatusBar)
         bar.set_session(self._session_key)
         bar.set_connection(True)
+
+    def _mount_banner(self) -> None:
+        """Brand banner on the transcript's first screen — a light touch of
+        ritual on entry. Pure presentation; safe to skip if mounting fails."""
+        from echo_agent.cli.tui.blocks import Banner
+
+        try:
+            self._tv.mount(Banner(self._session_key))
+        except Exception:
+            pass
 
     def check_action(self, action: str, parameters):
         # Only surface approval keys while a decision is actually pending;
