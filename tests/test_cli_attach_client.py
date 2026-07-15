@@ -145,6 +145,34 @@ def test_require_textual_raises_missing_dep_when_absent(monkeypatch):
     assert "textual" in str(ei.value)
 
 
+def test_require_textual_rejects_below_floor(monkeypatch):
+    """低于最低版本时须报明确的版本错误，而非放行到深处崩溃。
+
+    TUI 依赖 textual 的 theme API (0.86) 与 content markup (2.0)，实际按
+    8.2 验证；低于 floor 的旧版会 import 失败或渲染时 MarkupError。"""
+    import textual
+    from echo_agent.cli import attach_client
+
+    for low in ("0.60.0", "0.85.1", "2.0.0", "8.1.9"):
+        monkeypatch.setattr(textual, "__version__", low, raising=False)
+        with pytest.raises(MissingTUIDependencyError) as ei:
+            attach_client._require_textual()
+        # 错误须点明已装版本与所需下限，给出可操作指引
+        assert low in str(ei.value)
+        assert "8.2" in str(ei.value)
+
+
+def test_require_textual_accepts_floor_and_above(monkeypatch):
+    """>= floor（含预发布后缀）须放行。"""
+    import textual
+    from echo_agent.cli import attach_client
+
+    for ok in ("8.2.0", "8.2.8", "9.0.0rc1", "10.0.0"):
+        monkeypatch.setattr(textual, "__version__", ok, raising=False)
+        # 不抛异常即为通过
+        attach_client._require_textual()
+
+
 @pytest.mark.asyncio
 async def test_run_client_passes_handshake_session_key_into_tui(monkeypatch):
     import echo_agent.cli.attach_client as ac

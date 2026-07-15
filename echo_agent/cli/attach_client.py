@@ -20,14 +20,44 @@ class MissingTUIDependencyError(Exception):
     troubleshooting (the gateway may be perfectly healthy)."""
 
 
+# The TUI uses the theme API (textual.theme, added in 0.86) and native
+# content markup with theme variables like [$primary] (added in 2.0). Below
+# this floor the app either fails to import or raises MarkupError at render
+# time; check up front so the user gets an actionable version error instead
+# of a cryptic ModuleNotFoundError deep in the widget tree.
+_MIN_TEXTUAL = (8, 2)
+
+
 def _require_textual() -> None:
     try:
-        import textual  # noqa: F401
+        import textual
     except ImportError as e:
         raise MissingTUIDependencyError(
             "缺少 TUI 依赖 textual。请安装：pip install \"echo-agent[all]\" "
             "或 pip install \"echo-agent[tui]\"。"
         ) from e
+
+    raw = getattr(textual, "__version__", "0")
+    # Parse leading numeric components only (e.g. "8.2.8" -> (8, 2)); ignore
+    # any pre-release/build suffix so "9.0.0rc1" still compares correctly.
+    parts: list[int] = []
+    for token in raw.split(".")[:2]:
+        digits = ""
+        for ch in token:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        parts.append(int(digits) if digits else 0)
+    version = tuple(parts)
+
+    if version < _MIN_TEXTUAL:
+        need = ".".join(str(n) for n in _MIN_TEXTUAL)
+        raise MissingTUIDependencyError(
+            f"TUI 依赖 textual 版本过低（已安装 {raw}，需要 >= {need}）。"
+            f"请升级：pip install -U \"textual>={need}\"，"
+            "或 pip install -U \"echo-agent[tui]\"。"
+        )
 
 
 def build_ws_url(host: str, port: int, ws_path: str) -> str:

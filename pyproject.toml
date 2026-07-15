@@ -64,8 +64,12 @@ browser = ["playwright>=1.40"]
 otel = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20", "opentelemetry-exporter-otlp>=1.20"]
 tokenizers = ["tiktoken>=0.7"]
 documents = ["pymupdf>=1.24", "python-docx>=1.1", "openpyxl>=3.1", "python-pptx>=1.0"]
-tui = ["textual>=0.60"]
-all = ["openai>=1.30", "anthropic>=0.40", "boto3>=1.34", "google-generativeai>=0.8", "httpx[socks]>=0.23", "psutil>=5.9", "faiss-cpu>=1.7", "cryptography>=41.0", "tiktoken>=0.7", "fal-client>=0.5", "pymupdf>=1.24", "python-docx>=1.1", "openpyxl>=3.1", "python-pptx>=1.0", "textual>=0.60", "playwright>=1.40"]
+# textual>=8.2: the TUI uses the theme API (textual.theme, added 0.86) and
+# native content markup with theme variables like [$primary] (added 2.0).
+# 8.2 is the version the TUI is developed and verified against; pinning the
+# floor to it avoids declaring an unverified 2.0–8.1 compatibility window.
+tui = ["textual>=8.2"]
+all = ["openai>=1.30", "anthropic>=0.40", "boto3>=1.34", "google-generativeai>=0.8", "httpx[socks]>=0.23", "psutil>=5.9", "faiss-cpu>=1.7", "cryptography>=41.0", "tiktoken>=0.7", "fal-client>=0.5", "pymupdf>=1.24", "python-docx>=1.1", "openpyxl>=3.1", "python-pptx>=1.0", "textual>=8.2", "playwright>=1.40"]
 dev = ["ruff>=0.4", "pytest>=8.0", "pytest-asyncio>=0.23", "pytest-cov>=5.0"]
 skills = [
     "duckduckgo_search>=7.0",
