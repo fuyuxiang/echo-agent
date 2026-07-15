@@ -63,6 +63,14 @@ class TelegramChannelConfig(_Base):
             "desc_en": "Whether to add emoji reactions to messages",
         },
     )
+    data_dir: str = Field(
+        default="",
+        json_schema_extra={
+            "status": "effective", "ref": "channels/telegram.py:_offset_path",
+            "desc_zh": "Telegram 状态持久化目录(存 long-poll offset,防重启后重复拉取);缺省 ~/.echo-agent/data/telegram",
+            "desc_en": "Directory persisting Telegram state (long-poll offset, prevents re-fetch after restart); defaults to ~/.echo-agent/data/telegram",
+        },
+    )
 
 
 class DiscordChannelConfig(_Base):

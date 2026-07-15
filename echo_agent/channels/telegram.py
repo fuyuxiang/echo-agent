@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
+import os
 import time
+from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -21,6 +25,48 @@ _MAX_TEXT = 4096
 _RECONNECT_BACKOFFS = [2, 5, 10, 30, 60]
 
 
+def _offset_path(data_dir: Path, bot_id: str) -> Path:
+    return data_dir / f"{bot_id}.offset.json"
+
+
+def _load_offset(data_dir: Path, bot_id: str, token_hash: str) -> int:
+    """Read the persisted long-poll offset for this bot.
+
+    Returns 0 when there is no saved state, the file is unreadable, or the token
+    changed (a different bot behind the same config slot — an old offset would
+    silently skip that bot's backlog, so we reset it)."""
+    path = _offset_path(data_dir, bot_id)
+    if not path.exists():
+        return 0
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.debug("telegram: failed to load offset: {}", e)
+        return 0
+    if data.get("token_hash") != token_hash:
+        logger.info("telegram: bot token changed, resetting long-poll offset")
+        return 0
+    try:
+        return int(data.get("offset") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _save_offset(data_dir: Path, bot_id: str, token_hash: str, offset: int) -> None:
+    path = _offset_path(data_dir, bot_id)
+    try:
+        path.write_text(
+            json.dumps({"offset": offset, "token_hash": token_hash}),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        logger.warning("telegram: failed to save offset: {}", e)
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()[:16] if token else ""
+
+
 class TelegramChannel(BaseChannel):
     name = "telegram"
     supports_edit = True
@@ -36,6 +82,9 @@ class TelegramChannel(BaseChannel):
         self._group_policy = config.group_policy
         self._bot_id: str = ""
         self._bot_username: str = ""
+        data_dir = config.data_dir or os.path.expanduser("~/.echo-agent/data/telegram")
+        self._data_dir = Path(data_dir)
+        self._token_hash = _token_hash(self._token)
 
     async def start(self) -> None:
         connector = None
@@ -48,6 +97,15 @@ class TelegramChannel(BaseChannel):
             self._bot_id = str(me.get("id", ""))
             self._bot_username = me.get("username", "")
             logger.info("Telegram bot: @{}", self._bot_username)
+        # Restore the persisted long-poll offset so a restart does not re-pull
+        # (and re-answer) updates the previous process already acknowledged.
+        # Keyed by bot_id; falls back to token hash before getMe resolves an id.
+        if self._bot_id:
+            try:
+                self._data_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                logger.warning("telegram: cannot create offset dir {}: {}", self._data_dir, e)
+            self._offset = _load_offset(self._data_dir, self._bot_id, self._token_hash)
         self._running = True
         self.bus.subscribe_outbound(self.name, self.send)
         self._poll_task = asyncio.create_task(self._poll_loop())
@@ -191,6 +249,12 @@ class TelegramChannel(BaseChannel):
                 for update in updates:
                     self._offset = update["update_id"] + 1
                     await self._process_update(update)
+                # Persist once per batch (not per update) to bound disk I/O;
+                # the offset advances even if a single update fails to process,
+                # matching Telegram's long-poll semantics (fetching offset N acks
+                # everything below it upstream).
+                if self._bot_id:
+                    _save_offset(self._data_dir, self._bot_id, self._token_hash, self._offset)
             except asyncio.CancelledError:
                 break
             except Exception as e:
