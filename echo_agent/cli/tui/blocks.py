@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import os
 
+from rich.markdown import Markdown
 from rich.markup import escape
+from rich.table import Table
+from rich.text import Text
 from textual.widgets import Static
 
 from echo_agent.cli.tui.protocol import CogEvent
@@ -105,6 +108,12 @@ class UserTurn(Static):
 
 
 class AgentReply(Static):
+    """Agent reply body. Streaming tokens render as plain (escaped) text —
+    partial markdown is inevitably broken, and re-parsing every token would
+    flicker. The finished reply is rendered as markdown via ``set_markdown``;
+    ``set_final`` stays a plain-text path for status lines (heartbeat/error)
+    that reuse this widget but carry hand-built Rich markup, not markdown."""
+
     def __init__(self) -> None:
         self._buf = ""
         super().__init__("[$primary]●[/] ")
@@ -116,6 +125,31 @@ class AgentReply(Static):
     def set_final(self, text: str) -> None:
         self._buf = text
         self.update(f"[$primary]●[/] {escape(self._buf)}")
+
+    def _bullet_color(self) -> str:
+        """Resolve the theme's ``primary`` colour so the ``●`` matches the
+        streaming sigil. Rich renderables bypass Textual's ``$var`` markup
+        substitution, so we look the colour up here. Falls back to a fixed hue
+        when no app/theme is attached (e.g. pure unit tests)."""
+        try:
+            theme = self.app.current_theme
+            if theme is not None and theme.primary:
+                return theme.primary
+        except Exception:
+            pass
+        return "#8899ff"
+
+    def set_markdown(self, text: str) -> None:
+        """Render the finished reply as markdown, keeping the ``●`` sigil inline
+        with the body's first line. A two-column grid places the accent bullet
+        beside the markdown so the turn still reads as "the agent is speaking",
+        and wrapped/subsequent lines stay aligned under the body."""
+        self._buf = text
+        grid = Table.grid(padding=(0, 1, 0, 0))
+        grid.add_column()
+        grid.add_column()
+        grid.add_row(Text("●", style=self._bullet_color()), Markdown(text))
+        self.update(grid)
 
 
 class CognitiveBlock(Static):

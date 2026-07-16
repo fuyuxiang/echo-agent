@@ -26,6 +26,47 @@ def test_user_turn_prefix():
     assert UserTurn("你好").text_content == "❯ 你好"
 
 
+def test_agent_reply_streaming_plain_final_markdown():
+    """Streaming tokens stay plain (escaped) text; the finished reply renders
+    as a markdown grid. Guards the split that fixes un-rendered markdown."""
+    from rich.markdown import Markdown
+    from rich.table import Table
+    from echo_agent.cli.tui.blocks import AgentReply
+
+    r = AgentReply.__new__(AgentReply)
+    r._buf = ""
+    captured = {}
+    r.update = lambda content, **kw: captured.__setitem__("c", content)
+
+    r.append_token("**x**")
+    # Streaming path: markdown is NOT parsed — raw ``**`` survive as plain text.
+    assert isinstance(captured["c"], str)
+    assert "**x**" in captured["c"]
+
+    # No app attached: _bullet_color falls back to its fixed hue.
+    r.set_markdown("# 标题\n\n**加粗**")
+    grid = captured["c"]
+    # Final path: a two-column grid whose body column is a Markdown visual.
+    assert isinstance(grid, Table)
+    cells = [c for col in grid.columns for c in col.cells]
+    assert any(isinstance(c, Markdown) for c in cells)
+    assert r._buf == "# 标题\n\n**加粗**"
+
+
+def test_agent_reply_set_final_stays_plain():
+    """set_final is the status-line path (heartbeat/error): plain text, never
+    markdown, so hand-built Rich markup keeps working."""
+    from echo_agent.cli.tui.blocks import AgentReply
+
+    r = AgentReply.__new__(AgentReply)
+    r._buf = ""
+    captured = {}
+    r.update = lambda content, **kw: captured.setdefault("c", content)
+    r.set_final("⏳ 生成中")
+    assert isinstance(captured["c"], str)
+    assert "⏳ 生成中" in captured["c"]
+
+
 def test_approval_block_marks_decision():
     a = ApprovalBlock("req1", "shell", {"cmd": "rm x"}, "EXEC 高风险")
     assert a.decision is None

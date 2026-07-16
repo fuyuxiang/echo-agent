@@ -169,7 +169,10 @@ class EchoTUI(App):
         r = self._replies.pop(inbound_id, None)
         if r is None:
             r = self._tv.start_reply()
-        r.set_final(text)
+        # Finished reply: render markdown now that the text is complete.
+        # Streaming (append_token) stays plain text since partial markdown
+        # is broken and re-parsing every token would flicker.
+        r.set_markdown(text)
         self.query_one(StatusBar).stop_turn_timer()
 
     def on_cognitive(self, ev: CogEvent) -> None:
