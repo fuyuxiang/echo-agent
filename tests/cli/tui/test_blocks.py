@@ -93,6 +93,29 @@ async def test_transcript_heartbeat_updates_in_place():
 
 
 @pytest.mark.asyncio
+async def test_transcript_auto_follows_new_content():
+    """Mounting content past the viewport keeps the view scrolled to the bottom
+    (anchored), so long replies stay visible instead of growing below the fold."""
+    from textual.app import App
+    from textual.widgets import Static
+    from echo_agent.cli.tui.transcript import TranscriptView
+
+    class T(App):
+        def compose(self):
+            yield TranscriptView()
+
+    app = T()
+    async with app.run_test(size=(40, 6)) as pilot:
+        tv = app.query_one(TranscriptView)
+        for i in range(20):
+            tv.mount(Static(f"line {i}"))
+        await pilot.pause()
+        assert tv.max_scroll_y > 0  # content actually overflows the viewport
+        assert round(tv.scroll_y) == round(tv.max_scroll_y)
+        assert tv.is_vertical_scroll_end
+
+
+@pytest.mark.asyncio
 async def test_transcript_tracks_last_memory_and_thinking():
     from textual.app import App
     from echo_agent.cli.tui.transcript import TranscriptView

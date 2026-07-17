@@ -39,6 +39,15 @@ class TranscriptView(VerticalScroll):
         self._last_memory: CognitiveBlock | None = None
         self._last_thinking: CognitiveBlock | None = None
 
+    def on_mount(self) -> None:
+        # Anchor to the bottom so newly mounted blocks (replies, streaming
+        # tokens, tool/heartbeat lines) auto-follow into view. Without this the
+        # view kept its scroll position while content grew below the fold, so a
+        # long reply looked "stuck". Textual's anchor is persistent and self-
+        # releasing: scrolling up pauses the follow, scrolling back to the
+        # bottom restores it — no manual scroll_end on every mount.
+        self.anchor()
+
     @property
     def heartbeat_count(self) -> int:
         return len(self._heartbeats)
