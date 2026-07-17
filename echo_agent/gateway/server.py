@@ -794,6 +794,29 @@ class GatewayServer:
                             finally:
                                 clear_session_vars(tokens)
 
+                        if msg_type == "interrupt":
+                            # Cooperative stop of the session's running turn.
+                            # Routed as an internal control command that the loop
+                            # intercepts BEFORE the session lock (the running turn
+                            # holds that lock), so the inference loop can poll the
+                            # flag and converge cleanly. is_control bypasses the
+                            # rate limiter, mirroring the clarify-cancel escape
+                            # valve — same reasoning: a user who just flooded the
+                            # session is exactly who needs the stop to land.
+                            if not session_key:
+                                await websocket.send_json({"type": "error", "error": "authenticate first"})
+                                continue
+                            interrupt_event = InboundEvent.text_message(
+                                channel=f"gateway:{platform}",
+                                sender_id=user_id,
+                                chat_id=chat_id,
+                                text="/__interrupt__",
+                                session_key_override=session_key,
+                                is_control=True,
+                            )
+                            await self._bus.publish_inbound(interrupt_event)
+                            await websocket.send_json({"type": "accepted"})
+
                         if msg_type == "ping":
                             await websocket.send_json({"type": "pong"})
                     except Exception as e:

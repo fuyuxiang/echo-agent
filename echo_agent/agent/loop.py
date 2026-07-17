@@ -302,6 +302,8 @@ class AgentLoop:
         )
         from echo_agent.agent.clarify_manager import ClarifyManager
         self.clarify = ClarifyManager()
+        from echo_agent.agent.interrupt_manager import InterruptManager
+        self.interrupt = InterruptManager()
         self.inference = InferenceController()
         if config.permissions.approval.require_approval:
             from echo_agent.models.inference import InferenceConstraints
@@ -497,6 +499,7 @@ class AgentLoop:
             compressor=self.compressor,
             memory_store=self.memory,
             clarify_manager=self.clarify,
+            interrupt_manager=self.interrupt,
         )
         # Retrieval prefetcher: after each reply ResponseStage fires this on the
         # DISCARDABLE tier to warm the next turn's cache. Needs _hybrid_retriever
@@ -1142,6 +1145,15 @@ class AgentLoop:
         if self._is_clarify_cancel_command(event.text):
             await self._handle_clarify_cancel(event)
             return
+        # Turn-interrupt escape valve. Handled BEFORE the session lock for the
+        # same reason as clarify-cancel: the running turn holds the lock, so the
+        # cooperative-stop signal must be delivered on a lock-free path — the
+        # inference loop polls the flag at its next checkpoint and stops cleanly.
+        # Synthesized by the gateway from a Ctrl+C interrupt frame; internal
+        # control command, no reply.
+        if self._is_interrupt_command(event.text):
+            await self._handle_interrupt(event)
+            return
         session_lock = await self.sessions.acquire(event.session_key)
         async with session_lock:
             trace_id = uuid.uuid4().hex[:12]
@@ -1151,6 +1163,10 @@ class AgentLoop:
                 cognitive_emitter=self.cognitive_emitter,
             )
             activity = SharedActivityState(started_at=time.monotonic())
+            # Register this turn so a lock-free /__interrupt__ can flag it for a
+            # cooperative stop. request() always starts un-interrupted, so a
+            # stale flag from a prior turn cannot leak into this one.
+            self.interrupt.request(event.session_key, event.event_id)
             try:
                 await heartbeat.start(activity)
                 result = await self._process_event(event, trace_id, publish_response=True, activity=activity)
@@ -1184,6 +1200,9 @@ class AgentLoop:
                 await self.bus.publish_outbound(error_out)
                 await self._record_cron_outcome(event, "error", str(e))
             finally:
+                # Deregister the turn so a finished turn leaves no residue for
+                # the next one to trip over (mirrors request() above).
+                self.interrupt.clear(event.session_key)
                 await heartbeat.stop()
                 self.tracer.flush_trace(trace_id)
 
@@ -1371,6 +1390,20 @@ class AgentLoop:
         # so a disconnected/quit CLI does not leave the agent parked in
         # wait_for_answer until the 24h registry backstop. Internal control
         # command — no user-facing reply.
+        self.clarify.cancel_session(event.session_key)
+
+    _INTERRUPT_CMD = "/__interrupt__"
+
+    def _is_interrupt_command(self, text: str) -> bool:
+        return text.strip() == self._INTERRUPT_CMD
+
+    async def _handle_interrupt(self, event: InboundEvent) -> None:
+        # Flag the session's running turn for a cooperative stop. Also cancel any
+        # clarify parked on this session: a Ctrl+C while the agent waits for an
+        # answer should unblock it (mirrors the disconnect escape valve), not
+        # sit idle. Internal control command — no user-facing reply; the turn
+        # itself emits the "stopped" text when it converges at the checkpoint.
+        self.interrupt.interrupt(event.session_key)
         self.clarify.cancel_session(event.session_key)
 
     async def _handle_clarify_command(self, event: InboundEvent) -> str | None:

@@ -126,6 +126,7 @@ class InferenceStage:
         compressor: Any = None,
         memory_store: Any = None,
         clarify_manager: Any = None,
+        interrupt_manager: Any = None,
     ):
         self._config = config
         self._bus = bus
@@ -150,6 +151,7 @@ class InferenceStage:
         self._compressor = compressor
         self._memory_store = memory_store
         self._clarify = clarify_manager
+        self._interrupt = interrupt_manager
         # Read-only tool concurrency config (Task 2 added the fields, marked
         # effective). getattr fallbacks because some test configs are MagicMock.
         _tc = getattr(getattr(config, "agent", None), "tool_concurrency", None)
@@ -465,6 +467,23 @@ class InferenceStage:
         on_delta = stream_publisher.on_delta if ctx.publish_response else None
 
         for iteration in range(self._max_iterations):
+            # Cooperative interrupt checkpoint. A Ctrl+C interrupt frame set this
+            # flag on a lock-free path; stop cleanly at the iteration boundary so
+            # session history, memory writes and tool side effects are never left
+            # half-applied (the reason we do NOT hard-cancel the task). Keep any
+            # text produced so far and mark the turn as user-stopped, not
+            # exhausted, so run() treats it as a real (if partial) result.
+            if (
+                self._interrupt is not None
+                and self._interrupt.is_interrupted(getattr(event, "session_key", ""))
+            ):
+                notice = "⏹ 已按你的请求停止。"
+                response_text = (
+                    f"{response_text}\n\n{notice}" if response_text.strip() else notice
+                )
+                loop_exhausted = False
+                break
+
             # Filter out circuit-broken tools
             unavailable = self._circuit_breaker.get_unavailable_tools()
             active_tool_defs = [
@@ -641,6 +660,23 @@ class InferenceStage:
                     ctx.execution_plan.is_complete = True
                 if ctx.activity is not None:
                     ctx.activity.set_generating()
+                loop_exhausted = False
+                break
+
+            # Second checkpoint: an interrupt may have arrived DURING the (long)
+            # LLM call above. Stop before committing this batch so we don't run
+            # one more tool round after the user asked to stop. Checked here —
+            # after the no-tool-calls break, before appending the assistant
+            # tool_calls message — so the pending calls are discarded cleanly
+            # with no dangling tool_calls message to corrupt the next turn.
+            if (
+                self._interrupt is not None
+                and self._interrupt.is_interrupted(getattr(event, "session_key", ""))
+            ):
+                notice = "⏹ 已按你的请求停止。"
+                response_text = (
+                    f"{response_text}\n\n{notice}" if response_text.strip() else notice
+                )
                 loop_exhausted = False
                 break
 

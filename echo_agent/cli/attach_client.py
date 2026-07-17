@@ -213,7 +213,19 @@ async def run_client(
             except (aiohttp.ClientError, ConnectionError, RuntimeError):
                 app.notify_disconnected()
 
-        app = EchoTUI(send_coro=send_coro, session_key=session_key)
+        async def interrupt_coro() -> None:
+            # Control-only frame: asks the gateway to cooperatively stop the
+            # running turn. Same dead-socket guard as send_coro — an interrupt
+            # on a closed ws must not crash the key handler.
+            try:
+                await ws.send_json({"type": "interrupt"})
+            except (aiohttp.ClientError, ConnectionError, RuntimeError):
+                app.notify_disconnected()
+
+        app = EchoTUI(
+            send_coro=send_coro, session_key=session_key,
+            interrupt_coro=interrupt_coro,
+        )
         bridge = WSBridge(app)
 
         async def pump() -> None:

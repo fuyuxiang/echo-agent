@@ -142,6 +142,12 @@ class StatusBar(Static):
         self._memory_count = count
         self._refresh()
 
+    @property
+    def is_turn_active(self) -> bool:
+        """True while a turn is in flight (timer running). Lets the Ctrl+C
+        guard explain that a reply is still being generated server-side."""
+        return self._turn_start is not None
+
     def start_turn_timer(self) -> None:
         self._turn_start = time.time()
         if self._timer is not None:

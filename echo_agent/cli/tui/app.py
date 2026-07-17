@@ -3,6 +3,8 @@ keybindings; upstream sends go through the injected send_coro."""
 
 from __future__ import annotations
 
+import time
+
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
@@ -54,7 +56,10 @@ class EchoTUI(App):
     BINDINGS = [
         Binding("ctrl+r", "toggle_memory", "记忆", show=False),
         Binding("ctrl+o", "toggle_thinking", "思考", show=False),
-        Binding("ctrl+c", "quit", "退出", show=False),
+        # Ctrl+C is a guarded interrupt, not an instant quit: it denies a
+        # pending approval, else clears prompt text, else arms a 2s "press
+        # again to exit" window. Ctrl+D stays the immediate escape hatch.
+        Binding("ctrl+c", "interrupt", "中断/退出", show=False, priority=True),
         Binding("ctrl+d", "quit", "退出", show=False),
         # y/n/a are declared as bindings (not on_key) because a focused
         # PromptInput (TextArea) consumes printable keys before on_key runs in
@@ -81,9 +86,13 @@ class EchoTUI(App):
         Binding("enter", "clarify_accept", show=False),
     ]
 
-    def __init__(self, send_coro=None, session_key: str = "") -> None:
+    def __init__(self, send_coro=None, session_key: str = "", interrupt_coro=None) -> None:
         super().__init__()
         self._send = send_coro
+        # Sends a control-only interrupt frame ({"type":"interrupt"}) upstream so
+        # the gateway can cooperatively stop the running turn. Distinct from
+        # _send (ordinary messages) so an interrupt never becomes a chat turn.
+        self._interrupt = interrupt_coro
         self._session_key = session_key
         self._replies: dict[str, object] = {}
         # A single pending-approval slot is sufficient (no queue needed):
@@ -100,6 +109,13 @@ class EchoTUI(App):
         # free-text answer — the next PromptInput submit is a clarify answer,
         # not an ordinary turn.
         self._clarify_free_input = False
+        # Timestamp of the last Ctrl+C that armed the exit guard. A second
+        # Ctrl+C within CTRL_C_EXIT_WINDOW seconds exits; 0.0 means unarmed.
+        self._last_ctrl_c = 0.0
+
+    # Seconds within which a second Ctrl+C confirms exit (matches the common
+    # 2s window used by shells and other agent CLIs).
+    CTRL_C_EXIT_WINDOW = 2.0
 
     def compose(self) -> ComposeResult:
         yield TranscriptView()
@@ -377,6 +393,62 @@ class EchoTUI(App):
         b = self._tv.last_thinking_block()
         if b is not None:
             b.toggle()
+
+    async def action_interrupt(self) -> None:
+        """Guarded Ctrl+C. Priority:
+          1. A pending approval → deny it (unblocks the server), stay running.
+          2. Prompt has text → clear it (bash/readline convention), stay.
+          3. A turn is running → send an interrupt frame so the gateway
+             cooperatively stops it; stay running (do NOT arm exit).
+          4. Idle & empty → first press arms a 2s window and warns; a second
+             press within the window exits. Ctrl+D remains the instant exit."""
+        # 1. Deny a pending approval instead of exiting mid-decision. This
+        # cancels the active prompt on Ctrl+C and, unlike a
+        # bare exit, actively unblocks the server-side approval gate.
+        if (
+            self._pending_approval is not None
+            and self._pending_approval.decision is None
+        ):
+            self._last_ctrl_c = 0.0
+            await self._decide("deny")
+            return
+
+        # 2. Clear a non-empty prompt rather than exit.
+        pi = self.query_one(PromptInput)
+        if not pi.is_empty:
+            pi.text = ""
+            self._last_ctrl_c = 0.0
+            return
+
+        # 3. A turn is in flight → request a cooperative stop instead of exiting.
+        # The stop is best-effort and lands at the inference loop's next
+        # checkpoint (it cannot abort a single long tool call mid-run), so we
+        # tell the user it was requested rather than claiming an instant stop.
+        try:
+            turn_active = self.query_one(StatusBar).is_turn_active
+        except Exception:
+            turn_active = False
+        if turn_active and self._interrupt is not None:
+            self._last_ctrl_c = 0.0
+            await self._interrupt()
+            self.notify("已请求停止当前任务…", severity="warning", timeout=3)
+            return
+
+        # 4. Two-press exit guard.
+        now = time.monotonic()
+        if now - self._last_ctrl_c < self.CTRL_C_EXIT_WINDOW:
+            self.exit()
+            return
+        self._last_ctrl_c = now
+        try:
+            active = self.query_one(StatusBar).is_turn_active
+        except Exception:
+            active = False
+        hint = (
+            "回复仍在服务端生成，无法中断；再次按 Ctrl+C 退出"
+            if active else "再次按 Ctrl+C 退出（Ctrl+D 直接退出）"
+        )
+        self.notify(hint, severity="warning", timeout=self.CTRL_C_EXIT_WINDOW)
 
     async def _decide(self, decision: str, level: str = "") -> None:
         blk = self._pending_approval
