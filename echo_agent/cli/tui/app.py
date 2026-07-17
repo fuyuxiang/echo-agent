@@ -287,10 +287,26 @@ class EchoTUI(App):
         if text == "/quit":
             self.exit()
             return
+        if text == "/copy" or text == "/copy all":
+            self._do_copy(whole=text == "/copy all")
+            return
         self._tv.add_user(text)
         self.query_one(StatusBar).start_turn_timer()
         if self._send is not None:
             await self._send(text)
+
+    def _do_copy(self, whole: bool) -> None:
+        """Copy the last reply (default) or the whole transcript (/copy all) to
+        the system clipboard via OSC 52. Terminal support varies (works in
+        iTerm2/WezTerm/kitty; macOS Terminal.app does not), so we notify with
+        the copied length rather than silently succeeding."""
+        text = self._tv.export_text() if whole else self._tv.last_reply_text()
+        if not text:
+            self.notify("暂无可复制的内容", severity="warning", timeout=3)
+            return
+        self.copy_to_clipboard(text)
+        scope = "整段对话" if whole else "最近回复"
+        self.notify(f"已复制{scope}（{len(text)} 字）到剪贴板", timeout=3)
 
     def on_prompt_input_content_changed(
         self, message: PromptInput.ContentChanged

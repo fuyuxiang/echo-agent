@@ -21,6 +21,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/deny", "<id> [原因]", "拒绝待确认操作", "server", True),
     SlashCommand("/approvals", "", "列出待批操作", "server", False),
     SlashCommand("/clear", "", "清空当前转录流", "local", False),
+    SlashCommand("/copy", "[all]", "复制最近回复（all=整段对话）", "local", True),
     SlashCommand("/quit", "", "退出", "local", False),
 )
 

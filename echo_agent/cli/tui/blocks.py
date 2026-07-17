@@ -101,6 +101,9 @@ class Banner(Static):
 
 class UserTurn(Static):
     def __init__(self, text: str) -> None:
+        # Keep the sigil-free original so /copy can export a clean transcript
+        # without the "❯ " decoration.
+        self.raw_text = text
         self.text_content = f"❯ {text}"
         # Markup keeps the sigil in the accent colour and the task text bright,
         # so the title reads as the strongest element in each turn.
@@ -117,6 +120,12 @@ class AgentReply(Static):
     def __init__(self) -> None:
         self._buf = ""
         super().__init__("[$primary]●[/] ")
+
+    @property
+    def text(self) -> str:
+        """The reply body as plain text (markdown source / status line),
+        without the ``●`` sigil — used by /copy."""
+        return self._buf
 
     def append_token(self, t: str) -> None:
         self._buf += t

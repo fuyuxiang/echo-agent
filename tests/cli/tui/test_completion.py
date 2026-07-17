@@ -3,9 +3,9 @@ from echo_agent.cli.tui.completion import (
 )
 
 
-def test_catalog_has_exactly_five_commands():
+def test_catalog_has_exactly_six_commands():
     names = {c.name for c in COMMANDS}
-    assert names == {"/approve", "/deny", "/approvals", "/clear", "/quit"}
+    assert names == {"/approve", "/deny", "/approvals", "/clear", "/copy", "/quit"}
 
 
 def test_server_scope_only_the_three_real_ones():
@@ -13,9 +13,9 @@ def test_server_scope_only_the_three_real_ones():
     assert server == {"/approve", "/deny", "/approvals"}
 
 
-def test_local_scope_is_clear_and_quit():
+def test_local_scope_is_clear_copy_and_quit():
     local = {c.name for c in COMMANDS if c.scope == "local"}
-    assert local == {"/clear", "/quit"}
+    assert local == {"/clear", "/copy", "/quit"}
 
 
 def test_filter_by_prefix():
@@ -24,7 +24,7 @@ def test_filter_by_prefix():
 
 
 def test_filter_empty_slash_returns_all():
-    assert len(filter_commands("/")) == 5
+    assert len(filter_commands("/")) == 6
 
 
 def test_filter_non_slash_returns_empty():

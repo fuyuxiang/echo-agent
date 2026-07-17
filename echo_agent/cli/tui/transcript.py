@@ -147,3 +147,28 @@ class TranscriptView(VerticalScroll):
 
     def last_thinking_block(self) -> CognitiveBlock | None:
         return self._last_thinking
+
+    def last_reply_text(self) -> str | None:
+        """Plain text of the most recent agent reply, or None if there is no
+        reply yet. Heartbeats subclass AgentReply, so they are excluded to keep
+        /copy pointed at the actual answer, not a progress line."""
+        for w in reversed(list(self.children)):
+            if isinstance(w, _Heartbeat):
+                continue
+            if isinstance(w, AgentReply):
+                return w.text
+        return None
+
+    def export_text(self) -> str:
+        """The whole conversation as a plain-text transcript (user turns and
+        agent replies in order), for /copy all. Cognitive/tool/heartbeat lines
+        are skipped — they are UI scaffolding, not content worth copying."""
+        parts: list[str] = []
+        for w in self.children:
+            if isinstance(w, _Heartbeat):
+                continue
+            if isinstance(w, UserTurn):
+                parts.append(f"❯ {w.raw_text}")
+            elif isinstance(w, AgentReply):
+                parts.append(w.text)
+        return "\n\n".join(p for p in parts if p)
