@@ -285,15 +285,41 @@ class ApprovalBlock(Static):
         self.update(self._body())
 
 
+def _option_to_str(opt) -> str:
+    """Normalize a single clarify option to a display/answer string.
+
+    Plain strings pass through. Dict-shaped options (which the model may emit
+    despite the string-only schema) render as "value — description" when both
+    are present, otherwise whichever field exists; anything else falls back to
+    str()."""
+    if isinstance(opt, str):
+        return opt
+    if isinstance(opt, dict):
+        value = opt.get("value")
+        desc = opt.get("description")
+        if value is not None and desc:
+            return f"{value} — {desc}"
+        if value is not None:
+            return str(value)
+        if desc:
+            return str(desc)
+    return str(opt)
+
+
 class ChoiceBlock(Static):
     """A clarify prompt: a question plus optional numbered choices. The user
     picks by number, arrows+enter, or free text. Rendering is a pure method so
     it is unit-testable without a live screen (like ApprovalBlock)."""
 
-    def __init__(self, clarify_id: str, question: str, options: list[str]) -> None:
+    def __init__(self, clarify_id: str, question: str, options: list) -> None:
         self.clarify_id = clarify_id
         self.question = question
-        self.options = list(options or [])
+        # The clarify schema declares options as strings, but the model
+        # sometimes returns richer objects like {"value": ..., "description":
+        # ...}. Coerce every option to a display string at this boundary so the
+        # rest of the flow (rendering, selection, the answer sent back to the
+        # server) only ever deals with strings and never chokes on a dict.
+        self.options = [_option_to_str(o) for o in (options or [])]
         self.highlighted = 0
         self.answer: str | None = None
         super().__init__(self.render_body())
@@ -301,7 +327,7 @@ class ChoiceBlock(Static):
     def render_body(self) -> str:
         q = escape(str(self.question))
         if self.answer is not None:
-            return f"[$secondary]❓[/] {q} [$text-muted]—[/] [$success]已选:{escape(self.answer)}[/]"
+            return f"[$secondary]❓[/] {q} [$text-muted]—[/] [$success]已选:{escape(str(self.answer))}[/]"
         if not self.options:
             return f"[$secondary]❓[/] {q}\n    [$text-muted](请输入回答)[/]"
         lines = [f"[$secondary]❓[/] [b]{q}[/b]"]

@@ -245,6 +245,27 @@ def test_choice_block_mark_switches_render():
     assert "A" in b.render_body()
 
 
+def test_choice_block_coerces_dict_options_and_marks_without_crash():
+    # The model sometimes returns dict options despite the string-only schema.
+    # They must render, select, and mark as plain strings (no TypeError from
+    # rich.escape on a dict).
+    opts = [
+        {"value": "A", "description": "深度展开每个章节"},
+        {"value": "B"},
+        "普通字符串",
+    ]
+    b = ChoiceBlock("c1", "选哪个?", opts)
+    assert b.options == ["A — 深度展开每个章节", "B", "普通字符串"]
+    body = b.render_body()
+    assert "A — 深度展开每个章节" in body
+    # Selecting the highlighted option feeds a string back, not the dict.
+    picked = b.highlighted_option()
+    assert isinstance(picked, str)
+    b.mark(picked)
+    assert b.answer == "A — 深度展开每个章节"
+    assert "已选" in b.render_body()
+
+
 @pytest.mark.asyncio
 async def test_transcript_add_clarify_mounts_block():
     from textual.app import App
