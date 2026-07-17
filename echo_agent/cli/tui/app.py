@@ -95,6 +95,11 @@ class EchoTUI(App):
         self._interrupt = interrupt_coro
         self._session_key = session_key
         self._replies: dict[str, object] = {}
+        # event_id of the turn currently in flight, captured from its `accepted`
+        # frame. Ctrl+C scopes its interrupt to this ID so a stop frame delayed
+        # past the turn's end can't clip the next turn. Cleared when the turn
+        # ends (final reply or terminal error).
+        self._active_event_id: str = ""
         # A single pending-approval slot is sufficient (no queue needed):
         # approval requests are serialized server-side by inference_stage Phase A
         # — that check is a serial for-loop where cli blocks in wait_for_decision
@@ -174,6 +179,11 @@ class EchoTUI(App):
         return self.query_one(TranscriptView)
 
     # --- WSBridge sink ---
+    def on_turn_accepted(self, event_id: str) -> None:
+        """Record the in-flight turn's event_id (from its `accepted` frame) so a
+        Ctrl+C interrupt can target exactly this turn."""
+        self._active_event_id = event_id
+
     def on_user_reply_token(self, inbound_id: str, text: str) -> None:
         r = self._replies.get(inbound_id)
         if r is None:
@@ -189,6 +199,7 @@ class EchoTUI(App):
         # Streaming (append_token) stays plain text since partial markdown
         # is broken and re-parsing every token would flicker.
         r.set_markdown(text)
+        self._active_event_id = ""
         self.query_one(StatusBar).stop_turn_timer()
 
     def on_cognitive(self, ev: CogEvent) -> None:
@@ -229,7 +240,10 @@ class EchoTUI(App):
             mem = ev.data.get("memory_count")
             if mem is not None:
                 bar.set_memory_count(mem)
-            bar.stop_turn_timer()
+            # Freeze the elapsed-time display for this settled LLM round, but do
+            # NOT end the turn: more rounds (tools, clarify, reflection) may
+            # follow, and the Ctrl+C interrupt guard keys off turn-active state.
+            bar.pause_turn_timer()
             return
         if ev.cog_type == "tool_call":
             # Tool lines flip in place (running -> done) via a dedicated block,
@@ -244,6 +258,15 @@ class EchoTUI(App):
         # transcript rather than flipping the status bar to "disconnected",
         # which would mislead the user into debugging their connection.
         self._tv.add_error(msg or "未知错误")
+        self._active_event_id = ""
+        # A gateway error frame is terminal for the turn: the request was
+        # rejected, so no reply will land to clear the active flag. End the turn
+        # now, otherwise the Ctrl+C guard would keep trying to interrupt a turn
+        # that already died server-side.
+        try:
+            self.query_one(StatusBar).stop_turn_timer()
+        except Exception:
+            pass
 
     def notify_disconnected(self) -> None:
         """Flip the status bar to the disconnected state after a silent ws
@@ -430,7 +453,21 @@ class EchoTUI(App):
             turn_active = False
         if turn_active and self._interrupt is not None:
             self._last_ctrl_c = 0.0
-            await self._interrupt()
+            # Scope the stop to the in-flight turn so a delayed frame can't clip
+            # the next one. Empty (no accepted frame seen yet) → server stops
+            # whatever is running, preserving the old behavior.
+            await self._interrupt(self._active_event_id)
+            # A stop while parked on a clarify also cancels it server-side
+            # (loop._handle_interrupt calls clarify.cancel_session). Drop the
+            # TUI's pending clarify too, or the next thing the user types would
+            # be sent as an answer to a clarify that no longer exists.
+            if self._pending_clarify is not None:
+                self._pending_clarify = None
+                self._clarify_free_input = False
+                try:
+                    self.query_one(PromptInput).focus()
+                except Exception:
+                    pass
             self.notify("已请求停止当前任务…", severity="warning", timeout=3)
             return
 

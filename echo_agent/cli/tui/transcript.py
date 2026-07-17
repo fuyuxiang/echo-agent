@@ -128,6 +128,7 @@ class TranscriptView(VerticalScroll):
         this surfaces the reason instead of silently swallowing it or faking a
         disconnect."""
         w = AgentReply()
+        w.is_status = True
         self.mount(w)
         w.set_final(f"⚠️ 服务端错误: {msg}")
         return w
@@ -151,11 +152,15 @@ class TranscriptView(VerticalScroll):
     def last_reply_text(self) -> str | None:
         """Plain text of the most recent agent reply, or None if there is no
         reply yet. Heartbeats subclass AgentReply, so they are excluded to keep
-        /copy pointed at the actual answer, not a progress line."""
+        /copy pointed at the actual answer, not a progress line. Status lines
+        (server errors) reuse AgentReply but set is_status — also excluded, so a
+        rate-limit/error right before /copy doesn't clobber the real last reply."""
         for w in reversed(list(self.children)):
             if isinstance(w, _Heartbeat):
                 continue
             if isinstance(w, AgentReply):
+                if getattr(w, "is_status", False):
+                    continue
                 return w.text
         return None
 

@@ -814,7 +814,21 @@ class GatewayServer:
                                 session_key_override=session_key,
                                 is_control=True,
                             )
-                            await self._bus.publish_inbound(interrupt_event)
+                            # The client echoes the target turn's event_id (learned
+                            # from that turn's `accepted` frame). Stamp it so the
+                            # loop only stops that turn — a stop frame delayed past
+                            # the turn's end can't clip the next one. Absent for
+                            # older clients → stop whatever is running.
+                            target_id = data.get("event_id")
+                            if target_id:
+                                interrupt_event.metadata["_interrupt_target_event_id"] = str(target_id)
+                            # Only ACK if the interrupt actually entered the bus. A full queue
+                            # or a stopped bus returns False; claiming "accepted" then
+                            # would tell the user the turn was stopped when the stop
+                            # frame was silently dropped. Mirror the normal-send path.
+                            if not await self._bus.publish_inbound(interrupt_event):
+                                await websocket.send_json({"type": "error", "error": "server overloaded"})
+                                continue
                             await websocket.send_json({"type": "accepted"})
 
                         if msg_type == "ping":

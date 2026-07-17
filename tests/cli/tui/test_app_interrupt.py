@@ -17,10 +17,10 @@ def _approval_ev(request_id="r1", action="删除文件", risk="high"):
 async def test_ctrl_c_while_turn_running_sends_interrupt_not_exit():
     # A turn is in flight → Ctrl+C sends a control interrupt frame and stays
     # running, rather than arming the exit guard.
-    interrupts: list[int] = []
+    interrupts: list[str] = []
 
-    async def fake_interrupt():
-        interrupts.append(1)
+    async def fake_interrupt(target_event_id: str = ""):
+        interrupts.append(target_event_id)
 
     from echo_agent.cli.tui.status_bar import StatusBar
 
@@ -28,10 +28,11 @@ async def test_ctrl_c_while_turn_running_sends_interrupt_not_exit():
     async with app.run_test() as pilot:
         await pilot.pause()
         app.query_one(StatusBar).start_turn_timer()   # turn 进行中
+        app.on_turn_accepted("evt-123")               # 记录在飞 turn 的 event_id
         await pilot.pause()
         await app.action_interrupt()
         await pilot.pause()
-        assert interrupts == [1]             # 发了中断帧
+        assert interrupts == ["evt-123"]     # 发了中断帧且带上目标 event_id
         assert app._exit is False            # 不退出
         assert app._last_ctrl_c == 0.0       # 未武装退出窗口
 

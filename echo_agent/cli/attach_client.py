@@ -213,12 +213,18 @@ async def run_client(
             except (aiohttp.ClientError, ConnectionError, RuntimeError):
                 app.notify_disconnected()
 
-        async def interrupt_coro() -> None:
+        async def interrupt_coro(target_event_id: str = "") -> None:
             # Control-only frame: asks the gateway to cooperatively stop the
-            # running turn. Same dead-socket guard as send_coro — an interrupt
-            # on a closed ws must not crash the key handler.
+            # running turn. target_event_id (captured from that turn's `accepted`
+            # frame) scopes the stop so a delayed frame can't clip a later turn;
+            # omitted when unknown → gateway stops whatever is running. Same
+            # dead-socket guard as send_coro — an interrupt on a closed ws must
+            # not crash the key handler.
+            frame: dict = {"type": "interrupt"}
+            if target_event_id:
+                frame["event_id"] = target_event_id
             try:
-                await ws.send_json({"type": "interrupt"})
+                await ws.send_json(frame)
             except (aiohttp.ClientError, ConnectionError, RuntimeError):
                 app.notify_disconnected()
 

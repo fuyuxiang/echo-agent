@@ -1403,7 +1403,11 @@ class AgentLoop:
         # answer should unblock it (mirrors the disconnect escape valve), not
         # sit idle. Internal control command — no user-facing reply; the turn
         # itself emits the "stopped" text when it converges at the checkpoint.
-        self.interrupt.interrupt(event.session_key)
+        # The gateway stamps the turn the user meant to stop into metadata; pass
+        # it through so a delayed stop frame can't land on a later turn. Empty
+        # means "stop whatever is running" (older clients that don't track IDs).
+        target_event_id = str(event.metadata.get("_interrupt_target_event_id", ""))
+        self.interrupt.interrupt(event.session_key, target_event_id)
         self.clarify.cancel_session(event.session_key)
 
     async def _handle_clarify_command(self, event: InboundEvent) -> str | None:

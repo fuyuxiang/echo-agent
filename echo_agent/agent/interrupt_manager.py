@@ -41,14 +41,24 @@ class InterruptManager:
         previous turn can never bleed into the next one."""
         self._running[session_key] = _Running(inbound_event_id=inbound_event_id)
 
-    def interrupt(self, session_key: str) -> bool:
+    def interrupt(self, session_key: str, target_event_id: str = "") -> bool:
         """Flag the session's running turn for cooperative stop. Returns True if
         a turn was actually running (so the caller can distinguish a real
         interrupt from a no-op on an idle session). Idempotent: interrupting an
         already-interrupted turn stays True; interrupting an idle session is a
-        harmless False."""
+        harmless False.
+
+        target_event_id scopes the stop to a specific turn: if the caller knows
+        which turn it meant to stop (the TUI captures it from the `accepted`
+        frame), a stop frame delayed by scheduling can arrive after turn A ended
+        and turn B registered — without this guard it would wrongly stop B. When
+        the target does not match the running turn, the interrupt is a no-op
+        (returns False). An empty target keeps the old channel-agnostic behavior
+        (stop whatever is running) for callers that don't track event IDs."""
         r = self._running.get(session_key)
         if r is None:
+            return False
+        if target_event_id and r.inbound_event_id and target_event_id != r.inbound_event_id:
             return False
         r.interrupted = True
         return True

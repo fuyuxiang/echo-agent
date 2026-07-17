@@ -200,7 +200,7 @@ async def test_run_client_passes_handshake_session_key_into_tui(monkeypatch):
     monkeypatch.setattr(ac, "connect_ws", fake_connect)
 
     class _FakeApp:
-        def __init__(self, send_coro=None, session_key=""):
+        def __init__(self, send_coro=None, session_key="", interrupt_coro=None):
             captured["session_key"] = session_key
         def notify_disconnected(self):
             pass

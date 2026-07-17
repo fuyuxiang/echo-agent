@@ -16,7 +16,17 @@ class WSBridge:
         if mtype == "error":
             self._sink.on_error(payload.get("error") or "")
             return
-        if mtype in ("accepted", "auth_ok", "pong"):
+        if mtype == "accepted":
+            # Capture the accepted turn's event_id so a later Ctrl+C can scope
+            # its interrupt to THIS turn (the gateway matches it), preventing a
+            # delayed stop frame from clipping the next turn. event_id is absent
+            # on the interrupt-ACK itself and on older gateways — the sink treats
+            # empty as "no specific target".
+            eid = payload.get("event_id")
+            if eid:
+                self._sink.on_turn_accepted(str(eid))
+            return
+        if mtype in ("auth_ok", "pong"):
             return
 
         ev = parse_cog_frame(payload)

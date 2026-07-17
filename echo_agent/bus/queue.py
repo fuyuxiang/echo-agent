@@ -164,9 +164,20 @@ class MessageBus:
             # wake a parked turn, and a user who just flooded the session is
             # exactly the case where the escape valve is needed most. Gated on
             # the trusted typed field, never a forgeable metadata key.
+            # Control commands also bypass the concurrency semaphore entirely.
+            # They exist to wake or stop a parked/running turn, and those turns
+            # are exactly what occupies the concurrency slots — a Ctrl+C
+            # interrupt or clarify-cancel that had to queue behind full slots
+            # could never reach the turn holding them (a hard deadlock when every
+            # slot is a clarify wait). Control handlers return early before the
+            # session lock, so they're cheap and safe to dispatch unbounded.
             if event.is_control:
-                pass
-            elif self._rate_limiter and not self._rate_limiter.try_acquire(event.session_key):
+                task = asyncio.create_task(self._dispatch_inbound_event(event))
+                self._inflight_inbound.add(task)
+                task.add_done_callback(self._inflight_inbound.discard)
+                continue
+
+            if self._rate_limiter and not self._rate_limiter.try_acquire(event.session_key):
                 logger.warning("Rate limited session {}", event.session_key)
                 rate_limit_reply = OutboundEvent.text_reply(
                     channel=event.channel,

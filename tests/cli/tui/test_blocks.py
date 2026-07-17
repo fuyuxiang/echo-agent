@@ -255,14 +255,17 @@ def test_choice_block_coerces_dict_options_and_marks_without_crash():
         "普通字符串",
     ]
     b = ChoiceBlock("c1", "选哪个?", opts)
+    # Display labels show "value — description" for dicts.
     assert b.options == ["A — 深度展开每个章节", "B", "普通字符串"]
     body = b.render_body()
     assert "A — 深度展开每个章节" in body
-    # Selecting the highlighted option feeds a string back, not the dict.
+    # But selecting feeds back the bare VALUE, not the rendered label: the
+    # description is a human hint, never an option the model offered.
     picked = b.highlighted_option()
-    assert isinstance(picked, str)
+    assert picked == "A"
+    assert b.option_for_number(1) == "A"
     b.mark(picked)
-    assert b.answer == "A — 深度展开每个章节"
+    assert b.answer == "A"
     assert "已选" in b.render_body()
 
 

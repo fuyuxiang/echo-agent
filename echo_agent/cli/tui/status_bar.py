@@ -55,6 +55,12 @@ class StatusBar(Static):
         self._memory_count = 0
         self._turn_start: float | None = None
         self._turn_elapsed: float = 0.0
+        # Turn-active state is tracked separately from the display timer. A turn
+        # spans many LLM calls (tool rounds, clarify waits, reflection reruns),
+        # each emitting a cost_update that pauses the elapsed-time display — but
+        # the TURN is still in flight. The Ctrl+C guard must key off this flag,
+        # never the timer, or it stops sending interrupts after the first round.
+        self._turn_active: bool = False
         self._timer = None
         self._mounted = False
         super().__init__(self._compose_text())
@@ -144,20 +150,32 @@ class StatusBar(Static):
 
     @property
     def is_turn_active(self) -> bool:
-        """True while a turn is in flight (timer running). Lets the Ctrl+C
-        guard explain that a reply is still being generated server-side."""
-        return self._turn_start is not None
+        """True from turn start until the final reply lands. Independent of the
+        elapsed-time display (which cost_update pauses every LLM round), so the
+        Ctrl+C guard keeps sending interrupts through tool execution, clarify
+        waits and multi-round inference."""
+        return self._turn_active
 
     def start_turn_timer(self) -> None:
+        self._turn_active = True
         self._turn_start = time.time()
         if self._timer is not None:
             self._timer.resume()
         self._refresh()
 
-    def stop_turn_timer(self) -> None:
+    def pause_turn_timer(self) -> None:
+        """Freeze the elapsed-time display WITHOUT ending the turn. Called on
+        each cost_update: a new LLM round just settled its cost, but the turn is
+        still running, so is_turn_active stays True."""
         if self._turn_start is not None:
             self._turn_elapsed = time.time() - self._turn_start
             self._turn_start = None
         if self._timer is not None:
             self._timer.pause()
         self._refresh()
+
+    def stop_turn_timer(self) -> None:
+        """End the turn: freeze the display AND clear the active flag. Called
+        when the final reply arrives."""
+        self._turn_active = False
+        self.pause_turn_timer()

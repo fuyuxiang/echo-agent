@@ -60,6 +60,12 @@ class _LoopResult:
     # at the iteration ceiling). The turn produced an answer, but the TASK is
     # not done — run() must keep the plan resumable, same as budget_halted.
     forced_convergence: bool = False
+    # True when the user cooperatively stopped the turn (Ctrl+C interrupt frame
+    # tripped a checkpoint). The turn produced only a partial answer + stop
+    # notice; the TASK is not done — run() must keep the plan resumable AND skip
+    # post-processing (planner reflection, is_complete) that assumes a finished
+    # turn.
+    interrupted: bool = False
     should_review_skills: bool = False
     should_review_memory: bool = False
     skill_iters: int = 0
@@ -317,9 +323,12 @@ class InferenceStage:
 
         loop_result = await self._run_tool_loop(ctx, messages)
 
-        # 反思闭环：仅在多步 plan 上触发，最多重跑 1 轮
+        # 反思闭环：仅在多步 plan 上触发，最多重跑 1 轮。
+        # 用户中断的 turn 不反思也不重跑：中断意味着"现在就停"，再自动发起一轮
+        # 推理会违背用户意图，也会覆盖掉已生成的停止文案。
         if (
-            self._planner is not None
+            not loop_result.interrupted
+            and self._planner is not None
             and ctx.execution_plan is not None
             and len(ctx.execution_plan.steps) > 1
         ):
@@ -358,6 +367,7 @@ class InferenceStage:
                     # The rerun supersedes the first pass: if IT converged
                     # normally the turn is fine; only its own forcing counts.
                     forced_convergence=second.forced_convergence,
+                    interrupted=second.interrupted,
                     should_review_skills=loop_result.should_review_skills or second.should_review_skills,
                     should_review_memory=loop_result.should_review_memory or second.should_review_memory,
                     skill_iters=second.skill_iters,
@@ -403,6 +413,7 @@ class InferenceStage:
                     loop_result.loop_exhausted
                     or loop_result.budget_halted
                     or loop_result.forced_convergence
+                    or loop_result.interrupted
                 )
                 if task_incomplete:
                     status = "exhausted"
@@ -448,6 +459,7 @@ class InferenceStage:
         truncation_retried = False
         forcing_final = False
         forced_convergence = False
+        interrupted = False
 
         # Read nudge counters from session (do NOT write back — run() owns that)
         _skill_iters = session.metadata.get("_nudge_tool_iters_skill", 0)
@@ -482,6 +494,7 @@ class InferenceStage:
                     f"{response_text}\n\n{notice}" if response_text.strip() else notice
                 )
                 loop_exhausted = False
+                interrupted = True
                 break
 
             # Filter out circuit-broken tools
@@ -647,6 +660,26 @@ class InferenceStage:
             if response.content:
                 response_text = response.content
 
+            # Post-LLM interrupt checkpoint. An interrupt may have arrived DURING
+            # the (long) LLM call above. Check here — BEFORE the has_tool_calls
+            # branch — so BOTH paths are covered: a plain-text reply (the common
+            # case, which breaks just below) and a tool-call batch (discarded
+            # before it runs). Keep whatever text the model produced and mark the
+            # turn user-stopped, not exhausted. Placed before the assistant
+            # tool_calls message is appended, so pending calls are dropped cleanly
+            # with no dangling tool_calls message to corrupt the next turn.
+            if (
+                self._interrupt is not None
+                and self._interrupt.is_interrupted(getattr(event, "session_key", ""))
+            ):
+                notice = "⏹ 已按你的请求停止。"
+                response_text = (
+                    f"{response_text}\n\n{notice}" if response_text.strip() else notice
+                )
+                loop_exhausted = False
+                interrupted = True
+                break
+
             if not response.has_tool_calls:
                 if forcing_final:
                     # The forced final call delivered its conclusion — now the
@@ -660,23 +693,6 @@ class InferenceStage:
                     ctx.execution_plan.is_complete = True
                 if ctx.activity is not None:
                     ctx.activity.set_generating()
-                loop_exhausted = False
-                break
-
-            # Second checkpoint: an interrupt may have arrived DURING the (long)
-            # LLM call above. Stop before committing this batch so we don't run
-            # one more tool round after the user asked to stop. Checked here —
-            # after the no-tool-calls break, before appending the assistant
-            # tool_calls message — so the pending calls are discarded cleanly
-            # with no dangling tool_calls message to corrupt the next turn.
-            if (
-                self._interrupt is not None
-                and self._interrupt.is_interrupted(getattr(event, "session_key", ""))
-            ):
-                notice = "⏹ 已按你的请求停止。"
-                response_text = (
-                    f"{response_text}\n\n{notice}" if response_text.strip() else notice
-                )
                 loop_exhausted = False
                 break
 
@@ -716,6 +732,7 @@ class InferenceStage:
             loop_exhausted=loop_exhausted,
             budget_halted=budget_halted,
             forced_convergence=forced_convergence,
+            interrupted=interrupted,
             should_review_skills=counters.should_review_skills,
             should_review_memory=counters.should_review_memory,
             skill_iters=counters.skill_iters,

@@ -95,7 +95,7 @@ class Banner(Static):
         sess = f"  ·  会话 {self.session_key}" if self.session_key else ""
         return (
             f"[bold $primary]echo[/] [$text-muted]· agent[/]{sess}\n"
-            f"[$text-muted]输入消息开始对话  ·  /help 查看命令  ·  Ctrl+C 退出[/]"
+            f"[$text-muted]输入消息开始对话  ·  /help 查看命令  ·  Ctrl+C 停止任务/退出[/]"
         )
 
 
@@ -119,6 +119,10 @@ class AgentReply(Static):
 
     def __init__(self) -> None:
         self._buf = ""
+        # Status lines (server errors, etc.) reuse this widget but are NOT real
+        # agent replies. Flagged so /copy skips them and stays pointed at the
+        # last genuine answer.
+        self.is_status = False
         super().__init__("[$primary]●[/] ")
 
     @property
@@ -285,13 +289,33 @@ class ApprovalBlock(Static):
         self.update(self._body())
 
 
-def _option_to_str(opt) -> str:
-    """Normalize a single clarify option to a display/answer string.
+def _option_to_pair(opt) -> tuple[str, str]:
+    """Normalize a single clarify option to a (display, answer) pair.
 
-    Plain strings pass through. Dict-shaped options (which the model may emit
-    despite the string-only schema) render as "value — description" when both
-    are present, otherwise whichever field exists; anything else falls back to
-    str()."""
+    Plain strings pass through as both. Dict-shaped options (which the model may
+    emit despite the string-only schema) show "value — description" but answer
+    with the bare value: the description is a hint for the human, not part of
+    the choice, so sending the whole rendered label back would feed the model
+    prose it never offered as an option. Anything else falls back to str() for
+    both."""
+    if isinstance(opt, str):
+        return opt, opt
+    if isinstance(opt, dict):
+        value = opt.get("value")
+        desc = opt.get("description")
+        if value is not None and desc:
+            return f"{value} — {desc}", str(value)
+        if value is not None:
+            return str(value), str(value)
+        s = _option_to_str(opt)
+        return s, s
+    s = _option_to_str(opt)
+    return s, s
+
+
+def _option_to_str(opt) -> str:
+    """Display-only string for an option (used where the answer value is not
+    needed, e.g. legacy call sites and the dict fallback in _option_to_pair)."""
     if isinstance(opt, str):
         return opt
     if isinstance(opt, dict):
@@ -319,7 +343,11 @@ class ChoiceBlock(Static):
         # ...}. Coerce every option to a display string at this boundary so the
         # rest of the flow (rendering, selection, the answer sent back to the
         # server) only ever deals with strings and never chokes on a dict.
-        self.options = [_option_to_str(o) for o in (options or [])]
+        pairs = [_option_to_pair(o) for o in (options or [])]
+        # Display labels (may be "value — description"); shown in the list.
+        self.options = [d for d, _ in pairs]
+        # Answer values (bare value for dicts); sent back to the server on pick.
+        self._answers = [a for _, a in pairs]
         self.highlighted = 0
         self.answer: str | None = None
         super().__init__(self.render_body())
@@ -349,14 +377,16 @@ class ChoiceBlock(Static):
         self.update(self.render_body())
 
     def option_for_number(self, n: int) -> str | None:
+        # Return the ANSWER value, not the display label: for a dict option the
+        # user sees "value — description" but the server must receive only value.
         if not self.options or n < 1 or n > len(self.options):
             return None
-        return self.options[n - 1]
+        return self._answers[n - 1]
 
     def highlighted_option(self) -> str | None:
         if not self.options:
             return None
-        return self.options[self.highlighted]
+        return self._answers[self.highlighted]
 
     def mark(self, answer: str) -> None:
         self.answer = answer

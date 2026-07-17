@@ -38,6 +38,11 @@ def _make_loop():
     loop.tracer = _Tracer()
     loop.cognitive_emitter = None
     loop._running = True
+    # __new__ bypasses __init__, so the InterruptManager the loop registers each
+    # turn (request/clear around the session lock) is not wired up. Provide a
+    # real one so these delivery-focused tests exercise the actual turn lifecycle.
+    from echo_agent.agent.interrupt_manager import InterruptManager
+    loop.interrupt = InterruptManager()
     # _on_inbound 解析群聊会话作用域时读 config.session.group_session_scope；
     # 接线心跳后还会读 config.agent.heartbeat。用真实 SessionConfig/HeartbeatConfig
     # 提供默认值；心跳置 enabled=False，使这些用例只聚焦降级通知行为。
