@@ -955,3 +955,86 @@ async def test_multi_tool_batch_fail_fast_skips_later_serial_tools():
     )
     # The unexecuted second tool produced no tool message before the raise.
     assert not any(m["tool_call_id"] == "call_b" for m in tool_msgs)
+
+
+class TestInferenceStageInterrupt:
+    """Cooperative interrupt checkpoints in the tool loop. A flagged session
+    stops cleanly at an iteration boundary, keeping partial text and marking the
+    result as user-stopped (not exhausted)."""
+
+    @pytest.mark.asyncio
+    async def test_checkpoint_at_loop_top_stops_before_any_llm_call(self):
+        from echo_agent.agent.interrupt_manager import InterruptManager
+
+        # Interrupt set BEFORE the loop starts → the top-of-loop checkpoint fires
+        # on iteration 0, so the provider is never called.
+        provider = AsyncMock()
+        provider.chat_stream_with_retry = AsyncMock(
+            return_value=LLMResponse(content="should not be reached", finish_reason="stop")
+        )
+        stage, bus = _make_stage(provider=provider)
+        im = InterruptManager()
+        im.request("test:chat_1")
+        im.interrupt("test:chat_1")
+        stage._interrupt = im
+
+        ctx = _make_ctx()
+        result = await stage.run(ctx)
+
+        assert "已按你的请求停止" in result.response_text
+        provider.chat_stream_with_retry.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_checkpoint_after_llm_stops_before_running_tools(self):
+        from echo_agent.agent.interrupt_manager import InterruptManager
+
+        # Not interrupted at loop top; the LLM call flags the session (simulating
+        # an interrupt arriving DURING a long call) and returns tool calls. The
+        # second checkpoint must break before executing the batch.
+        im = InterruptManager()
+        im.request("test:chat_1")
+
+        tc = ToolCallRequest(id="call_1", name="exec", arguments={"command": "sleep 60"})
+
+        async def _fake_llm(*args, **kwargs):
+            im.interrupt("test:chat_1")     # interrupt lands during the call
+            return LLMResponse(content="正在处理", tool_calls=[tc], finish_reason="tool_calls")
+
+        provider = AsyncMock()
+        provider.chat_stream_with_retry = AsyncMock(side_effect=_fake_llm)
+
+        tools_reg = MagicMock()
+        tools_reg.execute = AsyncMock()
+        tools_reg.has = MagicMock(return_value=False)
+
+        stage, bus = _make_stage(provider=provider, tools=tools_reg)
+        stage._interrupt = im
+
+        ctx = _make_ctx()
+        result = await stage.run(ctx)
+
+        assert "已按你的请求停止" in result.response_text
+        # The pending tool batch was NOT executed.
+        tools_reg.execute.assert_not_called()
+        assert result.total_tool_calls == 0
+
+    @pytest.mark.asyncio
+    async def test_no_interrupt_runs_normally(self):
+        # Guard: an un-flagged session (or no manager) must not trip the
+        # checkpoint — normal completion.
+        from echo_agent.agent.interrupt_manager import InterruptManager
+
+        provider = AsyncMock()
+        provider.chat_stream_with_retry = AsyncMock(
+            return_value=LLMResponse(content="正常完成", finish_reason="stop")
+        )
+        stage, bus = _make_stage(provider=provider)
+        im = InterruptManager()
+        im.request("test:chat_1")           # running but NOT interrupted
+        stage._interrupt = im
+
+        ctx = _make_ctx()
+        result = await stage.run(ctx)
+
+        assert result.response_text == "正常完成"
+        assert "已按你的请求停止" not in result.response_text
