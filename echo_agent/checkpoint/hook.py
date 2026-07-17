@@ -7,7 +7,7 @@ from typing import Any
 from loguru import logger
 
 from echo_agent.checkpoint import git_available, set_checkpoint_manager
-from echo_agent.checkpoint.manager import CheckpointManager
+from echo_agent.checkpoint.manager import CheckpointManager, snapshot_exclude
 from echo_agent.checkpoint.store import ShadowGitStore
 
 WRITE_TOOLS: frozenset[str] = frozenset({"write_file", "edit_file", "patch"})
@@ -32,7 +32,10 @@ def install_checkpoint(config: Any, workspace: Path, hook_registry: Any) -> Chec
     if not git_available():
         logger.warning("checkpoint enabled but git not found on PATH — checkpoints disabled")
         return None
-    store = ShadowGitStore(Path(cp.store_path).expanduser())
+    store = ShadowGitStore(
+        Path(cp.store_path).expanduser(),
+        exclude=snapshot_exclude(config, workspace),
+    )
     mgr = CheckpointManager(
         store=store, workspace=Path(workspace),
         max_snapshots=cp.max_snapshots_per_workspace,

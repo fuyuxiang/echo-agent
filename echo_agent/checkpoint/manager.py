@@ -2,10 +2,48 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 
 from echo_agent.checkpoint.store import ShadowGitStore
+
+
+def snapshot_exclude(config: Any, workspace: Path) -> tuple[str, ...]:
+    """Workspace-relative paths the snapshotter must never capture.
+
+    Derived from the live config so it tracks user overrides instead of
+    hard-coding "data/". Storage dirs (SQLite DB, sessions, memory, logs) and
+    the shadow git store's own dir are excluded: a filesystem snapshot of a
+    live SQLite file is a torn read, and capturing the checkpoint repo itself
+    is recursive. Trailing globs catch SQLite's WAL/shm/journal sidecars.
+    """
+    ws = Path(workspace).expanduser().resolve()
+    names: list[str] = []
+    try:
+        candidates = [
+            config.storage.database_path,
+            config.storage.sessions_dir,
+            config.storage.memory_dir,
+            config.storage.logs_dir,
+            config.checkpoint.store_path,
+        ]
+    except AttributeError:
+        candidates = []
+    for raw in candidates:
+        # This derivation runs on the fail-open checkpoint install path, so a
+        # malformed or partial config must degrade to "exclude nothing extra"
+        # rather than abort the whole safety-net install.
+        try:
+            cand = Path(raw).expanduser()
+            cand = cand if cand.is_absolute() else ws / cand
+            rel = cand.resolve().relative_to(ws)
+        except (TypeError, ValueError, OSError):
+            continue  # bad value, or outside ws: git never stages it anyway
+        if rel.parts:
+            names.append(f"{rel.parts[0]}/")
+    ordered = tuple(dict.fromkeys(names))
+    return ordered + ("*.db-wal", "*.db-shm", "*.db-journal")
 
 
 class CheckpointManager:

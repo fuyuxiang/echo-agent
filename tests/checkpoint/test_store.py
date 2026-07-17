@@ -199,3 +199,84 @@ async def test_total_size_mb_positive_after_snapshot(tmp_path: Path):
     (ws / "a.txt").write_text("hello")
     await store.take_snapshot(ws, "s")
     assert await store.total_size_mb() > 0
+
+
+# ── Regression: 工单 ① checkpoint restore with deleted files / exclude ────
+
+
+@pytest.mark.asyncio
+async def test_restore_with_deleted_file(tmp_path: Path):
+    """P0: a file DELETED between snapshots must not crash restore.
+
+    The deleted file is absent from the target tree, so the old
+    `git checkout sha -- <file>` aborted the whole restore with
+    'pathspec did not match'. Restoring to the target now removes it.
+    """
+    store = ShadowGitStore(tmp_path / "store")
+    await store.ensure_initialized()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "a.txt").write_text("v1")
+    (ws / "db.wal").write_text("wal-1")
+    await store.take_snapshot(ws, "first")
+    # second snapshot deletes db.wal and edits a.txt
+    (ws / "db.wal").unlink()
+    (ws / "a.txt").write_text("v2")
+    s2 = await store.take_snapshot(ws, "second")
+    # runtime later re-creates db.wal and edits a.txt again
+    (ws / "db.wal").write_text("wal-2")
+    (ws / "a.txt").write_text("v3")
+    # restoring to s2 must not raise on the file deleted in s2
+    restored = await store.restore(ws, s2)
+    assert (ws / "a.txt").read_text() == "v2"
+    # db.wal was deleted in s2 -> restore removes it from the work tree
+    assert not (ws / "db.wal").exists()
+    assert set(restored) == {"a.txt", "db.wal"}
+
+
+@pytest.mark.asyncio
+async def test_take_snapshot_excludes_runtime_paths(tmp_path: Path):
+    """exclude keeps live DB dirs and the shadow store's own dir out of snapshots."""
+    store = ShadowGitStore(
+        tmp_path / "store",
+        exclude=("data/", "checkpoints/", "*.db-wal"),
+    )
+    await store.ensure_initialized()
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "keep.txt").write_text("keep")
+    (ws / "data").mkdir()
+    (ws / "data" / "echo_agent.db").write_text("DB")
+    (ws / "checkpoints" / "store").mkdir(parents=True)
+    (ws / "checkpoints" / "store" / "HEAD").write_text("ref")
+    (ws / "session.db-wal").write_text("wal")
+    sha = await store.take_snapshot(ws, "snap")
+    assert sha is not None
+    _, out, _ = await store._run_git(
+        ["ls-tree", "-r", "--name-only", "-z", sha], workspace=ws, check=False
+    )
+    names = {n for n in out.split("\x00") if n.strip()}
+    assert "keep.txt" in names
+    assert not any(n.startswith("data/") for n in names)
+    assert not any(n.startswith("checkpoints/") for n in names)
+    assert "session.db-wal" not in names
+
+
+def test_snapshot_exclude_derives_from_config(tmp_path: Path):
+    """snapshot_exclude derives top-level dirs from live config + sidecar globs."""
+    from types import SimpleNamespace
+
+    from echo_agent.checkpoint.manager import snapshot_exclude
+
+    ws = tmp_path
+    config = SimpleNamespace(
+        storage=SimpleNamespace(
+            database_path="data/echo_agent.db",
+            sessions_dir="data/sessions",
+            memory_dir="data/memory",
+            logs_dir="data/logs",
+        ),
+        checkpoint=SimpleNamespace(store_path=str(ws / "checkpoints" / "store")),
+    )
+    excl = snapshot_exclude(config, ws)
+    assert excl == ("data/", "checkpoints/", "*.db-wal", "*.db-shm", "*.db-journal")

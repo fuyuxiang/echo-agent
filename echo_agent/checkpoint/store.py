@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import hashlib
 import os
 from pathlib import Path
@@ -14,9 +15,18 @@ class ShadowGitStore:
     the work tree is pointed at the caller's workspace via env vars only.
     """
 
-    def __init__(self, store_path: Path) -> None:
+    def __init__(
+        self, store_path: Path, exclude: tuple[str, ...] | None = None
+    ) -> None:
         self._store = Path(store_path).expanduser().resolve()
         self._initialized = False
+        # Paths never captured in a snapshot. A plain name matches by directory
+        # prefix ("data/" -> data/ and everything under it); a name with a glob
+        # metachar matches against each path's basename ("*.db-wal"). The wiring
+        # layer supplies the runtime DB dir and the shadow store's own dir so a
+        # snapshot never does a torn read of a live SQLite file or recursively
+        # captures the checkpoint repo itself.
+        self._exclude: tuple[str, ...] = tuple(exclude or ())
 
     def _workspace_hash(self, workspace: Path) -> str:
         raw = str(Path(workspace).expanduser().resolve())
@@ -77,6 +87,24 @@ class ShadowGitStore:
             raise RuntimeError(f"git {' '.join(args)} failed ({rc}): {err.decode(errors='replace')}")
         return rc, out.decode(errors="replace"), err.decode(errors="replace")
 
+    def _excluded(self, name: str) -> bool:
+        """True if a workspace-relative path must never enter a snapshot.
+
+        A plain entry matches by directory prefix ("data/" covers data/ and all
+        descendants); an entry containing a glob metachar matches a path's
+        basename ("*.db-wal"). Keeps live SQLite files and the shadow store's
+        own dir out of snapshots (torn reads / recursive capture).
+        """
+        for pat in self._exclude:
+            if any(ch in pat for ch in "*?["):
+                if fnmatch.fnmatch(name.rsplit("/", 1)[-1], pat):
+                    return True
+            else:
+                prefix = pat.rstrip("/")
+                if name == prefix or name.startswith(prefix + "/"):
+                    return True
+        return False
+
     async def take_snapshot(
         self, workspace: Path, message: str, max_file_size_mb: int = 10
     ) -> str | None:
@@ -97,6 +125,12 @@ class ShadowGitStore:
             ["diff", "--cached", "--name-only", "-z"], workspace=ws, check=False
         )
         for name in [n for n in staged.split("\x00") if n.strip()]:
+            # Never capture runtime paths (live SQLite DBs, the shadow store's
+            # own dir): a filesystem-level snapshot of a file being written is a
+            # torn read, and snapshotting the checkpoint repo is recursive.
+            if self._excluded(name):
+                await self._run_git(["rm", "--cached", "--", name], workspace=ws, check=False)
+                continue
             fp = ws / name
             try:
                 if fp.is_file() and fp.stat().st_size > limit:
@@ -143,20 +177,46 @@ class ShadowGitStore:
                           "subject": subject, "files": files})
         return snaps
 
-    async def changed_paths(self, workspace: Path, sha: str) -> list[str]:
+    async def _diff_status(self, workspace: Path, sha: str) -> list[tuple[str, str]]:
+        """Return (status, path) for each file this snapshot changed vs its parent.
+
+        status is git's single-letter code A/M/D/T. restore needs the
+        distinction because a D(eleted) file is absent from sha's tree, so
+        `git checkout sha -- <it>` fails with "pathspec did not match" and
+        aborts the whole restore.
+        """
         ws = Path(workspace).expanduser().resolve()
         # -z keeps non-ASCII names raw; without it git C-quotes them (e.g.
         # Chinese -> "\346..."), and restore's checkout pathspec would miss.
         rc, out, _ = await self._run_git(
-            ["diff-tree", "--no-commit-id", "--name-only", "-z", "-r", f"{sha}^", sha],
+            ["diff-tree", "--no-commit-id", "--name-status", "-z", "-r", f"{sha}^", sha],
             workspace=ws, check=False,
         )
         if rc != 0:
-            # no parent (first commit): list all files in the tree
+            # no parent (first commit): every tree entry is an addition
             _, out, _ = await self._run_git(
                 ["ls-tree", "-r", "--name-only", "-z", sha], workspace=ws
             )
-        return [n for n in out.split("\x00") if n.strip()]
+            return [("A", n) for n in out.split("\x00") if n.strip()]
+        # --name-status -z emits flat NUL-separated fields: status, path,
+        # status, path, ... We don't pass -M/-C, so a rename surfaces as a
+        # D+A pair of single-path entries rather than one two-path R entry;
+        # the R/C branch below is defensive only.
+        fields = [f for f in out.split("\x00") if f != ""]
+        pairs: list[tuple[str, str]] = []
+        i = 0
+        while i + 1 < len(fields):
+            status = (fields[i] or "M")[0]
+            if status in ("R", "C") and i + 2 < len(fields):
+                pairs.append((status, fields[i + 2]))
+                i += 3
+            else:
+                pairs.append((status, fields[i + 1]))
+                i += 2
+        return pairs
+
+    async def changed_paths(self, workspace: Path, sha: str) -> list[str]:
+        return [name for _, name in await self._diff_status(workspace, sha)]
 
     async def show_snapshot(self, workspace: Path, sha: str) -> str:
         ws = Path(workspace).expanduser().resolve()
@@ -179,10 +239,28 @@ class ShadowGitStore:
         await self._assert_owned(ws, sha)
         # pre-rollback snapshot so the rollback itself is undoable
         await self.take_snapshot(ws, f"before restore {sha[:10]}")
-        paths = await self.changed_paths(ws, sha)
-        if paths:
-            await self._run_git(["checkout", sha, "--", *paths], workspace=ws)
-        return paths
+        changes = await self._diff_status(ws, sha)
+        # Split by change kind: files present in sha's tree (A/M/T, and any
+        # defensive R/C) are checked back out; files DELETED in sha are absent
+        # from its tree, so restoring "to sha's state" means removing them from
+        # the work tree. A plain `checkout sha -- <deleted>` would fail with
+        # "pathspec did not match" and abort the whole restore (the P0 bug).
+        restore_paths = [name for status, name in changes if status != "D"]
+        delete_paths = [name for status, name in changes if status == "D"]
+        if restore_paths:
+            await self._run_git(["checkout", sha, "--", *restore_paths], workspace=ws)
+        for name in delete_paths:
+            fp = ws / name
+            try:
+                if fp.is_file() or fp.is_symlink():
+                    fp.unlink()
+            except OSError:
+                # Best-effort: a path we can't remove shouldn't abort the whole
+                # rollback of the files that did restore cleanly.
+                continue
+        # Return every path the restore touched (both re-created and removed) so
+        # callers/CLI can report an accurate changed-file count.
+        return [name for _, name in changes]
 
     async def prune(self, workspace: Path, max_snapshots: int) -> int:
         """Keep only the newest max_snapshots commits, dropping older ones.

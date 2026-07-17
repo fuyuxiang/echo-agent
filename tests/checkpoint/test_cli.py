@@ -1,11 +1,25 @@
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from echo_agent.cli.checkpoint_cmd import _build_manager, run_checkpoint_command
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+
+
+def _fake_config(store_path):
+    """Minimal stand-in for the loaded config the CLI helpers consume."""
+    return SimpleNamespace(
+        checkpoint=SimpleNamespace(store_path=store_path),
+        storage=SimpleNamespace(
+            database_path="data/echo_agent.db",
+            sessions_dir="data/sessions",
+            memory_dir="data/memory",
+            logs_dir="data/logs",
+        ),
+    )
 
 
 @pytest.mark.asyncio
@@ -21,8 +35,8 @@ def test_run_checkpoint_list_smoke(tmp_path: Path, capsys, monkeypatch):
 
     # bypass real config: patch the loader helper to return our paths
     import echo_agent.cli.checkpoint_cmd as mod
-    monkeypatch.setattr(mod, "_resolve_store_and_ws",
-                        lambda cp, w: (store_path, ws))
+    monkeypatch.setattr(mod, "_resolve_config_and_ws",
+                        lambda cp, w: (_fake_config(store_path), ws))
     run_checkpoint_command("list", config_path=None, workspace=str(ws))
     out = capsys.readouterr().out
     assert "No checkpoints" in out or "checkpoint" in out.lower()
@@ -34,8 +48,8 @@ def test_restore_abort_when_user_declines(tmp_path: Path, capsys, monkeypatch):
     store_path = str(tmp_path / "store")
 
     import echo_agent.cli.checkpoint_cmd as mod
-    monkeypatch.setattr(mod, "_resolve_store_and_ws",
-                        lambda cp, w: (store_path, ws))
+    monkeypatch.setattr(mod, "_resolve_config_and_ws",
+                        lambda cp, w: (_fake_config(store_path), ws))
     monkeypatch.setattr("builtins.input", lambda _prompt: "n")
 
     called = False
@@ -60,13 +74,13 @@ def test_show_invalid_sha_prints_friendly_error(tmp_path: Path, capsys):
     store_path = str(tmp_path / "store")
 
     import echo_agent.cli.checkpoint_cmd as mod
-    orig = mod._resolve_store_and_ws
-    mod._resolve_store_and_ws = lambda cp, w: (store_path, ws)
+    orig = mod._resolve_config_and_ws
+    mod._resolve_config_and_ws = lambda cp, w: (_fake_config(store_path), ws)
     try:
         with pytest.raises(SystemExit) as exc:
             run_checkpoint_command("show", sha="deadbeef", config_path=None, workspace=str(ws))
     finally:
-        mod._resolve_store_and_ws = orig
+        mod._resolve_config_and_ws = orig
     assert exc.value.code == 1
     out = capsys.readouterr().out
     assert "错误:" in out
@@ -78,15 +92,15 @@ def test_restore_invalid_sha_prints_friendly_error(tmp_path: Path, capsys):
     store_path = str(tmp_path / "store")
 
     import echo_agent.cli.checkpoint_cmd as mod
-    orig = mod._resolve_store_and_ws
-    mod._resolve_store_and_ws = lambda cp, w: (store_path, ws)
+    orig = mod._resolve_config_and_ws
+    mod._resolve_config_and_ws = lambda cp, w: (_fake_config(store_path), ws)
     try:
         with pytest.raises(SystemExit) as exc:
             run_checkpoint_command(
                 "restore", sha="deadbeef", config_path=None, workspace=str(ws), yes=True
             )
     finally:
-        mod._resolve_store_and_ws = orig
+        mod._resolve_config_and_ws = orig
     assert exc.value.code == 1
     out = capsys.readouterr().out
     assert "错误:" in out

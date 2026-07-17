@@ -6,18 +6,19 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from echo_agent.checkpoint.manager import CheckpointManager
+from echo_agent.checkpoint.manager import CheckpointManager, snapshot_exclude
 from echo_agent.checkpoint.store import ShadowGitStore
 
 
-def _resolve_store_and_ws(config_path: str | None, workspace: str | None) -> tuple[str, Path]:
+def _resolve_config_and_ws(config_path: str | None, workspace: str | None):
     from echo_agent.cli.plugins_cmd import _get_config_and_workspace
-    config, ws = _get_config_and_workspace(config_path, workspace)
-    return config.checkpoint.store_path, ws
+    return _get_config_and_workspace(config_path, workspace)
 
 
-def _build_manager(store_path: str, workspace: Path) -> CheckpointManager:
-    store = ShadowGitStore(Path(store_path).expanduser())
+def _build_manager(
+    store_path: str, workspace: Path, exclude: tuple[str, ...] = ()
+) -> CheckpointManager:
+    store = ShadowGitStore(Path(store_path).expanduser(), exclude=exclude)
     return CheckpointManager(store=store, workspace=workspace)
 
 
@@ -25,8 +26,10 @@ def run_checkpoint_command(
     action: str, sha: str = "", config_path: str | None = None,
     workspace: str | None = None, yes: bool = False,
 ) -> None:
-    store_path, ws = _resolve_store_and_ws(config_path, workspace)
-    mgr = _build_manager(store_path, ws)
+    config, ws = _resolve_config_and_ws(config_path, workspace)
+    mgr = _build_manager(
+        config.checkpoint.store_path, ws, snapshot_exclude(config, ws)
+    )
 
     async def _init() -> None:
         await mgr._store.ensure_initialized()
