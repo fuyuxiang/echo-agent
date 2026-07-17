@@ -412,9 +412,13 @@ class TestSessionResetPolicy:
 
         config = self._make_config(mode="daily", daily_reset_hour=4)
         policy = SessionResetPolicy(config)
-        # Updated very recently
-        session = self._make_session(updated_at=datetime.now() - timedelta(minutes=5))
-        assert policy.should_reset(session) is False
+        # Freeze "now" at midday so the recent session cannot straddle the 4am
+        # daily boundary regardless of the wall-clock time the test runs at.
+        fixed_now = datetime(2024, 1, 1, 12, 0, 0)
+        with patch("echo_agent.gateway.session_policy.datetime") as mock_dt:
+            mock_dt.now.return_value = fixed_now
+            session = self._make_session(updated_at=fixed_now - timedelta(minutes=5))
+            assert policy.should_reset(session) is False
 
     def test_mode_both_idle_triggers(self):
         from echo_agent.gateway.session_policy import SessionResetPolicy
@@ -429,8 +433,13 @@ class TestSessionResetPolicy:
 
         config = self._make_config(mode="both", idle_timeout_minutes=60, daily_reset_hour=4)
         policy = SessionResetPolicy(config)
-        session = self._make_session(updated_at=datetime.now() - timedelta(minutes=5))
-        assert policy.should_reset(session) is False
+        # Freeze "now" at midday so neither the idle window nor the 4am daily
+        # boundary trips regardless of the wall-clock time the test runs at.
+        fixed_now = datetime(2024, 1, 1, 12, 0, 0)
+        with patch("echo_agent.gateway.session_policy.datetime") as mock_dt:
+            mock_dt.now.return_value = fixed_now
+            session = self._make_session(updated_at=fixed_now - timedelta(minutes=5))
+            assert policy.should_reset(session) is False
 
     @pytest.mark.asyncio
     async def test_reset_clears_session(self):
