@@ -1011,7 +1011,15 @@ class AgentLoop:
         某 scope 被写后 bump 版本,挂在任意 session_key 上的旧快照都因版本不符失效。"""
         await self._lru_put(self._memory_snapshots, key, value)
         await self._lru_put(self._memory_snapshot_ids, key, ids or frozenset())
-        self._memory_snapshot_meta[key] = (scope, version)
+        async with self._state_lock:
+            self._memory_snapshot_meta[key] = (scope, version)
+            # meta 不走 _lru_put,快照被 LRU 逐出后其 meta 会残留。按当前快照键集
+            # 剪除孤儿 meta,保证 meta 不超出快照上限、不无界增长(读侧已先 gate
+            # session_key in _memory_snapshots,孤儿 meta 不会误命中,但须防泄漏)。
+            if len(self._memory_snapshot_meta) > len(self._memory_snapshots):
+                live = set(self._memory_snapshots)
+                for k in [mk for mk in self._memory_snapshot_meta if mk not in live]:
+                    del self._memory_snapshot_meta[k]
 
     def _scope_version(self, scope: str) -> int:
         return self._scope_versions.get(scope, 0)
@@ -1020,6 +1028,7 @@ class AgentLoop:
         async with self._state_lock:
             self._memory_snapshots.pop(session_key, None)
             self._memory_snapshot_ids.pop(session_key, None)
+            self._memory_snapshot_meta.pop(session_key, None)
 
     async def _invalidate_memory_caches(self, scope: str, global_scope: bool = False) -> None:
         """记忆写操作后的缓存失效。per-scope 用版本号:bump 该 scope 的版本,
