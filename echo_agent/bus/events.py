@@ -106,11 +106,13 @@ class InboundEvent:
         return f"{self.channel}:{self.chat_id}"
 
     def scoped_session_key(self, scope: str) -> str:
-        """会话作用域键。私聊及 shared 策略下等同 session_key；
-        群聊 + per_user 策略时把 sender_id 纳入键，实现群内每人隔离。"""
-        if self.session_key_override:
-            return self.session_key_override
-        base = f"{self.channel}:{self.chat_id}"
+        """会话作用域键。私聊及 shared 策略下等同 session_key;
+        群聊 + per_user 策略时把 sender_id 纳入键,实现群内每人隔离。
+
+        群聊 per_user 隔离优先于 session_key_override:override 承载的是
+        群/会话本身的键,不含成员维度;若直接返回它会让整群共用一个键,
+        丢失群内按人隔离。故群聊 per_user 场景在 override 基础上仍拼 sender。"""
+        base = self.session_key_override or f"{self.channel}:{self.chat_id}"
         if scope == "per_user" and self.is_group and self.sender_id:
             return f"{base}:{self.sender_id}"
         return base
