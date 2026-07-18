@@ -80,9 +80,9 @@ class ReflectionEngine:
         self._llm_call = llm_call
         self._detector = contradiction_detector
 
-    def _prefix_groups(self) -> dict[str, list[MemoryEntry]]:
+    def _prefix_groups(self, memory_scope: str = "") -> dict[str, list[MemoryEntry]]:
         groups: dict[str, list[MemoryEntry]] = defaultdict(list)
-        for entry in self._store.list_all():
+        for entry in self._store.list_all(session_key=memory_scope or None):
             if entry.is_superseded or entry.tier == MemoryTier.ARCHIVAL:
                 continue
             if ":" not in entry.key:
@@ -90,12 +90,12 @@ class ReflectionEngine:
             groups[entry.key.split(":")[0]].append(entry)
         return groups
 
-    async def distill(self, max_groups: int = 2) -> int:
+    async def distill(self, max_groups: int = 2, memory_scope: str = "") -> int:
         """Induce abstract rules from concrete same-prefix facts. Add-only."""
         created = 0
         processed = 0
         try:
-            groups = self._prefix_groups()
+            groups = self._prefix_groups(memory_scope)
         except Exception as e:
             logger.warning("Reflection distill: grouping failed: {}", e)
             return 0
@@ -109,7 +109,7 @@ class ReflectionEngine:
                 continue
             processed += 1
             try:
-                rule = await self._ask_distill(prefix, entries, general_key)
+                rule = await self._ask_distill(prefix, entries, general_key, memory_scope)
                 if rule is not None:
                     self._store.add(rule)
                     created += 1
@@ -121,6 +121,7 @@ class ReflectionEngine:
 
     async def _ask_distill(
         self, prefix: str, entries: list[MemoryEntry], general_key: str,
+        memory_scope: str = "",
     ) -> MemoryEntry | None:
         listing = "\n".join(f"- {e.key}: {e.content}" for e in entries[:10])
         response = await self._llm_call(
@@ -159,12 +160,12 @@ class ReflectionEngine:
             tags=["distilled"],
             importance=importance,
             source="consolidated",
-            source_session=sample.source_session,
+            source_session=memory_scope or sample.source_session,
         )
 
     # ── Conflict resolution ──────────────────────────────────────────────────
 
-    async def _conflict_pairs(self) -> list[tuple[MemoryEntry, MemoryEntry]]:
+    async def _conflict_pairs(self, memory_scope: str = "") -> list[tuple[MemoryEntry, MemoryEntry]]:
         """Pair up suspected_conflict entries for adjudication.
 
         Prefers the detector's authoritative (memory_id_a, memory_id_b) rows —
@@ -175,7 +176,7 @@ class ReflectionEngine:
         available.
         """
         flagged = [
-            e for e in self._store.list_all()
+            e for e in self._store.list_all(session_key=memory_scope or None)
             if MemoryStore.SUSPECTED_CONFLICT_TAG in e.tags
             and not e.is_superseded
             and self.NEEDS_CONFIRMATION_TAG not in e.tags
@@ -304,13 +305,13 @@ class ReflectionEngine:
             return "ambiguous"
         return verdict
 
-    async def resolve_conflicts(self, max_pairs: int = 3) -> dict:
+    async def resolve_conflicts(self, max_pairs: int = 3, memory_scope: str = "") -> dict:
         """LLM-adjudicate suspected conflicts. Whitelist-validated verdicts:
         clear -> supersede; ambiguous/invalid -> defer to user; not_contradictory
         -> clear tags."""
         stats = {"resolved": 0, "deferred": 0, "dismissed": 0}
         try:
-            pairs = await self._conflict_pairs()
+            pairs = await self._conflict_pairs(memory_scope)
         except Exception as e:
             logger.warning("Reflection resolve: pairing failed: {}", e)
             return stats
@@ -353,17 +354,17 @@ class ReflectionEngine:
             logger.info("Reflection conflict resolution: {}", stats)
         return stats
 
-    async def run(self) -> dict:
+    async def run(self, memory_scope: str = "") -> dict:
         """Run full reflection pass: distill + resolve conflicts."""
         result: dict[str, Any] = {}
         try:
-            distilled = await self.distill()
+            distilled = await self.distill(memory_scope=memory_scope)
             result["distilled"] = distilled
         except Exception as e:
             logger.warning("Reflection distill phase failed: {}", e)
             result["distilled"] = 0
         try:
-            conflict_stats = await self.resolve_conflicts()
+            conflict_stats = await self.resolve_conflicts(memory_scope=memory_scope)
             result.update(conflict_stats)
         except Exception as e:
             logger.warning("Reflection resolve phase failed: {}", e)

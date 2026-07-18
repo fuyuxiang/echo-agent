@@ -281,7 +281,7 @@ class MemoryConsolidator:
         # Step 6: Reflection — distill + active conflict resolution
         if self._reflection_engine:
             try:
-                reflection_stats = await self._reflection_engine.run()
+                reflection_stats = await self._reflection_engine.run(memory_scope=memory_scope)
                 stats.update(reflection_stats)
             except Exception as e:
                 logger.warning("Reflection engine failed: {}", e)
