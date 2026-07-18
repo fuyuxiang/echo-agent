@@ -38,12 +38,15 @@ def test_group_per_user_empty_sender_falls_back():
     assert evt.scoped_session_key("per_user") == "telegram:grp1"
 
 
-def test_override_wins_over_scope():
+def test_group_per_user_appends_sender_even_with_override():
+    # 群聊 per_user 隔离优先于 session_key_override:override 承载群/会话本身的键,
+    # 不含成员维度,直接返回会让整群共用一个键、丢失群内按人隔离。故仍拼 sender。
+    # (旧断言 == "custom:key" 编码了已废弃的"override 优先"语义,随 override 短路移除而更新)
     evt = InboundEvent.text_message(
         channel="telegram", sender_id="alice", chat_id="grp1",
         text="hi", is_group=True, session_key_override="custom:key",
     )
-    assert evt.scoped_session_key("per_user") == "custom:key"
+    assert evt.scoped_session_key("per_user") == "custom:key:alice"
 
 
 def test_session_config_has_group_scope_default_per_user():
