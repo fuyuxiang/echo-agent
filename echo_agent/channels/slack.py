@@ -248,6 +248,7 @@ class SlackChannel(BaseChannel):
 
         sender_id = event.get("user", "")
         channel_id = event.get("channel", "")
+        channel_type = event.get("channel_type", "")
         text = event.get("text", "")
         thread_ts = event.get("thread_ts") or event.get("ts", "")
 
@@ -271,7 +272,8 @@ class SlackChannel(BaseChannel):
             chat_id=channel_id,
             text=text,
             media=media if media else None,
-            metadata={"thread_ts": thread_ts},
+            metadata={"thread_ts": thread_ts, "channel_type": channel_type},
+            is_group=channel_type != "im",
         )
 
     async def _download_slack_file(self, url: str) -> str | None:
