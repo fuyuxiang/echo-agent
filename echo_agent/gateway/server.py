@@ -764,6 +764,7 @@ class GatewayServer:
 
                             text = data.get("text", "")
                             attachments = data.get("attachments") or []
+                            is_group = bool(data.get("is_group", False))
                             if not text and not attachments:
                                 continue
 
@@ -785,6 +786,7 @@ class GatewayServer:
                                     chat_id=chat_id,
                                     content=content_blocks,
                                     session_key_override=session_key,
+                                    is_group=is_group,
                                 )
                                 event.metadata["gateway"] = True
                                 event.metadata["platform"] = platform
