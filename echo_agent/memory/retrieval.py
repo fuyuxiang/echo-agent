@@ -77,7 +77,7 @@ class HybridRetriever:
     async def retrieve(
         self, query: str, limit: int = 8,
         memory_scope: str = "", episode_session_key: str = "",
-        session_key: str = "", mem_type: MemoryType | None = None,
+        mem_type: MemoryType | None = None,
         episodes: list[Episode] | None = None,
     ) -> list[tuple[MemoryEntry | Episode, float]]:
         """混合检索管线：BM25 + 向量相似度 + RRF 融合。
@@ -87,18 +87,11 @@ class HybridRetriever:
             limit: 返回结果数量上限
             memory_scope: 记忆可见性作用域，用于语义可见性过滤
             episode_session_key: 会话键，用于 episode 候选查询
-            session_key: 向后兼容别名。旧调用只传它时同时充当
-                memory_scope 与 episode_session_key
             mem_type: 可选的记忆类型过滤
             episodes: 可选的 Episode 列表，参与统一排序
         Returns:
             按 RRF 分数降序排列的 (记忆条目|Episode, 分数) 列表
         """
-        # 向后兼容:旧调用只传 session_key 时,回退用它同时做可见性与 episode 查询
-        # (保持迁移前行为;Task 2 迁移调用点为显式双键后移除本别名)。
-        if session_key and not memory_scope and not episode_session_key:
-            memory_scope = session_key
-            episode_session_key = session_key
         entries = self._entries_fn()
         if memory_scope and self._visibility_fn is not None:
             entries = [e for e in entries if self._visibility_fn(e, memory_scope)]

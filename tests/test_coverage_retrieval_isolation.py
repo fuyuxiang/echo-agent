@@ -40,7 +40,7 @@ async def test_session_policy_hides_other_session_env_memory(tmp_path):
         entries_fn=lambda: [a, b],
         visibility_fn=store.is_visible_in_session,
     )
-    out = await retriever.retrieve("config", limit=5, session_key="s:B")
+    out = await retriever.retrieve("config", limit=5, memory_scope="s:B")
     contents = {e.content for e, _ in out}
 
     assert "alpha secret config" not in contents
@@ -58,7 +58,7 @@ async def test_session_policy_global_tag_crosses_sessions(tmp_path):
         entries_fn=lambda: [g],
         visibility_fn=store.is_visible_in_session,
     )
-    out = await retriever.retrieve("config", limit=5, session_key="s:B")
+    out = await retriever.retrieve("config", limit=5, memory_scope="s:B")
     contents = {e.content for e, _ in out}
 
     assert "shared global config" in contents
@@ -75,7 +75,7 @@ async def test_legacy_policy_env_memory_visible_across_sessions(tmp_path):
         entries_fn=lambda: [a],
         visibility_fn=store.is_visible_in_session,
     )
-    out = await retriever.retrieve("config", limit=5, session_key="s:B")
+    out = await retriever.retrieve("config", limit=5, memory_scope="s:B")
     contents = {e.content for e, _ in out}
 
     assert "alpha config" in contents
@@ -91,7 +91,7 @@ async def test_empty_session_key_skips_visibility_filter(tmp_path):
         entries_fn=lambda: [a],
         visibility_fn=store.is_visible_in_session,
     )
-    out = await retriever.retrieve("config", limit=5, session_key="")
+    out = await retriever.retrieve("config", limit=5, memory_scope="")
     contents = {e.content for e, _ in out}
 
     assert "alpha config" in contents

@@ -138,9 +138,9 @@ class TestEpisodeSearchFnAutoAssembly:
             entries_fn=lambda: [e_unrelated], forgetting=ForgettingCurve(),
             episode_search_fn=search_fn,
         )
-        results = await retriever.retrieve("上线部署", limit=8, session_key="s1")
+        results = await retriever.retrieve("上线部署", limit=8, episode_session_key="s1")
         search_fn.assert_awaited_once()
-        # session_key 透传给检索函数，episode 进入结果。
+        # episode_session_key 透传给检索函数，episode 进入结果。
         assert search_fn.await_args.args[1] == "s1"
         assert any(isinstance(r, Episode) and r.id == "ep1" for r, _ in results)
 
@@ -175,5 +175,5 @@ class TestEpisodeSearchFnAutoAssembly:
             entries_fn=lambda: [e], forgetting=ForgettingCurve(),
             episode_search_fn=search_fn,
         )
-        results = await retriever.retrieve("内容", limit=8, session_key="s1")
+        results = await retriever.retrieve("内容", limit=8, episode_session_key="s1")
         assert results and results[0][0].id == "e1"

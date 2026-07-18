@@ -56,7 +56,7 @@ def test_cjk_query_tokens():
 @pytest.mark.asyncio
 async def test_prefetcher_writes_cache_entry():
     class _R:
-        async def retrieve(self, query, limit=5, session_key=""):
+        async def retrieve(self, query, limit=5, memory_scope="", episode_session_key=""):
             return [("entry-obj", 0.9)]
 
     written = {}
@@ -78,10 +78,11 @@ async def test_prefetcher_passes_limit_and_session_key():
     seen = {}
 
     class _R:
-        async def retrieve(self, query, limit=10, session_key=""):
+        async def retrieve(self, query, limit=10, memory_scope="", episode_session_key=""):
             seen["query"] = query
             seen["limit"] = limit
-            seen["session_key"] = session_key
+            seen["memory_scope"] = memory_scope
+            seen["episode_session_key"] = episode_session_key
             return []
 
     async def cache_put(sk, entry):
@@ -89,14 +90,17 @@ async def test_prefetcher_passes_limit_and_session_key():
 
     pf = RetrievalPrefetcher(_R(), cache_put, limit=3)
     await pf.prefetch("sess-9", "deploy gateway")
-    assert seen == {"query": "deploy gateway", "limit": 3, "session_key": "sess-9"}
+    assert seen == {
+        "query": "deploy gateway", "limit": 3,
+        "memory_scope": "sess-9", "episode_session_key": "sess-9",
+    }
 
 
 @pytest.mark.asyncio
 async def test_prefetcher_swallows_retrieve_failure():
     # A background prefetch failure must not propagate; next turn just misses.
     class _R:
-        async def retrieve(self, query, limit=5, session_key=""):
+        async def retrieve(self, query, limit=5, memory_scope="", episode_session_key=""):
             raise RuntimeError("retriever down")
 
     called = False
@@ -168,7 +172,7 @@ def _make_context_stage(*, cache, on_miss, on_retrieve=None, hybrid=True,
     if hybrid:
         hybrid_retriever = MagicMock()
 
-        async def _retrieve(text, limit=5, session_key="", episodes=None):
+        async def _retrieve(text, limit=5, memory_scope="", episode_session_key="", episodes=None):
             return on_retrieve(text) if on_retrieve else []
 
         hybrid_retriever.retrieve = AsyncMock(side_effect=_retrieve)
@@ -257,7 +261,7 @@ async def test_cli_miss_timeout_falls_back_to_keyword():
     )
     stage._retrieval_miss_timeout = 0.01
 
-    async def _slow_retrieve(text, limit=5, session_key="", episodes=None):
+    async def _slow_retrieve(text, limit=5, memory_scope="", episode_session_key="", episodes=None):
         await _asyncio.sleep(1)
         return []
 
@@ -463,8 +467,8 @@ async def test_prefetch_cache_isolated_per_session_end_to_end():
     host._get_retrieval_cache = AgentLoop._get_retrieval_cache.__get__(host)
 
     class _R:
-        async def retrieve(self, query, limit=5, session_key=""):
-            return [(f"hit-for-{session_key}", 0.9)]
+        async def retrieve(self, query, limit=5, memory_scope="", episode_session_key=""):
+            return [(f"hit-for-{memory_scope}", 0.9)]
 
     pf = RetrievalPrefetcher(_R(), host._put_retrieval_cache, limit=5)
     await pf.prefetch("sess-A", "deploy gateway")
@@ -483,7 +487,7 @@ async def test_prefetch_cache_isolated_per_session_end_to_end():
 async def test_prefetcher_populates_knowledge_episodes_always_none():
     """episodic_fetch removed; episodes field always None, knowledge still works."""
     class _R:
-        async def retrieve(self, query, limit=5, session_key=""):
+        async def retrieve(self, query, limit=5, memory_scope="", episode_session_key=""):
             return [("m", 0.9)]
 
     def _know(query, user_id):  # sync, CPU-bound in prod
@@ -510,7 +514,7 @@ async def test_prefetcher_passes_user_id_to_knowledge():
     seen = {}
 
     class _R:
-        async def retrieve(self, query, limit=5, session_key=""):
+        async def retrieve(self, query, limit=5, memory_scope="", episode_session_key=""):
             return []
 
     def _know(query, user_id):
@@ -531,7 +535,7 @@ async def test_prefetcher_passes_user_id_to_knowledge():
 async def test_prefetcher_knowledge_failure_isolated():
     # knowledge failure leaves knowledge_context as None without crashing.
     class _R:
-        async def retrieve(self, query, limit=5, session_key=""):
+        async def retrieve(self, query, limit=5, memory_scope="", episode_session_key=""):
             return [("m", 0.5)]
 
     def _know(query, user_id):
@@ -562,7 +566,7 @@ async def test_prefetcher_knowledge_runs_off_event_loop():
     seen = {}
 
     class _R:
-        async def retrieve(self, query, limit=5, session_key=""):
+        async def retrieve(self, query, limit=5, memory_scope="", episode_session_key=""):
             return []
 
     def _know(query, user_id):
@@ -664,7 +668,7 @@ async def test_prefetcher_stamps_knowledge_user_id():
     # The cache entry must record which user the knowledge_context was
     # ACL-filtered for, so a shared session can't serve it to another user.
     class _R:
-        async def retrieve(self, query, limit=5, session_key=""):
+        async def retrieve(self, query, limit=5, memory_scope="", episode_session_key=""):
             return []
 
     def _know(query, user_id):

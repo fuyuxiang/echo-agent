@@ -102,7 +102,9 @@ class RetrievalPrefetcher:
             # 可见性检索用 memory_scope(owner-aware),与 context_stage/写侧对齐;
             # 缓存键与 knowledge ACL 仍用 session_key/user_id(见下)。
             scored = await self._retriever.retrieve(
-                query, limit=self._limit, session_key=(memory_scope or session_key)
+                query, limit=self._limit,
+                memory_scope=(memory_scope or session_key),
+                episode_session_key=session_key,
             )
         except Exception:
             logger.warning(

@@ -234,7 +234,9 @@ class ContextStage:
         try:
             return await asyncio.wait_for(
                 self._hybrid_retriever.retrieve(
-                    event.text, limit=8, session_key=event.memory_scope,
+                    event.text, limit=8,
+                    memory_scope=event.memory_scope,
+                    episode_session_key=event.session_key,
                 ),
                 timeout=timeout,
             )
@@ -374,11 +376,13 @@ class ContextStage:
                     # no separate "recent N" fetch here, which would otherwise
                     # miss high-relevance episodes outside the recency window.
                     scored = await self._hybrid_retriever.retrieve(
-                        event.text, limit=8, session_key=event.session_key,
+                        event.text, limit=8,
+                        memory_scope=event.memory_scope,
+                        episode_session_key=event.session_key,
                     )
                 else:
                     scored = self._memory.search_scored(
-                        event.text, limit=5, session_key=event.session_key
+                        event.text, limit=5, session_key=event.memory_scope
                     )
             else:
                 scored = await self._bounded_retrieve(event, publish_response)
