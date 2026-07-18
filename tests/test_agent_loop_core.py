@@ -369,6 +369,7 @@ async def test_process_event_freezes_memory_scope_to_owner(tmp_path: Path) -> No
     1:1 私聊(非群聊)应归一到 owner 键。"""
     agent, _, _ = _make_agent_loop(tmp_path)
     agent.config.memory.cross_channel_owner = True
+    agent.config.memory.principal_bindings = ["a2a:user"]
     owner_key = agent.config.memory.owner_key
 
     event = InboundEvent.text_message(
@@ -386,6 +387,7 @@ async def test_process_event_owner_scope_stable_across_sessions(tmp_path: Path) 
     两次不同 session_key 的调用必须落到同一 memory_scope，记忆才能跨调用互通。"""
     agent, _, _ = _make_agent_loop(tmp_path)
     agent.config.memory.cross_channel_owner = True
+    agent.config.memory.principal_bindings = ["a2a:user"]
 
     ev1 = InboundEvent.text_message(
         channel="a2a", sender_id="user", chat_id="direct", text="记住我喜欢深色模式",

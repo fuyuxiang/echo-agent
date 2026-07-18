@@ -115,15 +115,21 @@ class InboundEvent:
             return f"{base}:{self.sender_id}"
         return base
 
-    def memory_scope_key(self, group_scope: str, owner_key: str = "owner") -> str:
+    def memory_scope_key(
+        self, group_scope: str, owner_key: str, bindings: object = frozenset()
+    ) -> str:
         """记忆作用域键(独立于 session_key,不参与投递路由)。
 
-        单主体 personal agent:任意通道的 1:1 私聊都归一到同一个 owner 键,
-        使主人的 USER 记忆跨通道互通;群聊沿用 scoped_session_key 的 per_user
-        隔离,群成员之间记忆互不可见。"""
+        三分支:
+        - 群聊 → scoped_session_key(group_scope),群成员按会话隔离,永不进 owner;
+        - 1:1 私聊且 "{channel}:{sender_id}" 命中绑定表 → owner_key,跨通道互通;
+        - 1:1 私聊未命中 → session_key,fail-closed 按会话隔离。
+        """
         if self.is_group:
             return self.scoped_session_key(group_scope)
-        return owner_key
+        if self.sender_id and f"{self.channel}:{self.sender_id}" in bindings:
+            return owner_key
+        return self.session_key
 
     @property
     def text(self) -> str:

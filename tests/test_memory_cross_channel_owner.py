@@ -26,20 +26,21 @@ def _user_entry(scope: str, content: str = "fact") -> MemoryEntry:
 
 def test_memory_scope_key_1to1_returns_owner():
     ev = InboundEvent.text_message(channel="cli", sender_id="cli", chat_id="cli", text="x")
-    assert ev.memory_scope_key("per_user", "owner") == "owner"
+    # 绑定表命中 -> 归一到 owner。
+    assert ev.memory_scope_key("per_user", "owner", {"cli:cli"}) == "owner"
 
 
 def test_memory_scope_key_1to1_gateway_returns_owner():
     # gateway 私聊键是 3 段(gateway:wechat:uid),与群 per_user 3 段重叠,
-    # 但 is_group=False 时必须归一到 owner。
+    # 但 is_group=False 且命中绑定表时必须归一到 owner。
     ev = InboundEvent.text_message(channel="gateway:wechat", sender_id="u1", chat_id="u1", text="x")
-    assert ev.memory_scope_key("per_user", "owner") == "owner"
+    assert ev.memory_scope_key("per_user", "owner", {"gateway:wechat:u1"}) == "owner"
 
 
 def test_memory_scope_key_group_keeps_per_user_isolation():
     ev = InboundEvent.text_message(channel="telegram", sender_id="alice",
                                    chat_id="grp1", text="x", is_group=True)
-    assert ev.memory_scope_key("per_user", "owner") == "telegram:grp1:alice"
+    assert ev.memory_scope_key("per_user", "owner", {"telegram:alice"}) == "telegram:grp1:alice"
 
 
 # ── 跨通道互通(核心特性) ─────────────────────────────────────────

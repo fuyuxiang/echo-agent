@@ -6,9 +6,10 @@ from pydantic import ValidationError
 from echo_agent.config.schema import MemoryConfig
 
 
-def test_cross_channel_owner_defaults_off():
-    # 认证绑定(Phase 1)就绪前,私聊不得全局合并到单一 owner,默认必须关闭。
-    assert MemoryConfig().cross_channel_owner is False
+def test_cross_channel_owner_defaults_on():
+    # Phase 1 绑定表就绪后,归一已受 principal_bindings 约束(未列入者按会话隔离),
+    # 默认改回开启;是否有 sender 归一到 owner 取决于绑定表而非开关本身。
+    assert MemoryConfig().cross_channel_owner is True
 
 
 def test_owner_key_rejects_empty():

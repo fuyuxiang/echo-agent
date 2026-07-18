@@ -1218,7 +1218,11 @@ class AgentLoop:
         if not event.memory_scope:
             if self.config.memory.cross_channel_owner:
                 scope = self.config.session.group_session_scope
-                event.memory_scope = event.memory_scope_key(scope, self.config.memory.owner_key)
+                event.memory_scope = event.memory_scope_key(
+                    scope,
+                    self.config.memory.owner_key,
+                    frozenset(self.config.memory.principal_bindings),
+                )
             else:
                 event.memory_scope = event.session_key
         session = await self.sessions.get_or_create(event.session_key)

@@ -1864,11 +1864,11 @@ class MemoryConfig(_Base):
         },
     )
     cross_channel_owner: bool = Field(
-        default=False,
+        default=True,
         json_schema_extra={
             "status": "effective", "ref": "bus/events.py:memory_scope_key",
-            "desc_zh": "单主体跨通道记忆互通:开启时主人在所有1:1私聊(任意通道)共享USER记忆,群聊隔离不变;关闭则退回按会话隔离。默认关闭,需完成受认证的通道身份绑定后再开启",
-            "desc_en": "Single-subject cross-channel memory: owner shares USER memory across all 1:1 DMs on any channel; group isolation unchanged; off = per-session isolation. Off by default; enable only after authenticated channel identity binding.",
+            "desc_zh": "跨通道主人记忆归一:开启时,principal_bindings 列入的 sender 在各通道 1:1 私聊共享 owner 记忆;未列入者与群聊均按会话隔离。关闭则全部按会话隔离",
+            "desc_en": "Cross-channel owner memory: when on, senders listed in principal_bindings share owner memory across 1:1 DMs on any channel; unlisted senders and groups stay per-session. Off = all per-session.",
         },
     )
     owner_key: str = Field(
