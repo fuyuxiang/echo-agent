@@ -561,6 +561,7 @@ class AgentLoop:
             prefetcher=self._prefetcher,
             scope_version_fn=self._scope_version,
             invalidate_memory_caches_fn=self._invalidate_memory_caches,
+            memory_enabled=config.memory.enabled,
         )
 
     def _register_tools(self, scheduler: Any = None, task_manager: Any = None, workflow_engine: Any = None) -> None:

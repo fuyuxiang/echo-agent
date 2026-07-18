@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -92,7 +92,11 @@ def _make_api():
     server._require_admin_token = MagicMock(return_value=None)  # 授权通过
     api = MemoryAPI(server)
     store = MagicMock()
+    # flush_pending_embeds 会被 await,须是异步桩(否则 override 放行分支 await MagicMock 抛 TypeError)
+    store.flush_pending_embeds = AsyncMock()
     server._agent_loop.memory = store
+    # 写后失效同样 await,置异步桩
+    server._agent_loop._invalidate_memory_caches = AsyncMock()
     return api, store
 
 

@@ -66,8 +66,12 @@ class ResponseStage:
         prefetcher: Any = None,
         scope_version_fn: "Callable[[str], int] | None" = None,
         invalidate_memory_caches_fn: "Callable[[str, bool], Awaitable[None]] | None" = None,
+        memory_enabled: bool = True,
     ):
         self._config = config
+        # memory.enabled 总开关:关闭时不 flush、不调度 consolidation、不派 Reviewer、
+        # 不写回 working memory——与 Task 9 的工具/注入门控配套,避免半开状态。
+        self._memory_enabled = memory_enabled
         self._sessions = sessions
         self._memory = memory
         self._provider = provider
@@ -116,12 +120,13 @@ class ResponseStage:
         # context injection ("## Active Context") is non-empty. Previously
         # WorkingMemory had a reader (context_stage) but no writer, so the
         # injection was always blank. Skip ephemeral eval/test traffic.
-        self._update_working_memory(session.key, event, response_text)
+        if self._memory_enabled:
+            self._update_working_memory(session.key, event, response_text)
 
         # Flush pending memory embeddings. DURABLE: a dropped flush silently
         # loses embeddings, so pass a zero-arg factory (retry-capable) and tag
         # the tier so it is queued — never dropped — under saturation.
-        if self._memory.has_pending_embeds():
+        if self._memory_enabled and self._memory.has_pending_embeds():
             from echo_agent.agent.background import Tier
             self._spawn_fn(lambda: self._memory.flush_pending_embeds(), tier=Tier.DURABLE)
 
@@ -131,7 +136,7 @@ class ResponseStage:
 
         # Schedule consolidation (safe — acquires its own lock). DURABLE: the
         # consolidation commit must not be dropped under load.
-        if not ephemeral and hasattr(self._consolidation, '_consolidator'):
+        if self._memory_enabled and not ephemeral and hasattr(self._consolidation, '_consolidator'):
             from echo_agent.agent.background import Tier
             consolidator = self._consolidation._consolidator
             if consolidator.should_consolidate(session.message_count, session.last_consolidated):
@@ -159,7 +164,7 @@ class ResponseStage:
             self._spawn_fn(self._background_skill_review(
                 ctx.messages, event.session_key, event.channel,
             ))
-        if result.should_review_memory and not ephemeral:
+        if self._memory_enabled and result.should_review_memory and not ephemeral:
             self._spawn_fn(self._background_memory_review(ctx.messages, event.session_key, event.memory_scope))
 
         # Finalize streaming
@@ -173,7 +178,7 @@ class ResponseStage:
         # (zero inline retrieval latency). DISCARDABLE: a dropped prefetch is
         # harmless — the next turn simply misses and falls back to inline
         # retrieval — so a bare coroutine (no retry factory) is fine.
-        if self._prefetcher is not None and event.text:
+        if self._memory_enabled and self._prefetcher is not None and event.text:
             from echo_agent.agent.background import Tier
             self._spawn_fn(
                 self._prefetcher.prefetch(

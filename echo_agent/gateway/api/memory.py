@@ -16,10 +16,22 @@ class MemoryAPI:
     def _store(self):
         return self._server._agent_loop.memory
 
+    def _memory_enabled(self) -> bool:
+        # memory.enabled 总开关:关闭时整套 REST 记忆端点不可用,统一 409。
+        loop = getattr(self._server, "_agent_loop", None)
+        if loop is None:
+            return False
+        return bool(loop.config.memory.enabled)
+
+    def _disabled_response(self) -> web.Response:
+        return web.json_response({"error": "memory disabled"}, status=409)
+
     def _guard(self, request: web.Request, action: str) -> web.Response | None:
         return self._server._require_admin_token(request, action=action)
 
     async def list_entries(self, request: web.Request) -> web.Response:
+        if not self._memory_enabled():
+            return self._disabled_response()
         guard = self._guard(request, "memory_list")
         if guard is not None:
             return guard
@@ -58,6 +70,8 @@ class MemoryAPI:
         })
 
     async def stats(self, request: web.Request) -> web.Response:
+        if not self._memory_enabled():
+            return self._disabled_response()
         guard = self._guard(request, "memory_stats")
         if guard is not None:
             return guard
@@ -79,6 +93,8 @@ class MemoryAPI:
         })
 
     async def get_entry(self, request: web.Request) -> web.Response:
+        if not self._memory_enabled():
+            return self._disabled_response()
         guard = self._guard(request, "memory_get")
         if guard is not None:
             return guard
@@ -90,6 +106,8 @@ class MemoryAPI:
         return web.json_response(entry.to_dict())
 
     async def update_entry(self, request: web.Request) -> web.Response:
+        if not self._memory_enabled():
+            return self._disabled_response()
         guard = self._guard(request, "memory_update")
         if guard is not None:
             return guard
@@ -131,6 +149,8 @@ class MemoryAPI:
         return web.json_response(result.to_dict())
 
     async def delete_entry(self, request: web.Request) -> web.Response:
+        if not self._memory_enabled():
+            return self._disabled_response()
         guard = self._guard(request, "memory_delete")
         if guard is not None:
             return guard
@@ -162,6 +182,8 @@ class MemoryAPI:
         return web.json_response({"status": "deleted"})
 
     async def search(self, request: web.Request) -> web.Response:
+        if not self._memory_enabled():
+            return self._disabled_response()
         guard = self._guard(request, "memory_search")
         if guard is not None:
             return guard
