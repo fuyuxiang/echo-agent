@@ -27,33 +27,62 @@ def _store(tmp_path):
     return MemoryStore(memory_dir=tmp_path / "mem", scope_policy="session")
 
 
-def test_cross_channel_semantic_shared_episode_isolated(tmp_path):
-    # owner 语义事实跨通道可召回；episode 按会话隔离。
+def test_cross_channel_semantic_shared_and_isolated(tmp_path):
+    # owner 语义事实跨通道可召回(正向);非 owner 事实在 owner 域不可见(负向)。
     s = _store(tmp_path)
-    # 通道 A 写入 owner 语义事实（source_session=owner）。
-    s.add(
-        MemoryEntry(
-            type=MemoryType.USER,
-            tier=MemoryTier.SEMANTIC,
-            key="user:city",
-            content="住在上海",
-            source_session="owner",
-        )
-    )
+    s.add(MemoryEntry(
+        type=MemoryType.USER, tier=MemoryTier.SEMANTIC,
+        key="user:city", content="住在上海", source_session="owner",
+    ))
+    s.add(MemoryEntry(
+        type=MemoryType.USER, tier=MemoryTier.SEMANTIC,
+        key="user:city", content="住在北京", source_session="telegram:bob",
+    ))
     r = HybridRetriever(
         entries_fn=lambda: s.list_all(mem_type=MemoryType.USER),
         visibility_fn=s.is_visible_in_session,
     )
-    # 通道 B（不同 session=slack:U0，但 memory_scope 同为 owner）检索。
-    scored = asyncio.run(
-        r.retrieve(
-            "上海",
-            limit=8,
-            memory_scope="owner",
-            episode_session_key="slack:U0",
-        )
+    scored = asyncio.run(r.retrieve(
+        "上海 北京", limit=8, memory_scope="owner", episode_session_key="slack:U0",
+    ))
+    contents = [getattr(x[0], "content", "") for x in scored]
+    # 正向:owner 事实跨通道(slack session)可召回
+    assert any("上海" in c for c in contents)
+    # 负向:非 owner(telegram:bob)事实在 owner 域不可见——证明 scope 真隔离
+    assert not any("北京" in c for c in contents)
+
+
+def test_episode_isolated_by_session(tmp_path):
+    # episode 按 episode_session_key 隔离:注入模拟真实"按 session 精确匹配"的
+    # episode_search_fn(与 tiers.py 的 ep.session_key == session_key 一致),
+    # 断言只有当前会话的 episode 进入候选。
+    from echo_agent.memory.types import Episode
+
+    all_eps = [
+        Episode(id="epA", session_key="telegram:alice", summary="alice 讨论了部署"),
+        Episode(id="epB", session_key="slack:bob", summary="bob 讨论了发布"),
+    ]
+
+    async def episode_search(query, session_key, limit):
+        return [e for e in all_eps if e.session_key == session_key]
+
+    s = _store(tmp_path)
+    r = HybridRetriever(
+        entries_fn=lambda: s.list_all(mem_type=MemoryType.USER),
+        visibility_fn=s.is_visible_in_session,
+        episode_search_fn=episode_search,
     )
-    assert any("上海" in getattr(x[0], "content", "") for x in scored)
+    scored = asyncio.run(r.retrieve(
+        "讨论", limit=8, memory_scope="owner", episode_session_key="telegram:alice",
+    ))
+    # 检索结果里 episode 命中返回原始 Episode 对象(其正文在 summary 字段),
+    # 记忆条目则用 content 字段,故两者都取到才不漏检。
+    summaries = [
+        getattr(x[0], "summary", "") or getattr(x[0], "content", "") for x in scored
+    ]
+    # 只有 alice 会话的 episode 入候选,bob 的不出现
+    assert any("alice 讨论了部署" in sm for sm in summaries)
+    assert not any("bob 讨论了发布" in sm for sm in summaries)
 
 
 def test_long_term_shard_isolation(tmp_path):
