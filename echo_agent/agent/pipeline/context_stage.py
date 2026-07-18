@@ -15,6 +15,7 @@ from echo_agent.agent.context import (
     build_memory_context,
     build_skills_context,
 )
+from echo_agent.agent.pipeline.response_stage import _is_ephemeral_session
 from echo_agent.agent.pipeline.types import PipelineContext
 from echo_agent.bus.events import InboundEvent, OutboundEvent
 from echo_agent.session.manager import Session
@@ -266,12 +267,13 @@ class ContextStage:
         stream_publisher: Any,
         intro_text: str,
     ) -> PipelineContext:
+        ephemeral = _is_ephemeral_session(event.session_key, event.channel)
         working_ctx = ""
         if event.session_key in self._working_memories:
             working_ctx = self._working_memories[event.session_key].get_context()
 
         snapshot_ids: frozenset[str] = frozenset()
-        if self._snapshot_enabled:
+        if self._snapshot_enabled and not ephemeral:
             if event.session_key in self._memory_snapshots:
                 snapshot = self._memory_snapshots[event.session_key]
                 snapshot_ids = self._memory_snapshot_ids.get(event.session_key, frozenset())
@@ -289,6 +291,9 @@ class ContextStage:
                 snapshot=snapshot,
                 working_memory=working_ctx,
             )
+        elif ephemeral:
+            # eval/test：不读任何长期/快照记忆,只保留本轮 working memory。
+            memory_ctx = working_ctx
         else:
             memory_ctx = build_memory_context(
                 self._memory, session_key=event.memory_scope, working_memory=working_ctx
@@ -351,7 +356,7 @@ class ContextStage:
             cached, event.text, now=time.time(),
             ttl=self._cache_ttl, jaccard_min=self._cache_jaccard_min,
         )
-        if self._config.memory.enabled:
+        if self._config.memory.enabled and not ephemeral:
             # Prefer a fresh prefetched result (zero inline latency). On a miss,
             # `retrieval_on_miss` decides: "sync" pays full retrieval latency
             # this turn (accuracy-first daemon/gateway); "degrade" runs a
