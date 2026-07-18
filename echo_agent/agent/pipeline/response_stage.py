@@ -11,7 +11,7 @@ from echo_agent.agent.pipeline.types import InferenceResult, PipelineContext
 from echo_agent.utils.text import strip_thinking
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine
+    from collections.abc import Awaitable, Callable, Coroutine
 
     from echo_agent.agent.consolidation import ConsolidationWorker
     from echo_agent.config.schema import Config
@@ -65,6 +65,7 @@ class ResponseStage:
         working_memories: Any = None,
         prefetcher: Any = None,
         scope_version_fn: "Callable[[str], int] | None" = None,
+        invalidate_memory_caches_fn: "Callable[[str, bool], Awaitable[None]] | None" = None,
     ):
         self._config = config
         self._sessions = sessions
@@ -79,6 +80,7 @@ class ResponseStage:
         self._working_memories = working_memories
         self._prefetcher = prefetcher
         self._scope_version_fn = scope_version_fn
+        self._invalidate_memory_caches_fn = invalidate_memory_caches_fn
 
     async def finalize(self, ctx: PipelineContext, result: InferenceResult) -> ProcessResult:
         """Post-process inference result, save session, schedule background tasks."""
@@ -133,10 +135,18 @@ class ResponseStage:
             from echo_agent.agent.background import Tier
             consolidator = self._consolidation._consolidator
             if consolidator.should_consolidate(session.message_count, session.last_consolidated):
+                scope = event.memory_scope
+                async def _on_consolidated(session_key: str) -> None:
+                    await self._clear_memory_snapshot(session_key)
+                    # consolidation 重写了该 scope 的长期记忆分片,bump 版本使
+                    # 共享该 scope 但挂在其他 session_key 上的快照/检索缓存读时失效,
+                    # 而非仅清本 consolidating session 的快照。
+                    if self._invalidate_memory_caches_fn is not None and scope:
+                        await self._invalidate_memory_caches_fn(scope, False)
                 await self._consolidation.schedule(
                     session.key,
                     self._spawn_fn,
-                    on_complete=self._clear_memory_snapshot,
+                    on_complete=_on_consolidated,
                     tier=Tier.DURABLE,
                     memory_scope=event.memory_scope,
                 )

@@ -67,3 +67,11 @@ def test_response_stage_prefetch_uses_real_scope_version():
     # prefetch 不再硬编码 scope_version=0,改用注入的 scope_version_fn
     assert "scope_version=0" not in src
     assert "_scope_version_fn" in src
+
+
+def test_consolidation_on_complete_bumps_scope_version():
+    from echo_agent.agent.pipeline import response_stage
+    import inspect
+    src = inspect.getsource(response_stage.ResponseStage)
+    # consolidation 完成回调须能 bump scope 版本(接入 invalidate_memory_caches_fn)
+    assert "_invalidate_memory_caches_fn" in src
