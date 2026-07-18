@@ -242,7 +242,10 @@ class MemoryConsolidator:
         # record that a separate re-detect pass would leave in get_unresolved.
         if self._contradiction_detector and promoted:
             try:
-                all_entries = list(self.store._entries.values())
+                if memory_scope:
+                    all_entries = self.store.list_all(session_key=memory_scope)
+                else:
+                    all_entries = list(self.store._entries.values())
                 entry_map = {e.id: e for e in all_entries}
                 for new_entry in promoted:
                     others = [e for e in all_entries if e.id != new_entry.id]
@@ -315,6 +318,10 @@ class MemoryConsolidator:
             return False
         # Same full key + differing content is the only auto-resolvable case.
         if not a.key or a.key != b.key:
+            return False
+        # 同 key 不同 scope 是合法的不同主体事实(写入侧 _find_conflict 也按
+        # _same_scope 不 merge),不得判矛盾/跨 scope supersede。
+        if not self.store._same_scope(a, b):
             return False
         if a.content.strip() == b.content.strip():
             return False
