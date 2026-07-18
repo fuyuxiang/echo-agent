@@ -415,6 +415,8 @@ class AgentLoop:
         self._snapshot_enabled = config.memory.snapshot_enabled
         self._memory_snapshots: OrderedDict[str, str] = OrderedDict()
         self._memory_snapshot_ids: "OrderedDict[str, frozenset[str]]" = OrderedDict()
+        self._memory_snapshot_meta: dict[str, tuple[str, int]] = {}
+        self._scope_versions: dict[str, int] = {}
         self._retrieval_cache: OrderedDict[str, Any] = OrderedDict()
         self._max_cached_sessions = 200
         from echo_agent.agent.background import BackgroundScheduler
@@ -459,6 +461,8 @@ class AgentLoop:
             memory_snapshots=self._memory_snapshots,
             memory_snapshot_ids=self._memory_snapshot_ids,
             put_snapshot=self.put_memory_snapshot,
+            memory_snapshot_meta=self._memory_snapshot_meta,
+            scope_version_fn=self._scope_version,
             snapshot_enabled=self._snapshot_enabled,
             tool_definitions_fn=self.tools.get_definitions,
             episodic=self._episodic,
@@ -999,31 +1003,38 @@ class AgentLoop:
                 cache.popitem(last=False)
 
     async def put_memory_snapshot(
-        self, key: str, value: str, ids: "frozenset[str] | None" = None
+        self, key: str, value: str, ids: "frozenset[str] | None" = None,
+        scope: str = "", version: int = 0,
     ) -> None:
         """快照缓存的唯一写入入口:经统一 LRU 管控。同时写入进入快照的 entry.id 集,
-        供动态召回去重。"""
+        供动态召回去重。并记录构建时的 (scope, version),读侧据此按 scope 版本校验:
+        某 scope 被写后 bump 版本,挂在任意 session_key 上的旧快照都因版本不符失效。"""
         await self._lru_put(self._memory_snapshots, key, value)
         await self._lru_put(self._memory_snapshot_ids, key, ids or frozenset())
+        self._memory_snapshot_meta[key] = (scope, version)
+
+    def _scope_version(self, scope: str) -> int:
+        return self._scope_versions.get(scope, 0)
 
     async def _clear_memory_snapshot(self, session_key: str) -> None:
         async with self._state_lock:
             self._memory_snapshots.pop(session_key, None)
             self._memory_snapshot_ids.pop(session_key, None)
 
-    async def _invalidate_memory_caches(self, session_key: str, global_scope: bool = False) -> None:
-        """记忆写操作后的缓存失效:同时清快照与检索预取缓存,否则本轮删改的
-        条目仍会从冻结快照/TTL 内的 cached.scored 注入后续上下文。
-        environment 类型与矛盾裁决影响所有会话,须全局失效(global_scope)。"""
+    async def _invalidate_memory_caches(self, scope: str, global_scope: bool = False) -> None:
+        """记忆写操作后的缓存失效。per-scope 用版本号:bump 该 scope 的版本,
+        使所有在旧版本下构建、共享该 memory_scope 的快照/检索缓存(可能挂在
+        不同 session_key 上)读取时因版本不符而失效——根治按单 session_key
+        pop 清不掉跨通道共享 scope 的问题。environment/矛盾裁决影响所有会话,
+        仍全局 clear。"""
         async with self._state_lock:
             if global_scope:
                 self._memory_snapshots.clear()
                 self._memory_snapshot_ids.clear()
+                self._memory_snapshot_meta.clear()
                 self._retrieval_cache.clear()
             else:
-                self._memory_snapshots.pop(session_key, None)
-                self._memory_snapshot_ids.pop(session_key, None)
-                self._retrieval_cache.pop(session_key, None)
+                self._scope_versions[scope] = self._scope_versions.get(scope, 0) + 1
 
     async def _put_retrieval_cache(self, session_key: str, entry: Any) -> None:
         """检索预取缓存的唯一写入入口:复用统一 LRU(锁 + 上限),

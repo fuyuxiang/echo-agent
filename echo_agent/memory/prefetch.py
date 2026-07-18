@@ -47,6 +47,13 @@ class RetrievalCacheEntry:
     # when it matches the current turn's user. Default None = "unknown / legacy",
     # which the reader treats as a knowledge miss (never a blind hit).
     knowledge_user_id: str | None = None
+    # Scope-version invalidation (Task 5): entries are keyed by session_key but a
+    # memory write invalidates by memory_scope (owner-aware) via a version bump.
+    # Record the scope this entry was retrieved for and the scope version at build
+    # time; the reader serves it only when both still match the loop's live state,
+    # so a write to a shared scope drops stale prefetches across every channel.
+    scope: str = ""
+    scope_version: int = 0
 
 
 def is_fresh(entry: RetrievalCacheEntry, query: str, *, now: float,
@@ -85,7 +92,7 @@ class RetrievalPrefetcher:
         # thread so this background task never blocks the event loop.
         self._knowledge_fetch = knowledge_fetch
 
-    async def prefetch(self, session_key: str, query: str, user_id: str = "", memory_scope: str = "") -> None:
+    async def prefetch(self, session_key: str, query: str, user_id: str = "", memory_scope: str = "", scope_version: int = 0) -> None:
         """Retrieve once for ``query`` and write the result into the cache.
 
         Main-memory and knowledge retrieval are warmed together into a single
@@ -122,6 +129,10 @@ class RetrievalPrefetcher:
             # Stamp the user this knowledge was ACL-filtered for so a shared
             # session_key can't serve it to a different user (see field doc).
             knowledge_user_id=user_id if knowledge_context is not None else None,
+            # Stamp the owner-aware scope and its version so the reader can drop
+            # this entry once a write bumps the scope version (see field doc).
+            scope=(memory_scope or session_key),
+            scope_version=scope_version,
         )
         await self._cache_put(session_key, entry)
 

@@ -109,6 +109,8 @@ class ContextStage:
         memory_snapshots: OrderedDict,
         memory_snapshot_ids: "OrderedDict | None" = None,
         put_snapshot: "Callable[[str, str, frozenset], Awaitable[None]] | None" = None,
+        memory_snapshot_meta: "dict[str, tuple[str, int]] | None" = None,
+        scope_version_fn: "Callable[[str], int] | None" = None,
         snapshot_enabled: bool,
         tool_definitions_fn: Any,
         episodic: Any = None,
@@ -135,6 +137,8 @@ class ContextStage:
         self._memory_snapshots = memory_snapshots
         self._memory_snapshot_ids = memory_snapshot_ids if memory_snapshot_ids is not None else {}
         self._put_snapshot = put_snapshot
+        self._memory_snapshot_meta = memory_snapshot_meta if memory_snapshot_meta is not None else {}
+        self._scope_version_fn = scope_version_fn
         self._snapshot_enabled = snapshot_enabled
         self._tool_definitions_fn = tool_definitions_fn
         self._episodic = episodic
@@ -276,7 +280,14 @@ class ContextStage:
 
         snapshot_ids: frozenset[str] = frozenset()
         if self._snapshot_enabled and not ephemeral:
-            if event.session_key in self._memory_snapshots:
+            cur_ver = self._scope_version_fn(event.memory_scope) if self._scope_version_fn else 0
+            meta = self._memory_snapshot_meta.get(event.session_key)
+            snapshot_valid = (
+                event.session_key in self._memory_snapshots
+                and meta is not None
+                and meta == (event.memory_scope, cur_ver)
+            )
+            if snapshot_valid:
                 snapshot = self._memory_snapshots[event.session_key]
                 snapshot_ids = self._memory_snapshot_ids.get(event.session_key, frozenset())
             else:
@@ -286,8 +297,12 @@ class ContextStage:
                 if self._put_snapshot is not None:
                     # 写入唯一入口经 loop 的统一 LRU(锁 + 上限);
                     # put_snapshot 为空时本轮仍用刚算出的 snapshot,但不缓存
-                    # (不得回退到无界直写 dict)。
-                    await self._put_snapshot(event.session_key, snapshot, snapshot_ids)
+                    # (不得回退到无界直写 dict)。记录构建时 (scope, version),
+                    # 该 scope 被写后 bump 版本即令此快照失效。
+                    await self._put_snapshot(
+                        event.session_key, snapshot, snapshot_ids,
+                        event.memory_scope, cur_ver,
+                    )
             memory_ctx = build_memory_context(
                 self._memory,
                 snapshot=snapshot,
@@ -354,9 +369,15 @@ class ContextStage:
             if self._retrieval_cache_get is not None
             else None
         )
-        cache_fresh = cached is not None and is_fresh(
-            cached, event.text, now=time.time(),
-            ttl=self._cache_ttl, jaccard_min=self._cache_jaccard_min,
+        cur_ver = self._scope_version_fn(event.memory_scope) if self._scope_version_fn else 0
+        cache_fresh = (
+            cached is not None
+            and getattr(cached, "scope", "") == event.memory_scope
+            and getattr(cached, "scope_version", 0) == cur_ver
+            and is_fresh(
+                cached, event.text, now=time.time(),
+                ttl=self._cache_ttl, jaccard_min=self._cache_jaccard_min,
+            )
         )
         if self._config.memory.enabled and not ephemeral:
             # Prefer a fresh prefetched result (zero inline latency). On a miss,

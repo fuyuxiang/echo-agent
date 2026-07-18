@@ -165,7 +165,11 @@ class ResponseStage:
             from echo_agent.agent.background import Tier
             self._spawn_fn(
                 self._prefetcher.prefetch(
-                    event.session_key, event.text, event.sender_id, event.memory_scope
+                    event.session_key, event.text, event.sender_id, event.memory_scope,
+                    # 预取在 ResponseStage 触发,此处无 loop 的 scope 版本上下文,
+                    # 传 0:未发生写时读侧 cur_ver 亦为 0 视为命中;一旦该 scope
+                    # 被写 bump 版本,版本不符即自然失效(缓存条目不会陈旧命中)。
+                    scope_version=0,
                 ),
                 tier=Tier.DISCARDABLE,
             )

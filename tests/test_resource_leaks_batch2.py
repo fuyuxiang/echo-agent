@@ -78,6 +78,7 @@ async def test_put_memory_snapshot_bounded_by_lru():
     loop._state_lock = _asyncio.Lock()
     loop._memory_snapshots = OrderedDict()
     loop._memory_snapshot_ids = OrderedDict()
+    loop._memory_snapshot_meta = {}
     loop._max_cached_sessions = 3
 
     for i in range(5):
