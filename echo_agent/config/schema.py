@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
 
 
@@ -1879,6 +1879,16 @@ class MemoryConfig(_Base):
             "desc_en": "Owner memory scope key (single-subject default owner; rarely needs changing)",
         },
     )
+
+    @field_validator("owner_key")
+    @classmethod
+    def _owner_key_non_empty(cls, v: str) -> str:
+        # 空/空白 owner_key 会让私聊 memory_scope 变空串,进而在 store 层 fail-open
+        # 放行全库记忆(store.py:497)。这里 fail-closed 拒绝。
+        if not v or not v.strip():
+            raise ValueError("owner_key 不能为空")
+        return v
+
     retrieval_on_miss: Literal["degrade", "sync"] = Field(
         default="degrade",
         json_schema_extra={
