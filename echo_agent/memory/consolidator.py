@@ -262,7 +262,10 @@ class MemoryConsolidator:
 
         # Step 4: Run forgetting pass
         if self._forgetting_curve:
-            all_entries = list(self.store._entries.values())
+            if memory_scope:
+                all_entries = self.store.list_all(session_key=memory_scope)
+            else:
+                all_entries = list(self.store._entries.values())
             to_archive, to_forget = await self._forgetting_curve.run_decay_pass(all_entries)
             if to_archive and self._archival_manager:
                 stats["archived"] = await self._archival_manager.archive(to_archive)

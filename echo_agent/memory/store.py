@@ -664,10 +664,14 @@ class MemoryStore:
             raise ValueError(scan_error)
         return normalized
 
-    def _evict_oldest(self, mem_type: MemoryType) -> None:
-        """淘汰有效重要性最低的记忆条目，为新条目腾出空间。"""
+    def _evict_oldest(self, mem_type: MemoryType, scope_ref: "MemoryEntry | None" = None) -> None:
+        """淘汰有效重要性最低的记忆条目,为新条目腾出空间。
+        scope_ref 非空时只在与其同 scope 的子集内淘汰,避免高频 scope 挤掉别主体记忆。"""
+        candidates = self._typed_entries(mem_type)
+        if scope_ref is not None:
+            candidates = [e for e in candidates if self._same_scope(e, scope_ref)]
         typed = sorted(
-            self._typed_entries(mem_type),
+            candidates,
             key=lambda entry: (self._forgetting.effective_importance(entry), entry.updated_at or "", entry.id),
         )
         if typed:
@@ -790,8 +794,11 @@ class MemoryStore:
                 return merged
 
             limit = self._max_user if entry.type == MemoryType.USER else self._max_env
-            if len(self._typed_entries(entry.type)) >= limit:
-                self._evict_oldest(entry.type)
+            same_scope_typed = [
+                e for e in self._typed_entries(entry.type) if self._same_scope(e, entry)
+            ]
+            if len(same_scope_typed) >= limit:
+                self._evict_oldest(entry.type, scope_ref=entry)
 
             self._entries[entry.id] = entry
             self._index_entry(entry)
