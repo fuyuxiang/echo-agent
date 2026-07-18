@@ -661,6 +661,35 @@ class TestMemoryAPI:
         assert data["results"][0]["score"] == 0.9
         assert data["results"][0]["entry"]["id"] == "x"
 
+    @pytest.mark.asyncio
+    async def test_memory_endpoints_require_admin_token(self):
+        from echo_agent.gateway.api.memory import MemoryAPI
+        server = _make_server()
+        called = {}
+        def _admin(request, action):
+            called.setdefault("actions", []).append(action)
+            return None
+        server._require_admin_token = _admin
+        server._require_api_token = MagicMock(side_effect=AssertionError("must not use api token"))
+        server._agent_loop.memory = MagicMock()
+        server._agent_loop.memory.list_all.return_value = []
+        api = MemoryAPI(server)
+        await api.list_entries(_Request(query={}))
+        assert "memory_list" in called["actions"]
+
+    @pytest.mark.asyncio
+    async def test_search_passes_session_key(self):
+        from echo_agent.gateway.api.memory import MemoryAPI
+        server = _make_server()
+        store = MagicMock()
+        store.search_scored.return_value = []
+        server._agent_loop.memory = store
+        api = MemoryAPI(server)
+        await api.search(_Request(body={"query": "hi", "session_key": "owner"}))
+        # search 把 session_key 传给 store 做 scope 过滤
+        _, kwargs = store.search_scored.call_args
+        assert kwargs.get("session_key") == "owner"
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ConfigAPI

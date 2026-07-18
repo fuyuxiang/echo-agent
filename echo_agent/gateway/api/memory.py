@@ -17,7 +17,7 @@ class MemoryAPI:
         return self._server._agent_loop.memory
 
     def _guard(self, request: web.Request, action: str) -> web.Response | None:
-        return self._server._require_api_token(request, action=action)
+        return self._server._require_admin_token(request, action=action)
 
     async def list_entries(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "memory_list")
@@ -57,7 +57,8 @@ class MemoryAPI:
             return guard
 
         store = self._store()
-        entries = store.list_all()
+        session_key = request.query.get("session_key")
+        entries = store.list_all(session_key=session_key or None)
 
         by_tier: dict[str, int] = {}
         by_type: dict[str, int] = {}
@@ -130,7 +131,10 @@ class MemoryAPI:
 
         from echo_agent.memory.types import MemoryType
         mt = MemoryType(mem_type) if mem_type else None
-        results = self._store().search_scored(query, mem_type=mt, limit=limit)
+        session_key = body.get("session_key")
+        results = self._store().search_scored(
+            query, mem_type=mt, limit=limit, session_key=session_key or None,
+        )
 
         return web.json_response({
             "results": [
