@@ -285,6 +285,7 @@ class MatrixChannel(BaseChannel):
             media=media if media else None,
             reply_to_id=evt.get("event_id"),
             metadata={"msgtype": msgtype},
+            is_group=True,
         )
 
     async def _download_matrix_media(self, mxc_url: str) -> str | None:
