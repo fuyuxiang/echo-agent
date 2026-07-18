@@ -102,7 +102,20 @@ class MemoryAPI:
 
         content = body.get("content")
         tags = body.get("tags")
-        result = self._store().update(entry_id, content=content, tags=tags)
+
+        # 写权守卫:admin 默认也受守卫(source_priority("admin")=0,故对任何有来源
+        # 条目都被拦),仅 override=true 显式越权。被拒仅返回 403,不打 tag/写 contradiction。
+        from echo_agent.memory.types import provenance_guard
+        store = self._store()
+        entry = store.get(entry_id)
+        override = body.get("override") is True
+        if entry and not override and not provenance_guard("admin", entry):
+            return web.json_response(
+                {"error": "cannot overwrite higher-provenance entry; pass override=true to force"},
+                status=403,
+            )
+
+        result = store.update(entry_id, content=content, tags=tags)
         if not result:
             return web.json_response({"error": "not found"}, status=404)
         return web.json_response(result.to_dict())
@@ -113,7 +126,19 @@ class MemoryAPI:
             return guard
 
         entry_id = request.match_info["id"]
-        ok = self._store().delete(entry_id)
+
+        # 删权守卫:先取目标条目再删;admin 默认受守卫,override=true(取自 query)才越权。
+        from echo_agent.memory.types import provenance_guard
+        store = self._store()
+        entry = store.get(entry_id)
+        override = request.query.get("override") == "true"
+        if entry and not override and not provenance_guard("admin", entry):
+            return web.json_response(
+                {"error": "cannot delete higher-provenance entry; pass override=true to force"},
+                status=403,
+            )
+
+        ok = store.delete(entry_id)
         if not ok:
             return web.json_response({"error": "not found"}, status=404)
         return web.json_response({"status": "deleted"})

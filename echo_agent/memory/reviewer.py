@@ -11,7 +11,7 @@ from typing import Any
 from loguru import logger
 
 from echo_agent.memory.store import MemoryStore
-from echo_agent.memory.types import MemoryEntry, MemoryType, source_priority
+from echo_agent.memory.types import MemoryEntry, MemoryType, provenance_guard, source_priority
 from echo_agent.models.provider import LLMProvider
 
 _REVIEW_PROMPT = """\
@@ -201,6 +201,11 @@ class MemoryReviewer:
                 return resolve_error
             if not entry:
                 return "Error: no matching memory found"
+            # reviewer 恒 model_inferred:不得删除更高优先级(user_stated)条目。
+            # 被拒仅拒绝,不打 tag、不写 contradiction(裁决留到重构层)。
+            if not provenance_guard("model_inferred", entry):
+                logger.info("Reviewer remove denied (higher provenance): {}", entry.key)
+                return f"Kept existing (higher provenance) [{target}] {entry.key}"
             self._store.delete(entry.id)
             return f"Removed [{target}] {entry.key}"
 

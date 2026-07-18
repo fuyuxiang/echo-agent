@@ -78,10 +78,14 @@ class TestWritePathStamping:
 
     @pytest.mark.asyncio
     async def test_memory_tool_replace_updates_source(self, store):
+        # 原始条目改为 model_inferred:replace 默认来源也是 model_inferred,等优先级
+        # 可覆盖,验证"未声明 source → 保守默认 model_inferred"这一原意。若基础条目为
+        # user_stated,provenance_guard 会拦截 model_inferred 覆盖(见
+        # test_provenance_bypass_regression),那是有意的新语义,非本用例所测。
         tool = MemoryTool(store)
         await tool.execute({
             "action": "add", "target": "user", "key": "k4",
-            "content": "旧内容", "source": "user_stated",
+            "content": "旧内容", "source": "model_inferred",
         })
         await tool.execute({
             "action": "replace", "target": "user", "key": "k4", "content": "新内容",

@@ -11,6 +11,7 @@ from typing import Any, TYPE_CHECKING
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
 from echo_agent.memory.eligibility import Audience
 from echo_agent.memory.store import MemoryEntry, MemoryStore, MemoryType
+from echo_agent.memory.types import provenance_guard
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -231,6 +232,14 @@ class MemoryTool(Tool):
         if not entry:
             return ToolResult(success=False, error=f"No matching memory found for key='{key}' old_text='{old_text}'")
 
+        # 写权守卫:低优先级来源不得覆盖高优先级条目。被拒仅返回结构化拒绝,
+        # 不打 tag、不写 contradiction(写 contradiction 交 reflection 裁决留到重构层)。
+        if not provenance_guard(source, entry):
+            return ToolResult(
+                success=False,
+                error=f"Cannot overwrite higher-provenance entry: {entry.key}",
+            )
+
         try:
             self._store.update(entry.id, content=content, source=source)
         except ValueError as exc:
@@ -246,6 +255,16 @@ class MemoryTool(Tool):
             return ToolResult(success=False, error=resolve_error)
         if not entry:
             return ToolResult(success=False, error=f"No matching memory found for key='{key}' old_text='{old_text}'")
+
+        # 删权守卫:低优先级来源不得删除高优先级条目;被拒仅返回结构化拒绝。
+        actor_source = params.get("source", "")
+        if actor_source not in ("user_stated", "model_inferred"):
+            actor_source = "model_inferred"
+        if not provenance_guard(actor_source, entry):
+            return ToolResult(
+                success=False,
+                error=f"Cannot remove higher-provenance entry: {entry.key}",
+            )
 
         self._store.delete(entry.id)
         return ToolResult(success=True, output=f"Memory removed: [{entry.type.value}] {entry.key}")
