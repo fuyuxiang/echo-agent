@@ -24,6 +24,15 @@ def test_scope_filename_sanitized(tmp_path):
     assert s.read_long_term("gateway:web:u1") == "x"
 
 
+def test_separator_collision_distinct_shards(tmp_path):
+    # telegram:bob 与 telegram_bob 净化后前缀相同,但必须落不同分片,不串记忆。
+    s = _store(tmp_path)
+    s.write_long_term("telegram:bob", "冒号版")
+    s.write_long_term("telegram_bob", "下划线版")
+    assert s.read_long_term("telegram:bob") == "冒号版"
+    assert s.read_long_term("telegram_bob") == "下划线版"
+
+
 def test_dual_read_falls_back_to_legacy_global(tmp_path):
     s = _store(tmp_path)
     # 模拟旧全局 MEMORY.md 存在、owner 分片不存在

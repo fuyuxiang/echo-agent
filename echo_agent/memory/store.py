@@ -1258,7 +1258,12 @@ class MemoryStore:
     # ── Long-term memory file (MEMORY.md) ────────────────────────────────────
 
     def _long_term_path(self, scope: str):
-        return self._long_term_file.parent / f"MEMORY.{_safe_scope(scope)}.md"
+        # 文件名 = 可读的净化前缀 + 原始 scope 的短哈希。净化会把 : / 等归一为 _,
+        # 单靠它 telegram:bob 与 telegram_bob 会碰撞到同一文件、跨 scope 串记忆;
+        # 追加原始 scope 的 sha256 短哈希消歧,保证不同 scope 必得不同分片。
+        import hashlib
+        digest = hashlib.sha256((scope or "").encode("utf-8")).hexdigest()[:8]
+        return self._long_term_file.parent / f"MEMORY.{_safe_scope(scope)}.{digest}.md"
 
     def read_long_term(self, scope: str = "") -> str:
         path = self._long_term_path(scope)
