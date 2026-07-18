@@ -464,6 +464,7 @@ class AgentLoop:
             memory_snapshot_meta=self._memory_snapshot_meta,
             scope_version_fn=self._scope_version,
             snapshot_enabled=self._snapshot_enabled,
+            memory_enabled=config.memory.enabled,
             tool_definitions_fn=self.tools.get_definitions,
             episodic=self._episodic,
             plan_run_store=self._plan_run_store,
@@ -572,14 +573,22 @@ class AgentLoop:
             scheduler=scheduler,
             session_manager=self.sessions,
             skill_store=self.skill_store,
-            memory_store=self.memory,
-            contradiction_detector=getattr(self, "_contradiction_detector", None),
+            # memory.enabled 是总开关：关闭时连 memory_store 都不传，
+            # discover_tools 的 `if memory_store:` 门控即不注册 memory 工具；
+            # 配套的矛盾检测/失效回调在关闭时一并传 None，避免半开状态。
+            memory_store=self.memory if self.config.memory.enabled else None,
+            contradiction_detector=(
+                getattr(self, "_contradiction_detector", None)
+                if self.config.memory.enabled else None
+            ),
             task_manager=task_manager,
             workflow_engine=workflow_engine,
             knowledge_index=self.knowledge,
             approval=self.approval,
             clarify_manager=self.clarify,
-            memory_invalidate_fn=self._invalidate_memory_caches,
+            memory_invalidate_fn=(
+                self._invalidate_memory_caches if self.config.memory.enabled else None
+            ),
         )
         for tool in all_tools:
             self.tools.register(tool)

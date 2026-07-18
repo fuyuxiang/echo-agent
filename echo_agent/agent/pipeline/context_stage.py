@@ -112,6 +112,7 @@ class ContextStage:
         memory_snapshot_meta: "dict[str, tuple[str, int]] | None" = None,
         scope_version_fn: "Callable[[str], int] | None" = None,
         snapshot_enabled: bool,
+        memory_enabled: bool = True,
         tool_definitions_fn: Any,
         episodic: Any = None,
         plan_run_store: Any = None,
@@ -140,6 +141,7 @@ class ContextStage:
         self._memory_snapshot_meta = memory_snapshot_meta if memory_snapshot_meta is not None else {}
         self._scope_version_fn = scope_version_fn
         self._snapshot_enabled = snapshot_enabled
+        self._memory_enabled = memory_enabled
         self._tool_definitions_fn = tool_definitions_fn
         self._episodic = episodic
         self._plan_run_store = plan_run_store
@@ -279,7 +281,10 @@ class ContextStage:
             working_ctx = self._working_memories[event.session_key].get_context()
 
         snapshot_ids: frozenset[str] = frozenset()
-        if self._snapshot_enabled and not ephemeral:
+        if not self._memory_enabled:
+            # 总开关关闭：不读任何长期/快照记忆，只保留本轮 working memory。
+            memory_ctx = working_ctx
+        elif self._snapshot_enabled and not ephemeral:
             cur_ver = self._scope_version_fn(event.memory_scope) if self._scope_version_fn else 0
             meta = self._memory_snapshot_meta.get(event.session_key)
             snapshot_valid = (
