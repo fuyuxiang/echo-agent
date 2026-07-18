@@ -697,7 +697,7 @@ class TestMemoryAPI:
     async def test_search_success(self):
         api, store, _ = self._make()
         store.search_scored.return_value = [(_mem_entry("x"), 0.9)]
-        resp = await api.search(_Request(body={"query": "hello"}))
+        resp = await api.search(_Request(body={"query": "hello", "all_scopes": True}))
         assert resp.status == 200
         data = await _payload(resp)
         assert data["results"][0]["score"] == 0.9
@@ -718,6 +718,13 @@ class TestMemoryAPI:
         api = MemoryAPI(server)
         await api.list_entries(_Request(query={}))
         assert "memory_list" in called["actions"]
+
+    @pytest.mark.asyncio
+    async def test_search_without_scope_requires_all_scopes(self):
+        api, store, _ = self._make()
+        # body 无 session_key、无 all_scopes:跨 scope 全量返回是暴露口子,应拒绝
+        resp = await api.search(_Request(body={"query": "x"}))
+        assert resp.status == 400
 
     @pytest.mark.asyncio
     async def test_search_passes_session_key(self):

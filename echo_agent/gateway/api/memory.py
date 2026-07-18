@@ -182,6 +182,12 @@ class MemoryAPI:
         from echo_agent.memory.eligibility import Audience
         mt = MemoryType(mem_type) if mem_type else None
         session_key = body.get("session_key")
+        # 无 session_key 即全量跨主体检索,是跨 scope 暴露口子;须显式 all_scopes=true 才放行。
+        all_scopes = body.get("all_scopes") is True
+        if not session_key and not all_scopes:
+            return web.json_response(
+                {"error": "session_key or all_scopes=true required"}, status=400
+            )
         include_all = body.get("include_all") == "true"
         results = self._store().search_scored(
             query, mem_type=mt, limit=limit, session_key=session_key or None,
