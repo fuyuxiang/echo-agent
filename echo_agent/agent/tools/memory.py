@@ -89,12 +89,14 @@ class MemoryTool(Tool):
         store: MemoryStore,
         contradiction_detector: Any = None,
         invalidate_caches: "Callable[[str, bool], Awaitable[None]] | None" = None,
+        allow_environment_writes: bool = False,
     ):
         self._store = store
         self._contradiction_detector = contradiction_detector
         # 写操作成功后的缓存失效回调 (session_key, global_scope) -> None。
         # 不注入时退化为纯写 store(旧行为),由调用方决定是否需要一致性。
         self._invalidate_caches = invalidate_caches
+        self._allow_environment_writes = allow_environment_writes
 
     def _resolve_entry(
         self,
@@ -135,6 +137,17 @@ class MemoryTool(Tool):
         # 回退 session_key 兼容未经 loop 冻结构造的 ctx。变量名沿用 session_key
         # 因它直接喂给 store 的同名可见性参数。
         session_key = (ctx.memory_scope or ctx.session_key) if ctx else ""
+
+        # 堵模型写 ENVIRONMENT/global 入口(绕过 scope、全局可见);默认禁止。
+        if action in ("add", "replace") and not self._allow_environment_writes:
+            tags_str = params.get("tags", "") or ""
+            has_global = "global" in [t.strip() for t in tags_str.split(",")]
+            if mem_type == MemoryType.ENVIRONMENT or has_global:
+                return ToolResult(
+                    success=False,
+                    error="writing ENVIRONMENT or global-tagged memory is disabled "
+                          "(set memory.allow_model_environment_writes to enable)",
+                )
 
         if action == "add":
             result = self._add(params, mem_type, session_key)

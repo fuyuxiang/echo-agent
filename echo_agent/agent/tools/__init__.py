@@ -155,6 +155,7 @@ def discover_tools(
             store=memory_store,
             contradiction_detector=contradiction_detector,
             invalidate_caches=memory_invalidate_fn,
+            allow_environment_writes=config.memory.allow_model_environment_writes,
         ))
 
     if knowledge_index:

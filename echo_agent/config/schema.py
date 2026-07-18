@@ -1879,6 +1879,14 @@ class MemoryConfig(_Base):
             "desc_en": "Owner memory scope key (single-subject default owner; rarely needs changing)",
         },
     )
+    allow_model_environment_writes: bool = Field(
+        default=False,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/tools/memory.py",
+            "desc_zh": "是否允许模型记忆工具写 ENVIRONMENT 记忆或带 global 标签(这类绕过 scope、全局可见);默认关闭,模型只能写自己 scope 的 USER 记忆,避免任意通道模型污染全局",
+            "desc_en": "Allow the model memory tool to write ENVIRONMENT memory or global-tagged entries (these bypass scope, globally visible). Off by default; the model may only write its own scope's USER memory.",
+        },
+    )
 
     @field_validator("owner_key")
     @classmethod
