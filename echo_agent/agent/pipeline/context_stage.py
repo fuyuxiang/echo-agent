@@ -18,6 +18,7 @@ from echo_agent.agent.context import (
 from echo_agent.agent.pipeline.response_stage import _is_ephemeral_session
 from echo_agent.agent.pipeline.types import PipelineContext
 from echo_agent.bus.events import InboundEvent, OutboundEvent
+from echo_agent.memory.eligibility import Audience
 from echo_agent.session.manager import Session
 
 if TYPE_CHECKING:
@@ -229,8 +230,11 @@ class ContextStage:
                 # No retriever wired (vector off): keyword search IS the
                 # bounded path, and it's synchronous/fast already.
                 # 可见性用 memory_scope(owner-aware),与写侧 source_session 对齐。
+                # audience=RETRIEVAL:兜底召回本就是"该显示的召回",与 Hybrid
+                # 主路径对齐,过滤 superseded/archived/unresolved,不漏进 prompt。
                 return self._memory.search_scored(
-                    event.text, limit=5, session_key=event.memory_scope
+                    event.text, limit=5, session_key=event.memory_scope,
+                    audience=Audience.RETRIEVAL,
                 )
             if publish_response and self._bus:
                 await self._emit_progress(
@@ -256,7 +260,8 @@ class ContextStage:
                 )
             try:
                 return self._memory.search_scored(
-                    event.text, limit=5, session_key=event.memory_scope
+                    event.text, limit=5, session_key=event.memory_scope,
+                    audience=Audience.RETRIEVAL,
                 )
             except Exception as e:
                 logger.debug("Keyword fallback failed: {}", e)
@@ -408,7 +413,8 @@ class ContextStage:
                     )
                 else:
                     scored = self._memory.search_scored(
-                        event.text, limit=5, session_key=event.memory_scope
+                        event.text, limit=5, session_key=event.memory_scope,
+                        audience=Audience.RETRIEVAL,
                     )
             else:
                 scored = await self._bounded_retrieve(event, publish_response)
