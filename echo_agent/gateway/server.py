@@ -474,6 +474,7 @@ class GatewayServer:
         text = body.get("text", "")
         media_urls = body.get("media_urls", [])
         wait = bool(body.get("wait", False))
+        is_group = bool(body.get("is_group", False))
         timeout_seconds = max(1, min(int(body.get("timeout_seconds", 180)), 600))
 
         if not text and not media_urls:
@@ -542,6 +543,7 @@ class GatewayServer:
                 chat_id=chat_id,
                 content=content_blocks,
                 session_key_override=session_key,
+                is_group=is_group,
                 metadata={
                     "gateway": True,
                     "platform": platform,
