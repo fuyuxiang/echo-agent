@@ -55,6 +55,8 @@ def inbound_event_from_job(job: Any) -> InboundEvent:
     payload_dict = job.payload if isinstance(job.payload, dict) else {}
     authorized = payload_dict.get("unattended_authorized", True)
 
+    is_group = bool(payload.get("is_group", False))
+
     return InboundEvent(
         event_type=EventType.CRON,
         channel=target_channel,
@@ -69,6 +71,7 @@ def inbound_event_from_job(job: Any) -> InboundEvent:
         # event.cron_authorized directly.
         unattended=True,
         cron_authorized=bool(authorized),
+        is_group=is_group,
         metadata={
             "job_id": job.id,
             "job_name": job.name,
