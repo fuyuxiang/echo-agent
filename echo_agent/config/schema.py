@@ -1893,8 +1893,8 @@ class MemoryConfig(_Base):
         default_factory=list,
         json_schema_extra={
             "status": "effective", "ref": "bus/events.py:memory_scope_key",
-            "desc_zh": "主人身份绑定表:每项 \"通道:sender_id\",列入者的 1:1 私聊归一到 owner 记忆域实现跨通道互通;未列入者按会话隔离",
-            "desc_en": "Owner identity bindings: each \"channel:sender_id\"; listed senders' 1:1 DMs map to the owner memory scope for cross-channel sharing; others stay per-session.",
+            "desc_zh": "主人身份绑定表:每项 \"通道:sender_id\",列入者的 1:1 私聊归一到 owner 记忆域实现跨通道互通;未列入者按会话隔离。安全前提:仅对 sender_id 由平台保证不可伪造的通道(如 Telegram/Slack)启用,否则冒充该 id 者可读主人记忆;仅在 cross_channel_owner 开启时生效",
+            "desc_en": "Owner identity bindings: each \"channel:sender_id\"; listed senders' 1:1 DMs map to the owner memory scope for cross-channel sharing; others stay per-session. Security assumption: only for channels whose sender_id is platform-guaranteed unforgeable (e.g. Telegram/Slack); otherwise anyone spoofing that id reads owner memory. Effective only when cross_channel_owner is on.",
         },
     )
 
