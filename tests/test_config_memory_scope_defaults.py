@@ -45,3 +45,8 @@ def test_principal_bindings_rejects_empty_side():
         MemoryConfig(principal_bindings=["telegram:"])
     with pytest.raises(ValidationError):
         MemoryConfig(principal_bindings=[":alice"])
+
+
+def test_principal_bindings_normalizes_whitespace():
+    m = MemoryConfig(principal_bindings=["telegram: alice", " slack :U0XXX"])
+    assert m.principal_bindings == ["telegram:alice", "slack:U0XXX"]

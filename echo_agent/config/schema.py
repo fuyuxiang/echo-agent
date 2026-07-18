@@ -1902,12 +1902,16 @@ class MemoryConfig(_Base):
     @classmethod
     def _validate_principal_bindings(cls, v: list[str]) -> list[str]:
         # 每项须为 "channel:sender_id",冒号两侧非空;非法项 fail-closed 拒绝启动,
-        # 避免错配把陌生人误绑成 owner 或静默失效。
+        # 避免错配把陌生人误绑成 owner 或静默失效。归一化去除首尾空白后存储,
+        # 使 "telegram: alice" 这类含空格配置能与下游真实 sender_id 正确比对。
+        normalized: list[str] = []
         for item in v:
             channel, sep, sender = item.partition(":")
-            if not sep or not channel.strip() or not sender.strip():
+            channel, sender = channel.strip(), sender.strip()
+            if not sep or not channel or not sender:
                 raise ValueError(f"principal_bindings 项格式须为 'channel:sender_id',非法项: {item!r}")
-        return v
+            normalized.append(f"{channel}:{sender}")
+        return normalized
 
     retrieval_on_miss: Literal["degrade", "sync"] = Field(
         default="degrade",
