@@ -48,3 +48,17 @@ def test_override_non_group_returns_override():
     ev.session_key_override = "gateway:web:u1"
     # 非群聊维持原语义:直接用 override
     assert ev.scoped_session_key("per_user") == "gateway:web:u1"
+
+
+def test_scoped_session_key_idempotent_when_override_has_sender():
+    # 原生通道:_on_inbound 已把含 sender 的 scoped 键写回 override,再调不应双拼。
+    ev = _ev("telegram", "grp1", "alice", is_group=True)
+    ev.session_key_override = "telegram:grp1:alice"
+    assert ev.scoped_session_key("per_user") == "telegram:grp1:alice"
+
+
+def test_native_group_memory_scope_equals_session_key():
+    # 原生通道群聊 memory_scope 应与 session_key 一致,不出现双拼 sender。
+    ev = _ev("telegram", "grp1", "alice", is_group=True)
+    ev.session_key_override = "telegram:grp1:alice"  # 模拟 _on_inbound 冻结
+    assert ev.memory_scope_key("per_user", "owner", set()) == ev.session_key

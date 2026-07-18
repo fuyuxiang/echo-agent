@@ -111,10 +111,14 @@ class InboundEvent:
 
         群聊 per_user 隔离优先于 session_key_override:override 承载的是
         群/会话本身的键,不含成员维度;若直接返回它会让整群共用一个键,
-        丢失群内按人隔离。故群聊 per_user 场景在 override 基础上仍拼 sender。"""
+        丢失群内按人隔离。故群聊 per_user 场景在 override 基础上仍拼 sender。
+        拼接幂等:_on_inbound 可能已把含 sender 的 scoped 键写回 override,
+        此时不重复拼,避免 memory_scope 出现 :sender:sender 双拼、与 session_key 背离。"""
         base = self.session_key_override or f"{self.channel}:{self.chat_id}"
         if scope == "per_user" and self.is_group and self.sender_id:
-            return f"{base}:{self.sender_id}"
+            suffix = f":{self.sender_id}"
+            if not base.endswith(suffix):
+                return f"{base}{suffix}"
         return base
 
     def memory_scope_key(
