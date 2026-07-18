@@ -9,6 +9,12 @@ from enum import Enum
 from typing import Any
 
 
+def _pkg_version() -> str:
+    """已安装包版本;源码树运行时回退 0.0.0+unknown。"""
+    from echo_agent import __version__
+    return __version__
+
+
 class TaskState(str, Enum):
     SUBMITTED = "submitted"
     WORKING = "working"
@@ -83,7 +89,8 @@ class AgentCard:
     name: str = "echo-agent"
     description: str = "A modular AI agent framework"
     url: str = ""
-    version: str = "0.1.0"
+    # 默认取已安装包版本(源码树为 0.0.0+unknown);实例化处仍可显式覆盖。
+    version: str = field(default_factory=lambda: _pkg_version())
     capabilities: list[str] = field(default_factory=lambda: ["chat", "tool_use"])
     skills: list[str] = field(default_factory=list)
     authentication: dict[str, Any] = field(default_factory=lambda: {"schemes": ["bearer"]})

@@ -45,6 +45,8 @@ class TelemetryManager:
             logger.info("OpenTelemetry not installed — telemetry disabled")
             return
 
+        from echo_agent import __version__
+
         resource = Resource.create({"service.name": self._service_name})
 
         # Tracer
@@ -59,12 +61,12 @@ class TelemetryManager:
         else:
             tracer_provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
         trace.set_tracer_provider(tracer_provider)
-        self._tracer = trace.get_tracer("echo-agent", "0.1.0")
+        self._tracer = trace.get_tracer("echo-agent", __version__)
 
         # Meter
         meter_provider = MeterProvider(resource=resource)
         metrics.set_meter_provider(meter_provider)
-        self._meter = metrics.get_meter("echo-agent", "0.1.0")
+        self._meter = metrics.get_meter("echo-agent", __version__)
 
         self._initialized = True
         logger.info("OpenTelemetry initialized: service={}, endpoint={}", self._service_name, self._endpoint or "console")

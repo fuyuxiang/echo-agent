@@ -51,13 +51,18 @@ class ConfigAPI:
         data = {}
         for field_name in ("models", "gateway", "session", "memory", "knowledge", "agent", "ui", "evolution"):
             section = getattr(config, field_name, None)
-            if section is not None:
-                if hasattr(section, "to_dict"):
-                    data[field_name] = section.to_dict()
-                elif hasattr(section, "__dict__"):
-                    data[field_name] = vars(section)
-                else:
-                    data[field_name] = str(section)
+            if section is None:
+                continue
+            if hasattr(section, "model_dump"):
+                # pydantic 模型:mode="json" 递归把子模型/枚举/datetime 转成原生
+                # 可 JSON 类型。刻意不带 by_alias —— 保持 snake_case 字段名,既与
+                # get_models 端点一致,又让下面按 snake_case 的 _SENSITIVE_KEYS 脱敏
+                # 生效(camelCase 别名会绕过脱敏导致密钥泄漏)。
+                data[field_name] = section.model_dump(mode="json")
+            elif hasattr(section, "to_dict"):
+                data[field_name] = section.to_dict()
+            else:
+                data[field_name] = str(section)
 
         return web.json_response(_sanitize(data))
 

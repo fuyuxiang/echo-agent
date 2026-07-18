@@ -91,6 +91,9 @@ def main() -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="echo-agent", description="Echo Agent — modular AI agent framework")
+    from echo_agent import __version__
+    # __version__ 取自已安装包元数据;源码树直接运行会显示 0.0.0+unknown。
+    parser.add_argument("--version", action="version", version=f"echo-agent {__version__}")
     subparsers = parser.add_subparsers(dest="command")
 
     # run

@@ -92,6 +92,24 @@ def test_explain_unknown_key(capsys):
     assert "未知" in out or "unknown" in out.lower()
 
 
+def test_explain_group_key_lists_children(capsys):
+    # 分组级 key(如 gateway)匹配不到叶子字段,应回退列出其下子项而非报未知。
+    rc = run_config_command("explain", "gateway")
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "分组" in out or "group" in out.lower()
+    assert "gateway.port" in out
+    assert "未知" not in out
+
+
+def test_explain_snake_group_key_lists_children(capsys):
+    # snake_case 分组前缀同样支持。
+    rc = run_config_command("explain", "gateway")
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "gateway.enabled" in out
+
+
 def test_known_paths_contains_both_styles():
     paths = known_paths()
     assert "memory.archivalThreshold" in paths

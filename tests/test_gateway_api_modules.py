@@ -696,9 +696,21 @@ class TestConfigAPI:
 
     @pytest.mark.asyncio
     async def test_get_config_sanitizes_secrets(self):
+        # 真实 config section 是 pydantic 模型:有 model_dump、无 to_dict。用真实
+        # 模型驱动 model_dump(mode="json") 路径,既覆盖嵌套子模型序列化(旧 vars()
+        # 会抛 TypeError),又验证 snake_case 字段名下的密钥脱敏仍生效。
+        from pydantic import BaseModel
+
+        class _Sub(BaseModel):
+            timeout: int = 5
+
+        class _Section(BaseModel):
+            api_key: str = "supersecret"
+            host: str = "x"
+            nested: _Sub = _Sub()
+
         api, config, _ = self._make()
-        section = MagicMock()
-        section.to_dict.return_value = {"api_key": "supersecret", "host": "x"}
+        section = _Section()
         for f in ("models", "gateway", "session", "memory", "knowledge", "agent", "ui", "evolution"):
             setattr(config, f, section if f == "models" else None)
         resp = await api.get_config(_Request())
@@ -706,6 +718,8 @@ class TestConfigAPI:
         data = await _payload(resp)
         assert data["models"]["api_key"] == "***"
         assert data["models"]["host"] == "x"
+        # 嵌套子模型被递归序列化为原生 dict(旧实现会在此抛 TypeError)
+        assert data["models"]["nested"]["timeout"] == 5
 
     @pytest.mark.asyncio
     async def test_get_models_not_available(self):

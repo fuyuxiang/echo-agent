@@ -103,6 +103,19 @@ def _field_by_key(key: str) -> FieldInfo | None:
     return None
 
 
+def _fields_under_prefix(key: str) -> list[FieldInfo]:
+    """列出分组级 key(如 gateway、models)前缀下的所有叶子字段。
+
+    iter_fields 遇子模型只产出叶子,分组节点本身匹配不到叶子键;此处按
+    `<key>.` 前缀(camel 或 snake 皆可)收集,支撑 explain 对分组的回退展示。"""
+    prefix_camel = f"{key}."
+    out: list[FieldInfo] = []
+    for f in iter_fields(Config):
+        if f.path.startswith(prefix_camel) or f.snake_path.startswith(prefix_camel):
+            out.append(f)
+    return out
+
+
 def _dump(fmt: str, config_path, workspace) -> int:
     config_file = resolve_config_file(config_path=config_path, search_dir=workspace)
     config = load_config(config_path=config_file)
@@ -117,6 +130,16 @@ def _dump(fmt: str, config_path, workspace) -> int:
 def _explain(key: str, config_path, workspace) -> int:
     info = _field_by_key(key)
     if info is None:
+        # 分组级 key(gateway/models 等)匹配不到叶子字段:回退成列出其下子项,
+        # 而非直接报未知。
+        children = _fields_under_prefix(key)
+        if children:
+            print(f"配置分组 / group: {key}  （共 {len(children)} 项 / fields）")
+            for f in children:
+                desc = f.extra.get("desc_zh", "") or f.extra.get("desc_en", "")
+                print(f"  {f.path}  ({f.snake_path}): {desc}")
+            print("提示 / hint: config explain <上述任一 key> 查看单项详情")
+            return 0
         print(f"未知配置项 / unknown key: {key}")
         return 1
     config_file = resolve_config_file(config_path=config_path, search_dir=workspace)
@@ -192,8 +215,10 @@ def _validate(config_path, workspace) -> int:
     return rc
 
 
-def gen_docs(out_dir: str = "docs") -> None:
-    """Developer command: write the reference files and dead-field backlog."""
+def gen_docs(out_dir: str = "docs") -> Path:
+    """Developer command: write the reference files and dead-field backlog.
+
+    返回写入目录,供调用处打印绝对路径。"""
     base = Path(out_dir)
     base.mkdir(parents=True, exist_ok=True)
     (base / "config-reference.yaml").write_text(render_yaml("zh"), encoding="utf-8")
@@ -201,6 +226,7 @@ def gen_docs(out_dir: str = "docs") -> None:
     (base / "config-reference.md").write_text(render_markdown("zh"), encoding="utf-8")
     (base / "config-reference.en.md").write_text(render_markdown("en"), encoding="utf-8")
     (base / "config-dead-fields-backlog.md").write_text(render_backlog(), encoding="utf-8")
+    return base
 
 
 def run_config_command(
@@ -221,8 +247,8 @@ def run_config_command(
     if action == "validate":
         return _validate(config_path, workspace)
     if action == "gen-docs":
-        gen_docs()
-        print("已生成配置参考文档 / reference docs generated")
+        base = gen_docs()
+        print(f"已生成配置参考文档 / reference docs generated: {base.resolve()}")
         return 0
     print(f"未知子命令 / unknown action: {action}")
     return 1

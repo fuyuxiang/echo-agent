@@ -50,10 +50,11 @@ class MCPClient:
         return self._transport.is_connected
 
     async def initialize(self) -> dict[str, Any]:
+        from echo_agent import __version__
         resp = await self._request("initialize", {
             "protocolVersion": "2024-11-05",
             "capabilities": {"sampling": {}},
-            "clientInfo": {"name": "echo-agent", "version": "0.1.0"},
+            "clientInfo": {"name": "echo-agent", "version": __version__},
         })
         self._server_info = resp.get("serverInfo", {})
         self._server_capabilities = resp.get("capabilities", {})

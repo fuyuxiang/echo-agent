@@ -224,10 +224,12 @@ class GatewayServer:
         if self._a2a_config and self._a2a_config.enabled and self._agent_loop:
             from echo_agent.a2a.server import A2AServer
             from echo_agent.a2a.models import AgentCard
+            from echo_agent import __version__
             card = AgentCard(
                 name=self._a2a_config.agent_name,
                 description=self._a2a_config.agent_description,
                 url=f"http://{self._config.host}:{self._config.port}",
+                version=__version__,
                 capabilities=self._a2a_config.capabilities,
             )
             a2a = A2AServer(

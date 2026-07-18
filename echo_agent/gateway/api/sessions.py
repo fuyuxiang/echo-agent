@@ -21,7 +21,9 @@ class SessionsAPI:
             return guard
 
         channel = request.query.get("channel")
-        sessions = await self._server.session_manager.list_sessions()
+        # 用 async 版:同步 list_sessions 在运行的事件循环里只能看到内存缓存,
+        # 且 await 一个同步返回的 list 会抛 TypeError。
+        sessions = await self._server.session_manager.list_sessions_async()
 
         if channel:
             sessions = [s for s in sessions if s.get("key", "").startswith(channel)]
