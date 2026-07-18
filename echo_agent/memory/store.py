@@ -156,6 +156,7 @@ class MemoryStore:
         decay_half_life_days: float = 30.0,
         user_snapshot_char_limit: int = 4000,
         env_snapshot_char_limit: int = 2200,
+        long_term_snapshot_char_limit: int = 4000,
         storage: Any = None,
         scope_policy: str = "legacy",
         contradiction_scan_on_store: bool = False,
@@ -173,6 +174,7 @@ class MemoryStore:
         self._decay_half_life = decay_half_life_days
         self._user_snapshot_char_limit = user_snapshot_char_limit
         self._env_snapshot_char_limit = env_snapshot_char_limit
+        self._long_term_snapshot_char_limit = long_term_snapshot_char_limit
         self._entries: dict[str, MemoryEntry] = {}
         self._key_index: dict[str, set[str]] = {}  # key -> set of entry IDs for O(1) conflict lookup
         self._storage = storage
@@ -1242,6 +1244,13 @@ class MemoryStore:
         collected: list[str] = []
         long_term = self.read_long_term(session_key or "")
         if long_term:
+            # 临时止血:long-term(MEMORY.md)是快照里唯一无界注入源,user/env 段
+            # 均有字符上限。长期记忆文件增长会无界撑大 system prompt,故注入前截断。
+            # R3(唯一事实源,MD 降为渲染视图)落地后此逻辑并入渲染视图上限。
+            if len(long_term) > self._long_term_snapshot_char_limit:
+                long_term = (
+                    long_term[: self._long_term_snapshot_char_limit] + "\n…(truncated)"
+                )
             parts.append(f"## Long-term Memory\n\n{long_term}")
 
         user_ctx = self.get_context(
