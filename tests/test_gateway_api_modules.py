@@ -687,6 +687,23 @@ class TestConfigAPI:
         assert resp.status == 401
 
     @pytest.mark.asyncio
+    async def test_get_config_requires_admin_token(self):
+        from echo_agent.gateway.api.config import ConfigAPI
+        server = _make_server()
+        called = {}
+        def _admin(request, action):
+            called["action"] = action
+            return None
+        server._require_admin_token = _admin
+        server._require_api_token = MagicMock(side_effect=AssertionError("must not use api token"))
+        server._agent_loop.config = MagicMock()
+        for f in ("models", "gateway", "session", "memory", "knowledge", "agent", "ui", "evolution"):
+            setattr(server._agent_loop.config, f, None)
+        api = ConfigAPI(server)
+        await api.get_config(_Request())
+        assert called["action"] == "config_get"
+
+    @pytest.mark.asyncio
     async def test_get_config_not_available(self):
         api, _, _ = self._make(config=None)
         resp = await api.get_config(_Request())
@@ -754,6 +771,20 @@ def test_sanitize_helpers():
     assert _sanitize("plain") == "plain"
     deep = {"token": "t"}
     assert _sanitize(deep, depth=11) == deep
+
+
+def test_sanitize_masks_admin_tokens_and_credential_pool():
+    from echo_agent.gateway.api.config import _sanitize
+    raw = {
+        "gateway": {"auth": {"admin_tokens": ["adm-secret"], "api_tokens": ["t"]}},
+        "models": {"providers": [{"credential_pool": ["k1", "k2"]}]},
+        "extra_headers": {"Authorization": "Bearer xyz", "X-API-Key": "zzz"},
+    }
+    out = _sanitize(raw)
+    assert out["gateway"]["auth"]["admin_tokens"] == "***"
+    assert out["models"]["providers"][0]["credential_pool"] == "***"
+    assert out["extra_headers"]["Authorization"] == "***"
+    assert out["extra_headers"]["X-API-Key"] == "***"
 
 
 # ══════════════════════════════════════════════════════════════════════════════

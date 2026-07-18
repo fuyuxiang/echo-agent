@@ -7,10 +7,19 @@ from aiohttp import web
 if TYPE_CHECKING:
     from echo_agent.gateway.server import GatewayServer
 
-_SENSITIVE_KEYS = frozenset({
-    "api_key", "api_keys", "api_tokens", "secret", "password",
-    "token", "access_token", "secret_key", "private_key",
-})
+# 命中即打码的敏感子串(小写)。按子串而非精确键名匹配,覆盖 admin_tokens、
+# credential_pool、authorization、x-api-key 等旁路键;大小写不敏感。
+_SENSITIVE_SUBSTRINGS = (
+    "api_key", "apikey", "api_token", "token", "secret", "password",
+    "credential", "authorization", "auth_header", "private_key", "access_key",
+)
+
+
+def _is_sensitive(key: str) -> bool:
+    # 连字符归一为下划线,让 HTTP 头风格的 x-api-key 命中 api_key 等下划线子串,
+    # 避免 X-API-Key/Auth-Header 这类旁路键因分隔符差异绕过脱敏。
+    k = key.lower().replace("-", "_")
+    return any(sub in k for sub in _SENSITIVE_SUBSTRINGS)
 
 
 def _sanitize(obj: Any, depth: int = 0) -> Any:
@@ -19,7 +28,7 @@ def _sanitize(obj: Any, depth: int = 0) -> Any:
     if isinstance(obj, dict):
         result = {}
         for k, v in obj.items():
-            if k in _SENSITIVE_KEYS:
+            if isinstance(k, str) and _is_sensitive(k):
                 result[k] = "***" if v else ""
             else:
                 result[k] = _sanitize(v, depth + 1)
@@ -40,7 +49,7 @@ class ConfigAPI:
         return self._server._agent_loop.config if hasattr(self._server._agent_loop, "config") else None
 
     async def get_config(self, request: web.Request) -> web.Response:
-        guard = self._guard(request, "config_get")
+        guard = self._server._require_admin_token(request, action="config_get")
         if guard is not None:
             return guard
 
