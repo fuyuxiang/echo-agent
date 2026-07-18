@@ -145,7 +145,7 @@ def _make_context_stage(*, cache, on_miss, on_retrieve=None, hybrid=True,
     memory = MagicMock()
     memory.get_snapshot = MagicMock(return_value="")
 
-    def _search_scored(text, limit=5, session_key=""):
+    def _search_scored(text, limit=5, session_key="", audience=None):
         return on_retrieve(text) if on_retrieve else []
 
     memory.search_scored = MagicMock(side_effect=_search_scored)
@@ -267,7 +267,7 @@ async def test_cli_miss_timeout_falls_back_to_keyword():
 
     hybrid.retrieve = AsyncMock(side_effect=_slow_retrieve)
 
-    def _kw(text, limit=5, session_key=""):
+    def _kw(text, limit=5, session_key="", audience=None):
         kw_calls.append(text)
         return [(_Mem("kw", "keyword-fallback"), 0.5)]
 
