@@ -30,6 +30,7 @@ from loguru import logger
 from echo_agent.memory.types import MemoryEntry, MemoryTier, MemoryType, source_priority
 from echo_agent.memory.text import cjk_tokens
 from echo_agent.memory.forgetting import ForgettingCurve
+from echo_agent.memory.eligibility import Audience, is_eligible
 
 msvcrt = None
 try:
@@ -487,14 +488,27 @@ class MemoryStore:
                     del self._key_index[entry.key]
 
     def _filtered_entries(
-        self, mem_type: MemoryType | None = None, session_key: str | None = None,
+        self,
+        mem_type: MemoryType | None = None,
+        session_key: str | None = None,
+        *,
+        audience: "Audience | None" = None,
     ) -> list[MemoryEntry]:
-        """按类型和会话可见性过滤记忆条目。"""
+        """按类型和会话可见性过滤记忆条目。
+
+        ``audience=None`` 时不做生命周期过滤（写入路径 find_by_key/
+        find_by_content_matches 靠此仍能定位 superseded 条目）；非 None 时按
+        eligibility 矩阵过滤。"""
         entries = list(self._entries.values())
         if mem_type is not None:
             entries = [entry for entry in entries if entry.type == mem_type]
         if session_key:
             entries = [entry for entry in entries if self._visible_in_session(entry, session_key)]
+        if audience is not None:
+            entries = [
+                entry for entry in entries
+                if is_eligible(entry, audience, is_unresolved_fn=self.is_unresolved)
+            ]
         return entries
 
     def is_visible_in_session(self, entry: MemoryEntry, session_key: str) -> bool:
@@ -1044,8 +1058,14 @@ class MemoryStore:
     def get(self, entry_id: str) -> MemoryEntry | None:
         return self._entries.get(entry_id)
 
-    def list_all(self, mem_type: MemoryType | None = None, session_key: str | None = None) -> list[MemoryEntry]:
-        entries = self._filtered_entries(mem_type, session_key)
+    def list_all(
+        self,
+        mem_type: MemoryType | None = None,
+        session_key: str | None = None,
+        *,
+        audience: "Audience | None" = None,
+    ) -> list[MemoryEntry]:
+        entries = self._filtered_entries(mem_type, session_key, audience=audience)
         return sorted(entries, key=lambda entry: entry.updated_at or "", reverse=True)
 
     # ── Search ───────────────────────────────────────────────────────────────
@@ -1056,10 +1076,12 @@ class MemoryStore:
         mem_type: MemoryType | None = None,
         limit: int = 20,
         session_key: str | None = None,
+        *,
+        audience: "Audience | None" = None,
     ) -> list[MemoryEntry]:
         pattern = re.compile(re.escape(query), re.IGNORECASE)
         results: list[MemoryEntry] = []
-        for entry in self._filtered_entries(mem_type, session_key):
+        for entry in self._filtered_entries(mem_type, session_key, audience=audience):
             matched = (
                 pattern.search(entry.content)
                 or pattern.search(entry.key)
@@ -1076,6 +1098,8 @@ class MemoryStore:
         mem_type: MemoryType | None = None,
         limit: int = 10,
         session_key: str | None = None,
+        *,
+        audience: "Audience | None" = None,
     ) -> list[tuple[MemoryEntry, float]]:
         """Multi-keyword scored search. Returns (entry, score) pairs sorted by score."""
         words = [
@@ -1089,11 +1113,13 @@ class MemoryStore:
         if not words:
             return [
                 (entry, self._forgetting.effective_importance(entry))
-                for entry in self.search_keyword(query, mem_type, limit, session_key=session_key)
+                for entry in self.search_keyword(
+                    query, mem_type, limit, session_key=session_key, audience=audience,
+                )
             ]
 
         scored: list[tuple[MemoryEntry, float]] = []
-        for entry in self._filtered_entries(mem_type, session_key):
+        for entry in self._filtered_entries(mem_type, session_key, audience=audience):
             haystack = f"{entry.key} {entry.content} {' '.join(entry.tags)}".lower()
             word_hits = sum(1 for word in words if word in haystack)
             if word_hits == 0:
@@ -1126,11 +1152,13 @@ class MemoryStore:
         key: str,
         mem_type: MemoryType | None = None,
         session_key: str | None = None,
+        *,
+        audience: "Audience | None" = None,
     ) -> MemoryEntry | None:
         normalized_key = key.strip()
         if not normalized_key:
             return None
-        for entry in self._filtered_entries(mem_type, session_key):
+        for entry in self._filtered_entries(mem_type, session_key, audience=audience):
             if entry.key == normalized_key:
                 return entry
         return None
@@ -1141,12 +1169,14 @@ class MemoryStore:
         mem_type: MemoryType | None = None,
         limit: int | None = 10,
         session_key: str | None = None,
+        *,
+        audience: "Audience | None" = None,
     ) -> list[MemoryEntry]:
         normalized = substring.strip()
         if not normalized:
             return []
         results: list[MemoryEntry] = []
-        for entry in self._filtered_entries(mem_type, session_key):
+        for entry in self._filtered_entries(mem_type, session_key, audience=audience):
             if normalized in entry.content or normalized in entry.key:
                 results.append(entry)
                 if limit is not None and len(results) >= limit:

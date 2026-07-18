@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any, TYPE_CHECKING
 
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.memory.eligibility import Audience
 from echo_agent.memory.store import MemoryEntry, MemoryStore, MemoryType
 
 if TYPE_CHECKING:
@@ -254,7 +255,9 @@ class MemoryTool(Tool):
         if not query:
             return ToolResult(success=False, error="query is required for search")
 
-        results = self._store.search_scored(query, mem_type, limit=10, session_key=session_key)
+        results = self._store.search_scored(
+            query, mem_type, limit=10, session_key=session_key, audience=Audience.TOOL,
+        )
         if not results:
             return ToolResult(success=True, output="No matching memories found.")
 
@@ -267,7 +270,7 @@ class MemoryTool(Tool):
         return ToolResult(success=True, output="\n".join(lines))
 
     def _list(self, mem_type: MemoryType, session_key: str) -> ToolResult:
-        entries = self._store.list_all(mem_type, session_key=session_key)
+        entries = self._store.list_all(mem_type, session_key=session_key, audience=Audience.TOOL)
         if not entries:
             return ToolResult(success=True, output=f"No {mem_type.value} memories found.")
 

@@ -35,8 +35,14 @@ class MemoryAPI:
             return web.json_response({"error": "invalid offset/limit parameter"}, status=400)
 
         from echo_agent.memory.types import MemoryType
+        from echo_agent.memory.eligibility import Audience
         mt = MemoryType(mem_type) if mem_type else None
-        entries = store.list_all(mem_type=mt, session_key=session_key or None)
+        include_all = request.query.get("include_all") == "true"
+        entries = store.list_all(
+            mem_type=mt,
+            session_key=session_key or None,
+            audience=Audience.ADMIN if include_all else Audience.RETRIEVAL,
+        )
 
         if tier:
             entries = [e for e in entries if e.tier.value == tier]
@@ -130,10 +136,13 @@ class MemoryAPI:
         limit = body.get("limit", 10)
 
         from echo_agent.memory.types import MemoryType
+        from echo_agent.memory.eligibility import Audience
         mt = MemoryType(mem_type) if mem_type else None
         session_key = body.get("session_key")
+        include_all = body.get("include_all") == "true"
         results = self._store().search_scored(
             query, mem_type=mt, limit=limit, session_key=session_key or None,
+            audience=Audience.ADMIN if include_all else Audience.RETRIEVAL,
         )
 
         return web.json_response({
