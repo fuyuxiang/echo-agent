@@ -58,3 +58,12 @@ def test_clear_memory_snapshot_pops_meta():
     asyncio.run(run())
     assert "sA" not in loop._memory_snapshot_meta
     assert "sA" not in loop._memory_snapshots
+
+
+def test_response_stage_prefetch_uses_real_scope_version():
+    from echo_agent.agent.pipeline import response_stage
+    import inspect
+    src = inspect.getsource(response_stage.ResponseStage)
+    # prefetch 不再硬编码 scope_version=0,改用注入的 scope_version_fn
+    assert "scope_version=0" not in src
+    assert "_scope_version_fn" in src

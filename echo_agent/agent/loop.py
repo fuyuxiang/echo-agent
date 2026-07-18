@@ -558,6 +558,7 @@ class AgentLoop:
             skill_admission=self._skill_admission,
             working_memories=self._working_memories,
             prefetcher=self._prefetcher,
+            scope_version_fn=self._scope_version,
         )
 
     def _register_tools(self, scheduler: Any = None, task_manager: Any = None, workflow_engine: Any = None) -> None:

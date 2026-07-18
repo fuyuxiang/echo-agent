@@ -64,6 +64,7 @@ class ResponseStage:
         skill_admission: Any = None,
         working_memories: Any = None,
         prefetcher: Any = None,
+        scope_version_fn: "Callable[[str], int] | None" = None,
     ):
         self._config = config
         self._sessions = sessions
@@ -77,6 +78,7 @@ class ResponseStage:
         self._skill_admission = skill_admission
         self._working_memories = working_memories
         self._prefetcher = prefetcher
+        self._scope_version_fn = scope_version_fn
 
     async def finalize(self, ctx: PipelineContext, result: InferenceResult) -> ProcessResult:
         """Post-process inference result, save session, schedule background tasks."""
@@ -166,10 +168,13 @@ class ResponseStage:
             self._spawn_fn(
                 self._prefetcher.prefetch(
                     event.session_key, event.text, event.sender_id, event.memory_scope,
-                    # 预取在 ResponseStage 触发,此处无 loop 的 scope 版本上下文,
-                    # 传 0:未发生写时读侧 cur_ver 亦为 0 视为命中;一旦该 scope
-                    # 被写 bump 版本,版本不符即自然失效(缓存条目不会陈旧命中)。
-                    scope_version=0,
+                    # 预取用当前 scope 版本盖戳:写后版本一致仍可命中,该 scope
+                    # 被写 bump 版本后版本不符即自然失效(缓存条目不会陈旧命中)。
+                    # 无注入函数时回退 0(未发生写时读侧 cur_ver 亦为 0 视为命中)。
+                    scope_version=(
+                        self._scope_version_fn(event.memory_scope)
+                        if self._scope_version_fn is not None else 0
+                    ),
                 ),
                 tier=Tier.DISCARDABLE,
             )
