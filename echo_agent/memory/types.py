@@ -38,6 +38,12 @@ def source_priority(source: str) -> int:
     return _SOURCE_PRIORITY.get(source, 0)
 
 
+def provenance_guard(actor_source: str, target: "MemoryEntry") -> bool:
+    """写权守卫：actor 来源优先级 >= 目标条目来源优先级才允许覆盖/删除。
+    低优先级写高优先级返回 False（调用方据此拒绝并按需触发矛盾裁决）。"""
+    return source_priority(actor_source) >= source_priority(target.source)
+
+
 @dataclass
 class MemoryEntry:
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
