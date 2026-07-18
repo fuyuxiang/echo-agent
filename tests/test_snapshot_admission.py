@@ -57,7 +57,7 @@ def test_get_snapshot_returns_text_only_and_matches(tmp_path):
     assert "m1" in ids
 
 
-def test_admission_error_degrades_to_admit(tmp_path, monkeypatch):
+def test_admission_error_fails_closed(tmp_path, monkeypatch):
     store = _store(tmp_path)
     _add(store, mid="m1", content="likes tea", importance=0.9, access=5)
 
@@ -66,7 +66,7 @@ def test_admission_error_degrades_to_admit(tmp_path, monkeypatch):
     # ever reached. Narrow the seam: delegate to the real implementation, and
     # raise ONLY when the call originates from _admit_to_snapshot. This keeps the
     # test honest — it exercises an exception during the admission
-    # confidence-check specifically, and proves the entry is still admitted.
+    # confidence-check specifically, and proves the entry is NOT admitted.
     real = store._forgetting.effective_importance
     raised = False
 
@@ -79,7 +79,7 @@ def test_admission_error_degrades_to_admit(tmp_path, monkeypatch):
 
     monkeypatch.setattr(store._forgetting, "effective_importance", _boom)
     text, ids = store.get_snapshot_with_ids()
-    assert "m1" in ids  # 降级:准入检查抛错时仍固化,不因异常丢失
+    assert "m1" not in ids  # fail-closed:准入检查抛错时拒绝固化,宁缺毋滥
     # self-validating: prove the exception path was genuinely hit, so a future
     # rename of _admit_to_snapshot can't let _boom silently delegate and pass.
     assert raised

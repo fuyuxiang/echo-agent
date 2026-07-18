@@ -835,14 +835,14 @@ class MemoryStore:
     _SNAPSHOT_MIN_IMPORTANCE_UNVISITED = 0.4   # access_count==0 USER facts need this raw importance
 
     def _admit_to_snapshot(self, entry: MemoryEntry) -> bool:
-        """Gate for the frozen core snapshot. Hard gate (all types): exclude
-        superseded entries (already-adjudicated losers) and entries in an open
-        contradiction (not-yet-adjudicated pairs). Soft gate (USER only):
-        exclude low-confidence facts. Any error -> admit (degrade safe)."""
+        """Gate for the frozen core snapshot. Hard gate (all types): the unified
+        eligibility policy excludes superseded (adjudicated losers), unresolved
+        (open contradictions) and archived entries. Soft gate (USER only):
+        exclude low-confidence facts. Any error -> reject (fail-closed): a stale
+        or ineligible fact frozen into the system prompt is worse than dropping
+        one entry from the snapshot."""
         try:
-            if entry.is_superseded:
-                return False
-            if self.is_unresolved(entry.id):
+            if not is_eligible(entry, Audience.SNAPSHOT, is_unresolved_fn=self.is_unresolved):
                 return False
             if entry.type == MemoryType.USER:
                 if self._forgetting.effective_importance(entry) < self._SNAPSHOT_MIN_EFFECTIVE_IMPORTANCE:
@@ -851,8 +851,8 @@ class MemoryStore:
                     return False
             return True
         except Exception as e:
-            logger.debug("Snapshot admission check failed for {}, admitting: {}", entry.id, e)
-            return True
+            logger.debug("Snapshot admission check failed for {}, rejecting: {}", entry.id, e)
+            return False
 
 
     def _run_contradiction_scan(self, entry: MemoryEntry) -> None:

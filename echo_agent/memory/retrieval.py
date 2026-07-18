@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 from echo_agent.memory.types import MemoryEntry, MemoryType, Episode
 from echo_agent.memory.forgetting import ForgettingCurve
 from echo_agent.memory.text import tokenize as _tokenize_shared
+from echo_agent.memory.eligibility import Audience, is_eligible
 
 _RRF_K = 60
 
@@ -52,8 +53,12 @@ class HybridRetriever:
         visibility_fn: Callable[["MemoryEntry", str], bool] | None = None,
         episode_search_fn: Callable[[str, str, int], Awaitable[list[Episode]]] | None = None,
         episode_candidate_limit: int = 10,
+        is_unresolved_fn: Callable[[str], bool] | None = None,
     ):
         self._entries_fn = entries_fn
+        # No detector wired ⇒ never treat anything as unresolved, so eligibility
+        # filtering can't false-kill live entries when the caller omits it.
+        self._is_unresolved_fn = is_unresolved_fn or (lambda _id: False)
         self._vector_index = vector_index
         self._forgetting = forgetting or ForgettingCurve()
         self._embed_fn = embed_fn
@@ -97,6 +102,15 @@ class HybridRetriever:
             entries = [e for e in entries if self._visibility_fn(e, memory_scope)]
         if mem_type is not None:
             entries = [e for e in entries if e.type == mem_type]
+
+        # Unified recall-eligibility gate, applied BEFORE BM25/vector ranking so
+        # superseded/archived/unresolved entries never occupy a rank slot (which
+        # would understate the RRF score of the real top candidate). This is the
+        # authoritative filter; the fusion-loop check below is a second line.
+        entries = [
+            e for e in entries
+            if is_eligible(e, Audience.RETRIEVAL, is_unresolved_fn=self._is_unresolved_fn)
+        ]
 
         # Episodic candidates: use what the caller passed, else assemble them by
         # relevance via the injected search fn (semantic + LIKE fallback). This
@@ -153,7 +167,9 @@ class HybridRetriever:
         scored: list[tuple[MemoryEntry | Episode, float]] = []
         for cid in all_ids:
             candidate = entry_map.get(cid)
-            if candidate is None or candidate.is_superseded:
+            if candidate is None or not is_eligible(
+                candidate, Audience.RETRIEVAL, is_unresolved_fn=self._is_unresolved_fn
+            ):
                 continue
             rrf = 0.0
             if cid in bm25_rank_map:
