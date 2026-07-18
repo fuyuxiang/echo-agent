@@ -351,8 +351,8 @@ class _FakePrefetcher:
     def __init__(self):
         self.calls = []
 
-    async def prefetch(self, session_key, query, user_id=""):
-        self.calls.append((session_key, query, user_id))
+    async def prefetch(self, session_key, query, user_id="", memory_scope=""):
+        self.calls.append((session_key, query, user_id, memory_scope))
 
 
 def _make_finalize_stage(prefetcher=None, spawn=None):

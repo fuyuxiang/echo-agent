@@ -6,7 +6,6 @@ scope_policy='session' 下的行为：
 - 群聊 per_user -> 群成员之间、群成员与主人之间双向隔离(隐私护栏)
 - _same_scope 去重按 owner 键合并,不与群键误并
 """
-import pytest
 from pathlib import Path
 
 from echo_agent.bus.events import InboundEvent
