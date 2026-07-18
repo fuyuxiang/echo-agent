@@ -26,6 +26,11 @@ class _FakeStore:
         self.versions[entry_id] = version
         return True
 
+    def _same_scope(self, a, b):
+        # 镜像真实 store 的 session 策略:source_session 相等即同 scope
+        # (本测试条目均无 source_session,视为同 scope,auto-resolve 照常进行)。
+        return (getattr(a, "source_session", "") or "") == (getattr(b, "source_session", "") or "")
+
 
 class _StubStorage:
     async def execute_sql(self, *a, **k):

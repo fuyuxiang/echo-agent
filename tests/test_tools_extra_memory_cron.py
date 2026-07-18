@@ -263,7 +263,9 @@ class TestMemoryToolCacheInvalidation:
             calls.append((session_key, global_scope))
 
         store = MemoryStore(memory_dir=tmp_path / "mem")
-        tool = MemoryTool(store=store, invalidate_caches=_invalidate)
+        # 本测试验证 ENVIRONMENT 写触发全局缓存失效,需放行模型写 ENVIRONMENT
+        # (Phase 3 默认禁止模型写 ENVIRONMENT/global)。
+        tool = MemoryTool(store=store, invalidate_caches=_invalidate, allow_environment_writes=True)
         return tool, store, calls
 
     @pytest.mark.asyncio
