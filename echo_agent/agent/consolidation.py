@@ -96,7 +96,7 @@ class ConsolidationWorker:
             trimmed = chunk[:boundary]
 
             # Phase 2 (unlocked, slow): LLM work on the immutable snapshot.
-            chunk_ok = await self._consolidator.consolidate_chunk(trimmed)
+            chunk_ok = await self._consolidator.consolidate_chunk(trimmed, memory_scope)
 
             # Phase 3 (locked, fast): commit the new boundary — only if the
             # session region we consolidated is still intact (compression may

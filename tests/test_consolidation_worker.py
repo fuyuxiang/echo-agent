@@ -255,7 +255,7 @@ class TestDurableScheduling:
 
         calls = []
 
-        async def flaky(chunk):
+        async def flaky(chunk, memory_scope=""):
             calls.append(1)
             if len(calls) < 2:
                 raise RuntimeError("transient")

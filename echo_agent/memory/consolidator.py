@@ -118,11 +118,13 @@ class MemoryConsolidator:
     def set_reflection(self, engine):
         self._reflection_engine = engine
 
-    async def consolidate_chunk(self, messages: list[dict[str, Any]]) -> bool:
+    async def consolidate_chunk(
+        self, messages: list[dict[str, Any]], memory_scope: str = ""
+    ) -> bool:
         if not messages:
             return True
 
-        current_memory = self.store.read_long_term()
+        current_memory = self.store.read_long_term(memory_scope)
         formatted = self._format_messages(messages)
         prompt = (
             "Process this conversation and call save_memory with your consolidation.\n\n"
@@ -173,7 +175,7 @@ class MemoryConsolidator:
             if history_entry:
                 self.store.append_history(history_entry)
             if memory_update:
-                self.store.write_long_term(memory_update)
+                self.store.write_long_term(memory_scope, memory_update)
 
             logger.info("Memory consolidation complete: {} chars history, {} chars memory",
                         len(history_entry), len(memory_update))
@@ -204,7 +206,7 @@ class MemoryConsolidator:
             if chunk_already_consolidated:
                 summary_result = True
             else:
-                summary_result = await self.consolidate_chunk(messages)
+                summary_result = await self.consolidate_chunk(messages, memory_scope)
             if summary_result:
                 summary_text = await self._generate_episode_summary(messages)
                 episode = await self._episodic_manager.create_episode(

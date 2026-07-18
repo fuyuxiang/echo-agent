@@ -136,6 +136,14 @@ def _atomic_write_text(path: Path, content: str) -> None:
         raise
 
 
+def _safe_scope(scope: str) -> str:
+    """把 scope 变成文件名安全串:非 [A-Za-z0-9._-] 替换为 _,空则 default。
+    防止 scope 里的 : / 等造成路径穿越或非法文件名。"""
+    if not scope:
+        return "default"
+    return re.sub(r"[^A-Za-z0-9._-]", "_", scope)
+
+
 class MemoryStore:
     """Persistent memory store with file-based storage, safety checks, and scored search."""
 
@@ -1195,7 +1203,7 @@ class MemoryStore:
         set of entry ids that entered it (used to de-dup dynamic recall)."""
         parts: list[str] = []
         collected: list[str] = []
-        long_term = self.read_long_term()
+        long_term = self.read_long_term(session_key or "")
         if long_term:
             parts.append(f"## Long-term Memory\n\n{long_term}")
 
@@ -1249,17 +1257,25 @@ class MemoryStore:
 
     # ── Long-term memory file (MEMORY.md) ────────────────────────────────────
 
-    def read_long_term(self) -> str:
+    def _long_term_path(self, scope: str):
+        return self._long_term_file.parent / f"MEMORY.{_safe_scope(scope)}.md"
+
+    def read_long_term(self, scope: str = "") -> str:
+        path = self._long_term_path(scope)
+        if path.exists():
+            return path.read_text(encoding="utf-8")
+        # dual-read 迁移:分片不存在但旧全局 MEMORY.md 存在则读旧(只读不写回)。
         if self._long_term_file.exists():
             return self._long_term_file.read_text(encoding="utf-8")
         return ""
 
-    def write_long_term(self, content: str) -> None:
+    def write_long_term(self, scope: str, content: str) -> None:
         normalized = content.strip()
         if normalized:
             self._validate_content(normalized, field_name="memory_update")
-        with self._file_lock(self._long_term_file):
-            _atomic_write_text(self._long_term_file, normalized)
+        path = self._long_term_path(scope)
+        with self._file_lock(path):
+            _atomic_write_text(path, normalized)
 
     _MAX_HISTORY_BYTES = 1_000_000
 
