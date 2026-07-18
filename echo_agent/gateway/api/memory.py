@@ -118,6 +118,16 @@ class MemoryAPI:
         result = store.update(entry_id, content=content, tags=tags)
         if not result:
             return web.json_response({"error": "not found"}, status=404)
+
+        # 写后失效:先 flush 待入索引的向量,再失效缓存。顺序反了会有窗口内
+        # 缓存已失效、检索命中却读到未 flush 的旧向量。ENVIRONMENT 全局失效,
+        # 其余按其 source_session 作 scope 失效。
+        from echo_agent.memory.types import MemoryType
+        loop = self._server._agent_loop
+        global_scope = result.type == MemoryType.ENVIRONMENT
+        scope = "" if global_scope else result.source_session
+        await store.flush_pending_embeds()
+        await loop._invalidate_memory_caches(scope, global_scope)
         return web.json_response(result.to_dict())
 
     async def delete_entry(self, request: web.Request) -> web.Response:
@@ -141,6 +151,14 @@ class MemoryAPI:
         ok = store.delete(entry_id)
         if not ok:
             return web.json_response({"error": "not found"}, status=404)
+
+        # 写后失效:先 flush 再失效缓存(见 update_entry)。scope 取删除前的 entry。
+        from echo_agent.memory.types import MemoryType
+        loop = self._server._agent_loop
+        global_scope = bool(entry and entry.type == MemoryType.ENVIRONMENT)
+        scope = "" if global_scope else (entry.source_session if entry else "")
+        await store.flush_pending_embeds()
+        await loop._invalidate_memory_caches(scope, global_scope)
         return web.json_response({"status": "deleted"})
 
     async def search(self, request: web.Request) -> web.Response:

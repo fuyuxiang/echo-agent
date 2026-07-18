@@ -515,7 +515,11 @@ class TestMemoryAPI:
         server = _make_server()
         api = MemoryAPI(server)
         store = MagicMock()
+        # 写后失效依赖两个 async 协作者:store.flush_pending_embeds 与
+        # loop._invalidate_memory_caches,默认挂 AsyncMock 以便 await 成功。
+        store.flush_pending_embeds = AsyncMock(return_value=0)
         server._agent_loop.memory = store
+        server._agent_loop._invalidate_memory_caches = AsyncMock()
         return api, store, server
 
     @pytest.mark.asyncio
@@ -634,6 +638,44 @@ class TestMemoryAPI:
         assert resp.status == 200
         data = await _payload(resp)
         assert data["status"] == "deleted"
+
+    @pytest.mark.asyncio
+    async def test_update_triggers_flush_then_invalidate(self):
+        api, store, server = self._make()
+        store.update.return_value = _mem_entry("x")
+        order = []
+        store.flush_pending_embeds = AsyncMock(
+            side_effect=lambda: order.append("flush")
+        )
+        server._agent_loop._invalidate_memory_caches = AsyncMock(
+            side_effect=lambda *a, **k: order.append("invalidate")
+        )
+        resp = await api.update_entry(
+            _Request(match_info={"id": "x"}, body={"content": "c"})
+        )
+        assert resp.status == 200
+        # 先 flush 待入索引的向量,再失效缓存;顺序反了会有窗口读到未 flush 旧向量
+        store.flush_pending_embeds.assert_awaited_once()
+        server._agent_loop._invalidate_memory_caches.assert_awaited_once()
+        assert order == ["flush", "invalidate"]
+
+    @pytest.mark.asyncio
+    async def test_delete_triggers_flush_then_invalidate(self):
+        api, store, server = self._make()
+        store.get.return_value = _mem_entry("x")
+        store.delete.return_value = True
+        order = []
+        store.flush_pending_embeds = AsyncMock(
+            side_effect=lambda: order.append("flush")
+        )
+        server._agent_loop._invalidate_memory_caches = AsyncMock(
+            side_effect=lambda *a, **k: order.append("invalidate")
+        )
+        resp = await api.delete_entry(_Request(match_info={"id": "x"}))
+        assert resp.status == 200
+        store.flush_pending_embeds.assert_awaited_once()
+        server._agent_loop._invalidate_memory_caches.assert_awaited_once()
+        assert order == ["flush", "invalidate"]
 
     @pytest.mark.asyncio
     async def test_search_invalid_json(self):
