@@ -255,6 +255,7 @@ class SemanticManager:
 
     async def promote_from_episodic(
         self, episode: Episode, extracted_facts: list[dict[str, Any]],
+        memory_scope: str = "",
     ) -> list[MemoryEntry]:
         """Promote extracted facts from an episode to semantic memory."""
         promoted: list[MemoryEntry] = []
@@ -269,7 +270,7 @@ class SemanticManager:
                 importance=fact.get("importance", 0.5),
                 episode_id=episode.id,
                 source="consolidated",
-                source_session=episode.session_key if fact_type == MemoryType.USER else "",
+                source_session=(memory_scope or episode.session_key) if fact_type == MemoryType.USER else "",
             )
             try:
                 result = self._store.add(entry)

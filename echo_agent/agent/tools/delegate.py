@@ -88,6 +88,7 @@ def build_worker_tool_executor(
             execution_id=uuid.uuid4().hex[:12],
             trace_id=trace_id,
             session_key=parent_ctx.session_key if parent_ctx else "",
+            memory_scope=parent_ctx.memory_scope if parent_ctx else "",
             user_id=parent_ctx.user_id if parent_ctx else "",
             agent_id=f"worker_{depth}",
             attempt_index=0,

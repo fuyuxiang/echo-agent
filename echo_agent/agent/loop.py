@@ -1099,9 +1099,11 @@ class AgentLoop:
             return
         # 群聊会话作用域解析：把按策略解析出的隔离键固化到 override，
         # 使下游全部 session_key 读取(锁/working memory/快照/可见性/source_session)统一按此键隔离。
+        scope = self.config.session.group_session_scope
         if not event.session_key_override:
-            scope = self.config.session.group_session_scope
             event.session_key_override = event.scoped_session_key(scope)
+        # 记忆作用域(memory_scope)的冻结统一下沉到 _process_event,使 _on_inbound
+        # 与 process_direct(A2A/CLI)两条入站路径共享同一处逻辑,避免新增入口漏设。
         # Approval decisions (/approve, /deny, /approvals) are handled BEFORE
         # acquiring the session lock — by design. A turn that is blocked waiting
         # for approval holds the session lock while parked in wait_for_decision;
@@ -1208,6 +1210,17 @@ class AgentLoop:
 
     async def _process_event(self, event: InboundEvent, trace_id: str, *, publish_response: bool = False, activity: Any = None) -> _ProcessResult:
         """处理单个入站事件 — 委托给 pipeline stages。"""
+        # 记忆作用域键:与 session_key 解耦(后者承载会话锁/历史/投递路由,不能按人
+        # 归一)。此处是所有入站路径(_on_inbound、A2A/CLI 的 process_direct)的唯一
+        # 咽喉点,统一冻结可确保任何入口都拿到正确作用域。单主体下 1:1 私聊(任意通道,
+        # 含 A2A/CLI)归一到 owner 键实现跨通道记忆互通,群聊保持 per_user 隔离;
+        # 开关关闭时退回按会话键(旧行为)。
+        if not event.memory_scope:
+            if self.config.memory.cross_channel_owner:
+                scope = self.config.session.group_session_scope
+                event.memory_scope = event.memory_scope_key(scope, self.config.memory.owner_key)
+            else:
+                event.memory_scope = event.session_key
         session = await self.sessions.get_or_create(event.session_key)
         if event.session_key not in self._working_memories:
             from echo_agent.memory.tiers import WorkingMemory

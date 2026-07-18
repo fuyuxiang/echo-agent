@@ -73,6 +73,10 @@ class InboundEvent:
     reply_to_is_own: bool = False           # 用户引用的是不是机器人自己发的消息
     thread_id: str | None = None
     session_key_override: str | None = None
+    # 记忆作用域键(owner-aware),由 AgentLoop._on_inbound 冻结。刻意独立于
+    # session_key:后者承载会话锁/历史/投递路由(delivery 反解 channel:chat_id),
+    # 不能按人归一;记忆作用域可以。见 memory_scope_key。
+    memory_scope: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
     gateway_metadata: dict[str, Any] = field(default_factory=dict)
     is_group: bool = False
@@ -110,6 +114,16 @@ class InboundEvent:
         if scope == "per_user" and self.is_group and self.sender_id:
             return f"{base}:{self.sender_id}"
         return base
+
+    def memory_scope_key(self, group_scope: str, owner_key: str = "owner") -> str:
+        """记忆作用域键(独立于 session_key,不参与投递路由)。
+
+        单主体 personal agent:任意通道的 1:1 私聊都归一到同一个 owner 键,
+        使主人的 USER 记忆跨通道互通;群聊沿用 scoped_session_key 的 per_user
+        隔离,群成员之间记忆互不可见。"""
+        if self.is_group:
+            return self.scoped_session_key(group_scope)
+        return owner_key
 
     @property
     def text(self) -> str:

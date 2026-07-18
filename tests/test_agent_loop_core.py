@@ -358,3 +358,76 @@ async def test_non_approval_command_passes_through(tmp_path: Path) -> None:
     )
     resp = await agent._handle_approval_command(event)
     assert resp is None
+
+
+# ── memory_scope 在 _process_event 咽喉点的冻结（工单② A2A/CLI 链路补齐）────
+
+@pytest.mark.asyncio
+async def test_process_event_freezes_memory_scope_to_owner(tmp_path: Path) -> None:
+    """A2A/CLI 走 process_direct → _process_event，此前不经 _on_inbound，
+    memory_scope 会留空导致读侧空键放行、泄漏群聊隔离记忆。下沉冻结后，
+    1:1 私聊(非群聊)应归一到 owner 键。"""
+    agent, _, _ = _make_agent_loop(tmp_path)
+    assert agent.config.memory.cross_channel_owner is True
+    owner_key = agent.config.memory.owner_key
+
+    event = InboundEvent.text_message(
+        channel="a2a", sender_id="user", chat_id="direct", text="hi",
+        session_key_override="a2a:task-abc",
+    )
+    await agent._process_event(event, "trace-scope-1")
+
+    assert event.memory_scope == owner_key
+
+
+@pytest.mark.asyncio
+async def test_process_event_owner_scope_stable_across_sessions(tmp_path: Path) -> None:
+    """A2A 每次调用 session_key 皆随机(a2a:task.id)。归一到 owner 后，
+    两次不同 session_key 的调用必须落到同一 memory_scope，记忆才能跨调用互通。"""
+    agent, _, _ = _make_agent_loop(tmp_path)
+
+    ev1 = InboundEvent.text_message(
+        channel="a2a", sender_id="user", chat_id="direct", text="记住我喜欢深色模式",
+        session_key_override="a2a:task-111",
+    )
+    ev2 = InboundEvent.text_message(
+        channel="a2a", sender_id="user", chat_id="direct", text="我喜欢什么模式",
+        session_key_override="a2a:task-222",
+    )
+    await agent._process_event(ev1, "trace-scope-2a")
+    await agent._process_event(ev2, "trace-scope-2b")
+
+    assert ev1.session_key != ev2.session_key
+    assert ev1.memory_scope == ev2.memory_scope == agent.config.memory.owner_key
+
+
+@pytest.mark.asyncio
+async def test_process_event_scope_falls_back_to_session_when_disabled(tmp_path: Path) -> None:
+    """开关关闭时退回旧行为：memory_scope == session_key(按会话隔离)。"""
+    agent, _, _ = _make_agent_loop(tmp_path)
+    agent.config.memory.cross_channel_owner = False
+
+    event = InboundEvent.text_message(
+        channel="a2a", sender_id="user", chat_id="direct", text="hi",
+        session_key_override="a2a:task-xyz",
+    )
+    await agent._process_event(event, "trace-scope-3")
+
+    assert event.memory_scope == "a2a:task-xyz"
+
+
+@pytest.mark.asyncio
+async def test_process_event_group_keeps_per_user_isolation(tmp_path: Path) -> None:
+    """群聊事件仍按 per_user 隔离，不被归一到 owner(隐私护栏)。"""
+    agent, _, _ = _make_agent_loop(tmp_path)
+    agent.config.session.group_session_scope = "per_user"
+
+    event = InboundEvent.text_message(
+        channel="telegram", sender_id="alice", chat_id="grp1", text="hi", is_group=True,
+    )
+    # 群聊场景 session_key_override 由 _on_inbound 固化；这里模拟其已解析。
+    event.session_key_override = event.scoped_session_key("per_user")
+    await agent._process_event(event, "trace-scope-4")
+
+    assert event.memory_scope == "telegram:grp1:alice"
+    assert event.memory_scope != agent.config.memory.owner_key

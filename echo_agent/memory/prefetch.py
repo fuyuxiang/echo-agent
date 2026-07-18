@@ -85,7 +85,7 @@ class RetrievalPrefetcher:
         # thread so this background task never blocks the event loop.
         self._knowledge_fetch = knowledge_fetch
 
-    async def prefetch(self, session_key: str, query: str, user_id: str = "") -> None:
+    async def prefetch(self, session_key: str, query: str, user_id: str = "", memory_scope: str = "") -> None:
         """Retrieve once for ``query`` and write the result into the cache.
 
         Main-memory and knowledge retrieval are warmed together into a single
@@ -99,8 +99,10 @@ class RetrievalPrefetcher:
         allowed to cross users.
         """
         try:
+            # 可见性检索用 memory_scope(owner-aware),与 context_stage/写侧对齐;
+            # 缓存键与 knowledge ACL 仍用 session_key/user_id(见下)。
             scored = await self._retriever.retrieve(
-                query, limit=self._limit, session_key=session_key
+                query, limit=self._limit, session_key=(memory_scope or session_key)
             )
         except Exception:
             logger.warning(

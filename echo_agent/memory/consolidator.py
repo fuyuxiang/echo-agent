@@ -187,7 +187,7 @@ class MemoryConsolidator:
 
     async def sleep_consolidate(
         self, session_key: str, messages: list[dict[str, Any]],
-        *, chunk_already_consolidated: bool = False,
+        *, chunk_already_consolidated: bool = False, memory_scope: str = "",
     ) -> dict[str, int]:
         """Sleep-time consolidation pipeline:
         1. Create episode from messages
@@ -228,7 +228,7 @@ class MemoryConsolidator:
                         )
                         facts = self._parse_extracted_facts(response)
                         if facts:
-                            promoted = await self._semantic_manager.promote_from_episodic(episode, facts)
+                            promoted = await self._semantic_manager.promote_from_episodic(episode, facts, memory_scope=memory_scope)
                             stats["promoted"] = len(promoted)
                     except Exception as e:
                         logger.warning("Fact extraction failed: {}", e)

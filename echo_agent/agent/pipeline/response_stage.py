@@ -136,6 +136,7 @@ class ResponseStage:
                     self._spawn_fn,
                     on_complete=self._clear_memory_snapshot,
                     tier=Tier.DURABLE,
+                    memory_scope=event.memory_scope,
                 )
 
         # Background skill/memory reviews.
@@ -147,7 +148,7 @@ class ResponseStage:
                 ctx.messages, event.session_key, event.channel,
             ))
         if result.should_review_memory and not ephemeral:
-            self._spawn_fn(self._background_memory_review(ctx.messages, event.session_key))
+            self._spawn_fn(self._background_memory_review(ctx.messages, event.session_key, event.memory_scope))
 
         # Finalize streaming
         outbound_sent = False
@@ -164,7 +165,7 @@ class ResponseStage:
             from echo_agent.agent.background import Tier
             self._spawn_fn(
                 self._prefetcher.prefetch(
-                    event.session_key, event.text, event.sender_id
+                    event.session_key, event.text, event.sender_id, event.memory_scope
                 ),
                 tier=Tier.DISCARDABLE,
             )
@@ -189,17 +190,20 @@ class ResponseStage:
         try:
             from echo_agent.memory.types import MemoryEntry, MemoryTier, MemoryType
 
+            # source_session 用 owner-aware 的 memory_scope(跨通道归一/群聊隔离);
+            # working_memories 的字典键仍按 session_key(见调用处),两者刻意分离。
+            scope = getattr(event, "memory_scope", "") or session_key
             user_text = (getattr(event, "text", "") or "").strip()
             if user_text:
                 wm.add(MemoryEntry(
                     type=MemoryType.USER, tier=MemoryTier.WORKING,
-                    key="user", content=user_text[:500], source_session=session_key,
+                    key="user", content=user_text[:500], source_session=scope,
                 ))
             reply = (response_text or "").strip()
             if reply:
                 wm.add(MemoryEntry(
                     type=MemoryType.USER, tier=MemoryTier.WORKING,
-                    key="assistant", content=reply[:500], source_session=session_key,
+                    key="assistant", content=reply[:500], source_session=scope,
                 ))
         except Exception as e:
             logger.debug("Working memory update failed: {}", e)
@@ -226,14 +230,14 @@ class ResponseStage:
         except Exception as e:
             logger.warning("Background skill review failed: {}", e)
 
-    async def _background_memory_review(self, messages: list[dict[str, Any]], session_key: str) -> None:
+    async def _background_memory_review(self, messages: list[dict[str, Any]], session_key: str, memory_scope: str = "") -> None:
         try:
             from echo_agent.memory.reviewer import MemoryReviewer
             reviewer = MemoryReviewer(
                 provider=self._provider,
                 store=self._memory,
                 model=self._default_model,
-                session_key=session_key,
+                session_key=memory_scope or session_key,
             )
             actions = await reviewer.review(messages)
             if actions:

@@ -848,6 +848,7 @@ class InferenceStage:
                 execution_id=uuid.uuid4().hex[:12],
                 trace_id=trace_id,
                 session_key=event.session_key,
+                memory_scope=getattr(event, "memory_scope", ""),
                 user_id=event.sender_id,
                 attempt_index=0,
                 idempotency_key=build_idempotency_key(trace_id, tool_call.name, tool_index, tool_call.arguments),

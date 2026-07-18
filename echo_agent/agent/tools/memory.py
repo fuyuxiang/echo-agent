@@ -131,7 +131,10 @@ class MemoryTool(Tool):
         action = params.get("action", "")
         target = params.get("target", "user")
         mem_type = MemoryType.USER if target == "user" else MemoryType.ENVIRONMENT
-        session_key = ctx.session_key if ctx else ""
+        # 记忆作用域用 owner-aware 的 memory_scope(跨通道归一/群聊隔离都在其中);
+        # 回退 session_key 兼容未经 loop 冻结构造的 ctx。变量名沿用 session_key
+        # 因它直接喂给 store 的同名可见性参数。
+        session_key = (ctx.memory_scope or ctx.session_key) if ctx else ""
 
         if action == "add":
             result = self._add(params, mem_type, session_key)

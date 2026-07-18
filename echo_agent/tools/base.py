@@ -45,6 +45,9 @@ class ToolExecutionContext:
     execution_id: str = ""
     trace_id: str = ""
     session_key: str = ""
+    # 记忆作用域键(owner-aware)。与 session_key 解耦:后者承载锁/历史/投递,
+    # 记忆按人归一只用这个。由 AgentLoop 冻结后经 event 传入。
+    memory_scope: str = ""
     user_id: str = ""
     agent_id: str = ""
     attempt_index: int = 0

@@ -40,6 +40,7 @@ class ConsolidationWorker:
         on_complete: Callable[[str], Coroutine[Any, Any, None]] | None = None,
         *,
         tier: Any = None,
+        memory_scope: str = "",
     ) -> None:
         async with self._lock:
             if session_key in self._pending:
@@ -49,9 +50,9 @@ class ConsolidationWorker:
             # DURABLE point: pass a zero-arg factory (not a bare coroutine) so the
             # scheduler can re-invoke it on retry, and tag the tier so it is
             # queued — never dropped — under saturation.
-            spawn_fn(lambda: self._run(session_key, on_complete), tier=tier)
+            spawn_fn(lambda: self._run(session_key, on_complete, memory_scope), tier=tier)
         else:
-            spawn_fn(self._run(session_key, on_complete))
+            spawn_fn(self._run(session_key, on_complete, memory_scope))
 
     def is_pending(self, session_key: str) -> bool:
         return session_key in self._pending
@@ -60,6 +61,7 @@ class ConsolidationWorker:
         self,
         session_key: str,
         on_complete: Callable[[str], Coroutine[Any, Any, None]] | None = None,
+        memory_scope: str = "",
     ) -> None:
         try:
             # Phase 1 (locked, fast): snapshot the unconsolidated chunk.
@@ -118,6 +120,7 @@ class ConsolidationWorker:
                 try:
                     stats = await self._consolidator.sleep_consolidate(
                         session_key, trimmed, chunk_already_consolidated=chunk_ok,
+                        memory_scope=memory_scope,
                     )
                     if any(v > 0 for v in stats.values()):
                         logger.info("Sleep consolidation for {}: {}", session_key, stats)

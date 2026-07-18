@@ -221,8 +221,9 @@ class ContextStage:
             if timeout > 0 and not self._hybrid_retriever:
                 # No retriever wired (vector off): keyword search IS the
                 # bounded path, and it's synchronous/fast already.
+                # 可见性用 memory_scope(owner-aware),与写侧 source_session 对齐。
                 return self._memory.search_scored(
-                    event.text, limit=5, session_key=event.session_key
+                    event.text, limit=5, session_key=event.memory_scope
                 )
             if publish_response and self._bus:
                 await self._emit_progress(
@@ -232,7 +233,7 @@ class ContextStage:
         try:
             return await asyncio.wait_for(
                 self._hybrid_retriever.retrieve(
-                    event.text, limit=8, session_key=event.session_key,
+                    event.text, limit=8, session_key=event.memory_scope,
                 ),
                 timeout=timeout,
             )
@@ -246,7 +247,7 @@ class ContextStage:
                 )
             try:
                 return self._memory.search_scored(
-                    event.text, limit=5, session_key=event.session_key
+                    event.text, limit=5, session_key=event.memory_scope
                 )
             except Exception as e:
                 logger.debug("Keyword fallback failed: {}", e)
@@ -276,7 +277,7 @@ class ContextStage:
                 snapshot_ids = self._memory_snapshot_ids.get(event.session_key, frozenset())
             else:
                 snapshot, snapshot_ids = self._memory.get_snapshot_with_ids(
-                    session_key=event.session_key
+                    session_key=event.memory_scope
                 )
                 if self._put_snapshot is not None:
                     # 写入唯一入口经 loop 的统一 LRU(锁 + 上限);
@@ -290,7 +291,7 @@ class ContextStage:
             )
         else:
             memory_ctx = build_memory_context(
-                self._memory, session_key=event.session_key, working_memory=working_ctx
+                self._memory, session_key=event.memory_scope, working_memory=working_ctx
             )
 
         skills_ctx = build_skills_context(self._skill_store)

@@ -1863,6 +1863,22 @@ class MemoryConfig(_Base):
             "desc_en": "Memory scope policy",
         },
     )
+    cross_channel_owner: bool = Field(
+        default=True,
+        json_schema_extra={
+            "status": "effective", "ref": "bus/events.py:memory_scope_key",
+            "desc_zh": "单主体跨通道记忆互通:开启时主人在所有1:1私聊(任意通道)共享USER记忆,群聊隔离不变;关闭则退回按会话隔离",
+            "desc_en": "Single-subject cross-channel memory: owner shares USER memory across all 1:1 DMs on any channel; group isolation unchanged; off = per-session isolation",
+        },
+    )
+    owner_key: str = Field(
+        default="owner",
+        json_schema_extra={
+            "status": "effective", "ref": "bus/events.py:memory_scope_key",
+            "desc_zh": "主人记忆作用域键(单主体默认 owner,一般无需修改)",
+            "desc_en": "Owner memory scope key (single-subject default owner; rarely needs changing)",
+        },
+    )
     retrieval_on_miss: Literal["degrade", "sync"] = Field(
         default="degrade",
         json_schema_extra={
