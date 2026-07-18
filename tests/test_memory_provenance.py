@@ -203,7 +203,7 @@ class TestAutoResolvePriority:
         old_user.updated_at = "2026-01-01T00:00:00"
         newer_inferred = MemoryEntry(
             type=MemoryType.USER, key="home", content="住上海",
-            source="model_inferred", source_session="s2",
+            source="model_inferred", source_session="s1",
         )
         store._entries[newer_inferred.id] = newer_inferred
 
