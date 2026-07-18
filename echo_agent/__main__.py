@@ -227,6 +227,14 @@ def _build_parser() -> argparse.ArgumentParser:
     cp_parser.add_argument("-w", "--workspace", help="Workspace directory")
     cp_parser.add_argument("-y", "--yes", action="store_true", help="Skip restore confirmation")
 
+    # migrate
+    mig_parser = subparsers.add_parser("migrate", help="Run data migrations (memory scope)")
+    mig_parser.add_argument("action", choices=["run", "rollback", "status"], help="Migration action")
+    mig_parser.add_argument("--dry-run", action="store_true", help="Report changes without writing")
+    mig_parser.add_argument("-c", "--config", help="Path to config file")
+    mig_parser.add_argument("-w", "--workspace", help="Workspace directory")
+    mig_parser.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
+
     # top-level flags for backward compat
     parser.add_argument("-c", "--config", help="Path to config file", dest="top_config")
     parser.add_argument("-w", "--workspace", help="Workspace directory", dest="top_workspace")
@@ -361,6 +369,18 @@ def _dispatch() -> None:
             yes=args.yes,
         )
         return
+
+    if args.command == "migrate":
+        from echo_agent.cli.migrate_cmd import run_migrate_command
+        import sys as _sys
+        rc = run_migrate_command(
+            args.action,
+            config_path=args.config or args.top_config,
+            workspace=args.workspace or args.top_workspace,
+            dry_run=args.dry_run,
+            yes=args.yes,
+        )
+        _sys.exit(rc)
 
     if args.command == "cli":
         from echo_agent.cli import attach_client
