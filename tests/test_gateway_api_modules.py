@@ -787,6 +787,44 @@ def test_sanitize_masks_admin_tokens_and_credential_pool():
     assert out["extra_headers"]["X-API-Key"] == "***"
 
 
+def test_sanitize_masks_all_secret_key_fields():
+    from echo_agent.gateway.api.config import _sanitize
+    raw = {
+        "channels": {"encryption_key": "ek", "encoding_aes_key": "aes",
+                     "app_key": "ak", "app_secret": "as"},
+        "models": {"providers": [{"fal_key": "fk", "openai_api_key": "ok"}]},
+        "gateway": {"auth": {"admin_tokens": ["a"], "api_tokens": ["b"]}},
+    }
+    out = _sanitize(raw)
+    assert out["channels"]["encryption_key"] == "***"
+    assert out["channels"]["encoding_aes_key"] == "***"
+    assert out["channels"]["app_key"] == "***"
+    assert out["channels"]["app_secret"] == "***"
+    assert out["models"]["providers"][0]["fal_key"] == "***"
+    assert out["models"]["providers"][0]["openai_api_key"] == "***"
+    assert out["gateway"]["auth"]["admin_tokens"] == "***"
+    assert out["gateway"]["auth"]["api_tokens"] == "***"
+
+
+def test_sanitize_preserves_non_secret_lookalikes():
+    from echo_agent.gateway.api.config import _sanitize
+    raw = {
+        "memory": {"owner_key": "owner"},
+        "agent": {"max_tokens": 65536, "context_window_tokens": 200000,
+                  "summary_min_tokens": 100, "summary_max_tokens": 800},
+        "gateway": {"token_header": "X-Echo-Agent-Token"},
+        "security": {"encryption_key_env": "ECHO_KEY"},
+    }
+    out = _sanitize(raw)
+    assert out["memory"]["owner_key"] == "owner"
+    assert out["agent"]["max_tokens"] == 65536
+    assert out["agent"]["context_window_tokens"] == 200000
+    assert out["agent"]["summary_min_tokens"] == 100
+    assert out["agent"]["summary_max_tokens"] == 800
+    assert out["gateway"]["token_header"] == "X-Echo-Agent-Token"
+    assert out["security"]["encryption_key_env"] == "ECHO_KEY"
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # ChannelsAPI
 # ══════════════════════════════════════════════════════════════════════════════

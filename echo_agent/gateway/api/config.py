@@ -7,8 +7,23 @@ from aiohttp import web
 if TYPE_CHECKING:
     from echo_agent.gateway.server import GatewayServer
 
-# 命中即打码的敏感子串(小写)。按子串而非精确键名匹配,覆盖 admin_tokens、
-# credential_pool、authorization、x-api-key 等旁路键;大小写不敏感。
+# schema.py 审计得到的、值为密钥的精确字段名。
+_SENSITIVE_EXACT = frozenset({
+    "token", "bot_token", "app_token", "verify_token", "access_token",
+    "verification_token", "secret", "app_secret", "password",
+    "encryption_key", "encoding_aes_key", "app_key", "fal_key",
+    "api_key", "transcription_api_key", "search_api_key", "openai_api_key",
+    "credential_pool", "api_tokens", "admin_tokens", "auth",
+})
+
+# 名字看着敏感、实则非密钥的字段:预算数值、头名、env 变量名、作用域键。永不打码。
+_SENSITIVE_ALLOWLIST = frozenset({
+    "max_tokens", "context_window_tokens", "summary_min_tokens",
+    "summary_max_tokens", "token_header", "owner_key",
+    "encryption_key_env", "remote_key_path", "remote_strict_host_key",
+})
+
+# 动态字典键(如 extra_headers 的 Authorization / X-API-Key)的兜底子串。
 _SENSITIVE_SUBSTRINGS = (
     "api_key", "apikey", "api_token", "token", "secret", "password",
     "credential", "authorization", "auth_header", "private_key", "access_key",
@@ -16,10 +31,16 @@ _SENSITIVE_SUBSTRINGS = (
 
 
 def _is_sensitive(key: str) -> bool:
-    # 连字符归一为下划线,让 HTTP 头风格的 x-api-key 命中 api_key 等下划线子串,
-    # 避免 X-API-Key/Auth-Header 这类旁路键因分隔符差异绕过脱敏。
-    k = key.lower().replace("-", "_")
-    return any(sub in k for sub in _SENSITIVE_SUBSTRINGS)
+    if not isinstance(key, str):
+        return False
+    k = key.lower()
+    if k in _SENSITIVE_ALLOWLIST:
+        return False
+    if k in _SENSITIVE_EXACT:
+        return True
+    # 连字符归一为下划线,使 x-api-key 命中 api_key;兜底动态头名。
+    kn = k.replace("-", "_")
+    return any(sub in kn for sub in _SENSITIVE_SUBSTRINGS)
 
 
 def _sanitize(obj: Any, depth: int = 0) -> Any:
@@ -28,7 +49,9 @@ def _sanitize(obj: Any, depth: int = 0) -> Any:
     if isinstance(obj, dict):
         result = {}
         for k, v in obj.items():
-            if isinstance(k, str) and _is_sensitive(k):
+            if isinstance(k, str) and _is_sensitive(k) and not isinstance(v, dict):
+                # 敏感键的叶子/列表值整体打码;若值为 dict(如 gateway.auth 容器),
+                # 递归进入,让其子键(admin_tokens 等)逐个按各自敏感性处理。
                 result[k] = "***" if v else ""
             else:
                 result[k] = _sanitize(v, depth + 1)
