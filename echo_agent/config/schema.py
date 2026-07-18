@@ -1889,6 +1889,26 @@ class MemoryConfig(_Base):
             raise ValueError("owner_key 不能为空")
         return v
 
+    principal_bindings: list[str] = Field(
+        default_factory=list,
+        json_schema_extra={
+            "status": "effective", "ref": "bus/events.py:memory_scope_key",
+            "desc_zh": "主人身份绑定表:每项 \"通道:sender_id\",列入者的 1:1 私聊归一到 owner 记忆域实现跨通道互通;未列入者按会话隔离",
+            "desc_en": "Owner identity bindings: each \"channel:sender_id\"; listed senders' 1:1 DMs map to the owner memory scope for cross-channel sharing; others stay per-session.",
+        },
+    )
+
+    @field_validator("principal_bindings")
+    @classmethod
+    def _validate_principal_bindings(cls, v: list[str]) -> list[str]:
+        # 每项须为 "channel:sender_id",冒号两侧非空;非法项 fail-closed 拒绝启动,
+        # 避免错配把陌生人误绑成 owner 或静默失效。
+        for item in v:
+            channel, sep, sender = item.partition(":")
+            if not sep or not channel.strip() or not sender.strip():
+                raise ValueError(f"principal_bindings 项格式须为 'channel:sender_id',非法项: {item!r}")
+        return v
+
     retrieval_on_miss: Literal["degrade", "sync"] = Field(
         default="degrade",
         json_schema_extra={

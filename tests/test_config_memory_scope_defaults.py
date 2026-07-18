@@ -24,3 +24,24 @@ def test_owner_key_rejects_whitespace():
 
 def test_owner_key_accepts_normal():
     assert MemoryConfig(owner_key="owner").owner_key == "owner"
+
+
+def test_principal_bindings_defaults_empty():
+    assert MemoryConfig().principal_bindings == []
+
+
+def test_principal_bindings_accepts_valid():
+    b = ["telegram:alice", "slack:U0XXX"]
+    assert MemoryConfig(principal_bindings=b).principal_bindings == b
+
+
+def test_principal_bindings_rejects_no_colon():
+    with pytest.raises(ValidationError):
+        MemoryConfig(principal_bindings=["telegramalice"])
+
+
+def test_principal_bindings_rejects_empty_side():
+    with pytest.raises(ValidationError):
+        MemoryConfig(principal_bindings=["telegram:"])
+    with pytest.raises(ValidationError):
+        MemoryConfig(principal_bindings=[":alice"])
