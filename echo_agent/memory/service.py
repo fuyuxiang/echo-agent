@@ -319,7 +319,7 @@ class MemoryService:
         return ""
 
     def _env_denied(self, actor: str, mem_type: MemoryType | None, tags: list[str]) -> bool:
-        """actor∈{model,reviewer} 且(type==ENVIRONMENT 或含 global tag)且 not allow_env_writes → 拒。"""
+        """actor∈{model,reviewer,consolidation} 且(type==ENVIRONMENT 或含 global tag)且 not allow_env_writes → 拒。"""
         if self._allow_env_writes:
             return False
         if actor not in _ENV_RESTRICTED_ACTORS:
