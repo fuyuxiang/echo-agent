@@ -10,8 +10,9 @@ from echo_agent.memory.contradiction import ContradictionDetector
 from echo_agent.memory.eligibility import Audience
 from echo_agent.memory.service import MemoryService
 from echo_agent.memory.store import MemoryStore
-from echo_agent.memory.tiers import EpisodicManager, SemanticManager
-from echo_agent.memory.types import MemoryEntry, MemoryType
+from echo_agent.memory.forgetting import ForgettingCurve
+from echo_agent.memory.tiers import ArchivalManager, EpisodicManager, SemanticManager
+from echo_agent.memory.types import MemoryEntry, MemoryTier, MemoryType
 from echo_agent.storage.sqlite import SQLiteBackend
 
 
@@ -166,3 +167,60 @@ async def test_promote_then_deterministic_render(tmp_path):
     from echo_agent.memory.render import render_memory_md
     again = render_memory_md(store.list_all(session_key="sess1"))
     assert again.strip() == rendered.strip()
+
+
+@pytest.mark.asyncio
+async def test_render_reflects_lifecycle_changes_after_step2(tmp_path):
+    """一次 sleep_consolidate 内既 promote 新事实(Step 2)又对旧 active 条目做
+    生命周期变更(Step 4 归档)。重渲染若落在 Step 2 的 `if facts:` 块内,写出的
+    MEMORY.md 早于 Step 4,归档条目仍留在快照里 → 与 store 的 ACTIVE 集脱节。
+    重渲染移到 sleep_consolidate 末尾(Step 4 之后)无条件执行后,MEMORY.md 只反映
+    最终 ACTIVE 集:含新 promote 的事实,不含刚归档的旧条目。"""
+    storage = SQLiteBackend(tmp_path / "db.sqlite")
+    await storage.initialize()
+    store = MemoryStore(memory_dir=tmp_path / "mem", storage=storage)
+
+    async def mock_llm(**kwargs):
+        tools = kwargs.get("tools", [])
+        if tools:
+            name = tools[0]["function"]["name"]
+            if name == "save_facts":
+                return _FakeLLMResponse(tool_calls=[_FakeToolCall("1", "save_facts", {
+                    "facts": [{"type": "user", "key": "home", "content": "上海", "importance": 0.8}],
+                })])
+            return _FakeLLMResponse(tool_calls=[_FakeToolCall("1", name, {})])
+        return _FakeLLMResponse(content="summary")
+
+    consolidator = MemoryConsolidator(store, mock_llm, consolidation_threshold=1)
+    consolidator.set_episodic_manager(EpisodicManager(storage))
+    consolidator.set_semantic_manager(SemanticManager(MemoryService(store)))
+    # Step 4 归档链:ForgettingCurve 判定 + ArchivalManager 落 ARCHIVAL。
+    consolidator.set_forgetting_curve(ForgettingCurve())
+    consolidator.set_archival_manager(ArchivalManager(storage))
+
+    # 预置一条全局 ENVIRONMENT 旧事实:非 USER 故不豁免衰减,importance=0.03 落
+    # 归档区间(0.01 < 0.03 < 0.05)但不触发遗忘删除;tier 默认 SEMANTIC 即 active,
+    # Step 2 渲染时会出现在 MEMORY.md,Step 4 才被翻 ARCHIVAL。
+    store.add(MemoryEntry(type=MemoryType.ENVIRONMENT, key="stale_project",
+                          content="旧项目上下文", tier=MemoryTier.SEMANTIC,
+                          importance=0.03, source="model_inferred"))
+
+    await consolidator.sleep_consolidate("sess1", [
+        {"role": "user", "content": "我搬到上海了", "timestamp": "2024-01-01T00:00"},
+        {"role": "assistant", "content": "记下了", "timestamp": "2024-01-01T00:01"},
+    ], memory_scope="sess1")
+
+    # 归档确实发生:旧条目已翻 ARCHIVAL。
+    stale = next(e for e in store._entries.values() if e.key == "stale_project")
+    assert stale.tier == MemoryTier.ARCHIVAL
+
+    rendered = store.read_long_term("sess1")
+    # 新 promote 的 active 事实在快照里。
+    assert "上海" in rendered
+    # 核心:刚归档的旧条目不得残留在快照里(Step 2 早渲染时它会残留 → 此处红)。
+    assert "旧项目上下文" not in rendered
+
+    # 快照 == 当前 ACTIVE 集的确定性渲染(与 store 无漂移)。
+    from echo_agent.memory.render import render_memory_md
+    expected = render_memory_md(store.list_all(session_key="sess1"))
+    assert rendered.strip() == expected.strip()

@@ -164,18 +164,6 @@ class MemoryConsolidator:
                         if facts:
                             promoted = await self._semantic_manager.promote_from_episodic(episode, facts, memory_scope=memory_scope)
                             stats["promoted"] = len(promoted)
-                            # R3: after promote lands facts in the store, re-render
-                            # MEMORY.md deterministically from the scope's ACTIVE
-                            # entries. This replaces the old save_memory LLM rewrite:
-                            # MEMORY.md is now a pure, idempotent rendered snapshot
-                            # of the store (human-facing export; does NOT enter the
-                            # prompt), keeping the store as the single source of truth.
-                            try:
-                                visible = self.store.list_all(session_key=memory_scope)
-                                rendered = render_memory_md(visible)
-                                self.store.write_long_term(memory_scope, rendered)
-                            except Exception as re:
-                                logger.warning("MEMORY.md re-render failed: {}", re)
                     except Exception as e:
                         logger.warning("Fact extraction failed: {}", e)
 
@@ -239,6 +227,23 @@ class MemoryConsolidator:
                 stats.update(reflection_stats)
             except Exception as e:
                 logger.warning("Reflection engine failed: {}", e)
+
+        # Step 7: Deterministically re-render MEMORY.md from the scope's current
+        # ACTIVE set. This lands AFTER every lifecycle mutation of this run
+        # (Step 2 promote/supersede, Step 3 auto-resolve supersede, Step 4
+        # forgetting/archival, Step 6 reflection) rather than inside Step 2's
+        # `if facts:` block — so the snapshot never keeps entries that a later
+        # step superseded/archived, and runs that only archive or only re-adjudicate
+        # (no new facts) still refresh the file. render_memory_md filters
+        # superseded/ARCHIVAL, so MEMORY.md stays a pure, idempotent snapshot of
+        # the store (human-facing export; does NOT enter the prompt), keeping the
+        # store as the single source of truth. Unconditional: not gated on facts.
+        try:
+            visible = self.store.list_all(session_key=memory_scope)
+            rendered = render_memory_md(visible)
+            self.store.write_long_term(memory_scope, rendered)
+        except Exception as re:
+            logger.warning("MEMORY.md re-render failed: {}", re)
 
         logger.info("Sleep consolidation complete: {}", stats)
         return stats
