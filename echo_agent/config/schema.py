@@ -1961,6 +1961,14 @@ class MemoryConfig(_Base):
             "desc_en": "Entry threshold that triggers memory consolidation",
         },
     )
+    narrative_episode_count: int = Field(
+        default=3,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/pipeline/context_stage.py",
+            "desc_zh": "快照叙事层注入的最近 episode.summary 条数(承载跨条目时序/因果,补结构化事实层缺失)",
+            "desc_en": "Number of recent episode summaries injected as the snapshot narrative layer (carries cross-entry temporal/causal narrative)",
+        },
+    )
     vector_enabled: bool = Field(
         default=True,
         json_schema_extra={

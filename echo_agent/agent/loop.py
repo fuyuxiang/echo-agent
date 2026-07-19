@@ -484,6 +484,7 @@ class AgentLoop:
             memory_enabled=config.memory.enabled,
             tool_definitions_fn=self.tools.get_definitions,
             episodic=self._episodic,
+            narrative_episode_count=config.memory.narrative_episode_count,
             plan_run_store=self._plan_run_store,
             bus=bus,
             retrieval_cache_get=self._get_retrieval_cache,

@@ -116,6 +116,7 @@ class ContextStage:
         memory_enabled: bool = True,
         tool_definitions_fn: Any,
         episodic: Any = None,
+        narrative_episode_count: int = 3,
         plan_run_store: Any = None,
         bus: Any = None,
         retrieval_cache_get: "Callable[[str], Any] | None" = None,
@@ -145,6 +146,7 @@ class ContextStage:
         self._memory_enabled = memory_enabled
         self._tool_definitions_fn = tool_definitions_fn
         self._episodic = episodic
+        self._narrative_episode_count = narrative_episode_count
         self._plan_run_store = plan_run_store
         self._bus = bus
         self._retrieval_cache_get = retrieval_cache_get
@@ -301,8 +303,21 @@ class ContextStage:
                 snapshot = self._memory_snapshots[event.session_key]
                 snapshot_ids = self._memory_snapshot_ids.get(event.session_key, frozenset())
             else:
+                # R3 叙事层:async 上下文预取最近 N 条 episode.summary 传入,规避
+                # get_snapshot_with_ids 转 async 牵动全部调用点。叙事随快照一起
+                # 缓存,scope 版本 bump 时随快照失效(属既有缓存范畴)。
+                narrative_summaries: list[str] = []
+                if self._episodic is not None and self._narrative_episode_count > 0:
+                    try:
+                        episodes = await self._episodic.get_session_episodes(
+                            event.memory_scope, self._narrative_episode_count
+                        )
+                        narrative_summaries = [e.summary for e in episodes if e.summary]
+                    except Exception as e:
+                        logger.debug("Narrative episode prefetch failed: {}", e)
                 snapshot, snapshot_ids = self._memory.get_snapshot_with_ids(
-                    session_key=event.memory_scope
+                    session_key=event.memory_scope,
+                    episode_summaries=narrative_summaries or None,
                 )
                 if self._put_snapshot is not None:
                     # 写入唯一入口经 loop 的统一 LRU(锁 + 上限);

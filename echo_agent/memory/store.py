@@ -1328,11 +1328,21 @@ class MemoryStore:
             lines.append(overflow_notice.format(dropped=dropped))
         return "\n".join(lines)
 
+    # R3 叙事层:episode.summary 注入的字符上限,防止长会话叙事挤爆 system prompt。
+    _NARRATIVE_SNAPSHOT_CHAR_LIMIT = 2000
+
     def get_snapshot_with_ids(
-        self, session_key: str | None = None
+        self,
+        session_key: str | None = None,
+        episode_summaries: list[str] | None = None,
     ) -> tuple[str, frozenset[str]]:
         """Build the bounded memory snapshot for system-prompt injection, plus the
-        set of entry ids that entered it (used to de-dup dynamic recall)."""
+        set of entry ids that entered it (used to de-dup dynamic recall).
+
+        episode_summaries 为叙事层(最近 N 条 episode.summary),与结构化事实层
+        分工:事实层存最终态,叙事层承载跨条目时序/因果。episode 非 MemoryEntry,
+        不进 collected(无 id 去重需求)。由 ContextStage 在 async 上下文预取传入,
+        规避 get_snapshot_with_ids 转 async 牵动全部快照调用点。"""
         parts: list[str] = []
         collected: list[str] = []
         # R3:MEMORY.md(read_long_term)不再注入快照。快照只承载结构化事实层
@@ -1364,6 +1374,23 @@ class MemoryStore:
         )
         if env_ctx:
             parts.append(f"## Environment Memory\n\n{env_ctx}")
+
+        # R3 叙事层:最近 N 条 episode.summary 注入 ## Recent Context 段。空列表
+        # 不注入空段。带字符上限保护——逐条累加,超限即停,不截半句。
+        if episode_summaries:
+            lines: list[str] = []
+            used = 0
+            for s in episode_summaries:
+                s = (s or "").strip()
+                if not s:
+                    continue
+                line = f"- {s}"
+                if used + len(line) > self._NARRATIVE_SNAPSHOT_CHAR_LIMIT:
+                    break
+                lines.append(line)
+                used += len(line) + 1  # +1 近似换行
+            if lines:
+                parts.append("## Recent Context\n\n" + "\n".join(lines))
 
         # Reflection deferred conflicts: one-line nudge (reuses the snapshot
         # channel; no new interruption mechanism).
