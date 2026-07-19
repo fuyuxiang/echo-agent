@@ -91,8 +91,78 @@ def test_consolidate_chunk_accepts_memory_scope():
     assert "memory_scope" in sig.parameters
 
 
-def test_consolidate_chunk_reads_and_writes_scoped_shard():
+def test_consolidate_chunk_has_no_save_memory_llm_chain_source():
+    # R3:consolidate_chunk 不再重写 MEMORY.md——不读旧 MD、不发 save_memory LLM 链、
+    # 不写 HISTORY.md。MEMORY.md 由 promote 后 render 确定性重渲染。
     src = inspect.getsource(cons_mod.MemoryConsolidator.consolidate_chunk)
-    # 读写都带 scope,不再用无参全局读写
-    assert "read_long_term(memory_scope" in src or "read_long_term(scope" in src
-    assert "write_long_term(memory_scope" in src or "write_long_term(scope" in src
+    assert "read_long_term" not in src
+    assert "save_memory" not in src
+    assert "append_history" not in src
+    assert "write_long_term" not in src
+    # 模块级 save_memory 工具定义已删除
+    assert not hasattr(cons_mod, "_SAVE_MEMORY_TOOL")
+
+
+@pytest.mark.asyncio
+async def test_consolidate_no_save_memory_llm_chain(tmp_path):
+    """砍链A后:consolidate_chunk 不再发起 save_memory 工具调用。
+    计数桩 LLM 记录每次调用的工具名,断言全程无 save_memory 出现。"""
+    storage = SQLiteBackend(tmp_path / "db.sqlite")
+    await storage.initialize()
+    store = MemoryStore(memory_dir=tmp_path / "mem", storage=storage)
+
+    called_tools: list[str] = []
+
+    async def counting_llm(**kwargs):
+        for t in kwargs.get("tools", []) or []:
+            called_tools.append(t["function"]["name"])
+        return _FakeLLMResponse(content="summary")
+
+    consolidator = MemoryConsolidator(store, counting_llm, consolidation_threshold=1)
+    ok = await consolidator.consolidate_chunk([
+        {"role": "user", "content": "我住在上海", "timestamp": "2024-01-01T00:00"},
+        {"role": "assistant", "content": "记下了", "timestamp": "2024-01-01T00:01"},
+    ], memory_scope="sess1")
+
+    # 非空 chunk 保留成功信号(供 episode 门)
+    assert ok is True
+    # 关键:consolidate_chunk 不发起 save_memory 工具调用
+    assert "save_memory" not in called_tools
+
+
+@pytest.mark.asyncio
+async def test_promote_then_deterministic_render(tmp_path):
+    """sleep_consolidate promote 上海后,MEMORY.<scope>.md 由 render 确定性生成
+    (含"上海"、幂等),而非 LLM 自由文本。断言 read_long_term(scope) 含 active 事实。"""
+    storage = SQLiteBackend(tmp_path / "db.sqlite")
+    await storage.initialize()
+    store = MemoryStore(memory_dir=tmp_path / "mem", storage=storage)
+
+    async def mock_llm(**kwargs):
+        tools = kwargs.get("tools", [])
+        if tools:
+            name = tools[0]["function"]["name"]
+            if name == "save_facts":
+                return _FakeLLMResponse(tool_calls=[_FakeToolCall("1", "save_facts", {
+                    "facts": [{"type": "user", "key": "home", "content": "上海", "importance": 0.8}],
+                })])
+            return _FakeLLMResponse(tool_calls=[_FakeToolCall("1", name, {})])
+        return _FakeLLMResponse(content="summary")
+
+    consolidator = MemoryConsolidator(store, mock_llm, consolidation_threshold=1)
+    consolidator.set_episodic_manager(EpisodicManager(storage))
+    consolidator.set_semantic_manager(SemanticManager(MemoryService(store)))
+
+    await consolidator.sleep_consolidate("sess1", [
+        {"role": "user", "content": "我搬到上海了", "timestamp": "2024-01-01T00:00"},
+        {"role": "assistant", "content": "记下了", "timestamp": "2024-01-01T00:01"},
+    ], memory_scope="sess1")
+
+    rendered = store.read_long_term("sess1")
+    assert "上海" in rendered
+    assert "**home**" in rendered  # 确定性 render 结构,非 LLM 自由文本
+
+    # 幂等:同一 store 状态再渲染一次内容不变
+    from echo_agent.memory.render import render_memory_md
+    again = render_memory_md(store.list_all(session_key="sess1"))
+    assert again.strip() == rendered.strip()

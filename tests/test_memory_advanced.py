@@ -713,32 +713,33 @@ class TestMemoryConsolidator:
 
     @pytest.mark.asyncio
     async def test_consolidate_chunk_success(self, tmp_path: Path):
+        # R3: consolidate_chunk no longer rewrites MEMORY.md via an LLM chain.
+        # A non-empty chunk yields the True episode-gate signal, and MEMORY.md is
+        # NOT touched here (it is re-rendered later by sleep_consolidate/promote).
         store = MemoryStore(memory_dir=tmp_path / "mem")
 
         async def mock_llm(**kwargs):
-            return _FakeLLMResponse(tool_calls=[
-                _FakeToolCall("1", "save_memory", {
-                    "history_entry": "[2024-01-01] summary",
-                    "memory_update": "# Memory v2",
-                })
-            ])
+            raise AssertionError("consolidate_chunk must not call the LLM")
 
         consolidator = MemoryConsolidator(store, mock_llm)
         result = await consolidator.consolidate_chunk([
             {"role": "user", "content": "test", "timestamp": "2024-01-01"},
         ])
         assert result is True
-        assert "Memory v2" in store.read_long_term()
+        # No LLM rewrite of MEMORY.md — long-term stays empty.
+        assert store.read_long_term() == ""
 
     @pytest.mark.asyncio
-    async def test_consolidate_chunk_no_tool_call(self, tmp_path: Path):
+    async def test_consolidate_chunk_empty_content_returns_false(self, tmp_path: Path):
+        # R3: the negative signal is now "chunk carries no substantive content"
+        # (only empty/tool-noise turns), not "LLM declined to call save_memory".
         store = MemoryStore(memory_dir=tmp_path / "mem")
 
         async def mock_llm(**kwargs):
-            return _FakeLLMResponse(content="no tool call", tool_calls=[])
+            raise AssertionError("consolidate_chunk must not call the LLM")
 
         consolidator = MemoryConsolidator(store, mock_llm)
-        result = await consolidator.consolidate_chunk([{"role": "user", "content": "test"}])
+        result = await consolidator.consolidate_chunk([{"role": "user", "content": ""}])
         assert result is False
 
     @pytest.mark.asyncio
