@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable
 
 from loguru import logger
 
+from echo_agent.memory.service import ActorContext, MemoryService
 from echo_agent.memory.store import MemoryStore
 from echo_agent.memory.types import MemoryEntry, MemoryTier
 
@@ -72,11 +73,14 @@ class ReflectionEngine:
 
     def __init__(
         self,
-        store: MemoryStore,
+        service: MemoryService,
         llm_call: Callable[..., Awaitable[Any]],
         contradiction_detector: Any = None,
     ):
-        self._store = store
+        # 写走 service 的 maintenance/mark_superseded 通道(统一失效+审计);
+        # 读(list_all/get)仍直接用底层 store 句柄。
+        self._service = service
+        self._store = service.store
         self._llm_call = llm_call
         self._detector = contradiction_detector
 
@@ -111,8 +115,21 @@ class ReflectionEngine:
             try:
                 rule = await self._ask_distill(prefix, entries, general_key, memory_scope)
                 if rule is not None:
-                    self._store.add(rule)
-                    created += 1
+                    scope = memory_scope or rule.source_session or ""
+                    ctx = ActorContext(
+                        actor="reflection", session_key=scope, memory_scope=scope,
+                    )
+                    result = await self._service.add(
+                        ctx,
+                        type=rule.type,
+                        key=rule.key,
+                        content=rule.content,
+                        tags=rule.tags,
+                        importance=rule.importance,
+                        source="consolidated",
+                    )
+                    if result.ok:
+                        created += 1
             except Exception as e:
                 logger.warning("Reflection distill failed for prefix '{}': {}", prefix, e)
         if created:
@@ -243,21 +260,29 @@ class ReflectionEngine:
             return False
         return pw >= pl
 
-    def _clear_conflict_tags(self, *entries: MemoryEntry) -> None:
+    def _ctx_for(self, entry: MemoryEntry) -> ActorContext:
+        """按条目所属 scope 构造 reflection 维护上下文,让失效落在正确 scope。"""
+        scope = entry.source_session or ""
+        return ActorContext(actor="reflection", session_key=scope, memory_scope=scope)
+
+    async def _clear_conflict_tags(self, *entries: MemoryEntry) -> None:
         for e in entries:
             current = self._store.get(e.id)
             if current is None:
                 continue
             tags = [t for t in current.tags if t != MemoryStore.SUSPECTED_CONFLICT_TAG]
-            self._store.update(e.id, tags=tags)
+            await self._service.maintenance_update(self._ctx_for(current), e.id, tags=tags)
 
-    def _defer_to_user(self, *entries: MemoryEntry) -> None:
+    async def _defer_to_user(self, *entries: MemoryEntry) -> None:
         for e in entries:
             current = self._store.get(e.id)
             if current is None:
                 continue
             if self.NEEDS_CONFIRMATION_TAG not in current.tags:
-                self._store.update(e.id, tags=[*current.tags, self.NEEDS_CONFIRMATION_TAG])
+                await self._service.maintenance_update(
+                    self._ctx_for(current), e.id,
+                    tags=[*current.tags, self.NEEDS_CONFIRMATION_TAG],
+                )
 
     async def _resolve_detector_rows(
         self, a: MemoryEntry, b: MemoryEntry, resolution: str, winner_id: str | None,
@@ -330,25 +355,25 @@ class ReflectionEngine:
             if verdict in ("a_wins", "b_wins"):
                 winner, loser = (a, b) if verdict == "a_wins" else (b, a)
                 if not self._priority_allows_supersede(winner, loser):
-                    self._defer_to_user(a, b)
+                    await self._defer_to_user(a, b)
                     stats["deferred"] += 1
                     continue
             if verdict == "a_wins":
-                self._store.mark_superseded(b.id, a.id)
-                self._clear_conflict_tags(a, b)
+                await self._service.mark_superseded(self._ctx_for(b), b.id, a.id)
+                await self._clear_conflict_tags(a, b)
                 await self._resolve_detector_rows(a, b, "a_wins", a.id)
                 stats["resolved"] += 1
             elif verdict == "b_wins":
-                self._store.mark_superseded(a.id, b.id)
-                self._clear_conflict_tags(a, b)
+                await self._service.mark_superseded(self._ctx_for(a), a.id, b.id)
+                await self._clear_conflict_tags(a, b)
                 await self._resolve_detector_rows(a, b, "b_wins", b.id)
                 stats["resolved"] += 1
             elif verdict == "not_contradictory":
-                self._clear_conflict_tags(a, b)
+                await self._clear_conflict_tags(a, b)
                 await self._resolve_detector_rows(a, b, "not_contradictory", None)
                 stats["dismissed"] += 1
             else:  # ambiguous or whitelist-rejected output
-                self._defer_to_user(a, b)
+                await self._defer_to_user(a, b)
                 stats["deferred"] += 1
         if any(stats.values()):
             logger.info("Reflection conflict resolution: {}", stats)

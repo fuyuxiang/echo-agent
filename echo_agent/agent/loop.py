@@ -862,8 +862,17 @@ class AgentLoop:
 
         if config.memory.reflection_enabled:
             from echo_agent.memory.reflection import ReflectionEngine
-            self.consolidator.set_reflection(ReflectionEngine(
+            from echo_agent.memory.service import MemoryService
+            # Task 8 将统一收口为单例 service;本任务就近构造最小 service 让 reflection
+            # 的写(蒸馏 add/清 tag/裁决 mark_superseded)统一走 maintenance 通道失效+审计。
+            reflection_service = MemoryService(
                 self.memory,
+                invalidate_fn=self._invalidate_memory_caches,
+                flush_fn=getattr(self.memory, "flush_pending_embeds", None),
+                allow_env_writes=config.memory.allow_model_environment_writes,
+            )
+            self.consolidator.set_reflection(ReflectionEngine(
+                reflection_service,
                 llm_call=self.provider.chat_with_retry,
                 contradiction_detector=self._contradiction_detector,
             ))

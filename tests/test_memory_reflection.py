@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from echo_agent.memory.reflection import ReflectionEngine
+from echo_agent.memory.service import MemoryService
 from echo_agent.memory.store import MemoryStore
 from echo_agent.memory.types import MemoryEntry, MemoryType
 
@@ -13,6 +14,11 @@ from echo_agent.memory.types import MemoryEntry, MemoryType
 @pytest.fixture
 def store(tmp_path: Path) -> MemoryStore:
     return MemoryStore(tmp_path / "memory")
+
+
+def _svc(store) -> MemoryService:
+    """reflection 写现走 service 通道,测试用最小 service(无失效/审计)包裹 store。"""
+    return MemoryService(store)
 
 
 def _llm_returning(tool_name: str, args: dict):
@@ -29,7 +35,7 @@ def _add_prefixed(store, n, prefix="pref"):
     for i in range(n):
         entries.append(store.add(MemoryEntry(
             type=MemoryType.USER, key=f"{prefix}:item{i}",
-            content=f"喜欢事物{i}", source="model_inferred",
+            content=f"喜欢事物{i}", source="model_inferred", source_session="s1",
         )))
     return entries
 
@@ -42,7 +48,7 @@ class TestDistill:
             "distill": True, "key": "pref:general",
             "content": "用户对新事物普遍持开放喜好", "importance": 0.7,
         })
-        engine = ReflectionEngine(store, llm_call=llm)
+        engine = ReflectionEngine(_svc(store), llm_call=llm)
         created = await engine.distill()
         assert created == 1
         general = store.find_by_key("pref:general")
@@ -56,7 +62,7 @@ class TestDistill:
     async def test_skips_group_below_threshold(self, store):
         _add_prefixed(store, 2)  # 少于 3 条
         llm = AsyncMock()
-        engine = ReflectionEngine(store, llm_call=llm)
+        engine = ReflectionEngine(_svc(store), llm_call=llm)
         assert await engine.distill() == 0
         llm.assert_not_awaited()
 
@@ -68,7 +74,7 @@ class TestDistill:
             content="已有规律", source="consolidated",
         ))
         llm = AsyncMock()
-        engine = ReflectionEngine(store, llm_call=llm)
+        engine = ReflectionEngine(_svc(store), llm_call=llm)
         assert await engine.distill() == 0
         llm.assert_not_awaited()
 
@@ -76,7 +82,7 @@ class TestDistill:
     async def test_llm_declines_distill(self, store):
         _add_prefixed(store, 3)
         llm = _llm_returning("save_distilled", {"distill": False})
-        engine = ReflectionEngine(store, llm_call=llm)
+        engine = ReflectionEngine(_svc(store), llm_call=llm)
         assert await engine.distill() == 0
 
     @pytest.mark.asyncio
@@ -85,14 +91,14 @@ class TestDistill:
         _add_prefixed(store, 3, prefix="b")
         _add_prefixed(store, 3, prefix="c")
         llm = _llm_returning("save_distilled", {"distill": False})
-        engine = ReflectionEngine(store, llm_call=llm)
+        engine = ReflectionEngine(_svc(store), llm_call=llm)
         await engine.distill(max_groups=2)
         assert llm.await_count == 2
 
     @pytest.mark.asyncio
     async def test_llm_failure_returns_zero(self, store):
         _add_prefixed(store, 3)
-        engine = ReflectionEngine(store, llm_call=AsyncMock(side_effect=RuntimeError("boom")))
+        engine = ReflectionEngine(_svc(store), llm_call=AsyncMock(side_effect=RuntimeError("boom")))
         assert await engine.distill() == 0  # 不抛异常
 
 
@@ -122,7 +128,7 @@ class TestResolveConflicts:
             detector.get_unresolved = AsyncMock(return_value=[])
             detector.resolve = AsyncMock()
             detector.store_contradiction = AsyncMock()
-        return ReflectionEngine(store, llm_call=llm, contradiction_detector=detector), detector
+        return ReflectionEngine(_svc(store), llm_call=llm, contradiction_detector=detector), detector
 
     @pytest.mark.asyncio
     async def test_clear_verdict_supersedes(self, store):
@@ -216,7 +222,7 @@ class TestResolveConflicts:
         detector = MagicMock()
         detector.get_unresolved = AsyncMock(return_value=[])
         detector.resolve = AsyncMock()
-        engine = ReflectionEngine(store, llm_call=llm, contradiction_detector=detector)
+        engine = ReflectionEngine(_svc(store), llm_call=llm, contradiction_detector=detector)
         await engine.resolve_conflicts(max_pairs=3)
         assert llm.await_count == 3
 
@@ -246,7 +252,7 @@ class TestResolveConflicts:
             Contradiction(id="k1", memory_id_a=c1.id, memory_id_b=c3.id),
         ])
         detector.resolve = AsyncMock()
-        engine = ReflectionEngine(store, llm_call=llm, contradiction_detector=detector)
+        engine = ReflectionEngine(_svc(store), llm_call=llm, contradiction_detector=detector)
         stats = await engine.resolve_conflicts()
         assert stats["resolved"] == 1
         # c3 被 c1 顶替（真实冲突对），c2(邮编,无关) 未被牵连。
