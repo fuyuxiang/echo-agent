@@ -4,13 +4,24 @@ import pytest
 from pathlib import Path
 
 from echo_agent.agent.tools.memory import MemoryTool
+from echo_agent.memory.service import MemoryService
 from echo_agent.memory.store import MemoryStore
 from echo_agent.memory.types import MemoryEntry, source_priority
+from echo_agent.tools.base import ToolExecutionContext
 
 
 @pytest.fixture
 def store(tmp_path: Path) -> MemoryStore:
     return MemoryStore(tmp_path / "memory")
+
+
+# 工具已改走 service;写操作须经 execute 并带一个含 memory_scope 的 ctx
+# (USER 写的 scope 门禁在 service),用它取代此前的裸 MemoryTool(store)。
+_CTX = ToolExecutionContext(session_key="s", memory_scope="scope1")
+
+
+def _tool(store: MemoryStore) -> MemoryTool:
+    return MemoryTool(service=MemoryService(store))
 
 
 class TestSourceField:
@@ -53,27 +64,27 @@ class TestSourcePriority:
 class TestWritePathStamping:
     @pytest.mark.asyncio
     async def test_memory_tool_add_defaults_model_inferred(self, store):
-        tool = MemoryTool(store)
-        await tool.execute({"action": "add", "target": "user", "key": "k1", "content": "喜欢Python"})
+        tool = _tool(store)
+        await tool.execute({"action": "add", "target": "user", "key": "k1", "content": "喜欢Python"}, _CTX)
         assert store.find_by_key("k1").source == "model_inferred"
 
     @pytest.mark.asyncio
     async def test_memory_tool_add_explicit_user_stated(self, store):
-        tool = MemoryTool(store)
+        tool = _tool(store)
         await tool.execute({
             "action": "add", "target": "user", "key": "k2",
             "content": "用户明确说住在北京", "source": "user_stated",
-        })
+        }, _CTX)
         assert store.find_by_key("k2").source == "user_stated"
 
     @pytest.mark.asyncio
     async def test_memory_tool_add_rejects_unknown_source_to_default(self, store):
         """schema 之外的词不采纳，落默认 model_inferred。"""
-        tool = MemoryTool(store)
+        tool = _tool(store)
         await tool.execute({
             "action": "add", "target": "user", "key": "k3",
             "content": "c", "source": "hacker_injected",
-        })
+        }, _CTX)
         assert store.find_by_key("k3").source == "model_inferred"
 
     @pytest.mark.asyncio
@@ -82,14 +93,14 @@ class TestWritePathStamping:
         # 可覆盖,验证"未声明 source → 保守默认 model_inferred"这一原意。若基础条目为
         # user_stated,provenance_guard 会拦截 model_inferred 覆盖(见
         # test_provenance_bypass_regression),那是有意的新语义,非本用例所测。
-        tool = MemoryTool(store)
+        tool = _tool(store)
         await tool.execute({
             "action": "add", "target": "user", "key": "k4",
             "content": "旧内容", "source": "model_inferred",
-        })
+        }, _CTX)
         await tool.execute({
             "action": "replace", "target": "user", "key": "k4", "content": "新内容",
-        })
+        }, _CTX)
         e = store.find_by_key("k4")
         assert e.content == "新内容"
         assert e.source == "model_inferred"  # replace 未声明 → 保守默认

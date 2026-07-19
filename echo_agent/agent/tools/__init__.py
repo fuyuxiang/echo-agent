@@ -151,11 +151,17 @@ def discover_tools(
 
     if memory_store:
         from echo_agent.agent.tools.memory import MemoryTool
+        from echo_agent.memory.service import MemoryService
+        # Task 8 将统一收口为单例 service;本任务就近构造最小 service 让工具跑通。
+        service = MemoryService(
+            memory_store,
+            invalidate_fn=memory_invalidate_fn,
+            flush_fn=getattr(memory_store, "flush_pending_embeds", None),
+            allow_env_writes=config.memory.allow_model_environment_writes,
+        )
         tools.append(MemoryTool(
-            store=memory_store,
+            service=service,
             contradiction_detector=contradiction_detector,
-            invalidate_caches=memory_invalidate_fn,
-            allow_environment_writes=config.memory.allow_model_environment_writes,
         ))
 
     if knowledge_index:

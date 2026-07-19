@@ -329,14 +329,15 @@ class TestKnowledgeIndexTool:
 class TestMemoryTool:
     def _make(self):
         from echo_agent.agent.tools.memory import MemoryTool
+        from echo_agent.memory.service import MemoryService
 
         store = MagicMock()
-        return MemoryTool(store=store), store
+        return MemoryTool(service=MemoryService(store)), store
 
     @pytest.mark.asyncio
     async def test_add_success(self):
         tool, store = self._make()
-        mock_entry = SimpleNamespace(type=SimpleNamespace(value="user"), key="lang", content="Python")
+        mock_entry = SimpleNamespace(id="e1", type=SimpleNamespace(value="user"), key="lang", content="Python")
         store.add.return_value = mock_entry
         result = await tool.execute(
             {"action": "add", "target": "user", "key": "lang", "content": "Python"},

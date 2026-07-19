@@ -86,6 +86,11 @@ class MemoryService:
         self._audit_path = Path(audit_path) if audit_path else None
         self._allow_env_writes = allow_env_writes
 
+    @property
+    def store(self):
+        """暴露底层 store 供入口做读操作(find/search/list);写操作仍须走本类。"""
+        return self._store
+
     # ── 公开写 API ──────────────────────────────────────────────────────────
 
     async def add(

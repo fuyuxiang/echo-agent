@@ -24,10 +24,11 @@ def _ctx(**kwargs) -> ToolExecutionContext:
 class TestMemoryTool:
     def _make(self, tmp_path):
         from echo_agent.agent.tools.memory import MemoryTool
+        from echo_agent.memory.service import MemoryService
         from echo_agent.memory.store import MemoryStore
 
         store = MemoryStore(memory_dir=tmp_path / "mem")
-        return MemoryTool(store=store), store
+        return MemoryTool(service=MemoryService(store)), store
 
     @pytest.mark.asyncio
     async def test_unknown_action(self, tmp_path):
@@ -255,6 +256,7 @@ class TestCronjobTool:
 class TestMemoryToolCacheInvalidation:
     def _make(self, tmp_path):
         from echo_agent.agent.tools.memory import MemoryTool
+        from echo_agent.memory.service import MemoryService
         from echo_agent.memory.store import MemoryStore
 
         calls: list[tuple[str, bool]] = []
@@ -263,9 +265,10 @@ class TestMemoryToolCacheInvalidation:
             calls.append((session_key, global_scope))
 
         store = MemoryStore(memory_dir=tmp_path / "mem")
-        # 本测试验证 ENVIRONMENT 写触发全局缓存失效,需放行模型写 ENVIRONMENT
-        # (Phase 3 默认禁止模型写 ENVIRONMENT/global)。
-        tool = MemoryTool(store=store, invalidate_caches=_invalidate, allow_environment_writes=True)
+        # 写后失效已下沉到 service;本测试验证 ENVIRONMENT 写触发全局失效,
+        # 需放行模型写 ENVIRONMENT(默认禁止模型写 ENVIRONMENT/global)。
+        service = MemoryService(store, invalidate_fn=_invalidate, allow_env_writes=True)
+        tool = MemoryTool(service=service)
         return tool, store, calls
 
     @pytest.mark.asyncio
@@ -343,10 +346,11 @@ class TestMemoryToolCacheInvalidation:
     @pytest.mark.asyncio
     async def test_no_callback_is_noop(self, tmp_path):
         from echo_agent.agent.tools.memory import MemoryTool
+        from echo_agent.memory.service import MemoryService
         from echo_agent.memory.store import MemoryStore
 
         store = MemoryStore(memory_dir=tmp_path / "mem")
-        tool = MemoryTool(store=store)
+        tool = MemoryTool(service=MemoryService(store))
         result = await tool.execute(
             {"action": "add", "target": "user", "key": "k1", "content": "v1"},
             _ctx(session_key="s1"),

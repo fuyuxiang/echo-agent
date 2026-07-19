@@ -16,8 +16,10 @@ import pytest
 
 from echo_agent.agent.tools.memory import MemoryTool
 from echo_agent.memory.reviewer import MemoryReviewer
+from echo_agent.memory.service import MemoryService
 from echo_agent.memory.store import MemoryStore
 from echo_agent.memory.types import MemoryEntry, MemoryType
+from echo_agent.tools.base import ToolExecutionContext
 
 
 def _store(tmp_path: Path) -> MemoryStore:
@@ -30,33 +32,39 @@ def _user_entry(s: MemoryStore) -> MemoryEntry:
 
 # ── 工具 _remove / _replace ──────────────────────────────────────────────────
 
-def test_tool_remove_cannot_delete_user_stated(tmp_path):
+# 工具已改走 service:入口是 async execute + 含 scope 的 ctx(model actor)。
+_CTX = ToolExecutionContext(session_key="sess", memory_scope="sess")
+
+
+@pytest.mark.asyncio
+async def test_tool_remove_cannot_delete_user_stated(tmp_path):
     s = _store(tmp_path)
     e = _user_entry(s)
-    tool = MemoryTool(store=s)  # 默认 model_inferred actor
-    res = tool._remove({"key": "home"}, MemoryType.USER, session_key="sess")
+    tool = MemoryTool(service=MemoryService(s))  # 默认 model_inferred actor
+    res = await tool.execute({"action": "remove", "target": "user", "key": "home"}, _CTX)
     assert res.success is False
     assert s.get(e.id) is not None  # 未被删
 
 
-def test_tool_replace_cannot_overwrite_user_stated(tmp_path):
+@pytest.mark.asyncio
+async def test_tool_replace_cannot_overwrite_user_stated(tmp_path):
     s = _store(tmp_path)
     e = _user_entry(s)
-    tool = MemoryTool(store=s)
-    res = tool._replace(
-        {"key": "home", "content": "北京", "source": "model_inferred"},
-        MemoryType.USER,
-        session_key="sess",
+    tool = MemoryTool(service=MemoryService(s))
+    res = await tool.execute(
+        {"action": "replace", "target": "user", "key": "home", "content": "北京", "source": "model_inferred"},
+        _CTX,
     )
     assert res.success is False
     assert s.get(e.id).content == "上海"
 
 
-def test_tool_remove_被拒不打tag不写contradiction(tmp_path):
+@pytest.mark.asyncio
+async def test_tool_remove_被拒不打tag不写contradiction(tmp_path):
     s = _store(tmp_path)
     e = _user_entry(s)
-    tool = MemoryTool(store=s)
-    tool._remove({"key": "home"}, MemoryType.USER, session_key="sess")
+    tool = MemoryTool(service=MemoryService(s))
+    await tool.execute({"action": "remove", "target": "user", "key": "home"}, _CTX)
     kept = s.get(e.id)
     assert MemoryStore.SUSPECTED_CONFLICT_TAG not in kept.tags
 

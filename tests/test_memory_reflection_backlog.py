@@ -58,7 +58,9 @@ class TestAddHonestFeedback:
             type=MemoryType.USER, key="pref:tea", content="用户明说喝绿茶",
             source="user_stated", source_session="s1",
         ))
-        tool = MemoryTool(store)
+        from echo_agent.memory.service import MemoryService
+
+        tool = MemoryTool(MemoryService(store))
         # 同一会话作用域（s1）内写入，才会触发 _merge_locked 守卫。
         result = await tool.execute({
             "action": "add", "target": "user", "key": "pref:tea",
@@ -70,12 +72,14 @@ class TestAddHonestFeedback:
 
     @pytest.mark.asyncio
     async def test_add_normal_still_says_saved(self, store):
+        from echo_agent.agent.tools.base import ToolExecutionContext
         from echo_agent.agent.tools.memory import MemoryTool
+        from echo_agent.memory.service import MemoryService
 
-        tool = MemoryTool(store)
+        tool = MemoryTool(MemoryService(store))
         result = await tool.execute({
             "action": "add", "target": "user", "key": "fresh", "content": "全新条目",
-        })
+        }, ctx=ToolExecutionContext(session_key="s1"))
         assert "Memory saved" in result.output
 
 

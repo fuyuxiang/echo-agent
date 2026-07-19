@@ -202,8 +202,10 @@ async def test_memory_tool_lists_and_resolves_contradictions():
         async def resolve(self, cid, resolution, winner_id=None):
             self.resolved.append((cid, resolution, winner_id))
 
+    from echo_agent.memory.service import MemoryService
+
     det = _Detector()
-    tool = MemoryTool(store=_FakeStore([]), contradiction_detector=det)
+    tool = MemoryTool(service=MemoryService(_FakeStore([])), contradiction_detector=det)
 
     listed = await tool.execute({"action": "list_contradictions"})
     assert "c1" in listed.output

@@ -51,8 +51,10 @@ class TestMemoryToolSearchReinforces:
     async def test_tool_search_reinforces_results(self, store):
         from echo_agent.agent.tools.memory import MemoryTool
 
+        from echo_agent.memory.service import MemoryService
+
         e = _add(store)
-        tool = MemoryTool(store)
+        tool = MemoryTool(MemoryService(store))
         result = await tool.execute({"action": "search", "target": "user", "query": "Python"})
         assert result.success
         assert store.get(e.id).access_count == 1  # 工具搜索=结果进入上下文=强化一次
