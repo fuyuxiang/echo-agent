@@ -159,7 +159,8 @@ async def test_promote_then_deterministic_render(tmp_path):
         {"role": "assistant", "content": "记下了", "timestamp": "2024-01-01T00:01"},
     ], memory_scope="sess1")
 
-    rendered = store.read_long_term("sess1")
+    _p = store._long_term_path("sess1")
+    rendered = _p.read_text(encoding="utf-8") if _p.exists() else ""
     assert "上海" in rendered
     assert "**home**" in rendered  # 确定性 render 结构,非 LLM 自由文本
 
@@ -214,7 +215,8 @@ async def test_render_reflects_lifecycle_changes_after_step2(tmp_path):
     stale = next(e for e in store._entries.values() if e.key == "stale_project")
     assert stale.tier == MemoryTier.ARCHIVAL
 
-    rendered = store.read_long_term("sess1")
+    _p = store._long_term_path("sess1")
+    rendered = _p.read_text(encoding="utf-8") if _p.exists() else ""
     # 新 promote 的 active 事实在快照里。
     assert "上海" in rendered
     # 核心:刚归档的旧条目不得残留在快照里(Step 2 早渲染时它会残留 → 此处红)。

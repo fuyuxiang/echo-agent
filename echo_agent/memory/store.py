@@ -156,7 +156,6 @@ class MemoryStore:
         decay_half_life_days: float = 30.0,
         user_snapshot_char_limit: int = 4000,
         env_snapshot_char_limit: int = 2200,
-        long_term_snapshot_char_limit: int = 4000,
         storage: Any = None,
         scope_policy: str = "legacy",
         contradiction_scan_on_store: bool = False,
@@ -177,8 +176,6 @@ class MemoryStore:
         self._decay_half_life = decay_half_life_days
         self._user_snapshot_char_limit = user_snapshot_char_limit
         self._env_snapshot_char_limit = env_snapshot_char_limit
-        # R3:MEMORY.md 不再进快照/prompt,此上限转为 render.py 人类视图的渲染截断用途。
-        self._long_term_snapshot_char_limit = long_term_snapshot_char_limit
         self._entries: dict[str, MemoryEntry] = {}
         self._key_index: dict[str, set[str]] = {}  # key -> set of entry IDs for O(1) conflict lookup
         self._storage = storage
@@ -1397,9 +1394,9 @@ class MemoryStore:
         规避 get_snapshot_with_ids 转 async 牵动全部快照调用点。"""
         parts: list[str] = []
         collected: list[str] = []
-        # R3:MEMORY.md(read_long_term)不再注入快照。快照只承载结构化事实层
+        # R3:MEMORY.md 不再注入快照。快照只承载结构化事实层
         # (user/env 段 + pending 冲突提示),MD 降为人类可读视图,由 render.py
-        # 单独渲染并受 _long_term_snapshot_char_limit 约束,不再进 system prompt。
+        # 单独渲染,不再进 system prompt。
 
         user_ctx = self.get_context(
             MemoryType.USER,
@@ -1476,14 +1473,6 @@ class MemoryStore:
         digest = hashlib.sha256((scope or "").encode("utf-8")).hexdigest()[:8]
         return self._long_term_file.parent / f"MEMORY.{_safe_scope(scope)}.{digest}.md"
 
-    def read_long_term(self, scope: str = "") -> str:
-        path = self._long_term_path(scope)
-        if path.exists():
-            return path.read_text(encoding="utf-8")
-        # R3 Task6:删旧全局 MEMORY.md dual-read 回退。Task5 迁移已把存量 MD 抽入
-        # store,回退会让未写分片的 scope 读到同一旧全局文件造成跨 scope 暴露。
-        return ""
-
     def write_long_term(self, scope: str, content: str) -> None:
         normalized = content.strip()
         if normalized:
@@ -1491,25 +1480,3 @@ class MemoryStore:
         path = self._long_term_path(scope)
         with self._file_lock(path):
             _atomic_write_text(path, normalized)
-
-    _MAX_HISTORY_BYTES = 1_000_000
-
-    def append_history(self, entry: str) -> None:
-        with self._file_lock(self._history_file):
-            self._history_file.parent.mkdir(parents=True, exist_ok=True)
-            # Rotate instead of growing forever — HISTORY.md is append-only
-            # and would otherwise be an unbounded file.
-            try:
-                if (
-                    self._history_file.exists()
-                    and self._history_file.stat().st_size > self._MAX_HISTORY_BYTES
-                ):
-                    rotated = self._history_file.with_name(
-                        f"HISTORY-{datetime.now().strftime('%Y%m%d%H%M%S')}.md"
-                    )
-                    os.replace(self._history_file, rotated)
-                    logger.info("Rotated history file to {}", rotated.name)
-            except OSError as e:
-                logger.warning("History rotation failed: {}", e)
-            with open(self._history_file, "a", encoding="utf-8") as handle:
-                handle.write(entry.rstrip() + "\n\n")

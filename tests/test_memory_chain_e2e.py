@@ -89,11 +89,16 @@ def test_long_term_shard_isolation(tmp_path):
     s = _store(tmp_path)
     s.write_long_term("owner", "owner 私密")
     s.write_long_term("telegram:grp1:bob", "群成员 bob")
-    # R3:MD 按 scope 分片隔离(read_long_term 层),但不再注入快照/prompt。
-    assert "owner 私密" in s.read_long_term("owner")
-    assert "bob" not in s.read_long_term("owner")
-    assert "群成员 bob" in s.read_long_term("telegram:grp1:bob")
-    assert "私密" not in s.read_long_term("telegram:grp1:bob")
+
+    def _shard(scope):
+        p = s._long_term_path(scope)
+        return p.read_text(encoding="utf-8") if p.exists() else ""
+
+    # R3:MD 按 scope 分片隔离(落盘分片文件),但不再注入快照/prompt。
+    assert "owner 私密" in _shard("owner")
+    assert "bob" not in _shard("owner")
+    assert "群成员 bob" in _shard("telegram:grp1:bob")
+    assert "私密" not in _shard("telegram:grp1:bob")
     # 快照不含任一分片的 MD 文本。
     owner_snap, _ = s.get_snapshot_with_ids(session_key="owner")
     grp_snap, _ = s.get_snapshot_with_ids(session_key="telegram:grp1:bob")
@@ -107,4 +112,5 @@ def test_concurrent_same_scope_no_lost_write(tmp_path):
     s = _store(tmp_path)
     s.write_long_term("owner", "第一版")
     s.write_long_term("owner", "第二版")
-    assert s.read_long_term("owner") == "第二版"
+    _p = s._long_term_path("owner")
+    assert _p.read_text(encoding="utf-8") == "第二版"

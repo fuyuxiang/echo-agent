@@ -727,7 +727,8 @@ class TestMemoryConsolidator:
         ])
         assert result is True
         # No LLM rewrite of MEMORY.md — long-term stays empty.
-        assert store.read_long_term() == ""
+        _lt = store._long_term_path("")
+        assert (_lt.read_text(encoding="utf-8") if _lt.exists() else "") == ""
 
     @pytest.mark.asyncio
     async def test_consolidate_chunk_empty_content_returns_false(self, tmp_path: Path):
