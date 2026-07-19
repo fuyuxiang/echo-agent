@@ -32,6 +32,7 @@ from echo_agent.memory.retrieval import HybridRetriever
 from echo_agent.memory.contradiction import ContradictionDetector
 from echo_agent.memory.store import MemoryStore, _scan_memory_content
 from echo_agent.memory.consolidator import MemoryConsolidator
+from echo_agent.memory.service import MemoryService
 from echo_agent.memory.vectors import VectorIndex
 from echo_agent.storage.sqlite import SQLiteBackend
 
@@ -410,7 +411,7 @@ class TestSemanticManager:
     def test_get_semantic_entries(self, memory_store: MemoryStore):
         memory_store.add(_make_entry(key="k1", content="semantic fact", tier=MemoryTier.SEMANTIC))
         memory_store.add(_make_entry(key="k2", content="working fact", tier=MemoryTier.WORKING))
-        mgr = SemanticManager(memory_store)
+        mgr = SemanticManager(MemoryService(memory_store))
         entries = mgr.get_semantic_entries()
         # Only semantic tier entries returned
         assert all(e.tier == MemoryTier.SEMANTIC for e in entries)
@@ -992,7 +993,7 @@ class TestConsolidatorContradictionDetection:
 
         consolidator = MemoryConsolidator(store, mock_llm, consolidation_threshold=1)
         episodic = EpisodicManager(storage)
-        semantic = SemanticManager(store)
+        semantic = SemanticManager(MemoryService(store))
         consolidator.set_episodic_manager(episodic)
         consolidator.set_semantic_manager(semantic)
 
@@ -1046,7 +1047,7 @@ class TestConsolidatorContradictionDetection:
 
         consolidator = MemoryConsolidator(store, mock_llm, consolidation_threshold=1)
         episodic = EpisodicManager(storage)
-        semantic = SemanticManager(store)
+        semantic = SemanticManager(MemoryService(store))
         consolidator.set_episodic_manager(episodic)
         consolidator.set_semantic_manager(semantic)
 
@@ -1088,7 +1089,7 @@ class TestConsolidatorContradictionDetection:
 
         consolidator = MemoryConsolidator(store, mock_llm, consolidation_threshold=1)
         episodic = EpisodicManager(storage)
-        semantic = SemanticManager(store)
+        semantic = SemanticManager(MemoryService(store))
         consolidator.set_episodic_manager(episodic)
         consolidator.set_semantic_manager(semantic)
 

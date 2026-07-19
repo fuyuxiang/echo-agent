@@ -122,8 +122,9 @@ class TestWritePathStamping:
     async def test_promote_stamps_consolidated(self, store):
         from echo_agent.memory.tiers import SemanticManager
         from echo_agent.memory.types import Episode
+        from echo_agent.memory.service import MemoryService
 
-        mgr = SemanticManager(store)
+        mgr = SemanticManager(MemoryService(store))
         episode = Episode(session_key="s1", summary="聊了项目部署")
         promoted = await mgr.promote_from_episodic(
             episode, [{"key": "k6", "content": "项目用docker部署", "type": "environment"}],

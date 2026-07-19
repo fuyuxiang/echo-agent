@@ -609,7 +609,15 @@ class AgentLoop:
         forgetting = self.memory.forgetting_curve
 
         episodic = EpisodicManager(storage) if storage else None
-        semantic = SemanticManager(self.memory)
+        from echo_agent.memory.service import MemoryService
+        # Task 8 将统一收口为单例 service;本任务就近构造最小 service 让晋升跑通,
+        # 失效/flush/ENV 门禁全部收敛到 service 八步写序。
+        semantic = SemanticManager(MemoryService(
+            self.memory,
+            invalidate_fn=self._invalidate_memory_caches,
+            flush_fn=getattr(self.memory, "flush_pending_embeds", None),
+            allow_env_writes=config.memory.allow_model_environment_writes,
+        ))
         archival = ArchivalManager(storage, store=self.memory) if storage else None
 
         self._episodic = episodic

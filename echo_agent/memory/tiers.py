@@ -242,8 +242,10 @@ class SemanticManager:
     Wraps existing MemoryStore CRUD with tier filtering.
     """
 
-    def __init__(self, store: Any):
-        self._store = store
+    def __init__(self, service: Any):
+        # 写走 service 八步写序;读(get_semantic_entries)仍直接读 store。
+        self._service = service
+        self._store = service.store
 
     def get_semantic_entries(
         self,
@@ -257,27 +259,44 @@ class SemanticManager:
         self, episode: Episode, extracted_facts: list[dict[str, Any]],
         memory_scope: str = "",
     ) -> list[MemoryEntry]:
-        """Promote extracted facts from an episode to semantic memory."""
+        """Promote extracted facts from an episode to semantic memory.
+
+        写入统一走 MemoryService.promote(八步写序:校验→scope 门禁→ENV 门禁→
+        provenance→写入→flush→失效→审计)。fact 未显式给 type 时默认落 USER +
+        当前 memory_scope(不再默认 ENVIRONMENT 全局可见),写 ENV 需模型显式声明且
+        受 allow_model_environment_writes 门禁约束。source="consolidated"
+        优先级(2)高于 model_inferred(1) 是有意设计(睡眠蒸馏比单轮推断可信),保留。
+        """
+        from echo_agent.memory.service import ActorContext
+
         promoted: list[MemoryEntry] = []
         for fact in extracted_facts:
-            fact_type = MemoryType(fact.get("type", "environment"))
-            entry = MemoryEntry(
+            fact_type = MemoryType(fact.get("type", "user"))
+            # USER 落当前 scope(memory_scope 缺省回退 episode.session_key);
+            # ENV 保持全局可见(memory_scope 空 → source_session 空)。
+            scope = (memory_scope or episode.session_key) if fact_type == MemoryType.USER else ""
+            ctx = ActorContext(
+                actor="consolidation",
+                session_key=scope,
+                memory_scope=scope,
+            )
+            result = await self._service.promote(
+                ctx,
                 type=fact_type,
-                tier=MemoryTier.SEMANTIC,
                 key=fact.get("key", ""),
                 content=fact.get("content", ""),
                 tags=fact.get("tags", []),
                 importance=fact.get("importance", 0.5),
-                episode_id=episode.id,
                 source="consolidated",
-                source_session=(memory_scope or episode.session_key) if fact_type == MemoryType.USER else "",
             )
-            try:
-                result = self._store.add(entry)
-                promoted.append(result)
-            except ValueError as e:
+            if result.ok and result.entry is not None:
+                # 保留晋升来源 episode 的关联(service.add 不透传 episode_id)。
+                result.entry.episode_id = episode.id
+                promoted.append(result.entry)
+            else:
                 logger.warning(
-                    "Failed to promote fact from episode {}: {}", episode.id, e,
+                    "Failed to promote fact from episode {}: {}",
+                    episode.id, result.reason,
                 )
         if promoted:
             logger.info("Promoted {} facts from episode {}", len(promoted), episode.id)
