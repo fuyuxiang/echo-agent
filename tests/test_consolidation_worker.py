@@ -196,6 +196,45 @@ class TestConsolidationWorker:
         # later turn (or a scheduler retry with a fresh factory) can re-drive it.
         assert not worker.is_pending("test:7")
 
+    @pytest.mark.asyncio
+    async def test_sleep_consolidate_failure_propagates_for_retry(self, mock_sessions, mock_consolidator):
+        """A sleep_consolidate failure must re-raise (so the outer DURABLE handler
+        can retry it), instead of being silently swallowed by an inner
+        logger.warning. Sleep consolidation is idempotent (boundary committed
+        before sleep, empty chunk returns early, sub-steps guard double-writes),
+        so a retried re-run is safe."""
+        session = Session(key="test:sleepfail")
+        session.add_message("user", "msg")
+        mock_sessions.get_or_create = AsyncMock(return_value=session)
+        mock_sessions.save = AsyncMock()
+        mock_consolidator.sleep_consolidate = AsyncMock(side_effect=RuntimeError("sleep boom"))
+
+        completed_keys = []
+
+        async def on_complete(key):
+            completed_keys.append(key)
+
+        worker = ConsolidationWorker(
+            sessions=mock_sessions,
+            consolidator=mock_consolidator,
+            sleep_consolidation=True,
+        )
+
+        spawned = []
+
+        def spawn_fn(coro):
+            spawned.append(asyncio.ensure_future(coro))
+
+        await worker.schedule("test:sleepfail", spawn_fn, on_complete=on_complete)
+        results = await asyncio.gather(*spawned, return_exceptions=True)
+
+        # The sleep failure must surface as a raised exception, not be swallowed.
+        assert any(isinstance(r, RuntimeError) for r in results)
+        # on_complete must NOT run when sleep failed — the attempt did not succeed.
+        assert completed_keys == []
+        # _pending is still released so a scheduler retry can re-drive it.
+        assert not worker.is_pending("test:sleepfail")
+
 
 class TestDurableScheduling:
     """Task 8: consolidation is a DURABLE background point — it must be scheduled

@@ -130,7 +130,8 @@ class MemoryConsolidator:
         4. Run forgetting/archival pass
         Returns stats dict.
         """
-        stats = {"episodes": 0, "promoted": 0, "contradictions": 0, "resolved": 0, "archived": 0, "forgotten": 0}
+        stats = {"episodes": 0, "promoted": 0, "contradictions": 0, "resolved": 0, "archived": 0, "forgotten": 0,
+                 "fact_extract_errors": 0, "reflection_errors": 0}
         promoted: list = []
 
         # Step 1: Create episode
@@ -165,6 +166,10 @@ class MemoryConsolidator:
                             promoted = await self._semantic_manager.promote_from_episodic(episode, facts, memory_scope=memory_scope)
                             stats["promoted"] = len(promoted)
                     except Exception as e:
+                        # Single-step degradation: keep the rest of the sleep
+                        # pipeline running, but record the failure in stats so it
+                        # is observable (test/monitoring) rather than silent.
+                        stats["fact_extract_errors"] += 1
                         logger.warning("Fact extraction failed: {}", e)
 
         # Step 3: Run contradiction detection on newly promoted entries.
@@ -226,6 +231,9 @@ class MemoryConsolidator:
                 reflection_stats = await self._reflection_engine.run(memory_scope=memory_scope)
                 stats.update(reflection_stats)
             except Exception as e:
+                # Single-step degradation: don't abort the pipeline, but record
+                # the reflection failure in stats so it is observable.
+                stats["reflection_errors"] += 1
                 logger.warning("Reflection engine failed: {}", e)
 
         # Step 7: Deterministically re-render MEMORY.md from the scope's current

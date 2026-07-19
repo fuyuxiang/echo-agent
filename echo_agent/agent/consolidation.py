@@ -125,7 +125,15 @@ class ConsolidationWorker:
                     if any(v > 0 for v in stats.values()):
                         logger.info("Sleep consolidation for {}: {}", session_key, stats)
                 except Exception as e:
+                    # Surface the failure to the outer DURABLE handler (below) so
+                    # the scheduler tier retries this attempt — previously it was
+                    # swallowed here, leaving the whole sleep pipeline silently
+                    # dropped. Sleep consolidation is idempotent: the Phase-3
+                    # boundary commit already landed (104-115) before this block,
+                    # a retry re-snapshots and returns early when the chunk is
+                    # empty (77), and the sub-steps guard their own double-writes.
                     logger.warning("Sleep consolidation failed: {}", e)
+                    raise
 
             if on_complete:
                 await on_complete(session_key)
