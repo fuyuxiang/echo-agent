@@ -729,38 +729,25 @@ class MemoryStore:
 
     def _merge_locked(self, existing_id: str, new_entry: MemoryEntry) -> MemoryEntry:
         existing = self._entries[existing_id]
-        # Provenance guard: a lower-provenance write must not silently
-        # overwrite higher-provenance content (e.g. model inference vs. what
-        # the user explicitly stated). Keep the content, merge the metadata,
-        # and leave a suspected_conflict marker for the resolution flow.
+        # Provenance guard: a lower-provenance write must not overwrite
+        # higher-provenance content (e.g. model inference vs. what the user
+        # explicitly stated). Keep the old entry ACTIVE, drop the incoming
+        # write (it never lands in the store), and spawn an unresolved
+        # contradiction pair for the resolution flow to adjudicate.
         if source_priority(new_entry.source) < source_priority(existing.source):
-            merged_tags = _normalize_tags(
-                [*existing.tags, *new_entry.tags, self.SUSPECTED_CONFLICT_TAG]
-            )
-            existing.tags = merged_tags
-            existing.importance = max(existing.importance, new_entry.importance)
-            self._dirty_ids.add(existing_id)
             logger.info(
                 "Provenance guard: kept '{}' content from {} over incoming {}",
                 existing.key, existing.source, new_entry.source,
             )
             self._spawn_blocked_contradiction(existing, new_entry)
             return existing
-        new_content = self._validate_content(new_entry.content)
-        content_changed = new_content != existing.content
-        existing.content = new_content
-        existing.tags = _normalize_tags([*existing.tags, *new_entry.tags])
-        existing.importance = max(existing.importance, new_entry.importance)
-        existing.source = new_entry.source
-        existing.updated_at = datetime.now().isoformat()
-        self._dirty_ids.add(existing_id)
-        # Content changed → the stored vector no longer matches. Re-queue an
-        # embed keyed on the old vector so flush replaces it (same contract as
-        # update()); otherwise the merge path silently leaves the index
-        # pointing at the pre-merge text.
-        if content_changed:
-            self._queue_embed(existing, old_vec_id=existing.embedding_id)
-        return existing
+        # Priority >= old: append a new version instead of overwriting in place,
+        # so the prior fact survives as superseded (audit + rollback) rather
+        # than vanishing. _merge_locked already runs inside store.add's
+        # file_lock, so call the non-locking variant to avoid re-entering the
+        # same lock and deadlocking.
+        self._validate_content(new_entry.content)
+        return self._append_version_locked(existing_id, new_entry)
 
     def append_version(self, old_id: str, new_entry: MemoryEntry) -> MemoryEntry:
         """同 key 改口:新建版本而非原地覆盖。旧条目保留并标记 superseded_by,
@@ -769,27 +756,33 @@ class MemoryStore:
         path = self._path_for(new_entry.type)
         with self._file_lock(path):
             self._reload_type(new_entry.type)
-            old = self._entries.get(old_id)
-            if old is None:
-                # 旧条目已不在(并发删除),退化为普通新增
-                self._entries[new_entry.id] = new_entry
-                self._index_entry(new_entry)
-                self._dirty_ids.add(new_entry.id)
-                self._save_type(new_entry.type)
-                self._queue_embed(new_entry)
-                return new_entry
-            new_entry.version = old.version + 1
+            return self._append_version_locked(old_id, new_entry)
+
+    def _append_version_locked(self, old_id: str, new_entry: MemoryEntry) -> MemoryEntry:
+        """append_version 的锁内主体(不加锁、不 reload)。调用方须已持有对应类型的
+        file_lock 并完成 reload:公开的 append_version 自己加锁,而 _merge_locked 已在
+        store.add 的 file_lock 内,直接调加锁版会与同一把锁重入死锁,故复用此不加锁版本。"""
+        old = self._entries.get(old_id)
+        if old is None:
+            # 旧条目已不在(并发删除),退化为普通新增
             self._entries[new_entry.id] = new_entry
             self._index_entry(new_entry)
-            old.superseded_by = new_entry.id
-            old.updated_at = datetime.now().isoformat()
             self._dirty_ids.add(new_entry.id)
-            self._dirty_ids.add(old_id)
             self._save_type(new_entry.type)
-            self._queue_embed(new_entry)  # 新版本进索引
-            if old.embedding_id:
-                self._schedule_vector_removal(old.embedding_id)  # 清旧向量
+            self._queue_embed(new_entry)
             return new_entry
+        new_entry.version = old.version + 1
+        self._entries[new_entry.id] = new_entry
+        self._index_entry(new_entry)
+        old.superseded_by = new_entry.id
+        old.updated_at = datetime.now().isoformat()
+        self._dirty_ids.add(new_entry.id)
+        self._dirty_ids.add(old_id)
+        self._save_type(new_entry.type)
+        self._queue_embed(new_entry)  # 新版本进索引
+        if old.embedding_id:
+            self._schedule_vector_removal(old.embedding_id)  # 清旧向量
+        return new_entry
 
     def _spawn_blocked_contradiction(self, existing: MemoryEntry, blocked: MemoryEntry) -> None:
         """Record the guard-blocked content as a Contradiction row so the

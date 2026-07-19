@@ -1,4 +1,5 @@
 """启动回填、孤儿向量治理、update 旧向量替换测试。"""
+import asyncio
 from pathlib import Path
 
 import numpy as np
@@ -126,17 +127,24 @@ async def test_merge_reembeds_when_content_changes(store_with_index):
     old_vec = store._entries[e.id].embedding_id
     assert old_vec
 
-    # 同 key 同级来源、内容不同 → 走 _merge_locked 的内容替换分支。
-    store.add(MemoryEntry(
+    # 同 key 同级来源、内容不同 → 走 _merge_locked 的 append-version 分支:
+    # 旧条目 e.id 置 superseded 保留原内容,新版本承载新内容。
+    new_entry = store.add(MemoryEntry(
         type=MemoryType.USER, key="home:city", content="搬到了上海", source="user_stated",
     ))
-    assert store._entries[e.id].content == "搬到了上海"
+    assert new_entry.id != e.id and new_entry.content == "搬到了上海"
+    assert store._entries[e.id].content == "住北京"          # 旧条目内容保留
+    assert store._entries[e.id].superseded_by == new_entry.id  # 旧指向新
     await store.flush_pending_embeds()
-    new_vec = store._entries[e.id].embedding_id
+    # append 路径清旧向量走 _schedule_vector_removal 的 fire-and-forget 任务,
+    # 需等其落地后再断言(update 路径靠 flush 内 replaced_old 同步清,此处不同)。
+    if store._pending_storage_tasks:
+        await asyncio.gather(*list(store._pending_storage_tasks))
+    new_vec = store._entries[new_entry.id].embedding_id
     assert new_vec and new_vec != old_vec
     rows = await store._storage.load_vectors_all()
     ids = {r["id"] for r in rows}
-    assert new_vec in ids and old_vec not in ids
+    assert new_vec in ids and old_vec not in ids  # 旧向量已清,只 ACTIVE 进索引
     assert index.count == 1
 
 

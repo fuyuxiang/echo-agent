@@ -19,3 +19,26 @@ def test_append_version_preserves_old_and_bumps(tmp_path):
     assert s.get(old.id) is not None                # 旧版本保留
     assert s.get(old.id).superseded_by == result.id # 旧指向新
     assert not s.get(result.id).is_superseded        # 新是 active
+
+
+def test_add_same_key_higher_or_equal_appends(tmp_path):
+    s = _store(tmp_path)
+    s.add(MemoryEntry(type=MemoryType.USER, key="home", content="北京",
+                      source="user_stated", source_session="x"))
+    r = s.add(MemoryEntry(type=MemoryType.USER, key="home", content="上海",
+                          source="user_stated", source_session="x"))
+    assert r.content == "上海" and r.version == 2       # 走 append 非覆盖
+    all_home = [e for e in s._entries.values() if e.key == "home"]
+    assert len(all_home) == 2                            # 旧版本保留(未被覆盖)
+    assert any(e.content == "北京" and e.is_superseded for e in all_home)
+
+
+def test_add_same_key_lower_priority_keeps_old_no_overwrite(tmp_path):
+    s = _store(tmp_path)
+    s.add(MemoryEntry(type=MemoryType.USER, key="home", content="上海",
+                      source="user_stated", source_session="x"))
+    r = s.add(MemoryEntry(type=MemoryType.USER, key="home", content="北京",
+                          source="model_inferred", source_session="x"))
+    assert r.content == "上海"                           # 低优先级不覆盖,保留旧
+    live = [e for e in s._entries.values() if e.key == "home" and not e.is_superseded]
+    assert len(live) == 1 and live[0].content == "上海"  # 无新 active 版本

@@ -157,7 +157,15 @@ class TestMergeGuard:
         ))
         assert merged.content == "喝茶"  # 用户明说的内容保住了
         assert merged.source == "user_stated"
-        assert store.SUSPECTED_CONFLICT_TAG in merged.tags  # 冲突留痕
+        # 新语义:低优先级写不落库、旧条目保持 active(不再原地并 tag),
+        # 冲突交由 unresolved 矛盾对裁决。断言 store 内无低优先级新写、旧仍 active。
+        live = [
+            e for e in store._entries.values()
+            if e.key == "pref:drink" and not e.is_superseded
+        ]
+        assert len(live) == 1
+        assert live[0].content == "喝茶" and live[0].source == "user_stated"
+        assert not any(e.content == "喝咖啡" for e in store._entries.values())
 
     def test_equal_priority_overwrites(self, store):
         from echo_agent.memory.types import MemoryEntry, MemoryType
