@@ -802,6 +802,8 @@ class MemoryStore:
         self._queue_embed(new_entry)  # 新版本进索引
         if old.embedding_id:
             self._schedule_vector_removal(old.embedding_id)  # 清旧向量
+            old.embedding_id = ""  # 清引用,与 mark_superseded 对齐:否则孤儿扫描
+            # 仍把已移除的旧向量当有效引用,fire-and-forget 移除失败则永久孤儿。
         return new_entry
 
     def _spawn_blocked_contradiction(self, existing: MemoryEntry, blocked: MemoryEntry) -> None:
@@ -1143,23 +1145,6 @@ class MemoryStore:
             if entry.embedding_id:
                 self._schedule_vector_removal(entry.embedding_id)
                 entry.embedding_id = ""
-            self._dirty_ids.add(entry_id)
-            self._save_type(entry.type)
-            return True
-
-    def set_version(self, entry_id: str, version: int) -> bool:
-        self._warn_if_direct("set_version", entry_id)
-        entry = self._entries.get(entry_id)
-        if not entry:
-            return False
-        path = self._path_for(entry.type)
-        with self._file_lock(path):
-            self._reload_type(entry.type)
-            entry = self._entries.get(entry_id)
-            if not entry:
-                return False
-            entry.version = version
-            entry.updated_at = datetime.now().isoformat()
             self._dirty_ids.add(entry_id)
             self._save_type(entry.type)
             return True

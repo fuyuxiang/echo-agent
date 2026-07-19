@@ -248,7 +248,11 @@ class MemoryConsolidator:
                     all_entries = list(self.store._entries.values())
                 entry_map = {e.id: e for e in all_entries}
                 for new_entry in promoted:
-                    others = [e for e in all_entries if e.id != new_entry.id]
+                    # 排除 superseded 旧版本:list_all 默认 audience=None 不过滤生命周期,
+                    # 同 key 改口后的 superseded 兄弟会混入比较集合,被启发式判"矛盾",
+                    # 进而把新 active 条目误标 unresolved → 从召回/快照静默剔除。与写时
+                    # 扫描 _run_contradiction_scan 的 `not e.is_superseded` 口径统一。
+                    others = [e for e in all_entries if e.id != new_entry.id and not e.is_superseded]
                     contradictions = await self._contradiction_detector.check(
                         new_entry, others, llm_call=self._llm_call, embed_fn=self._embed_fn,
                     )

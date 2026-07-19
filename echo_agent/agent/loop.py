@@ -867,7 +867,7 @@ class AgentLoop:
         if config.memory.contradiction_detection and storage:
             from echo_agent.memory.contradiction import ContradictionDetector
             # R1 Task8:裁决 mark_superseded 走 loop 单例 service 的 maintenance
-            # 通道(统一失效+审计)。矛盾镜像跟踪与 set_version(R2 收)仍直接落 store。
+            # 通道(统一失效+审计)。矛盾镜像跟踪(unresolved 标记/清除)仍直接落 store。
             detector = ContradictionDetector(
                 storage,
                 vector_index,

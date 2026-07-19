@@ -79,6 +79,23 @@ def test_mark_superseded_clears_vector(tmp_path):
     assert s.get(old.id).embedding_id in ("", None)  # 旧向量已清
 
 
+def test_append_version_clears_old_embedding_id(tmp_path):
+    # append 改口路径也须清空旧条目 embedding_id,与 mark_superseded 对齐。
+    # 否则 scan_orphan_vectors 仍把旧 embedding_id 当有效引用,而向量已被
+    # fire-and-forget 移除 → 移除失败时永久孤儿(回收缺口)。
+    s = _store(tmp_path)
+    old = s.add(MemoryEntry(type=MemoryType.USER, key="home", content="北京",
+                            source="user_stated", source_session="x"))
+    # 赋真实向量并落盘,否则 append 的 reload 读回空 embedding_id,测试恒绿。
+    s.get(old.id).embedding_id = "vec-old"
+    s._save_type(MemoryType.USER)
+    new = MemoryEntry(type=MemoryType.USER, key="home", content="上海",
+                      source="user_stated", source_session="x")
+    s.append_version(old.id, new)
+    assert s.get(old.id).is_superseded                    # 旧被取代
+    assert s.get(old.id).embedding_id in ("", None)       # 旧 embedding_id 已清
+
+
 def test_capacity_counts_only_active(tmp_path):
     s = MemoryStore(memory_dir=tmp_path / "mem", scope_policy="session", max_user=2)
     s.add(MemoryEntry(type=MemoryType.USER, key="a", content="v1", source="user_stated", source_session="x"))
@@ -109,6 +126,31 @@ def test_lineage_prunes_beyond_max_versions(tmp_path):
     from echo_agent.memory.types import MemoryTier
     archival = [e for e in superseded if e.tier == MemoryTier.ARCHIVAL]
     assert len(archival) == 1  # 上限=2、3 个 superseded 恰好归档最旧 1 个
+
+
+def test_lineage_prune_groups_by_scope(tmp_path):
+    # 多主体同 key(两 session 都有 home)不应共用同一 lineage_max_versions 上限。
+    # 按 key 分组会把两 session 的 superseded 混入一组,越限误归档另一主体的世系。
+    # 按 (key, source_session) 分组:每 session 各 2 版、均未超上限 → 无一归档。
+    from echo_agent.memory.forgetting import ForgettingCurve
+    from echo_agent.memory.types import MemoryTier
+    from datetime import datetime, timedelta
+    # retention_days=0 关闭陈旧年龄判定,隔离出"版本数上限"这一条,专测按 scope 分组。
+    fc = ForgettingCurve(lineage_max_versions=2, lineage_retention_days=0)
+    recent = [(datetime.now() - timedelta(hours=2)).isoformat(),
+              (datetime.now() - timedelta(hours=1)).isoformat()]
+    entries = []
+    for sess in ("s1", "s2"):
+        for i, ts in enumerate(recent):
+            e = MemoryEntry(type=MemoryType.USER, key="home", content=f"{sess}-v{i}",
+                            source="user_stated", source_session=sess)
+            e.superseded_by = "later"           # 标记为 superseded
+            e.updated_at = ts
+            entries.append(e)
+    marked = fc.prune_lineage(entries)
+    # 各 session 恰好 2 版 superseded、等于上限,不应有任何条目被归档
+    assert marked == []
+    assert all(e.tier != MemoryTier.ARCHIVAL for e in entries)
 
 
 def test_lineage_exact_max_versions_not_pruned(tmp_path):

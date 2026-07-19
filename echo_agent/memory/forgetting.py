@@ -108,11 +108,14 @@ class ForgettingCurve:
         from echo_agent.memory.types import MemoryTier
 
         marked: list[MemoryEntry] = []
-        by_key: dict[str, list[MemoryEntry]] = {}
+        # 按 (key, source_session) 分组:多主体同 key(如两 session 都有 home)各自独立
+        # 世系,共用同一 key 分组会把它们混入同一 lineage_max_versions 上限、越限误归档
+        # 另一主体的版本。与写路径 _same_scope 的 source_session 隔离口径一致。
+        by_key: dict[tuple[str, str], list[MemoryEntry]] = {}
         for entry in entries:
             if not entry.is_superseded:
                 continue
-            by_key.setdefault(entry.key, []).append(entry)
+            by_key.setdefault((entry.key, entry.source_session or ""), []).append(entry)
 
         for versions in by_key.values():
             # 倒序：最近更新的排前，保留最近 lineage_max_versions 版。

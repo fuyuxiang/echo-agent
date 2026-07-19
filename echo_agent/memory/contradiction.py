@@ -118,7 +118,13 @@ class ContradictionDetector:
         2. If vector index available, include high-similarity entries even with different keys
         3. Cap total at MAX_LLM_CANDIDATES
         """
-        same_key = [c for c in candidates if c.key and c.key == new_entry.key and c.id != new_entry.id]
+        # 兜底排除 superseded:同 key 改口后的旧版本不应充当矛盾候选,否则会把
+        # 新 active 版本判"矛盾"并误标 unresolved。整合器 Step 3 已在调用方过滤,
+        # 此处双保险,防其它调用方(如未来直连 check 的路径)漏过滤。
+        same_key = [
+            c for c in candidates
+            if c.key and c.key == new_entry.key and c.id != new_entry.id and not c.is_superseded
+        ]
         same_key_ids = {c.id for c in same_key}
 
         vector_matches: list[MemoryEntry] = []
