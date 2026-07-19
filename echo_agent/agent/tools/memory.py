@@ -155,7 +155,7 @@ class MemoryTool(Tool):
         elif action == "list_contradictions":
             return await self._list_contradictions()
         elif action == "resolve_contradiction":
-            return await self._resolve_contradiction(params)
+            return await self._resolve_contradiction(params, session_key)
         else:
             return ToolResult(success=False, error=f"Unknown action '{action}'")
 
@@ -186,7 +186,7 @@ class MemoryTool(Tool):
             source=source,
         )
         if not res.ok:
-            return self._map_reject(res, mem_type, "add", key)
+            return self._map_reject(res, "add", key)
         stored = res.entry
         if stored is not None and stored.content != content:
             # 决策1(R1 保持既有行为):store 内部 _merge_locked 对同 key 冲突
@@ -221,7 +221,7 @@ class MemoryTool(Tool):
         # provenance 守卫、ENV/scope 门禁、失效、审计全在 service.replace 内。
         res = await self._service.replace(actor_ctx, entry.id, content=content, source=source)
         if not res.ok:
-            return self._map_reject(res, mem_type, "replace", entry.key)
+            return self._map_reject(res, "replace", entry.key)
         return ToolResult(success=True, output=f"Memory updated: [{entry.type.value}] {entry.key}")
 
     async def _remove(
@@ -239,11 +239,11 @@ class MemoryTool(Tool):
         # provenance 守卫(据 model actor 的派生来源)、门禁、失效、审计全在 service.remove 内。
         res = await self._service.remove(actor_ctx, entry.id)
         if not res.ok:
-            return self._map_reject(res, mem_type, "remove", entry.key)
+            return self._map_reject(res, "remove", entry.key)
         return ToolResult(success=True, output=f"Memory removed: [{entry.type.value}] {entry.key}")
 
     @staticmethod
-    def _map_reject(res, mem_type: MemoryType, op: str, key: str) -> ToolResult:
+    def _map_reject(res, op: str, key: str) -> ToolResult:
         """WriteResult 拒绝原因 → ToolResult 错误文案。"""
         reason = res.reason
         if reason == "rejected_env":
@@ -311,7 +311,7 @@ class MemoryTool(Tool):
         ]
         return ToolResult(success=True, output="\n".join(lines))
 
-    async def _resolve_contradiction(self, params: dict[str, Any]) -> ToolResult:
+    async def _resolve_contradiction(self, params: dict[str, Any], session_key: str = "") -> ToolResult:
         if self._contradiction_detector is None:
             return ToolResult(success=False, error="Contradiction detection is disabled.")
         cid = params.get("contradiction_id", "")
@@ -326,4 +326,7 @@ class MemoryTool(Tool):
             return ToolResult(success=False, error="winner_id must be memory_id_a or memory_id_b")
         resolution = "a_wins" if winner_id == c.memory_id_a else "b_wins"
         await self._contradiction_detector.resolve(cid, resolution, winner_id=winner_id)
+        # 裁决把败者标记 superseded(经 detector→store.mark_superseded),绕过八步写序,
+        # 须显式失效——否则冻结快照/预取跨轮继续注入已被取代的败者条目。裁决全局可见,全局失效。
+        await self._service.invalidate(session_key, global_scope=True)
         return ToolResult(success=True, output=f"Resolved {cid}: {resolution}")

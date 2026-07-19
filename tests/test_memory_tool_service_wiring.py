@@ -9,6 +9,7 @@ import pytest
 
 from echo_agent.memory.store import MemoryStore
 from echo_agent.memory.service import MemoryService
+from echo_agent.memory.types import Contradiction
 from echo_agent.agent.tools.memory import MemoryTool
 from echo_agent.tools.base import ToolExecutionContext
 
@@ -16,6 +17,33 @@ from echo_agent.tools.base import ToolExecutionContext
 def _tool(tmp_path):
     store = MemoryStore(memory_dir=tmp_path / "mem", scope_policy="session")
     return MemoryTool(service=MemoryService(store)), store
+
+
+@pytest.mark.asyncio
+async def test_resolve_contradiction_triggers_global_invalidation(tmp_path):
+    # 裁决把败者标记为 superseded(store.mark_superseded),若不失效,
+    # 冻结快照/预取会跨轮继续注入已被取代的旧条目。裁决对所有会话可见,须全局失效。
+    calls = []
+
+    async def _inval(scope, global_scope):
+        calls.append((scope, global_scope))
+
+    class _Detector:
+        async def get_unresolved(self, limit=10):
+            return [Contradiction(id="c1", memory_id_a="a", memory_id_b="b",
+                                  description="conflict")]
+        async def resolve(self, cid, resolution, winner_id=None):
+            return None
+
+    store = MemoryStore(memory_dir=tmp_path / "mem", scope_policy="session")
+    service = MemoryService(store, invalidate_fn=_inval)
+    tool = MemoryTool(service=service, contradiction_detector=_Detector())
+
+    res = await tool.execute(
+        {"action": "resolve_contradiction", "contradiction_id": "c1", "winner_id": "a"}
+    )
+    assert res.success is True
+    assert any(global_scope is True for _, global_scope in calls), calls
 
 
 @pytest.mark.asyncio

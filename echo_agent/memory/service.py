@@ -91,6 +91,20 @@ class MemoryService:
         """暴露底层 store 供入口做读操作(find/search/list);写操作仍须走本类。"""
         return self._store
 
+    async def invalidate(self, scope: str, global_scope: bool = False) -> None:
+        """公开失效钩子:供绕过八步写序、直接改 store 的裁决路径(如工具
+        resolve_contradiction→ContradictionDetector.resolve→mark_superseded)显式失效。
+
+        未注入 invalidate_fn 时安全跳过。此处不做 flush/审计——调用方是既有裁决动作,
+        本方法只补回被删除的缓存失效这一环,不抢跑 detector 整体迁移(Task 7)。
+        """
+        if self._invalidate_fn is None:
+            return
+        try:
+            await self._invalidate_fn(scope, global_scope)
+        except Exception as e:
+            logger.warning("MemoryService invalidate failed: {}", e)
+
     # ── 公开写 API ──────────────────────────────────────────────────────────
 
     async def add(

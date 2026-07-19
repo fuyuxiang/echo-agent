@@ -47,3 +47,21 @@ async def test_flush_before_invalidate(tmp_path):
     await svc.add(ActorContext(actor="model", session_key="s", memory_scope="scope1"),
                   type=MemoryType.USER, key="k", content="c", source="user_stated")
     assert order == ["flush", "invalidate"]
+
+
+@pytest.mark.asyncio
+async def test_public_invalidate_forwards_to_fn(tmp_path):
+    # 裁决路径(如工具 resolve_contradiction)绕过八步写序直接改 store,
+    # 需要一个公开失效钩子;它应把 (scope, global_scope) 透传给 invalidate_fn。
+    calls = []
+    async def _inval(scope, g): calls.append((scope, g))
+    svc, _ = _svc(tmp_path, invalidate_fn=_inval)
+    await svc.invalidate("scope1", global_scope=True)
+    assert calls == [("scope1", True)]
+
+
+@pytest.mark.asyncio
+async def test_public_invalidate_noop_without_fn(tmp_path):
+    # 未注入 invalidate_fn 时公开失效应安全跳过,不抛异常。
+    svc, _ = _svc(tmp_path)
+    await svc.invalidate("scope1", global_scope=True)
