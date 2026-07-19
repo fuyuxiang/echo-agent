@@ -310,7 +310,7 @@ class ContextStage:
                 if self._episodic is not None and self._narrative_episode_count > 0:
                     try:
                         episodes = await self._episodic.get_session_episodes(
-                            event.memory_scope, self._narrative_episode_count
+                            event.session_key, self._narrative_episode_count
                         )
                         narrative_summaries = [e.summary for e in episodes if e.summary]
                     except Exception as e:
