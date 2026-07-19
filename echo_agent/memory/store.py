@@ -762,6 +762,35 @@ class MemoryStore:
             self._queue_embed(existing, old_vec_id=existing.embedding_id)
         return existing
 
+    def append_version(self, old_id: str, new_entry: MemoryEntry) -> MemoryEntry:
+        """同 key 改口:新建版本而非原地覆盖。旧条目保留并标记 superseded_by,
+        清旧向量(只 ACTIVE 进索引),新条目 version = old.version + 1。文件锁内原子完成。
+        旧条目已不在(并发删除)时退化为普通新增。"""
+        path = self._path_for(new_entry.type)
+        with self._file_lock(path):
+            self._reload_type(new_entry.type)
+            old = self._entries.get(old_id)
+            if old is None:
+                # 旧条目已不在(并发删除),退化为普通新增
+                self._entries[new_entry.id] = new_entry
+                self._index_entry(new_entry)
+                self._dirty_ids.add(new_entry.id)
+                self._save_type(new_entry.type)
+                self._queue_embed(new_entry)
+                return new_entry
+            new_entry.version = old.version + 1
+            self._entries[new_entry.id] = new_entry
+            self._index_entry(new_entry)
+            old.superseded_by = new_entry.id
+            old.updated_at = datetime.now().isoformat()
+            self._dirty_ids.add(new_entry.id)
+            self._dirty_ids.add(old_id)
+            self._save_type(new_entry.type)
+            self._queue_embed(new_entry)  # 新版本进索引
+            if old.embedding_id:
+                self._schedule_vector_removal(old.embedding_id)  # 清旧向量
+            return new_entry
+
     def _spawn_blocked_contradiction(self, existing: MemoryEntry, blocked: MemoryEntry) -> None:
         """Record the guard-blocked content as a Contradiction row so the
         resolution flow can see it (placeholder memory_id_b = blocked:<source>).
@@ -970,6 +999,43 @@ class MemoryStore:
         self._cleanup_deleted(entry)
         return True
 
+    def _run_cleanup_coro(self, coro_factory: "Callable[[], Any]") -> None:
+        """Drive a best-effort cleanup coroutine on the running loop if there is
+        one, else on a throwaway loop. Extracted from _cleanup_deleted so both
+        the delete path and append_version's vector-only removal share the same
+        running-loop double path (fire-and-forget under a loop, synchronous
+        otherwise). Callers must gate on having work to do before calling."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None:
+            task = asyncio.ensure_future(coro_factory())
+            self._pending_storage_tasks.add(task)
+            task.add_done_callback(self._pending_storage_tasks.discard)
+        else:
+            new_loop = asyncio.new_event_loop()
+            try:
+                new_loop.run_until_complete(coro_factory())
+            finally:
+                new_loop.close()
+
+    def _schedule_vector_removal(self, embedding_id: str) -> None:
+        """Best-effort removal of a single vector from the index, using the same
+        running-loop double path as _cleanup_deleted. Used when an entry is kept
+        in _entries (e.g. superseded by append_version) but its vector must stop
+        being retrievable — only ACTIVE entries should stay in the index."""
+        if not (self._vector_index and embedding_id):
+            return
+
+        async def _remove() -> None:
+            try:
+                await self._vector_index.remove(embedding_id)
+            except Exception as e:
+                logger.debug("Vector removal failed for {}: {}", embedding_id, e)
+
+        self._run_cleanup_coro(_remove)
+
     def _cleanup_deleted(self, entry: MemoryEntry) -> None:
         async def _cleanup() -> None:
             if self._storage:
@@ -985,20 +1051,7 @@ class MemoryStore:
 
         if not self._storage and not (self._vector_index and entry.embedding_id):
             return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-        if loop is not None:
-            task = asyncio.ensure_future(_cleanup())
-            self._pending_storage_tasks.add(task)
-            task.add_done_callback(self._pending_storage_tasks.discard)
-        else:
-            new_loop = asyncio.new_event_loop()
-            try:
-                new_loop.run_until_complete(_cleanup())
-            finally:
-                new_loop.close()
+        self._run_cleanup_coro(_cleanup)
 
     def set_tier(self, entry_id: str, tier: MemoryTier) -> bool:
         """Persist a tier change (e.g. archival) to the authoritative JSON store."""
