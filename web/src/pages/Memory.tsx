@@ -3,7 +3,7 @@ import { useApi } from "../hooks/use-api";
 import { apiFetch } from "../lib/api";
 import { Trash2, Search } from "lucide-react";
 
-const TIERS = ["core", "episodic", "semantic", "procedural"] as const;
+const TIERS = ["working", "episodic", "semantic", "archival"] as const;
 
 interface MemoryEntry {
   id: string;
@@ -15,7 +15,7 @@ interface MemoryEntry {
 }
 
 export function Memory() {
-  const [tier, setTier] = useState<string>("core");
+  const [tier, setTier] = useState<string>("working");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<MemoryEntry[] | null>(null);
 
