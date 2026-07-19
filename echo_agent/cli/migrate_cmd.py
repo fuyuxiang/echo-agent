@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
 import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from loguru import logger
 
 from echo_agent.memory.types import MemoryType
 
@@ -91,32 +94,55 @@ def parse_render_view(text: str) -> list[tuple[str, list[str], str]]:
     return facts
 
 
-def _scope_from_shard(path: Path) -> str:
-    """从分片文件名反推作用域。`MEMORY.<safe_scope>.<digest>.md`→safe_scope;
-    旧全局 `MEMORY.md`→default。注:safe_scope 为净化后串,原始 scope 里的
-    :// 等已被归一为 _,无法无损还原(见 store._safe_scope),迁移用净化串。"""
+def _scope_digest(scope: str) -> str:
+    """与 store._long_term_path 完全一致的短哈希:sha256(scope 或空串).hexdigest()[:8]。"""
+    return hashlib.sha256((scope or "").encode("utf-8")).hexdigest()[:8]
+
+
+def _shard_hash(path: Path) -> "str | None":
+    """取分片文件名末段的 8 位十六进制短哈希。`MEMORY.<safe_scope>.<digest>.md`→digest;
+    旧全局 `MEMORY.md` 或无哈希段→None。"""
     parts = path.name.split(".")
-    # 去掉尾部 "md"
     if parts and parts[-1] == "md":
         parts = parts[:-1]
-    # parts[0] == "MEMORY";旧全局仅剩 ["MEMORY"]
-    if len(parts) <= 1:
-        return "default"
-    # 末段是 8 位十六进制短哈希则丢弃,中间段即 safe_scope
     if len(parts) >= 3 and re.fullmatch(r"[0-9a-f]{8}", parts[-1]):
-        mid = parts[1:-1]
-    else:
-        mid = parts[1:]
-    scope = ".".join(mid)
-    return scope or "default"
+        return parts[-1]
+    return None
 
 
-async def _import_memory_md(store, memory_dir: Path, dry_run: bool) -> int:
+def _scope_from_shard(path: Path, candidates: "set[str] | None" = None) -> "str | None":
+    """靠短哈希反查真实 scope,而非用文件名里的净化串。净化(: / → _)不可逆,
+    直接用净化串会让迁移条目 source_session 与读侧真实会话键恒不等、永久不可见。
+    对每个候选 scope 算 sha256 短哈希与文件名末段比对,命中即为真实 scope。
+    旧全局 MEMORY.md(无哈希段)→ default;查不到匹配 → None(调用方跳过,绝不写净化串)。"""
+    digest = _shard_hash(path)
+    if digest is None:
+        # 旧全局 MEMORY.md 无哈希段,沿用历史映射 default(空 scope 会被 USER 写口拒)。
+        return "default"
+    for cand in candidates or set():
+        if _scope_digest(cand) == digest:
+            return cand
+    return None
+
+
+def _build_scope_candidates(store, owner_key: str) -> "set[str]":
+    """构造短哈希反查候选:store 现有条目的 source_session + owner_key + 空串。
+    覆盖迁移前分片实际写入用过的作用域,足以反查回真实 scope。"""
+    candidates = {e.source_session for e in store._entries.values() if e.source_session}
+    candidates.add(owner_key or "owner")
+    candidates.add("")
+    return candidates
+
+
+async def _import_memory_md(store, memory_dir: Path, dry_run: bool, owner_key: str = "owner") -> int:
     """扫描 memory_dir 下 MEMORY.*.md 分片(及旧全局 MEMORY.md),把渲染视图里的
-    事实行经 service.promote 入 store,成功后原分片改名 .imported。返回入库条目数。"""
+    事实行经 service.promote 入 store,成功入库(stored>0)后原分片改名 .imported。
+    scope 靠短哈希反查真实值;反查不到则跳过该分片并告警,绝不用净化串写坏 scope。
+    返回入库条目数。"""
     from echo_agent.memory.service import ActorContext, MemoryService
 
     service = MemoryService(store)
+    candidates = _build_scope_candidates(store, owner_key)
     shards = sorted(memory_dir.glob("MEMORY.*.md"))
     legacy = memory_dir / "MEMORY.md"
     if legacy.exists():
@@ -126,7 +152,11 @@ async def _import_memory_md(store, memory_dir: Path, dry_run: bool) -> int:
     for shard in shards:
         if shard.name.endswith(".imported"):
             continue
-        scope = _scope_from_shard(shard)
+        scope = _scope_from_shard(shard, candidates)
+        if scope is None:
+            logger.warning(f"无法还原 scope,跳过 {shard.name}")
+            print(f"跳过(无法还原 scope): {shard.name}")
+            continue
         text = shard.read_text(encoding="utf-8")
         facts = parse_render_view(text)
         if not facts:
@@ -154,8 +184,12 @@ async def _import_memory_md(store, memory_dir: Path, dry_run: bool) -> int:
             else:
                 print(f"  条目 {key} 未入库: {res.reason}")
         imported += stored
-        shard.rename(shard.with_name(shard.name + ".imported"))
-        print(f"已入库 {stored} 条并备份为 {shard.name}.imported(scope={scope})")
+        # 仅在确有条目入库时改名,全失败/0 条不动原分片,便于重试。
+        if stored > 0:
+            shard.rename(shard.with_name(shard.name + ".imported"))
+            print(f"已入库 {stored} 条并备份为 {shard.name}.imported(scope={scope})")
+        else:
+            print(f"未入库任何条目,保留原分片: {shard.name}(scope={scope})")
     return imported
 
 
@@ -213,7 +247,7 @@ def run_migrate_command(action, *, config_path=None, workspace=None, dry_run=Fal
                 return 1
         if not dry_run:
             backup_user_memory(memory_dir)
-        total = asyncio.run(_import_memory_md(store, memory_dir, dry_run))
+        total = asyncio.run(_import_memory_md(store, memory_dir, dry_run, owner_key))
         if dry_run:
             print("[dry-run] 未写 store、未改名")
         else:

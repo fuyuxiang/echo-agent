@@ -92,6 +92,32 @@ def test_migrate_memory_md_extracts_to_store(tmp_path):
     assert shard.with_name(shard.name + ".imported").exists()
 
 
+def test_migrate_memory_md_restores_real_scope_and_visible(tmp_path):
+    # 分片 scope 含 : 净化后为 telegram_alice,读侧用真实 telegram:alice 比对。
+    # 迁移必须靠短哈希反查还原真实 scope,否则迁移条目对该会话永久不可见。
+    cfg, mem = _seed(tmp_path)  # seed 里已有 source_session=telegram:alice 的条目,作反查候选
+    shard = _write_shard(mem, "telegram:alice", "## user\n- **user:hobby**: 爬山")
+    assert shard.exists()
+    # 文件名净化段应为 telegram_alice(不可逆),证明只能靠哈希反查
+    assert ".telegram_alice." in shard.name
+
+    rc = run_migrate_command("memory-md", config_path=str(cfg), yes=True)
+    assert rc == 0
+
+    from echo_agent.memory.store import MemoryStore
+    from echo_agent.memory.types import MemoryType
+    store = MemoryStore(memory_dir=mem, scope_policy="session")
+
+    # 迁移条目的 source_session 必须还原为真实 scope,而非净化串
+    migrated = [e for e in store.list_all(mem_type=MemoryType.USER) if e.key == "user:hobby"]
+    assert len(migrated) == 1
+    assert migrated[0].source_session == "telegram:alice"
+
+    # 按真实会话键可见(走 _visible_in_session)
+    visible = {e.key for e in store.list_all(session_key="telegram:alice")}
+    assert "user:hobby" in visible
+
+
 def test_migrate_memory_md_dry_run_no_write(tmp_path):
     cfg, mem = _seed(tmp_path)
     shard = _write_shard(mem, "owner", "## user\n- **user:hobby**: 爬山")
