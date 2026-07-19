@@ -319,9 +319,13 @@ class ResponseStage:
         # turn no longer re-triggers (counters are zeroed just below); on
         # failure the counters stay elevated, so lifting the flag lets the next
         # turn re-dispatch and retry the batch instead of wedging it forever.
-        # This runs after the DURABLE scheduler's own retries are exhausted
-        # (the factory re-runs this whole coroutine per retry, re-setting/
-        # clearing the flag each attempt), so we never leak a stuck flag.
+        # The flag is only ever SET at the dispatch point (see finalize, under
+        # the turn's session lock); this coroutine never re-sets it. A DURABLE
+        # retry re-runs the whole coroutine, but that only re-enters this
+        # finally and discards again — it never re-raises the flag. So the flag
+        # is unconditionally cleared once (on success or failure), and a failed
+        # review — whose nudge counters stay elevated — is re-dispatched (and
+        # thus re-flagged) by a later turn rather than left stuck forever.
         try:
             actions = await reviewer.review(messages)
             if actions:
