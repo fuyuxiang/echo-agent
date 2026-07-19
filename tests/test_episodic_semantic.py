@@ -169,3 +169,20 @@ async def test_requeue_stale_keeps_old_vector_on_embed_failure(storage):
     ep_rows = [r for r in rows if r["source_id"] == f"ep:{ep.id}"]
     # 旧向量行保留（模型仍是旧模型），下次启动仍会进 stale 集合重试
     assert len(ep_rows) == 1 and ep_rows[0]["model"] == "fastembed:old"
+
+
+@pytest.mark.asyncio
+async def test_create_episode_idempotent_on_session_range(storage):
+    """E1-b: 同 (session_key, range) 重复调 create_episode 幂等，不新建第二条。"""
+    mgr = EpisodicManager(storage)
+    e1 = await mgr.create_episode(
+        "s1", [{"role": "user", "content": "x"}], "摘要A", message_range=(0, 5)
+    )
+    e2 = await mgr.create_episode(
+        "s1", [{"role": "user", "content": "x"}], "摘要B", message_range=(0, 5)
+    )
+    assert e1.id == e2.id  # 同 (session,range) 幂等，不新建
+    rows = await storage.fetch_sql(
+        "SELECT COUNT(*) AS n FROM memory_episodes WHERE session_key='s1'"
+    )
+    assert rows[0]["n"] == 1

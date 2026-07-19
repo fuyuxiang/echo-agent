@@ -80,6 +80,32 @@ class EpisodicManager:
         importance: float = 0.5,
         message_range: tuple[int, int] = (0, 0),
     ) -> Episode:
+        # Idempotency: a real (non-zero) message_range uniquely identifies the
+        # compressed span, so a retry/concurrent consolidation of the same span
+        # must not create a duplicate episode. range == (0, 0) means "no range
+        # info" and keeps the legacy per-call insert behaviour.
+        if message_range != (0, 0):
+            existing = await self._storage.fetch_sql(
+                "SELECT * FROM memory_episodes WHERE session_key = ? "
+                "AND message_range_start = ? AND message_range_end = ?",
+                (session_key, message_range[0], message_range[1]),
+            )
+            if existing:
+                row = existing[0]
+                logger.debug(
+                    "create_episode idempotent hit {} for session {} range {}",
+                    row["id"], session_key, message_range,
+                )
+                return Episode(
+                    id=row["id"],
+                    session_key=row["session_key"],
+                    summary=row["summary"],
+                    message_range_start=row["message_range_start"],
+                    message_range_end=row["message_range_end"],
+                    entity_ids=json.loads(row["entities"]) if row["entities"] else [],
+                    importance=row["importance"],
+                    created_at=row["created_at"],
+                )
         episode = Episode(
             id=uuid.uuid4().hex[:12],
             session_key=session_key,
