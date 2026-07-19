@@ -1123,11 +1123,17 @@ class MemoryStore:
                 return False
             entry.superseded_by = superseded_by
             entry.updated_at = datetime.now().isoformat()
+            # 旧条目已被取代:清其向量,只让 ACTIVE 条目留在索引里。异步 detector
+            # 裁决路径也走 mark_superseded,一并覆盖两条路径的向量回收。
+            if entry.embedding_id:
+                self._schedule_vector_removal(entry.embedding_id)
+                entry.embedding_id = ""
             self._dirty_ids.add(entry_id)
             self._save_type(entry.type)
             return True
 
     def set_version(self, entry_id: str, version: int) -> bool:
+        self._warn_if_direct("set_version", entry_id)
         entry = self._entries.get(entry_id)
         if not entry:
             return False

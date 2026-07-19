@@ -64,6 +64,21 @@ def test_conflict_ignores_superseded(tmp_path):
     assert len(live) == 1 and live[0].content == "广州"  # 广州为唯一 active
 
 
+def test_mark_superseded_clears_vector(tmp_path):
+    s = _store(tmp_path)
+    old = s.add(MemoryEntry(type=MemoryType.USER, key="home", content="北京",
+                            source="user_stated", source_session="x"))
+    new = s.add(MemoryEntry(type=MemoryType.USER, key="other", content="上海",
+                            source="user_stated", source_session="x"))
+    # 赋予旧条目真实向量并落盘,否则 mark_superseded 的 reload 会读回空 embedding_id,
+    # 测试将恒绿而覆盖不到"清旧向量"这条路径。
+    s.get(old.id).embedding_id = "vec-old"
+    s._save_type(MemoryType.USER)
+    s.mark_superseded(old.id, new.id)
+    assert s.get(old.id).superseded_by == new.id
+    assert s.get(old.id).embedding_id in ("", None)  # 旧向量已清
+
+
 def test_capacity_counts_only_active(tmp_path):
     s = MemoryStore(memory_dir=tmp_path / "mem", scope_policy="session", max_user=2)
     s.add(MemoryEntry(type=MemoryType.USER, key="a", content="v1", source="user_stated", source_session="x"))
