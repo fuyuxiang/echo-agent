@@ -875,12 +875,19 @@ class MemoryStore:
         it is store.get-able and reflection-pairable, yet excluded from recall by
         the eligibility matrix. Not superseded (reflection skips superseded ends)
         and never a merge base (see _find_conflict's pending-tag skip), so a later
-        equal-priority write can't resurrect it into active recall."""
+        equal-priority write can't resurrect it into active recall.
+
+        注入扫描对称性:add 路径在 store.add 入口就 _validate_content(内含
+        _scan_memory_content 注入扫描)使恶意内容永不落库;replace 被拒路径不经
+        store.update 故此前绕过扫描,直接落 blocked.content。此处补同款校验——
+        扫描命中时 _validate_content 抛 ValueError(与 add 一致),landing 随之
+        跳过,恶意内容不会落成 pending 条目被 reflection 注入 LLM prompt。"""
+        content = self._validate_content(blocked.content)
         landed = MemoryEntry(
             type=existing.type,
             tier=MemoryTier.ARCHIVAL,
             key=existing.key,
-            content=blocked.content,
+            content=content,
             tags=_normalize_tags([*blocked.tags, self.PENDING_CONFIRMATION_TAG]),
             source_session=blocked.source_session or existing.source_session,
             importance=blocked.importance,
