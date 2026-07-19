@@ -187,8 +187,25 @@ class MemoryService:
         # ③ ENV 门禁
         if self._env_denied(ctx.actor, target.type, target.tags):
             return self._reject(ctx, "replace", entry_id, target.type, source, "rejected_env")
-        # ④ provenance:低于目标优先级则拒(只拒,不写 contradiction);override 显式越权跳过
+        # ④ provenance:低于目标优先级则拒。R4:与 add 路径(_merge_locked→
+        # _spawn_blocked_contradiction)对齐,拒前先把被拒内容记为可裁决的
+        # contradiction(落真实 pending 条目,不进召回),交 reflection 消费;
+        # 被拒仍不改 active(target 不动)。override 显式越权跳过。
         if not override and not provenance_guard(source, target):
+            blocked = MemoryEntry(
+                type=target.type,
+                key=target.key,
+                content=content,
+                tags=list(tags or []),
+                source_session=ctx.memory_scope,
+                source=source,
+            )
+            spawn = getattr(self._store, "_spawn_blocked_contradiction", None)
+            if spawn is not None:
+                try:
+                    spawn(target, blocked)
+                except Exception as e:
+                    logger.warning("replace 被拒写 contradiction 失败: {}", e)
             return self._reject(ctx, "replace", entry_id, target.type, source, "rejected_provenance")
         # ①⑤ 校验+写入:内容校验由 store.update 内部完成(唯一校验源),
         # 非法内容抛 ValueError→转 invalid。

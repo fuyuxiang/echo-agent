@@ -286,3 +286,94 @@ class TestAutoResolvePriority:
         entry_map = {legacy.id: legacy, newer.id: newer}
         assert await c._auto_resolve_same_key(contradiction, entry_map) is False
         detector.resolve.assert_not_awaited()
+
+
+class TestBlockedContradictionResolvable:
+    """★ E2-b:低优先级写被 provenance 拒后,写入的 contradiction 行两端 id 都应能
+    被 store.get 取到(非 blocked: 占位),从而可被 reflection(Task 3 的 store.get
+    消费)配对裁决。既覆盖 add 路径(store._merge_locked),也覆盖 service.replace 路径。"""
+
+    async def _store_with_storage(self, tmp_path):
+        from echo_agent.storage.sqlite import SQLiteBackend
+
+        storage = SQLiteBackend(tmp_path / "prov.db")
+        await storage.initialize()
+        store = MemoryStore(memory_dir=tmp_path / "mem", storage=storage)
+        return store, storage
+
+    async def _drain(self, store):
+        import asyncio
+
+        pending = list(store._pending_storage_tasks)
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_add_blocked_records_resolvable_contradiction(self, tmp_path):
+        from echo_agent.memory.types import MemoryEntry, MemoryType
+
+        store, storage = await self._store_with_storage(tmp_path)
+        try:
+            winner = store.add(MemoryEntry(
+                type=MemoryType.USER, key="home", content="北京",
+                source="user_stated", source_session="s1",
+            ))
+            # 低优先级同 key 覆盖:被 provenance guard 拒,active 仍北京。
+            store.add(MemoryEntry(
+                type=MemoryType.USER, key="home", content="上海",
+                source="model_inferred", source_session="s1",
+            ))
+            await self._drain(store)
+
+            rows = await storage.fetch_sql(
+                "SELECT * FROM memory_contradictions WHERE resolution IS NULL", ()
+            )
+            assert rows, "被拒后应写入一条 unresolved contradiction"
+            row = rows[0]
+            assert row["memory_id_a"] == winner.id
+            # 承重断言:memory_id_b 不再是 blocked:<source> 占位,而是真实条目 id。
+            assert not row["memory_id_b"].startswith("blocked:")
+            b = store.get(row["memory_id_b"])
+            assert b is not None, "memory_id_b 应能被 store.get 取到"
+            assert b.content == "上海"
+            # 被拒仍不改 active:胜者北京未动,且未 superseded。
+            live = [e for e in store._entries.values()
+                    if e.key == "home" and not e.is_superseded and e.id == winner.id]
+            assert live and live[0].content == "北京"
+        finally:
+            await storage.close()
+
+    @pytest.mark.asyncio
+    async def test_rejected_low_priority_write_records_resolvable_contradiction(self, tmp_path):
+        from echo_agent.memory.service import ActorContext, MemoryService
+        from echo_agent.memory.types import MemoryEntry, MemoryType
+
+        store, storage = await self._store_with_storage(tmp_path)
+        try:
+            svc = MemoryService(store)
+            winner = store.add(MemoryEntry(
+                type=MemoryType.USER, key="home", content="北京",
+                source="user_stated", source_session="s1",
+            ))
+            # service.replace 低优先级覆盖:被 provenance 拒。
+            r = await svc.replace(
+                ActorContext(actor="model", session_key="s1", memory_scope="s1"),
+                winner.id, content="上海", source="model_inferred",
+            )
+            assert r.ok is False and r.reason == "rejected_provenance"
+            await self._drain(store)
+
+            rows = await storage.fetch_sql(
+                "SELECT * FROM memory_contradictions WHERE resolution IS NULL", ()
+            )
+            assert rows, "replace 被拒后也应写入 contradiction(与 add 对齐)"
+            row = rows[0]
+            assert row["memory_id_a"] == winner.id
+            assert not row["memory_id_b"].startswith("blocked:")
+            b = store.get(row["memory_id_b"])
+            assert b is not None and b.content == "上海"
+            # 被拒仍不改 active。
+            assert store.get(winner.id).content == "北京"
+            assert not store.get(winner.id).is_superseded
+        finally:
+            await storage.close()

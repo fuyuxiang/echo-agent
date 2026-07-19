@@ -707,6 +707,11 @@ class MemoryStore:
                 # superseded 旧版本仍留在 _key_index(世系/回滚需要),但改口须
                 # 以 active 版本为冲突基准,否则会命中旧版本导致 version 不递增。
                 continue
+            if self.PENDING_CONFIRMATION_TAG in existing.tags:
+                # 被 provenance 拒后落库的 pending 条目(待用户确认/待裁决)不作
+                # 冲突基准:否则后续等优先级写会 append_version 把它翻成 active
+                # 版本、重新进召回,绕过"低优先级不改 active"的守卫语义。
+                continue
             if existing.type == entry.type and self._same_scope(existing, entry):
                 return existing
         return None
@@ -808,15 +813,28 @@ class MemoryStore:
         return new_entry
 
     def _spawn_blocked_contradiction(self, existing: MemoryEntry, blocked: MemoryEntry) -> None:
-        """Record the guard-blocked content as a Contradiction row so the
-        resolution flow can see it (placeholder memory_id_b = blocked:<source>).
-        Async fire-and-forget, mirroring _cleanup_deleted's spawn pattern."""
+        """Record a guard-blocked lower-priority write as an unresolved
+        Contradiction the resolution flow can adjudicate.
+
+        The blocked content is first landed as a REAL store entry (source kept,
+        tagged ``needs_user_confirmation`` and parked at ARCHIVAL tier so the
+        unified eligibility matrix keeps it out of recall/snapshot/tool while
+        ``store.get`` and reflection's pairing can still resolve it). Its real id
+        becomes ``memory_id_b`` — no more ``blocked:<source>`` placeholder that
+        ``store.get`` could never resolve. The winner (``existing``) is left
+        untouched and stays recall-eligible: the pair is NOT marked unresolved,
+        so a low-priority write can never suppress the authoritative fact.
+
+        The synchronous part (landing the entry) runs inline so reflection can
+        consume it immediately; only the SQL row insert is async fire-and-forget,
+        mirroring _cleanup_deleted's spawn pattern."""
         if not self._storage:
             return
+        landed = self._land_blocked_entry(existing, blocked)
         from echo_agent.memory.types import Contradiction
         c = Contradiction(
             memory_id_a=existing.id,
-            memory_id_b=f"blocked:{blocked.source}",
+            memory_id_b=landed.id,
             description=(
                 f"Provenance guard blocked lower-priority write on key "
                 f"'{existing.key}': {blocked.content}"
@@ -849,6 +867,33 @@ class MemoryStore:
                 new_loop.run_until_complete(_record())
             finally:
                 new_loop.close()
+
+    def _land_blocked_entry(self, existing: MemoryEntry, blocked: MemoryEntry) -> MemoryEntry:
+        """Persist the guard-blocked content as a pending, out-of-recall entry.
+
+        Kept ACTIVE-but-parked (tier=ARCHIVAL + needs_user_confirmation tag) so
+        it is store.get-able and reflection-pairable, yet excluded from recall by
+        the eligibility matrix. Not superseded (reflection skips superseded ends)
+        and never a merge base (see _find_conflict's pending-tag skip), so a later
+        equal-priority write can't resurrect it into active recall."""
+        landed = MemoryEntry(
+            type=existing.type,
+            tier=MemoryTier.ARCHIVAL,
+            key=existing.key,
+            content=blocked.content,
+            tags=_normalize_tags([*blocked.tags, self.PENDING_CONFIRMATION_TAG]),
+            source_session=blocked.source_session or existing.source_session,
+            importance=blocked.importance,
+            source=blocked.source,
+        )
+        self._entries[landed.id] = landed
+        self._index_entry(landed)
+        self._dirty_ids.add(landed.id)
+        self._save_type(landed.type)
+        return landed
+
+    PENDING_CONFIRMATION_TAG = "needs_user_confirmation"
+
 
     # ── CRUD ─────────────────────────────────────────────────────────────────
 

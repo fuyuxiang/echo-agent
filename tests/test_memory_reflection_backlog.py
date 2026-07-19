@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from echo_agent.memory.store import MemoryStore
-from echo_agent.memory.types import MemoryEntry, MemoryType
+from echo_agent.memory.types import MemoryEntry, MemoryTier, MemoryType
 
 
 @pytest.fixture
@@ -107,7 +107,8 @@ class TestGuardSideEffects:
         assert store.get(e.id).updated_at == original_ts
 
     def test_guard_records_blocked_contradiction(self, store, tmp_path):
-        """被拦内容须落 Contradiction 行（占位 memory_id_b=blocked:<source>）。"""
+        """被拦内容须落 Contradiction 行,且 memory_id_b 为真实落库条目 id
+        (R4:不再是 blocked:<source> 占位),store.get 可取以供 reflection 裁决。"""
         calls = []
 
         class FakeStorage:
@@ -131,5 +132,13 @@ class TestGuardSideEffects:
         ]
         assert len(contradiction_inserts) == 1
         _, params = contradiction_inserts[0]
-        assert params[2] == "blocked:model_inferred"  # memory_id_b 占位
+        # memory_id_b 是真实落库条目 id,不再是 blocked:<source> 占位。
+        assert not params[2].startswith("blocked:")
+        landed = s.get(params[2])
+        assert landed is not None and landed.content == "被拦的低优先级内容"
         assert "被拦的低优先级内容" in params[3]  # description 含被拦文本
+        # 被拒仍不改 active:胜者高优先级未动、pending 落库条目不进召回(ARCHIVAL)。
+        active = [e for e in s._entries.values()
+                  if e.key == "k" and not e.is_superseded
+                  and e.tier != MemoryTier.ARCHIVAL]
+        assert len(active) == 1 and active[0].content == "高优先级"
