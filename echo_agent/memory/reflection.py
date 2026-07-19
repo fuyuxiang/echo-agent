@@ -69,8 +69,6 @@ _MIN_GROUP_SIZE = 3
 class ReflectionEngine:
     """LLM-backed distillation over prefix-grouped semantic memories."""
 
-    NEEDS_CONFIRMATION_TAG = "needs_user_confirmation"
-
     def __init__(
         self,
         service: MemoryService,
@@ -196,7 +194,7 @@ class ReflectionEngine:
             e for e in self._store.list_all(session_key=memory_scope or None)
             if MemoryStore.SUSPECTED_CONFLICT_TAG in e.tags
             and not e.is_superseded
-            and self.NEEDS_CONFIRMATION_TAG not in e.tags
+            and MemoryStore.PENDING_CONFIRMATION_TAG not in e.tags
         ]
         # Ensure flagged entries are persisted (they may have been injected in
         # memory only, e.g. by the provenance guard's blocked path).
@@ -281,10 +279,10 @@ class ReflectionEngine:
             current = self._store.get(e.id)
             if current is None:
                 continue
-            if self.NEEDS_CONFIRMATION_TAG not in current.tags:
+            if MemoryStore.PENDING_CONFIRMATION_TAG not in current.tags:
                 await self._service.maintenance_update(
                     self._ctx_for(current), e.id,
-                    tags=[*current.tags, self.NEEDS_CONFIRMATION_TAG],
+                    tags=[*current.tags, MemoryStore.PENDING_CONFIRMATION_TAG],
                 )
 
     async def _resolve_detector_rows(

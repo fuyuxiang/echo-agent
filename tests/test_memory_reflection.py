@@ -154,7 +154,7 @@ class TestResolveConflicts:
         assert stats["resolved"] == 0
         assert stats["deferred"] == 1
         assert not store.get(a.id).is_superseded
-        assert ReflectionEngine.NEEDS_CONFIRMATION_TAG in store.get(a.id).tags
+        assert MemoryStore.PENDING_CONFIRMATION_TAG in store.get(a.id).tags
 
     @pytest.mark.asyncio
     async def test_priority_floor_blocks_legacy(self, store):
@@ -181,8 +181,8 @@ class TestResolveConflicts:
         engine, _ = self._engine(store, {"verdict": "ambiguous", "explanation": "无法判断"})
         stats = await engine.resolve_conflicts()
         assert stats["deferred"] == 1
-        assert ReflectionEngine.NEEDS_CONFIRMATION_TAG in store.get(a.id).tags
-        assert ReflectionEngine.NEEDS_CONFIRMATION_TAG in store.get(b.id).tags
+        assert MemoryStore.PENDING_CONFIRMATION_TAG in store.get(a.id).tags
+        assert MemoryStore.PENDING_CONFIRMATION_TAG in store.get(b.id).tags
         assert not store.get(a.id).is_superseded
 
     @pytest.mark.asyncio
@@ -294,7 +294,7 @@ class TestSnapshotConfirmationNotice:
         e = store.add(MemoryEntry(
             type=MemoryType.USER, key="k", content="待确认内容", importance=0.9,
         ))
-        store.update(e.id, tags=[ReflectionEngine.NEEDS_CONFIRMATION_TAG])
+        store.update(e.id, tags=[MemoryStore.PENDING_CONFIRMATION_TAG])
         snapshot, _ = store.get_snapshot_with_ids()
         assert "need your confirmation" in snapshot
 
