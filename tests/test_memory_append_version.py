@@ -154,3 +154,17 @@ async def test_lineage_retention_days_marks_stale(tmp_path):
     stale.updated_at = (datetime.now() - timedelta(days=60)).isoformat()  # 陈旧 60 天
     to_archive, to_forget = await s._forgetting.run_decay_pass(list(s._entries.values()))
     assert stale.tier == MemoryTier.ARCHIVAL          # 超期 superseded 被归档
+
+
+def test_no_dead_supersede_and_paths_converge(tmp_path):
+    # 写时 append 产生的 superseded 不应被再当作新冲突(排除已由 _find_conflict 保证)
+    s = _store(tmp_path)
+    s.add(MemoryEntry(type=MemoryType.USER, key="home", content="北京",
+                      source="user_stated", source_session="x"))
+    s.add(MemoryEntry(type=MemoryType.USER, key="home", content="上海",
+                      source="user_stated", source_session="x"))
+    # 再 add 与 active 同内容(精确重复)应短路,不产生新版本
+    r = s.add(MemoryEntry(type=MemoryType.USER, key="home", content="上海",
+                          source="user_stated", source_session="x"))
+    live = [e for e in s._entries.values() if e.key == "home" and not e.is_superseded]
+    assert len(live) == 1 and live[0].content == "上海"  # 精确重复短路,无新版本

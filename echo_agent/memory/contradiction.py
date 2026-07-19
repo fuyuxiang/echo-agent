@@ -229,34 +229,8 @@ class ContradictionDetector:
         )
         return [Contradiction.from_dict(r) for r in rows]
 
-    async def supersede(
-        self,
-        old_entry: MemoryEntry,
-        new_entry: MemoryEntry,
-        store: Any,
-    ) -> None:
-        """Mark old_entry as superseded by new_entry in the version lattice."""
-        old_entry.superseded_by = new_entry.id
-        new_entry.version = old_entry.version + 1
-        if self._service is not None:
-            # mark_superseded 走 service maintenance 通道(统一失效+审计)。
-            from echo_agent.memory.service import ActorContext
-            scope = old_entry.source_session or ""
-            ctx = ActorContext(
-                actor="maintenance", session_key=scope, memory_scope=scope
-            )
-            await self._service.mark_superseded(ctx, old_entry.id, new_entry.id)
-        else:
-            store.mark_superseded(old_entry.id, new_entry.id)
-        # set_version 无对应 service 语义(version 属 R2 append-version,R1 不动),
-        # 保留直连 store;R2 重写此路径时一并收敛。
-        store.set_version(new_entry.id, new_entry.version)
-        logger.info(
-            "Memory {} superseded by {} (v{})",
-            old_entry.id,
-            new_entry.id,
-            new_entry.version,
-        )
+    # supersede() 死方法已删除:曾是唯一 version+1 处但无存活调用者,version 递增
+    # 现由 store.append_version 唯一接管;取代裁决走 resolve → mark_superseded。
 
     @staticmethod
     def _key_prefix(key: str) -> str:
