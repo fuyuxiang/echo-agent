@@ -89,11 +89,17 @@ def test_long_term_shard_isolation(tmp_path):
     s = _store(tmp_path)
     s.write_long_term("owner", "owner 私密")
     s.write_long_term("telegram:grp1:bob", "群成员 bob")
-    # 快照按 scope 只注入对应分片。
+    # R3:MD 按 scope 分片隔离(read_long_term 层),但不再注入快照/prompt。
+    assert "owner 私密" in s.read_long_term("owner")
+    assert "bob" not in s.read_long_term("owner")
+    assert "群成员 bob" in s.read_long_term("telegram:grp1:bob")
+    assert "私密" not in s.read_long_term("telegram:grp1:bob")
+    # 快照不含任一分片的 MD 文本。
     owner_snap, _ = s.get_snapshot_with_ids(session_key="owner")
     grp_snap, _ = s.get_snapshot_with_ids(session_key="telegram:grp1:bob")
-    assert "owner 私密" in owner_snap and "bob" not in owner_snap
-    assert "群成员 bob" in grp_snap and "私密" not in grp_snap
+    assert "## Long-term Memory" not in owner_snap
+    assert "owner 私密" not in owner_snap
+    assert "群成员 bob" not in grp_snap
 
 
 def test_concurrent_same_scope_no_lost_write(tmp_path):

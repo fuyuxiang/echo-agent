@@ -1,28 +1,18 @@
 from echo_agent.memory.store import MemoryStore
 
 
-def test_long_term_injection_capped(tmp_path):
-    s = MemoryStore(
-        memory_dir=tmp_path / "mem",
-        long_term_snapshot_char_limit=100,
-    )
-    # write_long_term(scope, content): 写入远超上限的长期记忆分片
+def test_long_term_md_not_injected_into_snapshot(tmp_path):
+    s = MemoryStore(memory_dir=tmp_path / "mem", scope_policy="session")
+    s.write_long_term("", "## legacy\n\n- **old**: 不该进 prompt 的 MD 文本")
+    snap, ids = s.get_snapshot_with_ids(session_key="")
+    assert "## Long-term Memory" not in snap  # MD 段不再注入
+    assert "不该进 prompt" not in snap
+
+
+def test_long_term_md_absent_even_when_large(tmp_path):
+    # MD 内容再大也不进快照(不再依赖字符上限截断)。
+    s = MemoryStore(memory_dir=tmp_path / "mem", scope_policy="session")
     s.write_long_term("", "x" * 5000)
     snap, _ids = s.get_snapshot_with_ids(session_key="")
-    lt_seg = (
-        snap.split("## Long-term Memory", 1)[-1]
-        if "## Long-term Memory" in snap
-        else ""
-    )
-    assert len(lt_seg) <= 200  # 100 上限 + 标题/截断标记裕量
-
-
-def test_long_term_short_content_not_truncated(tmp_path):
-    s = MemoryStore(
-        memory_dir=tmp_path / "mem",
-        long_term_snapshot_char_limit=100,
-    )
-    s.write_long_term("", "short note")
-    snap, _ids = s.get_snapshot_with_ids(session_key="")
-    assert "short note" in snap
-    assert "…(truncated)" not in snap
+    assert "## Long-term Memory" not in snap
+    assert "xxxx" not in snap
