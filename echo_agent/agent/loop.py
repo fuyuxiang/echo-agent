@@ -618,7 +618,13 @@ class AgentLoop:
             flush_fn=getattr(self.memory, "flush_pending_embeds", None),
             allow_env_writes=config.memory.allow_model_environment_writes,
         ))
-        archival = ArchivalManager(storage, store=self.memory) if storage else None
+        # 归档/遗忘删除走 service maintenance 通道(统一失效+审计);Task 8 统一单例。
+        archival = ArchivalManager(storage, service=MemoryService(
+            self.memory,
+            invalidate_fn=self._invalidate_memory_caches,
+            flush_fn=getattr(self.memory, "flush_pending_embeds", None),
+            allow_env_writes=config.memory.allow_model_environment_writes,
+        )) if storage else None
 
         self._episodic = episodic
         self.consolidator.set_episodic_manager(episodic)
@@ -849,7 +855,20 @@ class AgentLoop:
 
         if config.memory.contradiction_detection and storage:
             from echo_agent.memory.contradiction import ContradictionDetector
-            detector = ContradictionDetector(storage, vector_index, store=self.memory)
+            from echo_agent.memory.service import MemoryService as _MemSvc
+            # 裁决 mark_superseded 走 service maintenance 通道(统一失效+审计);
+            # Task 8 统一单例。矛盾镜像跟踪仍直接落 store。
+            detector = ContradictionDetector(
+                storage,
+                vector_index,
+                store=self.memory,
+                service=_MemSvc(
+                    self.memory,
+                    invalidate_fn=self._invalidate_memory_caches,
+                    flush_fn=getattr(self.memory, "flush_pending_embeds", None),
+                    allow_env_writes=config.memory.allow_model_environment_writes,
+                ),
+            )
             self._contradiction_detector = detector
             self.consolidator.set_contradiction_detector(detector)
             self.consolidator.set_auto_resolve_contradictions(

@@ -65,3 +65,19 @@ async def test_public_invalidate_noop_without_fn(tmp_path):
     # 未注入 invalidate_fn 时公开失效应安全跳过,不抛异常。
     svc, _ = _svc(tmp_path)
     await svc.invalidate("scope1", global_scope=True)
+
+
+@pytest.mark.asyncio
+async def test_maintenance_remove_deletes_user_stated_archival(tmp_path):
+    # 决策2:maintenance 是内部维护(归档删除),走 remove 应跳过 provenance,
+    # 能删掉 user_stated 的高优先级归档条目——与它 set_tier/maintenance_update
+    # 的免检身份一致。此前 maintenance 映射 legacy(rank0),会被 provenance 拦下。
+    svc, store = _svc(tmp_path)
+    e = store.add(MemoryEntry(type=MemoryType.USER, key="home", content="上海",
+                              source="user_stated", source_session="scope1"))
+    r = await svc.remove(
+        ActorContext(actor="maintenance", session_key="scope1", memory_scope="scope1"),
+        e.id,
+    )
+    assert r.ok is True and r.reason == ""
+    assert store.get(e.id) is None

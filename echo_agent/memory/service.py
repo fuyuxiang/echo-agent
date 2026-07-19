@@ -208,8 +208,11 @@ class MemoryService:
         # ③ ENV 门禁
         if self._env_denied(ctx.actor, target.type, target.tags):
             return self._reject(ctx, "remove", entry_id, target.type, derived, "rejected_env")
-        # ④ provenance;override 显式越权跳过
-        if not override and not provenance_guard(derived, target):
+        # ④ provenance;override 显式越权跳过。
+        # 决策2:maintenance 是内部维护(归档/遗忘删除,非用户/模型行为),与它
+        # set_tier/maintenance_update 的免检身份一致,跳过 provenance——否则
+        # _ACTOR_SOURCE 把 maintenance 映射 legacy(rank0)会拦下任何有主条目。
+        if not override and ctx.actor != "maintenance" and not provenance_guard(derived, target):
             return self._reject(ctx, "remove", entry_id, target.type, derived, "rejected_provenance")
         # ⑤ 写入
         ok = self._store.delete(entry_id)

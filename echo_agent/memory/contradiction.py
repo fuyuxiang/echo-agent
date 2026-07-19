@@ -59,12 +59,16 @@ class ContradictionDetector:
         storage: StorageBackend,
         vector_index: VectorIndex | None = None,
         store: Any = None,
+        service: Any = None,
     ) -> None:
         self._storage = storage
         self._vector_index = vector_index
-        # Authoritative MemoryStore — supersession markers must land there,
-        # because retrieval filters on the JSON-loaded entries, not the mirror.
+        # Authoritative MemoryStore — 矛盾镜像跟踪(unresolved 标记/清除)仍直接落
+        # store,因为检索按 JSON 加载的条目过滤,而非镜像。
         self._store = store
+        # MemoryService — supersede 标记(mark_superseded)改走 maintenance 通道,
+        # 统一失效+审计;裁决是内部维护动作,跳 provenance/ENV 门禁。
+        self._service = service
 
     # ------------------------------------------------------------------
     # Public API
@@ -186,7 +190,17 @@ class ContradictionDetector:
                 loser_id = (
                     row["memory_id_b"] if winner_id == row["memory_id_a"] else row["memory_id_a"]
                 )
-                if self._store is not None:
+                if self._service is not None:
+                    # 裁决(mark_superseded)走 service maintenance 通道:统一失效+审计。
+                    # 失效落在败者所属 scope;取不到条目时退回全局失效(裁决全局可见)。
+                    from echo_agent.memory.service import ActorContext
+                    loser = self._store.get(loser_id) if self._store is not None else None
+                    scope = loser.source_session if loser is not None else ""
+                    ctx = ActorContext(
+                        actor="maintenance", session_key=scope, memory_scope=scope
+                    )
+                    await self._service.mark_superseded(ctx, loser_id, winner_id)
+                elif self._store is not None:
                     self._store.mark_superseded(loser_id, winner_id)
                 else:
                     # Mirror-only fallback — has no effect on retrieval, which
@@ -224,7 +238,18 @@ class ContradictionDetector:
         """Mark old_entry as superseded by new_entry in the version lattice."""
         old_entry.superseded_by = new_entry.id
         new_entry.version = old_entry.version + 1
-        store.mark_superseded(old_entry.id, new_entry.id)
+        if self._service is not None:
+            # mark_superseded 走 service maintenance 通道(统一失效+审计)。
+            from echo_agent.memory.service import ActorContext
+            scope = old_entry.source_session or ""
+            ctx = ActorContext(
+                actor="maintenance", session_key=scope, memory_scope=scope
+            )
+            await self._service.mark_superseded(ctx, old_entry.id, new_entry.id)
+        else:
+            store.mark_superseded(old_entry.id, new_entry.id)
+        # set_version 无对应 service 语义(version 属 R2 append-version,R1 不动),
+        # 保留直连 store;R2 重写此路径时一并收敛。
         store.set_version(new_entry.id, new_entry.version)
         logger.info(
             "Memory {} superseded by {} (v{})",

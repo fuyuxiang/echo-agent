@@ -306,24 +306,30 @@ class SemanticManager:
 class ArchivalManager:
     """Compressed long-term storage for old/low-importance memories.
 
-    When constructed with the authoritative ``MemoryStore``, tier changes and
-    deletions go through it (and thus persist to the JSON files the store
-    actually loads from). The raw-SQL path is kept only as a fallback for
-    callers that have no store — writing the SQLite mirror alone has no effect
-    on what the agent remembers, because the store never reads it back.
+    归档(set_tier→ARCHIVAL)与遗忘删除(remove)统一走 MemoryService 的
+    maintenance 通道:内部维护身份跳过 provenance/ENV 门禁,但仍失效+flush+审计,
+    并持久化到 store 实际加载的 JSON。仅裸 SQL 回退路径(无 service 的老调用方)
+    保留——写 SQLite 镜像本身对 agent 记得什么没有影响,store 从不读回它。
     """
 
-    def __init__(self, storage: StorageBackend, store: Any = None):
+    def __init__(self, storage: StorageBackend, service: Any = None):
         self._storage = storage
-        self._store = store
+        self._service = service
 
     async def archive(self, entries: list[MemoryEntry]) -> int:
         """Move entries to archival tier. Returns count archived."""
         count = 0
         for entry in entries:
-            if self._store is not None:
+            if self._service is not None:
+                from echo_agent.memory.service import ActorContext
                 from echo_agent.memory.types import MemoryTier as _Tier
-                if self._store.set_tier(entry.id, _Tier.ARCHIVAL):
+                ctx = ActorContext(
+                    actor="maintenance",
+                    session_key=entry.source_session,
+                    memory_scope=entry.source_session,
+                )
+                result = await self._service.set_tier(ctx, entry.id, _Tier.ARCHIVAL)
+                if result.ok:
                     entry.tier = _Tier.ARCHIVAL
                     count += 1
                 continue
@@ -345,9 +351,17 @@ class ArchivalManager:
     async def delete_forgotten(self, entries: list[MemoryEntry]) -> int:
         count = 0
         for entry in entries:
-            if self._store is not None:
-                # store.delete persists to JSON and cleans mirror + vectors.
-                if self._store.delete(entry.id):
+            if self._service is not None:
+                # service.remove(maintenance) 跳过 provenance(内部维护删除),
+                # 持久化到 JSON 并清理镜像 + 向量,同时失效+审计。
+                from echo_agent.memory.service import ActorContext
+                ctx = ActorContext(
+                    actor="maintenance",
+                    session_key=entry.source_session,
+                    memory_scope=entry.source_session,
+                )
+                result = await self._service.remove(ctx, entry.id)
+                if result.ok:
                     count += 1
                 continue
             await self._storage.execute_sql(
