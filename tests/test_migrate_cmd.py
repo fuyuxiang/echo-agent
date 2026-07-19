@@ -61,3 +61,51 @@ def test_rollback_restores(tmp_path):
     assert rc == 0
     data = json.loads((mem / "user_memory.json").read_text())
     assert data[0]["source_session"] == "telegram:alice"  # 已还原
+
+
+def _write_shard(mem: Path, scope: str, content: str) -> Path:
+    """用 store 的真实路径规则写一个 MEMORY.<scope>.<digest>.md 渲染视图分片。"""
+    from echo_agent.memory.store import MemoryStore
+    store = MemoryStore(memory_dir=mem, scope_policy="session")
+    store.write_long_term(scope, content)
+    return store._long_term_path(scope)
+
+
+def test_migrate_memory_md_extracts_to_store(tmp_path):
+    cfg, mem = _seed(tmp_path)
+    shard = _write_shard(mem, "owner", "## user\n- **user:hobby**: 爬山\n- **user:lang**: Python")
+    assert shard.exists()
+
+    rc = run_migrate_command("memory-md", config_path=str(cfg), yes=True)
+    assert rc == 0
+
+    # 分片条目已入 store
+    from echo_agent.memory.store import MemoryStore
+    from echo_agent.memory.types import MemoryType
+    store = MemoryStore(memory_dir=mem, scope_policy="session")
+    keys = {e.key: e.content for e in store.list_all(mem_type=MemoryType.USER)}
+    assert keys.get("user:hobby") == "爬山"
+    assert keys.get("user:lang") == "Python"
+
+    # 原分片改名 .imported 备份,原名已不存在
+    assert not shard.exists()
+    assert shard.with_name(shard.name + ".imported").exists()
+
+
+def test_migrate_memory_md_dry_run_no_write(tmp_path):
+    cfg, mem = _seed(tmp_path)
+    shard = _write_shard(mem, "owner", "## user\n- **user:hobby**: 爬山")
+
+    rc = run_migrate_command("memory-md", config_path=str(cfg), dry_run=True, yes=True)
+    assert rc == 0
+
+    # dry-run 不改名
+    assert shard.exists()
+    assert not shard.with_name(shard.name + ".imported").exists()
+
+    # dry-run 不写 store
+    from echo_agent.memory.store import MemoryStore
+    from echo_agent.memory.types import MemoryType
+    store = MemoryStore(memory_dir=mem, scope_policy="session")
+    keys = {e.key for e in store.list_all(mem_type=MemoryType.USER)}
+    assert "user:hobby" not in keys

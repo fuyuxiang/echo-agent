@@ -229,7 +229,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # migrate
     mig_parser = subparsers.add_parser("migrate", help="Run data migrations (memory scope)")
-    mig_parser.add_argument("action", choices=["run", "rollback", "status"], help="Migration action")
+    mig_parser.add_argument("action", choices=["run", "rollback", "status", "memory-md"], help="Migration action")
     mig_parser.add_argument("--dry-run", action="store_true", help="Report changes without writing")
     mig_parser.add_argument("-c", "--config", help="Path to config file")
     mig_parser.add_argument("-w", "--workspace", help="Workspace directory")
