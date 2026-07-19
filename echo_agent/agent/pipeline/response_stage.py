@@ -88,6 +88,15 @@ class ResponseStage:
         self._invalidate_memory_caches_fn = invalidate_memory_caches_fn
         # R1 Task8:后台 memory review 用注入的 loop 单例 service,不再每次 new。
         self._memory_service = memory_service
+        # R4 Task6 Important2:进程内 per-session "review 进行中" 去重集合。
+        # 清零挪到成功回调后,触发条件是 ">= 阈值" 且计数每轮持久化,因此在后台
+        # review 成功落 0 之前每一轮 turn 都会重新判定 ≥ 阈值。若无去重,每轮都会
+        # 派发一个新 review(昂贵 LLM + 可能重复写)。dispatch 前置标记、review
+        # 结束(成功或最终失败)时在 _background_memory_review 的 finally 里清除。
+        # ResponseStage 是 loop 内单例(见 loop.py 唯一构造点),该集合天然进程内
+        # 唯一;派发判定与 add 都发生在 finalize 内、持该 turn 的 session 锁下,turn
+        # 之间被 session 锁串行化,故对同一 session 的 check-then-add 无并发竞态。
+        self._memory_review_inflight: set[str] = set()
 
     async def finalize(self, ctx: PipelineContext, result: InferenceResult) -> ProcessResult:
         """Post-process inference result, save session, schedule background tasks."""
@@ -176,13 +185,23 @@ class ResponseStage:
             # failed review left the counters at 0, so this batch would never be
             # reviewed again. On success the review resets + persists; on failure
             # it re-raises so the counters stay put and next turn re-triggers.
-            from echo_agent.agent.background import Tier
-            self._spawn_fn(
-                lambda: self._background_memory_review(
-                    ctx.messages, event.session_key, event.memory_scope,
-                ),
-                tier=Tier.DURABLE,
-            )
+            #
+            # In-flight dedupe (R4 Task6 Important2): the trigger is now level
+            # (">= 阈值") and the counter is cleared only on the review's success
+            # callback, so every turn between the trigger and that callback would
+            # re-dispatch a fresh review. Guard on a per-session in-flight flag:
+            # skip dispatch while a review for this session is still running.
+            # Both the check and the add happen here under the turn's session
+            # lock, so concurrent turns for the same session cannot both pass.
+            if session.key not in self._memory_review_inflight:
+                self._memory_review_inflight.add(session.key)
+                from echo_agent.agent.background import Tier
+                self._spawn_fn(
+                    lambda: self._background_memory_review(
+                        ctx.messages, event.session_key, event.memory_scope,
+                    ),
+                    tier=Tier.DURABLE,
+                )
 
         # Finalize streaming
         outbound_sent = False
@@ -294,15 +313,27 @@ class ResponseStage:
         # the failure AND (below) skip the counter reset — the counters would
         # only be cleared on a genuine success, so a failed review keeps the
         # nudge counters intact and next turn re-triggers this batch.
-        actions = await reviewer.review(messages)
-        if actions:
-            logger.info("Background memory review: {}", "; ".join(actions))
-            await self._clear_memory_snapshot(session_key)
-        # Success: clear the memory-review nudge counters and persist. Done here
-        # (not at the inference-stage trigger) so a failed/retried review never
-        # loses the pending batch. Re-acquire under the session lock so this does
-        # not race the next turn's own metadata write.
-        await self._reset_memory_nudge_counters(session_key)
+        #
+        # The in-flight flag (dispatch dedupe, see finalize) is cleared in a
+        # finally so it lifts on BOTH success and failure: on success the next
+        # turn no longer re-triggers (counters are zeroed just below); on
+        # failure the counters stay elevated, so lifting the flag lets the next
+        # turn re-dispatch and retry the batch instead of wedging it forever.
+        # This runs after the DURABLE scheduler's own retries are exhausted
+        # (the factory re-runs this whole coroutine per retry, re-setting/
+        # clearing the flag each attempt), so we never leak a stuck flag.
+        try:
+            actions = await reviewer.review(messages)
+            if actions:
+                logger.info("Background memory review: {}", "; ".join(actions))
+                await self._clear_memory_snapshot(session_key)
+            # Success: clear the memory-review nudge counters and persist. Done
+            # here (not at the inference-stage trigger) so a failed/retried
+            # review never loses the pending batch. Re-acquire under the session
+            # lock so this does not race the next turn's own metadata write.
+            await self._reset_memory_nudge_counters(session_key)
+        finally:
+            self._memory_review_inflight.discard(session_key)
 
     async def _reset_memory_nudge_counters(self, session_key: str) -> None:
         """Zero the memory-review nudge counters for ``session_key`` and persist.
@@ -310,14 +341,29 @@ class ResponseStage:
         Serialized against the turn loop via the per-session lock so a
         concurrent next-turn save cannot clobber (or be clobbered by) this
         reset. No-op if the SessionManager stand-in lacks the lock/lookup API
-        (older/lighter test doubles)."""
+        (older/lighter test doubles).
+
+        The clear+save is wrapped in its own guard so a persistence failure
+        does NOT propagate: this coroutine is awaited at the tail of the
+        DURABLE ``_background_memory_review`` factory, so a raised save error
+        would be caught by ``_run_durable`` and re-run the ENTIRE review
+        (expensive LLM call + possibly duplicate memory writes). Swallowing it
+        here leaves the counters at their elevated value, so the next turn
+        naturally re-triggers the review — no rerun of the whole batch needed."""
         acquire = getattr(self._sessions, "acquire", None)
         get_or_create = getattr(self._sessions, "get_or_create", None)
         if acquire is None or get_or_create is None:
             return
-        lock = await acquire(session_key)
-        async with lock:
-            session = await get_or_create(session_key)
-            session.metadata["_nudge_turns_memory"] = 0
-            session.metadata["_nudge_tool_iters_memory"] = 0
-            await self._sessions.save(session)
+        try:
+            lock = await acquire(session_key)
+            async with lock:
+                session = await get_or_create(session_key)
+                session.metadata["_nudge_turns_memory"] = 0
+                session.metadata["_nudge_tool_iters_memory"] = 0
+                await self._sessions.save(session)
+        except Exception as e:  # noqa: BLE001 — 不得向上传播,避免触发 review 重跑
+            logger.warning(
+                "Memory nudge counter reset/save failed for {}; "
+                "counters kept elevated, next turn will re-trigger: {}",
+                session_key, e,
+            )

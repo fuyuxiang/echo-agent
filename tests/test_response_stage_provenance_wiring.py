@@ -262,3 +262,130 @@ async def test_memory_counter_cleared_only_on_review_success():
 
     assert session2.metadata["_nudge_turns_memory"] == 5
     assert session2.metadata["_nudge_tool_iters_memory"] == 3
+
+
+# --- R4 Task6 Important 1: reset/save 失败不得触发昂贵的 review 重跑 -----------
+class _SaveFailsSessions:
+    """SessionManager 替身:提供真锁与固定 session,但 save 恒抛异常——模拟
+    metadata 持久化失败(磁盘满/存储抖动)。"""
+
+    def __init__(self, session):
+        self._session = session
+        self.save_calls = 0
+
+    async def acquire(self, key):
+        import asyncio
+        return asyncio.Lock()
+
+    async def get_or_create(self, key):
+        return self._session
+
+    async def save(self, session):
+        self.save_calls += 1
+        raise RuntimeError("disk full")
+
+
+@pytest.mark.asyncio
+async def test_reset_save_failure_does_not_rerun_review():
+    """计数清零后的 save 失败绝不能把整轮 review 当作失败重跑。
+
+    review 成功后 _reset_memory_nudge_counters 里的 save 若抛异常并向上传播,
+    会被 DURABLE _run_durable 当成 review 失败,按 factory 重跑整段 review
+    (昂贵的 LLM 调用 + 可能重复写入记忆)。修法:reset 内部吞掉 save 失败,
+    只 warning,不向上抛——所以 DURABLE 不会重试,review 只跑一次。"""
+    from unittest.mock import AsyncMock, patch
+
+    from echo_agent.agent.background import BackgroundScheduler, Tier
+
+    session = Session(key="tg:9")
+    session.metadata["_nudge_turns_memory"] = 5
+    session.metadata["_nudge_tool_iters_memory"] = 3
+    sessions = _SaveFailsSessions(session)
+
+    rs = ResponseStage(
+        config=None,
+        sessions=sessions,
+        memory=_FakeMemory(),
+        provider=None,
+        consolidation_worker=object(),
+        default_model="",
+        spawn_fn=lambda *a, **k: None,
+        clear_memory_snapshot_fn=AsyncMock(),
+        memory_service=object(),  # non-None → skip inline MemoryService build
+    )
+
+    reviewer = MagicMock()
+    reviewer.review = AsyncMock(return_value=["memory: added x"])
+
+    scheduler = BackgroundScheduler(max_concurrency=2)
+    with patch("echo_agent.memory.reviewer.MemoryReviewer", return_value=reviewer):
+        scheduler.spawn(
+            lambda: rs._background_memory_review(
+                [{"role": "user", "content": "hi"}], "tg:9", "tg:9",
+            ),
+            tier=Tier.DURABLE,
+        )
+        await scheduler.aclose()
+
+    # save 确实被调到并失败,但昂贵的 review 只允许跑一次——不因 save 失败重跑。
+    assert reviewer.review.await_count == 1
+    assert sessions.save_calls >= 1
+
+
+# --- R4 Task6 Important 2: review 进行中禁止重复派发 --------------------------
+@pytest.mark.asyncio
+async def test_review_inflight_blocks_duplicate_dispatch():
+    """清零挪到成功回调后,触发条件是 ">= 阈值" 且每轮持久化。达阈值后、在后台
+    review 成功回调落 0 之前,若无 in-flight 去重,则每轮 turn 都重新判定 ≥ 阈值
+    → 重复派发新 review。此处校验:review 进行中,后续 turn 不再重复派发;回调
+    清掉 in-flight 标记后,下一轮才允许再次派发。"""
+    spawned = []
+
+    def _spawn_fn(item, **kwargs):
+        spawned.append(item)
+
+    rs = ResponseStage(
+        config=None,
+        sessions=_FakeSessions(),
+        memory=_FakeMemory(),
+        provider=None,
+        consolidation_worker=object(),
+        default_model="",
+        spawn_fn=_spawn_fn,
+        clear_memory_snapshot_fn=lambda *a, **k: None,
+    )
+    # spawn_fn 只记录不执行,review 永不落地 → 模拟 review 仍在进行中。
+    rs._background_memory_review = (
+        lambda self, *a, **k: None
+    ).__get__(rs, ResponseStage)
+
+    event = InboundEvent.text_message(
+        channel="telegram", sender_id="u1", chat_id="123", text="hi",
+    )
+    session = Session(key=event.session_key)
+
+    def _ctx():
+        return PipelineContext(
+            event=event, session=session, trace_id="t", publish_response=False,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+    result = InferenceResult(
+        response_text="ok", total_tool_calls=0,
+        should_review_skills=False, should_review_memory=True,
+    )
+
+    # Turn 1:达阈值,派发一次,标记 in-flight。
+    await rs.finalize(_ctx(), result)
+    assert len(spawned) == 1
+    assert session.key in rs._memory_review_inflight
+
+    # Turn 2:review 仍进行中(标记未清),同样 should_review_memory=True,
+    # 但必须被去重,不得派发第二次。
+    await rs.finalize(_ctx(), result)
+    assert len(spawned) == 1
+
+    # 成功回调清掉 in-flight 标记后,下一轮允许再次派发。
+    rs._memory_review_inflight.discard(session.key)
+    await rs.finalize(_ctx(), result)
+    assert len(spawned) == 2
