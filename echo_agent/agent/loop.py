@@ -252,6 +252,8 @@ class AgentLoop:
             contradiction_scan_on_store=config.memory.contradiction_scan_on_store,
             archival_threshold=config.memory.archival_threshold,
             forget_threshold=config.memory.forget_threshold,
+            lineage_max_versions=config.memory.lineage_max_versions,
+            lineage_retention_days=config.memory.lineage_retention_days,
             # R1 Task8:唯一写口。所有写者经 self._memory_service 单例(下方构造)
             # 走八步写序,故 store 置 service_only,外部绕过 service 直写即软告警。
             service_only=config.memory.enabled,

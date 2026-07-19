@@ -162,6 +162,8 @@ class MemoryStore:
         contradiction_scan_on_store: bool = False,
         archival_threshold: float = 0.05,
         forget_threshold: float = 0.01,
+        lineage_max_versions: int = 3,
+        lineage_retention_days: int = 90,
         service_only: bool = False,
     ):
         self.memory_dir = memory_dir
@@ -191,10 +193,14 @@ class MemoryStore:
         self._dirty_ids: set[str] = set()
         self._failed_sync: set[str] = set()
         self._load()
+        self._lineage_max_versions = lineage_max_versions
+        self._lineage_retention_days = lineage_retention_days
         self._forgetting = ForgettingCurve(
             base_half_life_days=decay_half_life_days,
             archive_threshold=archival_threshold,
             forget_threshold=forget_threshold,
+            lineage_max_versions=lineage_max_versions,
+            lineage_retention_days=lineage_retention_days,
         )
         self._vector_index = None  # set externally via set_vector_index()
         self._retriever = None  # set externally via set_retriever()
@@ -783,6 +789,15 @@ class MemoryStore:
         old.updated_at = datetime.now().isoformat()
         self._dirty_ids.add(new_entry.id)
         self._dirty_ids.add(old_id)
+        # 世系裁剪:每次改口后,把该 key 下超版本数上限/超保留天数的旧 superseded
+        # 版本置 tier=ARCHIVAL,交既有 archival→forget 遗忘流删除。只碰 superseded,
+        # 不动 active,故 active USER 不衰减语义不变。就地标记同步落盘,遗忘删除由
+        # 空闲整合期的 run_decay_pass 异步执行。
+        same_key = [
+            e for e in self._typed_entries(new_entry.type) if e.key == new_entry.key
+        ]
+        for pruned in self._forgetting.prune_lineage(same_key):
+            self._dirty_ids.add(pruned.id)
         self._save_type(new_entry.type)
         self._queue_embed(new_entry)  # 新版本进索引
         if old.embedding_id:

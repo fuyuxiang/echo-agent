@@ -28,10 +28,14 @@ class ForgettingCurve:
         base_half_life_days: float = 30.0,
         archive_threshold: float = 0.05,
         forget_threshold: float = 0.01,
+        lineage_max_versions: int = 3,
+        lineage_retention_days: int = 90,
     ):
         self._base_half_life = max(1.0, base_half_life_days)
         self._archive_threshold = archive_threshold
         self._forget_threshold = forget_threshold
+        self._lineage_max_versions = max(0, lineage_max_versions)
+        self._lineage_retention_days = max(0, lineage_retention_days)
 
     @staticmethod
     def _days_since(iso_timestamp: str) -> float:
@@ -91,6 +95,45 @@ class ForgettingCurve:
         except (ValueError, OverflowError, TypeError):
             return None
 
+    def prune_lineage(self, entries: list[MemoryEntry]) -> list[MemoryEntry]:
+        """世系裁剪：把过度膨胀的 superseded 版本链收敛到 ARCHIVAL。
+
+        对每个 key 下的 **superseded** 版本（按 updated_at 倒序）：
+          - 超过 lineage_max_versions 的更旧版本 → ARCHIVAL；
+          - 超过 lineage_retention_days 天的陈旧版本 → ARCHIVAL（即使未超版本数）。
+        **只作用于 superseded，绝不触碰 active 版本**（active 是唯一事实源）。
+        返回本次被新标记为 ARCHIVAL 的条目列表。同步纯方法，供 store append 路径与
+        run_decay_pass 复用。
+        """
+        from echo_agent.memory.types import MemoryTier
+
+        marked: list[MemoryEntry] = []
+        by_key: dict[str, list[MemoryEntry]] = {}
+        for entry in entries:
+            if not entry.is_superseded:
+                continue
+            by_key.setdefault(entry.key, []).append(entry)
+
+        for versions in by_key.values():
+            # 倒序：最近更新的排前，保留最近 lineage_max_versions 版。
+            versions.sort(key=lambda e: e.updated_at or "", reverse=True)
+            for idx, entry in enumerate(versions):
+                if entry.tier == MemoryTier.ARCHIVAL:
+                    continue
+                over_version = idx >= self._lineage_max_versions
+                over_age = False
+                if self._lineage_retention_days > 0 and entry.updated_at:
+                    try:
+                        over_age = self._days_since(entry.updated_at) > self._lineage_retention_days
+                    except (ValueError, OverflowError, TypeError):
+                        over_age = False
+                if over_version or over_age:
+                    entry.tier = MemoryTier.ARCHIVAL
+                    marked.append(entry)
+        if marked:
+            logger.info("Lineage prune: {} superseded versions archived", len(marked))
+        return marked
+
     async def run_decay_pass(
         self,
         entries: list[MemoryEntry],
@@ -99,6 +142,10 @@ class ForgettingCurve:
 
         Returns (to_archive, to_forget).
         """
+        # 世系裁剪先行：superseded 版本（含 USER 类型）按版本数/保留天数收敛为
+        # ARCHIVAL。必须在下方 USER continue 之前独立处理——否则 superseded 的 USER
+        # 旧版本会被跳过而永不收敛。active USER 仍照常 continue 不衰减，语义不破。
+        self.prune_lineage(entries)
         to_archive: list[MemoryEntry] = []
         to_forget: list[MemoryEntry] = []
         for entry in entries:

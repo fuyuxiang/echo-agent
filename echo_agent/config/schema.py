@@ -2049,6 +2049,22 @@ class MemoryConfig(_Base):
             "desc_en": "Forget score threshold; entries below it are forgotten",
         },
     )
+    lineage_max_versions: int = Field(
+        default=3,
+        json_schema_extra={
+            "status": "effective", "ref": "memory/forgetting.py:prune_lineage",
+            "desc_zh": "同 key 世系保留的 superseded 版本数上限,超出的最旧版本转归档待遗忘",
+            "desc_en": "Max superseded versions kept per key lineage; older ones move to archival for forgetting",
+        },
+    )
+    lineage_retention_days: int = Field(
+        default=90,
+        json_schema_extra={
+            "status": "effective", "ref": "memory/forgetting.py:prune_lineage",
+            "desc_zh": "superseded 版本保留天数,超期即转归档待遗忘(即便未超版本数上限)",
+            "desc_en": "Retention days for superseded versions; stale ones move to archival even under the version cap",
+        },
+    )
     max_working_memory: int = Field(
         default=20,
         json_schema_extra={

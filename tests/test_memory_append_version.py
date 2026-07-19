@@ -96,3 +96,47 @@ def test_capacity_counts_only_active(tmp_path):
     # 无 active 条目被误删:a-v2 与 b 两个 active 都在
     live = [e for e in s._entries.values() if not e.is_superseded]
     assert {e.content for e in live} == {"v2", "w"}
+
+
+def test_lineage_prunes_beyond_max_versions(tmp_path):
+    s = MemoryStore(memory_dir=tmp_path / "mem", scope_policy="session",
+                    lineage_max_versions=2)
+    for c in ["v1", "v2", "v3", "v4"]:  # 连续改口,产生 3 个 superseded + 1 active
+        s.add(MemoryEntry(type=MemoryType.USER, key="home", content=c,
+                          source="user_stated", source_session="x"))
+    superseded = [e for e in s._entries.values() if e.key == "home" and e.is_superseded]
+    # 世系裁剪:保留最近 2 版 superseded,更旧的转 ARCHIVAL(待遗忘删除)
+    from echo_agent.memory.types import MemoryTier
+    archival = [e for e in superseded if e.tier == MemoryTier.ARCHIVAL]
+    assert len(archival) >= 1  # 最旧的 superseded 被标记归档
+
+
+def test_lineage_active_not_pruned(tmp_path):
+    # 世系裁剪只作用于 superseded,active 版本永不被标记归档。
+    s = MemoryStore(memory_dir=tmp_path / "mem", scope_policy="session",
+                    lineage_max_versions=1)
+    for c in ["v1", "v2", "v3"]:
+        s.add(MemoryEntry(type=MemoryType.USER, key="home", content=c,
+                          source="user_stated", source_session="x"))
+    from echo_agent.memory.types import MemoryTier
+    active = [e for e in s._entries.values() if e.key == "home" and not e.is_superseded]
+    assert len(active) == 1                          # 仅一个 active
+    assert active[0].content == "v3"                 # 最新版本存活
+    assert active[0].tier != MemoryTier.ARCHIVAL     # active 未被裁剪
+
+
+@pytest.mark.asyncio
+async def test_lineage_retention_days_marks_stale(tmp_path):
+    # 超过保留天数的 superseded 即使未超版本数上限,也被标记 ARCHIVAL。
+    from datetime import datetime, timedelta
+    from echo_agent.memory.types import MemoryTier
+    s = MemoryStore(memory_dir=tmp_path / "mem", scope_policy="session",
+                    lineage_max_versions=100, lineage_retention_days=30)
+    old = s.add(MemoryEntry(type=MemoryType.USER, key="home", content="旧",
+                            source="user_stated", source_session="x"))
+    s.add(MemoryEntry(type=MemoryType.USER, key="home", content="新",
+                      source="user_stated", source_session="x"))  # 旧→superseded
+    stale = s.get(old.id)
+    stale.updated_at = (datetime.now() - timedelta(days=60)).isoformat()  # 陈旧 60 天
+    to_archive, to_forget = await s._forgetting.run_decay_pass(list(s._entries.values()))
+    assert stale.tier == MemoryTier.ARCHIVAL          # 超期 superseded 被归档
