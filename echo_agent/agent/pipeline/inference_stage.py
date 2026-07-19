@@ -384,7 +384,12 @@ class InferenceStage:
             _memory_turns += 1
             if _memory_turns >= self._memory_nudge_interval:
                 should_review_memory = True
-                _memory_turns = 0
+                # NB: counter is NOT reset here. Clearing at the trigger meant a
+                # failed background review left the counter at 0, so this batch
+                # would never be reviewed again. The counter is now zeroed only
+                # after the review SUCCEEDS (ResponseStage._background_memory_review),
+                # so a failed/retried review keeps it elevated and next turn
+                # re-triggers.
 
         # Persist nudge counters back to session metadata
         session.metadata["_nudge_tool_iters_skill"] = loop_result.skill_iters
@@ -1122,7 +1127,9 @@ class InferenceStage:
             if (self._memory_nudge_interval > 0 and counters.memory_iters >= self._memory_nudge_interval
                     and self._tools.has("memory")):
                 counters.should_review_memory = True
-                counters.memory_iters = 0
+                # Counter NOT reset here — see run(): it is zeroed only after the
+                # background review succeeds, so a failed review re-triggers next
+                # turn instead of dropping this batch permanently.
 
     async def _chat_stream_with_routing(
         self,

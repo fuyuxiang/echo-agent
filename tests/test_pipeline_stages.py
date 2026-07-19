@@ -236,9 +236,10 @@ class TestResponseStage:
 
         spawned = []
 
-        def _record_spawn(coro):
-            spawned.append(coro)
-            coro.close()  # avoid "coroutine never awaited" warning
+        def _record_spawn(coro, **kwargs):
+            # Memory review is now dispatched as a DURABLE zero-arg factory
+            # (retry-capable), so record the item + tier without awaiting it.
+            spawned.append((coro, kwargs.get("tier")))
 
         stage = ResponseStage(
             config=MagicMock(),
@@ -259,8 +260,12 @@ class TestResponseStage:
 
         await stage.finalize(ctx, result)
 
-        # The memory review coroutine must have been spawned despite zero tool calls.
+        # The memory review must have been spawned despite zero tool calls, and
+        # it must be DURABLE (a dropped/failed review would otherwise lose the
+        # batch — E4).
+        from echo_agent.agent.background import Tier
         assert len(spawned) == 1
+        assert spawned[0][1] == Tier.DURABLE
 
     @pytest.mark.asyncio
     async def test_skill_review_still_requires_tool_calls(self):

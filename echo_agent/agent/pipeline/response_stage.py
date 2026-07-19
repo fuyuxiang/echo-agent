@@ -168,7 +168,21 @@ class ResponseStage:
                 ctx.messages, event.session_key, event.channel,
             ))
         if self._memory_enabled and result.should_review_memory and not ephemeral:
-            self._spawn_fn(self._background_memory_review(ctx.messages, event.session_key, event.memory_scope))
+            # DURABLE: a dropped/failed memory review must not silently lose this
+            # batch's facts. Pass a zero-arg factory (retry-capable) so the
+            # scheduler can re-run it — a bare coroutine cannot be re-awaited.
+            # The review also owns clearing the nudge counters, but only AFTER it
+            # succeeds: clearing at the trigger point (inference_stage) meant a
+            # failed review left the counters at 0, so this batch would never be
+            # reviewed again. On success the review resets + persists; on failure
+            # it re-raises so the counters stay put and next turn re-triggers.
+            from echo_agent.agent.background import Tier
+            self._spawn_fn(
+                lambda: self._background_memory_review(
+                    ctx.messages, event.session_key, event.memory_scope,
+                ),
+                tier=Tier.DURABLE,
+            )
 
         # Finalize streaming
         outbound_sent = False
@@ -258,27 +272,52 @@ class ResponseStage:
             logger.warning("Background skill review failed: {}", e)
 
     async def _background_memory_review(self, messages: list[dict[str, Any]], session_key: str, memory_scope: str = "") -> None:
-        try:
-            from echo_agent.memory.reviewer import MemoryReviewer
-            # R1 Task8:优先用 loop 注入的单例 service;缺省(旧构造/测试)才就近兜底。
-            service = self._memory_service
-            if service is None:
-                from echo_agent.memory.service import MemoryService
-                service = MemoryService(
-                    self._memory,
-                    invalidate_fn=self._invalidate_memory_caches_fn,
-                    flush_fn=getattr(self._memory, "flush_pending_embeds", None),
-                    allow_env_writes=self._config.memory.allow_model_environment_writes,
-                )
-            reviewer = MemoryReviewer(
-                provider=self._provider,
-                service=service,
-                model=self._default_model,
-                session_key=memory_scope or session_key,
+        from echo_agent.memory.reviewer import MemoryReviewer
+        # R1 Task8:优先用 loop 注入的单例 service;缺省(旧构造/测试)才就近兜底。
+        service = self._memory_service
+        if service is None:
+            from echo_agent.memory.service import MemoryService
+            service = MemoryService(
+                self._memory,
+                invalidate_fn=self._invalidate_memory_caches_fn,
+                flush_fn=getattr(self._memory, "flush_pending_embeds", None),
+                allow_env_writes=self._config.memory.allow_model_environment_writes,
             )
-            actions = await reviewer.review(messages)
-            if actions:
-                logger.info("Background memory review: {}", "; ".join(actions))
-                await self._clear_memory_snapshot(session_key)
-        except Exception as e:
-            logger.warning("Background memory review failed: {}", e)
+        reviewer = MemoryReviewer(
+            provider=self._provider,
+            service=service,
+            model=self._default_model,
+            session_key=memory_scope or session_key,
+        )
+        # NB: exceptions propagate on purpose. This runs as a DURABLE factory, so
+        # a raise lets the scheduler retry; swallowing it here would both hide
+        # the failure AND (below) skip the counter reset — the counters would
+        # only be cleared on a genuine success, so a failed review keeps the
+        # nudge counters intact and next turn re-triggers this batch.
+        actions = await reviewer.review(messages)
+        if actions:
+            logger.info("Background memory review: {}", "; ".join(actions))
+            await self._clear_memory_snapshot(session_key)
+        # Success: clear the memory-review nudge counters and persist. Done here
+        # (not at the inference-stage trigger) so a failed/retried review never
+        # loses the pending batch. Re-acquire under the session lock so this does
+        # not race the next turn's own metadata write.
+        await self._reset_memory_nudge_counters(session_key)
+
+    async def _reset_memory_nudge_counters(self, session_key: str) -> None:
+        """Zero the memory-review nudge counters for ``session_key`` and persist.
+
+        Serialized against the turn loop via the per-session lock so a
+        concurrent next-turn save cannot clobber (or be clobbered by) this
+        reset. No-op if the SessionManager stand-in lacks the lock/lookup API
+        (older/lighter test doubles)."""
+        acquire = getattr(self._sessions, "acquire", None)
+        get_or_create = getattr(self._sessions, "get_or_create", None)
+        if acquire is None or get_or_create is None:
+            return
+        lock = await acquire(session_key)
+        async with lock:
+            session = await get_or_create(session_key)
+            session.metadata["_nudge_turns_memory"] = 0
+            session.metadata["_nudge_tool_iters_memory"] = 0
+            await self._sessions.save(session)
