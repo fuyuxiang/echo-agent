@@ -168,3 +168,23 @@ def test_no_dead_supersede_and_paths_converge(tmp_path):
                           source="user_stated", source_session="x"))
     live = [e for e in s._entries.values() if e.key == "home" and not e.is_superseded]
     assert len(live) == 1 and live[0].content == "上海"  # 精确重复短路,无新版本
+
+
+@pytest.mark.asyncio
+async def test_beijing_to_shanghai_acceptance(tmp_path):
+    from echo_agent.memory.service import MemoryService, ActorContext
+    store = MemoryStore(memory_dir=tmp_path / "mem", scope_policy="session")
+    svc = MemoryService(store)
+    ctx = ActorContext(actor="model", session_key="s", memory_scope="x")
+    await svc.add(ctx, type=MemoryType.USER, key="home", content="住在北京", source="user_stated")
+    r = await svc.add(ctx, type=MemoryType.USER, key="home", content="住在上海", source="user_stated")
+    home = [e for e in store._entries.values() if e.key == "home"]
+    live = [e for e in home if not e.is_superseded]
+    old = [e for e in home if e.is_superseded]
+    assert len(live) == 1 and live[0].content == "住在上海" and live[0].version == 2
+    assert len(old) == 1 and old[0].content == "住在北京"          # 旧事实保留
+    assert old[0].superseded_by == live[0].id
+    # 召回只回 active:关键词族 TOOL audience 不返回 superseded
+    from echo_agent.memory.eligibility import Audience
+    hits = store.search_scored("北京", session_key="x", audience=Audience.TOOL)
+    assert all("北京" not in e.content for e, _ in hits)          # 旧值不被召回
