@@ -1,0 +1,356 @@
+"""统一记忆写入口 MemoryService — 所有写操作收敛到八步写序。
+
+R1 重构层地基:把散落在 6 个写入口各自实现的 provenance/失效/审计逻辑,
+收敛成一条八步写序(校验→scope 门禁→ENV 门禁→provenance→写入→flush→失效→审计)。
+本模块只包裹现有 MemoryStore 语义,不改变 store 行为;后续任务逐个把旧入口迁移到这里。
+
+硬约束:
+  - 被拒只拒绝、不写 contradiction(不打 suspected_conflict tag、不写 contradiction 行)。
+  - 失效顺序:先 flush 再 invalidate。
+  - maintenance/mark_superseded/set_tier 走精简写序:跳过 provenance 与 ENV 门禁
+    (它们是裁决者/内部维护),但仍失效+flush+审计。
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Awaitable, Callable
+
+from loguru import logger
+
+from echo_agent.memory.types import (
+    MemoryEntry,
+    MemoryTier,
+    MemoryType,
+    provenance_guard,
+)
+
+_MAX_AUDIT_FILE_BYTES = 5_000_000
+
+# ENV 门禁:只有这两类 actor 才受限(裁决者/内部维护不受限)。
+_ENV_RESTRICTED_ACTORS = frozenset({"model", "reviewer"})
+
+# actor → provenance 来源标签。用于没有显式 source 参数的写操作(如 remove),
+# 据此对目标条目做 provenance_guard。裁决者/内部维护走精简写序、不触发此表。
+_ACTOR_SOURCE = {
+    "model": "model_inferred",
+    "reviewer": "model_inferred",
+    "reflection": "model_inferred",
+    "consolidation": "consolidated",
+    "admin": "user_stated",
+    "migration": "legacy",
+    "maintenance": "legacy",
+}
+
+
+@dataclass
+class ActorContext:
+    """一次写操作的发起者上下文。
+
+    actor ∈ model/reviewer/consolidation/reflection/admin/migration/maintenance。
+    session_key 为当前会话键;memory_scope 为写入目标的作用域(USER 写必填)。
+    """
+
+    actor: str
+    session_key: str = ""
+    memory_scope: str = ""
+
+
+@dataclass
+class WriteResult:
+    """写操作结果。reason ∈ ""/rejected_provenance/rejected_scope/rejected_env/invalid。"""
+
+    ok: bool
+    entry: MemoryEntry | None = None
+    reason: str = ""
+
+
+class MemoryService:
+    """记忆统一写入口:所有写操作走八步写序,集中 provenance/失效/审计。"""
+
+    def __init__(
+        self,
+        store,
+        *,
+        invalidate_fn: Callable[[str, bool], Awaitable[Any]] | None = None,
+        flush_fn: Callable[[], Awaitable[Any]] | None = None,
+        audit_path: Path | None = None,
+        allow_env_writes: bool = False,
+    ):
+        self._store = store
+        self._invalidate_fn = invalidate_fn
+        self._flush_fn = flush_fn
+        self._audit_path = Path(audit_path) if audit_path else None
+        self._allow_env_writes = allow_env_writes
+
+    # ── 公开写 API ──────────────────────────────────────────────────────────
+
+    async def add(
+        self,
+        ctx: ActorContext,
+        *,
+        type: MemoryType,
+        key: str,
+        content: str,
+        tags: list[str] | None = None,
+        importance: float = 0.5,
+        source: str,
+    ) -> WriteResult:
+        """新增记忆条目,走完整八步写序。新 key 无既有 target 故跳过 provenance。"""
+        tags = list(tags or [])
+        # ① 校验
+        try:
+            self._store._validate_content(content)
+        except ValueError:
+            return self._reject(ctx, "add", "", type, source, "invalid")
+        # ② scope 门禁
+        scope_rej = self._scope_gate(type, ctx)
+        if scope_rej:
+            return self._reject(ctx, "add", "", type, source, scope_rej)
+        # ③ ENV 门禁
+        if self._env_denied(ctx.actor, type, tags):
+            return self._reject(ctx, "add", "", type, source, "rejected_env")
+        # ④ provenance:add 无 target,跳过
+        # ⑤ 写入
+        entry = MemoryEntry(
+            type=type,
+            key=key,
+            content=content,
+            tags=tags,
+            importance=importance,
+            source=source,
+            source_session=ctx.memory_scope,
+        )
+        stored = self._store.add(entry)
+        # ⑥⑦ flush→失效 ⑧ 审计
+        await self._finalize(ctx, "add", stored.id, type, source, "", True)
+        return WriteResult(ok=True, entry=stored)
+
+    async def replace(
+        self,
+        ctx: ActorContext,
+        entry_id: str,
+        *,
+        content: str,
+        source: str,
+    ) -> WriteResult:
+        """替换既有条目内容,走完整八步写序(含 provenance 守卫)。"""
+        target = self._store.get(entry_id)
+        if target is None:
+            return self._reject(ctx, "replace", entry_id, None, source, "invalid")
+        # ① 校验
+        try:
+            self._store._validate_content(content)
+        except ValueError:
+            return self._reject(ctx, "replace", entry_id, target.type, source, "invalid")
+        # ② scope 门禁
+        scope_rej = self._scope_gate(target.type, ctx)
+        if scope_rej:
+            return self._reject(ctx, "replace", entry_id, target.type, source, scope_rej)
+        # ③ ENV 门禁
+        if self._env_denied(ctx.actor, target.type, target.tags):
+            return self._reject(ctx, "replace", entry_id, target.type, source, "rejected_env")
+        # ④ provenance:低于目标优先级则拒(只拒,不写 contradiction)
+        if not provenance_guard(source, target):
+            return self._reject(ctx, "replace", entry_id, target.type, source, "rejected_provenance")
+        # ⑤ 写入
+        updated = self._store.update(entry_id, content=content, source=source)
+        if updated is None:
+            return self._reject(ctx, "replace", entry_id, target.type, source, "invalid")
+        await self._finalize(ctx, "replace", entry_id, target.type, source, "", True)
+        return WriteResult(ok=True, entry=updated)
+
+    async def remove(self, ctx: ActorContext, entry_id: str) -> WriteResult:
+        """删除既有条目,走完整八步写序(含 provenance 守卫)。"""
+        target = self._store.get(entry_id)
+        if target is None:
+            return self._reject(ctx, "remove", entry_id, None, "", "invalid")
+        derived = _ACTOR_SOURCE.get(ctx.actor, "legacy")
+        # ② scope 门禁
+        scope_rej = self._scope_gate(target.type, ctx)
+        if scope_rej:
+            return self._reject(ctx, "remove", entry_id, target.type, derived, scope_rej)
+        # ③ ENV 门禁
+        if self._env_denied(ctx.actor, target.type, target.tags):
+            return self._reject(ctx, "remove", entry_id, target.type, derived, "rejected_env")
+        # ④ provenance
+        if not provenance_guard(derived, target):
+            return self._reject(ctx, "remove", entry_id, target.type, derived, "rejected_provenance")
+        # ⑤ 写入
+        ok = self._store.delete(entry_id)
+        if not ok:
+            return self._reject(ctx, "remove", entry_id, target.type, derived, "invalid")
+        await self._finalize(ctx, "remove", entry_id, target.type, derived, "", True)
+        return WriteResult(ok=True, entry=target)
+
+    async def promote(
+        self,
+        ctx: ActorContext,
+        *,
+        type: MemoryType,
+        key: str,
+        content: str,
+        tags: list[str] | None = None,
+        importance: float,
+        source: str = "consolidated",
+    ) -> WriteResult:
+        """整合提升(consolidation)写入新条目,写序与 add 一致(无 target 跳过 provenance)。"""
+        return await self.add(
+            ctx,
+            type=type,
+            key=key,
+            content=content,
+            tags=tags,
+            importance=importance,
+            source=source,
+        )
+
+    # ── 精简写序:裁决者/内部维护(跳过 provenance 与 ENV 门禁) ──────────────
+
+    async def maintenance_update(
+        self,
+        ctx: ActorContext,
+        entry_id: str,
+        *,
+        tags: list[str] | None = None,
+        content: str | None = None,
+        source: str | None = None,
+    ) -> WriteResult:
+        """内部维护更新:跳过 provenance/ENV 门禁,仍失效+flush+审计。"""
+        target = self._store.get(entry_id)
+        if target is None:
+            return self._reject(ctx, "maintenance_update", entry_id, None, source or "", "invalid")
+        try:
+            updated = self._store.update(entry_id, content=content, tags=tags, source=source)
+        except ValueError:
+            return self._reject(ctx, "maintenance_update", entry_id, target.type, source or "", "invalid")
+        if updated is None:
+            return self._reject(ctx, "maintenance_update", entry_id, target.type, source or "", "invalid")
+        await self._finalize(ctx, "maintenance_update", entry_id, target.type, source or "", "", True)
+        return WriteResult(ok=True, entry=updated)
+
+    async def mark_superseded(
+        self, ctx: ActorContext, entry_id: str, superseded_by: str
+    ) -> WriteResult:
+        """标记条目被取代:裁决动作,精简写序。"""
+        target = self._store.get(entry_id)
+        if target is None:
+            return self._reject(ctx, "mark_superseded", entry_id, None, "", "invalid")
+        ok = self._store.mark_superseded(entry_id, superseded_by)
+        if not ok:
+            return self._reject(ctx, "mark_superseded", entry_id, target.type, "", "invalid")
+        await self._finalize(ctx, "mark_superseded", entry_id, target.type, "", "", True)
+        return WriteResult(ok=True, entry=self._store.get(entry_id))
+
+    async def set_tier(
+        self, ctx: ActorContext, entry_id: str, tier: MemoryTier
+    ) -> WriteResult:
+        """调整条目 tier(如归档):内部维护,精简写序。"""
+        target = self._store.get(entry_id)
+        if target is None:
+            return self._reject(ctx, "set_tier", entry_id, None, "", "invalid")
+        ok = self._store.set_tier(entry_id, tier)
+        if not ok:
+            return self._reject(ctx, "set_tier", entry_id, target.type, "", "invalid")
+        await self._finalize(ctx, "set_tier", entry_id, target.type, "", "", True)
+        return WriteResult(ok=True, entry=self._store.get(entry_id))
+
+    # ── 门禁 ───────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _scope_gate(mem_type: MemoryType | None, ctx: ActorContext) -> str:
+        """USER 写 memory_scope 空则拒 rejected_scope;ENVIRONMENT 允许空 scope。"""
+        if mem_type == MemoryType.USER and not ctx.memory_scope:
+            return "rejected_scope"
+        return ""
+
+    def _env_denied(self, actor: str, mem_type: MemoryType | None, tags: list[str]) -> bool:
+        """actor∈{model,reviewer} 且(type==ENVIRONMENT 或含 global tag)且 not allow_env_writes → 拒。"""
+        if self._allow_env_writes:
+            return False
+        if actor not in _ENV_RESTRICTED_ACTORS:
+            return False
+        return mem_type == MemoryType.ENVIRONMENT or "global" in (tags or [])
+
+    # ── 失效 + flush + 审计 ──────────────────────────────────────────────────
+
+    async def _finalize(
+        self,
+        ctx: ActorContext,
+        op: str,
+        entry_id: str,
+        mem_type: MemoryType | None,
+        source: str,
+        reason: str,
+        ok: bool,
+    ) -> None:
+        """⑥⑦ 失效前先 flush,再 invalidate;⑧ 追加审计。"""
+        # ⑦ flush 在失效前
+        if self._flush_fn is not None:
+            try:
+                await self._flush_fn()
+            except Exception as e:
+                logger.warning("MemoryService flush failed: {}", e)
+        # ⑥ 失效:USER→(scope, False);ENV/裁决→(scope, True)
+        if self._invalidate_fn is not None:
+            global_scope = mem_type != MemoryType.USER
+            try:
+                await self._invalidate_fn(ctx.memory_scope, global_scope)
+            except Exception as e:
+                logger.warning("MemoryService invalidate failed: {}", e)
+        # ⑧ 审计
+        self._append_audit(ctx, op, entry_id, mem_type, source, reason, ok)
+
+    def _reject(
+        self,
+        ctx: ActorContext,
+        op: str,
+        entry_id: str,
+        mem_type: MemoryType | None,
+        source: str,
+        reason: str,
+    ) -> WriteResult:
+        """被拒路径:只审计拒绝事实,绝不失效/写库/写 contradiction。"""
+        self._append_audit(ctx, op, entry_id, mem_type, source, reason, False)
+        return WriteResult(ok=False, reason=reason)
+
+    def _append_audit(
+        self,
+        ctx: ActorContext,
+        op: str,
+        entry_id: str,
+        mem_type: MemoryType | None,
+        source: str,
+        reason: str,
+        ok: bool,
+    ) -> None:
+        """JSONL/UTF-8 追加、超限轮转,仿 tool registry 的 _append_audit。"""
+        if self._audit_path is None:
+            return
+        entry: dict[str, Any] = {
+            "actor": ctx.actor,
+            "op": op,
+            "entry_id": entry_id,
+            "scope": ctx.memory_scope,
+            "source": source,
+            "reason": reason,
+            "ok": ok,
+            "ts": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            self._audit_path.parent.mkdir(parents=True, exist_ok=True)
+            if (
+                self._audit_path.exists()
+                and self._audit_path.stat().st_size > _MAX_AUDIT_FILE_BYTES
+            ):
+                rotated = self._audit_path.with_name(
+                    f"{self._audit_path.stem}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}.jsonl"
+                )
+                self._audit_path.replace(rotated)
+            with self._audit_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+        except Exception as e:
+            logger.debug("Failed to append memory audit entry: {}", e)
