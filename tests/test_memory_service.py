@@ -104,3 +104,21 @@ async def test_maintenance_remove_deletes_user_stated_archival(tmp_path):
     )
     assert r.ok is True and r.reason == ""
     assert store.get(e.id) is None
+
+
+@pytest.mark.asyncio
+async def test_service_add_same_key_appends_version(tmp_path):
+    # 经 service.add 的同 key 改口端到端应透明获得 store 层 append-version:
+    # version 递增、旧版本保留(superseded)、WriteResult.entry 返回新版本、
+    # live(active)只留最新一条。service 无需新逻辑,只透传 store.add 返回值。
+    from echo_agent.memory.store import MemoryStore
+    from echo_agent.memory.service import MemoryService, ActorContext
+    from echo_agent.memory.types import MemoryType
+    store = MemoryStore(memory_dir=tmp_path / "mem", scope_policy="session")
+    svc = MemoryService(store)
+    ctx = ActorContext(actor="model", session_key="s", memory_scope="x")
+    await svc.add(ctx, type=MemoryType.USER, key="home", content="北京", source="user_stated")
+    r = await svc.add(ctx, type=MemoryType.USER, key="home", content="上海", source="user_stated")
+    assert r.ok is True and r.entry.version == 2
+    live = [e for e in store._entries.values() if e.key == "home" and not e.is_superseded]
+    assert len(live) == 1 and live[0].content == "上海"
