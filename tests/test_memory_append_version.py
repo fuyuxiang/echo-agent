@@ -108,7 +108,21 @@ def test_lineage_prunes_beyond_max_versions(tmp_path):
     # 世系裁剪:保留最近 2 版 superseded,更旧的转 ARCHIVAL(待遗忘删除)
     from echo_agent.memory.types import MemoryTier
     archival = [e for e in superseded if e.tier == MemoryTier.ARCHIVAL]
-    assert len(archival) >= 1  # 最旧的 superseded 被标记归档
+    assert len(archival) == 1  # 上限=2、3 个 superseded 恰好归档最旧 1 个
+
+
+def test_lineage_exact_max_versions_not_pruned(tmp_path):
+    # 边界:superseded 版本数恰好 == lineage_max_versions 时,无一被归档。
+    s = MemoryStore(memory_dir=tmp_path / "mem", scope_policy="session",
+                    lineage_max_versions=2)
+    for c in ["v1", "v2", "v3"]:  # 2 个 superseded(v1,v2) + 1 active(v3)
+        s.add(MemoryEntry(type=MemoryType.USER, key="home", content=c,
+                          source="user_stated", source_session="x"))
+    from echo_agent.memory.types import MemoryTier
+    superseded = [e for e in s._entries.values() if e.key == "home" and e.is_superseded]
+    assert len(superseded) == 2                                   # 恰好 2 版 superseded
+    archival = [e for e in superseded if e.tier == MemoryTier.ARCHIVAL]
+    assert len(archival) == 0                                     # 未超上限,无一归档
 
 
 def test_lineage_active_not_pruned(tmp_path):

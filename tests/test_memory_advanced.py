@@ -207,6 +207,33 @@ class TestForgettingCurve:
         assert user_old not in to_archive
         assert user_old not in to_forget
 
+    @pytest.mark.asyncio
+    async def test_run_decay_pass_superseded_user_archival_goes_to_forget(self):
+        """被世系裁剪判定超限的 superseded USER 旧版本(已翻 ARCHIVAL)必须能真正
+        进 to_forget 被删除,否则磁盘无界堆积。importance 故意设高(0.8),证明进
+        to_forget 靠的是 superseded+ARCHIVAL 分支而非 should_forget。"""
+        curve = ForgettingCurve(base_half_life_days=5.0, archive_threshold=0.05, forget_threshold=0.01)
+        superseded_user = _make_entry(
+            type=MemoryType.USER, tier=MemoryTier.ARCHIVAL,
+            importance=0.8, superseded_by="new_active_id",
+        )
+        to_archive, to_forget = await curve.run_decay_pass([superseded_user])
+        assert superseded_user in to_forget       # 超限 superseded USER 旧版本被删
+        assert superseded_user not in to_archive
+
+    @pytest.mark.asyncio
+    async def test_run_decay_pass_active_user_not_forgotten(self):
+        """active USER(非 superseded)即使 tier 恰为 ARCHIVAL 也绝不进 to_forget——
+        新分支只作用于 superseded,active USER 语义不破。"""
+        curve = ForgettingCurve(base_half_life_days=5.0, archive_threshold=0.05, forget_threshold=0.01)
+        active_user = _make_entry(
+            type=MemoryType.USER, tier=MemoryTier.ARCHIVAL,
+            importance=0.8, superseded_by="",
+        )
+        to_archive, to_forget = await curve.run_decay_pass([active_user])
+        assert active_user not in to_forget
+        assert active_user not in to_archive
+
     def test_half_life_days(self):
         curve = ForgettingCurve(base_half_life_days=30.0)
         entry = _make_entry(access_count=0)

@@ -150,6 +150,13 @@ class ForgettingCurve:
         to_forget: list[MemoryEntry] = []
         for entry in entries:
             from echo_agent.memory.types import MemoryTier, MemoryType
+            # 世系裁剪判定超限的 superseded 旧版本(已翻 ARCHIVAL)必须真正走遗忘删除,
+            # 否则磁盘无界堆积。此分支必须在下方 USER continue 之前——superseded 的
+            # USER 旧版本才能进 to_forget。只作用于 superseded:active USER 恒非
+            # superseded(is_superseded 恒 False),天然不进此分支,衰减语义不破。
+            if entry.is_superseded and entry.tier == MemoryTier.ARCHIVAL:
+                to_forget.append(entry)
+                continue
             # User facts are the relationship core — never archive or forget them,
             # regardless of importance score. Hard guarantee, not score-dependent.
             if entry.type == MemoryType.USER:
