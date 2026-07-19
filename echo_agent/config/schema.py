@@ -2128,6 +2128,14 @@ class MemoryConfig(_Base):
             "desc_en": "Query-embedding timeout (seconds); falls back to keyword search on timeout",
         },
     )
+    rrf_min_similarity: float = Field(
+        default=0.25,
+        json_schema_extra={
+            "status": "effective", "ref": "memory/retrieval.py:vec_rank_map",
+            "desc_zh": "RRF 向量召回相似度下限(可调),向量命中分数低于该值则不占 rank 槽、不贡献 RRF 分,避免低相似度命中污染真实候选;BM25 侧不设(量纲不同)",
+            "desc_en": "RRF vector-recall similarity floor (tunable); vector hits scoring below it occupy no rank slot and contribute no RRF term, preventing low-similarity hits from polluting real candidates. Not applied to BM25 (different scale).",
+        },
+    )
     embed_load_timeout_seconds: float = Field(
         default=60.0,
         json_schema_extra={

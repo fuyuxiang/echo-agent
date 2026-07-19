@@ -924,6 +924,7 @@ class AgentLoop:
             visibility_fn=self.memory.is_visible_in_session,
             episode_search_fn=_episode_search if episodic_mgr is not None else None,
             is_unresolved_fn=self.memory.is_unresolved,
+            min_similarity=config.memory.rrf_min_similarity,
         )
         self.memory.set_retriever(self._hybrid_retriever)
         # context_stage 在 __init__ 里按值持有了 None，这里重指最终检索器。

@@ -70,6 +70,28 @@ class TestRRFFusion:
         assert not hasattr(HybridRetriever, "_resonance_score")
 
 
+class TestVectorMinSimilarityFloor:
+    @pytest.mark.asyncio
+    async def test_low_similarity_vector_hit_excluded(self):
+        """低相似度向量命中不占 rank 槽、不贡献 RRF——BM25 未命中则不进结果。"""
+        live = _entry("live", "live", "相关内容")
+        noise = _entry("noise", "noise", "无关噪声")
+        vec = MagicMock()
+        # noise 相似度 0.1 低于 0.25 下限,应被过滤;live 0.9 保留
+        vec.search = AsyncMock(return_value=[("live", 0.9), ("noise", 0.1)])
+        retriever = HybridRetriever(
+            entries_fn=lambda: [live, noise], vector_index=vec,
+            embed_fn=AsyncMock(return_value=[0.1]),
+            visibility_fn=lambda e, s: True,
+            is_unresolved_fn=lambda _id: False, min_similarity=0.25,
+        )
+        results = await retriever.retrieve("查询", memory_scope="s1", limit=5)
+        hits = [r for r, _ in results]
+        assert any(h.id == "live" for h in hits)
+        # noise 只靠低相似度向量命中,BM25 未命中→不应进结果
+        assert all(h.id != "noise" for h in hits)
+
+
 class TestEpisodicInRetrieval:
     @pytest.mark.asyncio
     async def test_episode_ranks_with_memory(self):

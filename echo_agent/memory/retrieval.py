@@ -54,6 +54,7 @@ class HybridRetriever:
         episode_search_fn: Callable[[str, str, int], Awaitable[list[Episode]]] | None = None,
         episode_candidate_limit: int = 10,
         is_unresolved_fn: Callable[[str], bool] | None = None,
+        min_similarity: float = 0.25,
     ):
         self._entries_fn = entries_fn
         # No detector wired ⇒ never treat anything as unresolved, so eligibility
@@ -78,6 +79,13 @@ class HybridRetriever:
         # rather than stalling the reply.
         self._embed_timeout = max(0.1, float(embed_timeout))
         self._embed_timeout_warned = False
+        # Vector similarity floor. _vector_search returns (eid, score) but the
+        # score was previously discarded (only rank was used), so any low-score
+        # vector hit that entered the candidate pool still burned a rank slot and
+        # contributed an RRF term — polluting the real candidates. Hits below
+        # this floor are dropped before rank enumeration. BM25 side has no floor
+        # (BM25 scores are a different scale). Tunable via memory.rrf_min_similarity.
+        self._min_similarity = float(min_similarity)
 
     async def retrieve(
         self, query: str, limit: int = 8,
@@ -151,13 +159,16 @@ class HybridRetriever:
         # BEFORE enumerating so surviving candidates get contiguous ranks. If
         # we enumerated first and filtered after, a discarded hit would burn a
         # rank slot and understate the RRF score of the real top candidate.
+        # Also drop hits below self._min_similarity: a low-similarity vector
+        # match must not occupy a rank slot or contribute an RRF term.
         vec_rank_map: dict[str, int] = {}
         if self._vector_index and self._embed_fn:
             vec_results = await self._vector_search(query, pool)
             candidate_ids = {c.id for c in candidates}
             vec_rank_map = {
                 eid: rank for rank, eid in enumerate(
-                    eid for eid, _ in vec_results if eid in candidate_ids
+                    eid for eid, score in vec_results
+                    if eid in candidate_ids and score >= self._min_similarity
                 )
             }
 
