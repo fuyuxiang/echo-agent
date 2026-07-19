@@ -696,7 +696,11 @@ class MemoryStore:
         candidate_ids = self._key_index.get(entry.key, set())
         for eid in candidate_ids:
             existing = self._entries.get(eid)
-            if existing and existing.type == entry.type and self._same_scope(existing, entry):
+            if existing is None or existing.is_superseded:
+                # superseded 旧版本仍留在 _key_index(世系/回滚需要),但改口须
+                # 以 active 版本为冲突基准,否则会命中旧版本导致 version 不递增。
+                continue
+            if existing.type == entry.type and self._same_scope(existing, entry):
                 return existing
         return None
 
@@ -712,7 +716,8 @@ class MemoryStore:
     def _evict_oldest(self, mem_type: MemoryType, scope_ref: "MemoryEntry | None" = None) -> None:
         """淘汰有效重要性最低的记忆条目,为新条目腾出空间。
         scope_ref 非空时只在与其同 scope 的子集内淘汰,避免高频 scope 挤掉别主体记忆。"""
-        candidates = self._typed_entries(mem_type)
+        # superseded 版本由世系保留(Task 6)管理,不参与容量淘汰,否则会误删旧版本。
+        candidates = [e for e in self._typed_entries(mem_type) if not e.is_superseded]
         if scope_ref is not None:
             candidates = [e for e in candidates if self._same_scope(e, scope_ref)]
         typed = sorted(
@@ -863,7 +868,8 @@ class MemoryStore:
 
             limit = self._max_user if entry.type == MemoryType.USER else self._max_env
             same_scope_typed = [
-                e for e in self._typed_entries(entry.type) if self._same_scope(e, entry)
+                e for e in self._typed_entries(entry.type)
+                if self._same_scope(e, entry) and not e.is_superseded
             ]
             if len(same_scope_typed) >= limit:
                 self._evict_oldest(entry.type, scope_ref=entry)
