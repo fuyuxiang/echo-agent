@@ -257,9 +257,18 @@ class ResponseStage:
     async def _background_memory_review(self, messages: list[dict[str, Any]], session_key: str, memory_scope: str = "") -> None:
         try:
             from echo_agent.memory.reviewer import MemoryReviewer
+            from echo_agent.memory.service import MemoryService
+            # Task 8 将统一收口为单例 service;本任务就近构造最小 service 让 reviewer 跑通,
+            # 失效/flush/ENV 门禁全部收敛到 service 八步写序。
+            service = MemoryService(
+                self._memory,
+                invalidate_fn=self._invalidate_memory_caches_fn,
+                flush_fn=getattr(self._memory, "flush_pending_embeds", None),
+                allow_env_writes=self._config.memory.allow_model_environment_writes,
+            )
             reviewer = MemoryReviewer(
                 provider=self._provider,
-                store=self._memory,
+                service=service,
                 model=self._default_model,
                 session_key=memory_scope or session_key,
             )

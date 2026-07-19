@@ -105,12 +105,14 @@ class TestWritePathStamping:
         assert e.content == "新内容"
         assert e.source == "model_inferred"  # replace 未声明 → 保守默认
 
-    def test_reviewer_stamps_model_inferred(self, store):
+    @pytest.mark.asyncio
+    async def test_reviewer_stamps_model_inferred(self, store):
         from echo_agent.memory.reviewer import MemoryReviewer
         from unittest.mock import MagicMock
 
-        reviewer = MemoryReviewer(provider=MagicMock(), store=store)
-        result = reviewer._execute({
+        # USER 写:scope 门禁在 service,须给 reviewer 一个 session_key 作 memory_scope。
+        reviewer = MemoryReviewer(provider=MagicMock(), service=MemoryService(store), session_key="s1")
+        result = await reviewer._execute({
             "action": "add", "target": "user", "key": "k5", "content": "推断的偏好",
         })
         assert result.startswith("Added")

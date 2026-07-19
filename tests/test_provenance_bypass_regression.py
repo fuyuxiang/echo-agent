@@ -71,11 +71,12 @@ async def test_tool_remove_被拒不打tag不写contradiction(tmp_path):
 
 # ── reviewer remove ──────────────────────────────────────────────────────────
 
-def test_reviewer_remove_cannot_delete_user_stated(tmp_path):
+@pytest.mark.asyncio
+async def test_reviewer_remove_cannot_delete_user_stated(tmp_path):
     s = _store(tmp_path)
     e = _user_entry(s)
-    reviewer = MemoryReviewer(provider=MagicMock(), store=s, session_key="sess")
-    result = reviewer._execute({"action": "remove", "target": "user", "key": "home"})
+    reviewer = MemoryReviewer(provider=MagicMock(), service=MemoryService(s), session_key="sess")
+    result = await reviewer._execute({"action": "remove", "target": "user", "key": "home"})
     assert not result.startswith("Removed")
     assert s.get(e.id) is not None
 

@@ -14,33 +14,43 @@ def store(tmp_path: Path) -> MemoryStore:
 
 
 class TestReviewerReplaceGuard:
-    def test_replace_blocked_when_lower_priority(self, store):
+    @pytest.mark.asyncio
+    async def test_replace_blocked_when_lower_priority(self, store):
         """后台 reviewer 的 replace 不得覆盖 user_stated 内容。"""
         from echo_agent.memory.reviewer import MemoryReviewer
 
+        from echo_agent.memory.service import MemoryService
+
         e = store.add(MemoryEntry(
             type=MemoryType.USER, key="home", content="用户明说住北京",
-            source="user_stated",
+            source="user_stated", source_session="s1",
         ))
-        reviewer = MemoryReviewer(provider=MagicMock(), store=store)
-        result = reviewer._execute({
+        reviewer = MemoryReviewer(
+            provider=MagicMock(), service=MemoryService(store), session_key="s1",
+        )
+        result = await reviewer._execute({
             "action": "replace", "target": "user", "key": "home", "content": "推断住上海",
         })
         assert "Kept existing" in result
         entry = store.get(e.id)
         assert entry.content == "用户明说住北京"
         assert entry.source == "user_stated"
-        assert store.SUSPECTED_CONFLICT_TAG in entry.tags
+        # service 被拒仅拒绝,不再打 suspected_conflict tag(裁决留到重构层)。
+        assert store.SUSPECTED_CONFLICT_TAG not in entry.tags
 
-    def test_replace_allowed_on_equal_priority(self, store):
+    @pytest.mark.asyncio
+    async def test_replace_allowed_on_equal_priority(self, store):
         from echo_agent.memory.reviewer import MemoryReviewer
+        from echo_agent.memory.service import MemoryService
 
         e = store.add(MemoryEntry(
             type=MemoryType.USER, key="job", content="旧推断",
-            source="model_inferred",
+            source="model_inferred", source_session="s1",
         ))
-        reviewer = MemoryReviewer(provider=MagicMock(), store=store)
-        result = reviewer._execute({
+        reviewer = MemoryReviewer(
+            provider=MagicMock(), service=MemoryService(store), session_key="s1",
+        )
+        result = await reviewer._execute({
             "action": "replace", "target": "user", "key": "job", "content": "新推断",
         })
         assert result.startswith("Updated")

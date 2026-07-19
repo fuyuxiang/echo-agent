@@ -10,8 +10,8 @@ from typing import Any
 
 from loguru import logger
 
-from echo_agent.memory.store import MemoryStore
-from echo_agent.memory.types import MemoryEntry, MemoryType, provenance_guard, source_priority
+from echo_agent.memory.service import ActorContext, MemoryService
+from echo_agent.memory.types import MemoryEntry, MemoryType
 from echo_agent.models.provider import LLMProvider
 
 _REVIEW_PROMPT = """\
@@ -60,9 +60,12 @@ _TOOL_DEFS = [
 class MemoryReviewer:
     """Reviews conversations and auto-extracts memories."""
 
-    def __init__(self, provider: LLMProvider, store: MemoryStore, model: str = "", session_key: str = ""):
+    def __init__(self, provider: LLMProvider, service: MemoryService, model: str = "", session_key: str = ""):
+        # 统一写入口:provenance/ENV 门禁/失效/审计全部收敛在 service 的八步写序。
+        # reviewer 只负责参数解析、读操作(find/resolve)与 WriteResult→结果映射。
         self._provider = provider
-        self._store = store
+        self._service = service
+        self._store = service.store
         self._model = model
         self._session_key = session_key
 
@@ -117,7 +120,7 @@ class MemoryReviewer:
             messages.append(assistant_msg)
 
             for tc in response.tool_calls:
-                result = self._execute(tc.arguments)
+                result = await self._execute(tc.arguments)
                 messages.append({"role": "tool", "tool_call_id": tc.id, "name": tc.name, "content": result})
                 if not result.startswith("Error"):
                     actions.append(f"memory: {result}")
@@ -127,7 +130,15 @@ class MemoryReviewer:
 
         return actions
 
-    def _execute(self, params: dict[str, Any]) -> str:
+    def _actor_ctx(self) -> ActorContext:
+        # reviewer 恒 model_inferred;USER 写以 session_key 为 scope,ENV 写由 service 门禁拦。
+        return ActorContext(
+            actor="reviewer",
+            session_key=self._session_key,
+            memory_scope=self._session_key,
+        )
+
+    async def _execute(self, params: dict[str, Any]) -> str:
         action = params.get("action", "")
         target = params.get("target", "user")
         mem_type = MemoryType.USER if target == "user" else MemoryType.ENVIRONMENT
@@ -142,19 +153,19 @@ class MemoryReviewer:
         if action == "add":
             if not key or not content:
                 return "Error: key and content required"
-            entry = MemoryEntry(
+            # 决策1:不额外前置 provenance 判定,直接走 service.add;
+            # 同 key 合并语义由 store 内部保持,失效由 service 统一触发。
+            res = await self._service.add(
+                self._actor_ctx(),
                 type=mem_type,
                 key=key,
                 content=content,
                 importance=importance,
                 source="model_inferred",
-                source_session=self._session_key if mem_type == MemoryType.USER else "",
             )
-            try:
-                result = self._store.add(entry)
-            except ValueError as exc:
-                return f"Error: {exc}"
-            return f"Added [{target}] {result.key}"
+            if not res.ok:
+                return self._map_reject(res, target, "add", key)
+            return f"Added [{target}] {res.entry.key}"
 
         elif action == "replace":
             if not content:
@@ -163,36 +174,23 @@ class MemoryReviewer:
             if resolve_error:
                 return resolve_error
             if not entry:
-                entry = MemoryEntry(
+                res = await self._service.add(
+                    self._actor_ctx(),
                     type=mem_type,
                     key=key or "auto",
                     content=content,
                     importance=importance,
                     source="model_inferred",
-                    source_session=self._session_key if mem_type == MemoryType.USER else "",
                 )
-                try:
-                    self._store.add(entry)
-                except ValueError as exc:
-                    return f"Error: {exc}"
-                return f"Added (new) [{target}] {entry.key}"
-            if source_priority("model_inferred") < source_priority(entry.source):
-                # Background inference must not overwrite higher-provenance
-                # content via the replace side door (spec 2026-07-02 §a1).
-                flagged = self._store.get(entry.id)
-                if flagged is not None and MemoryStore.SUSPECTED_CONFLICT_TAG not in flagged.tags:
-                    self._store.update(
-                        entry.id,
-                        tags=[*flagged.tags, MemoryStore.SUSPECTED_CONFLICT_TAG],
-                    )
-                return (
-                    f"Kept existing (higher provenance) [{target}] {entry.key}; "
-                    "flagged conflict for review"
-                )
-            try:
-                self._store.update(entry.id, content=content, source="model_inferred")
-            except ValueError as exc:
-                return f"Error: {exc}"
+                if not res.ok:
+                    return self._map_reject(res, target, "replace", key or "auto")
+                return f"Added (new) [{target}] {res.entry.key}"
+            # provenance 守卫(移入 service):低于目标优先级则拒,只拒不写 contradiction。
+            res = await self._service.replace(
+                self._actor_ctx(), entry.id, content=content, source="model_inferred",
+            )
+            if not res.ok:
+                return self._map_reject(res, target, "replace", entry.key)
             return f"Updated [{target}] {entry.key}"
 
         elif action == "remove":
@@ -201,12 +199,27 @@ class MemoryReviewer:
                 return resolve_error
             if not entry:
                 return "Error: no matching memory found"
-            # reviewer 恒 model_inferred:不得删除更高优先级(user_stated)条目。
-            # 被拒仅拒绝,不打 tag、不写 contradiction(裁决留到重构层)。
-            if not provenance_guard("model_inferred", entry):
-                logger.info("Reviewer remove denied (higher provenance): {}", entry.key)
-                return f"Kept existing (higher provenance) [{target}] {entry.key}"
-            self._store.delete(entry.id)
+            # provenance 守卫(据 reviewer actor 派生的 model_inferred)由 service.remove 强制。
+            res = await self._service.remove(self._actor_ctx(), entry.id)
+            if not res.ok:
+                return self._map_reject(res, target, "remove", entry.key)
             return f"Removed [{target}] {entry.key}"
 
         return f"Error: unknown action '{action}'"
+
+    @staticmethod
+    def _map_reject(res: Any, target: str, op: str, key: str) -> str:
+        """WriteResult 拒绝原因 → reviewer 结果文案(非 Error 前缀者不计入 actions 由 review 判定)。"""
+        reason = res.reason
+        if reason == "rejected_provenance":
+            # 保住高优先级旧内容;被拒仅拒绝,不谎称已写入。
+            logger.info("Reviewer {} denied (higher provenance): {}", op, key)
+            return f"Kept existing (higher provenance) [{target}] {key}"
+        if reason == "rejected_env":
+            return (
+                f"Error: writing ENVIRONMENT or global-tagged memory is disabled "
+                f"[{target}] {key}"
+            )
+        if reason == "rejected_scope":
+            return f"Error: cannot write memory without a resolved scope [{target}] {key}"
+        return f"Error: memory {op} failed for '{key}' ({reason})"
