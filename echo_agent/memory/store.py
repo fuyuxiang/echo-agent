@@ -162,6 +162,7 @@ class MemoryStore:
         contradiction_scan_on_store: bool = False,
         archival_threshold: float = 0.05,
         forget_threshold: float = 0.01,
+        service_only: bool = False,
     ):
         self.memory_dir = memory_dir
         self.memory_dir.mkdir(parents=True, exist_ok=True)
@@ -179,6 +180,13 @@ class MemoryStore:
         self._key_index: dict[str, set[str]] = {}  # key -> set of entry IDs for O(1) conflict lookup
         self._storage = storage
         self._scope_policy = scope_policy
+        # R1 Task8 软约束:service_only=True 时,写方法(add/update/delete/
+        # mark_superseded/set_tier)在非 service 调用栈直写时 logger.warning。
+        # service 写前经 service_write() 上下文置位 _in_service_write,写方法据此
+        # 区分 service 自调(免告警)与外部直写(告警)。软告警不硬抛——迁移脚本
+        # 与既有 store 内部自调(_merge_locked/_evict_oldest 不经写方法)均不误伤。
+        self._service_only = service_only
+        self._in_service_write = 0
         self._pending_storage_tasks: set = set()
         self._dirty_ids: set[str] = set()
         self._failed_sync: set[str] = set()
@@ -221,6 +229,27 @@ class MemoryStore:
 
     def set_retriever(self, retriever):
         self._retriever = retriever
+
+    @contextmanager
+    def service_write(self):
+        """标记一段 MemoryService 发起的写:期间 store 写方法不触发 _service_only
+        告警。可重入(计数),支持 service 内部一次写序里多次调 store。"""
+        self._in_service_write += 1
+        try:
+            yield
+        finally:
+            self._in_service_write -= 1
+
+    def _warn_if_direct(self, op: str, entry_id: str = "") -> None:
+        """service_only 模式下,非 service 调用栈直写 store 写方法即软告警。
+        不硬抛:仅提示新代码应改走 MemoryService 八步写序,避免绕过失效/审计/门禁。"""
+        if self._service_only and self._in_service_write <= 0:
+            logger.warning(
+                "MemoryStore.{} called directly (service_only); writes should go "
+                "through MemoryService to keep provenance/invalidation/audit intact. "
+                "entry_id={}",
+                op, entry_id or "?",
+            )
 
     @staticmethod
     def _content_hash(text: str) -> str:
@@ -780,6 +809,7 @@ class MemoryStore:
 
     def add(self, entry: MemoryEntry) -> MemoryEntry:
         """添加记忆条目。自动去重、冲突合并、容量淘汰。"""
+        self._warn_if_direct("add", entry.id)
         entry.content = self._validate_content(entry.content)
         entry.key = entry.key.strip()
         entry.tags = _normalize_tags(entry.tags)
@@ -892,6 +922,7 @@ class MemoryStore:
         tags: list[str] | None = None,
         source: str | None = None,
     ) -> MemoryEntry | None:
+        self._warn_if_direct("update", entry_id)
         entry = self._entries.get(entry_id)
         if not entry:
             return None
@@ -919,6 +950,7 @@ class MemoryStore:
             return entry
 
     def delete(self, entry_id: str) -> bool:
+        self._warn_if_direct("delete", entry_id)
         entry = self._entries.get(entry_id)
         if not entry:
             return False
@@ -970,6 +1002,7 @@ class MemoryStore:
 
     def set_tier(self, entry_id: str, tier: MemoryTier) -> bool:
         """Persist a tier change (e.g. archival) to the authoritative JSON store."""
+        self._warn_if_direct("set_tier", entry_id)
         entry = self._entries.get(entry_id)
         if not entry:
             return False
@@ -1026,6 +1059,7 @@ class MemoryStore:
     def mark_superseded(self, entry_id: str, superseded_by: str) -> bool:
         """Persist a supersession marker to the authoritative JSON store, so
         retrieval's ``is_superseded`` filter actually takes effect."""
+        self._warn_if_direct("mark_superseded", entry_id)
         entry = self._entries.get(entry_id)
         if not entry:
             return False

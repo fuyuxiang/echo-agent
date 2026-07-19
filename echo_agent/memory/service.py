@@ -14,6 +14,7 @@ R1 重构层地基:把散落在 6 个写入口各自实现的 provenance/失效/
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -93,6 +94,14 @@ class MemoryService:
         """暴露底层 store 供入口做读操作(find/search/list);写操作仍须走本类。"""
         return self._store
 
+    def _service_write(self):
+        """进入 store 的 service_write 上下文(若 store 支持),使本类经过的 store
+        写不触发 _service_only 软告警。store 无此能力(旧实现/测试桩)时退回 no-op。"""
+        sw = getattr(self._store, "service_write", None)
+        if sw is not None:
+            return sw()
+        return nullcontext()
+
     async def invalidate(self, scope: str, global_scope: bool = False) -> None:
         """公开失效钩子:供绕过八步写序、直接改 store 的裁决路径(如工具
         resolve_contradiction→ContradictionDetector.resolve→mark_superseded)显式失效。
@@ -145,7 +154,8 @@ class MemoryService:
             source=source,
             source_session=ctx.memory_scope,
         )
-        stored = self._store.add(entry)
+        with self._service_write():
+            stored = self._store.add(entry)
         # ⑥⑦ flush→失效 ⑧ 审计
         await self._finalize(ctx, "add", stored.id, type, source, "", True)
         return WriteResult(ok=True, entry=stored)
@@ -184,7 +194,8 @@ class MemoryService:
         if not override and not provenance_guard(source, target):
             return self._reject(ctx, "replace", entry_id, target.type, source, "rejected_provenance")
         # ⑤ 写入
-        updated = self._store.update(entry_id, content=content, tags=tags, source=source)
+        with self._service_write():
+            updated = self._store.update(entry_id, content=content, tags=tags, source=source)
         if updated is None:
             return self._reject(ctx, "replace", entry_id, target.type, source, "invalid")
         await self._finalize(ctx, "replace", entry_id, target.type, source, "", True)
@@ -215,7 +226,8 @@ class MemoryService:
         if not override and ctx.actor != "maintenance" and not provenance_guard(derived, target):
             return self._reject(ctx, "remove", entry_id, target.type, derived, "rejected_provenance")
         # ⑤ 写入
-        ok = self._store.delete(entry_id)
+        with self._service_write():
+            ok = self._store.delete(entry_id)
         if not ok:
             return self._reject(ctx, "remove", entry_id, target.type, derived, "invalid")
         await self._finalize(ctx, "remove", entry_id, target.type, derived, "", True)
@@ -259,7 +271,8 @@ class MemoryService:
         if target is None:
             return self._reject(ctx, "maintenance_update", entry_id, None, source or "", "invalid")
         try:
-            updated = self._store.update(entry_id, content=content, tags=tags, source=source)
+            with self._service_write():
+                updated = self._store.update(entry_id, content=content, tags=tags, source=source)
         except ValueError:
             return self._reject(ctx, "maintenance_update", entry_id, target.type, source or "", "invalid")
         if updated is None:
@@ -274,7 +287,8 @@ class MemoryService:
         target = self._store.get(entry_id)
         if target is None:
             return self._reject(ctx, "mark_superseded", entry_id, None, "", "invalid")
-        ok = self._store.mark_superseded(entry_id, superseded_by)
+        with self._service_write():
+            ok = self._store.mark_superseded(entry_id, superseded_by)
         if not ok:
             return self._reject(ctx, "mark_superseded", entry_id, target.type, "", "invalid")
         await self._finalize(ctx, "mark_superseded", entry_id, target.type, "", "", True)
@@ -287,7 +301,8 @@ class MemoryService:
         target = self._store.get(entry_id)
         if target is None:
             return self._reject(ctx, "set_tier", entry_id, None, "", "invalid")
-        ok = self._store.set_tier(entry_id, tier)
+        with self._service_write():
+            ok = self._store.set_tier(entry_id, tier)
         if not ok:
             return self._reject(ctx, "set_tier", entry_id, target.type, "", "invalid")
         await self._finalize(ctx, "set_tier", entry_id, target.type, "", "", True)

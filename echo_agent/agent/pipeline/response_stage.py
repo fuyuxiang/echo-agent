@@ -67,6 +67,7 @@ class ResponseStage:
         scope_version_fn: "Callable[[str], int] | None" = None,
         invalidate_memory_caches_fn: "Callable[[str, bool], Awaitable[None]] | None" = None,
         memory_enabled: bool = True,
+        memory_service: Any = None,
     ):
         self._config = config
         # memory.enabled 总开关:关闭时不 flush、不调度 consolidation、不派 Reviewer、
@@ -85,6 +86,8 @@ class ResponseStage:
         self._prefetcher = prefetcher
         self._scope_version_fn = scope_version_fn
         self._invalidate_memory_caches_fn = invalidate_memory_caches_fn
+        # R1 Task8:后台 memory review 用注入的 loop 单例 service,不再每次 new。
+        self._memory_service = memory_service
 
     async def finalize(self, ctx: PipelineContext, result: InferenceResult) -> ProcessResult:
         """Post-process inference result, save session, schedule background tasks."""
@@ -257,15 +260,16 @@ class ResponseStage:
     async def _background_memory_review(self, messages: list[dict[str, Any]], session_key: str, memory_scope: str = "") -> None:
         try:
             from echo_agent.memory.reviewer import MemoryReviewer
-            from echo_agent.memory.service import MemoryService
-            # Task 8 将统一收口为单例 service;本任务就近构造最小 service 让 reviewer 跑通,
-            # 失效/flush/ENV 门禁全部收敛到 service 八步写序。
-            service = MemoryService(
-                self._memory,
-                invalidate_fn=self._invalidate_memory_caches_fn,
-                flush_fn=getattr(self._memory, "flush_pending_embeds", None),
-                allow_env_writes=self._config.memory.allow_model_environment_writes,
-            )
+            # R1 Task8:优先用 loop 注入的单例 service;缺省(旧构造/测试)才就近兜底。
+            service = self._memory_service
+            if service is None:
+                from echo_agent.memory.service import MemoryService
+                service = MemoryService(
+                    self._memory,
+                    invalidate_fn=self._invalidate_memory_caches_fn,
+                    flush_fn=getattr(self._memory, "flush_pending_embeds", None),
+                    allow_env_writes=self._config.memory.allow_model_environment_writes,
+                )
             reviewer = MemoryReviewer(
                 provider=self._provider,
                 service=service,

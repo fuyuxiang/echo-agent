@@ -30,6 +30,7 @@ from echo_agent.bus.queue import MessageBus
 from echo_agent.config.schema import Config
 from echo_agent.cost.budget import CostTracker
 from echo_agent.memory.consolidator import MemoryConsolidator
+from echo_agent.memory.service import MemoryService
 from echo_agent.memory.store import MemoryStore
 from echo_agent.models.inference import InferenceController
 from echo_agent.models.provider import LLMProvider
@@ -251,6 +252,20 @@ class AgentLoop:
             contradiction_scan_on_store=config.memory.contradiction_scan_on_store,
             archival_threshold=config.memory.archival_threshold,
             forget_threshold=config.memory.forget_threshold,
+            # R1 Task8:唯一写口。所有写者经 self._memory_service 单例(下方构造)
+            # 走八步写序,故 store 置 service_only,外部绕过 service 直写即软告警。
+            service_only=config.memory.enabled,
+        )
+        # R1 Task8:统一装配的 MemoryService 单例——所有写者(工具/reviewer/REST/
+        # promotion/reflection/detector/归档)共享此实例,失效/flush/审计集中一处,
+        # 审计统一落 logs_dir/memory_audit.jsonl(复用 tool_audit.jsonl 同目录)。
+        # 收口前各入口就近 new 独立 service,失效/审计各自为政;此处收敛为单例。
+        self._memory_service = MemoryService(
+            self.memory,
+            invalidate_fn=self._invalidate_memory_caches,
+            flush_fn=self.memory.flush_pending_embeds,
+            audit_path=workspace / config.storage.logs_dir / "memory_audit.jsonl",
+            allow_env_writes=config.memory.allow_model_environment_writes,
         )
         self.tools = ToolRegistry(
             audit_log_path=workspace / config.storage.logs_dir / "tool_audit.jsonl",
@@ -562,6 +577,8 @@ class AgentLoop:
             scope_version_fn=self._scope_version,
             invalidate_memory_caches_fn=self._invalidate_memory_caches,
             memory_enabled=config.memory.enabled,
+            # R1 Task8:Reviewer 经 ResponseStage 后台 review 注入 loop 单例 service。
+            memory_service=self._memory_service,
         )
 
     def _register_tools(self, scheduler: Any = None, task_manager: Any = None, workflow_engine: Any = None) -> None:
@@ -590,6 +607,10 @@ class AgentLoop:
             memory_invalidate_fn=(
                 self._invalidate_memory_caches if self.config.memory.enabled else None
             ),
+            # R1 Task8:MemoryTool 注入 loop 单例 service,不再就近 new。
+            memory_service=(
+                self._memory_service if self.config.memory.enabled else None
+            ),
         )
         for tool in all_tools:
             self.tools.register(tool)
@@ -609,22 +630,10 @@ class AgentLoop:
         forgetting = self.memory.forgetting_curve
 
         episodic = EpisodicManager(storage) if storage else None
-        from echo_agent.memory.service import MemoryService
-        # Task 8 将统一收口为单例 service;本任务就近构造最小 service 让晋升跑通,
-        # 失效/flush/ENV 门禁全部收敛到 service 八步写序。
-        semantic = SemanticManager(MemoryService(
-            self.memory,
-            invalidate_fn=self._invalidate_memory_caches,
-            flush_fn=getattr(self.memory, "flush_pending_embeds", None),
-            allow_env_writes=config.memory.allow_model_environment_writes,
-        ))
-        # 归档/遗忘删除走 service maintenance 通道(统一失效+审计);Task 8 统一单例。
-        archival = ArchivalManager(storage, service=MemoryService(
-            self.memory,
-            invalidate_fn=self._invalidate_memory_caches,
-            flush_fn=getattr(self.memory, "flush_pending_embeds", None),
-            allow_env_writes=config.memory.allow_model_environment_writes,
-        )) if storage else None
+        # R1 Task8:晋升(SemanticManager)与归档/遗忘删除(ArchivalManager)均注入
+        # loop 的 _memory_service 单例,失效/flush/审计统一收敛。
+        semantic = SemanticManager(self._memory_service)
+        archival = ArchivalManager(storage, service=self._memory_service) if storage else None
 
         self._episodic = episodic
         self.consolidator.set_episodic_manager(episodic)
@@ -855,19 +864,13 @@ class AgentLoop:
 
         if config.memory.contradiction_detection and storage:
             from echo_agent.memory.contradiction import ContradictionDetector
-            from echo_agent.memory.service import MemoryService as _MemSvc
-            # 裁决 mark_superseded 走 service maintenance 通道(统一失效+审计);
-            # Task 8 统一单例。矛盾镜像跟踪仍直接落 store。
+            # R1 Task8:裁决 mark_superseded 走 loop 单例 service 的 maintenance
+            # 通道(统一失效+审计)。矛盾镜像跟踪与 set_version(R2 收)仍直接落 store。
             detector = ContradictionDetector(
                 storage,
                 vector_index,
                 store=self.memory,
-                service=_MemSvc(
-                    self.memory,
-                    invalidate_fn=self._invalidate_memory_caches,
-                    flush_fn=getattr(self.memory, "flush_pending_embeds", None),
-                    allow_env_writes=config.memory.allow_model_environment_writes,
-                ),
+                service=self._memory_service,
             )
             self._contradiction_detector = detector
             self.consolidator.set_contradiction_detector(detector)
@@ -881,17 +884,11 @@ class AgentLoop:
 
         if config.memory.reflection_enabled:
             from echo_agent.memory.reflection import ReflectionEngine
-            from echo_agent.memory.service import MemoryService
-            # Task 8 将统一收口为单例 service;本任务就近构造最小 service 让 reflection
-            # 的写(蒸馏 add/清 tag/裁决 mark_superseded)统一走 maintenance 通道失效+审计。
-            reflection_service = MemoryService(
-                self.memory,
-                invalidate_fn=self._invalidate_memory_caches,
-                flush_fn=getattr(self.memory, "flush_pending_embeds", None),
-                allow_env_writes=config.memory.allow_model_environment_writes,
-            )
+            # R1 Task8:reflection 的写(蒸馏 add/清 tag/裁决 mark_superseded)注入
+            # loop 单例 service,统一走 maintenance 通道失效+审计。收口前就近 new 的
+            # reflection service 无 audit_path,审计 no-op——收敛后一并落统一审计。
             self.consolidator.set_reflection(ReflectionEngine(
-                reflection_service,
+                self._memory_service,
                 llm_call=self.provider.chat_with_retry,
                 contradiction_detector=self._contradiction_detector,
             ))

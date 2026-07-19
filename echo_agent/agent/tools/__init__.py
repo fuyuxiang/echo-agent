@@ -33,6 +33,7 @@ def discover_tools(
     approval: Any = None,
     clarify_manager: Any = None,
     memory_invalidate_fn: Any = None,
+    memory_service: Any = None,
 ) -> list[Tool]:
     ws = str(workspace)
     restrict = config.tools.restrict_to_workspace
@@ -151,14 +152,17 @@ def discover_tools(
 
     if memory_store:
         from echo_agent.agent.tools.memory import MemoryTool
-        from echo_agent.memory.service import MemoryService
-        # Task 8 将统一收口为单例 service;本任务就近构造最小 service 让工具跑通。
-        service = MemoryService(
-            memory_store,
-            invalidate_fn=memory_invalidate_fn,
-            flush_fn=getattr(memory_store, "flush_pending_embeds", None),
-            allow_env_writes=config.memory.allow_model_environment_writes,
-        )
+        # R1 Task8:优先用调用方注入的 loop 单例 service;缺省(独立调 discover_tools
+        # 的旧用法/测试)才就近构造一个最小 service 兜底,保持向后兼容。
+        service = memory_service
+        if service is None:
+            from echo_agent.memory.service import MemoryService
+            service = MemoryService(
+                memory_store,
+                invalidate_fn=memory_invalidate_fn,
+                flush_fn=getattr(memory_store, "flush_pending_embeds", None),
+                allow_env_writes=config.memory.allow_model_environment_writes,
+            )
         tools.append(MemoryTool(
             service=service,
             contradiction_detector=contradiction_detector,
