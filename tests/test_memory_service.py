@@ -31,6 +31,29 @@ async def test_low_priority_replace_rejected_no_contradiction(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_add_invalid_content_rejected(tmp_path):
+    # 非法内容(空白)由 store.add 内部校验抛 ValueError,service 捕获转 invalid;
+    # service 层不再重复预校验(store 是唯一校验源)。空白内容仍被拒、不落库。
+    svc, store = _svc(tmp_path)
+    r = await svc.add(ActorContext(actor="model", session_key="s", memory_scope="scope1"),
+                      type=MemoryType.USER, key="k", content="   ", source="model_inferred")
+    assert r.ok is False and r.reason == "invalid"
+    assert store.find_by_key("k", session_key="scope1") is None
+
+
+@pytest.mark.asyncio
+async def test_replace_invalid_content_rejected(tmp_path):
+    # 非法内容由 store.update 内部校验抛 ValueError,service 捕获转 invalid,原内容保留。
+    svc, store = _svc(tmp_path)
+    e = store.add(MemoryEntry(type=MemoryType.USER, key="home", content="上海",
+                              source="user_stated", source_session="scope1"))
+    r = await svc.replace(ActorContext(actor="admin", session_key="s", memory_scope="scope1"),
+                          e.id, content="   ", source="admin", override=True)
+    assert r.ok is False and r.reason == "invalid"
+    assert store.get(e.id).content == "上海"
+
+
+@pytest.mark.asyncio
 async def test_env_write_denied_for_model_by_default(tmp_path):
     svc, _ = _svc(tmp_path, allow_env_writes=False)
     r = await svc.add(ActorContext(actor="model", session_key="s", memory_scope="scope1"),

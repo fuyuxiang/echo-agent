@@ -124,7 +124,9 @@ class TestWritePathStamping:
         from echo_agent.memory.types import Episode
         from echo_agent.memory.service import MemoryService
 
-        mgr = SemanticManager(MemoryService(store))
+        # consolidation 写全局 ENV 受门禁约束,本用例只验证来源标记为 consolidated,
+        # 故显式开 allow_env_writes 让 ENV 事实写成功后再断言来源戳。
+        mgr = SemanticManager(MemoryService(store, allow_env_writes=True))
         episode = Episode(session_key="s1", summary="聊了项目部署")
         promoted = await mgr.promote_from_episodic(
             episode, [{"key": "k6", "content": "项目用docker部署", "type": "environment"}],

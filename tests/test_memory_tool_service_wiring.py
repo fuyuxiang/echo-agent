@@ -7,9 +7,11 @@ service 注入替代裸 store。
 
 import pytest
 
+from echo_agent.memory.contradiction import ContradictionDetector
 from echo_agent.memory.store import MemoryStore
 from echo_agent.memory.service import MemoryService
-from echo_agent.memory.types import Contradiction
+from echo_agent.memory.types import Contradiction, MemoryEntry, MemoryType
+from echo_agent.storage.sqlite import SQLiteBackend
 from echo_agent.agent.tools.memory import MemoryTool
 from echo_agent.tools.base import ToolExecutionContext
 
@@ -44,6 +46,45 @@ async def test_resolve_contradiction_triggers_global_invalidation(tmp_path):
     )
     assert res.success is True
     assert any(global_scope is True for _, global_scope in calls), calls
+
+
+@pytest.mark.asyncio
+async def test_resolve_contradiction_via_wired_detector_invalidates_once(tmp_path):
+    """detector 已装配 service 时:裁决经 detector→service.mark_superseded→_finalize
+    已触发失效,工具不得再显式 invalidate 二次失效。
+
+    装配后 detector.resolve 的 mark_superseded 走 service maintenance 通道会失效一次;
+    此前工具随后又 service.invalidate(global_scope=True) 造成同一裁决失效两次。
+    修后:装配 service 的 detector 只失效一次(由 detector 触发),且败者确被 superseded。
+    """
+    calls: list[tuple[str, bool]] = []
+
+    async def _inval(scope, g):
+        calls.append((scope, g))
+
+    storage = SQLiteBackend(tmp_path / "db.sqlite")
+    await storage.initialize()
+    store = MemoryStore(memory_dir=tmp_path / "mem")
+    service = MemoryService(store, invalidate_fn=_inval)
+
+    winner = store.add(MemoryEntry(type=MemoryType.USER, key="home", content="北京",
+                                   source="user_stated", source_session="s1"))
+    loser = store.add(MemoryEntry(type=MemoryType.USER, key="home", content="上海",
+                                  source="user_stated", source_session="s1"))
+
+    detector = ContradictionDetector(storage=storage, store=store, service=service)
+    c = Contradiction(id="c1", memory_id_a=loser.id, memory_id_b=winner.id, description="x")
+    await detector.store_contradiction(c)
+
+    tool = MemoryTool(service=service, contradiction_detector=detector)
+    res = await tool.execute(
+        {"action": "resolve_contradiction", "contradiction_id": "c1", "winner_id": winner.id}
+    )
+    assert res.success is True
+    # 裁决确实生效:败者被标记 superseded(证明失效未被删没)
+    assert store.get(loser.id).superseded_by == winner.id
+    # 只失效一次(detector 经 service.mark_superseded 触发),工具不再二次失效
+    assert len(calls) == 1, calls
 
 
 @pytest.mark.asyncio

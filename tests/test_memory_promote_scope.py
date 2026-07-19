@@ -5,10 +5,10 @@ from echo_agent.memory.store import MemoryStore
 from echo_agent.memory.types import MemoryType
 
 
-def _make_mgr(tmp_path):
+def _make_mgr(tmp_path, allow_env_writes=False):
     """构造走 MemoryService 八步写序的 SemanticManager 与其底层 store。"""
     store = MemoryStore(memory_dir=tmp_path / "mem")
-    service = MemoryService(store)
+    service = MemoryService(store, allow_env_writes=allow_env_writes)
     return SemanticManager(service), store
 
 
@@ -26,12 +26,30 @@ async def test_promote_user_fact_carries_source_session(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_promote_environment_fact_no_source_session(tmp_path):
-    mgr, _ = _make_mgr(tmp_path)
+async def test_promote_environment_fact_denied_by_default(tmp_path):
+    """默认 allow_env_writes=False 时 consolidation 写全局 ENV 被 ENV 门禁拒绝。
+
+    consolidation 提炼的 fact 来自 LLM 对话(不可信),模型可显式输出
+    type=environment 绕过 allow_model_environment_writes 写全局 ENV。
+    consolidation 纳入 ENV 门禁后,默认配置下该 ENV 写被拒(promoted 为空、库中无该条目)。
+    """
+    mgr, store = _make_mgr(tmp_path, allow_env_writes=False)
     episode = _make_episode("telegram:room1")
     facts = [{"type": "environment", "key": "tz", "content": "UTC+8"}]
     promoted = await mgr.promote_from_episodic(episode, facts)
-    # ENV 事实保持全局可见(source_session 空),不落当前 scope
+    assert promoted == []  # ENV 写被门禁拒绝,不晋升
+    assert store.find_by_key("tz", MemoryType.ENVIRONMENT) is None
+
+
+@pytest.mark.asyncio
+async def test_promote_environment_fact_allowed_when_enabled(tmp_path):
+    """管理员显式开 allow_model_environment_writes 后 consolidation 才可写全局 ENV。"""
+    mgr, _ = _make_mgr(tmp_path, allow_env_writes=True)
+    episode = _make_episode("telegram:room1")
+    facts = [{"type": "environment", "key": "tz", "content": "UTC+8"}]
+    promoted = await mgr.promote_from_episodic(episode, facts)
+    # 开关打开:ENV 事实写成功且保持全局可见(source_session 空)
+    assert promoted, "开启 allow_env_writes 后 ENV 事实应被成功晋升"
     assert promoted[0].source_session == ""
 
 

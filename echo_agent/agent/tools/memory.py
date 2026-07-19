@@ -326,7 +326,11 @@ class MemoryTool(Tool):
             return ToolResult(success=False, error="winner_id must be memory_id_a or memory_id_b")
         resolution = "a_wins" if winner_id == c.memory_id_a else "b_wins"
         await self._contradiction_detector.resolve(cid, resolution, winner_id=winner_id)
-        # 裁决把败者标记 superseded(经 detector→store.mark_superseded),绕过八步写序,
-        # 须显式失效——否则冻结快照/预取跨轮继续注入已被取代的败者条目。裁决全局可见,全局失效。
-        await self._service.invalidate(session_key, global_scope=True)
+        # 装配 service 的 detector,其 resolve 已走 detector→service.mark_superseded→
+        # _finalize 完成失效(八步写序内),工具不得再显式 invalidate 二次失效。
+        # 仅当 detector 未装配 service(裸 store 兜底路径)时,mark_superseded 直连
+        # store 不触发失效,才由工具补一次全局失效——否则冻结快照/预取跨轮继续
+        # 注入已被取代的败者条目。裁决全局可见,故兜底失效用全局。
+        if getattr(self._contradiction_detector, "_service", None) is None:
+            await self._service.invalidate(session_key, global_scope=True)
         return ToolResult(success=True, output=f"Resolved {cid}: {resolution}")

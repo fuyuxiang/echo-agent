@@ -31,8 +31,11 @@ from echo_agent.memory.types import (
 
 _MAX_AUDIT_FILE_BYTES = 5_000_000
 
-# ENV 门禁:只有这两类 actor 才受限(裁决者/内部维护不受限)。
-_ENV_RESTRICTED_ACTORS = frozenset({"model", "reviewer"})
+# ENV 门禁:model/reviewer/consolidation 三类 actor 受限(裁决者/内部维护不受限)。
+# consolidation 提炼的 fact 源自 LLM 对话(不可信),模型可显式输出 type=environment
+# 绕过 allow_model_environment_writes 写全局 ENV,故一并纳入门禁——默认拒,
+# 管理员显式开 allow_model_environment_writes 后才可写。
+_ENV_RESTRICTED_ACTORS = frozenset({"model", "reviewer", "consolidation"})
 
 # actor → provenance 来源标签。用于没有显式 source 参数的写操作(如 remove),
 # 据此对目标条目做 provenance_guard。裁决者/内部维护走精简写序、不触发此表。
@@ -131,11 +134,6 @@ class MemoryService:
     ) -> WriteResult:
         """新增记忆条目,走完整八步写序。新 key 无既有 target 故跳过 provenance。"""
         tags = list(tags or [])
-        # ① 校验
-        try:
-            self._store._validate_content(content)
-        except ValueError:
-            return self._reject(ctx, "add", "", type, source, "invalid")
         # ② scope 门禁
         scope_rej = self._scope_gate(type, ctx)
         if scope_rej:
@@ -144,7 +142,8 @@ class MemoryService:
         if self._env_denied(ctx.actor, type, tags):
             return self._reject(ctx, "add", "", type, source, "rejected_env")
         # ④ provenance:add 无 target,跳过
-        # ⑤ 写入
+        # ①⑤ 校验+写入:内容校验由 store.add 内部完成(唯一校验源),
+        # 非法内容抛 ValueError→转 invalid,service 不再重复预校验。
         entry = MemoryEntry(
             type=type,
             key=key,
@@ -154,8 +153,11 @@ class MemoryService:
             source=source,
             source_session=ctx.memory_scope,
         )
-        with self._service_write():
-            stored = self._store.add(entry)
+        try:
+            with self._service_write():
+                stored = self._store.add(entry)
+        except ValueError:
+            return self._reject(ctx, "add", "", type, source, "invalid")
         # ⑥⑦ flush→失效 ⑧ 审计
         await self._finalize(ctx, "add", stored.id, type, source, "", True)
         return WriteResult(ok=True, entry=stored)
@@ -178,11 +180,6 @@ class MemoryService:
         target = self._store.get(entry_id)
         if target is None:
             return self._reject(ctx, "replace", entry_id, None, source, "invalid")
-        # ① 校验
-        try:
-            self._store._validate_content(content)
-        except ValueError:
-            return self._reject(ctx, "replace", entry_id, target.type, source, "invalid")
         # ② scope 门禁
         scope_rej = self._scope_gate(target.type, ctx)
         if scope_rej:
@@ -193,9 +190,13 @@ class MemoryService:
         # ④ provenance:低于目标优先级则拒(只拒,不写 contradiction);override 显式越权跳过
         if not override and not provenance_guard(source, target):
             return self._reject(ctx, "replace", entry_id, target.type, source, "rejected_provenance")
-        # ⑤ 写入
-        with self._service_write():
-            updated = self._store.update(entry_id, content=content, tags=tags, source=source)
+        # ①⑤ 校验+写入:内容校验由 store.update 内部完成(唯一校验源),
+        # 非法内容抛 ValueError→转 invalid。
+        try:
+            with self._service_write():
+                updated = self._store.update(entry_id, content=content, tags=tags, source=source)
+        except ValueError:
+            return self._reject(ctx, "replace", entry_id, target.type, source, "invalid")
         if updated is None:
             return self._reject(ctx, "replace", entry_id, target.type, source, "invalid")
         await self._finalize(ctx, "replace", entry_id, target.type, source, "", True)

@@ -142,6 +142,39 @@ async def test_rest_delete_user_stated_denied_without_override(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_rest_update_tags_only_user_stated_denied_without_override(tmp_path):
+    # admin 仅改 tags(无 content)也应受 provenance 守卫约束:
+    # user_stated 条目、无 override → 被拒 403,且不落库(store.update 不被调用)。
+    api, store = _make_api()
+    store.get.return_value = MemoryEntry(
+        type=MemoryType.USER, key="home", content="上海", source="user_stated",
+        source_session="s",
+    )
+    resp = await api.update_entry(_Request(match_info={"id": "x"}, body={"tags": ["vip"]}))
+    assert resp.status == 403
+    store.update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rest_update_tags_only_allowed_with_override(tmp_path):
+    # override=true 时 admin 仅改 tags 越权放行。
+    api, store = _make_api()
+    store.get.return_value = MemoryEntry(
+        type=MemoryType.USER, key="home", content="上海", source="user_stated",
+        source_session="s",
+    )
+    store.update.return_value = MemoryEntry(
+        type=MemoryType.USER, key="home", content="上海", source="user_stated",
+        source_session="s", tags=["vip"],
+    )
+    resp = await api.update_entry(
+        _Request(match_info={"id": "x"}, body={"tags": ["vip"], "override": True})
+    )
+    assert resp.status == 200
+    store.update.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_rest_update_user_stated_allowed_with_override(tmp_path):
     api, store = _make_api()
     store.get.return_value = MemoryEntry(

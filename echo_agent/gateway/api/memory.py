@@ -154,13 +154,22 @@ class MemoryAPI:
         # 条目都被拦),仅 override=true 显式越权。provenance/门禁/写后 flush+失效/审计
         # 全在 service 八步写序内。tags-only 更新(无 content)走精简的 maintenance_update。
         actor = ActorContext(actor="admin", session_key=sk, memory_scope=sk)
+        override = body.get("override") is True
         if content is not None:
-            override = body.get("override") is True
             r = await service.replace(
                 actor, entry_id, content=content, source="admin",
                 tags=tags, override=override,
             )
         else:
+            # tags-only 更新(无 content)同样受 admin provenance 守卫:maintenance_update
+            # 走精简写序会跳过 provenance,故在此显式对目标条目施加 admin 守卫——
+            # admin 派生源 priority 0,对任何有来源条目都被拦,仅 override=true 越权。
+            from echo_agent.memory.types import provenance_guard
+            if not override and not provenance_guard("admin", entry):
+                return web.json_response(
+                    {"error": "cannot overwrite higher-provenance entry; pass override=true to force"},
+                    status=403,
+                )
             r = await service.maintenance_update(actor, entry_id, tags=tags)
 
         if not r.ok:
