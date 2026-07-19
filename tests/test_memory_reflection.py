@@ -259,6 +259,35 @@ class TestResolveConflicts:
         assert store.get(c3.id).is_superseded
         assert not store.get(c2.id).is_superseded
 
+    @pytest.mark.asyncio
+    async def test_conflict_pairs_consumes_unresolved_without_tag(self, store):
+        """detector 检出的 unresolved 行(两端条目都无 suspected_conflict tag)应能被
+        _conflict_pairs 配对裁决——不再要求 tag 交集。"""
+        from echo_agent.memory.types import Contradiction
+        a = store.add(MemoryEntry(
+            type=MemoryType.USER, key="home:city", content="住北京",
+            source="model_inferred",
+        ))
+        b = MemoryEntry(
+            type=MemoryType.USER, key="home:addr", content="其实住上海",
+            source="model_inferred",
+        )
+        store._entries[b.id] = b  # 绕过守卫构造并存冲突对
+        # 两端都无 suspected_conflict tag。
+        from echo_agent.memory.store import MemoryStore as _MS
+        assert _MS.SUSPECTED_CONFLICT_TAG not in a.tags
+        assert _MS.SUSPECTED_CONFLICT_TAG not in b.tags
+        detector = MagicMock()
+        detector.get_unresolved = AsyncMock(return_value=[
+            Contradiction(id="k1", memory_id_a=a.id, memory_id_b=b.id),
+        ])
+        detector.resolve = AsyncMock()
+        engine = ReflectionEngine(_svc(store), llm_call=AsyncMock(), contradiction_detector=detector)
+        pairs = await engine._conflict_pairs()
+        assert len(pairs) == 1
+        paired_ids = frozenset((pairs[0][0].id, pairs[0][1].id))
+        assert paired_ids == frozenset((a.id, b.id))
+
 
 class TestSnapshotConfirmationNotice:
     def test_snapshot_appends_notice_when_pending(self, store):

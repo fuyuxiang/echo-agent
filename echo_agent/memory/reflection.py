@@ -209,17 +209,20 @@ class ReflectionEngine:
                 self._store._save_type(t)
         flagged_by_id = {e.id: e for e in flagged}
 
-        # Preferred path: use the detector's exact conflict pairs, restricted to
-        # currently-flagged, non-superseded entries. De-dup unordered pairs.
+        # Preferred path: consume the detector's exact conflict rows directly,
+        # resolving each side to a real store entry (the suspected_conflict tag
+        # is not required — the detector writes rows without tagging, so gating
+        # on tag membership would leave those conflicts unadjudicated). Skip
+        # missing/self/superseded entries. De-dup unordered pairs.
         if self._detector is not None:
             try:
                 unresolved = await self._detector.get_unresolved(limit=10000)
                 pairs: list[tuple[MemoryEntry, MemoryEntry]] = []
                 seen: set[frozenset[str]] = set()
                 for c in unresolved:
-                    a = flagged_by_id.get(c.memory_id_a)
-                    b = flagged_by_id.get(c.memory_id_b)
-                    if a is None or b is None or a.id == b.id:
+                    a = self._store.get(c.memory_id_a)
+                    b = self._store.get(c.memory_id_b)
+                    if a is None or b is None or a.id == b.id or a.is_superseded or b.is_superseded:
                         continue
                     key = frozenset((a.id, b.id))
                     if key in seen:
