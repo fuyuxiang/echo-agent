@@ -40,7 +40,9 @@ _ACTOR_SOURCE = {
     "reviewer": "model_inferred",
     "reflection": "model_inferred",
     "consolidation": "consolidated",
-    "admin": "user_stated",
+    # admin 派生源 priority 0(不在 _SOURCE_PRIORITY),故 remove 默认被 provenance
+    # 拦(对任何有来源条目),仅 override=True 显式越权——沿用止血层最安全默认。
+    "admin": "admin",
     "migration": "legacy",
     "maintenance": "legacy",
 }
@@ -155,8 +157,14 @@ class MemoryService:
         *,
         content: str,
         source: str,
+        tags: list[str] | None = None,
+        override: bool = False,
     ) -> WriteResult:
-        """替换既有条目内容,走完整八步写序(含 provenance 守卫)。"""
+        """替换既有条目内容,走完整八步写序(含 provenance 守卫)。
+
+        override=True 时跳过第④步 provenance(admin 通道显式越权);scope/ENV
+        门禁与失效/审计仍照常执行。tags 非 None 时一并更新条目标签。
+        """
         target = self._store.get(entry_id)
         if target is None:
             return self._reject(ctx, "replace", entry_id, None, source, "invalid")
@@ -172,18 +180,23 @@ class MemoryService:
         # ③ ENV 门禁
         if self._env_denied(ctx.actor, target.type, target.tags):
             return self._reject(ctx, "replace", entry_id, target.type, source, "rejected_env")
-        # ④ provenance:低于目标优先级则拒(只拒,不写 contradiction)
-        if not provenance_guard(source, target):
+        # ④ provenance:低于目标优先级则拒(只拒,不写 contradiction);override 显式越权跳过
+        if not override and not provenance_guard(source, target):
             return self._reject(ctx, "replace", entry_id, target.type, source, "rejected_provenance")
         # ⑤ 写入
-        updated = self._store.update(entry_id, content=content, source=source)
+        updated = self._store.update(entry_id, content=content, tags=tags, source=source)
         if updated is None:
             return self._reject(ctx, "replace", entry_id, target.type, source, "invalid")
         await self._finalize(ctx, "replace", entry_id, target.type, source, "", True)
         return WriteResult(ok=True, entry=updated)
 
-    async def remove(self, ctx: ActorContext, entry_id: str) -> WriteResult:
-        """删除既有条目,走完整八步写序(含 provenance 守卫)。"""
+    async def remove(
+        self, ctx: ActorContext, entry_id: str, *, override: bool = False
+    ) -> WriteResult:
+        """删除既有条目,走完整八步写序(含 provenance 守卫)。
+
+        override=True 时跳过第④步 provenance(admin 通道显式越权)。
+        """
         target = self._store.get(entry_id)
         if target is None:
             return self._reject(ctx, "remove", entry_id, None, "", "invalid")
@@ -195,8 +208,8 @@ class MemoryService:
         # ③ ENV 门禁
         if self._env_denied(ctx.actor, target.type, target.tags):
             return self._reject(ctx, "remove", entry_id, target.type, derived, "rejected_env")
-        # ④ provenance
-        if not provenance_guard(derived, target):
+        # ④ provenance;override 显式越权跳过
+        if not override and not provenance_guard(derived, target):
             return self._reject(ctx, "remove", entry_id, target.type, derived, "rejected_provenance")
         # ⑤ 写入
         ok = self._store.delete(entry_id)

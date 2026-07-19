@@ -522,6 +522,28 @@ class TestMemoryAPI:
         server._agent_loop._invalidate_memory_caches = AsyncMock()
         return api, store, server
 
+    def _make_with_service(self):
+        """写端点(update/delete)已改走 MemoryService 的 admin 通道:
+        server 上挂 mock service,store 仅供 handler 读目标条目派生 scope。"""
+        from echo_agent.gateway.api.memory import MemoryAPI
+
+        server = _make_server()
+        service = MagicMock()
+        server._agent_loop._memory_service = service
+        store = MagicMock()
+        store.get.return_value = _mem_entry("x")
+        store.flush_pending_embeds = AsyncMock(return_value=0)
+        server._agent_loop.memory = store
+        server._agent_loop._invalidate_memory_caches = AsyncMock()
+        api = MemoryAPI(server)
+        return api, service, store, server
+
+    @staticmethod
+    def _write_result(ok=True, reason="", entry_id="x"):
+        from echo_agent.memory.service import WriteResult
+
+        return WriteResult(ok=ok, entry=_mem_entry(entry_id) if ok else None, reason=reason)
+
     @pytest.mark.asyncio
     async def test_list_entries_unauthorized(self):
         from echo_agent.gateway.api.memory import MemoryAPI
@@ -605,8 +627,8 @@ class TestMemoryAPI:
 
     @pytest.mark.asyncio
     async def test_update_entry_not_found(self):
-        api, store, _ = self._make()
-        store.update.return_value = None
+        api, service, store, _ = self._make_with_service()
+        store.get.return_value = None
         resp = await api.update_entry(
             _Request(match_info={"id": "x"}, body={"content": "c"})
         )
@@ -614,8 +636,8 @@ class TestMemoryAPI:
 
     @pytest.mark.asyncio
     async def test_update_entry_success(self):
-        api, store, _ = self._make()
-        store.update.return_value = _mem_entry("x")
+        api, service, store, _ = self._make_with_service()
+        service.replace = AsyncMock(return_value=self._write_result())
         resp = await api.update_entry(
             _Request(match_info={"id": "x"}, body={"content": "c", "tags": ["t"]})
         )
@@ -624,58 +646,91 @@ class TestMemoryAPI:
         assert data["id"] == "x"
 
     @pytest.mark.asyncio
+    async def test_rest_update_passes_override_to_service(self):
+        api, service, store, _ = self._make_with_service()
+        service.replace = AsyncMock(return_value=self._write_result())
+        await api.update_entry(
+            _Request(match_info={"id": "x"}, body={"content": "x", "override": True})
+        )
+        _, kw = service.replace.call_args
+        assert kw.get("override") is True
+        assert kw.get("source") == "admin"
+
+    @pytest.mark.asyncio
+    async def test_rest_update_admin_rejected_without_override(self):
+        api, service, store, _ = self._make_with_service()
+        service.replace = AsyncMock(
+            return_value=self._write_result(ok=False, reason="rejected_provenance")
+        )
+        resp = await api.update_entry(
+            _Request(match_info={"id": "x"}, body={"content": "c"})
+        )
+        assert resp.status == 403
+        _, kw = service.replace.call_args
+        assert kw.get("override") is False
+
+    @pytest.mark.asyncio
+    async def test_rest_update_invalid_content_maps_400(self):
+        api, service, store, _ = self._make_with_service()
+        service.replace = AsyncMock(
+            return_value=self._write_result(ok=False, reason="invalid")
+        )
+        resp = await api.update_entry(
+            _Request(match_info={"id": "x"}, body={"content": "c"})
+        )
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_rest_update_tags_only_uses_maintenance_update(self):
+        # 只传 tags 无 content:走 maintenance_update(不受 provenance 守卫)。
+        api, service, store, _ = self._make_with_service()
+        service.maintenance_update = AsyncMock(return_value=self._write_result())
+        service.replace = AsyncMock(return_value=self._write_result())
+        resp = await api.update_entry(
+            _Request(match_info={"id": "x"}, body={"tags": ["t"]})
+        )
+        assert resp.status == 200
+        service.maintenance_update.assert_awaited_once()
+        service.replace.assert_not_awaited()
+        _, kw = service.maintenance_update.call_args
+        assert kw.get("tags") == ["t"]
+
+    @pytest.mark.asyncio
     async def test_delete_entry_not_found(self):
-        api, store, _ = self._make()
-        store.delete.return_value = False
+        api, service, store, _ = self._make_with_service()
+        store.get.return_value = None
         resp = await api.delete_entry(_Request(match_info={"id": "x"}))
         assert resp.status == 404
 
     @pytest.mark.asyncio
     async def test_delete_entry_success(self):
-        api, store, _ = self._make()
-        store.delete.return_value = True
+        api, service, store, _ = self._make_with_service()
+        service.remove = AsyncMock(return_value=self._write_result())
         resp = await api.delete_entry(_Request(match_info={"id": "x"}))
         assert resp.status == 200
         data = await _payload(resp)
         assert data["status"] == "deleted"
 
     @pytest.mark.asyncio
-    async def test_update_triggers_flush_then_invalidate(self):
-        api, store, server = self._make()
-        store.update.return_value = _mem_entry("x")
-        order = []
-        store.flush_pending_embeds = AsyncMock(
-            side_effect=lambda: order.append("flush")
+    async def test_rest_delete_passes_override_from_query(self):
+        api, service, store, _ = self._make_with_service()
+        service.remove = AsyncMock(return_value=self._write_result())
+        await api.delete_entry(
+            _Request(match_info={"id": "x"}, query={"override": "true"})
         )
-        server._agent_loop._invalidate_memory_caches = AsyncMock(
-            side_effect=lambda *a, **k: order.append("invalidate")
-        )
-        resp = await api.update_entry(
-            _Request(match_info={"id": "x"}, body={"content": "c"})
-        )
-        assert resp.status == 200
-        # 先 flush 待入索引的向量,再失效缓存;顺序反了会有窗口读到未 flush 旧向量
-        store.flush_pending_embeds.assert_awaited_once()
-        server._agent_loop._invalidate_memory_caches.assert_awaited_once()
-        assert order == ["flush", "invalidate"]
+        _, kw = service.remove.call_args
+        assert kw.get("override") is True
 
     @pytest.mark.asyncio
-    async def test_delete_triggers_flush_then_invalidate(self):
-        api, store, server = self._make()
-        store.get.return_value = _mem_entry("x")
-        store.delete.return_value = True
-        order = []
-        store.flush_pending_embeds = AsyncMock(
-            side_effect=lambda: order.append("flush")
-        )
-        server._agent_loop._invalidate_memory_caches = AsyncMock(
-            side_effect=lambda *a, **k: order.append("invalidate")
+    async def test_rest_delete_admin_rejected_without_override(self):
+        api, service, store, _ = self._make_with_service()
+        service.remove = AsyncMock(
+            return_value=self._write_result(ok=False, reason="rejected_provenance")
         )
         resp = await api.delete_entry(_Request(match_info={"id": "x"}))
-        assert resp.status == 200
-        store.flush_pending_embeds.assert_awaited_once()
-        server._agent_loop._invalidate_memory_caches.assert_awaited_once()
-        assert order == ["flush", "invalidate"]
+        assert resp.status == 403
+        _, kw = service.remove.call_args
+        assert kw.get("override") is False
 
     @pytest.mark.asyncio
     async def test_search_invalid_json(self):

@@ -106,6 +106,10 @@ def _make_api():
     server._agent_loop.memory = store
     # 写后失效同样 await,置异步桩
     server._agent_loop._invalidate_memory_caches = AsyncMock()
+    # 端到端走真 MemoryService 的 admin 通道:置空 loop 上的单例槽,使 _service()
+    # 就地用上面的 mock store + 异步失效/flush 构造真 service(验证 provenance 真拦)。
+    server._agent_loop._memory_service = None
+    server._agent_loop.config.memory.allow_model_environment_writes = False
     return api, store
 
 
@@ -117,7 +121,8 @@ async def _payload(resp):
 async def test_rest_update_user_stated_denied_without_override(tmp_path):
     api, store = _make_api()
     store.get.return_value = MemoryEntry(
-        type=MemoryType.USER, key="home", content="上海", source="user_stated"
+        type=MemoryType.USER, key="home", content="上海", source="user_stated",
+        source_session="s",
     )
     resp = await api.update_entry(_Request(match_info={"id": "x"}, body={"content": "北京"}))
     assert resp.status == 403
@@ -128,7 +133,8 @@ async def test_rest_update_user_stated_denied_without_override(tmp_path):
 async def test_rest_delete_user_stated_denied_without_override(tmp_path):
     api, store = _make_api()
     store.get.return_value = MemoryEntry(
-        type=MemoryType.USER, key="home", content="上海", source="user_stated"
+        type=MemoryType.USER, key="home", content="上海", source="user_stated",
+        source_session="s",
     )
     resp = await api.delete_entry(_Request(match_info={"id": "x"}))
     assert resp.status == 403
@@ -139,10 +145,12 @@ async def test_rest_delete_user_stated_denied_without_override(tmp_path):
 async def test_rest_update_user_stated_allowed_with_override(tmp_path):
     api, store = _make_api()
     store.get.return_value = MemoryEntry(
-        type=MemoryType.USER, key="home", content="上海", source="user_stated"
+        type=MemoryType.USER, key="home", content="上海", source="user_stated",
+        source_session="s",
     )
     store.update.return_value = MemoryEntry(
-        type=MemoryType.USER, key="home", content="北京", source="user_stated"
+        type=MemoryType.USER, key="home", content="北京", source="user_stated",
+        source_session="s",
     )
     resp = await api.update_entry(
         _Request(match_info={"id": "x"}, body={"content": "北京", "override": True})
@@ -155,7 +163,8 @@ async def test_rest_update_user_stated_allowed_with_override(tmp_path):
 async def test_rest_delete_user_stated_allowed_with_override(tmp_path):
     api, store = _make_api()
     store.get.return_value = MemoryEntry(
-        type=MemoryType.USER, key="home", content="上海", source="user_stated"
+        type=MemoryType.USER, key="home", content="上海", source="user_stated",
+        source_session="s",
     )
     store.delete.return_value = True
     resp = await api.delete_entry(

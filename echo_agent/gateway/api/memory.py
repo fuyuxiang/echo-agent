@@ -16,6 +16,24 @@ class MemoryAPI:
     def _store(self):
         return self._server._agent_loop.memory
 
+    def _service(self):
+        """REST 写端点(update/delete)统一走 MemoryService 的 admin 通道。
+
+        Task 8 将全局收口为单例;本任务就近取 loop 上已构造的 service,缺失则
+        用 loop 的 memory/失效/flush 就地构造一个最小 service。
+        """
+        loop = self._server._agent_loop
+        service = getattr(loop, "_memory_service", None)
+        if service is not None:
+            return service
+        from echo_agent.memory.service import MemoryService
+        return MemoryService(
+            loop.memory,
+            invalidate_fn=loop._invalidate_memory_caches,
+            flush_fn=getattr(loop.memory, "flush_pending_embeds", None),
+            allow_env_writes=loop.config.memory.allow_model_environment_writes,
+        )
+
     def _memory_enabled(self) -> bool:
         # memory.enabled 总开关:关闭时整套 REST 记忆端点不可用,统一 409。
         loop = getattr(self._server, "_agent_loop", None)
@@ -121,32 +139,40 @@ class MemoryAPI:
         content = body.get("content")
         tags = body.get("tags")
 
-        # 写权守卫:admin 默认也受守卫(source_priority("admin")=0,故对任何有来源
-        # 条目都被拦),仅 override=true 显式越权。被拒仅返回 403,不打 tag/写 contradiction。
-        from echo_agent.memory.types import provenance_guard
+        # 目标不存在直接 404(避免把 service 的 invalid 与 not-found 混为 400)。
+        # scope 取目标条目的 source_session:USER 写据此过 scope 门禁并按 scope 失效。
         store = self._store()
         entry = store.get(entry_id)
-        override = body.get("override") is True
-        if entry and not override and not provenance_guard("admin", entry):
-            return web.json_response(
-                {"error": "cannot overwrite higher-provenance entry; pass override=true to force"},
-                status=403,
-            )
-
-        result = store.update(entry_id, content=content, tags=tags)
-        if not result:
+        if entry is None:
             return web.json_response({"error": "not found"}, status=404)
+        sk = entry.source_session
 
-        # 写后失效:先 flush 待入索引的向量,再失效缓存。顺序反了会有窗口内
-        # 缓存已失效、检索命中却读到未 flush 的旧向量。ENVIRONMENT 全局失效,
-        # 其余按其 source_session 作 scope 失效。
-        from echo_agent.memory.types import MemoryType
-        loop = self._server._agent_loop
-        global_scope = result.type == MemoryType.ENVIRONMENT
-        scope = "" if global_scope else result.source_session
-        await store.flush_pending_embeds()
-        await loop._invalidate_memory_caches(scope, global_scope)
-        return web.json_response(result.to_dict())
+        from echo_agent.memory.service import ActorContext
+        service = self._service()
+
+        # admin 写权:默认受 provenance 守卫(source_priority("admin")=0,对任何有来源
+        # 条目都被拦),仅 override=true 显式越权。provenance/门禁/写后 flush+失效/审计
+        # 全在 service 八步写序内。tags-only 更新(无 content)走精简的 maintenance_update。
+        actor = ActorContext(actor="admin", session_key=sk, memory_scope=sk)
+        if content is not None:
+            override = body.get("override") is True
+            r = await service.replace(
+                actor, entry_id, content=content, source="admin",
+                tags=tags, override=override,
+            )
+        else:
+            r = await service.maintenance_update(actor, entry_id, tags=tags)
+
+        if not r.ok:
+            if r.reason == "rejected_provenance":
+                return web.json_response(
+                    {"error": "cannot overwrite higher-provenance entry; pass override=true to force"},
+                    status=403,
+                )
+            if r.reason == "invalid":
+                return web.json_response({"error": "invalid update"}, status=400)
+            return web.json_response({"error": r.reason or "rejected"}, status=400)
+        return web.json_response(r.entry.to_dict())
 
     async def delete_entry(self, request: web.Request) -> web.Response:
         if not self._memory_enabled():
@@ -157,28 +183,32 @@ class MemoryAPI:
 
         entry_id = request.match_info["id"]
 
-        # 删权守卫:先取目标条目再删;admin 默认受守卫,override=true(取自 query)才越权。
-        from echo_agent.memory.types import provenance_guard
+        # 目标不存在直接 404;scope 取删除前 entry 的 source_session。
         store = self._store()
         entry = store.get(entry_id)
-        override = request.query.get("override") == "true"
-        if entry and not override and not provenance_guard("admin", entry):
-            return web.json_response(
-                {"error": "cannot delete higher-provenance entry; pass override=true to force"},
-                status=403,
-            )
-
-        ok = store.delete(entry_id)
-        if not ok:
+        if entry is None:
             return web.json_response({"error": "not found"}, status=404)
+        sk = entry.source_session
 
-        # 写后失效:先 flush 再失效缓存(见 update_entry)。scope 取删除前的 entry。
-        from echo_agent.memory.types import MemoryType
-        loop = self._server._agent_loop
-        global_scope = bool(entry and entry.type == MemoryType.ENVIRONMENT)
-        scope = "" if global_scope else (entry.source_session if entry else "")
-        await store.flush_pending_embeds()
-        await loop._invalidate_memory_caches(scope, global_scope)
+        from echo_agent.memory.service import ActorContext
+        service = self._service()
+
+        # admin 删权:默认受守卫,override=true(取自 query)才越权。provenance/门禁/
+        # 写后 flush+失效/审计全在 service.remove 八步写序内。
+        override = request.query.get("override") == "true"
+        r = await service.remove(
+            ActorContext(actor="admin", session_key=sk, memory_scope=sk),
+            entry_id, override=override,
+        )
+        if not r.ok:
+            if r.reason == "rejected_provenance":
+                return web.json_response(
+                    {"error": "cannot delete higher-provenance entry; pass override=true to force"},
+                    status=403,
+                )
+            if r.reason == "invalid":
+                return web.json_response({"error": "not found"}, status=404)
+            return web.json_response({"error": r.reason or "rejected"}, status=400)
         return web.json_response({"status": "deleted"})
 
     async def search(self, request: web.Request) -> web.Response:
