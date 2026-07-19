@@ -1,12 +1,18 @@
 """Tests for the ConsolidationWorker."""
 
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 
 from echo_agent.agent.consolidation import ConsolidationWorker
-from echo_agent.session.manager import Session
+from echo_agent.memory.consolidator import MemoryConsolidator
+from echo_agent.memory.service import MemoryService
+from echo_agent.memory.store import MemoryStore
+from echo_agent.memory.tiers import EpisodicManager, SemanticManager
+from echo_agent.session.manager import Session, SessionManager
+from echo_agent.storage.sqlite import SQLiteBackend
 
 
 @pytest.fixture
@@ -358,3 +364,70 @@ class TestSnapshotValidity:
         ]
         session = self._session([{"role": "user", "content": "a"}])
         assert ConsolidationWorker._snapshot_still_valid(session, 0, chunk, 2) is False
+
+
+class TestEpisodeAbsoluteRange:
+    """Critical 回归：巩固轮次的 episode 幂等键必须用绝对消息区间。
+
+    修复前 consolidator 传 message_range=(0, len(messages)) —— range_start 恒 0、
+    range_end 是本轮消息条数（相对长度）。两个内容不同但恰好条数相同的巩固轮次会
+    生成同一把 (session, 0, N) 幂等键 → 第二轮 episode 被静默去重丢弃。
+    修复后应传绝对区间 (start, start+len)，两轮各建一条。
+    """
+
+    async def _make_worker(self, tmp_path: Path):
+        storage = SQLiteBackend(tmp_path / "db.sqlite")
+        await storage.initialize()
+        store = MemoryStore(memory_dir=tmp_path / "mem", storage=storage)
+
+        async def mock_llm(**kwargs):
+            class _Resp:
+                content = "summary"
+                tool_calls: list = []
+            return _Resp()
+
+        consolidator = MemoryConsolidator(store, mock_llm, consolidation_threshold=1)
+        episodic = EpisodicManager(storage)
+        consolidator.set_episodic_manager(episodic)
+        consolidator.set_semantic_manager(SemanticManager(MemoryService(store)))
+
+        sessions = SessionManager(tmp_path / "sessions", storage=storage)
+        worker = ConsolidationWorker(
+            sessions=sessions, consolidator=consolidator, sleep_consolidation=True,
+        )
+        return worker, sessions, storage, episodic
+
+    async def _run_worker(self, worker, session_key: str):
+        spawned = []
+
+        def spawn_fn(coro):
+            spawned.append(asyncio.ensure_future(coro))
+
+        await worker.schedule(session_key, spawn_fn)
+        await asyncio.gather(*spawned)
+
+    @pytest.mark.asyncio
+    async def test_two_equal_length_rounds_create_two_episodes(self, tmp_path):
+        """两个内容不同、条数相同的巩固轮次（绝对区间不同）各建一条 episode，不误去重。"""
+        worker, sessions, storage, _ = await self._make_worker(tmp_path)
+        session_key = "chan:1"
+
+        # Round 1: 2 条消息，绝对区间 (0, 2)。
+        session = await sessions.get_or_create(session_key)
+        session.add_message("user", "第一轮内容 A")
+        session.add_message("assistant", "回应 A")
+        await sessions.save(session)
+        await self._run_worker(worker, session_key)
+
+        # Round 2: 再 2 条消息，绝对区间 (2, 4) —— 条数与第一轮相同但位置不同。
+        session = await sessions.get_or_create(session_key)
+        session.add_message("user", "第二轮内容 B")
+        session.add_message("assistant", "回应 B")
+        await sessions.save(session)
+        await self._run_worker(worker, session_key)
+
+        rows = await storage.fetch_sql(
+            "SELECT COUNT(*) AS n FROM memory_episodes WHERE session_key=?",
+            (session_key,),
+        )
+        assert rows[0]["n"] == 2, "两个等长巩固轮次被相对键误去重，episodic 记忆静默丢失"

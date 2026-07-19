@@ -122,6 +122,7 @@ class MemoryConsolidator:
     async def sleep_consolidate(
         self, session_key: str, messages: list[dict[str, Any]],
         *, chunk_already_consolidated: bool = False, memory_scope: str = "",
+        range_start: int = 0,
     ) -> dict[str, int]:
         """Sleep-time consolidation pipeline:
         1. Create episode from messages
@@ -146,7 +147,7 @@ class MemoryConsolidator:
                     session_key=session_key,
                     messages=messages,
                     summary=summary_text,
-                    message_range=(0, len(messages)),
+                    message_range=(range_start, range_start + len(messages)),
                 )
                 stats["episodes"] = 1
 

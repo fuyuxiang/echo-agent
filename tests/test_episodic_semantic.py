@@ -186,3 +186,33 @@ async def test_create_episode_idempotent_on_session_range(storage):
         "SELECT COUNT(*) AS n FROM memory_episodes WHERE session_key='s1'"
     )
     assert rows[0]["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_create_episode_distinct_ranges_create_two(storage):
+    """幂等键有区分度：不同 message_range 各建一条不同 id 的 episode。"""
+    mgr = EpisodicManager(storage)
+    e1 = await mgr.create_episode(
+        "s1", [{"role": "user", "content": "x"}], "摘要A", message_range=(0, 2)
+    )
+    e2 = await mgr.create_episode(
+        "s1", [{"role": "user", "content": "y"}], "摘要B", message_range=(2, 4)
+    )
+    assert e1.id != e2.id  # 不同 range → 不同 episode
+    rows = await storage.fetch_sql(
+        "SELECT COUNT(*) AS n FROM memory_episodes WHERE session_key='s1'"
+    )
+    assert rows[0]["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_create_episode_zero_range_always_new(storage):
+    """range=(0,0) 表示"无区间信息"，保持既有 per-call 新建行为，不去重。"""
+    mgr = EpisodicManager(storage)
+    e1 = await mgr.create_episode("s1", [], "摘要A", message_range=(0, 0))
+    e2 = await mgr.create_episode("s1", [], "摘要B", message_range=(0, 0))
+    assert e1.id != e2.id  # (0,0) 每次新建
+    rows = await storage.fetch_sql(
+        "SELECT COUNT(*) AS n FROM memory_episodes WHERE session_key='s1'"
+    )
+    assert rows[0]["n"] == 2

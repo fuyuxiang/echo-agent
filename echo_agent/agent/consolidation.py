@@ -120,7 +120,7 @@ class ConsolidationWorker:
                 try:
                     stats = await self._consolidator.sleep_consolidate(
                         session_key, trimmed, chunk_already_consolidated=chunk_ok,
-                        memory_scope=memory_scope,
+                        memory_scope=memory_scope, range_start=start,
                     )
                     if any(v > 0 for v in stats.values()):
                         logger.info("Sleep consolidation for {}: {}", session_key, stats)
