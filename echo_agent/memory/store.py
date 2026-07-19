@@ -1428,9 +1428,8 @@ class MemoryStore:
         path = self._long_term_path(scope)
         if path.exists():
             return path.read_text(encoding="utf-8")
-        # dual-read 迁移:分片不存在但旧全局 MEMORY.md 存在则读旧(只读不写回)。
-        if self._long_term_file.exists():
-            return self._long_term_file.read_text(encoding="utf-8")
+        # R3 Task6:删旧全局 MEMORY.md dual-read 回退。Task5 迁移已把存量 MD 抽入
+        # store,回退会让未写分片的 scope 读到同一旧全局文件造成跨 scope 暴露。
         return ""
 
     def write_long_term(self, scope: str, content: str) -> None:

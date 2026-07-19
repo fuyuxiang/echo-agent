@@ -33,12 +33,21 @@ def test_separator_collision_distinct_shards(tmp_path):
     assert s.read_long_term("telegram_bob") == "下划线版"
 
 
-def test_dual_read_falls_back_to_legacy_global(tmp_path):
+def test_read_long_term_no_dual_read_fallback(tmp_path):
+    s = MemoryStore(memory_dir=tmp_path / "mem", scope_policy="session")
+    # 造旧全局 MEMORY.md
+    (tmp_path / "mem" / "MEMORY.md").write_text("旧全局跨scope内容", encoding="utf-8")
+    # 未写过分片的 scope 读:不应回退读到旧全局(避免跨 scope 暴露)
+    assert s.read_long_term("some_scope") == ""
+
+
+def test_read_long_term_shard_still_read_after_removing_fallback(tmp_path):
+    # 迁移后无回退:旧全局存在也不读,只读该 scope 分片。
     s = _store(tmp_path)
-    # 模拟旧全局 MEMORY.md 存在、owner 分片不存在
     (tmp_path / "MEMORY.md").write_text("旧全局记忆", encoding="utf-8")
-    assert s.read_long_term("owner") == "旧全局记忆"
-    # 写入走新分片,不覆盖旧全局
+    # 未写分片的 scope 读到空,不回退旧全局
+    assert s.read_long_term("owner") == ""
+    # 写入走新分片,读回分片内容,旧全局原样不动
     s.write_long_term("owner", "新分片记忆")
     assert s.read_long_term("owner") == "新分片记忆"
     assert (tmp_path / "MEMORY.md").read_text(encoding="utf-8") == "旧全局记忆"
