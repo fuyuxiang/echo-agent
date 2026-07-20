@@ -98,6 +98,49 @@ async def test_running_task_not_redispatched_on_second_scan():
 
 
 @pytest.mark.asyncio
+async def test_dispatch_rejected_by_bus_requeues_task():
+    """If the bus rejects the publish, the task the dispatcher optimistically
+    flipped to RUNNING must roll back to QUEUED so a later scan re-picks it —
+    otherwise it is stuck at RUNNING forever with no turn to ever close it."""
+    storage = FakeStorage()
+    manager = TaskManager(storage)
+    bus = FakeBus(accept=False)
+    task = await manager.create(title="rejected")
+    await manager.transition(task.id, TaskStatus.QUEUED)
+
+    dispatcher = TaskDispatcher(bus, manager)
+    await dispatcher._scan_once()
+    await asyncio.sleep(0)
+
+    assert len(bus.published) == 1  # attempted once
+    reloaded = await manager.get(task.id)
+    assert reloaded.status == TaskStatus.QUEUED  # rolled back, not stuck at RUNNING
+    assert reloaded.started_at == ""
+
+    # A later scan (bus now healthy) re-picks it and dispatches successfully.
+    bus.accept = True
+    await dispatcher._scan_once()
+    await asyncio.sleep(0)
+    assert len(bus.published) == 2
+    assert (await manager.get(task.id)).status == TaskStatus.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_requeue_dispatch_failed_noop_when_not_running():
+    """Only a RUNNING task (the optimistic pre-publish flip) may roll back. A task
+    that a real turn already moved on from must be left alone."""
+    storage = FakeStorage()
+    manager = TaskManager(storage)
+    task = await manager.create(title="t")
+    await manager.transition(task.id, TaskStatus.QUEUED)
+    await manager.transition(task.id, TaskStatus.RUNNING)
+    await manager.transition(task.id, TaskStatus.REVIEW)
+
+    result = await manager.requeue_dispatch_failed(task.id)
+    assert result.status == TaskStatus.REVIEW  # untouched
+
+
+@pytest.mark.asyncio
 async def test_render_task_prompt_includes_id_and_title():
     storage = FakeStorage()
     manager = TaskManager(storage)

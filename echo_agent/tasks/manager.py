@@ -114,6 +114,27 @@ class TaskManager:
         await self._storage.store_task(task.id, task.to_dict())
         return task
 
+    async def requeue_dispatch_failed(self, task_id: str) -> TaskRecord | None:
+        """Roll a task the dispatcher already flipped to RUNNING back to QUEUED
+        when the turn never actually started (message bus rejected the publish).
+        Without this the task is stuck at RUNNING forever: the dispatcher only
+        scans QUEUED, so it would never be re-picked and no turn will ever write
+        a terminal state. RUNNING→QUEUED is deliberately NOT a public
+        state-machine transition (it would let the board drag running→queued and
+        create executor-less "ghost running" tasks); this is the one internal
+        path allowed to do it, and only for a task whose turn we know never ran.
+        No-op if the task vanished or already left RUNNING (a real turn picked it
+        up in the meantime). Never raises."""
+        task = await self.get(task_id)
+        if not task or task.status != TaskStatus.RUNNING:
+            return task
+        task.status = TaskStatus.QUEUED
+        task.started_at = ""
+        task.updated_at = _now()
+        await self._storage.store_task(task.id, task.to_dict())
+        logger.warning("Task {} re-queued after dispatch was rejected", task_id)
+        return task
+
     async def mark_terminal(
         self, task_id: str, status: TaskStatus, *, result: str = "", error: str = ""
     ) -> TaskRecord | None:

@@ -25,6 +25,7 @@ class ProcessResult:
     response_text: str = ""
     outbound_sent: bool = False
     degraded_notices: list[str] = field(default_factory=list)
+    task_incomplete: bool = False
 
 
 class TokenStreamPublisher:

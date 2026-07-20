@@ -27,6 +27,7 @@ class ProcessResult:
     response_text: str = ""
     outbound_sent: bool = False
     degraded_notices: list[str] = field(default_factory=list)
+    task_incomplete: bool = False
 
 
 # Channels whose traffic is synthetic (evaluation/benchmark/test harnesses) and
@@ -234,6 +235,7 @@ class ResponseStage:
             response_text=response_text or "",
             outbound_sent=outbound_sent,
             degraded_notices=list(result.degraded_notices),
+            task_incomplete=result.task_incomplete,
         )
 
     def _update_working_memory(self, session_key: str, event: Any, response_text: str) -> None:

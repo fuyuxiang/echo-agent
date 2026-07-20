@@ -1175,20 +1175,50 @@ class AgentLoop:
     async def _record_task_outcome(self, event: InboundEvent, status: str, error: str = "") -> None:
         """For a dispatched board task, drive it to a terminal state after its turn
         finishes — the safety net that keeps a task from being stuck at RUNNING if
-        the agent didn't close it out via the task tool itself. Idempotent: if the
-        agent already completed/failed it (terminal), mark_terminal no-ops, and a
-        task cancelled mid-run is already terminal so a "success" writeback can't
-        resurrect it. No-op for non-task events or when no task_manager is wired."""
+        the agent didn't close it out via the task tool itself. `status` is one of
+        "completed" (clean finish → SUCCESS), "incomplete" (turn produced a reply
+        but did not finish the task: provider error / budget / iteration ceiling /
+        forced convergence / interrupt → FAILED) or "error" (the turn raised →
+        FAILED). Idempotent: if the agent already completed/failed it (terminal),
+        mark_terminal no-ops, and a task cancelled mid-run is already terminal so a
+        later writeback can't resurrect it. No-op for non-task events or when no
+        task_manager is wired."""
         manager = getattr(self, "_task_manager", None)
         task_id = str(event.metadata.get("task_id") or "")
         if manager is None or not task_id:
             return
-        from echo_agent.tasks.models import TaskStatus
+        from echo_agent.tasks.models import TERMINAL_TASK_STATUSES, TaskStatus
         target = TaskStatus.SUCCESS if status == "completed" else TaskStatus.FAILED
+        if status == "incomplete" and not error:
+            error = "任务未完成即结束(模型报错/预算或轮次耗尽/被中断),已按失败处理"
         try:
-            await manager.mark_terminal(task_id, target, error=error)
+            # Snapshot the pre-writeback status: if the agent already closed the
+            # task via the task tool, it's already terminal AND the tool already
+            # advanced the workflow — mark_terminal no-ops and we must NOT advance
+            # again. We only advance the workflow when THIS writeback is what
+            # drove the task terminal (the agent didn't call complete/fail).
+            before = await manager.get(task_id)
+            was_open = before is not None and before.status not in TERMINAL_TASK_STATUSES
+            after = await manager.mark_terminal(task_id, target, error=error)
         except Exception as e:
             logger.debug("Task outcome writeback failed for task {}: {}", task_id, e)
+            return
+        # Safety-net terminal transition on a workflow step: advance the owning
+        # workflow so its next eligible steps get queued (same hook TaskTool runs
+        # when the agent closes a step itself). Best-effort — the writeback
+        # already persisted; a failed advance is recoverable via explicit advance.
+        engine = getattr(self, "_workflow_engine", None)
+        if (
+            engine is not None
+            and was_open
+            and after is not None
+            and getattr(after, "workflow_id", "")
+            and after.status in TERMINAL_TASK_STATUSES
+        ):
+            try:
+                await engine.on_task_complete(after.id)
+            except Exception as e:
+                logger.debug("Workflow advance after task writeback failed for {}: {}", task_id, e)
 
     async def _on_inbound(self, event: InboundEvent) -> None:
         """入站事件处理入口，负责追踪、错误处理和响应发布。"""
@@ -1296,7 +1326,15 @@ class AgentLoop:
                     await self.bus.publish_outbound(out)
                 self.tracer.end_span(span, metadata={"response_len": len(response_text or "")})
                 await self._record_cron_outcome(event, "completed")
-                await self._record_task_outcome(event, "completed")
+                # A turn that returned without raising still may not have FINISHED
+                # the task: provider error, budget/iteration exhaustion, forced
+                # convergence or user interrupt all produce a reply but leave the
+                # task incomplete. Write such a dispatched task back as FAILED, not
+                # SUCCESS, so the board doesn't show a half-done task as done.
+                if getattr(result, "task_incomplete", False):
+                    await self._record_task_outcome(event, "incomplete")
+                else:
+                    await self._record_task_outcome(event, "completed")
             except Exception as e:
                 logger.error("Processing failed for event {}: {}", event.event_id, e)
                 self.tracer.end_span(span, error=str(e))
@@ -1422,6 +1460,7 @@ class AgentLoop:
             response_text=result.response_text,
             outbound_sent=result.outbound_sent,
             degraded_notices=result.degraded_notices,
+            task_incomplete=result.task_incomplete,
         )
 
     async def _handle_approval_command(self, event: InboundEvent) -> str | None:

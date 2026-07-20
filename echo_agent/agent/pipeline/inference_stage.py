@@ -66,6 +66,11 @@ class _LoopResult:
     # post-processing (planner reflection, is_complete) that assumes a finished
     # turn.
     interrupted: bool = False
+    # True when the provider returned finish_reason="error" (the LLM call itself
+    # failed and was surfaced as a fallback reply, not raised). The turn produced
+    # only a canned apology; the TASK did not complete — a dispatched board task
+    # must be written back as FAILED, not SUCCESS.
+    errored: bool = False
     should_review_skills: bool = False
     should_review_memory: bool = False
     skill_iters: int = 0
@@ -383,6 +388,7 @@ class InferenceStage:
                     # normally the turn is fine; only its own forcing counts.
                     forced_convergence=second.forced_convergence,
                     interrupted=second.interrupted,
+                    errored=second.errored,
                     should_review_skills=loop_result.should_review_skills or second.should_review_skills,
                     should_review_memory=loop_result.should_review_memory or second.should_review_memory,
                     skill_iters=second.skill_iters,
@@ -451,6 +457,16 @@ class InferenceStage:
             should_review_skills=loop_result.should_review_skills,
             should_review_memory=should_review_memory,
             degraded_notices=loop_result.degraded_notices,
+            # Same "didn't cleanly finish" signal the plan-run status uses above,
+            # plus provider error. Carried out of the stage so AgentLoop can write
+            # a dispatched task back as FAILED instead of SUCCESS.
+            task_incomplete=(
+                loop_result.loop_exhausted
+                or loop_result.budget_halted
+                or loop_result.forced_convergence
+                or loop_result.interrupted
+                or loop_result.errored
+            ),
         )
 
     async def _run_tool_loop(self, ctx: PipelineContext, messages: list[dict[str, Any]]) -> _LoopResult:
@@ -480,6 +496,7 @@ class InferenceStage:
         forcing_final = False
         forced_convergence = False
         interrupted = False
+        errored = False
 
         # Read nudge counters from session (do NOT write back — run() owns that)
         _skill_iters = session.metadata.get("_nudge_tool_iters_skill", 0)
@@ -635,6 +652,7 @@ class InferenceStage:
                 if not response_text:
                     response_text = "I encountered an issue processing your request. Please try again."
                 loop_exhausted = False
+                errored = True
                 break
 
             if response.finish_reason == "length":
@@ -753,6 +771,7 @@ class InferenceStage:
             budget_halted=budget_halted,
             forced_convergence=forced_convergence,
             interrupted=interrupted,
+            errored=errored,
             should_review_skills=counters.should_review_skills,
             should_review_memory=counters.should_review_memory,
             skill_iters=counters.skill_iters,

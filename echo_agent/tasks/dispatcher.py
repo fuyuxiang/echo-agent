@@ -107,9 +107,9 @@ class TaskDispatcher:
         async with self._sem:
             try:
                 # Move to running BEFORE publishing so a second scan (or another
-                # instance) won't pick the same task up again. If publish fails we
-                # roll back is unnecessary: the turn just never runs and the
-                # writeback safety net leaves it running until re-queued.
+                # instance) won't pick the same task up again. If the publish is
+                # rejected we roll RUNNING back to QUEUED below — otherwise the
+                # task would be stuck at RUNNING with no turn to ever close it.
                 session_key = f"task:{task.id}"
                 event = InboundEvent(
                     event_type=EventType.SYSTEM,
@@ -128,7 +128,12 @@ class TaskDispatcher:
                 await self._tasks.set_running_context(task.id, session_key, event.event_id)
                 accepted = await self._bus.publish_inbound(event)
                 if not accepted:
-                    logger.warning("Task {} dispatch rejected by bus (full/stopping)", task.id)
+                    # The turn never entered the bus, so no AgentLoop turn will
+                    # ever run or write a terminal state for this task. Roll the
+                    # optimistic RUNNING back to QUEUED so a later scan re-picks
+                    # it instead of leaving it stuck at RUNNING forever.
+                    logger.warning("Task {} dispatch rejected by bus (full/stopping), re-queueing", task.id)
+                    await self._tasks.requeue_dispatch_failed(task.id)
             except Exception as e:
                 logger.error("Failed to dispatch task {}: {}", task.id, e)
             finally:

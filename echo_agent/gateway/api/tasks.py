@@ -162,10 +162,25 @@ class TasksAPI:
         except ValueError:
             return web.json_response({"error": f"invalid status: {to_status}"}, status=400)
 
+        # Snapshot the running context BEFORE the transition: if this task is
+        # currently being executed by the agent, moving it OUT of running (cancel,
+        # fail, suspend, block from the board) must also cooperatively stop that
+        # turn — otherwise the DB says "cancelled" while the agent and its tool
+        # side effects keep running. This mirrors delete_task; the generic
+        # transition endpoint is what the Kanban actually calls.
+        prev = await self._manager().get(task_id)
+        was_running = prev is not None and prev.status == TaskStatus.RUNNING
+        session_key = prev.session_id if was_running else ""
+        interrupt_event_id = str(prev.metadata.get("_interrupt_event_id") or "") if was_running else ""
+
         try:
             task = await self._manager().transition(task_id, new_status)
         except ValueError as e:
             return web.json_response({"error": str(e)}, status=400)
+
+        # Stop the executing turn when the board moved a running task off "running".
+        if was_running and new_status != TaskStatus.RUNNING and session_key:
+            await self._interrupt_session(session_key, interrupt_event_id)
 
         # Terminal transition on a workflow step: advance the owning workflow
         # so its next eligible steps get queued (same hook as TaskTool).

@@ -59,9 +59,13 @@ async def test_create_task(mock_server, api):
 @pytest.mark.asyncio
 async def test_transition_task(mock_server, api):
     from echo_agent.tasks.models import TaskRecord, TaskStatus
+    mock_server._agent_loop.task_manager.get = AsyncMock(
+        return_value=TaskRecord(title="t", status=TaskStatus.PENDING)
+    )
     mock_server._agent_loop.task_manager.transition = AsyncMock(
         return_value=TaskRecord(title="t", status=TaskStatus.QUEUED)
     )
+    mock_server._agent_loop.workflow_engine = None
 
     app = web.Application()
     app.router.add_post("/api/v1/tasks/{id}/transition", api.transition_task)
@@ -72,6 +76,10 @@ async def test_transition_task(mock_server, api):
 
 @pytest.mark.asyncio
 async def test_transition_invalid_returns_400(mock_server, api):
+    from echo_agent.tasks.models import TaskRecord, TaskStatus
+    mock_server._agent_loop.task_manager.get = AsyncMock(
+        return_value=TaskRecord(title="t", status=TaskStatus.PENDING)
+    )
     mock_server._agent_loop.task_manager.transition = AsyncMock(
         side_effect=ValueError("Invalid transition: pending → success")
     )
@@ -81,6 +89,57 @@ async def test_transition_invalid_returns_400(mock_server, api):
     async with TestClient(TestServer(app)) as client:
         resp = await client.post("/api/v1/tasks/t_123/transition", json={"to": "success"})
         assert resp.status == 400
+
+
+@pytest.mark.asyncio
+async def test_transition_running_to_cancelled_interrupts_turn(mock_server, api):
+    """The Kanban cancels via the generic transition endpoint, not DELETE. Moving a
+    RUNNING task off "running" must also stop the executing turn cooperatively —
+    otherwise the board says cancelled while the agent keeps running."""
+    from echo_agent.tasks.models import TaskRecord, TaskStatus
+    running = TaskRecord(
+        id="t_run", title="running", status=TaskStatus.RUNNING,
+        session_id="task:t_run", metadata={"_interrupt_event_id": "evt_9"},
+    )
+    cancelled = TaskRecord(id="t_run", title="running", status=TaskStatus.CANCELLED)
+    mock_server._agent_loop.task_manager.get = AsyncMock(return_value=running)
+    mock_server._agent_loop.task_manager.transition = AsyncMock(return_value=cancelled)
+    mock_server._agent_loop.workflow_engine = None
+    mock_server._bus = MagicMock()
+    mock_server._bus.publish_inbound = AsyncMock(return_value=True)
+
+    app = web.Application()
+    app.router.add_post("/api/v1/tasks/{id}/transition", api.transition_task)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/api/v1/tasks/t_run/transition", json={"to": "cancelled"})
+        assert resp.status == 200
+
+    mock_server._bus.publish_inbound.assert_awaited_once()
+    event = mock_server._bus.publish_inbound.await_args.args[0]
+    assert event.text == "/__interrupt__"
+    assert event.session_key == "task:t_run"
+    assert event.metadata["_interrupt_target_event_id"] == "evt_9"
+
+
+@pytest.mark.asyncio
+async def test_transition_non_running_skips_interrupt(mock_server, api):
+    """A pending→queued board move isn't stopping an executing turn, so no interrupt."""
+    from echo_agent.tasks.models import TaskRecord, TaskStatus
+    pending = TaskRecord(id="t_p", title="p", status=TaskStatus.PENDING)
+    queued = TaskRecord(id="t_p", title="p", status=TaskStatus.QUEUED)
+    mock_server._agent_loop.task_manager.get = AsyncMock(return_value=pending)
+    mock_server._agent_loop.task_manager.transition = AsyncMock(return_value=queued)
+    mock_server._agent_loop.workflow_engine = None
+    mock_server._bus = MagicMock()
+    mock_server._bus.publish_inbound = AsyncMock(return_value=True)
+
+    app = web.Application()
+    app.router.add_post("/api/v1/tasks/{id}/transition", api.transition_task)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/api/v1/tasks/t_p/transition", json={"to": "queued"})
+        assert resp.status == 200
+
+    mock_server._bus.publish_inbound.assert_not_awaited()
 
 
 @pytest.mark.asyncio

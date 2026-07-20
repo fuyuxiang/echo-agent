@@ -131,6 +131,7 @@ class TestInferenceStageTextOnly:
 
         assert result.response_text == "Hello world"
         assert result.total_tool_calls == 0
+        assert result.task_incomplete is False  # clean finish → task may be SUCCESS
 
 
 class TestInferenceStageError:
@@ -148,6 +149,9 @@ class TestInferenceStageError:
         result = await stage.run(ctx)
 
         assert "issue" in result.response_text.lower() or "try again" in result.response_text.lower()
+        # A provider error is NOT a finished task: it must surface so a dispatched
+        # board task is written back as FAILED, not SUCCESS.
+        assert result.task_incomplete is True
 
 
 class TestInferenceStageApprovalDenied:
@@ -234,6 +238,8 @@ class TestInferenceStageMaxIterations:
 
         # Loop exhausted, fallback text should mention issue/try again
         assert "issue" in result.response_text.lower() or "try again" in result.response_text.lower()
+        # Iteration ceiling means the task did not finish → incomplete.
+        assert result.task_incomplete is True
 
 
 class TestInferenceStageReflection:
