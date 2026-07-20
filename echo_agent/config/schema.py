@@ -908,6 +908,16 @@ class ProviderConfig(_Base):
             "desc_en": "Per-request timeout (seconds)",
         },
     )
+    stream_include_usage: bool = Field(
+        default=True,
+        json_schema_extra={
+            "status": "effective", "ref": "models/providers/openai_provider.py:31",
+            "desc_zh": "流式请求是否附带 stream_options.include_usage(用于统计 token/成本);"
+                       "个别不支持该字段的 OpenAI 兼容端点需设为 false",
+            "desc_en": "Send stream_options.include_usage on streaming requests (for token/cost "
+                       "accounting); set false for OpenAI-compatible endpoints that reject the field",
+        },
+    )
     rate_limit_rpm: int = Field(
         default=0,
         json_schema_extra={

@@ -17,11 +17,11 @@ import pytest
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def _openai_provider(default_model="gpt-4"):
+def _openai_provider(default_model="gpt-4", **kw):
     from echo_agent.models.providers.openai_provider import OpenAIProvider
 
     with patch.object(OpenAIProvider, "_build_client", return_value=MagicMock()):
-        return OpenAIProvider(api_key="k", default_model=default_model)
+        return OpenAIProvider(api_key="k", default_model=default_model, **kw)
 
 
 def _anthropic_provider(default_model="claude-sonnet-4-20250514", **kw):
@@ -210,7 +210,8 @@ class TestOpenAIStreamToolCalls:
     @pytest.mark.asyncio
     async def test_stream_init_failure_falls_back_to_chat(self):
         provider = _openai_provider()
-        # First call (stream) raises; fallback non-stream call succeeds.
+        # Stream init raises, the stream retry (without stream_options) also
+        # raises, so we finally fall back to the non-stream chat which succeeds.
         msg = MagicMock()
         msg.content = "fallback"
         msg.reasoning_content = None
@@ -223,10 +224,51 @@ class TestOpenAIStreamToolCalls:
         resp.usage = None
         resp.model = "gpt-4"
         provider._client.chat.completions.create = AsyncMock(
-            side_effect=[RuntimeError("stream boom"), resp]
+            side_effect=[RuntimeError("stream boom"), RuntimeError("retry boom"), resp]
         )
         out = await provider.chat_stream(messages=[{"role": "user", "content": "hi"}])
         assert out.content == "fallback"
+
+    @pytest.mark.asyncio
+    async def test_stream_init_failure_retries_without_stream_options(self):
+        # An endpoint that rejects stream_options should still stream: the first
+        # attempt (with the field) fails, and the retry (without it) succeeds,
+        # preserving token-by-token output — we only lose usage.
+        provider = _openai_provider()
+        chunks = [_StreamChunk(content="hi"), _StreamChunk(finish_reason="stop")]
+        create = AsyncMock(side_effect=[RuntimeError("bad stream_options"), _AsyncStream(chunks)])
+        provider._client.chat.completions.create = create
+        out = await provider.chat_stream(messages=[{"role": "user", "content": "hi"}])
+        assert out.content == "hi"
+        assert create.await_count == 2
+        # First attempt carried stream_options; the retry dropped it.
+        assert create.await_args_list[0].kwargs.get("stream_options") == {"include_usage": True}
+        assert "stream_options" not in create.await_args_list[1].kwargs
+
+    @pytest.mark.asyncio
+    async def test_stream_include_usage_false_omits_field(self):
+        # A provider configured with stream_include_usage=False must never send
+        # stream_options (for endpoints that reject it outright).
+        provider = _openai_provider(stream_include_usage=False)
+        chunks = [_StreamChunk(content="hi"), _StreamChunk(finish_reason="stop")]
+        create = AsyncMock(return_value=_AsyncStream(chunks))
+        provider._client.chat.completions.create = create
+        await provider.chat_stream(messages=[{"role": "user", "content": "hi"}])
+        assert "stream_options" not in create.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_caller_can_override_stream_options(self):
+        # A caller passing stream_options explicitly must have it honored (not
+        # silently dropped by _build_params).
+        provider = _openai_provider()
+        chunks = [_StreamChunk(content="hi"), _StreamChunk(finish_reason="stop")]
+        create = AsyncMock(return_value=_AsyncStream(chunks))
+        provider._client.chat.completions.create = create
+        await provider.chat_stream(
+            messages=[{"role": "user", "content": "hi"}],
+            stream_options={"include_usage": False},
+        )
+        assert create.call_args.kwargs["stream_options"] == {"include_usage": False}
 
     @pytest.mark.asyncio
     async def test_stream_requests_usage_and_parses_final_chunk(self):

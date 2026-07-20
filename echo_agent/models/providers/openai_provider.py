@@ -22,6 +22,13 @@ class OpenAIProvider(LLMProvider):
         super().__init__(api_key=api_key, api_base=api_base)
         self._default_model = default_model
         self._extra_headers: dict[str, str] = kwargs.get("extra_headers", {})
+        # Whether to request `stream_options={"include_usage": True}` on streaming
+        # calls (needed for token counts / cost frames). Some OpenAI-compatible
+        # endpoints reject the field outright; set stream_include_usage=False for
+        # those. Default True preserves usage reporting on real OpenAI. Even when
+        # True, chat_stream retries once WITHOUT the field before giving up on
+        # streaming, so a rejecting endpoint still streams (just without usage).
+        self._stream_include_usage: bool = bool(kwargs.get("stream_include_usage", True))
         self._client = self._build_client()
 
     def _build_client(self) -> Any:
@@ -79,14 +86,30 @@ class OpenAIProvider(LLMProvider):
         params["stream"] = True
         # OpenAI-compatible streaming omits `usage` unless include_usage is set;
         # without it the final chunk carries no token counts, so cost/context/
-        # model status frames never surface. setdefault lets a caller override.
-        params.setdefault("stream_options", {"include_usage": True})
+        # model status frames never surface. A caller may override stream_options
+        # explicitly (honored by _build_params); otherwise default it on unless
+        # this provider was configured with stream_include_usage=False.
+        if "stream_options" not in params and self._stream_include_usage:
+            params["stream_options"] = {"include_usage": True}
 
         try:
             stream = await self._client.chat.completions.create(**params)
         except Exception as e:
-            logger.warning("OpenAI stream init failed, falling back to non-streaming: {}", e)
-            return await self.chat(messages, tools, model, tool_choice, **kwargs)
+            # Some OpenAI-compatible endpoints reject stream_options. Before
+            # abandoning streaming entirely, retry the stream once without that
+            # field — this keeps token-by-token output for such endpoints (only
+            # usage/cost frames are lost). Only worth retrying if we actually
+            # sent stream_options; otherwise go straight to the non-stream path.
+            if params.pop("stream_options", None) is not None:
+                logger.warning("OpenAI stream init failed, retrying stream without stream_options: {}", e)
+                try:
+                    stream = await self._client.chat.completions.create(**params)
+                except Exception as e2:
+                    logger.warning("OpenAI stream retry failed, falling back to non-streaming: {}", e2)
+                    return await self.chat(messages, tools, model, tool_choice, **kwargs)
+            else:
+                logger.warning("OpenAI stream init failed, falling back to non-streaming: {}", e)
+                return await self.chat(messages, tools, model, tool_choice, **kwargs)
 
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
@@ -171,7 +194,7 @@ class OpenAIProvider(LLMProvider):
             params["tool_choice"] = tool_choice
         if self.generation.top_p < 1.0:
             params["top_p"] = self.generation.top_p
-        for key in ("extra_body", "extra_headers"):
+        for key in ("extra_body", "extra_headers", "stream_options"):
             if key in kwargs:
                 params[key] = kwargs[key]
         return params

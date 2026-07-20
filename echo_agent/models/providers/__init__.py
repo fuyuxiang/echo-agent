@@ -111,6 +111,9 @@ def create_provider(config: ProviderConfig, *, default_model: str = "") -> LLMPr
     kwargs: dict[str, Any] = {}
     if config.extra_headers:
         kwargs["extra_headers"] = config.extra_headers
+    # Only meaningful for the OpenAI-compatible family; other providers accept
+    # **kwargs and ignore it. Lets an endpoint that rejects stream_options opt out.
+    kwargs["stream_include_usage"] = config.stream_include_usage
     configured_default = default_model or (config.models[0] if config.models else "")
     if configured_default:
         kwargs["default_model"] = configured_default
