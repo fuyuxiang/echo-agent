@@ -228,6 +228,21 @@ class TestOpenAIStreamToolCalls:
         out = await provider.chat_stream(messages=[{"role": "user", "content": "hi"}])
         assert out.content == "fallback"
 
+    @pytest.mark.asyncio
+    async def test_stream_requests_usage_and_parses_final_chunk(self):
+        # OpenAI-compatible streams only carry usage when include_usage is set;
+        # the request must ask for it and the final usage-bearing chunk must be
+        # surfaced, otherwise cost/context/model status frames never fire.
+        provider = _openai_provider()
+        usage_chunk = _StreamChunk(finish_reason="stop")
+        usage_chunk.usage = MagicMock(prompt_tokens=11, completion_tokens=7)
+        chunks = [_StreamChunk(content="hi"), usage_chunk]
+        create = AsyncMock(return_value=_AsyncStream(chunks))
+        provider._client.chat.completions.create = create
+        out = await provider.chat_stream(messages=[{"role": "user", "content": "hi"}])
+        assert create.call_args.kwargs["stream_options"] == {"include_usage": True}
+        assert out.usage == {"prompt_tokens": 11, "completion_tokens": 7}
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Anthropic — chat / parse / param building

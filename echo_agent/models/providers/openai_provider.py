@@ -77,6 +77,10 @@ class OpenAIProvider(LLMProvider):
     ) -> LLMResponse:
         params = self._build_params(messages, tools, model, tool_choice, **kwargs)
         params["stream"] = True
+        # OpenAI-compatible streaming omits `usage` unless include_usage is set;
+        # without it the final chunk carries no token counts, so cost/context/
+        # model status frames never surface. setdefault lets a caller override.
+        params.setdefault("stream_options", {"include_usage": True})
 
         try:
             stream = await self._client.chat.completions.create(**params)

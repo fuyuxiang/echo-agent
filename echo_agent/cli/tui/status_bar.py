@@ -99,7 +99,7 @@ class StatusBar(Static):
             bar = _ctx_bar(percent)
             segments.append(f"{used_str}/{max_str} {bar} {percent}%")
         else:
-            segments.append("[dim]ctx —[/dim]")
+            segments.append("[dim]上下文 —[/dim]")
 
         # 3. Timer
         if self._turn_start is not None:
