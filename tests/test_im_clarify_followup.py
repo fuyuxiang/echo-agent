@@ -11,7 +11,7 @@ import time
 from echo_agent.agent.clarify_manager import ClarifyManager
 from echo_agent.agent.loop import AgentLoop
 from echo_agent.agent.pipeline.context_stage import build_user_message_with_reply
-from echo_agent.bus.events import InboundEvent
+from echo_agent.bus.events import EventType, InboundEvent
 from echo_agent.bus.queue import MessageBus
 from echo_agent.config.loader import load_config
 from echo_agent.models.provider import LLMProvider, LLMResponse
@@ -154,6 +154,40 @@ def test_bind_respects_explicit_user_quote(tmp_path):
     loop._maybe_bind_im_clarify_answer(event)
     # 用户显式引用优先,不被隐式续接覆盖。
     assert event.reply_to_text == "用户自己引用的另一条消息"
+    # 但残留的待答须被清理:引用回答成功后,下一条无关消息不应再被绑到旧问题。
+    assert loop.clarify.take_im_pending("weixin:u1", ttl_seconds=300) is None
+
+
+def test_bind_skips_cron_events(tmp_path):
+    loop = _make_loop(tmp_path)
+    loop.clarify.register_im_pending("weixin:u1", "追问", ["A"])
+    # 定时任务复用同一 session_key,不应消费待答:既不改写文本,也不弹出 pending。
+    cron = _inbound("定时触发的内容", event_type=EventType.CRON, unattended=True)
+    loop._maybe_bind_im_clarify_answer(cron)
+    assert cron.reply_to_text is None
+    # 待答仍在,留给真正的用户消息消费。
+    assert loop.clarify.take_im_pending("weixin:u1", ttl_seconds=300) is not None
+
+
+def test_bind_skips_unattended_and_control_events(tmp_path):
+    loop = _make_loop(tmp_path)
+    loop.clarify.register_im_pending("weixin:u1", "追问", ["A"])
+    unattended = _inbound("无人值守", unattended=True)
+    loop._maybe_bind_im_clarify_answer(unattended)
+    assert unattended.reply_to_text is None
+    control = _inbound("控制事件", is_control=True)
+    loop._maybe_bind_im_clarify_answer(control)
+    assert control.reply_to_text is None
+    assert loop.clarify.take_im_pending("weixin:u1", ttl_seconds=300) is not None
+
+
+def test_bind_noop_when_clarify_missing(tmp_path):
+    # __new__ 绕过 __init__ 的轻量构造路径不接线 self.clarify:必须安全 no-op,
+    # 而非抛 AttributeError(否则会打红所有走该构造路径的既有测试)。
+    loop = AgentLoop.__new__(AgentLoop)
+    event = _inbound("A")
+    loop._maybe_bind_im_clarify_answer(event)
+    assert event.reply_to_text is None
 
 
 def test_bind_consumes_pending_once(tmp_path):

@@ -128,6 +128,9 @@ class LaunchdBackend:
         return result.returncode == 0
 
     def is_current(self, workspace: str | None = None, config: str | None = None) -> bool:
+        # 纯比对:把入参当作“本次期望的参数”,None 表示默认参数。install 用它判断
+        # 已装内容是否等于本次请求要装的内容 —— 先用自定义 -w/-c 安装、再执行普通
+        # install(参数缺省)时,能正确检出差异并重写回默认,而非误报 up to date。
         plist_path = self.service_path()
         if not plist_path.exists():
             return False
@@ -135,11 +138,14 @@ class LaunchdBackend:
             installed = plist_path.read_text(encoding="utf-8")
         except OSError:
             return False
-        # 未显式给出 workspace/config 时(如 status 探测),从已安装 plist 回读
-        # 安装期参数再比对,避免把自定义 -w/-c 的服务误判为 stale。
-        if workspace is None and config is None:
-            workspace, config = self._installed_target()
         return installed == self._render(workspace, config)
+
+    def _is_current_recovered(self) -> bool:
+        # status 探测专用:无从得知安装期参数,从已装 plist 回读 -w/-c 再自比对,
+        # 避免把自定义参数安装的服务误判为 stale。与 is_current 的“期望参数”语义
+        # 区分开:此处目的是“文件是否仍是本程序渲染的形态”,而非“是否等于默认”。
+        workspace, config = self._installed_target()
+        return self.is_current(workspace, config)
 
     def status(self) -> None:
         if not self.is_installed():
@@ -150,7 +156,7 @@ class LaunchdBackend:
         else:
             print(f"✗ Gateway service is installed but not running ({LAUNCHD_LABEL})")
             print("  Start it with: echo-agent gateway start")
-        if not self.is_current():
+        if not self._is_current_recovered():
             print("  ⚠ Installed LaunchAgent is stale — rerun: echo-agent gateway install --force")
 
     def logs(self, follow: bool = False) -> None:

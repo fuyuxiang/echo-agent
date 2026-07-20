@@ -58,6 +58,18 @@ _RELEASE_PACKAGES: dict[str, dict[str, Any]] = {
 }
 
 
+def _dir_has_ready_model(model_dir: Path) -> bool:
+    """判断一个 fastembed 缓存子目录是否是一份就绪可用的模型:关键文件存在且非零。
+
+    只看 model_optimized.onnx 是否存在会把半成品(空文件、残缺目录)误判为命中,
+    从而永远不再重下。此处额外要求文件非零,让中断残留的空壳退回重新下载。"""
+    onnx = model_dir / "model_optimized.onnx"
+    try:
+        return onnx.is_file() and onnx.stat().st_size > 0
+    except OSError:
+        return False
+
+
 class LocalEmbedder:
     """fastembed-backed local embedder with lazy load and graceful failure."""
 
@@ -140,11 +152,14 @@ class LocalEmbedder:
 
         cache_root = Path(self._cache_dir).resolve()
         target = cache_root / pkg["cache_subdir"]
-        if (target / "model_optimized.onnx").exists():
+        # cache-hit 只认“已就绪”的缓存:关键文件存在且非零。半成品(进程中断/磁盘满
+        # 留下的空文件或残缺目录)不算命中,会走下面的重新下载 + 原子落地。
+        if _dir_has_ready_model(target):
             return True
         os.makedirs(self._cache_dir, exist_ok=True)
         for url in pkg["urls"]:
             tmp = None
+            staging = None
             try:
                 with urllib.request.urlopen(url, timeout=30) as resp, \
                         tempfile.NamedTemporaryFile(dir=self._cache_dir, delete=False) as f:
@@ -154,23 +169,38 @@ class LocalEmbedder:
                 if digest != pkg["sha256"]:
                     logger.warning("Release model sha256 mismatch from {}", url)
                     continue
+                # 解压到同盘的临时暂存目录,校验通过后再原子改名到最终目录。这样进程
+                # 中断/磁盘满/半解压都只污染 staging(finally 会清掉),最终目录要么不
+                # 存在、要么是一份完整可用的缓存,不会留下让 cache-hit 误判的半成品。
+                staging = tempfile.mkdtemp(dir=self._cache_dir, prefix=".staging-")
+                staging_root = Path(staging).resolve()
                 with tarfile.open(tmp, "r:gz") as tar:
                     # Guard against path traversal without relying on the 3.12+
                     # `filter="data"` arg (project floor is Python 3.11): every
-                    # member must resolve to a path inside the cache root.
+                    # member must resolve to a path inside the staging root.
                     for member in tar.getmembers():
-                        dest = (cache_root / member.name).resolve()
-                        if dest != cache_root and cache_root not in dest.parents:
+                        dest = (staging_root / member.name).resolve()
+                        if dest != staging_root and staging_root not in dest.parents:
                             raise ValueError(f"unsafe tar member: {member.name}")
-                    tar.extractall(self._cache_dir)
-                if (target / "model_optimized.onnx").exists():
-                    logger.info("Embedding model fetched from release mirror: {}", url)
-                    return True
+                    tar.extractall(staging)
+                extracted = staging_root / pkg["cache_subdir"]
+                if not _dir_has_ready_model(extracted):
+                    logger.warning("Release model incomplete after extract from {}", url)
+                    continue
+                # 原子落地:先移除可能残留的旧半成品目录,再把校验通过的 staging 子目录
+                # 原地改名为最终目录(同盘 rename 是原子操作)。
+                if target.exists():
+                    shutil.rmtree(target, ignore_errors=True)
+                os.replace(extracted, target)
+                logger.info("Embedding model fetched from release mirror: {}", url)
+                return True
             except Exception as e:
                 logger.warning("Release model fetch failed from {}: {}", url, e)
             finally:
                 if tmp:
                     Path(tmp).unlink(missing_ok=True)
+                if staging:
+                    shutil.rmtree(staging, ignore_errors=True)
         return False
 
     def _load_model_sync(self) -> Any | None:

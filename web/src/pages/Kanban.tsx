@@ -32,8 +32,9 @@ export function Kanban() {
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTitle.trim()) return;
-    await createTask(newTitle.trim());
-    setNewTitle("");
+    // 仅在创建成功后清空输入:失败时保留用户已输入的标题,避免网络/后端错误吞掉输入。
+    const ok = await createTask(newTitle.trim());
+    if (ok) setNewTitle("");
   };
 
   if (loading) return <div className="p-8 text-center text-gray-500">Loading...</div>;

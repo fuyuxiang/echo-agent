@@ -1496,17 +1496,36 @@ class AgentLoop:
         force-map "A" → option ourselves; the model resolves the choice from the
         full quoted context, which also handles free-text answers uniformly.
 
-        No-ops when: the session has no pending, the pending expired (TTL), or
-        the message already carries its own quote (an explicit user reference
-        wins over the implicit follow-up binding).
+        No-ops when: the event is not a real user message (cron / unattended /
+        internal control events must not consume pending — they reuse the source
+        session key and would otherwise mis-bind to the last question); the loop
+        has no clarify manager wired (lightweight __new__ construction paths); the
+        session has no pending; the pending expired (TTL); or the message already
+        carries its own quote. In the quoted case the explicit user reference wins
+        over the implicit follow-up binding, but the stale pending is still cleared
+        so it cannot bind to a later unrelated message.
         """
-        if event.reply_to_text:
+        # 仅真实用户的常规消息才能消费待答状态。定时任务(cron/unattended)与内部
+        # 控制事件复用同一 source_session_key 时,不应把 TTL 内的下一次调度误当成
+        # “回答上次问题”而绑定到 pending。
+        if event.event_type != EventType.MESSAGE or event.unattended or event.is_control:
+            return
+        # clarify 兜底:__new__ 绕过 __init__ 的构造路径(如部分轻量测试)不接线
+        # self.clarify,此处安全 no-op 而非抛 AttributeError。
+        clarify = getattr(self, "clarify", None)
+        if clarify is None:
             return
         session_key = event.session_key
         if not session_key:
             return
+        # 用户显式引用了某条消息:引用意图优先于隐式追问绑定,不再改写 reply_to_text。
+        # 但仍要清理本 session 的待答状态,否则旧问题会残留 —— 引用回答成功后,下一条
+        # 无关消息会被误绑到已被回答过的旧问题上。
+        if event.reply_to_text:
+            clarify.clear_im_pending(session_key)
+            return
         ttl = float(self.config.session.im_clarify_pending_ttl_seconds)
-        req = self.clarify.take_im_pending(session_key, ttl)
+        req = clarify.take_im_pending(session_key, ttl)
         if req is None:
             return
         question = (req.question or "").strip()

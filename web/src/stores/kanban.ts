@@ -32,7 +32,7 @@ interface KanbanState {
   loading: boolean;
   fetchTasks: () => Promise<void>;
   transitionTask: (id: string, to: string) => Promise<void>;
-  createTask: (title: string, description?: string) => Promise<void>;
+  createTask: (title: string, description?: string) => Promise<boolean>;
   updateLocal: (id: string, changes: Partial<TaskCard>) => void;
   addLocal: (task: TaskCard) => void;
 }
@@ -71,14 +71,17 @@ export const useKanbanStore = create<KanbanState>((set) => ({
   },
 
   createTask: async (title, description = "") => {
+    // 返回成功布尔值:创建失败(网络/后端)时调用方据此保留用户输入,不清空标题框。
     try {
       const data = await apiFetch<{ task: TaskCard }>("/tasks", {
         method: "POST",
         body: JSON.stringify({ title, description, source: "human" }),
       });
       set((s) => ({ tasks: [...s.tasks, data.task] }));
+      return true;
     } catch (e) {
       toast.error(`创建失败：${e instanceof Error ? e.message : String(e)}`);
+      return false;
     }
   },
 

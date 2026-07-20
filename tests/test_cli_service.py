@@ -263,6 +263,29 @@ def test_launchd_is_current_roundtrip(launchd):
     assert launchd.is_current() is False
 
 
+def test_launchd_install_default_rewrites_custom(launchd, capsys, tmp_path):
+    # 先用自定义 workspace 安装,再执行普通 install(默认参数):应检出差异并重写回
+    # 默认,而非误报 up to date 保留旧参数(P4)。
+    custom_ws = str(tmp_path / "custom-ws")
+    launchd.install(workspace=custom_ws)
+    assert custom_ws in launchd.service_path().read_text()
+    capsys.readouterr()
+    launchd.install()
+    out = capsys.readouterr().out
+    assert "stale" in out
+    assert custom_ws not in launchd.service_path().read_text()
+
+
+def test_launchd_status_recovers_custom_params(launchd, capsys, tmp_path):
+    # status 探测对自定义参数安装不应误报 stale:从已装 plist 回读 -w/-c 自比对。
+    custom_ws = str(tmp_path / "custom-ws")
+    launchd.install(workspace=custom_ws)
+    assert launchd._is_current_recovered() is True
+    with patch(f"{_PKG}.launchd.LaunchdBackend.is_running", return_value=True):
+        launchd.status()
+    assert "stale" not in capsys.readouterr().out
+
+
 def test_launchd_start_requires_install(launchd, capsys):
     with pytest.raises(SystemExit):
         launchd.start()
