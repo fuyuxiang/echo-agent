@@ -44,6 +44,7 @@ class BootstrapResult:
     scheduler: Any = None
     health: Any = None
     instance_lock: Any = None
+    task_dispatcher: Any = None
 
 
 async def bootstrap(
@@ -184,6 +185,12 @@ async def bootstrap(
         task_manager=task_manager, workflow_engine=workflow_engine,
     )
 
+    # Bridges queued board tasks to the agent for execution (the task subsystem
+    # has no executor of its own — the agent is the executor). Polls QUEUED tasks
+    # and dispatches each as an inbound event on its own isolated session.
+    from echo_agent.tasks.dispatcher import TaskDispatcher
+    task_dispatcher = TaskDispatcher(bus, task_manager)
+
     # Plugin system — discover and activate plugins
     from echo_agent.plugins.manager import PluginManager
 
@@ -291,7 +298,7 @@ async def bootstrap(
         config=config, workspace=ws, storage=storage, bus=bus,
         router=router, provider=provider, agent=agent,
         channels=channels, scheduler=scheduler, health=health,
-        instance_lock=instance_lock,
+        instance_lock=instance_lock, task_dispatcher=task_dispatcher,
     )
 
 
@@ -381,6 +388,8 @@ class AppRuntime:
 
         if ctx.scheduler:
             await ctx.scheduler.start()
+        if ctx.task_dispatcher:
+            await ctx.task_dispatcher.start()
         await ctx.health.start()
 
         if ctx.config.gateway.enabled:
@@ -411,6 +420,8 @@ class AppRuntime:
         await self._stop_step("health", ctx.health.stop())
         if ctx.scheduler:
             await self._stop_step("scheduler", ctx.scheduler.stop())
+        if ctx.task_dispatcher:
+            await self._stop_step("task_dispatcher", ctx.task_dispatcher.stop())
         await self._stop_step("channels", ctx.channels.stop_all())
         await self._stop_step("agent", ctx.agent.stop())
         await self._stop_step("bus", ctx.bus.stop())

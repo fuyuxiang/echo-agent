@@ -1,32 +1,52 @@
-import { useEffect, useState } from "react";
-import { DndContext, DragEndEvent, closestCenter, useDroppable, useDraggable } from "@dnd-kit/core";
-import { useKanbanStore, COLUMNS, TaskCard } from "../stores/kanban";
-import { Plus } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { DndContext, DragEndEvent, DragStartEvent, closestCenter, useDroppable, useDraggable } from "@dnd-kit/core";
+import {
+  useKanbanStore,
+  PRIMARY_COLUMNS,
+  ARCHIVED_COLUMNS,
+  TASK_STATUS_META,
+  TaskCard,
+  canTransition,
+} from "../stores/kanban";
+import { toast } from "../stores/toast";
+import { Plus, X, RotateCcw, Check, Undo2, Play } from "lucide-react";
 
 export function Kanban() {
   const { tasks, loading, fetchTasks, transitionTask, createTask, updateLocal } = useKanbanStore();
   const [newTitle, setNewTitle] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
+  const [draggingFrom, setDraggingFrom] = useState<string | null>(null);
 
   useEffect(() => { fetchTasks(); }, []);
 
   // 实时事件(task_created/transitioned/updated)后端从未通过 dashboard WS 广播,
   // 订阅是死代码,已移除;多端同步待 WS broadcast 接线后恢复。当前靠本地乐观更新。
 
+  const columns = useMemo(
+    () => (showArchived ? [...PRIMARY_COLUMNS, ...ARCHIVED_COLUMNS] : [...PRIMARY_COLUMNS]),
+    [showArchived],
+  );
+
+  const handleDragStart = (event: DragStartEvent) => {
+    const task = tasks.find((t) => t.id === event.active.id);
+    setDraggingFrom(task ? task.status : null);
+  };
+
   const handleDragEnd = (event: DragEndEvent) => {
+    setDraggingFrom(null);
     const { active, over } = event;
     if (!over) return;
     const targetColumn = over.id as string;
     const taskId = active.id as string;
     const task = tasks.find((t) => t.id === taskId);
-    if (task && task.status !== targetColumn) {
-      const previousStatus = task.status;
-      // Optimistically update
-      updateLocal(taskId, { status: targetColumn });
-      transitionTask(taskId, targetColumn).catch(() => {
-        // Revert on failure
-        updateLocal(taskId, { status: previousStatus });
-      });
-    }
+    if (!task || task.status === targetColumn) return;
+    // 非法流转直接忽略:不发请求、不弹错。合法性以前端镜像判定,后端仍会二次校验。
+    if (!canTransition(task.status, targetColumn)) return;
+    const previousStatus = task.status;
+    updateLocal(taskId, { status: targetColumn }); // 乐观更新
+    transitionTask(taskId, targetColumn).catch(() => {
+      updateLocal(taskId, { status: previousStatus }); // 失败回滚
+    });
   };
 
   const handleCreate = async (e: React.FormEvent) => {
@@ -37,15 +57,15 @@ export function Kanban() {
     if (ok) setNewTitle("");
   };
 
-  if (loading) return <div className="p-8 text-center text-gray-500">Loading...</div>;
+  if (loading) return <div className="p-8 text-center text-gray-500">加载中…</div>;
 
   return (
     <div className="h-full flex flex-col">
-      <form onSubmit={handleCreate} className="flex gap-2 mb-4">
+      <form onSubmit={handleCreate} className="flex gap-2 mb-2">
         <input
           value={newTitle}
           onChange={(e) => setNewTitle(e.target.value)}
-          placeholder="新建任务..."
+          placeholder="新建任务…"
           className="border rounded px-3 py-1.5 flex-1"
         />
         <button type="submit" className="bg-blue-600 text-white px-3 py-1.5 rounded flex items-center gap-1">
@@ -53,10 +73,23 @@ export function Kanban() {
         </button>
       </form>
 
-      <DndContext collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+      <div className="flex items-center justify-between mb-3 text-xs text-gray-500">
+        <span>收件箱里的任务点“开始执行”(或拖到“排队中”)后,Agent 会自动认领执行。</span>
+        <label className="flex items-center gap-1 cursor-pointer select-none">
+          <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
+          显示已取消 / 挂起
+        </label>
+      </div>
+
+      <DndContext collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
         <div className="flex gap-3 flex-1 overflow-x-auto">
-          {COLUMNS.map((col) => (
-            <KanbanColumn key={col.id} column={col} tasks={tasks.filter((t) => t.status === col.id)} />
+          {columns.map((col) => (
+            <KanbanColumn
+              key={col}
+              status={col}
+              tasks={tasks.filter((t) => t.status === col)}
+              draggingFrom={draggingFrom}
+            />
           ))}
         </div>
       </DndContext>
@@ -64,20 +97,48 @@ export function Kanban() {
   );
 }
 
-function KanbanColumn({ column, tasks }: { column: { id: string; label: string }; tasks: TaskCard[] }) {
-  const { setNodeRef, isOver } = useDroppable({ id: column.id });
+function KanbanColumn({
+  status,
+  tasks,
+  draggingFrom,
+}: {
+  status: string;
+  tasks: TaskCard[];
+  draggingFrom: string | null;
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id: status });
+  const meta = TASK_STATUS_META[status];
+
+  // 拖拽中:高亮合法落点、灰化非法列,给出“能不能放这里”的即时反馈。
+  const isValidTarget = draggingFrom !== null && draggingFrom !== status && canTransition(draggingFrom, status);
+  const isInvalidTarget = draggingFrom !== null && draggingFrom !== status && !isValidTarget;
+
+  // 列内按优先级降序(priority 大在前),同级按创建时间。
+  const sorted = useMemo(
+    () =>
+      [...tasks].sort(
+        (a, b) => b.priority - a.priority || a.created_at.localeCompare(b.created_at),
+      ),
+    [tasks],
+  );
+
+  let bg = "bg-gray-100";
+  if (isOver && isValidTarget) bg = "bg-blue-50 ring-2 ring-blue-300";
+  else if (isValidTarget) bg = "bg-blue-50/50";
+  else if (isInvalidTarget) bg = "bg-gray-100 opacity-40";
 
   return (
     <div
       ref={setNodeRef}
-      className={`flex-shrink-0 w-64 rounded-lg p-2 flex flex-col ${isOver ? "bg-blue-50" : "bg-gray-100"}`}
+      className={`flex-shrink-0 w-64 rounded-lg p-2 flex flex-col transition-colors ${bg}`}
     >
-      <div className="font-semibold text-sm mb-2 flex items-center gap-2">
-        {column.label}
-        <span className="text-xs bg-gray-200 rounded-full px-2">{tasks.length}</span>
+      <div className="font-semibold text-sm mb-2 flex items-center gap-2" title={meta?.hint}>
+        {meta?.label ?? status}
+        <span className={`text-xs rounded-full px-2 ${meta?.chip ?? "bg-gray-200"}`}>{tasks.length}</span>
       </div>
       <div className="flex-1 space-y-2 overflow-y-auto">
-        {tasks.map((task) => (
+        {sorted.length === 0 && <div className="text-xs text-gray-400 py-2 text-center">暂无任务</div>}
+        {sorted.map((task) => (
           <KanbanCard key={task.id} task={task} />
         ))}
       </div>
@@ -85,30 +146,109 @@ function KanbanColumn({ column, tasks }: { column: { id: string; label: string }
   );
 }
 
+// 卡片操作:全部走既有 transition 接口(后端已暴露)。transitionTask 内部已在失败时
+// 弹 error toast 并 re-throw,这里只负责乐观更新、回滚与成功提示,不重复弹错。
+function useCardActions(task: TaskCard) {
+  const { transitionTask, updateLocal } = useKanbanStore();
+
+  const run = async (to: string, okMsg: string) => {
+    const prev = task.status;
+    updateLocal(task.id, { status: to }); // 乐观更新
+    try {
+      await transitionTask(task.id, to);
+      toast.success(okMsg);
+    } catch {
+      updateLocal(task.id, { status: prev }); // 失败回滚(错误提示已由 transitionTask 弹出)
+    }
+  };
+
+  return {
+    start: () => run("queued", "已排队,等待执行"),
+    cancel: () => run("cancelled", "已取消任务"),
+    retry: () => run("queued", "已重新排队"),
+    approve: () => run("success", "已通过审核"),
+    reject: () => run("queued", "已打回重排"),
+  };
+}
+
 function KanbanCard({ task }: { task: TaskCard }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({ id: task.id });
+  const actions = useCardActions(task);
 
   const style = transform
     ? { transform: `translate(${transform.x}px, ${transform.y}px)` }
     : undefined;
 
+  // 卡片上展示的可用操作,依状态而定。
+  const canStart = task.status === "pending"; // 收件箱任务显式排队 → 触发 dispatcher 执行
+  const canCancel = ["pending", "queued", "running", "blocked", "suspended"].includes(task.status);
+  const canRetry = task.status === "failed";
+  const inReview = task.status === "review";
+
+  const detail =
+    task.status === "failed"
+      ? task.error
+      : task.status === "blocked"
+        ? task.blocked_reason
+        : task.status === "review"
+          ? task.review_summary
+          : "";
+
   return (
     <div
       ref={setNodeRef}
       style={style}
-      {...listeners}
-      {...attributes}
-      className={`bg-white rounded-md border p-3 shadow-sm cursor-grab active:cursor-grabbing ${isDragging ? "opacity-50" : ""}`}
+      className={`group bg-white rounded-md border p-3 shadow-sm ${isDragging ? "opacity-50" : ""}`}
     >
-      <div className="text-sm font-medium">{task.title}</div>
-      {task.assignee && <div className="text-xs text-gray-500 mt-1">@{task.assignee}</div>}
-      {task.labels.length > 0 && (
-        <div className="flex gap-1 mt-1 flex-wrap">
-          {task.labels.map((l) => (
-            <span key={l} className="text-xs bg-blue-100 text-blue-700 px-1.5 rounded">{l}</span>
-          ))}
+      {/* 拖拽把手区域:标题栏可拖,操作按钮不带 listeners 以免误触发拖拽。 */}
+      <div {...listeners} {...attributes} className="cursor-grab active:cursor-grabbing">
+        <div className="flex items-start justify-between gap-2">
+          <div className="text-sm font-medium flex-1">{task.title}</div>
+          <span className="text-[10px] text-gray-400 shrink-0 mt-0.5" title="优先级">P{task.priority}</span>
         </div>
-      )}
+        {detail && <div className="text-xs text-gray-500 mt-1 line-clamp-2">{detail}</div>}
+        {task.assignee && <div className="text-xs text-gray-500 mt-1">@{task.assignee}</div>}
+        {task.labels.length > 0 && (
+          <div className="flex gap-1 mt-1 flex-wrap">
+            {task.labels.map((l) => (
+              <span key={l} className="text-xs bg-blue-100 text-blue-700 px-1.5 rounded">{l}</span>
+            ))}
+          </div>
+        )}
+        {task.status === "failed" && task.retry_count > 0 && (
+          <div className="text-[10px] text-gray-400 mt-1">已重试 {task.retry_count}/{task.max_retries}</div>
+        )}
+      </div>
+
+      {/* 操作条:hover 显现,避免常态干扰。 */}
+      <div className="flex gap-1 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
+        {canStart && (
+          <button onClick={actions.start} className="p-1 hover:bg-blue-50 rounded text-blue-600" title="开始执行(交给 Agent)">
+            <Play size={14} />
+          </button>
+        )}
+        {inReview && (
+          <>
+            <button onClick={actions.approve} className="p-1 hover:bg-green-50 rounded text-green-600" title="通过审核">
+              <Check size={14} />
+            </button>
+            <button onClick={actions.reject} className="p-1 hover:bg-gray-100 rounded text-gray-500" title="打回重排">
+              <Undo2 size={14} />
+            </button>
+          </>
+        )}
+        {canRetry && (
+          <button onClick={actions.retry} className="p-1 hover:bg-blue-50 rounded text-blue-600" title="重试">
+            <RotateCcw size={14} />
+          </button>
+        )}
+        {canCancel && (
+          <button onClick={actions.cancel} className="p-1 hover:bg-red-50 rounded text-red-500" title="取消任务">
+            <X size={14} />
+          </button>
+        )}
+      </div>
     </div>
   );
 }
+

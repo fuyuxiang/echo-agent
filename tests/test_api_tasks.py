@@ -81,3 +81,51 @@ async def test_transition_invalid_returns_400(mock_server, api):
     async with TestClient(TestServer(app)) as client:
         resp = await client.post("/api/v1/tasks/t_123/transition", json={"to": "success"})
         assert resp.status == 400
+
+
+@pytest.mark.asyncio
+async def test_cancel_running_task_interrupts_its_turn(mock_server, api):
+    """Cancelling a RUNNING task must also publish a scoped /__interrupt__ control
+    event so the executing turn stops cooperatively — not just flip the DB status."""
+    from echo_agent.tasks.models import TaskRecord, TaskStatus
+    running = TaskRecord(
+        id="t_run", title="running", status=TaskStatus.RUNNING,
+        session_id="task:t_run", metadata={"_interrupt_event_id": "evt_42"},
+    )
+    mock_server._agent_loop.task_manager.get = AsyncMock(return_value=running)
+    mock_server._agent_loop.task_manager.cancel = AsyncMock(return_value=running)
+    mock_server._bus = MagicMock()
+    mock_server._bus.publish_inbound = AsyncMock(return_value=True)
+
+    app = web.Application()
+    app.router.add_delete("/api/v1/tasks/{id}", api.delete_task)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.delete("/api/v1/tasks/t_run")
+        assert resp.status == 200
+
+    mock_server._agent_loop.task_manager.cancel.assert_awaited_once_with("t_run")
+    mock_server._bus.publish_inbound.assert_awaited_once()
+    event = mock_server._bus.publish_inbound.await_args.args[0]
+    assert event.text == "/__interrupt__"
+    assert event.is_control is True
+    assert event.session_key == "task:t_run"
+    assert event.metadata["_interrupt_target_event_id"] == "evt_42"
+
+
+@pytest.mark.asyncio
+async def test_cancel_non_running_task_skips_interrupt(mock_server, api):
+    """A queued/pending task isn't executing, so cancel should not fire an interrupt."""
+    from echo_agent.tasks.models import TaskRecord, TaskStatus
+    pending = TaskRecord(id="t_pend", title="pending", status=TaskStatus.PENDING)
+    mock_server._agent_loop.task_manager.get = AsyncMock(return_value=pending)
+    mock_server._agent_loop.task_manager.cancel = AsyncMock(return_value=pending)
+    mock_server._bus = MagicMock()
+    mock_server._bus.publish_inbound = AsyncMock(return_value=True)
+
+    app = web.Application()
+    app.router.add_delete("/api/v1/tasks/{id}", api.delete_task)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.delete("/api/v1/tasks/t_pend")
+        assert resp.status == 200
+
+    mock_server._bus.publish_inbound.assert_not_awaited()

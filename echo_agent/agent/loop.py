@@ -1172,6 +1172,24 @@ class AgentLoop:
         except Exception as e:
             logger.debug("Cron outcome writeback failed for job {}: {}", job_id, e)
 
+    async def _record_task_outcome(self, event: InboundEvent, status: str, error: str = "") -> None:
+        """For a dispatched board task, drive it to a terminal state after its turn
+        finishes — the safety net that keeps a task from being stuck at RUNNING if
+        the agent didn't close it out via the task tool itself. Idempotent: if the
+        agent already completed/failed it (terminal), mark_terminal no-ops, and a
+        task cancelled mid-run is already terminal so a "success" writeback can't
+        resurrect it. No-op for non-task events or when no task_manager is wired."""
+        manager = getattr(self, "_task_manager", None)
+        task_id = str(event.metadata.get("task_id") or "")
+        if manager is None or not task_id:
+            return
+        from echo_agent.tasks.models import TaskStatus
+        target = TaskStatus.SUCCESS if status == "completed" else TaskStatus.FAILED
+        try:
+            await manager.mark_terminal(task_id, target, error=error)
+        except Exception as e:
+            logger.debug("Task outcome writeback failed for task {}: {}", task_id, e)
+
     async def _on_inbound(self, event: InboundEvent) -> None:
         """入站事件处理入口，负责追踪、错误处理和响应发布。"""
         if not self._running:
@@ -1278,6 +1296,7 @@ class AgentLoop:
                     await self.bus.publish_outbound(out)
                 self.tracer.end_span(span, metadata={"response_len": len(response_text or "")})
                 await self._record_cron_outcome(event, "completed")
+                await self._record_task_outcome(event, "completed")
             except Exception as e:
                 logger.error("Processing failed for event {}: {}", event.event_id, e)
                 self.tracer.end_span(span, error=str(e))
@@ -1288,6 +1307,7 @@ class AgentLoop:
                 error_out.metadata["_inbound_event_id"] = event.event_id
                 await self.bus.publish_outbound(error_out)
                 await self._record_cron_outcome(event, "error", str(e))
+                await self._record_task_outcome(event, "error", str(e))
             finally:
                 # Deregister the turn so a finished turn leaves no residue for
                 # the next one to trip over (mirrors request() above).

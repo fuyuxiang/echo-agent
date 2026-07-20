@@ -34,6 +34,7 @@ class TaskManager:
         assignee: str = "",
         source: str = "",
         board_id: str = "default",
+        session_id: str = "",
     ) -> TaskRecord:
         task = TaskRecord(
             title=title, description=description,
@@ -44,6 +45,7 @@ class TaskManager:
             assignee=assignee,
             source=source,
             board_id=board_id,
+            session_id=session_id,
         )
         await self._storage.store_task(task.id, task.to_dict())
         logger.info("Task created: {} '{}'", task.id, title)
@@ -95,6 +97,41 @@ class TaskManager:
 
     async def cancel(self, task_id: str) -> TaskRecord:
         return await self.transition(task_id, TaskStatus.CANCELLED)
+
+    async def set_running_context(
+        self, task_id: str, session_key: str, inbound_event_id: str
+    ) -> TaskRecord | None:
+        """Record which session/turn is executing this task so a later cancel can
+        interrupt precisely that turn (not just flip the DB status). Stored on the
+        task's session_id + metadata['_interrupt_event_id']. Best-effort: returns
+        None if the task vanished, never raises."""
+        task = await self.get(task_id)
+        if not task:
+            return None
+        task.session_id = session_key
+        task.metadata = {**task.metadata, "_interrupt_event_id": inbound_event_id}
+        task.updated_at = _now()
+        await self._storage.store_task(task.id, task.to_dict())
+        return task
+
+    async def mark_terminal(
+        self, task_id: str, status: TaskStatus, *, result: str = "", error: str = ""
+    ) -> TaskRecord | None:
+        """Idempotently drive a dispatched task to a terminal state after its turn
+        finishes. If the agent already completed it via the task tool (now in a
+        terminal state), this is a no-op — the writeback must not resurrect or
+        double-transition. RUNNING→SUCCESS needs the intermediate REVIEW hop that
+        the state machine enforces (mirrors TaskTool.complete)."""
+        task = await self.get(task_id)
+        if not task or task.status in TERMINAL_TASK_STATUSES:
+            return task
+        try:
+            if status == TaskStatus.SUCCESS and task.status == TaskStatus.RUNNING:
+                await self.transition(task_id, TaskStatus.REVIEW)
+            return await self.transition(task_id, status, result=result, error=error)
+        except ValueError as e:
+            logger.debug("Task {} terminal writeback skipped: {}", task_id, e)
+            return await self.get(task_id)
 
     async def update(self, task_id: str, **fields: Any) -> TaskRecord:
         task = await self.get(task_id)

@@ -103,11 +103,44 @@ class TasksAPI:
         task = await self._manager().get(task_id)
         if not task:
             return web.json_response({"error": "not found"}, status=404)
+        was_running = task.status == TaskStatus.RUNNING
+        session_key = task.session_id
+        interrupt_event_id = str(task.metadata.get("_interrupt_event_id") or "")
         try:
             await self._manager().cancel(task_id)
         except ValueError as e:
             return web.json_response({"error": str(e)}, status=409)
+        # Cancel is a pure DB status flip; if the task is actually being executed
+        # by the agent, also cooperatively stop that turn. We synthesize the same
+        # /__interrupt__ control event the WS interrupt path uses, scoped to the
+        # task's own session and stamped with the running turn's event_id so it
+        # stops exactly that turn (not a later, unrelated one on the same session).
+        if was_running and session_key:
+            await self._interrupt_session(session_key, interrupt_event_id)
         return web.json_response({"status": "deleted"})
+
+    async def _interrupt_session(self, session_key: str, target_event_id: str) -> None:
+        """Best-effort cooperative interrupt of the turn executing a task. Mirrors
+        GatewayServer's WS interrupt frame. Never raises — a failed interrupt must
+        not fail the cancel, which already persisted."""
+        from echo_agent.bus.events import InboundEvent
+        bus = getattr(self._server, "_bus", None)
+        if bus is None:
+            return
+        try:
+            event = InboundEvent.text_message(
+                channel="task",
+                sender_id="dispatcher",
+                chat_id=session_key,
+                text="/__interrupt__",
+                session_key_override=session_key,
+                is_control=True,
+            )
+            if target_event_id:
+                event.metadata["_interrupt_target_event_id"] = target_event_id
+            await bus.publish_inbound(event)
+        except Exception:
+            pass
 
     async def transition_task(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "tasks_transition")
