@@ -162,6 +162,18 @@ class TasksAPI:
         except ValueError:
             return web.json_response({"error": f"invalid status: {to_status}"}, status=400)
 
+        # Entering RUNNING is the dispatcher's exclusive job: it flips a QUEUED
+        # task to RUNNING *and* publishes the agent event that actually executes
+        # it. A manual transition to running only changes the DB status — no
+        # executor is ever attached — producing an "orphan running" task the
+        # dispatcher (which only scans QUEUED) will never pick up or close. Reject
+        # it so a task only becomes running by being queued for the dispatcher.
+        if new_status == TaskStatus.RUNNING:
+            return web.json_response(
+                {"error": "cannot transition to running directly; queue the task so the dispatcher runs it"},
+                status=400,
+            )
+
         # Snapshot the running context BEFORE the transition: if this task is
         # currently being executed by the agent, moving it OUT of running (cancel,
         # fail, suspend, block from the board) must also cooperatively stop that
@@ -195,3 +207,21 @@ class TasksAPI:
             except Exception:
                 pass
         return web.json_response({"task": task.to_dict()})
+
+    async def retry_task(self, request: web.Request) -> web.Response:
+        """Retry a failed task. Distinct from a generic failed→queued transition:
+        it goes through manager.retry, which increments retry_count and enforces
+        max_retries. Routing retry through the plain /transition endpoint (as the
+        board used to) silently bypassed both — a task could be retried forever
+        and its attempt count never moved."""
+        guard = self._guard(request, "tasks_retry")
+        if guard is not None:
+            return guard
+
+        task_id = request.match_info["id"]
+        try:
+            task = await self._manager().retry(task_id)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
+        return web.json_response({"task": task.to_dict()})
+

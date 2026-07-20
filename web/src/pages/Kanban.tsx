@@ -149,7 +149,7 @@ function KanbanColumn({
 // 卡片操作:全部走既有 transition 接口(后端已暴露)。transitionTask 内部已在失败时
 // 弹 error toast 并 re-throw,这里只负责乐观更新、回滚与成功提示,不重复弹错。
 function useCardActions(task: TaskCard) {
-  const { transitionTask, updateLocal } = useKanbanStore();
+  const { transitionTask, retryTask, updateLocal } = useKanbanStore();
 
   const run = async (to: string, okMsg: string) => {
     const prev = task.status;
@@ -162,10 +162,22 @@ function useCardActions(task: TaskCard) {
     }
   };
 
+  // 重试走专用 retry 端点(递增 retry_count + 校验 max_retries),不走通用 transition。
+  const doRetry = async () => {
+    const prev = task.status;
+    updateLocal(task.id, { status: "queued" }); // 乐观更新
+    try {
+      await retryTask(task.id);
+      toast.success("已重新排队");
+    } catch {
+      updateLocal(task.id, { status: prev }); // 失败回滚(错误提示已由 retryTask 弹出)
+    }
+  };
+
   return {
     start: () => run("queued", "已排队,等待执行"),
     cancel: () => run("cancelled", "已取消任务"),
-    retry: () => run("queued", "已重新排队"),
+    retry: doRetry,
     approve: () => run("success", "已通过审核"),
     reject: () => run("queued", "已打回重排"),
   };

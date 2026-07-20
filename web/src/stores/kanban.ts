@@ -62,13 +62,16 @@ export const ARCHIVED_COLUMNS = ["cancelled", "suspended"] as const;
 
 // 前端镜像后端状态机(models.py VALID_TASK_TRANSITIONS),用于拖拽时判定合法目标列:
 // 高亮可落列、忽略非法拖拽,避免"拖了就报错"。后端仍是唯一权威校验。
+// 注意:进入 running 是 dispatcher 的专属职责(它同时投递执行事件),手动/拖拽转入
+// running 只会产生没有执行者的"幽灵 running",后端已在 transition 接口拒绝,这里也
+// 一并移除 *→running 落点,避免拖拽给出会被后端打回的假可落提示。
 export const VALID_TRANSITIONS: Record<string, string[]> = {
   pending: ["queued", "cancelled"],
-  queued: ["running", "cancelled"],
+  queued: ["cancelled"],
   running: ["review", "blocked", "failed", "suspended", "cancelled"],
-  blocked: ["queued", "running", "cancelled"],
+  blocked: ["queued", "cancelled"],
   review: ["success", "queued"],
-  suspended: ["queued", "running", "cancelled"],
+  suspended: ["queued", "cancelled"],
   failed: ["queued"],
   success: [],
   cancelled: [],
@@ -83,6 +86,7 @@ interface KanbanState {
   loading: boolean;
   fetchTasks: () => Promise<void>;
   transitionTask: (id: string, to: string) => Promise<void>;
+  retryTask: (id: string) => Promise<void>;
   createTask: (title: string, description?: string) => Promise<boolean>;
   updateLocal: (id: string, changes: Partial<TaskCard>) => void;
   addLocal: (task: TaskCard) => void;
@@ -118,6 +122,24 @@ export const useKanbanStore = create<KanbanState>((set) => ({
       }));
     } catch (e) {
       toast.error(`流转失败：${e instanceof Error ? e.message : String(e)}`);
+      throw e;
+    }
+  },
+
+  retryTask: async (id) => {
+    // 重试走专用端点(manager.retry):递增 retry_count 且校验 max_retries。
+    // 不能走通用 transition(failed→queued),那会绕过计数与上限,任务可被无限重试。
+    // 不吞错:交给调用方在 catch 里回滚乐观更新,这里补一条 toast 说明失败原因
+    // (常见于已达 max_retries 被后端拒绝)。
+    try {
+      const data = await apiFetch<{ task: TaskCard }>(`/tasks/${id}/retry`, {
+        method: "POST",
+      });
+      set((s) => ({
+        tasks: s.tasks.map((t) => (t.id === id ? { ...t, ...data.task } : t)),
+      }));
+    } catch (e) {
+      toast.error(`重试失败：${e instanceof Error ? e.message : String(e)}`);
       throw e;
     }
   },

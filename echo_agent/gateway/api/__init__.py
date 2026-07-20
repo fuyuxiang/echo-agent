@@ -77,6 +77,7 @@ def register_management_routes(app: web.Application, prefix: str, server: Gatewa
     app.router.add_put(f"{prefix}/tasks/{{id}}", tasks_api.update_task)
     app.router.add_delete(f"{prefix}/tasks/{{id}}", tasks_api.delete_task)
     app.router.add_post(f"{prefix}/tasks/{{id}}/transition", tasks_api.transition_task)
+    app.router.add_post(f"{prefix}/tasks/{{id}}/retry", tasks_api.retry_task)
 
     app.router.add_get(f"{prefix}/sessions", sessions_api.list_sessions)
     app.router.add_get(f"{prefix}/sessions/{{key}}/history", sessions_api.get_history)

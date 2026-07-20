@@ -188,3 +188,59 @@ async def test_cancel_non_running_task_skips_interrupt(mock_server, api):
         assert resp.status == 200
 
     mock_server._bus.publish_inbound.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_transition_to_running_rejected(mock_server, api):
+    """Entering running is the dispatcher's job (it also attaches the executor).
+    A manual transition to running would create an orphan running task, so the
+    endpoint must reject it with 400 and never touch the manager."""
+    from echo_agent.tasks.models import TaskRecord, TaskStatus
+    mock_server._agent_loop.task_manager.get = AsyncMock(
+        return_value=TaskRecord(id="t_q", title="q", status=TaskStatus.QUEUED)
+    )
+    mock_server._agent_loop.task_manager.transition = AsyncMock()
+
+    app = web.Application()
+    app.router.add_post("/api/v1/tasks/{id}/transition", api.transition_task)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/api/v1/tasks/t_q/transition", json={"to": "running"})
+        assert resp.status == 400
+
+    mock_server._agent_loop.task_manager.transition.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_retry_endpoint_calls_manager_retry(mock_server, api):
+    """Retry must go through manager.retry (increments retry_count, enforces
+    max_retries), not a plain failed→queued transition that bypasses both."""
+    from echo_agent.tasks.models import TaskRecord, TaskStatus
+    retried = TaskRecord(id="t_f", title="f", status=TaskStatus.QUEUED, retry_count=1)
+    mock_server._agent_loop.task_manager.retry = AsyncMock(return_value=retried)
+
+    app = web.Application()
+    app.router.add_post("/api/v1/tasks/{id}/retry", api.retry_task)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/api/v1/tasks/t_f/retry")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["task"]["retry_count"] == 1
+
+    mock_server._agent_loop.task_manager.retry.assert_awaited_once_with("t_f")
+
+
+@pytest.mark.asyncio
+async def test_retry_endpoint_surfaces_max_retries_error(mock_server, api):
+    """When manager.retry rejects (max_retries exceeded / not failed), the
+    endpoint returns 400 with the reason rather than silently succeeding."""
+    mock_server._agent_loop.task_manager.retry = AsyncMock(
+        side_effect=ValueError("Max retries (3) exceeded")
+    )
+
+    app = web.Application()
+    app.router.add_post("/api/v1/tasks/{id}/retry", api.retry_task)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/api/v1/tasks/t_f/retry")
+        assert resp.status == 400
+        data = await resp.json()
+        assert "Max retries" in data["error"]
