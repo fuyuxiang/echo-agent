@@ -206,8 +206,10 @@ class LocalEmbedder:
     def _load_model_sync(self) -> Any | None:
         try:
             # Our own release mirrors first (CN-friendly, sha256-pinned).
-            # Failure silently falls through to the HF/GCS path below.
-            self._fetch_release_package()
+            # Failure silently falls through to the HF/GCS path below. The
+            # return flag records whether the cache is now a ready model, which
+            # decides the offline-pin below.
+            ready = self._fetch_release_package()
             # Bound the underlying HF socket so a slow/dead mirror fails fast at
             # the transport layer. HF_HUB_DOWNLOAD_TIMEOUT covers file transfer;
             # HF_HUB_ETAG_TIMEOUT covers the metadata calls (model_info /
@@ -225,6 +227,18 @@ class LocalEmbedder:
             kwargs: dict[str, Any] = {"model_name": self._model_name}
             if self._cache_dir:
                 kwargs["cache_dir"] = self._cache_dir
+            # Cache already holds a ready model (release package fetched or
+            # pre-seeded): pin fastembed to local files so it does NOT go online
+            # first. fastembed 0.8 otherwise probes its HF source before the GCS
+            # cache layout, and on CN networks the HF onnx pull goes through Xet
+            # (cas-server.xethub.hf.co) and 401s with a RuntimeError that escapes
+            # fastembed's own GCS fallback — stranding the ready local cache and
+            # degrading the whole process to keyword-only. local_files_only is
+            # per-call (unlike HF_HUB_OFFLINE) so it never leaks to other HF use.
+            # When NOT ready we stay online so fastembed's hf/gcs sources can
+            # still self-heal a cold first start.
+            if ready:
+                kwargs["local_files_only"] = True
             return fastembed.TextEmbedding(**kwargs)
         except Exception as e:
             logger.warning(

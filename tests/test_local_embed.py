@@ -247,3 +247,38 @@ async def test_no_cache_dir_omits_kwarg():
         await e.embed("text")
         _, kwargs = fake_cls.call_args
         assert "cache_dir" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_ready_cache_pins_local_files_only():
+    """release 包已就绪时，强制 fastembed 走离线本地缓存，不抢先联网。
+
+    否则 fastembed 0.8 会先探 HF 源，CN 网络下拉 onnx 走 Xet(xethub)撞 401，
+    异常逃出其自身 GCS 兜底，白白晾着已就绪的本地包降级为关键词检索。"""
+    import numpy as np
+    fake_model = MagicMock()
+    fake_model.embed.return_value = iter([np.array([0.1], dtype=np.float32)])
+    fake_cls = MagicMock(return_value=fake_model)
+    fake_mod = MagicMock(TextEmbedding=fake_cls)
+    with patch.dict(sys.modules, {"fastembed": fake_mod}):
+        e = LocalEmbedder("BAAI/bge-small-zh-v1.5", cache_dir="/tmp/echo-models")
+        with patch.object(e, "_fetch_release_package", return_value=True):
+            await e.embed("text")
+        _, kwargs = fake_cls.call_args
+        assert kwargs.get("local_files_only") is True
+
+
+@pytest.mark.asyncio
+async def test_unready_cache_stays_online():
+    """缓存未就绪(冷启动首下)时保持联网，让 fastembed 的 hf/gcs 源仍能自愈。"""
+    import numpy as np
+    fake_model = MagicMock()
+    fake_model.embed.return_value = iter([np.array([0.1], dtype=np.float32)])
+    fake_cls = MagicMock(return_value=fake_model)
+    fake_mod = MagicMock(TextEmbedding=fake_cls)
+    with patch.dict(sys.modules, {"fastembed": fake_mod}):
+        e = LocalEmbedder("BAAI/bge-small-zh-v1.5", cache_dir="/tmp/echo-models")
+        with patch.object(e, "_fetch_release_package", return_value=False):
+            await e.embed("text")
+        _, kwargs = fake_cls.call_args
+        assert "local_files_only" not in kwargs
