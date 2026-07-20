@@ -177,3 +177,46 @@ async def test_mark_terminal_running_to_success_via_review():
     result = await manager.mark_terminal(task.id, TaskStatus.SUCCESS, result="done")
     assert result.status == TaskStatus.SUCCESS
     assert result.result == "done"
+
+
+@pytest.mark.asyncio
+async def test_event_sink_receives_task_changes():
+    """Every task change emits a typed event to the wired sink so the dashboard
+    can push real-time updates. create → task_created; transitions/retry/requeue
+    → task_transitioned; update → task_updated."""
+    storage = FakeStorage()
+    manager = TaskManager(storage)
+    events: list[tuple[str, str]] = []
+
+    async def sink(event_type, payload):
+        events.append((event_type, payload["status"]))
+
+    manager.set_event_sink(sink)
+
+    task = await manager.create(title="t")
+    await manager.transition(task.id, TaskStatus.QUEUED)
+    await manager.transition(task.id, TaskStatus.RUNNING)
+    await manager.update(task.id, title="renamed")
+    await manager.mark_terminal(task.id, TaskStatus.FAILED, error="x")
+
+    assert ("task_created", "pending") in events
+    assert ("task_transitioned", "queued") in events
+    assert ("task_transitioned", "running") in events
+    assert ("task_updated", "running") in events
+    assert ("task_transitioned", "failed") in events
+
+
+@pytest.mark.asyncio
+async def test_event_sink_failure_does_not_break_operation():
+    """A broken/slow subscriber must never fail the task operation that already
+    persisted."""
+    storage = FakeStorage()
+    manager = TaskManager(storage)
+
+    async def bad_sink(event_type, payload):
+        raise RuntimeError("subscriber down")
+
+    manager.set_event_sink(bad_sink)
+
+    task = await manager.create(title="t")  # must not raise
+    assert (await manager.get(task.id)).status == TaskStatus.PENDING

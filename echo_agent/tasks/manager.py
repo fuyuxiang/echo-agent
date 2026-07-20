@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from loguru import logger
 
@@ -14,12 +14,36 @@ from echo_agent.tasks.models import (
     _now,
 )
 
+# An event sink receives (event_type, payload) for every task change so the
+# dashboard can push real-time updates. Wired at startup (app.py) to the
+# dashboard WS broadcast; None until then (tests, headless runs).
+EventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
+
 
 class TaskManager:
     """Manages task lifecycle with enforced state transitions."""
 
     def __init__(self, storage: Any):
         self._storage = storage
+        self._event_sink: EventSink | None = None
+
+    def set_event_sink(self, sink: EventSink | None) -> None:
+        """Wire an async sink that receives every task change (create/transition/
+        update). Best-effort: emission never blocks or fails a state change."""
+        self._event_sink = sink
+
+    async def _emit(self, event_type: str, task: TaskRecord) -> None:
+        """Fire a task event to the sink if one is wired. Swallows everything —
+        a broken/slow subscriber must never break the task operation that already
+        persisted."""
+        sink = self._event_sink
+        if sink is None:
+            return
+        try:
+            await sink(event_type, task.to_dict())
+        except Exception as e:
+            logger.debug("Task event emit ({}) failed: {}", event_type, e)
+
 
     async def create(
         self,
@@ -49,6 +73,7 @@ class TaskManager:
         )
         await self._storage.store_task(task.id, task.to_dict())
         logger.info("Task created: {} '{}'", task.id, title)
+        await self._emit("task_created", task)
         return task
 
     async def get(self, task_id: str) -> TaskRecord | None:
@@ -76,6 +101,7 @@ class TaskManager:
             task.error = kwargs["error"]
         await self._storage.store_task(task.id, task.to_dict())
         logger.info("Task {} → {}", task_id, new_status.value)
+        await self._emit("task_transitioned", task)
         return task
 
     async def retry(self, task_id: str) -> TaskRecord:
@@ -93,6 +119,7 @@ class TaskManager:
         task.updated_at = _now()
         await self._storage.store_task(task.id, task.to_dict())
         logger.info("Task {} retried (attempt {})", task_id, task.retry_count)
+        await self._emit("task_transitioned", task)
         return task
 
     async def cancel(self, task_id: str) -> TaskRecord:
@@ -133,6 +160,7 @@ class TaskManager:
         task.updated_at = _now()
         await self._storage.store_task(task.id, task.to_dict())
         logger.warning("Task {} re-queued after dispatch was rejected", task_id)
+        await self._emit("task_transitioned", task)
         return task
 
     async def mark_terminal(
@@ -169,6 +197,7 @@ class TaskManager:
                 task.metadata = incoming
         task.updated_at = _now()
         await self._storage.store_task(task.id, task.to_dict())
+        await self._emit("task_updated", task)
         return task
 
     async def list_by_status(self, status: TaskStatus | None = None) -> list[TaskRecord]:

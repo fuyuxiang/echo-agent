@@ -104,6 +104,12 @@ class GatewayServer:
         return self._running
 
     @property
+    def dashboard_ws(self) -> DashboardWebSocket:
+        """The dashboard WebSocket hub — exposes broadcast() so subsystems (e.g.
+        TaskManager) can push real-time events to subscribed UI clients."""
+        return self._dashboard_ws
+
+    @property
     def actual_port(self) -> int:
         """Return the actual bound port (useful when configured port is 0)."""
         if self._actual_port is not None:

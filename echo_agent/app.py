@@ -406,6 +406,14 @@ class AppRuntime:
             if self._shutdown_event:
                 self._gateway.set_shutdown_event(self._shutdown_event)
             await self._gateway.start()
+            # Push real-time task changes to subscribed dashboard clients. Every
+            # task state change funnels through TaskManager, so wiring the sink
+            # here covers all writers (API, dispatcher, agent writeback, TaskTool)
+            # without instrumenting each call site. Emission is best-effort and
+            # never blocks a task operation.
+            task_manager = getattr(ctx.agent, "task_manager", None)
+            if task_manager is not None:
+                task_manager.set_event_sink(self._gateway.dashboard_ws.broadcast)
             logger.info("Gateway started on {}:{}", ctx.config.gateway.host, ctx.config.gateway.port)
         return True
 
