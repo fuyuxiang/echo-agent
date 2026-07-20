@@ -576,6 +576,65 @@ EMBED_MODEL="${ECHO_EMBED_MODEL:-BAAI/bge-small-zh-v1.5}"
 EMBED_CACHE_DIR="${ECHO_EMBED_CACHE_DIR:-$ECHO_HOME/models/fastembed}"
 EMBED_PREFETCH_TIMEOUT="${ECHO_EMBED_PREFETCH_TIMEOUT:-900}"
 
+# Release-hosted model package (self-owned mirrors, tried before HF/GCS).
+# NOTE: tags differ in case between the two forges (Gitee v1.1.0 / GitHub V1.1.0).
+EMBED_PKG_NAME="bge-small-zh-v1.5-fastembed.tar.gz"
+EMBED_PKG_SHA256="d095c530b22f384d4d19a79c5862b65e8fff104af64ce9bb9e89690c186d418f"
+EMBED_PKG_URLS=(
+    "https://gitee.com/fuyuxiang/echo-agent/releases/download/v1.1.0/$EMBED_PKG_NAME"
+    "https://github.com/fuyuxiang/echo-agent/releases/download/V1.1.0/$EMBED_PKG_NAME"
+)
+# The directory fastembed expects inside the cache (== tar top-level dir).
+EMBED_PKG_DIR="fast-bge-small-zh-v1.5"
+
+# Try to populate the fastembed cache from our own release mirrors (Gitee first
+# for CN networks, then GitHub). Success means the later prefetch step is a pure
+# offline cache hit. Best-effort: any failure returns non-zero and the caller
+# falls through to the existing HF/GCS prefetch path.
+fetch_embedding_model_from_release() {
+    # Only the default model is packaged on the releases; a custom
+    # ECHO_EMBED_MODEL must use the HF/GCS path.
+    if [ "$EMBED_MODEL" != "BAAI/bge-small-zh-v1.5" ]; then
+        return 1
+    fi
+    # Cache already materialized (marker: the onnx weights file)?
+    if [ -f "$EMBED_CACHE_DIR/$EMBED_PKG_DIR/model_optimized.onnx" ]; then
+        log_info "Embedding model already cached; skipping release download."
+        return 0
+    fi
+    if ! command -v curl >/dev/null 2>&1; then
+        return 1
+    fi
+
+    mkdir -p "$EMBED_CACHE_DIR"
+    local tmp_tar="$EMBED_CACHE_DIR/.$EMBED_PKG_NAME.part"
+    local url actual
+    for url in "${EMBED_PKG_URLS[@]}"; do
+        log_info "Downloading embedding model from release: $url"
+        if ! curl -fsSL --retry 2 --connect-timeout 15 --max-time 600 \
+                -o "$tmp_tar" "$url"; then
+            log_warn "Download failed from $url; trying next source."
+            rm -f "$tmp_tar"
+            continue
+        fi
+        actual=$(shasum -a 256 "$tmp_tar" 2>/dev/null | awk '{print $1}')
+        [ -n "$actual" ] || actual=$(sha256sum "$tmp_tar" 2>/dev/null | awk '{print $1}')
+        if [ "$actual" != "$EMBED_PKG_SHA256" ]; then
+            log_warn "sha256 mismatch from $url (got ${actual:-none}); trying next source."
+            rm -f "$tmp_tar"
+            continue
+        fi
+        if tar -xzf "$tmp_tar" -C "$EMBED_CACHE_DIR"; then
+            rm -f "$tmp_tar"
+            log_success "Embedding model fetched from release mirror (offline-ready)."
+            return 0
+        fi
+        log_warn "Extraction failed for $url; trying next source."
+        rm -f "$tmp_tar"
+    done
+    return 1
+}
+
 prefetch_embedding_model() {
     local venv_python="$INSTALL_DIR/venv/bin/python"
     if [ ! -x "$venv_python" ]; then
@@ -586,6 +645,10 @@ prefetch_embedding_model() {
         log_info "Embedding model prefetch disabled (ECHO_EMBED_MODEL empty)."
         return 0
     fi
+
+    # Our own release mirrors first; on success the fastembed load below is an
+    # offline cache hit and doubles as the verification step.
+    fetch_embedding_model_from_release || true
 
     log_info "Prefetching local embedding model '$EMBED_MODEL' into $EMBED_CACHE_DIR ..."
     mkdir -p "$EMBED_CACHE_DIR"

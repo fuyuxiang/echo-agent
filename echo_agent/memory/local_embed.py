@@ -28,6 +28,7 @@ import os
 import sys
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -41,6 +42,20 @@ _KNOWN_DIMS: dict[str, int] = {
 }
 
 _DEFAULT_MODEL = "BAAI/bge-small-zh-v1.5"
+
+# Self-hosted release packages, tried before fastembed's HF/GCS download.
+# Key = model name; the tar's top-level dir must equal cache_subdir (that is
+# fastembed's cache-hit layout, verified offline).
+_RELEASE_PACKAGES: dict[str, dict[str, Any]] = {
+    "BAAI/bge-small-zh-v1.5": {
+        "cache_subdir": "fast-bge-small-zh-v1.5",
+        "sha256": "d095c530b22f384d4d19a79c5862b65e8fff104af64ce9bb9e89690c186d418f",
+        "urls": [
+            "https://gitee.com/fuyuxiang/echo-agent/releases/download/v1.1.0/bge-small-zh-v1.5-fastembed.tar.gz",
+            "https://github.com/fuyuxiang/echo-agent/releases/download/V1.1.0/bge-small-zh-v1.5-fastembed.tar.gz",
+        ],
+    },
+}
 
 
 class LocalEmbedder:
@@ -108,8 +123,61 @@ class LocalEmbedder:
     def dimensions(self) -> int:
         return _KNOWN_DIMS.get(self._model_name, 0)
 
+    def _fetch_release_package(self) -> bool:
+        """Populate the fastembed cache from our own release mirrors.
+
+        Runs inside the load thread (never on the event loop). Returns True when
+        the cache dir now holds the model; False falls through to fastembed's own
+        HF/GCS download. Best-effort by design."""
+        pkg = _RELEASE_PACKAGES.get(self._model_name)
+        if pkg is None or not self._cache_dir:
+            return False
+        import hashlib
+        import shutil
+        import tarfile
+        import tempfile
+        import urllib.request
+
+        cache_root = Path(self._cache_dir).resolve()
+        target = cache_root / pkg["cache_subdir"]
+        if (target / "model_optimized.onnx").exists():
+            return True
+        os.makedirs(self._cache_dir, exist_ok=True)
+        for url in pkg["urls"]:
+            tmp = None
+            try:
+                with urllib.request.urlopen(url, timeout=30) as resp, \
+                        tempfile.NamedTemporaryFile(dir=self._cache_dir, delete=False) as f:
+                    tmp = f.name
+                    shutil.copyfileobj(resp, f)
+                digest = hashlib.sha256(Path(tmp).read_bytes()).hexdigest()
+                if digest != pkg["sha256"]:
+                    logger.warning("Release model sha256 mismatch from {}", url)
+                    continue
+                with tarfile.open(tmp, "r:gz") as tar:
+                    # Guard against path traversal without relying on the 3.12+
+                    # `filter="data"` arg (project floor is Python 3.11): every
+                    # member must resolve to a path inside the cache root.
+                    for member in tar.getmembers():
+                        dest = (cache_root / member.name).resolve()
+                        if dest != cache_root and cache_root not in dest.parents:
+                            raise ValueError(f"unsafe tar member: {member.name}")
+                    tar.extractall(self._cache_dir)
+                if (target / "model_optimized.onnx").exists():
+                    logger.info("Embedding model fetched from release mirror: {}", url)
+                    return True
+            except Exception as e:
+                logger.warning("Release model fetch failed from {}: {}", url, e)
+            finally:
+                if tmp:
+                    Path(tmp).unlink(missing_ok=True)
+        return False
+
     def _load_model_sync(self) -> Any | None:
         try:
+            # Our own release mirrors first (CN-friendly, sha256-pinned).
+            # Failure silently falls through to the HF/GCS path below.
+            self._fetch_release_package()
             # Bound the underlying HF socket so a slow/dead mirror fails fast at
             # the transport layer. HF_HUB_DOWNLOAD_TIMEOUT covers file transfer;
             # HF_HUB_ETAG_TIMEOUT covers the metadata calls (model_info /
