@@ -240,10 +240,13 @@ class EchoTUI(App):
             mem = ev.data.get("memory_count")
             if mem is not None:
                 bar.set_memory_count(mem)
-            # Freeze the elapsed-time display for this settled LLM round, but do
-            # NOT end the turn: more rounds (tools, clarify, reflection) may
-            # follow, and the Ctrl+C interrupt guard keys off turn-active state.
-            bar.pause_turn_timer()
+            # A cost_update means one LLM round just settled — but the TURN is
+            # still running (more tool rounds, clarify waits, reflection reruns
+            # may follow). Deliberately do NOT pause the elapsed-time display
+            # here: the timer must span the WHOLE turn, not freeze at the first
+            # round's duration. It stops only when the final reply lands
+            # (stop_turn_timer). The Ctrl+C guard keys off turn-active state, not
+            # this display, so it is unaffected either way.
             return
         if ev.cog_type == "tool_call":
             # Tool lines flip in place (running -> done) via a dedicated block,

@@ -56,10 +56,10 @@ class StatusBar(Static):
         self._turn_start: float | None = None
         self._turn_elapsed: float = 0.0
         # Turn-active state is tracked separately from the display timer. A turn
-        # spans many LLM calls (tool rounds, clarify waits, reflection reruns),
-        # each emitting a cost_update that pauses the elapsed-time display — but
-        # the TURN is still in flight. The Ctrl+C guard must key off this flag,
-        # never the timer, or it stops sending interrupts after the first round.
+        # spans many LLM calls (tool rounds, clarify waits, reflection reruns);
+        # the elapsed-time display runs continuously across all of them and only
+        # freezes when the turn ends. The Ctrl+C guard must key off this flag,
+        # never the timer, so it keeps sending interrupts for the whole turn.
         self._turn_active: bool = False
         self._timer = None
         self._mounted = False
@@ -150,10 +150,10 @@ class StatusBar(Static):
 
     @property
     def is_turn_active(self) -> bool:
-        """True from turn start until the final reply lands. Independent of the
-        elapsed-time display (which cost_update pauses every LLM round), so the
-        Ctrl+C guard keeps sending interrupts through tool execution, clarify
-        waits and multi-round inference."""
+        """True from turn start until the final reply lands. Tracked separately
+        from the elapsed-time display so the Ctrl+C guard keeps sending
+        interrupts through tool execution, clarify waits and multi-round
+        inference regardless of what the timer shows."""
         return self._turn_active
 
     def start_turn_timer(self) -> None:
@@ -164,9 +164,10 @@ class StatusBar(Static):
         self._refresh()
 
     def pause_turn_timer(self) -> None:
-        """Freeze the elapsed-time display WITHOUT ending the turn. Called on
-        each cost_update: a new LLM round just settled its cost, but the turn is
-        still running, so is_turn_active stays True."""
+        """Freeze the elapsed-time display at the current duration. Called by
+        stop_turn_timer when the turn ends; NOT called per LLM round, so the
+        timer runs continuously across a multi-round turn and shows the whole
+        turn's duration."""
         if self._turn_start is not None:
             self._turn_elapsed = time.time() - self._turn_start
             self._turn_start = None
