@@ -206,9 +206,9 @@ class TestConsolidationWorker:
     async def test_sleep_consolidate_failure_propagates_for_retry(self, mock_sessions, mock_consolidator):
         """A sleep_consolidate failure must re-raise (so the outer DURABLE handler
         can retry it), instead of being silently swallowed by an inner
-        logger.warning. Sleep consolidation is idempotent (boundary committed
-        before sleep, empty chunk returns early, sub-steps guard double-writes),
-        so a retried re-run is safe."""
+        logger.warning. The Phase-3 boundary commit now runs AFTER sleep, so on
+        failure the boundary must NOT advance — the retry re-snapshots the same
+        non-empty chunk and truly replays this span (episode/fact/reflection)."""
         session = Session(key="test:sleepfail")
         session.add_message("user", "msg")
         mock_sessions.get_or_create = AsyncMock(return_value=session)
@@ -236,6 +236,10 @@ class TestConsolidationWorker:
 
         # The sleep failure must surface as a raised exception, not be swallowed.
         assert any(isinstance(r, RuntimeError) for r in results)
+        # 边界提交移到 sleep 之后:sleep 失败时边界不推进(save 未调用),
+        # last_consolidated 保持 0,DURABLE 重试将重放同一非空 chunk。
+        mock_sessions.save.assert_not_called()
+        assert session.last_consolidated == 0
         # on_complete must NOT run when sleep failed — the attempt did not succeed.
         assert completed_keys == []
         # _pending is still released so a scheduler retry can re-drive it.
@@ -431,3 +435,47 @@ class TestEpisodeAbsoluteRange:
             (session_key,),
         )
         assert rows[0]["n"] == 2, "两个等长巩固轮次被相对键误去重，episodic 记忆静默丢失"
+
+    @pytest.mark.asyncio
+    async def test_sleep_retry_replays_same_chunk_until_success(self, tmp_path):
+        """E: sleep_consolidate 前两次抛异常、第三次成功 → 三次都拿到非空 chunk,
+        最终 episode 恰 1 条、last_consolidated 恰好推进一次。"""
+        worker, sessions, storage, _ = await self._make_worker(tmp_path)
+        session_key = "chan:retry"
+
+        session = await sessions.get_or_create(session_key)
+        session.add_message("user", "重试内容 A")
+        session.add_message("assistant", "回应 A")
+        await sessions.save(session)
+
+        real_sleep = worker._consolidator.sleep_consolidate
+        seen_chunk_lens: list[int] = []
+        calls = {"n": 0}
+
+        async def flaky_sleep(session_key, messages, **kwargs):
+            seen_chunk_lens.append(len(messages))
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise RuntimeError(f"sleep boom {calls['n']}")
+            return await real_sleep(session_key, messages, **kwargs)
+
+        worker._consolidator.sleep_consolidate = flaky_sleep
+
+        # 模拟 DURABLE 重试:失败重跑 _run,直到成功。前两次会抛异常,容忍之。
+        for _ in range(3):
+            try:
+                await self._run_worker(worker, session_key)
+            except RuntimeError:
+                pass
+
+        # 三次都拿到非空 chunk(边界未提前推进)。
+        assert seen_chunk_lens == [2, 2, 2], seen_chunk_lens
+        # 最终 episode 恰 1 条(D 的唯一索引保证重放幂等)。
+        rows = await storage.fetch_sql(
+            "SELECT COUNT(*) AS n FROM memory_episodes WHERE session_key=?",
+            (session_key,),
+        )
+        assert rows[0]["n"] == 1
+        # 边界恰好推进一次(成功后才提交)。
+        session = await sessions.get_or_create(session_key)
+        assert session.last_consolidated == 2

@@ -1,7 +1,6 @@
-import pytest
 from echo_agent.memory.store import MemoryStore
 from echo_agent.memory.eligibility import Audience
-from echo_agent.memory.types import MemoryEntry, MemoryTier, MemoryType
+from echo_agent.memory.types import MemoryEntry, MemoryType
 
 
 def _store(tmp_path):

@@ -216,3 +216,31 @@ async def test_create_episode_zero_range_always_new(storage):
         "SELECT COUNT(*) AS n FROM memory_episodes WHERE session_key='s1'"
     )
     assert rows[0]["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_create_episode_concurrent_same_span_dedup(storage):
+    """D: 20 个并发同 (session, range) 调用 → 表中恰 1 行,返回值 id 全相同。"""
+    import asyncio
+    mgr = EpisodicManager(storage)
+    results = await asyncio.gather(*[
+        mgr.create_episode("s1", [], f"摘要{i}", message_range=(0, 5))
+        for i in range(20)
+    ])
+    ids = {e.id for e in results}
+    assert len(ids) == 1, f"并发应收敛到单一 episode,实得 {ids}"
+    rows = await storage.fetch_sql(
+        "SELECT COUNT(*) AS n FROM memory_episodes WHERE session_key='s1'"
+    )
+    assert rows[0]["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_create_episode_dedup_no_orphan_vector(episodic, storage):
+    """D: 重复(冲突)调用不产生第二条 ep: 向量。"""
+    e1 = await episodic.create_episode("s1", [], "讨论了项目部署方案", message_range=(0, 5))
+    e2 = await episodic.create_episode("s1", [], "又一次部署总结", message_range=(0, 5))
+    assert e1.id == e2.id
+    rows = await storage.load_vectors_all()
+    ep_vecs = [r for r in rows if r["source_id"].startswith("ep:")]
+    assert len(ep_vecs) == 1, f"应只有 1 条 ep 向量,实得 {[r['source_id'] for r in ep_vecs]}"

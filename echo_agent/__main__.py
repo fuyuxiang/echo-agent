@@ -234,6 +234,10 @@ def _build_parser() -> argparse.ArgumentParser:
     mig_parser.add_argument("-c", "--config", help="Path to config file")
     mig_parser.add_argument("-w", "--workspace", help="Workspace directory")
     mig_parser.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
+    mig_parser.add_argument(
+        "--adopt-empty", action="store_true",
+        help="run 时额外把空 scope 的 USER 记忆收编给 owner_key",
+    )
 
     # top-level flags for backward compat
     parser.add_argument("-c", "--config", help="Path to config file", dest="top_config")
@@ -379,6 +383,7 @@ def _dispatch() -> None:
             workspace=args.workspace or args.top_workspace,
             dry_run=args.dry_run,
             yes=args.yes,
+            adopt_empty=args.adopt_empty,
         )
         _sys.exit(rc)
 

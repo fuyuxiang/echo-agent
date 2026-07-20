@@ -351,9 +351,11 @@ class ResponseStage:
         does NOT propagate: this coroutine is awaited at the tail of the
         DURABLE ``_background_memory_review`` factory, so a raised save error
         would be caught by ``_run_durable`` and re-run the ENTIRE review
-        (expensive LLM call + possibly duplicate memory writes). Swallowing it
-        here leaves the counters at their elevated value, so the next turn
-        naturally re-triggers the review — no rerun of the whole batch needed."""
+        (expensive LLM call + possibly duplicate memory writes). On save
+        failure we ROLL BACK the in-memory counters to their prior value:
+        Session is a shared cached object, so leaving it zeroed after a failed
+        save would make the next turn read 0 and never re-trigger the review —
+        the counters would be lost in memory yet never persisted."""
         acquire = getattr(self._sessions, "acquire", None)
         get_or_create = getattr(self._sessions, "get_or_create", None)
         if acquire is None or get_or_create is None:
@@ -362,12 +364,24 @@ class ResponseStage:
             lock = await acquire(session_key)
             async with lock:
                 session = await get_or_create(session_key)
+                old = (
+                    session.metadata.get("_nudge_turns_memory", 0),
+                    session.metadata.get("_nudge_tool_iters_memory", 0),
+                )
                 session.metadata["_nudge_turns_memory"] = 0
                 session.metadata["_nudge_tool_iters_memory"] = 0
-                await self._sessions.save(session)
-        except Exception as e:  # noqa: BLE001 — 不得向上传播,避免触发 review 重跑
+                try:
+                    await self._sessions.save(session)
+                except Exception as e:
+                    # 回滚内存值,保持内存/磁盘一致,下一 turn 仍会重新触发 review。
+                    session.metadata["_nudge_turns_memory"] = old[0]
+                    session.metadata["_nudge_tool_iters_memory"] = old[1]
+                    logger.warning(
+                        "Memory nudge counter save failed for {}; counters restored "
+                        "in-memory, next turn will re-trigger: {}",
+                        session_key, e,
+                    )
+        except Exception as e:  # noqa: BLE001 — acquire/get_or_create 失败不上抛,避免 review 重跑
             logger.warning(
-                "Memory nudge counter reset/save failed for {}; "
-                "counters kept elevated, next turn will re-trigger: {}",
-                session_key, e,
+                "Memory nudge counter reset failed for {}: {}", session_key, e,
             )

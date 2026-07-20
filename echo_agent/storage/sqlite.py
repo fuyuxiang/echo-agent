@@ -177,6 +177,14 @@ _MIGRATIONS: list[tuple[int, str]] = [
     )"""),
     (22, "ALTER TABLE vectors ADD COLUMN model TEXT DEFAULT ''"),
     (23, "ALTER TABLE vectors ADD COLUMN dim INTEGER DEFAULT 0"),
+    # 24 先清历史重复 episode(保留每组最早 id),否则 25 建唯一索引会失败。
+    # (0,0) 区间是 legacy "无区间信息" 语义,用部分索引排除,保持逐次插入行为不变。
+    (24, """DELETE FROM memory_episodes WHERE NOT (message_range_start = 0 AND message_range_end = 0)
+            AND id NOT IN (SELECT MIN(id) FROM memory_episodes
+            GROUP BY session_key, message_range_start, message_range_end)"""),
+    (25, """CREATE UNIQUE INDEX IF NOT EXISTS uq_episodes_span
+            ON memory_episodes(session_key, message_range_start, message_range_end)
+            WHERE NOT (message_range_start = 0 AND message_range_end = 0)"""),
 ]
 
 

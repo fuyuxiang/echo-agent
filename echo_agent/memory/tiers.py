@@ -116,8 +116,13 @@ class EpisodicManager:
             importance=importance,
             created_at=datetime.now().isoformat(),
         )
+        # 非 (0,0) 区间受唯一索引 uq_episodes_span 保护:并发同区间用 INSERT OR IGNORE
+        # 抢锁,只有真正写入的那次才 embed。冲突方回查既有行返回,跳过 _embed_summary
+        # (向量已由首次插入写过,重复 embed 会产生孤儿向量)。(0,0) 区间不受索引约束,
+        # 保持 INSERT OR REPLACE 的逐次插入行为。
+        insert_verb = "INSERT OR IGNORE" if message_range != (0, 0) else "INSERT OR REPLACE"
         await self._storage.execute_sql(
-            "INSERT OR REPLACE INTO memory_episodes (id, session_key, summary, "
+            f"{insert_verb} INTO memory_episodes (id, session_key, summary, "
             "message_range_start, message_range_end, entities, importance, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
@@ -126,6 +131,30 @@ class EpisodicManager:
                 json.dumps(episode.entity_ids), episode.importance, episode.created_at,
             ),
         )
+        if message_range != (0, 0):
+            # execute_sql 不返回 rowcount,回查该区间当前落库行:若非本次 id,说明并发
+            # 冲突被 IGNORE,返回既有行且不 embed。
+            rows = await self._storage.fetch_sql(
+                "SELECT * FROM memory_episodes WHERE session_key = ? "
+                "AND message_range_start = ? AND message_range_end = ?",
+                (session_key, message_range[0], message_range[1]),
+            )
+            if rows and rows[0]["id"] != episode.id:
+                row = rows[0]
+                logger.debug(
+                    "create_episode lost insert race, reusing {} for session {} range {}",
+                    row["id"], session_key, message_range,
+                )
+                return Episode(
+                    id=row["id"],
+                    session_key=row["session_key"],
+                    summary=row["summary"],
+                    message_range_start=row["message_range_start"],
+                    message_range_end=row["message_range_end"],
+                    entity_ids=json.loads(row["entities"]) if row["entities"] else [],
+                    importance=row["importance"],
+                    created_at=row["created_at"],
+                )
         await self._embed_summary(episode.id, summary)
         logger.debug("Created episode {} for session {}", episode.id, session_key)
         return episode

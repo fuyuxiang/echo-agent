@@ -303,10 +303,11 @@ class MemoryConsolidator:
         else:
             winner, _loser = self._newest_wins(a, b)
         resolution = "a_wins" if winner.id == c.memory_id_a else "b_wins"
-        await self._contradiction_detector.resolve(
+        # resolve 现返回 bool:supersede 失败时矛盾行保持 unresolved,本次视为未消解,
+        # 下轮巩固/反思会重试。
+        return await self._contradiction_detector.resolve(
             c.id, resolution, winner_id=winner.id
         )
-        return True
 
     @staticmethod
     def _newest_wins(a, b):

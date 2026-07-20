@@ -98,9 +98,32 @@ class ConsolidationWorker:
             # Phase 2 (unlocked, slow): LLM work on the immutable snapshot.
             chunk_ok = await self._consolidator.consolidate_chunk(trimmed, memory_scope)
 
-            # Phase 3 (locked, fast): commit the new boundary — only if the
-            # session region we consolidated is still intact (compression may
-            # have rewritten history while the LLM ran).
+            # Sleep consolidation runs BEFORE the Phase-3 boundary commit: it
+            # works purely on the snapshot and the memory store (own locking),
+            # no session lock needed. Ordering matters — if sleep fails and
+            # raises, the boundary must NOT have advanced, so the DURABLE retry
+            # re-snapshots the SAME non-empty chunk and truly replays this span.
+            # Committing the boundary first (the old order) advanced start past
+            # the chunk, so the retry saw an empty chunk (77) and returned early,
+            # dropping episode/fact-extraction/reflection permanently.
+            # Idempotency of a replay is guaranteed: episodes by D's unique index,
+            # fact extraction via service.promote (same-key merge, no dup), and
+            # reflection consuming unresolved rows (resolved-once, re-entrant).
+            if self._sleep_consolidation:
+                try:
+                    stats = await self._consolidator.sleep_consolidate(
+                        session_key, trimmed, chunk_already_consolidated=chunk_ok,
+                        memory_scope=memory_scope, range_start=start,
+                    )
+                    if any(v > 0 for v in stats.values()):
+                        logger.info("Sleep consolidation for {}: {}", session_key, stats)
+                except Exception as e:
+                    logger.warning("Sleep consolidation failed: {}", e)
+                    raise
+
+            # Phase 3 (locked, fast): commit the new boundary AFTER sleep
+            # succeeded — only if the session region we consolidated is still
+            # intact (compression may have rewritten history while the LLM ran).
             if chunk_ok:
                 session_lock = await self._sessions.acquire(session_key)
                 async with session_lock:
@@ -113,27 +136,6 @@ class ConsolidationWorker:
                             "Consolidation boundary for {} skipped: history changed during LLM work",
                             session_key,
                         )
-
-            # Sleep consolidation works purely on the snapshot and the memory
-            # store (which has its own locking) — no session lock needed.
-            if self._sleep_consolidation:
-                try:
-                    stats = await self._consolidator.sleep_consolidate(
-                        session_key, trimmed, chunk_already_consolidated=chunk_ok,
-                        memory_scope=memory_scope, range_start=start,
-                    )
-                    if any(v > 0 for v in stats.values()):
-                        logger.info("Sleep consolidation for {}: {}", session_key, stats)
-                except Exception as e:
-                    # Surface the failure to the outer DURABLE handler (below) so
-                    # the scheduler tier retries this attempt — previously it was
-                    # swallowed here, leaving the whole sleep pipeline silently
-                    # dropped. Sleep consolidation is idempotent: the Phase-3
-                    # boundary commit already landed (104-115) before this block,
-                    # a retry re-snapshots and returns early when the chunk is
-                    # empty (77), and the sub-steps guard their own double-writes.
-                    logger.warning("Sleep consolidation failed: {}", e)
-                    raise
 
             if on_complete:
                 await on_complete(session_key)

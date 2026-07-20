@@ -23,7 +23,8 @@ import pytest
 from echo_agent.memory.contradiction import ContradictionDetector
 from echo_agent.memory.eligibility import Audience
 from echo_agent.memory.reflection import ReflectionEngine
-from echo_agent.memory.service import ActorContext, MemoryService
+from echo_agent.memory.service import MemoryService
+from echo_agent.memory.service import ActorContext
 from echo_agent.memory.store import MemoryStore
 from echo_agent.memory.types import MemoryEntry, MemoryType
 from echo_agent.storage.sqlite import SQLiteBackend
@@ -247,6 +248,42 @@ async def test_reflection_does_not_cross_scope_adjudicate(tmp_path):
         assert store.get(landed_s2.id).superseded_by == w2.id, "s2 败者应被 s2 胜者取代"
         assert store.get(landed_s1.id).superseded_by != w2.id
         assert store.get(landed_s2.id).superseded_by != w1.id
+    finally:
+        await _drain(store)
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_service_reject_lands_pending_and_sql_row_in_same_await(tmp_path):
+    """I: service.replace 被拒后,pending 条目与 SQL contradiction 行在同一 await 链内
+    均已存在——不依赖 _spawn 的后台任务调度(不 _drain)。"""
+    storage, store, service, detector = await _wire(tmp_path)
+    try:
+        ctx = ActorContext(actor="model", session_key="s1", memory_scope="s1")
+        # 高优先级 user_stated 先落 active。
+        winner = store.add(MemoryEntry(
+            type=MemoryType.USER, key="home", content="北京",
+            source="user_stated", source_session="s1",
+        ))
+
+        # model_inferred 低优先级 replace → 被 provenance 拒。
+        res = await service.replace(
+            ctx, winner.id, content="上海", source="model_inferred",
+        )
+        assert res.ok is False and res.reason == "rejected_provenance"
+
+        # 不 _drain:SQL contradiction 行应已在拒绝返回前 await 落盘。
+        rows = await storage.fetch_sql(
+            "SELECT * FROM memory_contradictions WHERE resolution IS NULL", ()
+        )
+        assert rows, "拒绝路径应在同一 await 链内写入 contradiction 行(无孤儿窗口)"
+        row = rows[0]
+        assert row["memory_id_a"] == winner.id
+        landed = store.get(row["memory_id_b"])
+        assert landed is not None and landed.content == "上海"
+        # active 不动。
+        assert store.get(winner.id).content == "北京"
+        assert not store.get(winner.id).is_superseded
     finally:
         await _drain(store)
         await storage.close()

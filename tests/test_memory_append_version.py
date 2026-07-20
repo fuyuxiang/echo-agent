@@ -206,8 +206,8 @@ def test_no_dead_supersede_and_paths_converge(tmp_path):
     s.add(MemoryEntry(type=MemoryType.USER, key="home", content="上海",
                       source="user_stated", source_session="x"))
     # 再 add 与 active 同内容(精确重复)应短路,不产生新版本
-    r = s.add(MemoryEntry(type=MemoryType.USER, key="home", content="上海",
-                          source="user_stated", source_session="x"))
+    s.add(MemoryEntry(type=MemoryType.USER, key="home", content="上海",
+                      source="user_stated", source_session="x"))
     live = [e for e in s._entries.values() if e.key == "home" and not e.is_superseded]
     assert len(live) == 1 and live[0].content == "上海"  # 精确重复短路,无新版本
 
@@ -219,7 +219,7 @@ async def test_beijing_to_shanghai_acceptance(tmp_path):
     svc = MemoryService(store)
     ctx = ActorContext(actor="model", session_key="s", memory_scope="x")
     await svc.add(ctx, type=MemoryType.USER, key="home", content="住在北京", source="user_stated")
-    r = await svc.add(ctx, type=MemoryType.USER, key="home", content="住在上海", source="user_stated")
+    await svc.add(ctx, type=MemoryType.USER, key="home", content="住在上海", source="user_stated")
     home = [e for e in store._entries.values() if e.key == "home"]
     live = [e for e in home if not e.is_superseded]
     old = [e for e in home if e.is_superseded]

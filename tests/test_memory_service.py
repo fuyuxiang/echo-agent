@@ -64,7 +64,9 @@ async def test_env_write_denied_for_model_by_default(tmp_path):
 @pytest.mark.asyncio
 async def test_flush_before_invalidate(tmp_path):
     order = []
-    async def _flush(): order.append("flush"); return 0
+    async def _flush():
+        order.append("flush")
+        return 0
     async def _inval(scope, g): order.append("invalidate")
     svc, _ = _svc(tmp_path, flush_fn=_flush, invalidate_fn=_inval)
     await svc.add(ActorContext(actor="model", session_key="s", memory_scope="scope1"),

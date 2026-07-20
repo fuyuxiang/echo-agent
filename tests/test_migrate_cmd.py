@@ -71,6 +71,45 @@ def _write_shard(mem: Path, scope: str, content: str) -> Path:
     return store._long_term_path(scope)
 
 
+def test_migrate_legacy_memory_md_adopts_owner_and_visible(tmp_path):
+    # H: 旧全局 MEMORY.md(无哈希段)导入后条目归 owner_key、对 owner 可见,
+    # 而非落到空 scope 造成"软失忆"。
+    cfg, mem = _seed(tmp_path)
+    (mem / "MEMORY.md").write_text("## user\n- **user:hobby**: 爬山", encoding="utf-8")
+
+    rc = run_migrate_command("memory-md", config_path=str(cfg), yes=True)
+    assert rc == 0
+
+    from echo_agent.memory.store import MemoryStore
+    from echo_agent.memory.types import MemoryType
+    store = MemoryStore(memory_dir=mem, scope_policy="session")
+    migrated = [e for e in store.list_all(mem_type=MemoryType.USER) if e.key == "user:hobby"]
+    assert len(migrated) == 1
+    assert migrated[0].source_session == "owner"
+    visible = {e.key for e in store.list_all(session_key="owner")}
+    assert "user:hobby" in visible
+
+
+def test_migrate_memory_md_no_user_memory_no_error(tmp_path):
+    # H: user_memory.json 尚不存在时 memory-md 全流程不抛异常(备份跳过)。
+    mem = tmp_path / "data" / "memory"
+    mem.mkdir(parents=True)
+    (mem / "MEMORY.md").write_text("## user\n- **user:hobby**: 爬山", encoding="utf-8")
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        "workspace: " + str(tmp_path) + "\n"
+        "memory:\n"
+        "  scope_policy: session\n"
+        "  owner_key: owner\n"
+        "  principal_bindings: []\n",
+        encoding="utf-8",
+    )
+    rc = run_migrate_command("memory-md", config_path=str(cfg), yes=True)
+    assert rc == 0
+    # 无 user_memory.json 时不建备份
+    assert not list(mem.glob("user_memory.json.migbak-*"))
+
+
 def test_migrate_memory_md_extracts_to_store(tmp_path):
     cfg, mem = _seed(tmp_path)
     shard = _write_shard(mem, "owner", "## user\n- **user:hobby**: 爬山\n- **user:lang**: Python")

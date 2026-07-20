@@ -31,7 +31,8 @@ async def test_superseded_not_in_candidate_pool(monkeypatch):
 @pytest.mark.asyncio
 async def test_archived_excluded(monkeypatch):
     arch = _entry("a", "旧档案", source="user_stated", tier=MemoryTier.ARCHIVAL)
-    vec = MagicMock(); vec.search = AsyncMock(return_value=[])
+    vec = MagicMock()
+    vec.search = AsyncMock(return_value=[])
     r = HybridRetriever(
         entries_fn=lambda: [arch], vector_index=vec,
         embed_fn=AsyncMock(return_value=[0.1]),

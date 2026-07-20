@@ -332,6 +332,39 @@ async def test_reset_save_failure_does_not_rerun_review():
     assert sessions.save_calls >= 1
 
 
+@pytest.mark.asyncio
+async def test_reset_save_failure_restores_in_memory_counters():
+    """F: save 失败时内存计数须回滚为旧值,而非停留在 0。
+
+    Session 是缓存共享对象,若清零后 save 失败仍留 0,下一 turn 读到 0 永不重派
+    review,计数在内存丢失却从未持久化。修法:save 失败回滚内存计数。"""
+    from unittest.mock import AsyncMock
+
+    session = Session(key="tg:rollback")
+    session.metadata["_nudge_turns_memory"] = 5
+    session.metadata["_nudge_tool_iters_memory"] = 3
+    sessions = _SaveFailsSessions(session)
+
+    rs = ResponseStage(
+        config=None,
+        sessions=sessions,
+        memory=_FakeMemory(),
+        provider=None,
+        consolidation_worker=object(),
+        default_model="",
+        spawn_fn=lambda *a, **k: None,
+        clear_memory_snapshot_fn=AsyncMock(),
+        memory_service=object(),
+    )
+
+    await rs._reset_memory_nudge_counters("tg:rollback")
+
+    assert sessions.save_calls == 1
+    # 回滚:计数恢复旧值,下一 turn 仍会重新触发 review。
+    assert session.metadata["_nudge_turns_memory"] == 5
+    assert session.metadata["_nudge_tool_iters_memory"] == 3
+
+
 # --- R4 Task6 Important 2: review 进行中禁止重复派发 --------------------------
 @pytest.mark.asyncio
 async def test_review_inflight_blocks_duplicate_dispatch():

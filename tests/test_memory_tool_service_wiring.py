@@ -30,19 +30,28 @@ async def test_resolve_contradiction_triggers_global_invalidation(tmp_path):
     async def _inval(scope, global_scope):
         calls.append((scope, global_scope))
 
+    store = MemoryStore(memory_dir=tmp_path / "mem", scope_policy="session")
+    a = store.add(MemoryEntry(type=MemoryType.USER, key="home", content="北京",
+                              source="user_stated", source_session="scope1"))
+    b = store.add(MemoryEntry(type=MemoryType.USER, key="home", content="上海",
+                              source="user_stated", source_session="scope1"))
+
     class _Detector:
-        async def get_unresolved(self, limit=10):
-            return [Contradiction(id="c1", memory_id_a="a", memory_id_b="b",
+        _store = store
+
+        async def get_unresolved(self, limit=10, memory_scope=None):
+            return [Contradiction(id="c1", memory_id_a=a.id, memory_id_b=b.id,
                                   description="conflict")]
         async def resolve(self, cid, resolution, winner_id=None):
-            return None
+            return True
 
-    store = MemoryStore(memory_dir=tmp_path / "mem", scope_policy="session")
     service = MemoryService(store, invalidate_fn=_inval)
     tool = MemoryTool(service=service, contradiction_detector=_Detector())
 
+    ctx = ToolExecutionContext(session_key="s", memory_scope="scope1")
     res = await tool.execute(
-        {"action": "resolve_contradiction", "contradiction_id": "c1", "winner_id": "a"}
+        {"action": "resolve_contradiction", "contradiction_id": "c1", "winner_id": a.id},
+        ctx,
     )
     assert res.success is True
     assert any(global_scope is True for _, global_scope in calls), calls
@@ -77,8 +86,10 @@ async def test_resolve_contradiction_via_wired_detector_invalidates_once(tmp_pat
     await detector.store_contradiction(c)
 
     tool = MemoryTool(service=service, contradiction_detector=detector)
+    ctx = ToolExecutionContext(session_key="s1", memory_scope="s1")
     res = await tool.execute(
-        {"action": "resolve_contradiction", "contradiction_id": "c1", "winner_id": winner.id}
+        {"action": "resolve_contradiction", "contradiction_id": "c1", "winner_id": winner.id},
+        ctx,
     )
     assert res.success is True
     # 裁决确实生效:败者被标记 superseded(证明失效未被删没)

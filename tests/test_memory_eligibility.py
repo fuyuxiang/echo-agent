@@ -1,5 +1,4 @@
 # tests/test_memory_eligibility.py
-import pytest
 from echo_agent.memory.eligibility import Audience, LifecycleStatus, lifecycle_status, is_eligible
 from echo_agent.memory.types import MemoryEntry, MemoryTier, MemoryType
 

@@ -110,6 +110,32 @@ class TestStorageSync:
         assert hasattr(store, "_pending_storage_tasks")
         assert isinstance(store._pending_storage_tasks, set)
 
+    def test_aclose_drains_pending_tasks(self, tmp_path: Path) -> None:
+        """J: aclose 等待在途镜像任务完成后返回,排空 _pending_storage_tasks。"""
+        async def _run() -> None:
+            store = MemoryStore(memory_dir=tmp_path / "mem")
+
+            async def _slow() -> None:
+                await asyncio.sleep(0.05)
+
+            task = asyncio.ensure_future(_slow())
+            store._pending_storage_tasks.add(task)
+            task.add_done_callback(store._pending_storage_tasks.discard)
+
+            await store.aclose(timeout=5.0)
+            assert task.done()
+            assert not [t for t in store._pending_storage_tasks if not t.done()]
+
+        asyncio.run(_run())
+
+    def test_aclose_noop_when_empty(self, tmp_path: Path) -> None:
+        """J: 无在途任务时 aclose 直接返回。"""
+        async def _run() -> None:
+            store = MemoryStore(memory_dir=tmp_path / "mem")
+            await store.aclose()  # 不抛异常即通过
+
+        asyncio.run(_run())
+
 
 class TestStoreAddUpdateDelete:
     """Tests for MemoryStore CRUD triggering _save_type."""

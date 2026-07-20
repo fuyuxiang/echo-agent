@@ -564,7 +564,10 @@ class MemoryStore:
         if "global" in entry.tags:
             return True
         if not entry.source_session:
-            return True
+            # ENVIRONMENT 是机器/环境事实,天然无主体,保持可见;
+            # USER 无主,fail-closed:历史条目须经 `migrate run --adopt-empty` 收编,
+            # 否则不可见(但不丢失)。防空 scope USER 记忆跨会话全局泄露。
+            return entry.type == MemoryType.ENVIRONMENT
         return entry.source_session == session_key
 
     def _same_scope(self, existing: MemoryEntry, incoming: MemoryEntry) -> bool:
@@ -693,6 +696,18 @@ class MemoryStore:
     def _load(self) -> None:
         self._reload_type(MemoryType.USER)
         self._reload_type(MemoryType.ENVIRONMENT)
+        # fail-closed 下空 scope USER 记忆不可见,提示运维收编(否则"软失忆")。
+        if self._scope_policy != "legacy":
+            orphan = sum(
+                1 for e in self._typed_entries(MemoryType.USER)
+                if not e.source_session and "global" not in e.tags
+            )
+            if orphan > 0:
+                logger.warning(
+                    "{} 条空 scope 的 USER 记忆当前不可见(fail-closed),"
+                    "执行 `echo-agent migrate run --adopt-empty` 收编给 owner",
+                    orphan,
+                )
 
     def _find_conflict(self, entry: MemoryEntry) -> MemoryEntry | None:
         if not entry.key:
@@ -839,16 +854,7 @@ class MemoryStore:
         )
 
         async def _record() -> None:
-            try:
-                await self._storage.execute_sql(
-                    "INSERT OR REPLACE INTO memory_contradictions"
-                    "(id, memory_id_a, memory_id_b, description, resolution, resolved_at, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (c.id, c.memory_id_a, c.memory_id_b, c.description,
-                     None, None, c.created_at),
-                )
-            except Exception as e:
-                logger.warning("Failed to record blocked contradiction: {}", e)
+            await self._insert_contradiction_row(c)
 
         try:
             loop = asyncio.get_running_loop()
@@ -864,6 +870,52 @@ class MemoryStore:
                 new_loop.run_until_complete(_record())
             finally:
                 new_loop.close()
+
+    async def _insert_contradiction_row(self, c) -> None:
+        """INSERT 一行 unresolved contradiction 镜像。供同步 spawn 路径与异步
+        service 拒绝路径(record_blocked_contradiction)共用。"""
+        try:
+            await self._storage.execute_sql(
+                "INSERT OR REPLACE INTO memory_contradictions"
+                "(id, memory_id_a, memory_id_b, description, resolution, resolved_at, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (c.id, c.memory_id_a, c.memory_id_b, c.description,
+                 None, None, c.created_at),
+            )
+        except Exception as e:
+            logger.warning("Failed to record blocked contradiction: {}", e)
+
+    async def record_blocked_contradiction(
+        self, existing: MemoryEntry, landed: MemoryEntry
+    ) -> None:
+        """service 拒绝路径专用:对已 landed 的 blocked 条目,同步(await)写入 SQL
+        contradiction 行——不再 fire-and-forget,消除"有 pending 条目、无 contradiction
+        行"的孤儿窗口。landing 由调用方在 _service_write 锁内先完成,这里只补 SQL 行。"""
+        if not self._storage:
+            return
+        from echo_agent.memory.types import Contradiction
+        c = Contradiction(
+            memory_id_a=existing.id,
+            memory_id_b=landed.id,
+            description=(
+                f"Provenance guard blocked lower-priority write on key "
+                f"'{existing.key}': {landed.content}"
+            ),
+        )
+        await self._insert_contradiction_row(c)
+
+    async def aclose(self, timeout: float = 5.0) -> None:
+        """等待所有在途 SQLite 镜像任务落盘,用于进程关闭屏障。
+
+        _spawn_blocked_contradiction / _cleanup_deleted 等把 fire-and-forget
+        镜像写注册进 _pending_storage_tasks,但此前无任何 drain 入口,进程关闭时
+        aiosqlite 会向已关闭事件循环回调。此方法在关闭时排空这些任务。"""
+        pending = [t for t in self._pending_storage_tasks if not t.done()]
+        if not pending:
+            return
+        _done, still = await asyncio.wait(pending, timeout=timeout)
+        if still:
+            logger.warning("{} memory mirror task(s) not drained at shutdown", len(still))
 
     def _land_blocked_entry(self, existing: MemoryEntry, blocked: MemoryEntry) -> MemoryEntry:
         """Persist the guard-blocked content as a pending, out-of-recall entry.

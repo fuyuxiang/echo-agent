@@ -216,7 +216,7 @@ class TestAutoResolvePriority:
 
         c = MemoryConsolidator(store, llm_call=AsyncMock())
         detector = MagicMock()
-        detector.resolve = AsyncMock()
+        detector.resolve = AsyncMock(return_value=True)
         c.set_contradiction_detector(detector)
         return c, detector
 

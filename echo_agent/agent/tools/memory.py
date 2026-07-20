@@ -153,7 +153,7 @@ class MemoryTool(Tool):
         elif action == "list":
             return self._list(mem_type, session_key)
         elif action == "list_contradictions":
-            return await self._list_contradictions()
+            return await self._list_contradictions(session_key)
         elif action == "resolve_contradiction":
             return await self._resolve_contradiction(params, session_key)
         else:
@@ -299,10 +299,15 @@ class MemoryTool(Tool):
             lines.append(f"... and {total - 50} more")
         return ToolResult(success=True, output="\n".join(lines))
 
-    async def _list_contradictions(self) -> ToolResult:
+    async def _list_contradictions(self, memory_scope: str = "") -> ToolResult:
         if self._contradiction_detector is None:
             return ToolResult(success=False, error="Contradiction detection is disabled.")
-        items = await self._contradiction_detector.get_unresolved(limit=20)
+        # 空 scope 不能写(见 _scope_gate 的 rejected_scope),同理不能看/裁决矛盾。
+        if not memory_scope:
+            return ToolResult(success=False, error="no memory scope in context")
+        items = await self._contradiction_detector.get_unresolved(
+            limit=20, memory_scope=memory_scope
+        )
         if not items:
             return ToolResult(success=True, output="No unresolved contradictions.")
         lines = [
@@ -314,18 +319,44 @@ class MemoryTool(Tool):
     async def _resolve_contradiction(self, params: dict[str, Any], session_key: str = "") -> ToolResult:
         if self._contradiction_detector is None:
             return ToolResult(success=False, error="Contradiction detection is disabled.")
+        # 空 scope 直接拒绝(与 _scope_gate 的 rejected_scope 一致:不能写就不能裁决)。
+        if not session_key:
+            return ToolResult(success=False, error="no memory scope in context")
         cid = params.get("contradiction_id", "")
         winner_id = params.get("winner_id", "")
         if not cid or not winner_id:
             return ToolResult(success=False, error="contradiction_id and winner_id are required")
-        unresolved = {c.id: c for c in await self._contradiction_detector.get_unresolved(limit=100)}
+        unresolved = {
+            c.id: c
+            for c in await self._contradiction_detector.get_unresolved(
+                limit=100, memory_scope=session_key
+            )
+        }
         c = unresolved.get(cid)
         if c is None:
             return ToolResult(success=False, error=f"No unresolved contradiction '{cid}'")
+        # 边界鉴权:两端条目必须都对调用方 scope 可见才允许裁决。不能依赖
+        # detector.resolve() 内部的 ActorContext——那个 ctx 用的是败者自己的 scope
+        # (contradiction.py 构造 loser scope),等于自我放行,鉴权必须在工具边界完成。
+        store = getattr(self._contradiction_detector, "_store", None)
+        if store is not None:
+            a = store.get(c.memory_id_a)
+            b = store.get(c.memory_id_b)
+            if (
+                a is None or b is None
+                or not store.is_visible_in_session(a, session_key)
+                or not store.is_visible_in_session(b, session_key)
+            ):
+                return ToolResult(success=False, error="contradiction not in your scope")
         if winner_id not in (c.memory_id_a, c.memory_id_b):
             return ToolResult(success=False, error="winner_id must be memory_id_a or memory_id_b")
         resolution = "a_wins" if winner_id == c.memory_id_a else "b_wins"
-        await self._contradiction_detector.resolve(cid, resolution, winner_id=winner_id)
+        ok = await self._contradiction_detector.resolve(cid, resolution, winner_id=winner_id)
+        if not ok:
+            return ToolResult(
+                success=False,
+                error="resolution failed, contradiction stays open — retry later",
+            )
         # 装配 service 的 detector,其 resolve 已走 detector→service.mark_superseded→
         # _finalize 完成失效(八步写序内),工具不得再显式 invalidate 二次失效。
         # 仅当 detector 未装配 service(裸 store 兜底路径)时,mark_superseded 直连

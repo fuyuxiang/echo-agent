@@ -981,6 +981,8 @@ class AgentLoop:
         if self._contradiction_detector is not None:
             try:
                 self.memory.reset_unresolved()
+                # unresolved 镜像本身是全局索引,启动重建必须扫全库——这是
+                # get_unresolved 唯一合法的不带 memory_scope(全库)调用方。
                 for c in await self._contradiction_detector.get_unresolved(limit=10000):
                     self.memory.mark_contradiction_unresolved(
                         c.id, c.memory_id_a, c.memory_id_b
@@ -1033,6 +1035,13 @@ class AgentLoop:
         # the scheduler; ``aclose`` cancels discardable tasks and flushes durable
         # ones. This is the single shutdown path for background work.
         await self._bg_scheduler.aclose(timeout=10.0)
+        # 调度器 aclose 后再排空 store 的在途镜像任务:DURABLE 任务可能刚产生镜像写,
+        # 顺序不能反。消除关闭时 aiosqlite 向已关闭事件循环回调的资源警告。
+        if getattr(self, "memory", None) is not None:
+            try:
+                await self.memory.aclose()
+            except Exception as e:
+                logger.debug("Memory store aclose raised (ignored): {}", e)
         # Release the local embedder's dedicated thread pool, if one was built.
         if self._local_embedder is not None:
             try:

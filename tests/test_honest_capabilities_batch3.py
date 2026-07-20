@@ -16,6 +16,9 @@ class _FakeStore:
         self.superseded = []
         self.versions = {}
 
+    def get(self, entry_id):
+        return self._entries.get(entry_id)
+
     def mark_superseded(self, entry_id, superseded_by):
         self.superseded.append((entry_id, superseded_by))
         if entry_id in self._entries:
@@ -196,22 +199,25 @@ async def test_memory_tool_lists_and_resolves_contradictions():
     class _Detector:
         def __init__(self):
             self.resolved = []
-        async def get_unresolved(self, limit=10):
+        async def get_unresolved(self, limit=10, memory_scope=None):
             return [Contradiction(id="c1", memory_id_a="a", memory_id_b="b",
                                   description="Key 'pref:lang' conflict")]
         async def resolve(self, cid, resolution, winner_id=None):
             self.resolved.append((cid, resolution, winner_id))
+            return True
 
     from echo_agent.memory.service import MemoryService
+    from echo_agent.tools.base import ToolExecutionContext
 
     det = _Detector()
     tool = MemoryTool(service=MemoryService(_FakeStore([])), contradiction_detector=det)
+    ctx = ToolExecutionContext(session_key="s", memory_scope="scope1")
 
-    listed = await tool.execute({"action": "list_contradictions"})
+    listed = await tool.execute({"action": "list_contradictions"}, ctx)
     assert "c1" in listed.output
 
     done = await tool.execute({"action": "resolve_contradiction",
-                               "contradiction_id": "c1", "winner_id": "a"})
+                               "contradiction_id": "c1", "winner_id": "a"}, ctx)
     assert done.success
     assert ("c1", "a_wins", "a") in det.resolved
 

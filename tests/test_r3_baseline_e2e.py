@@ -2,7 +2,6 @@ import pytest
 from echo_agent.memory.store import MemoryStore
 from echo_agent.memory.service import MemoryService, ActorContext
 from echo_agent.memory.types import MemoryType
-from echo_agent.memory.eligibility import Audience
 
 @pytest.mark.asyncio
 async def test_append_version_and_invalidation(tmp_path):

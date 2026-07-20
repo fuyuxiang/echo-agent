@@ -23,17 +23,30 @@ class MigrationResult:
     rewritten: int = 0
     old_keys: list[str] = field(default_factory=list)
     skipped: int = 0
+    adopted_empty: int = 0
 
 
-def migrate_source_session(store, bindings, owner_key: str, dry_run: bool = False) -> MigrationResult:
+def migrate_source_session(
+    store, bindings, owner_key: str, dry_run: bool = False, include_empty: bool = False,
+) -> MigrationResult:
     """把 source_session 精确命中 bindings 的 USER 条目改写为 owner_key。
     跳过:空 source_session、含 global tag、已是 owner_key。ENVIRONMENT 天然不在 USER 列表。
+    include_empty=True 时,额外把空 source_session 且不含 global tag 的 USER 条目也收编为
+    owner_key(配合 store 可见性 fail-closed:未收编的空 scope USER 记忆将不可见但不丢失)。
     dry_run=True 只统计不写盘。不合并同 key。"""
     result = MigrationResult()
     hit_ids: list[str] = []
     for entry in store.list_all(mem_type=MemoryType.USER):
         ss = entry.source_session or ""
-        if not ss or "global" in entry.tags or ss == owner_key:
+        if not ss:
+            # 空 scope:仅在 include_empty 且非 global 时收编,否则按原逻辑跳过。
+            if include_empty and "global" not in entry.tags:
+                result.adopted_empty += 1
+                if not dry_run:
+                    entry.source_session = owner_key
+                    hit_ids.append(entry.id)
+            continue
+        if "global" in entry.tags or ss == owner_key:
             continue
         if ss not in bindings:
             result.skipped += 1
@@ -49,8 +62,13 @@ def migrate_source_session(store, bindings, owner_key: str, dry_run: bool = Fals
     return result
 
 
-def backup_user_memory(memory_dir: Path) -> Path:
+def backup_user_memory(memory_dir: Path) -> "Path | None":
     src = memory_dir / "user_memory.json"
+    if not src.exists():
+        # 首次迁移(如仅导入 MEMORY.md 分片)时 user_memory.json 尚不存在:
+        # 不再让 shutil.copy2 抛 FileNotFoundError,返回 None 表示无需备份。
+        print("user_memory.json 尚不存在,跳过备份")
+        return None
     dst = memory_dir / f"{_BACKUP_PREFIX}{int(time.time())}"
     shutil.copy2(src, dst)
     return dst
@@ -110,15 +128,19 @@ def _shard_hash(path: Path) -> "str | None":
     return None
 
 
-def _scope_from_shard(path: Path, candidates: "set[str] | None" = None) -> "str | None":
+def _scope_from_shard(
+    path: Path, candidates: "set[str] | None" = None, legacy_scope: str = "default",
+) -> "str | None":
     """靠短哈希反查真实 scope,而非用文件名里的净化串。净化(: / → _)不可逆,
     直接用净化串会让迁移条目 source_session 与读侧真实会话键恒不等、永久不可见。
     对每个候选 scope 算 sha256 短哈希与文件名末段比对,命中即为真实 scope。
-    旧全局 MEMORY.md(无哈希段)→ default;查不到匹配 → None(调用方跳过,绝不写净化串)。"""
+    旧全局 MEMORY.md(无哈希段)→ legacy_scope(默认 default);查不到匹配 → None
+    (调用方跳过,绝不写净化串)。"""
     digest = _shard_hash(path)
     if digest is None:
-        # 旧全局 MEMORY.md 无哈希段,沿用历史映射 default(空 scope 会被 USER 写口拒)。
-        return "default"
+        # 旧全局 MEMORY.md 无哈希段:映射到 legacy_scope。调用方应传 owner_key,
+        # 否则用 default(空 scope 会被 USER 写口拒 → owner 永远看不见,"软失忆")。
+        return legacy_scope
     for cand in candidates or set():
         if _scope_digest(cand) == digest:
             return cand
@@ -138,6 +160,8 @@ async def _import_memory_md(store, memory_dir: Path, dry_run: bool, owner_key: s
     """扫描 memory_dir 下 MEMORY.*.md 分片(及旧全局 MEMORY.md),把渲染视图里的
     事实行经 service.promote 入 store,成功入库(stored>0)后原分片改名 .imported。
     scope 靠短哈希反查真实值;反查不到则跳过该分片并告警,绝不用净化串写坏 scope。
+    旧全局 MEMORY.md(无哈希段)映射到 owner_key,归 owner 可见。
+    分片是 USER 渲染视图,条目一律按 USER 导入——强制 USER 是设计而非缺陷。
     返回入库条目数。"""
     from echo_agent.memory.service import ActorContext, MemoryService
 
@@ -152,7 +176,7 @@ async def _import_memory_md(store, memory_dir: Path, dry_run: bool, owner_key: s
     for shard in shards:
         if shard.name.endswith(".imported"):
             continue
-        scope = _scope_from_shard(shard, candidates)
+        scope = _scope_from_shard(shard, candidates, legacy_scope=owner_key)
         if scope is None:
             logger.warning(f"无法还原 scope,跳过 {shard.name}")
             print(f"跳过(无法还原 scope): {shard.name}")
@@ -193,7 +217,9 @@ async def _import_memory_md(store, memory_dir: Path, dry_run: bool, owner_key: s
     return imported
 
 
-def run_migrate_command(action, *, config_path=None, workspace=None, dry_run=False, yes=False) -> int:
+def run_migrate_command(
+    action, *, config_path=None, workspace=None, dry_run=False, yes=False, adopt_empty=False,
+) -> int:
     from echo_agent.cli.plugins_cmd import _get_config_and_workspace
 
     config, ws = _get_config_and_workspace(config_path, workspace)
@@ -203,9 +229,10 @@ def run_migrate_command(action, *, config_path=None, workspace=None, dry_run=Fal
     store = _load_store(config, ws)
 
     if action == "status":
-        res = migrate_source_session(store, bindings, owner_key, dry_run=True)
+        res = migrate_source_session(store, bindings, owner_key, dry_run=True, include_empty=True)
         bak = latest_backup(memory_dir)
         print(f"待迁移(命中 bindings 但仍是旧键)的 USER 条目: {res.rewritten}")
+        print(f"空 scope 待收编(需 --adopt-empty)的 USER 条目: {res.adopted_empty}")
         print(f"迁移备份: {bak.name if bak else '无'}")
         return 0
 
@@ -225,18 +252,28 @@ def run_migrate_command(action, *, config_path=None, workspace=None, dry_run=Fal
 
     if action == "run":
         if dry_run:
-            res = migrate_source_session(store, bindings, owner_key, dry_run=True)
+            res = migrate_source_session(
+                store, bindings, owner_key, dry_run=True, include_empty=adopt_empty
+            )
             print(f"[dry-run] 将改写 {res.rewritten} 条 USER 记忆的 source_session→{owner_key}")
             print(f"[dry-run] 涉及旧键: {sorted(set(res.old_keys))}")
+            if adopt_empty:
+                print(f"[dry-run] 将收编 {res.adopted_empty} 条空 scope USER 记忆→{owner_key}")
             return 0
         if not yes:
-            reply = input(f"将改写命中 bindings 的 USER 记忆 source_session→{owner_key}(先自动备份),继续? [y/N] ")
+            extra = "(含空 scope 收编)" if adopt_empty else ""
+            reply = input(
+                f"将改写命中 bindings 的 USER 记忆 source_session→{owner_key}{extra}"
+                "(先自动备份),继续? [y/N] "
+            )
             if reply.strip().lower() != "y":
                 print("已取消")
                 return 1
         backup_user_memory(memory_dir)
-        res = migrate_source_session(store, bindings, owner_key)
+        res = migrate_source_session(store, bindings, owner_key, include_empty=adopt_empty)
         print(f"已迁移 {res.rewritten} 条,涉及旧键: {sorted(set(res.old_keys))}")
+        if adopt_empty:
+            print(f"已收编 {res.adopted_empty} 条空 scope USER 记忆→{owner_key}")
         return 0
 
     if action == "memory-md":

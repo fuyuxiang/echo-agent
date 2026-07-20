@@ -205,7 +205,6 @@ class ReflectionEngine:
             types_to_save = {e.type for e in flagged}
             for t in types_to_save:
                 self._store._save_type(t)
-        flagged_by_id = {e.id: e for e in flagged}
 
         # Preferred path: consume the detector's exact conflict rows directly,
         # resolving each side to a real store entry (the suspected_conflict tag
@@ -214,7 +213,9 @@ class ReflectionEngine:
         # missing/self/superseded entries. De-dup unordered pairs.
         if self._detector is not None:
             try:
-                unresolved = await self._detector.get_unresolved(limit=10000)
+                unresolved = await self._detector.get_unresolved(
+                    limit=10000, memory_scope=memory_scope or None
+                )
                 pairs: list[tuple[MemoryEntry, MemoryEntry]] = []
                 seen: set[frozenset[str]] = set()
                 for c in unresolved:
@@ -287,20 +288,31 @@ class ReflectionEngine:
 
     async def _resolve_detector_rows(
         self, a: MemoryEntry, b: MemoryEntry, resolution: str, winner_id: str | None,
-    ) -> None:
-        """Close ALL open detector rows for this (a, b) pair — handles I1 dedup."""
+        memory_scope: str = "",
+    ) -> bool:
+        """Close ALL open detector rows for this (a, b) pair — handles I1 dedup.
+
+        返回 True 表示所有匹配行都成功裁决;False 表示至少一行 resolve 失败
+        (supersede 败者失败),行仍 unresolved,调用方应记 error、下轮重试。"""
         if not self._detector:
-            return
+            return True
+        all_ok = True
         try:
-            unresolved = await self._detector.get_unresolved(limit=10000)
+            unresolved = await self._detector.get_unresolved(
+                limit=10000, memory_scope=memory_scope or None
+            )
             for c in unresolved:
                 if (
                     (c.memory_id_a == a.id and c.memory_id_b == b.id)
                     or (c.memory_id_a == b.id and c.memory_id_b == a.id)
                 ):
-                    await self._detector.resolve(c.id, resolution, winner_id)
+                    ok = await self._detector.resolve(c.id, resolution, winner_id)
+                    if not ok:
+                        all_ok = False
         except Exception as e:
             logger.warning("Reflection: failed to resolve detector rows: {}", e)
+            return False
+        return all_ok
 
     async def _ask_adjudicate(self, a: MemoryEntry, b: MemoryEntry) -> str:
         """Ask LLM to adjudicate; returns validated verdict or 'ambiguous'."""
@@ -335,7 +347,7 @@ class ReflectionEngine:
         """LLM-adjudicate suspected conflicts. Whitelist-validated verdicts:
         clear -> supersede; ambiguous/invalid -> defer to user; not_contradictory
         -> clear tags."""
-        stats = {"resolved": 0, "deferred": 0, "dismissed": 0}
+        stats = {"resolved": 0, "deferred": 0, "dismissed": 0, "reflection_errors": 0}
         try:
             pairs = await self._conflict_pairs(memory_scope)
         except Exception as e:
@@ -362,16 +374,16 @@ class ReflectionEngine:
             if verdict == "a_wins":
                 await self._service.mark_superseded(self._ctx_for(b), b.id, a.id)
                 await self._clear_conflict_tags(a, b)
-                await self._resolve_detector_rows(a, b, "a_wins", a.id)
-                stats["resolved"] += 1
+                ok = await self._resolve_detector_rows(a, b, "a_wins", a.id, memory_scope)
+                stats["resolved" if ok else "reflection_errors"] += 1
             elif verdict == "b_wins":
                 await self._service.mark_superseded(self._ctx_for(a), a.id, b.id)
                 await self._clear_conflict_tags(a, b)
-                await self._resolve_detector_rows(a, b, "b_wins", b.id)
-                stats["resolved"] += 1
+                ok = await self._resolve_detector_rows(a, b, "b_wins", b.id, memory_scope)
+                stats["resolved" if ok else "reflection_errors"] += 1
             elif verdict == "not_contradictory":
                 await self._clear_conflict_tags(a, b)
-                await self._resolve_detector_rows(a, b, "not_contradictory", None)
+                await self._resolve_detector_rows(a, b, "not_contradictory", None, memory_scope)
                 stats["dismissed"] += 1
             else:  # ambiguous or whitelist-rejected output
                 await self._defer_to_user(a, b)

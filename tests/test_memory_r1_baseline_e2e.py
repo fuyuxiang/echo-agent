@@ -1,5 +1,6 @@
 # tests/test_memory_r1_baseline_e2e.py
-import json, pytest
+import json
+import pytest
 from echo_agent.memory.store import MemoryStore
 from echo_agent.memory.service import MemoryService, ActorContext
 from echo_agent.memory.types import MemoryEntry, MemoryType

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 from contextlib import nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -200,12 +200,27 @@ class MemoryService:
                 source_session=ctx.memory_scope,
                 source=source,
             )
-            spawn = getattr(self._store, "_spawn_blocked_contradiction", None)
-            if spawn is not None:
+            # landing(同步写盘)入 _service_write 锁,SQL 行 await 紧随其后落盘——
+            # 不再 fire-and-forget,消除"有 pending 条目、无 contradiction 行"的孤儿窗口。
+            # _service_write() 是同步上下文管理器包不住 await,故 landing 在锁内、
+            # SQL await 在锁外。
+            land = getattr(self._store, "_land_blocked_entry", None)
+            record = getattr(self._store, "record_blocked_contradiction", None)
+            if land is not None and record is not None:
                 try:
-                    spawn(target, blocked)
+                    with self._service_write():
+                        landed = land(target, blocked)
+                    await record(target, landed)
                 except Exception as e:
                     logger.warning("replace 被拒写 contradiction 失败: {}", e)
+            else:
+                # 旧 store/测试桩兜底:退回同步 spawn 路径。
+                spawn = getattr(self._store, "_spawn_blocked_contradiction", None)
+                if spawn is not None:
+                    try:
+                        spawn(target, blocked)
+                    except Exception as e:
+                        logger.warning("replace 被拒写 contradiction 失败: {}", e)
             return self._reject(ctx, "replace", entry_id, target.type, source, "rejected_provenance")
         # ①⑤ 校验+写入:内容校验由 store.update 内部完成(唯一校验源),
         # 非法内容抛 ValueError→转 invalid。

@@ -115,7 +115,6 @@ def test_store_service_only_soft_warns_on_direct_write(tmp_path, caplog):
 
     store = MemoryStore(memory_dir=tmp_path / "mem", scope_policy="session", service_only=True)
 
-    import logging
     from loguru import logger as _logger
 
     records: list[str] = []
