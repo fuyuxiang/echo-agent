@@ -78,6 +78,68 @@ class CostTracker:
         except Exception:
             logger.warning("cost_ledger load failed; starting from in-memory zero")
 
+    @staticmethod
+    def _window_floor(days: int) -> str:
+        """最早统计日(含)的 window_date 字符串。days<=0 归一为 1 天(仅今天)。"""
+        from datetime import timedelta
+        span = max(1, int(days))
+        return (date.today() - timedelta(days=span - 1)).isoformat()
+
+    async def get_daily_usage(self, days: int = 7) -> list[dict[str, Any]]:
+        """按天聚合最近 days 天的 token/成本,供 dashboard 趋势图使用。
+
+        数据源是 cost_ledger_dim(provider/model/channel 维度),这里跨维度按
+        window_date 汇总。无 storage 时返回空,让接口优雅降级而非报错。
+        """
+        if self._storage is None:
+            return []
+        rows = await self._storage.fetch_sql(
+            "SELECT window_date, SUM(input_tokens) AS input_tokens, "
+            "SUM(output_tokens) AS output_tokens, SUM(spent_usd) AS cost_usd "
+            "FROM cost_ledger_dim WHERE window_date >= ? "
+            "GROUP BY window_date ORDER BY window_date ASC",
+            (self._window_floor(days),),
+        )
+        return [
+            {
+                "date": r["window_date"],
+                "input_tokens": int(r["input_tokens"] or 0),
+                "output_tokens": int(r["output_tokens"] or 0),
+                "cost_usd": round(float(r["cost_usd"] or 0.0), 6),
+            }
+            for r in rows
+        ]
+
+    async def get_channel_usage(self, days: int = 7) -> list[dict[str, Any]]:
+        """按 channel 聚合最近 days 天的 token/成本,供渠道归因图使用。"""
+        if self._storage is None:
+            return []
+        rows = await self._storage.fetch_sql(
+            "SELECT channel, SUM(input_tokens) AS input_tokens, "
+            "SUM(output_tokens) AS output_tokens, SUM(spent_usd) AS cost_usd "
+            "FROM cost_ledger_dim WHERE window_date >= ? "
+            "GROUP BY channel ORDER BY cost_usd DESC",
+            (self._window_floor(days),),
+        )
+        return [
+            {
+                "channel": r["channel"] or "",
+                "input_tokens": int(r["input_tokens"] or 0),
+                "output_tokens": int(r["output_tokens"] or 0),
+                "cost_usd": round(float(r["cost_usd"] or 0.0), 6),
+            }
+            for r in rows
+        ]
+
+    async def get_skill_usage(self, days: int = 7) -> list[dict[str, Any]]:
+        """技能调用排行。
+
+        当前无数据源:成本埋点只记录 provider/model/channel 维度,从未记录 skill
+        调用次数(cost_ledger_dim 无 skill 列,也无独立的技能计数表)。故先返回空
+        使接口优雅降级;待技能执行路径补埋点后再实现。参数保留以稳定签名。
+        """
+        return []
+
     def _roll_window(self) -> None:
         today = _today_key()
         if today != self._window_date:

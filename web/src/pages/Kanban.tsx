@@ -1,20 +1,16 @@
 import { useEffect, useState } from "react";
 import { DndContext, DragEndEvent, closestCenter, useDroppable, useDraggable } from "@dnd-kit/core";
 import { useKanbanStore, COLUMNS, TaskCard } from "../stores/kanban";
-import { useWsSubscribe } from "../hooks/use-ws";
 import { Plus } from "lucide-react";
 
 export function Kanban() {
-  const { tasks, loading, fetchTasks, transitionTask, createTask, updateLocal, addLocal } = useKanbanStore();
+  const { tasks, loading, fetchTasks, transitionTask, createTask, updateLocal } = useKanbanStore();
   const [newTitle, setNewTitle] = useState("");
 
   useEffect(() => { fetchTasks(); }, []);
 
-  useWsSubscribe(["tasks"], (ev) => {
-    if (ev.type === "task_created") addLocal(ev.payload);
-    else if (ev.type === "task_transitioned") updateLocal(ev.payload.id, { status: ev.payload.to });
-    else if (ev.type === "task_updated") updateLocal(ev.payload.id, ev.payload);
-  }, ["task_created", "task_transitioned", "task_updated"]);
+  // 实时事件(task_created/transitioned/updated)后端从未通过 dashboard WS 广播,
+  // 订阅是死代码,已移除;多端同步待 WS broadcast 接线后恢复。当前靠本地乐观更新。
 
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;

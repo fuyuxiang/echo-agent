@@ -1,5 +1,7 @@
 import { useApi } from "../hooks/use-api";
 import { apiFetch } from "../lib/api";
+import { runMutation } from "../stores/toast";
+import { Loadable } from "../components/Loadable";
 import { Upload, Trash2, RefreshCw } from "lucide-react";
 import { useRef } from "react";
 
@@ -10,29 +12,42 @@ interface Document {
 }
 
 export function Knowledge() {
-  const { data, refetch } = useApi<{ documents: Document[] }>("/knowledge/documents");
+  const { data, loading, error, refetch } = useApi<{ documents: Document[] }>("/knowledge/documents");
   const { data: status } = useApi<{ indexed_count: number; last_rebuild: string }>("/knowledge/status");
   const fileRef = useRef<HTMLInputElement>(null);
 
   const upload = async (file: File) => {
-    const form = new FormData();
-    form.append("file", file);
-    await fetch("/api/v1/knowledge/upload", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${localStorage.getItem("echo_token")}` },
-      body: form,
-    });
-    refetch();
+    const ok = await runMutation(async () => {
+      const form = new FormData();
+      form.append("file", file);
+      // multipart 上传不走 apiFetch(它强制 JSON Content-Type),这里手动带 token,
+      // 并显式检查响应状态,否则失败会被静默忽略。
+      const resp = await fetch("/api/v1/knowledge/upload", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${localStorage.getItem("echo_token")}` },
+        body: form,
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ error: resp.statusText }));
+        throw new Error(err.error || resp.statusText);
+      }
+    }, { success: "上传成功", error: "上传失败" });
+    if (ok) refetch();
   };
 
   const rebuild = async () => {
-    await apiFetch("/knowledge/rebuild", { method: "POST" });
-    refetch();
+    const ok = await runMutation(() => apiFetch("/knowledge/rebuild", { method: "POST" }), {
+      success: "已触发重建", error: "重建失败",
+    });
+    if (ok) refetch();
   };
 
   const deleteDoc = async (path: string) => {
-    await apiFetch(`/knowledge/documents/${encodeURIComponent(path)}`, { method: "DELETE" });
-    refetch();
+    const ok = await runMutation(
+      () => apiFetch(`/knowledge/documents/${encodeURIComponent(path)}`, { method: "DELETE" }),
+      { success: "已删除", error: "删除失败" },
+    );
+    if (ok) refetch();
   };
 
   return (
@@ -50,19 +65,29 @@ export function Knowledge() {
         <input ref={fileRef} type="file" className="hidden" onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])} />
       </div>
 
-      <div className="space-y-2">
-        {data?.documents.map((doc) => (
-          <div key={doc.path} className="flex items-center justify-between bg-white border rounded p-3">
-            <div>
-              <div className="text-sm font-medium">{doc.path}</div>
-              <div className="text-xs text-gray-400">{(doc.size / 1024).toFixed(1)} KB</div>
-            </div>
-            <button onClick={() => deleteDoc(doc.path)} className="text-red-400 hover:text-red-600">
-              <Trash2 size={16} />
-            </button>
+      <Loadable
+        loading={loading}
+        error={error}
+        data={data}
+        isEmpty={(d) => d.documents.length === 0}
+        emptyText="暂无文档"
+      >
+        {(d) => (
+          <div className="space-y-2">
+            {d.documents.map((doc) => (
+              <div key={doc.path} className="flex items-center justify-between bg-white border rounded p-3">
+                <div>
+                  <div className="text-sm font-medium">{doc.path}</div>
+                  <div className="text-xs text-gray-400">{(doc.size / 1024).toFixed(1)} KB</div>
+                </div>
+                <button onClick={() => deleteDoc(doc.path)} className="text-red-400 hover:text-red-600">
+                  <Trash2 size={16} />
+                </button>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
+        )}
+      </Loadable>
     </div>
   );
 }

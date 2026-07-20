@@ -5,6 +5,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer, TestClient
 
 from echo_agent.agent.loop import AgentLoop
+from echo_agent.cost.budget import CostTracker
 from echo_agent.gateway.api.analytics import AnalyticsAPI
 
 
@@ -15,15 +16,18 @@ def mock_server():
     # spec_set=AgentLoop so assigning an attribute the loop does not expose
     # raises AttributeError here — catching contract drift the API would hit.
     server._agent_loop = MagicMock(spec_set=AgentLoop)
-    server._agent_loop.cost_tracker = MagicMock()
+    # spec=CostTracker:只允许 mock 真实存在的方法。此前用裸 MagicMock() 能凭空造出
+    # get_daily_usage 等不存在的方法,让测试全绿却掩盖了 CostTracker 根本没实现这些
+    # 方法的事实(线上 500)。加 spec 后,方法一旦被删就在此处 AttributeError。
+    server._agent_loop.cost_tracker = MagicMock(spec=CostTracker)
     server._agent_loop.cost_tracker.get_daily_usage = AsyncMock(return_value=[
-        {"date": "2026-07-07", "model": "gpt-4o", "input_tokens": 1000, "output_tokens": 500, "cost_usd": 0.05}
+        {"date": "2026-07-07", "input_tokens": 1000, "output_tokens": 500, "cost_usd": 0.05}
     ])
     server._agent_loop.cost_tracker.get_skill_usage = AsyncMock(return_value=[
         {"skill": "web_search", "count": 42}
     ])
     server._agent_loop.cost_tracker.get_channel_usage = AsyncMock(return_value=[
-        {"channel": "telegram", "messages": 100}
+        {"channel": "telegram", "input_tokens": 100, "output_tokens": 50, "cost_usd": 0.01}
     ])
     return server
 

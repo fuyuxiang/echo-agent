@@ -135,3 +135,60 @@ def test_record_accepts_channel_kwarg():
     sig = inspect.signature(CostTracker.record)
     assert "channel" in sig.parameters
     assert sig.parameters["channel"].default == ""
+
+
+# ── Reporting aggregation (dashboard analytics) ──────────────────────────────
+# 这些方法此前不存在,analytics API 调用会 500;测试用真实 storage 驱动聚合,
+# 而非 mock,确保 SQL 与表结构真实对齐。
+
+
+@pytest.mark.asyncio
+async def test_get_daily_usage_aggregates_across_dimensions(tmp_path):
+    storage = await _fresh_storage(tmp_path)
+    t = _tracker(storage)
+    # 同一天两条不同维度(不同 channel),daily 汇总应合并为一行。
+    await t.record("gpt-4o-mini", {"prompt_tokens": 1_000_000, "completion_tokens": 0},
+                   "openai", channel="telegram")
+    await t.record("gpt-4o-mini", {"prompt_tokens": 1_000_000, "completion_tokens": 0},
+                   "openai", channel="discord")
+    daily = await t.get_daily_usage(days=7)
+    assert len(daily) == 1
+    row = daily[0]
+    assert set(row.keys()) == {"date", "input_tokens", "output_tokens", "cost_usd"}
+    assert row["input_tokens"] == 2_000_000
+    assert row["cost_usd"] > 0
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_get_channel_usage_groups_by_channel(tmp_path):
+    storage = await _fresh_storage(tmp_path)
+    t = _tracker(storage)
+    await t.record("gpt-4o-mini", {"prompt_tokens": 1_000_000, "completion_tokens": 0},
+                   "openai", channel="telegram")
+    await t.record("gpt-4o-mini", {"prompt_tokens": 1_000_000, "completion_tokens": 0},
+                   "openai", channel="discord")
+    channels = await t.get_channel_usage(days=7)
+    names = {c["channel"] for c in channels}
+    assert names == {"telegram", "discord"}
+    assert all(set(c.keys()) == {"channel", "input_tokens", "output_tokens", "cost_usd"}
+               for c in channels)
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_get_skill_usage_returns_empty_no_datasource(tmp_path):
+    # skill 维度无埋点,契约上先降级为空数组(而非 500)。
+    storage = await _fresh_storage(tmp_path)
+    t = _tracker(storage)
+    assert await t.get_skill_usage(days=7) == []
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_reporting_methods_no_storage_return_empty():
+    t = CostTracker(storage=None, enabled=False)
+    assert await t.get_daily_usage() == []
+    assert await t.get_channel_usage() == []
+    assert await t.get_skill_usage() == []
+

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { apiFetch } from "../lib/api";
+import { toast } from "./toast";
 
 export interface TaskCard {
   id: string;
@@ -45,27 +46,40 @@ export const useKanbanStore = create<KanbanState>((set) => ({
     try {
       const data = await apiFetch<{ tasks: TaskCard[] }>("/tasks?board_id=default");
       set({ tasks: data.tasks });
+    } catch (e) {
+      toast.error(`任务加载失败：${e instanceof Error ? e.message : String(e)}`);
     } finally {
       set({ loading: false });
     }
   },
 
   transitionTask: async (id, to) => {
-    await apiFetch(`/tasks/${id}/transition`, {
-      method: "POST",
-      body: JSON.stringify({ to }),
-    });
-    set((s) => ({
-      tasks: s.tasks.map((t) => (t.id === id ? { ...t, status: to } : t)),
-    }));
+    // 不吞错:交给调用方(拖拽处)在 catch 里回滚。这里补一条 toast 说明失败原因,
+    // 否则卡片“弹回原列”而用户不知为何(常见于后端状态机拒绝的非法流转)。
+    try {
+      await apiFetch(`/tasks/${id}/transition`, {
+        method: "POST",
+        body: JSON.stringify({ to }),
+      });
+      set((s) => ({
+        tasks: s.tasks.map((t) => (t.id === id ? { ...t, status: to } : t)),
+      }));
+    } catch (e) {
+      toast.error(`流转失败：${e instanceof Error ? e.message : String(e)}`);
+      throw e;
+    }
   },
 
   createTask: async (title, description = "") => {
-    const data = await apiFetch<{ task: TaskCard }>("/tasks", {
-      method: "POST",
-      body: JSON.stringify({ title, description, source: "human" }),
-    });
-    set((s) => ({ tasks: [...s.tasks, data.task] }));
+    try {
+      const data = await apiFetch<{ task: TaskCard }>("/tasks", {
+        method: "POST",
+        body: JSON.stringify({ title, description, source: "human" }),
+      });
+      set((s) => ({ tasks: [...s.tasks, data.task] }));
+    } catch (e) {
+      toast.error(`创建失败：${e instanceof Error ? e.message : String(e)}`);
+    }
   },
 
   updateLocal: (id, changes) => {

@@ -4,12 +4,18 @@ import { Activity, Radio, Brain, Coins, AlertCircle, CheckCircle, AlertTriangle 
 interface HealthData {
   status: string;
   active_sessions: number;
-  channels: { name: string; type: string; running: boolean }[];
 }
 
 interface TasksData {
   tasks: { status: string }[];
   total: number;
+}
+
+// 后端 channels.py 返回 name/enabled/running,没有 type 字段。
+interface ChannelItem {
+  name: string;
+  enabled: boolean;
+  running: boolean;
 }
 
 const STATUS_ICON: Record<string, React.ReactNode> = {
@@ -20,7 +26,7 @@ const STATUS_ICON: Record<string, React.ReactNode> = {
 
 export function Overview() {
   const { data: health } = useApi<HealthData>("/health");
-  const { data: channels } = useApi<{ channels: { name: string; type: string; running: boolean }[] }>("/channels");
+  const { data: channels } = useApi<{ channels: ChannelItem[] }>("/channels");
   const { data: tasks } = useApi<TasksData>("/tasks?board_id=default");
   const { data: memory } = useApi<{ total: number }>("/memory/stats");
 
@@ -63,7 +69,7 @@ export function Overview() {
               <div key={ch.name} className="flex items-center gap-2 text-sm">
                 <span className={`w-2 h-2 rounded-full ${ch.running ? "bg-green-500" : "bg-gray-300"}`} />
                 <span>{ch.name}</span>
-                <span className="text-gray-400">{ch.type}</span>
+                <span className="text-gray-400">{ch.running ? "在线" : "离线"}</span>
               </div>
             ))}
           </div>

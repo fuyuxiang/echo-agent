@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { Layout } from "./components/Layout";
+import { Toaster } from "./components/Toaster";
 import { Login } from "./pages/Login";
 import { Overview } from "./pages/Overview";
 import { Kanban } from "./pages/Kanban";
@@ -16,6 +17,7 @@ import { Analytics } from "./pages/Analytics";
 export function App() {
   return (
     <BrowserRouter>
+      <Toaster />
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route element={<Layout />}>

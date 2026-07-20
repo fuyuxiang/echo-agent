@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useApi } from "../hooks/use-api";
 import { apiFetch } from "../lib/api";
+import { runMutation } from "../stores/toast";
 import { Play, Trash2, Plus } from "lucide-react";
 
 interface CronJob {
@@ -14,26 +15,35 @@ interface CronJob {
 }
 
 export function Cron() {
-  const { data, refetch } = useApi<{ jobs: CronJob[] }>("/cron");
+  const { data, loading, error, refetch } = useApi<{ jobs: CronJob[] }>("/cron");
   const [showCreate, setShowCreate] = useState(false);
   const [name, setName] = useState("");
   const [expr, setExpr] = useState("");
 
   const trigger = async (id: string) => {
-    await apiFetch(`/cron/${id}/trigger`, { method: "POST" });
-    refetch();
+    const ok = await runMutation(() => apiFetch(`/cron/${id}/trigger`, { method: "POST" }), {
+      success: "已触发执行", error: "触发失败",
+    });
+    if (ok) refetch();
   };
 
   const remove = async (id: string) => {
-    await apiFetch(`/cron/${id}`, { method: "DELETE" });
-    refetch();
+    const ok = await runMutation(() => apiFetch(`/cron/${id}`, { method: "DELETE" }), {
+      success: "已删除", error: "删除失败",
+    });
+    if (ok) refetch();
   };
 
   const create = async (e: React.FormEvent) => {
     e.preventDefault();
-    await apiFetch("/cron", { method: "POST", body: JSON.stringify({ name, cron_expr: expr }) });
-    setName(""); setExpr(""); setShowCreate(false);
-    refetch();
+    const ok = await runMutation(
+      () => apiFetch("/cron", { method: "POST", body: JSON.stringify({ name, cron_expr: expr }) }),
+      { success: "已创建", error: "创建失败" },
+    );
+    if (ok) {
+      setName(""); setExpr(""); setShowCreate(false);
+      refetch();
+    }
   };
 
   return (
@@ -80,6 +90,9 @@ export function Cron() {
           ))}
         </tbody>
       </table>
+      {error && <div className="text-red-600 text-sm bg-red-50 border border-red-200 rounded p-3">加载失败：{error}</div>}
+      {!error && loading && !data && <div className="text-gray-400 text-sm p-3">加载中...</div>}
+      {!error && data && data.jobs.length === 0 && <div className="text-gray-400 text-center py-8">暂无定时任务</div>}
     </div>
   );
 }

@@ -1,28 +1,41 @@
 import { useApi } from "../hooks/use-api";
+import { Loadable } from "../components/Loadable";
 
 interface Channel {
   name: string;
-  type: string;
+  // 后端 channels.py 返回 name/enabled/running,没有 type 字段;之前前端读 ch.type
+  // 恒为 undefined 导致副标题永远空白。改用 enabled 展示配置状态。
+  enabled: boolean;
   running: boolean;
 }
 
 export function Channels() {
-  const { data } = useApi<{ channels: Channel[] }>("/channels");
+  const { data, loading, error } = useApi<{ channels: Channel[] }>("/channels");
 
   return (
-    <div className="space-y-2">
-      {data?.channels.map((ch) => (
-        <div key={ch.name} className="bg-white border rounded-lg p-4 flex items-center gap-4">
-          <span className={`w-3 h-3 rounded-full ${ch.running ? "bg-green-500" : "bg-gray-300"}`} />
-          <div className="flex-1">
-            <div className="font-medium text-sm">{ch.name}</div>
-            <div className="text-xs text-gray-500">{ch.type}</div>
-          </div>
-          <span className={`text-xs px-2 py-0.5 rounded ${ch.running ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
-            {ch.running ? "在线" : "离线"}
-          </span>
+    <Loadable
+      loading={loading}
+      error={error}
+      data={data}
+      isEmpty={(d) => d.channels.length === 0}
+      emptyText="暂无已启用的通道"
+    >
+      {(d) => (
+        <div className="space-y-2">
+          {d.channels.map((ch) => (
+            <div key={ch.name} className="bg-white border rounded-lg p-4 flex items-center gap-4">
+              <span className={`w-3 h-3 rounded-full ${ch.running ? "bg-green-500" : "bg-gray-300"}`} />
+              <div className="flex-1">
+                <div className="font-medium text-sm">{ch.name}</div>
+                <div className="text-xs text-gray-500">{ch.enabled ? "已启用" : "未启用"}</div>
+              </div>
+              <span className={`text-xs px-2 py-0.5 rounded ${ch.running ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
+                {ch.running ? "在线" : "离线"}
+              </span>
+            </div>
+          ))}
         </div>
-      ))}
-    </div>
+      )}
+    </Loadable>
   );
 }
