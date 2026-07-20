@@ -1,17 +1,20 @@
 """Interactive setup wizard for Echo Agent.
 
-The wizard is structured into ten sections, each runnable independently:
+The wizard is structured into twelve sections, each runnable independently
+(order matches ``SETUP_SECTIONS`` below):
 
     1. Language          — auto-detected, overridable
     2. Model & Provider  — LLM provider + default model
     3. Permissions       — approval mode (smart/manual/off)
-    4. Sandbox           — execution backend (local/sandbox/container/remote)
+    4. Terminal / Sandbox — execution backend (local/sandbox/container/remote)
     5. Agent Behavior    — max_iterations / compression / session reset
     6. Tools             — profile + optional integrations (web/tts/mcp/...)
     7. Channels          — messaging integrations + allowlist
     8. Gateway           — Web/WS API exposure
-    9. Observability     — log level + OpenTelemetry export
-   10. Evolution         — self-evolving skill harness (off by default)
+    9. Security          — security.profile hardening
+   10. Observability     — log level + OpenTelemetry export
+   11. Evolution         — self-evolving skill harness (off by default)
+   12. Cost              — daily budget cap and cost tracking
 
 Followed by a Capability Check ("doctor") + summary.
 
@@ -60,6 +63,9 @@ CHANNEL_DEFS: list[tuple[str, str, list[tuple[str, str]]]] = [
     ("qqbot", "QQ Bot", [("app_id", "App ID"), ("app_secret", "App secret")]),
     ("email", "Email", [("imap_host", "IMAP host"), ("smtp_host", "SMTP host"), ("username", "Username"), ("password", "Password")]),
     ("matrix", "Matrix", [("homeserver", "Homeserver URL"), ("user_id", "User ID"), ("access_token", "Access token")]),
+    ("whatsapp", "WhatsApp", [("verify_token", "Webhook verify token"), ("access_token", "Cloud API access token"), ("phone_number_id", "Phone number ID")]),
+    # webhook / cron 通道运行时也支持,但依赖路径/端口、调度表等结构化配置,
+    # 不适配此处 key-value 字段循环,请用 `echo-agent config` 或直接编辑 YAML 配置。
 ]
 
 
@@ -501,7 +507,9 @@ def setup_tools(config: dict) -> None:
 
     if "tts" in chosen:
         tts = _ensure_dict(tools, "tts")
-        backends = ["edge", "openai", "elevenlabs"]
+        # 只列运行时(agent/tools/tts.py)真正实现的后端。曾提供 elevenlabs,
+        # 但运行时无该实现,选中后会被静默降级为 Edge TTS,故移除。
+        backends = ["edge", "openai"]
         cur_backend = tts.get("default_backend") or tts.get("defaultBackend") or "edge"
         b_idx = _choice(t("tools.tts_backend"), backends,
                         default=backends.index(cur_backend) if cur_backend in backends else 0)
@@ -666,6 +674,14 @@ def setup_gateway(config: dict) -> None:
             token = secrets.token_urlsafe(32)
             print_info(f"  Generated token: {token}")
         auth["api_tokens"] = [token]
+    else:
+        # open 模式:清理遗留的 api_tokens(含驼峰键),否则 server 只要发现
+        # token 列表非空就仍要求携带 token,与"Open — no auth"提示矛盾。
+        removed = bool(auth.get("api_tokens") or auth.get("apiTokens"))
+        auth.pop("api_tokens", None)
+        auth.pop("apiTokens", None)
+        if removed:
+            print_info(t("gateway.open_tokens_cleared"))
 
     print_success(t("gateway.saved", host=gw["host"], port=gw["port"], mode=t(f"gateway.auth_{auth_keys[a_idx]}")))
 

@@ -24,26 +24,45 @@ class LaunchdBackend:
     def _domain_target(self) -> str:
         return f"gui/{os.getuid()}/{LAUNCHD_LABEL}"
 
-    def _render(self, workspace: str | None = None) -> str:
+    def _render(self, workspace: str | None = None, config: str | None = None) -> str:
         log_path = log_file()
         workdir = Path(workspace).expanduser().resolve() if workspace else Path.home() / ".echo-agent"
         return render_launchd_plist(
-            argv=gateway_argv(workspace),
+            argv=gateway_argv(workspace, config),
             workdir=str(workdir),
             log_path=str(log_path),
         )
 
-    def install(self, workspace: str | None = None, force: bool = False) -> None:
+    def _installed_target(self) -> tuple[str | None, str | None]:
+        """Recover the (workspace, config) baked into the installed plist.
+
+        status()/is_current() have no access to the args used at install time;
+        without this they'd re-render with the home-default workspace and report
+        a service installed under a custom -w/-c as permanently stale. Parsing
+        the persisted ProgramArguments gives an accurate self-comparison."""
+        import plistlib
+
+        plist_path = self.service_path()
+        try:
+            data = plistlib.loads(plist_path.read_bytes())
+        except (OSError, ValueError):
+            return None, None
+        if not isinstance(data, dict):
+            return None, None
+        from echo_agent.cli.service.base import parse_gateway_argv
+        return parse_gateway_argv(data.get("ProgramArguments") or [])
+
+    def install(self, workspace: str | None = None, force: bool = False, config: str | None = None) -> None:
         plist_path = self.service_path()
         if plist_path.exists() and not force:
-            if self.is_current(workspace):
+            if self.is_current(workspace, config):
                 print(f"LaunchAgent already installed and up to date: {plist_path}")
                 print("Start it with: echo-agent gateway start")
                 return
             print("Installed LaunchAgent is stale (paths or arguments changed); rewriting it.")
         log_file().parent.mkdir(parents=True, exist_ok=True)
         plist_path.parent.mkdir(parents=True, exist_ok=True)
-        content = self._render(workspace)
+        content = self._render(workspace, config)
         plist_path.write_text(content, encoding="utf-8")
         print(f"LaunchAgent installed: {plist_path}")
         print(f"  Logs: {log_file()}")
@@ -108,7 +127,7 @@ class LaunchdBackend:
         )
         return result.returncode == 0
 
-    def is_current(self, workspace: str | None = None) -> bool:
+    def is_current(self, workspace: str | None = None, config: str | None = None) -> bool:
         plist_path = self.service_path()
         if not plist_path.exists():
             return False
@@ -116,7 +135,11 @@ class LaunchdBackend:
             installed = plist_path.read_text(encoding="utf-8")
         except OSError:
             return False
-        return installed == self._render(workspace)
+        # 未显式给出 workspace/config 时(如 status 探测),从已安装 plist 回读
+        # 安装期参数再比对,避免把自定义 -w/-c 的服务误判为 stale。
+        if workspace is None and config is None:
+            workspace, config = self._installed_target()
+        return installed == self._render(workspace, config)
 
     def status(self) -> None:
         if not self.is_installed():

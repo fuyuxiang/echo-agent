@@ -60,7 +60,23 @@ class EvalDataset:
         return cls(cases)
 
     @classmethod
+    def from_dir(cls, path: Path) -> EvalDataset:
+        """Load and merge every YAML/JSON dataset file under a directory.
+
+        The default ``data/eval`` config value points at a directory; loading a
+        directory as a single file used to raise IsADirectoryError. Files are
+        read in sorted order for stable case ordering; subdirectories are not
+        recursed."""
+        cases: list[EvalCase] = []
+        for child in sorted(path.iterdir()):
+            if child.suffix in (".yaml", ".yml", ".json") and child.is_file():
+                cases.extend(cls.from_path(child).cases)
+        return cls(cases)
+
+    @classmethod
     def from_path(cls, path: Path) -> EvalDataset:
+        if path.is_dir():
+            return cls.from_dir(path)
         if path.suffix in (".yaml", ".yml"):
             return cls.from_yaml(path)
         return cls.from_json(path)

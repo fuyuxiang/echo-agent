@@ -283,7 +283,7 @@ cases:
 def _init_dataset(config_path: str | None, workspace: str | None) -> None:
     from echo_agent.config.loader import load_config, resolve_config_file
 
-    config_file = resolve_config_file(config_path)
+    config_file = resolve_config_file(config_path, search_dir=workspace)
     overrides = {"workspace": workspace} if workspace else None
     config = load_config(config_path=config_file, overrides=overrides)
 

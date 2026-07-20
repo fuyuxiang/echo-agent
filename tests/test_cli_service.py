@@ -173,7 +173,7 @@ def test_allows_status_from_inside_gateway(monkeypatch):
 @pytest.mark.parametrize(
     "action,method,kwargs",
     [
-        ("install", "install", {"workspace": None, "force": False}),
+        ("install", "install", {"workspace": None, "force": False, "config": None}),
         ("uninstall", "uninstall", {}),
         ("start", "start", {}),
         ("stop", "stop", {}),

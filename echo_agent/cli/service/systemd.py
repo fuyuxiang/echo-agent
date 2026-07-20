@@ -31,20 +31,20 @@ class SystemdUserBackend:
     def _systemctl(self, args: list[str], check: bool = True) -> int:
         return run(["systemctl", "--user", *args], check=check)
 
-    def _render(self, workspace: str | None = None) -> str:
+    def _render(self, workspace: str | None = None, config: str | None = None) -> str:
         return render_systemd_unit(
-            argv=gateway_argv(workspace),
+            argv=gateway_argv(workspace, config),
             workdir=str(_workdir(workspace)),
         )
 
-    def install(self, workspace: str | None = None, force: bool = False) -> None:
+    def install(self, workspace: str | None = None, force: bool = False, config: str | None = None) -> None:
         unit_path = self.service_path()
-        if unit_path.exists() and not force and self.is_current(workspace):
+        if unit_path.exists() and not force and self.is_current(workspace, config):
             print(f"Service already installed and up to date: {unit_path}")
             print("Start it with: echo-agent gateway start")
             return
         unit_path.parent.mkdir(parents=True, exist_ok=True)
-        unit_path.write_text(self._render(workspace), encoding="utf-8")
+        unit_path.write_text(self._render(workspace, config), encoding="utf-8")
         self._systemctl(["daemon-reload"])
         self._systemctl(["enable", SERVICE_NAME], check=False)
         print(f"Service installed: {unit_path}")
@@ -91,7 +91,7 @@ class SystemdUserBackend:
         )
         return result.returncode == 0
 
-    def is_current(self, workspace: str | None = None) -> bool:
+    def is_current(self, workspace: str | None = None, config: str | None = None) -> bool:
         unit_path = self.service_path()
         if not unit_path.exists():
             return False
@@ -99,7 +99,10 @@ class SystemdUserBackend:
             installed = unit_path.read_text(encoding="utf-8")
         except OSError:
             return False
-        return installed == self._render(workspace)
+        if workspace is None and config is None:
+            from echo_agent.cli.service.base import parse_systemd_execstart
+            workspace, config = parse_systemd_execstart(installed)
+        return installed == self._render(workspace, config)
 
     def status(self) -> None:
         if not self.is_installed():
@@ -134,20 +137,20 @@ class SystemdSystemBackend:
             cmd = ["sudo", *cmd]
         return run(cmd, check=check)
 
-    def _render(self, workspace: str | None = None) -> str:
+    def _render(self, workspace: str | None = None, config: str | None = None) -> str:
         return render_systemd_unit(
-            argv=gateway_argv(workspace),
+            argv=gateway_argv(workspace, config),
             workdir=str(_workdir(workspace)),
             user=getpass.getuser(),
         )
 
-    def install(self, workspace: str | None = None, force: bool = False) -> None:
+    def install(self, workspace: str | None = None, force: bool = False, config: str | None = None) -> None:
         unit_path = self.service_path()
-        if unit_path.exists() and not force and self.is_current(workspace):
+        if unit_path.exists() and not force and self.is_current(workspace, config):
             print(f"Service already installed and up to date: {unit_path}")
             print("Start it with: echo-agent gateway start --system")
             return
-        content = self._render(workspace)
+        content = self._render(workspace, config)
         tmp = Path(f"/tmp/{SERVICE_NAME}.service")
         tmp.write_text(content, encoding="utf-8")
         self._sudo(["cp", str(tmp), str(unit_path)])
@@ -194,7 +197,7 @@ class SystemdSystemBackend:
         result = subprocess.run(["systemctl", "is-active", "--quiet", SERVICE_NAME])
         return result.returncode == 0
 
-    def is_current(self, workspace: str | None = None) -> bool:
+    def is_current(self, workspace: str | None = None, config: str | None = None) -> bool:
         unit_path = self.service_path()
         if not unit_path.exists():
             return False
@@ -202,7 +205,10 @@ class SystemdSystemBackend:
             installed = unit_path.read_text(encoding="utf-8")
         except OSError:
             return False
-        return installed == self._render(workspace)
+        if workspace is None and config is None:
+            from echo_agent.cli.service.base import parse_systemd_execstart
+            workspace, config = parse_systemd_execstart(installed)
+        return installed == self._render(workspace, config)
 
     def status(self) -> None:
         if not self.is_installed():

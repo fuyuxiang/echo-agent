@@ -224,6 +224,7 @@ MESSAGES = {
                              "服务将拒绝启动（无认证的网关不允许暴露到网络）。",
         "open_exposed_fix": "改绑到 127.0.0.1（仅本机）？选“否”请改用白名单 / 配对模式并配置 token。",
         "host_pinned": "已将 host 改为 127.0.0.1。",
+        "open_tokens_cleared": "已清理遗留的 api_tokens（开放模式无需 token）。",
         "saved": "Gateway：{host}:{port}，认证 = {mode}",
     },
     "security": {

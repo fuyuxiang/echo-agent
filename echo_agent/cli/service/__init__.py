@@ -97,6 +97,7 @@ def run_service_action(
     system: bool = False,
     force: bool = False,
     follow: bool = False,
+    config: str | None = None,
 ) -> None:
     if action in ("stop", "restart", "uninstall") and _refuse_inside_gateway(action):
         sys.exit(1)
@@ -110,7 +111,7 @@ def run_service_action(
         sys.exit(1)
 
     if action == "install":
-        backend.install(workspace=workspace, force=force)
+        backend.install(workspace=workspace, force=force, config=config)
     elif action == "uninstall":
         backend.uninstall()
     elif action == "start":

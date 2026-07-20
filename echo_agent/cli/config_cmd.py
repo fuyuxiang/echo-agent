@@ -96,6 +96,45 @@ def _container_keys() -> set[str]:
     return keys
 
 
+def _element_leaf(path: str) -> str | None:
+    """First field segment inside a container element.
+
+    ``models.providers[].apiKey`` -> ``apiKey``;
+    ``tools.mcpServers{}.command`` -> ``command``. Returns None when the path
+    carries no container marker."""
+    for marker in ("[]", "{}"):
+        idx = path.find(marker)
+        if idx != -1:
+            rest = path[idx + len(marker):].lstrip(".")
+            return rest.split(".", 1)[0] if rest else None
+    return None
+
+
+def _container_element_fields() -> dict[str, set[str]]:
+    """Map each container prefix (camel + snake) to the set of allowed element
+    field names (both camel and snake leaf variants).
+
+    Used by validate to catch typos *inside* container elements (e.g. a
+    ``providers`` list item with ``apiKye``), which the top-level walk skips.
+    Only the element's own top-level keys are checked — values that are
+    free-form maps (extraHeaders/env/headers) are intentionally not recursed."""
+    out: dict[str, set[str]] = {}
+    for f in iter_fields(Config):
+        camel_prefix = _container_prefix(f.path)
+        snake_prefix = _container_prefix(f.snake_path)
+        camel_leaf = _element_leaf(f.path)
+        snake_leaf = _element_leaf(f.snake_path)
+        for prefix in (camel_prefix, snake_prefix):
+            if prefix is None:
+                continue
+            bucket = out.setdefault(prefix, set())
+            if camel_leaf:
+                bucket.add(camel_leaf)
+            if snake_leaf:
+                bucket.add(snake_leaf)
+    return out
+
+
 def _field_by_key(key: str) -> FieldInfo | None:
     for f in iter_fields(Config):
         if key in (f.path, f.snake_path):
@@ -179,10 +218,34 @@ def _validate(config_path, workspace) -> int:
     rc = 0
     known = known_paths()
     containers = _container_keys()
+    element_fields = _container_element_fields()
     dead_paths = {f.snake_path: f for f in iter_fields(Config)
                   if f.extra.get("status") == "dead"}
     dead_camel = {f.path: f for f in iter_fields(Config)
                   if f.extra.get("status") == "dead"}
+
+    def check_container_elements(path: str, value: Any) -> None:
+        """校验容器(list/dict)元素的顶层键,捕获元素内部拼写错误。
+
+        list 元素、dict 值均按对象处理;元素内部的自由映射(extraHeaders 等)
+        不再下钻,避免对用户自定义键误报。"""
+        nonlocal rc
+        allowed = element_fields.get(path)
+        if not allowed:
+            return
+        if isinstance(value, dict):
+            elements = value.values()
+        elif isinstance(value, list):
+            elements = value
+        else:
+            return
+        for elem in elements:
+            if not isinstance(elem, dict):
+                continue
+            for ek in elem:
+                if ek not in allowed:
+                    print(f"未知配置项 / unknown: {path}[].{ek}")
+                    rc = 1
 
     # 2) 未知字段检测 + 3) 死字段提示(扁平化用户键)
     def walk(node: Any, prefix: str) -> None:
@@ -191,8 +254,9 @@ def _validate(config_path, workspace) -> int:
             return
         for k, v in node.items():
             path = f"{prefix}.{k}" if prefix else k
-            # 已知容器键当作叶子式已知键处理,不下钻其值
+            # 已知容器键:不下钻其值,但校验其元素的顶层键(捕获元素内拼写错误)。
             if path in containers:
+                check_container_elements(path, v)
                 continue
             if isinstance(v, dict):
                 # 仅当 path 是已知中间组才继续下钻;否则报未知

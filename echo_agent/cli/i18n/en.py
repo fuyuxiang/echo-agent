@@ -224,6 +224,7 @@ MESSAGES = {
                              "the service will refuse to start (an unauthenticated gateway cannot be exposed to the network).",
         "open_exposed_fix": "Rebind to 127.0.0.1 (loopback only)? Choose No to switch to allowlist/pairing and set a token.",
         "host_pinned": "Host set to 127.0.0.1.",
+        "open_tokens_cleared": "Cleared leftover api_tokens (open mode needs no token).",
         "saved": "Gateway: {host}:{port}, auth={mode}",
     },
     "security": {

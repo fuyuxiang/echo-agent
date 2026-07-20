@@ -45,9 +45,12 @@ def test_dispatch_list_calls_list():
 
 
 def test_dispatch_check_calls_check():
-    with patch(f"{_T}._check_plugins") as fn:
-        plugins_cmd.run_plugin_command("check")
+    # check 现在把 _check_plugins 的退出码经 sys.exit 透出,0 表示全部通过。
+    with patch(f"{_T}._check_plugins", return_value=0) as fn:
+        with pytest.raises(SystemExit) as exc:
+            plugins_cmd.run_plugin_command("check")
     fn.assert_called_once()
+    assert exc.value.code == 0
 
 
 def test_dispatch_info_requires_name(capsys):
@@ -206,7 +209,22 @@ def test_toggle_enable_not_in_deny_noop(tmp_path, capsys):
     cfg_file.write_text("plugins:\n  deny: []\n", encoding="utf-8")
     with patch("echo_agent.config.loader.resolve_config_file", return_value=cfg_file):
         plugins_cmd._toggle_plugin("demo", enable=True, config_path=None)
-    assert "not in the deny list" in capsys.readouterr().out
+    # 不在 deny 且无 allow 白名单需补入,视为已启用。
+    assert "already enabled" in capsys.readouterr().out
+
+
+def test_toggle_enable_adds_to_nonempty_allow(tmp_path, capsys):
+    # 白名单非空时,enable 除了移出 deny,还应把插件补进 allow,
+    # 否则运行期仍被白名单挡下。
+    cfg_file = tmp_path / "echo-agent.yaml"
+    cfg_file.write_text("plugins:\n  allow: [other]\n  deny: [demo]\n", encoding="utf-8")
+    with patch("echo_agent.config.loader.resolve_config_file", return_value=cfg_file):
+        plugins_cmd._toggle_plugin("demo", enable=True, config_path=None)
+    import yaml
+    data = yaml.safe_load(cfg_file.read_text(encoding="utf-8"))
+    assert "demo" not in data["plugins"]["deny"]
+    assert "demo" in data["plugins"]["allow"]
+    assert "enabled" in capsys.readouterr().out
 
 
 # ── _check_plugins ────────────────────────────────────────────────────────────

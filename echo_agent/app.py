@@ -74,7 +74,10 @@ async def bootstrap(
     from echo_agent.scheduler.delivery import build_scheduled_job_handler
     from echo_agent.storage.sqlite import SQLiteBackend
 
-    config_file = resolve_config_file(config_path)
+    # 不带 -c 时用 workspace 作查找目录,避免子命令回退到 ~/.echo-agent 的全局
+    # 配置(与 run_gateway 的预解析、cost/config 命令行为保持一致)。
+    search_dir = overrides.get("workspace") if overrides else None
+    config_file = resolve_config_file(config_path, search_dir=search_dir)
     config = load_config(config_path=config_file, overrides=overrides)
     configure_logging(config.observability.log_level)
 
@@ -584,7 +587,9 @@ async def run_gateway(
     _cfg_file = resolve_config_file(config_path)
     _cfg = load_config(config_path=_cfg_file)
     pre_host = host or _cfg.gateway.host
-    pre_port = port or _cfg.gateway.port
+    # port=0 is the "pick an ephemeral port" sentinel and must survive: use the
+    # config port only when --port was omitted (None), not when it is 0.
+    pre_port = port if port is not None else _cfg.gateway.port
     bind_err = _gateway_port_in_use(pre_host, pre_port)
     if bind_err:
         logger.error(bind_err)
@@ -618,7 +623,9 @@ async def run_gateway(
     ctx.config.gateway.enabled = True
     if host:
         ctx.config.gateway.host = host
-    if port:
+    # Apply --port when provided, including 0 (ephemeral). Only None means
+    # "not passed"; `if port` would drop the dynamic-port request.
+    if port is not None:
         ctx.config.gateway.port = port
 
     install_signal_handler(shutdown)

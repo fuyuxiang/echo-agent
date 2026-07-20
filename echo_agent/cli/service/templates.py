@@ -6,6 +6,7 @@ rendered payload without touching the filesystem or subprocess.
 
 from __future__ import annotations
 
+import shlex
 from xml.sax.saxutils import escape
 
 from echo_agent.cli.service.base import STOP_TIMEOUT_SECONDS
@@ -59,7 +60,10 @@ def render_systemd_unit(
 ) -> str:
     """Render a systemd unit. ``user`` is only set for system-scope units;
     user-scope units run as the invoking user implicitly."""
-    exec_start = " ".join(argv)
+    # shlex.quote each token: systemd splits ExecStart on unquoted whitespace,
+    # so a Python interpreter or workspace path containing spaces would be torn
+    # into separate arguments without this.
+    exec_start = " ".join(shlex.quote(a) for a in argv)
     user_line = f"User={user}\n" if user else ""
     wanted_by = "multi-user.target" if user else "default.target"
     return f"""[Unit]

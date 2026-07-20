@@ -26,14 +26,14 @@ def run_plugin_command(
         if not name:
             print("Usage: echo-agent plugin enable <name>")
             sys.exit(1)
-        _toggle_plugin(name, enable=True, config_path=config_path)
+        _toggle_plugin(name, enable=True, config_path=config_path, workspace=workspace)
     elif action == "disable":
         if not name:
             print("Usage: echo-agent plugin disable <name>")
             sys.exit(1)
-        _toggle_plugin(name, enable=False, config_path=config_path)
+        _toggle_plugin(name, enable=False, config_path=config_path, workspace=workspace)
     elif action == "check":
-        _check_plugins(config_path, workspace)
+        sys.exit(_check_plugins(config_path, workspace))
     else:
         print(f"Unknown plugin action: {action}")
         print("Available: list, info, enable, disable, check")
@@ -46,7 +46,7 @@ def _get_config_and_workspace(
     """Load config and resolve workspace."""
     from echo_agent.config.loader import load_config, resolve_config_file
 
-    config_file = resolve_config_file(config_path)
+    config_file = resolve_config_file(config_path, search_dir=workspace)
     overrides = {"workspace": workspace} if workspace else None
     config = load_config(config_path=config_file, overrides=overrides)
 
@@ -138,14 +138,20 @@ def _show_plugin_info(name: str, config_path: str | None, workspace: str | None)
         print(f"\n  WARNING: Missing env vars: {', '.join(missing)}")
 
 
-def _toggle_plugin(name: str, *, enable: bool, config_path: str | None) -> None:
-    """Add/remove a plugin from the deny list in config."""
+def _toggle_plugin(
+    name: str, *, enable: bool, config_path: str | None, workspace: str | None = None
+) -> None:
+    """Add/remove a plugin from the deny list in config.
+
+    workspace 参与配置文件定位(search_dir),避免不带 -c 时误写 ~/.echo-agent
+    下的全局配置。enable 时若存在非空 allow 白名单,同时把插件补进 allow,
+    否则 CLI 提示 enabled 但运行期仍被白名单挡下,与实际不符。"""
     from echo_agent.config.loader import resolve_config_file
 
     import yaml
 
-    config_file = resolve_config_file(config_path)
-    if config_file is None:
+    config_file = resolve_config_file(config_path, search_dir=workspace)
+    if config_file is None or not config_file.exists():
         print("No config file found. Create echo-agent.yaml first.")
         sys.exit(1)
 
@@ -154,14 +160,23 @@ def _toggle_plugin(name: str, *, enable: bool, config_path: str | None) -> None:
 
     plugins_section = data.setdefault("plugins", {})
     deny_list = plugins_section.setdefault("deny", [])
+    allow_list = plugins_section.get("allow") or []
 
     if enable:
+        changed = False
         if name in deny_list:
             deny_list.remove(name)
+            changed = True
+        # 白名单非空时,仅移出 deny 不足以让插件加载,还需补进 allow。
+        if allow_list and name not in allow_list:
+            allow_list.append(name)
+            plugins_section["allow"] = allow_list
+            changed = True
+        if changed:
             config_file.write_text(yaml.dump(data, default_flow_style=False, allow_unicode=True), encoding="utf-8")
-            print(f"Plugin '{name}' enabled (removed from deny list).")
+            print(f"Plugin '{name}' enabled.")
         else:
-            print(f"Plugin '{name}' is not in the deny list.")
+            print(f"Plugin '{name}' is already enabled.")
     else:
         if name not in deny_list:
             deny_list.append(name)
@@ -171,8 +186,10 @@ def _toggle_plugin(name: str, *, enable: bool, config_path: str | None) -> None:
             print(f"Plugin '{name}' is already disabled.")
 
 
-def _check_plugins(config_path: str | None, workspace: str | None) -> None:
-    """Dry-run: verify all plugins can be loaded."""
+def _check_plugins(config_path: str | None, workspace: str | None) -> int:
+    """Dry-run: verify all plugins can be loaded.
+
+    返回退出码:全部 OK 返回 0,存在加载失败/缺依赖返回 1,便于 CI 门禁。"""
     config, ws = _get_config_and_workspace(config_path, workspace)
 
     from echo_agent.plugins.loader import discover_all, load_plugin_module, topological_sort
@@ -201,3 +218,4 @@ def _check_plugins(config_path: str | None, workspace: str | None) -> None:
             fail_count += 1
 
     print(f"\nResult: {ok_count} OK, {fail_count} failed/skipped")
+    return 1 if fail_count else 0
