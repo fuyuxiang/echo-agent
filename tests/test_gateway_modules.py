@@ -146,6 +146,8 @@ class TestGatewayHealthProvider:
         gw.hooks.handler_count = 5
         gw.delivery_router = MagicMock()
         gw.delivery_router.rule_count = 2
+        # Real sized mapping so the ws_clients count reflects attached clients.
+        gw._ws_clients = {"gateway:cli:alice": object()}
 
         return gw
 
@@ -165,6 +167,9 @@ class TestGatewayHealthProvider:
         assert result["active_sessions"] == 3
         assert result["hooks_loaded"] == 5
         assert result["delivery_rules"] == 2
+        # Attached interactive clients (TUI/web) surface for the ops "is the CLI
+        # connected?" view — one client was wired in _make_gateway.
+        assert result["ws_clients"] == 1
 
     @pytest.mark.asyncio
     async def test_check_unhealthy(self):

@@ -29,6 +29,20 @@ class GatewayHealthProvider:
         if self._gw.media_cache:
             media_size = self._gw.media_cache.get_size_mb()
 
+        # Number of interactive WebSocket clients currently attached to /ws (the
+        # TUI, web playground). Distinct from channels: these are transient
+        # consumers, not standing delivery paths. A count ≥1 means at least one
+        # CLI/TUI is connected — enough for the ops-view "is the CLI attached?"
+        # check without modeling per-client identity. Defensive: never let this
+        # metric break the health check itself.
+        ws_client_count = 0
+        try:
+            clients = getattr(self._gw, "_ws_clients", None)
+            if clients is not None:
+                ws_client_count = len(clients)
+        except TypeError:
+            ws_client_count = 0
+
         session_count = 0
         if self._gw.session_manager:
             list_sessions = getattr(self._gw.session_manager, "list_sessions_async", None)
@@ -50,6 +64,12 @@ class GatewayHealthProvider:
             "status": status,
             "server_running": is_running,
             "active_channels": channel_status,
+            # Number of interactive WebSocket clients currently attached to /ws
+            # (the TUI, web playground). Distinct from channels: these are
+            # transient consumers, not standing delivery paths. A count ≥1 means
+            # at least one CLI/TUI is connected — enough for the ops-view check
+            # of "is the CLI attached?" without modeling per-client identity.
+            "ws_clients": ws_client_count,
             "provider": provider_status,
             "rate_limiter": rate_stats,
             "media_cache_mb": round(media_size, 1),

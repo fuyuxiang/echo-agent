@@ -1,9 +1,11 @@
 import { useApi } from "../hooks/use-api";
-import { Activity, Radio, Brain, Coins, AlertCircle, CheckCircle, AlertTriangle } from "lucide-react";
+import { Activity, Radio, Brain, Coins, Plug, AlertCircle, CheckCircle, AlertTriangle } from "lucide-react";
 
 interface HealthData {
   status: string;
   active_sessions: number;
+  // 已连接到 /ws 的交互客户端数(TUI、网页 playground)。≥1 表示至少一个 CLI 连着。
+  ws_clients: number;
 }
 
 interface TasksData {
@@ -44,9 +46,10 @@ export function Overview() {
         <span className="text-lg font-semibold capitalize">{health?.status || "unknown"}</span>
       </div>
 
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-5 gap-4">
         <MetricCard icon={<Activity size={18} />} label="活跃会话" value={health?.active_sessions ?? 0} />
         <MetricCard icon={<Radio size={18} />} label="通道在线" value={onlineChannels} />
+        <MetricCard icon={<Plug size={18} />} label="CLI 客户端" value={health?.ws_clients ?? 0} />
         <MetricCard icon={<Brain size={18} />} label="记忆条数" value={memory?.total ?? 0} />
         <MetricCard icon={<Coins size={18} />} label="Running 任务" value={statusCounts["running"] ?? 0} />
       </div>

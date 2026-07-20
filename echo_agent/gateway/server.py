@@ -667,8 +667,8 @@ class GatewayServer:
         guard = self._require_api_token(request, action="stats")
         if guard is not None:
             return guard
+        # ws_clients is now part of health.check() itself, so no need to re-add it.
         health_data = await self.health.check()
-        health_data["ws_clients"] = len(self._ws_clients)
         return web.json_response(health_data)
 
     # ── WebSocket handler ─────────────────────────────────────────────────
