@@ -1235,6 +1235,14 @@ class AgentLoop:
         if self._is_interrupt_command(event.text):
             await self._handle_interrupt(event)
             return
+        # IM follow-up continuation. On IM channels a clarify tool call cannot
+        # block the turn, so the agent's question was remembered per session
+        # (InferenceStage._prepare_clarify → register_im_pending). If this
+        # session has an unanswered, unexpired follow-up, bind this message to it
+        # so the model sees WHAT is being answered — otherwise a bare "A" reads
+        # as an isolated, ambiguous message. This runs on IM channels only; CLI
+        # uses the blocking /clarify path and never registers an IM pending.
+        self._maybe_bind_im_clarify_answer(event)
         session_lock = await self.sessions.acquire(event.session_key)
         async with session_lock:
             trace_id = uuid.uuid4().hex[:12]
@@ -1475,6 +1483,43 @@ class AgentLoop:
 
     def _is_clarify_command(self, text: str) -> bool:
         return text.strip().split(maxsplit=1)[0].lower() == "/clarify" if text.strip() else False
+
+    def _maybe_bind_im_clarify_answer(self, event: InboundEvent) -> None:
+        """Bind an IM message to a pending follow-up question on its session.
+
+        The agent asked a question on an IM channel last turn; that question was
+        remembered (register_im_pending). We surface it to the model by reusing
+        the reply-quote injection path: setting reply_to_text makes
+        build_user_message_with_reply prepend the question (and any options) to
+        the history copy, so the model sees the user is answering it — without
+        rewriting event.text (retrieval/history keep the raw reply). We do NOT
+        force-map "A" → option ourselves; the model resolves the choice from the
+        full quoted context, which also handles free-text answers uniformly.
+
+        No-ops when: the session has no pending, the pending expired (TTL), or
+        the message already carries its own quote (an explicit user reference
+        wins over the implicit follow-up binding).
+        """
+        if event.reply_to_text:
+            return
+        session_key = event.session_key
+        if not session_key:
+            return
+        ttl = float(self.config.session.im_clarify_pending_ttl_seconds)
+        req = self.clarify.take_im_pending(session_key, ttl)
+        if req is None:
+            return
+        question = (req.question or "").strip()
+        if not question:
+            return
+        if req.options:
+            choices = "；".join(f"{chr(65 + i)}. {opt}" for i, opt in enumerate(req.options))
+            quoted = f"{question}\n可选项：{choices}"
+        else:
+            quoted = question
+        event.reply_to_text = quoted
+        event.reply_to_is_own = True
+        event.reply_to_sender = None
 
     _CLARIFY_CANCEL_CMD = "/__clarify_cancel__"
 

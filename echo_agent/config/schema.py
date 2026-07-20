@@ -1802,6 +1802,14 @@ class SessionConfig(_Base):
             "desc_en": "Send a self-introduction on new sessions",
         },
     )
+    im_clarify_pending_ttl_seconds: int = Field(
+        default=300,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/loop.py",
+            "desc_zh": "IM 通道追问续接的待答有效期(秒);agent 发出追问后超过此时长,下一条消息不再当作答案而按新消息处理",
+            "desc_en": "TTL (seconds) for an IM follow-up question; after this, the next message is treated as new rather than an answer to the pending question",
+        },
+    )
     introduction_template: str = Field(
         default="",
         json_schema_extra={

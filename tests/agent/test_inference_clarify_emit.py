@@ -79,11 +79,34 @@ async def test_prepare_clarify_noop_on_non_cli_channel():
     mgr = ClarifyManager()
     cog = _FakeCog()
     stage = _make_stage(mgr, cog)
+    tc = _FakeToolCall("clarify", {"question": "q", "options": ["A", "B"]})
+
+    class _IMEvent(_FakeEvent):
+        channel = "wecom"
+        session_key = "wecom:u1"
+
+    await stage._prepare_clarify(tc, _IMEvent())
+    # IM channel: no id injected into the tool, no cognitive frame (TUI-only)...
+    assert "_clarify_id" not in tc.arguments
+    assert cog.emitted == []
+    # ...but the question is remembered per session so the next inbound message
+    # can be routed to it as the answer (IM follow-up continuation).
+    pending = mgr.take_im_pending("wecom:u1", ttl_seconds=300)
+    assert pending is not None
+    assert pending.question == "q"
+    assert pending.options == ["A", "B"]
+
+
+@pytest.mark.asyncio
+async def test_prepare_clarify_im_pending_not_registered_without_session_key():
+    mgr = ClarifyManager()
+    cog = _FakeCog()
+    stage = _make_stage(mgr, cog)
     tc = _FakeToolCall("clarify", {"question": "q"})
 
     class _IMEvent(_FakeEvent):
         channel = "wecom"
+        session_key = ""
 
     await stage._prepare_clarify(tc, _IMEvent())
-    assert "_clarify_id" not in tc.arguments
-    assert cog.emitted == []
+    assert mgr.take_im_pending("", ttl_seconds=300) is None

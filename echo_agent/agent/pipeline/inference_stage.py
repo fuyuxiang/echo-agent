@@ -169,16 +169,31 @@ class InferenceStage:
         self._hook_registry = registry
 
     async def _prepare_clarify(self, tool_call: Any, event: Any) -> None:
-        """Before a CLI clarify runs: register a pending request, inject its id
-        into the tool arguments, and emit a clarify_request frame so the TUI can
-        render the choices. The tool then blocks on ClarifyManager.wait_for_answer.
-        Only fires on the CLI channel (same gate as frame emission)."""
+        """Wire a clarify tool call to the follow-up machinery.
+
+        CLI channel: register a pending request, inject its id into the tool
+        arguments, and emit a clarify_request frame so the TUI can render the
+        choices. The tool then blocks on ClarifyManager.wait_for_answer.
+
+        IM channels (non-CLI): the tool cannot block (callback-style transport,
+        no long-held lock), so instead we remember the question per session via
+        register_im_pending. The tool still returns the question as text this
+        turn; _on_inbound consumes the *next* message on this session as the
+        answer. No id injection, no frame — those are CLI/TUI-only."""
         if tool_call.name != "clarify" or self._clarify is None:
-            return
-        if not should_emit_cognitive(event.channel):
             return
         question = tool_call.arguments.get("question", "")
         options = tool_call.arguments.get("options", []) or []
+        if not should_emit_cognitive(event.channel):
+            # IM path: remember the question keyed by session so the next inbound
+            # message is routed as its answer (see AgentLoop._on_inbound).
+            session_key = getattr(event, "session_key", "")
+            if session_key:
+                self._clarify.register_im_pending(
+                    session_key, question, options,
+                    user_id=getattr(event, "sender_id", ""),
+                )
+            return
         req = self._clarify.request(
             question, options,
             user_id=getattr(event, "sender_id", ""),
