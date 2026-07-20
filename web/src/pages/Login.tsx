@@ -12,11 +12,21 @@ export function Login() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+    // apiFetch 从 localStorage 读 token,所以必须先落盘再校验;失败再回滚,
+    // 否则无效 token 也会残留。/health 无需鉴权,验不出 token,这里改用
+    // /config —— 它走 admin token 校验,能真正验证输入的 admin token 是否有效。
+    const prev = localStorage.getItem("echo_token");
+    setStoreToken(token);
     try {
-      await apiFetch("/health");
-      setStoreToken(token);
+      await apiFetch("/config");
       navigate("/", { replace: true });
     } catch {
+      if (prev !== null) {
+        localStorage.setItem("echo_token", prev);
+      } else {
+        localStorage.removeItem("echo_token");
+      }
+      useAuthStore.setState({ token: prev });
       setError("Token 无效或服务不可达");
     }
   };

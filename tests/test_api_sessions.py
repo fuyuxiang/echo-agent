@@ -25,8 +25,11 @@ async def test_list_sessions(mock_server, api):
     # 端点调的是异步的 list_sessions_async(同步 list_sessions 在事件循环里
     # 只能看到内存缓存,且 await 一个 list 会 TypeError)。mock 必须打在真实
     # 被调方法上,避免像旧版那样用 AsyncMock 伪装同步方法而掩盖类型不匹配。
+    # 字段须与真实 storage(storage/sqlite.py、session/manager.py)一致:返回
+    # updated_at 而非 last_active。前端 Sessions.tsx 依赖 updated_at,旧 mock 用
+    # last_active 与实现脱节,曾掩盖前端字段名 bug。
     mock_server.session_manager.list_sessions_async = AsyncMock(return_value=[
-        {"key": "tg_user1", "message_count": 10, "last_active": "2026-07-07T10:00:00"},
+        {"key": "tg_user1", "message_count": 10, "updated_at": "2026-07-07T10:00:00"},
     ])
 
     app = web.Application()
@@ -36,6 +39,7 @@ async def test_list_sessions(mock_server, api):
         assert resp.status == 200
         data = await resp.json()
         assert len(data["sessions"]) == 1
+        assert data["sessions"][0]["updated_at"] == "2026-07-07T10:00:00"
 
 
 @pytest.mark.asyncio
