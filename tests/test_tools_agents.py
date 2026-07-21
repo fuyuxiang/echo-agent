@@ -480,43 +480,25 @@ class TestProcessTool:
 
     @pytest.mark.asyncio
     async def test_list_empty(self):
+        # Each ProcessTool owns a private, initially empty process table.
         tool = self._make()
-        # Clear global state
-        import echo_agent.agent.tools.process as proc_mod
-        orig = proc_mod._PROCESSES.copy()
-        proc_mod._PROCESSES.clear()
-        try:
-            result = await tool.execute({"action": "list"}, _ctx())
-            assert result.success is True
-            assert "No background" in result.output
-        finally:
-            proc_mod._PROCESSES.update(orig)
+        result = await tool.execute({"action": "list"}, _ctx())
+        assert result.success is True
+        assert "No background" in result.output
 
     @pytest.mark.asyncio
     async def test_poll_not_found(self):
         tool = self._make()
-        import echo_agent.agent.tools.process as proc_mod
-        orig = proc_mod._PROCESSES.copy()
-        proc_mod._PROCESSES.clear()
-        try:
-            result = await tool.execute({"action": "poll", "process_id": "proc_999"}, _ctx())
-            assert result.success is False
-            assert "not found" in result.error
-        finally:
-            proc_mod._PROCESSES.update(orig)
+        result = await tool.execute({"action": "poll", "process_id": "proc_999"}, _ctx())
+        assert result.success is False
+        assert "not found" in result.error
 
     @pytest.mark.asyncio
     async def test_stop_not_found(self):
         tool = self._make()
-        import echo_agent.agent.tools.process as proc_mod
-        orig = proc_mod._PROCESSES.copy()
-        proc_mod._PROCESSES.clear()
-        try:
-            result = await tool.execute({"action": "stop", "process_id": "proc_999"}, _ctx())
-            assert result.success is False
-            assert "not found" in result.error
-        finally:
-            proc_mod._PROCESSES.update(orig)
+        result = await tool.execute({"action": "stop", "process_id": "proc_999"}, _ctx())
+        assert result.success is False
+        assert "not found" in result.error
 
 
 # ===========================================================================

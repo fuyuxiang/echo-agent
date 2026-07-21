@@ -12,8 +12,6 @@ from loguru import logger
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
 from echo_agent.security.guards import evaluate_shell_command
 
-_PROCESSES: dict[str, dict[str, Any]] = {}
-
 
 class ProcessTool(Tool):
     name = "process"
@@ -35,6 +33,9 @@ class ProcessTool(Tool):
         self._workspace = workspace
         self._exec_policy = exec_policy
         self._network_policy = network_policy
+        # Per-instance process table — a module-level global would let one Agent
+        # instance's ProcessTool see and stop another's background processes.
+        self._processes: dict[str, dict[str, Any]] = {}
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         action = params["action"]
@@ -72,7 +73,7 @@ class ProcessTool(Tool):
             cwd=self._workspace,
         )
         pid = f"proc_{proc.pid}"
-        _PROCESSES[pid] = {
+        self._processes[pid] = {
             "process": proc,
             "command": cmd,
             "started": time.time(),
@@ -87,14 +88,14 @@ class ProcessTool(Tool):
             lambda t: not t.cancelled() and t.exception()
             and logger.warning("Output collector for {} failed: {}", pid, t.exception())
         )
-        _PROCESSES[pid]["collector"] = collector
+        self._processes[pid]["collector"] = collector
         return ToolResult(output=f"Started process {pid}: {cmd}", metadata={"process_id": pid})
 
     def _list(self) -> ToolResult:
-        if not _PROCESSES:
+        if not self._processes:
             return ToolResult(output="No background processes.")
         lines = []
-        for pid, info in _PROCESSES.items():
+        for pid, info in self._processes.items():
             proc = info["process"]
             status = "running" if proc.returncode is None else f"exited({proc.returncode})"
             elapsed = int(time.time() - info["started"])
@@ -102,9 +103,9 @@ class ProcessTool(Tool):
         return ToolResult(output="\n".join(lines))
 
     async def _poll(self, pid: str) -> ToolResult:
-        if pid not in _PROCESSES:
+        if pid not in self._processes:
             return ToolResult(success=False, error=f"Process '{pid}' not found")
-        info = _PROCESSES[pid]
+        info = self._processes[pid]
         proc = info["process"]
         status = "running" if proc.returncode is None else f"exited({proc.returncode})"
         stdout = info["stdout_buf"].decode(errors="replace")[-8000:]
@@ -115,9 +116,9 @@ class ProcessTool(Tool):
         return ToolResult(output=output, metadata={"status": status})
 
     async def _stop(self, pid: str) -> ToolResult:
-        if pid not in _PROCESSES:
+        if pid not in self._processes:
             return ToolResult(success=False, error=f"Process '{pid}' not found")
-        info = _PROCESSES[pid]
+        info = self._processes[pid]
         proc = info["process"]
         if proc.returncode is None:
             proc.terminate()
@@ -129,11 +130,32 @@ class ProcessTool(Tool):
         collector = info.get("collector")
         if collector is not None:
             collector.cancel()
-        del _PROCESSES[pid]
+        del self._processes[pid]
         return ToolResult(output=f"Stopped {pid}")
 
+    async def aclose(self) -> None:
+        """Terminate every live child process and cancel its collector.
+
+        Called from AgentLoop.stop() so background processes do not outlive the
+        agent. Kept idempotent — a second call over an empty table is a no-op.
+        """
+        for pid, info in list(self._processes.items()):
+            proc = info["process"]
+            if proc.returncode is None:
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+            for key in ("collector", "watchdog"):
+                task = info.get(key)
+                if task is not None:
+                    task.cancel()
+        self._processes.clear()
+
     async def _collect_output(self, pid: str) -> None:
-        info = _PROCESSES.get(pid)
+        info = self._processes.get(pid)
         if not info:
             return
         proc = info["process"]
