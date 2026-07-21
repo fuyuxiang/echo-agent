@@ -159,13 +159,25 @@ class ProcessTool(Tool):
         if not info:
             return
         proc = info["process"]
-        try:
+
+        async def _drain(stream: Any, buf_key: str) -> None:
+            if stream is None:
+                return
             while True:
-                chunk = await proc.stdout.read(4096)
+                chunk = await stream.read(4096)
                 if not chunk:
                     break
-                info["stdout_buf"] += chunk
-                if len(info["stdout_buf"]) > 100_000:
-                    info["stdout_buf"] = info["stdout_buf"][-50_000:]
+                info[buf_key] += chunk
+                if len(info[buf_key]) > 100_000:
+                    info[buf_key] = info[buf_key][-50_000:]
+
+        try:
+            # Drain stdout AND stderr concurrently. Reading only stdout lets the
+            # stderr pipe buffer fill (~64KB on Linux) and the child blocks on
+            # its next stderr write forever — a classic subprocess deadlock.
+            await asyncio.gather(
+                _drain(proc.stdout, "stdout_buf"),
+                _drain(proc.stderr, "stderr_buf"),
+            )
         except Exception as e:
-            logger.debug("Error reading process stdout: {}", e)
+            logger.debug("Error reading process output: {}", e)
