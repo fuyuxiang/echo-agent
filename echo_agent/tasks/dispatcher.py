@@ -79,6 +79,11 @@ class TaskDispatcher:
         # dispatch coroutine awaits it before releasing the concurrency slot so
         # one slot covers the WHOLE turn, not just the publish (decision d).
         self._pending_release: dict[str, asyncio.Future[None]] = {}
+        # Task ids whose lease renewal returned False (task left RUNNING or lost
+        # ownership): the renew loop stops poking these. This only halts
+        # RENEWING — the slot is still owned by _dispatch's finally / the
+        # terminal listener, which release it independently (gap #5).
+        self._stop_renew: set[str] = set()
         self._sem = asyncio.Semaphore(max_concurrent)
 
     async def start(self) -> None:
@@ -138,7 +143,6 @@ class TaskDispatcher:
 
     async def _dispatch(self, task: Any) -> None:
         await self._sem.acquire()
-        released = False
         try:
             session_key = f"task:{task.id}"
             attempt_id = uuid.uuid4().hex
@@ -155,7 +159,7 @@ class TaskDispatcher:
                 unattended=True,
                 metadata={"task_id": task.id},
             )
-            fut: asyncio.Future[None] = asyncio.get_event_loop().create_future()
+            fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
             self._pending_release[task.id] = fut
             try:
                 # Move to running BEFORE publishing so a second scan (or another
@@ -184,9 +188,9 @@ class TaskDispatcher:
                 logger.warning("Task {} turn did not reach terminal within lease, releasing slot", task.id)
         finally:
             self._pending_release.pop(task.id, None)
+            self._stop_renew.discard(task.id)
             self._inflight.discard(task.id)
-            if not released:
-                self._sem.release()
+            self._sem.release()
 
     async def _on_task_terminal(self, task_id: str, status: Any) -> None:
         """Terminal listener (registered on TaskManager): unblock the dispatch
@@ -203,8 +207,18 @@ class TaskDispatcher:
         running here."""
         while self._running:
             for task_id in list(self._pending_release.keys()):
+                if task_id in self._stop_renew:
+                    continue
                 try:
-                    await self._tasks.renew_lease(task_id, self._owner_id, self._lease_ttl_ms)
+                    renewed = await self._tasks.renew_lease(
+                        task_id, self._owner_id, self._lease_ttl_ms
+                    )
                 except Exception as e:
                     logger.debug("Lease renew failed for task {}: {}", task_id, e)
+                    continue
+                if not renewed:
+                    # Task left RUNNING or another owner took it: stop renewing.
+                    # The slot itself stays owned by _dispatch's finally / the
+                    # terminal listener — we only stop poking the lease (gap #5).
+                    self._stop_renew.add(task_id)
             await asyncio.sleep(self._renew_interval)
