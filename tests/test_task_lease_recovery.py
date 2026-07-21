@@ -112,7 +112,14 @@ async def test_transition_bumps_version_via_cas(tmp_path):
 
 @pytest.mark.asyncio
 async def test_concurrent_terminal_transitions_do_not_both_win(tmp_path):
-    """CAS 保证并发 cancel + complete 只有一方改写终态,终态唯一。"""
+    """CAS 保证并发 cancel + fail 从同一 RUNNING 起点竞争两个不同终态时,
+    有且只有一方胜出改写终态,另一方被拒绝,终态不会丢失。
+
+    仅断言 final.status ∈ {CANCELLED, FAILED} 无法区分正确的 CAS(恰好一方
+    胜出、另一方抛错)与被 last-write-wins 破坏的实现(两方都落盘、后写覆盖
+    先写),因为两种情形下最终状态都落在这两个终态之一。这里改为直接捕获两个
+    并发协程的结果,断言恰好一个 TaskRecord(胜者)、一个异常(败者),并核对
+    持久化终态等于胜者的状态,才能真正守护"终态唯一、无丢失"这一不变式。"""
     backend = SQLiteBackend(tmp_path / "db.sqlite")
     await backend.initialize()
     manager = TaskManager(backend)
@@ -120,20 +127,30 @@ async def test_concurrent_terminal_transitions_do_not_both_win(tmp_path):
     await manager.transition(task.id, TaskStatus.QUEUED)
     await manager.transition(task.id, TaskStatus.RUNNING)
 
-    async def cancel():
-        try:
-            return await manager.transition(task.id, TaskStatus.CANCELLED)
-        except Exception:
-            return None
+    # Two concurrent transitions racing from the shared RUNNING start toward two
+    # DIFFERENT terminal states. Do NOT swallow — let exceptions surface so we can
+    # prove exactly one won and the other was rejected.
+    results = await asyncio.gather(
+        manager.transition(task.id, TaskStatus.CANCELLED),
+        manager.transition(task.id, TaskStatus.FAILED, error="x"),
+        return_exceptions=True,
+    )
 
-    async def fail():
-        try:
-            return await manager.transition(task.id, TaskStatus.FAILED, error="x")
-        except Exception:
-            return None
+    # Exactly one coroutine must win (returns a TaskRecord); the other must be
+    # rejected. The loser either re-reads a now-terminal status whose allowed-set
+    # excludes its target (ValueError) or exhausts CAS retries (TaskCASConflict).
+    records = [r for r in results if isinstance(r, TaskRecord)]
+    errors = [r for r in results if isinstance(r, Exception)]
+    assert len(records) == 1, f"exactly one winner expected, got {results!r}"
+    assert len(errors) == 1, f"exactly one loser expected, got {results!r}"
+    assert isinstance(errors[0], (ValueError, TaskCASConflict)), repr(errors[0])
 
-    await asyncio.gather(cancel(), fail())
+    winner = records[0]
+    assert winner.status in (TaskStatus.CANCELLED, TaskStatus.FAILED)
+
+    # The persisted terminal status must equal the WINNER's — no lost update where
+    # a later write silently overwrites the terminal state the winner committed.
     final = await manager.get(task.id)
-    # 终态唯一:必落在两者之一,不出现被后写者覆盖成另一个终态又回滚的中间态
+    assert final.status == winner.status
     assert final.status in (TaskStatus.CANCELLED, TaskStatus.FAILED)
     await backend.close()
