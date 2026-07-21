@@ -51,7 +51,7 @@ async def test_create_cron_job(mock_server, api):
     app.router.add_post("/api/v1/cron", api.create_job)
     async with TestClient(TestServer(app)) as client:
         resp = await client.post("/api/v1/cron", json={
-            "name": "new_job", "cron_expr": "*/5 * * * *", "payload": {"msg": "hello"}
+            "name": "new_job", "cron_expr": "*/5 * * * *", "payload": {"command": "hello"}
         })
         assert resp.status == 201
         data = await resp.json()
@@ -156,3 +156,50 @@ async def test_get_runs(mock_server, api):
         assert resp.status == 200
         data = await resp.json()
         assert len(data["runs"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_create_cron_job_rejects_empty_payload(mock_server, api):
+    """缺 command/message 的 Cron 触发时 delivery.inbound_event_from_job 会抛
+    ValueError,永远跑不成——创建时就该 400 拦掉,而非默认空 dict 落库。"""
+    app = web.Application()
+    app.router.add_post("/api/v1/cron", api.create_job)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/api/v1/cron", json={"name": "bad", "cron_expr": "*/5 * * * *"})
+        assert resp.status == 400
+        data = await resp.json()
+        assert "command" in data["error"] or "message" in data["error"]
+
+
+@pytest.mark.asyncio
+async def test_create_cron_job_accepts_command_payload(mock_server, api):
+    from echo_agent.scheduler.service import ScheduledJob, TriggerKind
+    created = ScheduledJob(id="j_ok", name="ok", trigger=TriggerKind.CRON, cron_expr="*/5 * * * *")
+    mock_server._agent_loop.scheduler.add_job = MagicMock(return_value=created)
+
+    app = web.Application()
+    app.router.add_post("/api/v1/cron", api.create_job)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/api/v1/cron", json={
+            "name": "ok", "cron_expr": "*/5 * * * *",
+            "payload": {"command": "巡检磁盘", "deliver_channel": "cli", "deliver_chat_id": "c1"},
+        })
+        assert resp.status == 201
+
+
+@pytest.mark.asyncio
+async def test_job_to_dict_marks_config_valid(mock_server, api):
+    from echo_agent.scheduler.service import ScheduledJob, TriggerKind
+    good = ScheduledJob(id="g", name="g", trigger=TriggerKind.CRON, cron_expr="* * * * *",
+                        payload={"command": "x"})
+    bad = ScheduledJob(id="b", name="b", trigger=TriggerKind.CRON, cron_expr="* * * * *", payload={})
+    mock_server._agent_loop.scheduler.list_jobs = MagicMock(return_value=[good, bad])
+
+    app = web.Application()
+    app.router.add_get("/api/v1/cron", api.list_jobs)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/api/v1/cron")
+        data = await resp.json()
+        by_id = {j["id"]: j for j in data["jobs"]}
+        assert by_id["g"]["config_valid"] is True
+        assert by_id["b"]["config_valid"] is False

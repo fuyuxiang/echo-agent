@@ -11,6 +11,16 @@ if TYPE_CHECKING:
     from echo_agent.gateway.server import GatewayServer
 
 
+def _payload_has_content(payload: object) -> bool:
+    """A scheduled job needs actual work to do. Mirror delivery.inbound_event_from_job:
+    the effective instruction is payload['command'] or payload['message']; without a
+    non-empty one the fire-time path raises ValueError, so reject at creation."""
+    if not isinstance(payload, dict):
+        return False
+    command = str(payload.get("command") or payload.get("message") or "").strip()
+    return bool(command)
+
+
 class CronAPI:
     def __init__(self, server: GatewayServer):
         self._server = server
@@ -53,11 +63,18 @@ class CronAPI:
         except (ValueError, KeyError, TypeError) as e:
             return web.json_response({"error": f"invalid cron_expr: {e}"}, status=400)
 
+        payload = body.get("payload", {})
+        if not _payload_has_content(payload):
+            return web.json_response(
+                {"error": "payload must contain a non-empty 'command' or 'message'"},
+                status=400,
+            )
+
         job = ScheduledJob(
             name=name,
             trigger=TriggerKind.CRON,
             cron_expr=cron_expr,
-            payload=body.get("payload", {}),
+            payload=payload,
         )
         created = self._scheduler().add_job(job)
         return web.json_response({"id": created.id}, status=201)
@@ -143,4 +160,5 @@ class CronAPI:
             "next_run_ms": job.next_run_ms,
             "last_status": job.last_status,
             "payload": job.payload,
+            "config_valid": _payload_has_content(job.payload),
         }
