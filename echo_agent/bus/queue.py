@@ -84,7 +84,7 @@ class MessageBus:
 
         best = DeliveryResult(DeliveryStage.NO_HANDLER, channel)
         for i, result in enumerate(results):
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 logger.error("Outbound handler {} for channel {} failed: {}", i, channel, result)
                 best = self._merge(best, DeliveryResult(DeliveryStage.FAILED, channel, error=str(result)))
             elif isinstance(result, SendResult):

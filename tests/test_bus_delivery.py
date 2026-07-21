@@ -70,3 +70,17 @@ async def test_publish_handler_exception_is_failed():
     bus.subscribe_outbound("cli", h)
     res = await bus.publish_outbound(_evt())
     assert res.stage is DeliveryStage.FAILED
+
+
+@pytest.mark.asyncio
+async def test_publish_handler_cancelled_error_is_failed():
+    # asyncio.gather(return_exceptions=True) captures CancelledError, which
+    # derives from BaseException (not Exception) in Python 3.8+. A cancelled
+    # handler is a failed delivery and must never be classified as ACCEPTED.
+    import asyncio
+
+    bus = MessageBus()
+    async def h(e): raise asyncio.CancelledError()
+    bus.subscribe_outbound("cli", h)
+    res = await bus.publish_outbound(_evt())
+    assert res.stage is DeliveryStage.FAILED
