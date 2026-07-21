@@ -351,18 +351,22 @@ class SQLiteBackend(StorageBackend):
             raise
 
     async def load_memories(self, mem_type: str | None = None) -> list[dict[str, Any]]:
-        db = await self._ensure_connection()
         try:
+            db = await self._ensure_connection()
             if mem_type:
                 rows = await db.execute_fetchall(
                     "SELECT data FROM memories WHERE type=? ORDER BY updated_at DESC", (mem_type,),
                 )
             else:
                 rows = await db.execute_fetchall("SELECT data FROM memories ORDER BY updated_at DESC")
+        except (aiosqlite.Error, OSError) as e:
+            logger.error("Storage unavailable loading memories: {}", e)
+            raise StorageUnavailable(f"failed to read memories: {e}") from e
+        try:
             return [json.loads(r[0]) for r in rows]
-        except Exception as e:
-            logger.error("Failed to load memories: {}", e)
-            return []
+        except (json.JSONDecodeError, ValueError, TypeError, KeyError) as e:
+            logger.error("Corrupt memory data: {}", e)
+            raise CorruptData(f"a memory row is not decodable: {e}") from e
 
     async def delete_memory(self, entry_id: str) -> bool:
         db = await self._ensure_connection()
@@ -392,13 +396,19 @@ class SQLiteBackend(StorageBackend):
             raise
 
     async def load_task(self, task_id: str) -> dict[str, Any] | None:
-        db = await self._ensure_connection()
         try:
+            db = await self._ensure_connection()
             row = await db.execute_fetchall("SELECT data FROM tasks WHERE id=?", (task_id,))
-            return json.loads(row[0][0]) if row else None
-        except Exception as e:
-            logger.error("Failed to load task '{}': {}", task_id, e)
+        except (aiosqlite.Error, OSError) as e:
+            logger.error("Storage unavailable loading task '{}': {}", task_id, e)
+            raise StorageUnavailable(f"failed to read task '{task_id}': {e}") from e
+        if not row:
             return None
+        try:
+            return json.loads(row[0][0])
+        except (json.JSONDecodeError, ValueError, TypeError, KeyError) as e:
+            logger.error("Corrupt task data for '{}': {}", task_id, e)
+            raise CorruptData(f"task '{task_id}' is not decodable: {e}") from e
 
     async def list_tasks(
         self,
@@ -454,13 +464,19 @@ class SQLiteBackend(StorageBackend):
             raise
 
     async def load_workflow(self, workflow_id: str) -> dict[str, Any] | None:
-        db = await self._ensure_connection()
         try:
+            db = await self._ensure_connection()
             row = await db.execute_fetchall("SELECT data FROM workflows WHERE id=?", (workflow_id,))
-            return json.loads(row[0][0]) if row else None
-        except Exception as e:
-            logger.error("Failed to load workflow '{}': {}", workflow_id, e)
+        except (aiosqlite.Error, OSError) as e:
+            logger.error("Storage unavailable loading workflow '{}': {}", workflow_id, e)
+            raise StorageUnavailable(f"failed to read workflow '{workflow_id}': {e}") from e
+        if not row:
             return None
+        try:
+            return json.loads(row[0][0])
+        except (json.JSONDecodeError, ValueError, TypeError, KeyError) as e:
+            logger.error("Corrupt workflow data for '{}': {}", workflow_id, e)
+            raise CorruptData(f"workflow '{workflow_id}' is not decodable: {e}") from e
 
     async def list_workflows(self, status: str | None = None) -> list[dict[str, Any]]:
         db = await self._ensure_connection()

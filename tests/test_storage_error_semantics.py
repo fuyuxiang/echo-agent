@@ -56,3 +56,45 @@ async def test_load_session_io_error_raises_unavailable(backend: SQLiteBackend, 
     monkeypatch.setattr(db, "execute_fetchall", boom)
     with pytest.raises(StorageUnavailable):
         await backend.load_session("any")
+
+
+@pytest.mark.asyncio
+async def test_load_task_corrupt_raises(backend: SQLiteBackend):
+    db = await backend._ensure_connection()
+    await db.execute(
+        "INSERT OR REPLACE INTO tasks (id, workflow_id, status, data, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("t:bad", "", "pending", "{broken", "2026-01-01T00:00:00", "2026-01-01T00:00:00"),
+    )
+    await db.commit()
+    with pytest.raises(CorruptData):
+        await backend.load_task("t:bad")
+    assert await backend.load_task("t:none") is None
+
+
+@pytest.mark.asyncio
+async def test_load_workflow_corrupt_raises(backend: SQLiteBackend):
+    db = await backend._ensure_connection()
+    await db.execute(
+        "INSERT OR REPLACE INTO workflows (id, name, status, data, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("w:bad", "", "pending", "{broken", "2026-01-01T00:00:00", "2026-01-01T00:00:00"),
+    )
+    await db.commit()
+    with pytest.raises(CorruptData):
+        await backend.load_workflow("w:bad")
+    assert await backend.load_workflow("w:none") is None
+
+
+@pytest.mark.asyncio
+async def test_load_memories_corrupt_raises(backend: SQLiteBackend):
+    db = await backend._ensure_connection()
+    await db.execute(
+        "INSERT OR REPLACE INTO memories (id, type, key, data, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("m:bad", "user", "k", "{broken", "2026-01-01T00:00:00", "2026-01-01T00:00:00"),
+    )
+    await db.commit()
+    with pytest.raises(CorruptData):
+        await backend.load_memories("user")
+    assert await backend.load_memories("empty_type") == []
