@@ -12,6 +12,7 @@ interface CronJob {
   status: string;
   last_status: string;
   next_run_ms: number | null;
+  config_valid?: boolean;
 }
 
 export function Cron() {
@@ -19,6 +20,10 @@ export function Cron() {
   const [showCreate, setShowCreate] = useState(false);
   const [name, setName] = useState("");
   const [expr, setExpr] = useState("");
+  const [command, setCommand] = useState("");
+  const [deliverChannel, setDeliverChannel] = useState("");
+  const [deliverChatId, setDeliverChatId] = useState("");
+  const [sourceSessionKey, setSourceSessionKey] = useState("");
 
   const trigger = async (id: string) => {
     const ok = await runMutation(() => apiFetch(`/cron/${id}/trigger`, { method: "POST" }), {
@@ -36,12 +41,21 @@ export function Cron() {
 
   const create = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!command.trim()) {
+      return; // 任务内容必填:与后端 400 校验双保险
+    }
+    const payload: Record<string, string> = { command: command.trim() };
+    if (deliverChannel.trim()) payload.deliver_channel = deliverChannel.trim();
+    if (deliverChatId.trim()) payload.deliver_chat_id = deliverChatId.trim();
+    if (sourceSessionKey.trim()) payload.source_session_key = sourceSessionKey.trim();
     const ok = await runMutation(
-      () => apiFetch("/cron", { method: "POST", body: JSON.stringify({ name, cron_expr: expr }) }),
+      () => apiFetch("/cron", { method: "POST", body: JSON.stringify({ name, cron_expr: expr, payload }) }),
       { success: "已创建", error: "创建失败" },
     );
     if (ok) {
-      setName(""); setExpr(""); setShowCreate(false);
+      setName(""); setExpr(""); setCommand("");
+      setDeliverChannel(""); setDeliverChatId(""); setSourceSessionKey("");
+      setShowCreate(false);
       refetch();
     }
   };
@@ -56,10 +70,18 @@ export function Cron() {
       </div>
 
       {showCreate && (
-        <form onSubmit={create} className="bg-white border rounded p-4 flex gap-3">
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="任务名称" className="border rounded px-3 py-1.5 flex-1" />
-          <input value={expr} onChange={(e) => setExpr(e.target.value)} placeholder="cron 表达式" className="border rounded px-3 py-1.5 w-40" />
-          <button type="submit" className="bg-green-600 text-white px-3 py-1.5 rounded text-sm">创建</button>
+        <form onSubmit={create} className="bg-white border rounded p-4 flex flex-col gap-3">
+          <div className="flex gap-3">
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="任务名称" className="border rounded px-3 py-1.5 flex-1" />
+            <input value={expr} onChange={(e) => setExpr(e.target.value)} placeholder="cron 表达式" className="border rounded px-3 py-1.5 w-40" />
+          </div>
+          <textarea value={command} onChange={(e) => setCommand(e.target.value)} placeholder="任务内容(必填,交给 Agent 执行的指令)" className="border rounded px-3 py-1.5" rows={2} />
+          <div className="flex gap-3">
+            <input value={deliverChannel} onChange={(e) => setDeliverChannel(e.target.value)} placeholder="投递渠道(deliver_channel,可选)" className="border rounded px-3 py-1.5 flex-1" />
+            <input value={deliverChatId} onChange={(e) => setDeliverChatId(e.target.value)} placeholder="会话/群 ID(deliver_chat_id,可选)" className="border rounded px-3 py-1.5 flex-1" />
+          </div>
+          <input value={sourceSessionKey} onChange={(e) => setSourceSessionKey(e.target.value)} placeholder="会话目标 source_session_key(可选,填了可自动解析渠道)" className="border rounded px-3 py-1.5" />
+          <button type="submit" disabled={!command.trim()} className="bg-green-600 text-white px-3 py-1.5 rounded text-sm disabled:opacity-50 self-start">创建</button>
         </form>
       )}
 
@@ -77,7 +99,12 @@ export function Cron() {
         <tbody>
           {data?.jobs.map((job) => (
             <tr key={job.id} className="border-b">
-              <td className="py-2 font-medium">{job.name || job.id}</td>
+              <td className="py-2 font-medium">
+                {job.name || job.id}
+                {job.config_valid === false && (
+                  <span className="ml-2 text-xs px-1.5 rounded bg-red-100 text-red-700">配置无效</span>
+                )}
+              </td>
               <td className="font-mono text-xs">{job.cron_expr}</td>
               <td><span className={`text-xs px-1.5 rounded ${job.enabled ? "bg-green-100 text-green-700" : "bg-gray-100"}`}>{job.enabled ? "活跃" : "暂停"}</span></td>
               <td className="text-xs">{job.last_status || "-"}</td>
