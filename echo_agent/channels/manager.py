@@ -13,7 +13,7 @@ from loguru import logger
 
 from echo_agent.bus.events import InboundEvent, OutboundEvent
 from echo_agent.bus.queue import MessageBus
-from echo_agent.channels.base import BaseChannel
+from echo_agent.channels.base import BaseChannel, SendResult
 from echo_agent.channels.cli import CLIChannel
 from echo_agent.channels.cron import CronChannel
 from echo_agent.channels.dingtalk import DingTalkChannel
@@ -136,7 +136,7 @@ class ChannelManager:
                 except Exception as e:
                     logger.debug("send_reaction failed on {}: {}", event.channel, e)
 
-    async def _filter_and_dispatch(self, event: OutboundEvent) -> None:
+    async def _filter_and_dispatch(self, event: OutboundEvent) -> SendResult | None:
         if event.metadata.get("_token_stream"):
             await self._handle_token_stream(event)
             if event.metadata.get("_drop"):
@@ -161,9 +161,12 @@ class ChannelManager:
                 return
 
         if event.is_final and event.message_kind == "final":
+            result = None
             if not event.metadata.get("_token_stream"):
-                await self._deliver_final(event)
+                result = await self._deliver_final(event)
             await self._on_outbound_final(event)
+            return result
+        return None
 
     async def _on_outbound_final(self, event: OutboundEvent) -> None:
         channel = self._channels.get(event.channel)
@@ -197,7 +200,7 @@ class ChannelManager:
             except Exception as e:
                 logger.debug("send_reaction failed on {}: {}", event.channel, e)
 
-    async def _deliver_final(self, event: OutboundEvent) -> None:
+    async def _deliver_final(self, event: OutboundEvent) -> SendResult | None:
         # Authoritative finalize guard: mark this turn finalized synchronously,
         # before any await yields the event loop, so a still-running heartbeat
         # timer that fires during downstream channel I/O is discarded rather
@@ -241,7 +244,7 @@ class ChannelManager:
                         # fall through to a fresh send if the in-place edit failed
                     else:
                         event.metadata["_drop"] = True
-                        return
+                        return result
                 except Exception as e:
                     logger.error("Final seal-edit exception on {}: {}", event.channel, e)
                     await self._delete_stale_heartbeat(channel, event, hb_msg_id)
@@ -261,7 +264,10 @@ class ChannelManager:
                 logger.warning("Final delivery failed on {}: {}", event.channel, result.error)
         except Exception as e:
             logger.error("Final delivery exception on {}: {}", event.channel, e)
+            event.metadata["_drop"] = True
+            return SendResult(success=False, error=str(e))
         event.metadata["_drop"] = True
+        return result
 
     async def _delete_stale_heartbeat(self, channel, event: OutboundEvent, msg_id: str) -> None:
         """Best-effort removal of a lingering heartbeat message after a failed
