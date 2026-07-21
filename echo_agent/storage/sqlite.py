@@ -414,14 +414,20 @@ class SQLiteBackend(StorageBackend):
         task's terminal/lease state under concurrency without clobbering a peer."""
         db = await self._ensure_connection()
         now = datetime.now().isoformat()
+        # Make the stored JSON authoritative: on a winning swap the SQL bumps the
+        # ``version`` column to expected_version+1, so the serialized blob must
+        # carry the same value regardless of what the caller passed. Otherwise the
+        # column and load_task(...)["version"] diverge and a read-modify-write
+        # retry loop spuriously loses. Shallow-copy to avoid mutating the caller.
+        persisted = {**data, "version": expected_version + 1}
         try:
             cur = await db.execute(
                 "UPDATE tasks SET status=?, data=?, owner_id=?, lease_until_ms=?, "
                 "attempt_id=?, version=version+1, updated_at=? WHERE id=? AND version=?",
-                (data.get("status", "pending"),
-                 json.dumps(data, ensure_ascii=False),
-                 data.get("owner_id", ""), data.get("lease_until_ms"),
-                 data.get("attempt_id", ""), now, task_id, expected_version),
+                (persisted.get("status", "pending"),
+                 json.dumps(persisted, ensure_ascii=False),
+                 persisted.get("owner_id", ""), persisted.get("lease_until_ms"),
+                 persisted.get("attempt_id", ""), now, task_id, expected_version),
             )
             await db.commit()
             return cur.rowcount == 1

@@ -55,4 +55,39 @@ async def test_cas_store_task_fails_on_stale_version(tmp_path):
     # Second writer holds a stale expected_version=0 → must lose.
     lost = await backend.cas_store_task(rec.id, {**rec.to_dict(), "version": 1}, expected_version=0)
     assert lost is False
+    # Losing swap must leave the row untouched (version still at the winner's 1).
+    reloaded = await backend.load_task(rec.id)
+    assert reloaded["version"] == 1
+    await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_cas_store_task_is_version_authoritative_without_caller_prebump(tmp_path):
+    """B3 hazard: a read-modify-write caller reads data (version=0), mutates
+    status, and calls cas_store_task WITHOUT pre-bumping data["version"]. The
+    primitive must still make the stored JSON agree with the column (both →1),
+    so the next retry using load_task(...)["version"] as expected_version wins."""
+    backend = SQLiteBackend(tmp_path / "db.sqlite")
+    await backend.initialize()
+    rec = TaskRecord(title="t", version=0)
+    await backend.store_task(rec.id, rec.to_dict())
+
+    # Caller did NOT pre-bump: data["version"] is still 0.
+    data = await backend.load_task(rec.id)
+    assert data["version"] == 0
+    data["status"] = "running"
+    ok = await backend.cas_store_task(rec.id, data, expected_version=0)
+    assert ok is True
+
+    # Column and JSON must agree at 1 despite the caller passing version=0.
+    reloaded = await backend.load_task(rec.id)
+    assert reloaded["version"] == 1
+    assert reloaded["status"] == "running"
+
+    # A subsequent CAS keyed on the reloaded JSON version must succeed, proving
+    # column and JSON did not diverge.
+    reloaded["status"] = "completed"
+    again = await backend.cas_store_task(rec.id, reloaded, expected_version=reloaded["version"])
+    assert again is True
+    assert (await backend.load_task(rec.id))["version"] == 2
     await backend.close()
