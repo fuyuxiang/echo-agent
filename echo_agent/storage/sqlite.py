@@ -12,6 +12,7 @@ import aiosqlite
 from loguru import logger
 
 from echo_agent.storage.backend import StorageBackend
+from echo_agent.storage.errors import CorruptData, StorageUnavailable
 
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS sessions (
@@ -283,13 +284,19 @@ class SQLiteBackend(StorageBackend):
             raise
 
     async def load_session(self, key: str) -> dict[str, Any] | None:
-        db = await self._ensure_connection()
         try:
+            db = await self._ensure_connection()
             row = await db.execute_fetchall("SELECT data FROM sessions WHERE key=?", (key,))
-            return json.loads(row[0][0]) if row else None
-        except Exception as e:
-            logger.error("Failed to load session '{}': {}", key, e)
+        except (aiosqlite.Error, OSError) as e:
+            logger.error("Storage unavailable loading session '{}': {}", key, e)
+            raise StorageUnavailable(f"failed to read session '{key}': {e}") from e
+        if not row:
             return None
+        try:
+            return json.loads(row[0][0])
+        except (json.JSONDecodeError, ValueError, TypeError, KeyError) as e:
+            logger.error("Corrupt session data for '{}': {}", key, e)
+            raise CorruptData(f"session '{key}' is not decodable: {e}") from e
 
     async def delete_session(self, key: str) -> bool:
         db = await self._ensure_connection()
