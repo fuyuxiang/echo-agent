@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from typing import Awaitable, Callable
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 from loguru import logger
 
+from echo_agent.bus.delivery import DeliveryResult, DeliveryStage
 from echo_agent.bus.events import InboundEvent, OutboundEvent
 from echo_agent.bus.rate_limiter import SessionRateLimiter
 
+if TYPE_CHECKING:
+    from echo_agent.channels.base import SendResult
+
 InboundHandler = Callable[[InboundEvent], Awaitable[None]]
-OutboundHandler = Callable[[OutboundEvent], Awaitable[None]]
+OutboundHandler = Callable[[OutboundEvent], Awaitable["SendResult | None"]]
 
 
 class MessageBus:
@@ -49,10 +53,10 @@ class MessageBus:
             logger.error("Inbound queue full after 5s wait, rejecting event from {}:{}", event.channel, event.chat_id)
             return False
 
-    async def publish_outbound(self, event: OutboundEvent) -> None:
+    async def publish_outbound(self, event: OutboundEvent) -> DeliveryResult:
         if not self._global_outbound_handlers and event.channel not in self._outbound_handlers:
             logger.warning("No outbound handler for channel={}", event.channel)
-            return
+            return DeliveryResult(DeliveryStage.NO_HANDLER, event.channel)
 
         # Snapshot handler lists before iterating so a handler that mutates the list
         # (e.g. subscribes/unsubscribes) won't trigger "list changed size" errors.
@@ -61,24 +65,45 @@ class MessageBus:
             *(handler(event) for handler in global_handlers),
             return_exceptions=True,
         )
-        for i, result in enumerate(global_results):
-            if isinstance(result, Exception):
-                logger.error("Global outbound handler {} failed: {}", i, result)
+        agg = self._aggregate(event.channel, global_results)
 
         if event.metadata.get("_drop"):
-            return
+            return agg
 
         specific_handlers = list(self._outbound_handlers.get(event.channel, []))
-        if not specific_handlers:
-            return
+        if specific_handlers:
+            specific_results = await asyncio.gather(
+                *(handler(event) for handler in specific_handlers),
+                return_exceptions=True,
+            )
+            agg = self._merge(agg, self._aggregate(event.channel, specific_results))
+        return agg
 
-        specific_results = await asyncio.gather(
-            *(handler(event) for handler in specific_handlers),
-            return_exceptions=True,
-        )
-        for i, result in enumerate(specific_results):
+    def _aggregate(self, channel: str, results: list) -> DeliveryResult:
+        from echo_agent.channels.base import SendResult
+
+        best = DeliveryResult(DeliveryStage.NO_HANDLER, channel)
+        for i, result in enumerate(results):
             if isinstance(result, Exception):
-                logger.error("Outbound handler {} for channel {} failed: {}", i, event.channel, result)
+                logger.error("Outbound handler {} for channel {} failed: {}", i, channel, result)
+                best = self._merge(best, DeliveryResult(DeliveryStage.FAILED, channel, error=str(result)))
+            elif isinstance(result, SendResult):
+                best = self._merge(best, DeliveryResult.from_send_result(result, channel))
+            else:  # None
+                best = self._merge(best, DeliveryResult(DeliveryStage.ACCEPTED, channel))
+        return best
+
+    @staticmethod
+    def _merge(a: DeliveryResult, b: DeliveryResult) -> DeliveryResult:
+        # Precedence: FAILED wins (surface any explicit failure), then DELIVERED,
+        # then ACCEPTED, then NO_HANDLER.
+        order = {
+            DeliveryStage.FAILED: 3,
+            DeliveryStage.DELIVERED: 2,
+            DeliveryStage.ACCEPTED: 1,
+            DeliveryStage.NO_HANDLER: 0,
+        }
+        return a if order[a.stage] >= order[b.stage] else b
 
     def subscribe_inbound(self, handler: InboundHandler) -> None:
         self._inbound_subscribers.append(handler)
