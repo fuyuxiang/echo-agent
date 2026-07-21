@@ -185,10 +185,14 @@ class TaskManager:
         task = await self.get(task_id)
         if not task or task.status != TaskStatus.RUNNING or task.owner_id != owner_id:
             return False
+        expected_version = task.version
         task.lease_until_ms = _now_ms() + lease_ttl_ms
         task.updated_at = _now()
-        await self._storage.store_task(task.id, task.to_dict())
-        return True
+        # Route through CAS so the lease write only lands if the version still
+        # matches. A lost CAS means a concurrent writer advanced the task (e.g. a
+        # terminal transition) — return False so the renewer stops, and never
+        # revert the terminal state back to RUNNING.
+        return await self._cas_persist(task, expected_version)
 
     async def reclaim_expired_running(
         self, *, current_owner_id: str, now_ms: int | None = None

@@ -207,6 +207,40 @@ async def test_renew_lease_only_for_matching_owner(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_renew_lease_cannot_revert_concurrent_terminal_transition(tmp_path):
+    """B4 race: a periodic renewer captures a RUNNING snapshot, then the owning
+    turn commits a terminal transition via CAS. The blind store_task path would
+    resurrect the terminal task at RUNNING with a stale version. Routing
+    renew_lease through _cas_persist closes it: renew_lease returns False and the
+    persisted terminal status survives against the REAL SQLiteBackend."""
+    backend = SQLiteBackend(tmp_path / "db.sqlite")
+    await backend.initialize()
+    manager = TaskManager(backend)
+    t = await manager.create(title="t")
+    await manager.transition(t.id, TaskStatus.QUEUED)
+    await manager.transition(t.id, TaskStatus.RUNNING)
+    await manager.set_running_context(t.id, "task:t", "evt", owner_id="inst-1", lease_ttl_ms=1000)
+
+    # Renewer reads a RUNNING snapshot (captures its version).
+    snapshot = await manager.get(t.id)
+    assert snapshot.status == TaskStatus.RUNNING
+
+    # Owning turn commits a terminal transition via CAS (bumps the version).
+    await manager.transition(t.id, TaskStatus.CANCELLED)
+
+    # Stale renewer still believes it owns a RUNNING task and tries to renew.
+    renewed = await manager.renew_lease(t.id, owner_id="inst-1", lease_ttl_ms=60000)
+    assert renewed is False
+
+    # Critical invariant: the terminal state was NOT reverted to RUNNING.
+    persisted = await manager.get(t.id)
+    assert persisted.status == TaskStatus.CANCELLED
+    reloaded = await backend.load_task(t.id)
+    assert reloaded["status"] == TaskStatus.CANCELLED.value
+    await backend.close()
+
+
+@pytest.mark.asyncio
 async def test_terminal_listener_fires_on_terminal(tmp_path):
     backend = SQLiteBackend(tmp_path / "db.sqlite")
     await backend.initialize()
