@@ -154,3 +154,73 @@ async def test_concurrent_terminal_transitions_do_not_both_win(tmp_path):
     assert final.status == winner.status
     assert final.status in (TaskStatus.CANCELLED, TaskStatus.FAILED)
     await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_reclaim_requeues_expired_and_foreign_running(tmp_path):
+    backend = SQLiteBackend(tmp_path / "db.sqlite")
+    await backend.initialize()
+    manager = TaskManager(backend)
+
+    # 孤儿 A:上一个实例(旧 owner)遗留的 RUNNING。
+    a = await manager.create(title="orphan-old-owner")
+    await manager.transition(a.id, TaskStatus.QUEUED)
+    await manager.transition(a.id, TaskStatus.RUNNING)
+    await manager.set_running_context(a.id, "task:a", "evt_a", owner_id="inst-OLD", lease_ttl_ms=60000)
+
+    # 孤儿 B:owner 是自己但租约已过期。
+    b = await manager.create(title="orphan-expired")
+    await manager.transition(b.id, TaskStatus.QUEUED)
+    await manager.transition(b.id, TaskStatus.RUNNING)
+    await manager.set_running_context(b.id, "task:b", "evt_b", owner_id="inst-NEW", lease_ttl_ms=-1)
+
+    # 健康 C:owner 自己且租约有效,不该被回收。
+    c = await manager.create(title="healthy")
+    await manager.transition(c.id, TaskStatus.QUEUED)
+    await manager.transition(c.id, TaskStatus.RUNNING)
+    await manager.set_running_context(c.id, "task:c", "evt_c", owner_id="inst-NEW", lease_ttl_ms=60000)
+
+    reclaimed = await manager.reclaim_expired_running(current_owner_id="inst-NEW", now_ms=_now_ms())
+
+    assert set(reclaimed) == {a.id, b.id}
+    assert (await manager.get(a.id)).status == TaskStatus.QUEUED
+    assert (await manager.get(b.id)).status == TaskStatus.QUEUED
+    assert (await manager.get(c.id)).status == TaskStatus.RUNNING
+    await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_renew_lease_only_for_matching_owner(tmp_path):
+    backend = SQLiteBackend(tmp_path / "db.sqlite")
+    await backend.initialize()
+    manager = TaskManager(backend)
+    t = await manager.create(title="t")
+    await manager.transition(t.id, TaskStatus.QUEUED)
+    await manager.transition(t.id, TaskStatus.RUNNING)
+    await manager.set_running_context(t.id, "task:t", "evt", owner_id="inst-1", lease_ttl_ms=1000)
+
+    before = (await manager.get(t.id)).lease_until_ms
+    assert await manager.renew_lease(t.id, owner_id="inst-1", lease_ttl_ms=60000) is True
+    assert (await manager.get(t.id)).lease_until_ms > before
+    assert await manager.renew_lease(t.id, owner_id="other", lease_ttl_ms=60000) is False
+    await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_terminal_listener_fires_on_terminal(tmp_path):
+    backend = SQLiteBackend(tmp_path / "db.sqlite")
+    await backend.initialize()
+    manager = TaskManager(backend)
+    seen: list[tuple[str, str]] = []
+
+    async def listener(task_id, status):
+        seen.append((task_id, status.value))
+
+    manager.add_terminal_listener(listener)
+    t = await manager.create(title="t")
+    await manager.transition(t.id, TaskStatus.QUEUED)
+    await manager.transition(t.id, TaskStatus.RUNNING)  # not terminal → no fire
+    await manager.transition(t.id, TaskStatus.CANCELLED)  # terminal → fire
+
+    assert seen == [(t.id, "cancelled")]
+    await backend.close()

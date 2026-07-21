@@ -13,12 +13,18 @@ from echo_agent.tasks.models import (
     VALID_TASK_TRANSITIONS,
     TERMINAL_TASK_STATUSES,
     _now,
+    _now_ms,
 )
 
 # An event sink receives (event_type, payload) for every task change so the
 # dashboard can push real-time updates. Wired at startup (app.py) to the
 # dashboard WS broadcast; None until then (tests, headless runs).
 EventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
+
+# A terminal listener is fired once a task reaches SUCCESS/FAILED/CANCELLED so
+# the dispatcher can release the concurrency semaphore only after the whole turn
+# (not merely the publish) is done — see decision (d).
+TerminalListener = Callable[[str, "TaskStatus"], Awaitable[None]]
 
 
 class TaskManager:
@@ -27,6 +33,7 @@ class TaskManager:
     def __init__(self, storage: Any):
         self._storage = storage
         self._event_sink: EventSink | None = None
+        self._terminal_listeners: list[TerminalListener] = []
 
     def set_event_sink(self, sink: EventSink | None) -> None:
         """Wire an async sink that receives every task change (create/transition/
@@ -105,6 +112,8 @@ class TaskManager:
             if await self._cas_persist(task, expected_version):
                 logger.info("Task {} → {}", task_id, new_status.value)
                 await self._emit("task_transitioned", task)
+                if new_status in TERMINAL_TASK_STATUSES:
+                    await self._fire_terminal(task_id, new_status)
                 return task
         raise TaskCASConflict(f"Task '{task_id}' transition to {new_status.value} lost CAS after retries")
 
@@ -145,20 +154,59 @@ class TaskManager:
         return await self.transition(task_id, TaskStatus.CANCELLED)
 
     async def set_running_context(
-        self, task_id: str, session_key: str, inbound_event_id: str
+        self, task_id: str, session_key: str, inbound_event_id: str,
+        *, owner_id: str = "", lease_ttl_ms: int = 0, attempt_id: str = "",
     ) -> TaskRecord | None:
         """Record which session/turn is executing this task so a later cancel can
-        interrupt precisely that turn (not just flip the DB status). Stored on the
-        task's session_id + metadata['_interrupt_event_id']. Best-effort: returns
-        None if the task vanished, never raises."""
+        interrupt precisely that turn, and (when the dispatcher provides them)
+        stamp the lease trio owner_id/attempt_id/lease_until_ms so a crashed
+        instance's RUNNING tasks can be reclaimed by whoever holds the workspace
+        next. Best-effort: returns None if the task vanished, never raises.
+        lease_ttl_ms == 0 keeps the old behaviour (no lease); a negative TTL
+        stamps an already-expired lease (used to simulate a stale lease)."""
         task = await self.get(task_id)
         if not task:
             return None
         task.session_id = session_key
         task.metadata = {**task.metadata, "_interrupt_event_id": inbound_event_id}
+        if owner_id:
+            task.owner_id = owner_id
+        if attempt_id:
+            task.attempt_id = attempt_id
+        if lease_ttl_ms != 0:
+            task.lease_until_ms = _now_ms() + lease_ttl_ms
         task.updated_at = _now()
         await self._storage.store_task(task.id, task.to_dict())
         return task
+
+    async def renew_lease(self, task_id: str, owner_id: str, lease_ttl_ms: int) -> bool:
+        """Extend a RUNNING task's lease if we still own it. Returns False when the
+        task left RUNNING or another owner took it — the caller must stop renewing."""
+        task = await self.get(task_id)
+        if not task or task.status != TaskStatus.RUNNING or task.owner_id != owner_id:
+            return False
+        task.lease_until_ms = _now_ms() + lease_ttl_ms
+        task.updated_at = _now()
+        await self._storage.store_task(task.id, task.to_dict())
+        return True
+
+    async def reclaim_expired_running(
+        self, *, current_owner_id: str, now_ms: int | None = None
+    ) -> list[str]:
+        """Requeue RUNNING tasks whose executor is gone: either stamped by a
+        previous instance (owner_id != current) or whose lease has expired. Called
+        once at startup so a crash mid-turn no longer strands a task at RUNNING
+        forever. Returns the reclaimed task ids."""
+        ref = now_ms if now_ms is not None else _now_ms()
+        reclaimed: list[str] = []
+        for task in await self.list_by_status(TaskStatus.RUNNING):
+            foreign = bool(task.owner_id) and task.owner_id != current_owner_id
+            expired = task.lease_until_ms is not None and task.lease_until_ms < ref
+            if foreign or expired:
+                rolled = await self.requeue_dispatch_failed(task.id)
+                if rolled is not None and rolled.status == TaskStatus.QUEUED:
+                    reclaimed.append(task.id)
+        return reclaimed
 
     async def requeue_dispatch_failed(self, task_id: str) -> TaskRecord | None:
         """Roll a task the dispatcher already flipped to RUNNING back to QUEUED
@@ -200,6 +248,21 @@ class TaskManager:
         except ValueError as e:
             logger.debug("Task {} terminal writeback skipped: {}", task_id, e)
             return await self.get(task_id)
+
+    def add_terminal_listener(self, listener: TerminalListener) -> None:
+        """Register an async callback fired after a task reaches a terminal state.
+        The dispatcher uses this to release the concurrency semaphore only once the
+        whole turn (not merely the publish) is done — see decision (d)."""
+        self._terminal_listeners.append(listener)
+
+    async def _fire_terminal(self, task_id: str, status: TaskStatus) -> None:
+        """Notify terminal listeners. Best-effort: a broken listener must never
+        fail the state change that already persisted."""
+        for listener in list(self._terminal_listeners):
+            try:
+                await listener(task_id, status)
+            except Exception as e:
+                logger.debug("Terminal listener failed for task {}: {}", task_id, e)
 
     async def update(self, task_id: str, **fields: Any) -> TaskRecord:
         task = await self.get(task_id)
