@@ -212,8 +212,12 @@ async def bootstrap(
         # Bridges queued board tasks to the agent for execution (the task subsystem
         # has no executor of its own — the agent is the executor). Polls QUEUED tasks
         # and dispatches each as an inbound event on its own isolated session.
-        from echo_agent.tasks.dispatcher import TaskDispatcher
-        task_dispatcher = TaskDispatcher(bus, task_manager)
+        from echo_agent.tasks.dispatcher import TaskDispatcher, new_owner_id
+        dispatcher_owner_id = new_owner_id()
+        task_dispatcher = TaskDispatcher(bus, task_manager, owner_id=dispatcher_owner_id)
+        # Release the concurrency slot only when the whole turn reaches a terminal
+        # state (decision d), not merely after the inbound publish.
+        task_manager.add_terminal_listener(task_dispatcher._on_task_terminal)
 
         # Plugin system — discover and activate plugins
         from echo_agent.plugins.manager import PluginManager
@@ -420,6 +424,14 @@ class AppRuntime:
         if ctx.scheduler:
             await ctx.scheduler.start()
         if ctx.task_dispatcher:
+            # Reclaim tasks a crashed previous instance left stranded at RUNNING
+            # (foreign owner or expired lease) BEFORE we start dispatching, so
+            # they re-enter the queue instead of blocking forever.
+            reclaimed = await ctx.agent.task_manager.reclaim_expired_running(
+                current_owner_id=ctx.task_dispatcher._owner_id
+            )
+            if reclaimed:
+                logger.info("Reclaimed {} orphaned RUNNING task(s) at startup", len(reclaimed))
             await ctx.task_dispatcher.start()
         await ctx.health.start()
 

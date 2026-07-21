@@ -26,6 +26,12 @@ from echo_agent.bus.events import ContentBlock, ContentType, EventType, InboundE
 from echo_agent.tasks.models import TaskStatus
 
 
+def new_owner_id() -> str:
+    """Generate a per-process owner id stamped onto RUNNING tasks' leases so a
+    later instance can tell 'my in-flight task' from 'a crashed peer's orphan'."""
+    return uuid.uuid4().hex
+
+
 def render_task_prompt(task: Any) -> str:
     """Render a task record into the natural-language instruction the agent
     receives. Kept deliberately explicit about the expected close-out so the

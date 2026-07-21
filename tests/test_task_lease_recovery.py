@@ -258,3 +258,11 @@ async def test_terminal_listener_fires_on_terminal(tmp_path):
 
     assert seen == [(t.id, "cancelled")]
     await backend.close()
+
+
+def test_new_owner_id_is_unique_hex():
+    from echo_agent.tasks.dispatcher import new_owner_id
+
+    a, b = new_owner_id(), new_owner_id()
+    assert a != b
+    assert len(a) == 32 and all(c in "0123456789abcdef" for c in a)
