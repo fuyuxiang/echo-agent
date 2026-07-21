@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from echo_agent.agent.streaming import TokenStreamPublisher
+from echo_agent.bus.delivery import DeliveryStage
 
 
 def _make_event():
@@ -54,7 +55,8 @@ class TestTokenStreamPublisherDisabled:
     async def test_finalize_noop(self):
         pub, bus = _make_publisher(enabled=False)
         result = await pub.finalize("final text")
-        assert result is False
+        # Disabled streaming reports NO_HANDLER so callers fall back to a plain send.
+        assert result.stage is DeliveryStage.NO_HANDLER
         bus.publish_outbound.assert_not_called()
 
 
@@ -112,7 +114,8 @@ class TestTokenStreamPublisherFinalize:
         pub._pending = ""
 
         result = await pub.finalize("partial complete")
-        assert result is True
+        # finalize now transparently returns publish_outbound's receipt.
+        assert result is bus.publish_outbound.return_value
         # Should publish the full text as final
         bus.publish_outbound.assert_called()
         call_args = bus.publish_outbound.call_args[0][0]
@@ -124,7 +127,7 @@ class TestTokenStreamPublisherFinalize:
         # No non-final was sent yet
         assert pub._sent_nonfinal is False
         result = await pub.finalize("complete text")
-        assert result is True
+        assert result is bus.publish_outbound.return_value
         bus.publish_outbound.assert_called_once()
         call_args = bus.publish_outbound.call_args[0][0]
         assert call_args.is_final is True

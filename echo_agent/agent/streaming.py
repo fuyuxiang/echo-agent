@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
+from echo_agent.bus.delivery import DeliveryResult, DeliveryStage
+
 if TYPE_CHECKING:
     from echo_agent.bus.events import InboundEvent
     from echo_agent.bus.queue import MessageBus
@@ -110,9 +112,11 @@ class TokenStreamPublisher:
             if len(self._pending) >= self._flush_chars or now - self._last_flush >= self._flush_interval:
                 await self._flush(is_final=False)
 
-    async def finalize(self, final_text: str) -> bool:
+    async def finalize(self, final_text: str) -> "DeliveryResult":
+        # NO_HANDLER signals "streaming path not taken" so the caller falls back
+        # to a plain final send; it is not a delivery failure.
         if not self._enabled:
-            return False
+            return DeliveryResult(DeliveryStage.NO_HANDLER, self._event.channel)
 
         if final_text.startswith(self._full_text):
             self._pending += final_text[len(self._full_text):]
@@ -126,11 +130,9 @@ class TokenStreamPublisher:
 
         if self._sent_nonfinal:
             self._pending = ""
-            await self._publish(self._full_text, is_final=True, full_text=True)
-            return True
+            return await self._publish(self._full_text, is_final=True, full_text=True)
 
-        await self._publish(final_text, is_final=True, full_text=True)
-        return True
+        return await self._publish(final_text, is_final=True, full_text=True)
 
     # ------------------------------------------------------------------
     # Boundary detection
@@ -176,7 +178,7 @@ class TokenStreamPublisher:
         self._pending = self._pending[pos:]
         await self._publish(text, is_final=is_final)
 
-    async def _publish(self, text: str, *, is_final: bool, full_text: bool = False) -> None:
+    async def _publish(self, text: str, *, is_final: bool, full_text: bool = False) -> "DeliveryResult":
         from echo_agent.bus.events import OutboundEvent
 
         if is_final and full_text:
@@ -200,10 +202,11 @@ class TokenStreamPublisher:
         outbound.metadata["_token_stream"] = True
         if full_text:
             outbound.metadata["_stream_full_text"] = True
-        await self._bus.publish_outbound(outbound)
+        result = await self._bus.publish_outbound(outbound)
         self._last_flush = time.monotonic()
         if not is_final and text:
             self._sent_nonfinal = True
+        return result
 
 
 # Backward-compatible aliases

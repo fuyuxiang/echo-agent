@@ -207,7 +207,11 @@ class ResponseStage:
         # Finalize streaming
         outbound_sent = False
         if ctx.publish_response and ctx.stream_publisher:
-            outbound_sent = await ctx.stream_publisher.finalize(response_text)
+            # finalize now returns a DeliveryResult. Only a real delivery (or
+            # accepted) receipt suppresses the plain final republish; NO_HANDLER
+            # (streaming path not taken) and FAILED both fall through to it.
+            receipt = await ctx.stream_publisher.finalize(response_text)
+            outbound_sent = receipt.ok
 
         # Reply is now out the door. Prefetch the NEXT turn's retrieval using
         # this turn's query and write it to the per-session cache, so a
