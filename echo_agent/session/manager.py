@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from loguru import logger
 
@@ -87,10 +88,53 @@ class SessionManager:
         self._lock = asyncio.Lock()
         self._session_locks: OrderedDict[str, asyncio.Lock] = OrderedDict()
         self._max_session_locks = 200
+        self._migrate_legacy_filenames()
 
     def _session_path(self, key: str) -> Path:
-        safe = key.replace(":", "_").replace("/", "_")
+        # Lossless, bijective encoding so distinct keys never map to the same
+        # file. The old scheme replaced both ":" and "/" with "_", so "a:b",
+        # "a/b" and "a_b" all collided onto "a_b.jsonl" — one session silently
+        # overwriting another. quote(safe="") escapes every reserved char.
+        safe = quote(key, safe="")
         return self.sessions_dir / f"{safe}.jsonl"
+
+    def _migrate_legacy_filenames(self) -> None:
+        """One-time, idempotent rename of files written under the old lossy
+        scheme (":"/"/" -> "_") to the new quote()-encoded names.
+
+        The authoritative key is the ``key`` field in each file's metadata line,
+        not the filename — so a legacy "a_b.jsonl" whose metadata key is "a:b"
+        is moved to "a%3Ab.jsonl". Files already at their canonical path are left
+        untouched; ambiguous cases (missing key, target exists) are logged and
+        skipped rather than risking data loss.
+        """
+        for path in self.sessions_dir.glob("*.jsonl"):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    first = f.readline().strip()
+                if not first:
+                    continue
+                meta = json.loads(first)
+                if meta.get("_type") != "metadata":
+                    continue
+                key = meta.get("key")
+                if not key:
+                    logger.warning("Session file {} has no key; skipping migration", path.name)
+                    continue
+                target = self._session_path(key)
+                if target == path:
+                    continue  # already canonical — idempotent no-op
+                if target.exists():
+                    logger.warning(
+                        "Cannot migrate {} -> {}: target exists; skipping",
+                        path.name, target.name,
+                    )
+                    continue
+                os.replace(str(path), str(target))
+                logger.info("Migrated session filename {} -> {}", path.name, target.name)
+            except (OSError, ValueError) as e:
+                logger.warning("Failed to migrate session file {}: {}", path.name, e)
+                continue
 
     async def acquire(self, key: str) -> asyncio.Lock:
         """Return a per-session lock for serializing concurrent access.
