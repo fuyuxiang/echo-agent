@@ -206,9 +206,22 @@ class SessionManager:
             return session
 
     async def _load(self, key: str) -> Session | None:
-        if self._storage:
-            return await self._load_from_storage(key)
-        return await self._load_from_file(key)
+        if not self._storage:
+            return await self._load_from_file(key)
+        # StorageUnavailable / CorruptData propagate — we must NOT quietly serve a
+        # possibly-stale downgrade file when the backend is merely unreachable.
+        session = await self._load_from_storage(key)
+        if session is not None:
+            return session
+        # Genuine NotFound in SQLite: a prior save may have fallen back to a
+        # downgrade file. Recover it and best-effort re-persist to SQLite.
+        recovered = await self._load_from_file(key)
+        if recovered is not None:
+            try:
+                await self._save_to_storage(recovered)
+            except Exception as e:
+                logger.warning("Failed to re-persist recovered session {} to storage: {}", key, e)
+        return recovered
 
     async def _load_from_storage(self, key: str) -> Session | None:
         # StorageUnavailable / CorruptData propagate to get_or_create, which must

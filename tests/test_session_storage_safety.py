@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from echo_agent.session.manager import SessionManager
+from echo_agent.session.manager import Session, SessionManager
 from echo_agent.storage.errors import StorageUnavailable, CorruptData
 
 
@@ -45,3 +45,40 @@ async def test_get_or_create_missing_creates_empty(tmp_path: Path):
     session = await mgr.get_or_create("chan:3")
     assert session.key == "chan:3"
     assert session.messages == []
+
+
+@pytest.mark.asyncio
+async def test_sqlite_notfound_falls_back_to_downgrade_file(tmp_path: Path):
+    # A real SQLite backend that has no row, plus a downgrade file on disk.
+    from echo_agent.storage.sqlite import SQLiteBackend
+
+    storage = SQLiteBackend(tmp_path / "fb.db")
+    await storage.initialize()
+    mgr = SessionManager(sessions_dir=tmp_path / "sessions", storage=storage)
+
+    # Write only to the downgrade file (simulating a prior save-fallback).
+    fallback = Session(key="chan:9")
+    fallback.add_message("user", "from disk")
+    await mgr._save_to_file(fallback)
+
+    loaded = await mgr.get_or_create("chan:9")
+    assert loaded is not None
+    assert loaded.messages[0]["content"] == "from disk"
+    # It should have been rewritten back into SQLite.
+    assert await storage.load_session("chan:9") is not None
+    await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_storage_unavailable_does_not_read_stale_file(tmp_path: Path):
+    storage = MagicMock()
+    storage.load_session = AsyncMock(side_effect=StorageUnavailable("down"))
+    mgr = SessionManager(sessions_dir=tmp_path / "sessions", storage=storage)
+
+    stale = Session(key="chan:10")
+    stale.add_message("user", "stale disk copy")
+    await mgr._save_to_file(stale)
+
+    # Must surface the outage, not silently serve the (possibly stale) file.
+    with pytest.raises(StorageUnavailable):
+        await mgr.get_or_create("chan:10")
