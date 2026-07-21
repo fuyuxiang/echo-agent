@@ -143,6 +143,28 @@ async def test_update_cron_job_not_found(mock_server, api):
 
 
 @pytest.mark.asyncio
+async def test_update_cron_job_rejects_empty_payload(mock_server, api):
+    """update 不能把 payload 改回空内容——否则会重开 create_job 已堵上的 P0 洞
+    (fire-time delivery.inbound_event_from_job 抛 ValueError)。校验与 create 一致。"""
+    from echo_agent.scheduler.service import ScheduledJob, TriggerKind
+    job = ScheduledJob(
+        id="j1", name="ok", trigger=TriggerKind.CRON, cron_expr="0 9 * * *",
+        payload={"command": "do it"},
+    )
+    mock_server._agent_loop.scheduler.get_job = MagicMock(return_value=job)
+
+    app = web.Application()
+    app.router.add_put("/api/v1/cron/{id}", api.update_job)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.put("/api/v1/cron/j1", json={"payload": {}})
+        assert resp.status == 400
+        data = await resp.json()
+        assert "command" in data["error"] or "message" in data["error"]
+        # Rejected before mutation: the original payload is untouched.
+        assert job.payload == {"command": "do it"}
+
+
+@pytest.mark.asyncio
 async def test_get_runs(mock_server, api):
     mock_server._agent_loop.scheduler.get_run_history = MagicMock(return_value=[
         {"ts": 1000, "status": "completed"},

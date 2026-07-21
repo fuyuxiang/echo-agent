@@ -201,6 +201,11 @@ class TaskManager:
         previous instance (owner_id != current) or whose lease has expired. Called
         once at startup so a crash mid-turn no longer strands a task at RUNNING
         forever. Returns the reclaimed task ids."""
+        # NOTE: assumes a single active instance per workspace (enforced by the
+        # runtime instance-lock). requeue here is a plain write, not CAS; that is
+        # safe only because no concurrent instance shares this DB. If multi-instance
+        # shared-DB is ever supported, requeue_dispatch_failed must become CAS-guarded
+        # to avoid clobbering a peer's concurrent terminal write.
         ref = now_ms if now_ms is not None else _now_ms()
         reclaimed: list[str] = []
         for task in await self.list_by_status(TaskStatus.RUNNING):

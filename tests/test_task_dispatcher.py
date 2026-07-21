@@ -294,6 +294,39 @@ async def test_semaphore_released_only_after_terminal():
 
 
 @pytest.mark.asyncio
+async def test_long_turn_past_lease_does_not_release_slot_early():
+    """缺口(d) 回归:回合运行时间超过 lease_ttl_ms,但任务仍是本实例持有的
+    RUNNING,信号量不得提前释放——旧实现固定 lease_ttl_ms 到点放槽,会令并发
+    静默超过 max_concurrent。"""
+    storage = _FakeStorage()
+    manager = TaskManager(storage)
+    bus = _FakeBus()
+    task = await manager.create(title="long turn")
+    await manager.transition(task.id, TaskStatus.QUEUED)
+
+    # Short lease + short poll cadence so the test crosses several renew
+    # intervals AND the old fixed lease_ttl_ms timeout within a fraction of a
+    # second.
+    dispatcher = TaskDispatcher(
+        bus, manager, owner_id="inst-1", max_concurrent=1,
+        lease_ttl_ms=100, renew_interval_sec=0.05,
+    )
+    manager.add_terminal_listener(dispatcher._on_task_terminal)
+
+    d_task = asyncio.create_task(dispatcher._dispatch(task))
+    # Wait well past lease_ttl_ms/1000 (0.1s) and multiple renew intervals.
+    await asyncio.sleep(0.35)
+    # Task never left RUNNING and is still ours → slot MUST still be held.
+    assert dispatcher._sem.locked()
+    assert (await manager.get(task.id)).status == TaskStatus.RUNNING
+
+    # Reaching terminal finally releases the slot and lets _dispatch return.
+    await manager.transition(task.id, TaskStatus.CANCELLED)
+    await asyncio.wait_for(d_task, timeout=1.0)
+    assert not dispatcher._sem.locked()
+
+
+@pytest.mark.asyncio
 async def test_stop_waits_for_inflight_then_times_out():
     """缺口(b)(c):在途 dispatch task 被强引用,stop 带超时等待,超时 cancel。"""
     storage = _FakeStorage()

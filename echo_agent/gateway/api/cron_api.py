@@ -101,6 +101,14 @@ class CronAPI:
             except (ValueError, KeyError, TypeError) as e:
                 return web.json_response({"error": f"invalid cron_expr: {e}"}, status=400)
 
+        # Same content guard as create_job: a PUT must not restore the empty-payload
+        # state create_job now rejects (would re-open the fire-time ValueError hole).
+        if "payload" in body and not _payload_has_content(body["payload"]):
+            return web.json_response(
+                {"error": "payload must contain a non-empty 'command' or 'message'"},
+                status=400,
+            )
+
         if "name" in body:
             job.name = body["name"]
         if "cron_expr" in body:

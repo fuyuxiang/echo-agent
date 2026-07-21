@@ -187,11 +187,30 @@ class TaskDispatcher:
                 logger.warning("Task {} dispatch rejected by bus (full/stopping), re-queueing", task.id)
                 await self._tasks.requeue_dispatch_failed(task.id)
                 return
-            # 缺口(d):publish 成功,持槽等到 turn 终态(或租约超时兜底)才释放。
-            try:
-                await asyncio.wait_for(fut, timeout=self._lease_ttl_ms / 1000)
-            except asyncio.TimeoutError:
-                logger.warning("Task {} turn did not reach terminal within lease, releasing slot", task.id)
+            # 缺口(d):publish 成功,持槽等到 turn 终态。用短超时轮询终态 future,
+            # 只有当租约真正丢失(_stop_renew 标记该任务已不再由本实例续租,或回读
+            # 显示任务已离开 RUNNING/换主)时才放弃槽位——而非固定 lease_ttl_ms 到点
+            # 就放,否则长于租约的正常回合会被提前放槽,令并发静默超过 max_concurrent
+            # (续租循环每 renew_interval 续租正是为了支撑长回合)。
+            while not fut.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(fut), timeout=self._renew_interval)
+                    break
+                except asyncio.TimeoutError:
+                    # Still running past one renew interval — that's expected for
+                    # long turns. Only release the slot if the lease is no longer
+                    # ours (task left RUNNING / taken over / renewal stopped).
+                    if task.id in self._stop_renew:
+                        logger.warning("Task {} lease lost; releasing slot", task.id)
+                        break
+                    current = await self._tasks.get(task.id)
+                    if (
+                        current is None
+                        or current.status != TaskStatus.RUNNING
+                        or current.owner_id != self._owner_id
+                    ):
+                        logger.warning("Task {} no longer our RUNNING; releasing slot", task.id)
+                        break
         finally:
             self._pending_release.pop(task.id, None)
             self._stop_renew.discard(task.id)
