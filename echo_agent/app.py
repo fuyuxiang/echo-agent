@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import signal
 import sys
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, TYPE_CHECKING
@@ -92,214 +93,236 @@ async def bootstrap(
     # Acquire the single-instance lock before opening SQLite / running migrations
     # so a duplicate process bails out here rather than concurrently initializing
     # the database. Raising before any resource is opened means nothing to leak.
-    instance_lock: Any = None
-    if single_instance and config.runtime.single_instance and not force:
-        from echo_agent.runtime_lock import acquire_instance_lock
-        instance_lock = acquire_instance_lock(ws, role=role)
+    async with AsyncExitStack() as stack:
+        instance_lock: Any = None
+        if single_instance and config.runtime.single_instance and not force:
+            from echo_agent.runtime_lock import acquire_instance_lock
+            instance_lock = acquire_instance_lock(ws, role=role)
+            stack.callback(instance_lock.release)
 
-    storage = SQLiteBackend(ws / config.storage.database_path)
-    await storage.initialize()
+        async def _rollback(name: str, coro_factory: Any) -> None:
+            # Guard each teardown so one failing rollback step cannot abort
+            # the unwind of the others (mirrors AppRuntime._stop_step).
+            try:
+                await coro_factory()
+            except Exception as e:
+                logger.warning("Bootstrap rollback: error cleaning up {}: {}", name, e)
 
-    bus = MessageBus(
-        max_queue_size=config.bus.max_queue_size,
-        max_concurrency=config.bus.max_concurrency,
-    )
+        storage = SQLiteBackend(ws / config.storage.database_path)
+        await storage.initialize()
+        stack.push_async_callback(_rollback, "storage", storage.close)
 
-    from echo_agent.bus.rate_limiter import SessionRateLimiter
-    bus.set_rate_limiter(SessionRateLimiter(
-        rpm=config.rate_limit.session_rpm,
-        burst=config.rate_limit.session_burst,
-    ))
-    router = ModelRouter(config.models)
-    provider: LLMProvider | None = None
-    provider_errors: list[str] = []
-
-    for pc in config.models.providers:
-        try:
-            p = create_provider(pc, default_model=config.models.default_model)
-            router.register_provider(pc.name, p)
-            if provider is None:
-                provider = p
-            logger.info("Registered provider: {}", pc.name)
-        except Exception as e:
-            provider_errors.append(f"{pc.name or '<unnamed>'}: {e}")
-            logger.warning("Failed to create provider '{}': {}", pc.name, e)
-
-    if provider is None:
-        from echo_agent.models.stub import StubProvider
-
-        if config.models.providers:
-            details = "; ".join(provider_errors) or "all configured providers were skipped"
-            stub_message = (
-                "[No LLM provider could be initialized. Check provider SDK/API key. "
-                f"Details: {details}]"
-            )
-            logger.error("No providers initialized — using stub: {}", details)
-        else:
-            stub_message = "[No LLM provider configured. Set up a provider in echo-agent.yaml]"
-            logger.error("No providers configured — using stub")
-
-        provider = StubProvider(stub_message)
-        router.register_provider("stub", provider)
-
-    from echo_agent.scheduler.service import Scheduler, ScheduledJob, TriggerKind
-    scheduler: Scheduler | None = None
-    if config.scheduler.enabled:
-        inspection_runner = None
-        insp_cfg = config.agent.inspection
-        if insp_cfg.enabled:
-            from echo_agent.agent.inspection.store import InspectStore
-            from echo_agent.agent.inspection.tick import run_inspection_tick
-            insp_store = InspectStore(
-                ws / insp_cfg.inspect_file,
-                ws / "data" / "inspect_state.json",
-            )
-
-            async def inspection_runner():
-                await run_inspection_tick(insp_store, insp_cfg, bus)
-
-        scheduler = Scheduler(
-            store_path=ws / "data" / "scheduler.json",
-            on_job=build_scheduled_job_handler(bus, inspection_runner=inspection_runner),
-            max_concurrent=config.scheduler.max_concurrent_jobs,
+        bus = MessageBus(
+            max_queue_size=config.bus.max_queue_size,
+            max_concurrency=config.bus.max_concurrency,
         )
-        if insp_cfg.enabled and not any(
-            j.name == "__inspection_tick__" for j in scheduler.list_jobs()
-        ):
-            scheduler.add_job(ScheduledJob(
-                name="__inspection_tick__",
-                trigger=TriggerKind.INTERVAL,
-                interval_ms=insp_cfg.tick_interval_sec * 1000,
-                payload={"_inspection_tick": True},
-            ))
 
-    from echo_agent.tasks.manager import TaskManager
-    from echo_agent.tasks.workflow import WorkflowEngine
-    task_manager = TaskManager(storage)
-    workflow_engine = WorkflowEngine(storage, task_manager)
+        from echo_agent.bus.rate_limiter import SessionRateLimiter
+        bus.set_rate_limiter(SessionRateLimiter(
+            rpm=config.rate_limit.session_rpm,
+            burst=config.rate_limit.session_burst,
+        ))
+        stack.push_async_callback(_rollback, "bus", bus.stop)
+        router = ModelRouter(config.models)
+        provider: LLMProvider | None = None
+        provider_errors: list[str] = []
 
-    agent = AgentLoop(
-        bus=bus, config=config, provider=provider, workspace=ws,
-        router=router,
-        scheduler=scheduler, storage=storage,
-        task_manager=task_manager, workflow_engine=workflow_engine,
-    )
+        for pc in config.models.providers:
+            try:
+                p = create_provider(pc, default_model=config.models.default_model)
+                router.register_provider(pc.name, p)
+                if provider is None:
+                    provider = p
+                logger.info("Registered provider: {}", pc.name)
+            except Exception as e:
+                provider_errors.append(f"{pc.name or '<unnamed>'}: {e}")
+                logger.warning("Failed to create provider '{}': {}", pc.name, e)
 
-    # Bridges queued board tasks to the agent for execution (the task subsystem
-    # has no executor of its own — the agent is the executor). Polls QUEUED tasks
-    # and dispatches each as an inbound event on its own isolated session.
-    from echo_agent.tasks.dispatcher import TaskDispatcher
-    task_dispatcher = TaskDispatcher(bus, task_manager)
+        if provider is None:
+            from echo_agent.models.stub import StubProvider
 
-    # Plugin system — discover and activate plugins
-    from echo_agent.plugins.manager import PluginManager
+            if config.models.providers:
+                details = "; ".join(provider_errors) or "all configured providers were skipped"
+                stub_message = (
+                    "[No LLM provider could be initialized. Check provider SDK/API key. "
+                    f"Details: {details}]"
+                )
+                logger.error("No providers initialized — using stub: {}", details)
+            else:
+                stub_message = "[No LLM provider configured. Set up a provider in echo-agent.yaml]"
+                logger.error("No providers configured — using stub")
 
-    plugin_manager = PluginManager(
-        config=config,
-        workspace=ws,
-        bus=bus,
-        tool_registry=agent.tools,
-        provider=provider,
-    )
-    await plugin_manager.discover_and_load()
-    agent.set_plugin_manager(plugin_manager)
+            provider = StubProvider(stub_message)
+            router.register_provider("stub", provider)
 
-    # Checkpoint safety net — snapshot workspace before write tools (fail-open)
-    try:
-        from echo_agent.checkpoint.hook import install_checkpoint
-        install_checkpoint(config, ws, plugin_manager.hooks)
-    except Exception as e:
-        logger.debug("checkpoint install failed (fail-open): {}", e)
-
-    # Post-write validation — lint the written file, feed errors back (fail-open)
-    try:
-        from echo_agent.validation.hook import install_validation
-        install_validation(config, ws, plugin_manager.hooks)
-    except Exception as e:
-        logger.debug("validation install failed (fail-open): {}", e)
-
-    # Self-evolving skill harness
-    if config.evolution.enabled:
-        try:
-            from echo_agent.evaluation.dataset import EvalDataset
-            from echo_agent.evaluation.runner import EvalRunner
-            from echo_agent.evolution.engine import EvolutionEngine
-
-            dataset_path = ws / config.evolution.eval_dataset_path
-            if not dataset_path.is_absolute():
-                dataset_path = (ws / config.evolution.eval_dataset_path).resolve()
-
-            def _load_eval_dataset() -> EvalDataset:
-                return EvalDataset.from_path(dataset_path)
-
-            def _make_eval_runner() -> EvalRunner:
-                return EvalRunner(
-                    agent,
-                    parallel=config.evolution.eval_parallel,
-                    timeout=config.evolution.eval_timeout_seconds,
-                    provider=provider,
+        from echo_agent.scheduler.service import Scheduler, ScheduledJob, TriggerKind
+        scheduler: Scheduler | None = None
+        if config.scheduler.enabled:
+            inspection_runner = None
+            insp_cfg = config.agent.inspection
+            if insp_cfg.enabled:
+                from echo_agent.agent.inspection.store import InspectStore
+                from echo_agent.agent.inspection.tick import run_inspection_tick
+                insp_store = InspectStore(
+                    ws / insp_cfg.inspect_file,
+                    ws / "data" / "inspect_state.json",
                 )
 
-            reflection_module = None
-            try:
-                from echo_agent.agent.planning.reflection import ReflectionModule
-                reflection_module = ReflectionModule(provider.chat_with_retry)
-            except Exception as e:
-                logger.debug("Reflection module unavailable for evolution: {}", e)
+                async def inspection_runner():
+                    await run_inspection_tick(insp_store, insp_cfg, bus)
 
-            evolution_engine = EvolutionEngine(
-                config=config.evolution,
-                workspace=ws,
-                storage=storage,
-                provider=provider,
-                skill_store=agent.skill_store,
-                skill_manager=None,
-                eval_runner_factory=_make_eval_runner,
-                eval_dataset_loader=_load_eval_dataset,
-                hooks=plugin_manager.hooks,
-                reflection=reflection_module,
-                router=router,
+            scheduler = Scheduler(
+                store_path=ws / "data" / "scheduler.json",
+                on_job=build_scheduled_job_handler(bus, inspection_runner=inspection_runner),
+                max_concurrent=config.scheduler.max_concurrent_jobs,
             )
-            agent.set_evolution_engine(evolution_engine)
-            logger.info("Evolution engine attached (trigger={})", config.evolution.trigger_mode)
+            if insp_cfg.enabled and not any(
+                j.name == "__inspection_tick__" for j in scheduler.list_jobs()
+            ):
+                scheduler.add_job(ScheduledJob(
+                    name="__inspection_tick__",
+                    trigger=TriggerKind.INTERVAL,
+                    interval_ms=insp_cfg.tick_interval_sec * 1000,
+                    payload={"_inspection_tick": True},
+                ))
+
+        if scheduler is not None:
+            stack.push_async_callback(_rollback, "scheduler", scheduler.stop)
+        from echo_agent.tasks.manager import TaskManager
+        from echo_agent.tasks.workflow import WorkflowEngine
+        task_manager = TaskManager(storage)
+        workflow_engine = WorkflowEngine(storage, task_manager)
+
+        agent = AgentLoop(
+            bus=bus, config=config, provider=provider, workspace=ws,
+            router=router,
+            scheduler=scheduler, storage=storage,
+            task_manager=task_manager, workflow_engine=workflow_engine,
+        )
+
+        stack.push_async_callback(_rollback, "agent", agent.stop)
+        # Bridges queued board tasks to the agent for execution (the task subsystem
+        # has no executor of its own — the agent is the executor). Polls QUEUED tasks
+        # and dispatches each as an inbound event on its own isolated session.
+        from echo_agent.tasks.dispatcher import TaskDispatcher
+        task_dispatcher = TaskDispatcher(bus, task_manager)
+
+        # Plugin system — discover and activate plugins
+        from echo_agent.plugins.manager import PluginManager
+
+        plugin_manager = PluginManager(
+            config=config,
+            workspace=ws,
+            bus=bus,
+            tool_registry=agent.tools,
+            provider=provider,
+        )
+        await plugin_manager.discover_and_load()
+        agent.set_plugin_manager(plugin_manager)
+
+        # Checkpoint safety net — snapshot workspace before write tools (fail-open)
+        try:
+            from echo_agent.checkpoint.hook import install_checkpoint
+            install_checkpoint(config, ws, plugin_manager.hooks)
         except Exception as e:
-            logger.warning("Failed to attach evolution engine: {}", e)
+            logger.debug("checkpoint install failed (fail-open): {}", e)
 
-    channels = ChannelManager(config.channels, bus, on_cli_exit=on_cli_exit)
-    # Wire the real heartbeat config so verbosity (key_milestones/every_tool/
-    # silent) actually takes effect at runtime; the manager otherwise defaults.
-    channels._heartbeat_cfg = config.agent.heartbeat
-    health = HealthChecker(check_interval=config.observability.health_check_interval_seconds)
+        # Post-write validation — lint the written file, feed errors back (fail-open)
+        try:
+            from echo_agent.validation.hook import install_validation
+            install_validation(config, ws, plugin_manager.hooks)
+        except Exception as e:
+            logger.debug("validation install failed (fail-open): {}", e)
 
-    from echo_agent.observability.monitor import ComponentHealth as CH
+        # Self-evolving skill harness
+        if config.evolution.enabled:
+            try:
+                from echo_agent.evaluation.dataset import EvalDataset
+                from echo_agent.evaluation.runner import EvalRunner
+                from echo_agent.evolution.engine import EvolutionEngine
 
-    async def _check_bus() -> CH:
-        return CH.HEALTHY if bus.pending_inbound < 900 else CH.DEGRADED
+                dataset_path = ws / config.evolution.eval_dataset_path
+                if not dataset_path.is_absolute():
+                    dataset_path = (ws / config.evolution.eval_dataset_path).resolve()
 
-    async def _check_agent() -> CH:
-        return CH.HEALTHY if agent.is_running else CH.UNHEALTHY
+                def _load_eval_dataset() -> EvalDataset:
+                    return EvalDataset.from_path(dataset_path)
 
-    async def _check_storage() -> CH:
-        return CH.HEALTHY if storage.is_connected else CH.UNHEALTHY
+                def _make_eval_runner() -> EvalRunner:
+                    return EvalRunner(
+                        agent,
+                        parallel=config.evolution.eval_parallel,
+                        timeout=config.evolution.eval_timeout_seconds,
+                        provider=provider,
+                    )
 
-    health.register_check("bus", _check_bus)
-    health.register_check("agent", _check_agent)
-    health.register_check("storage", _check_storage)
+                reflection_module = None
+                try:
+                    from echo_agent.agent.planning.reflection import ReflectionModule
+                    reflection_module = ReflectionModule(provider.chat_with_retry)
+                except Exception as e:
+                    logger.debug("Reflection module unavailable for evolution: {}", e)
 
-    async def _session_cleanup() -> CH:
-        count = await agent.sessions.cleanup_expired()
-        if count:
-            logger.info("Cleaned up {} expired sessions", count)
-        return CH.HEALTHY
+                evolution_engine = EvolutionEngine(
+                    config=config.evolution,
+                    workspace=ws,
+                    storage=storage,
+                    provider=provider,
+                    skill_store=agent.skill_store,
+                    skill_manager=None,
+                    eval_runner_factory=_make_eval_runner,
+                    eval_dataset_loader=_load_eval_dataset,
+                    hooks=plugin_manager.hooks,
+                    reflection=reflection_module,
+                    router=router,
+                )
+                agent.set_evolution_engine(evolution_engine)
+                logger.info("Evolution engine attached (trigger={})", config.evolution.trigger_mode)
+            except Exception as e:
+                logger.warning("Failed to attach evolution engine: {}", e)
 
-    health.register_check("session_cleanup", _session_cleanup)
+        channels = ChannelManager(config.channels, bus, on_cli_exit=on_cli_exit)
+        stack.push_async_callback(_rollback, "channels", channels.stop_all)
+        # Wire the real heartbeat config so verbosity (key_milestones/every_tool/
+        # silent) actually takes effect at runtime; the manager otherwise defaults.
+        channels._heartbeat_cfg = config.agent.heartbeat
+        health = HealthChecker(check_interval=config.observability.health_check_interval_seconds)
 
-    return BootstrapResult(
-        config=config, workspace=ws, storage=storage, bus=bus,
-        router=router, provider=provider, agent=agent,
-        channels=channels, scheduler=scheduler, health=health,
-        instance_lock=instance_lock, task_dispatcher=task_dispatcher,
-    )
+        from echo_agent.observability.monitor import ComponentHealth as CH
+
+        async def _check_bus() -> CH:
+            return CH.HEALTHY if bus.pending_inbound < 900 else CH.DEGRADED
+
+        async def _check_agent() -> CH:
+            return CH.HEALTHY if agent.is_running else CH.UNHEALTHY
+
+        async def _check_storage() -> CH:
+            return CH.HEALTHY if storage.is_connected else CH.UNHEALTHY
+
+        health.register_check("bus", _check_bus)
+        health.register_check("agent", _check_agent)
+        health.register_check("storage", _check_storage)
+
+        async def _session_cleanup() -> CH:
+            count = await agent.sessions.cleanup_expired()
+            if count:
+                logger.info("Cleaned up {} expired sessions", count)
+            return CH.HEALTHY
+
+        health.register_check("session_cleanup", _session_cleanup)
+
+        result = BootstrapResult(
+            config=config, workspace=ws, storage=storage, bus=bus,
+            router=router, provider=provider, agent=agent,
+            channels=channels, scheduler=scheduler, health=health,
+            instance_lock=instance_lock, task_dispatcher=task_dispatcher,
+        )
+        # Success: hand ownership to AppRuntime. pop_all() detaches the
+        # registered teardowns so exiting this block is a no-op; AppRuntime.stop()
+        # then unwinds them at steady-state shutdown. On any exception above,
+        # __aexit__ instead runs them in LIFO order — lock and connection freed.
+        stack.pop_all()
+        return result
 
 
 def install_signal_handler(shutdown: asyncio.Event) -> None:
