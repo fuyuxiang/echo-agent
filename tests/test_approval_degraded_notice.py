@@ -22,6 +22,10 @@ def _make_loop():
     class _Bus:
         async def publish_outbound(self, out):
             sent.append(out)
+            # The loop keys its terminal writeback on publish_outbound's
+            # DeliveryResult.ok, so the stub must return a delivered receipt.
+            from echo_agent.bus.delivery import DeliveryResult, DeliveryStage
+            return DeliveryResult(DeliveryStage.DELIVERED, out.channel)
 
     class _Sessions:
         async def acquire(self, key):

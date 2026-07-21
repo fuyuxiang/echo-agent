@@ -221,20 +221,20 @@ async def test_incomplete_turn_still_recorded_when_delivery_ok():
 
 
 @pytest.mark.asyncio
-async def test_streamed_turn_failed_delivery_records_error():
-    """A streamed turn (outbound_sent) whose finalize receipt failed propagates
-    via ProcessResult.delivery_ok, so the terminal state is error too — no
-    second publish happens on this path."""
+async def test_streamed_failed_delivery_falls_back_and_records_error():
+    """A streamed turn whose finalize receipt FAILED reports outbound_sent=False
+    (ResponseStage only sets it on an ok receipt), so the loop republishes
+    response_text. When that republish also returns FAILED, the terminal state
+    is error — the real streaming-failure path, no unreachable mirror field."""
     loop, cron_calls, task_calls = _build_loop(
-        delivery=DeliveryResult(DeliveryStage.DELIVERED, "cron"),  # unused here
-        result=ProcessResult(
-            response_text="hi", outbound_sent=True, delivery_ok=False
-        ),
+        delivery=DeliveryResult(DeliveryStage.FAILED, "cron", error="platform down"),
+        result=ProcessResult(response_text="hi", outbound_sent=False),
     )
 
     await loop._on_inbound(_cron_event())
 
     assert cron_calls[-1][0] == "error"
     assert task_calls[-1][0] == "error"
-    # streamed path already delivered; no extra publish_outbound
-    assert loop.bus.sent == []
+    # failed stream fell back to a single republish of response_text
+    assert len(loop.bus.sent) == 1
+    assert loop.bus.sent[0].content[0].text == "hi"

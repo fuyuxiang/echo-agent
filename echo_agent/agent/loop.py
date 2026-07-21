@@ -1318,12 +1318,13 @@ class AgentLoop:
                 final_text = "" if result.outbound_sent else response_text
 
                 # Terminal state must reflect the REAL delivery fate, not merely
-                # that we called publish. A non-streaming publish returns a
-                # DeliveryResult; a streamed turn's fate rode back on
-                # result.delivery_ok (ResponseStage.finalize). Default True so a
-                # turn with nothing to publish (e.g. silenced inspection) is not
-                # falsely faulted.
-                delivery_ok = True
+                # that we called publish. Only a non-streaming publish here can
+                # fail: a streamed turn only sets outbound_sent when its finalize
+                # receipt was ok, and a FAILED stream falls back to republishing
+                # response_text (final_text non-empty) which is judged below.
+                # Default True so a turn with nothing to publish (e.g. silenced
+                # inspection, or an already-delivered stream) is not falsely faulted.
+                delivered = True
                 if final_text and _should_publish_reply(event, final_text):
                     out = OutboundEvent.from_text_with_media(
                         channel=event.channel, chat_id=event.chat_id, text=final_text, reply_to_id=event.reply_to_id,
@@ -1331,11 +1332,7 @@ class AgentLoop:
                     out.metadata = dict(event.metadata)
                     out.metadata["_inbound_event_id"] = event.event_id
                     delivery = await self.bus.publish_outbound(out)
-                    delivery_ok = delivery.ok
-                elif result.outbound_sent:
-                    # Streamed turn already delivered inside ResponseStage; its
-                    # finalize receipt was carried out on result.delivery_ok.
-                    delivery_ok = getattr(result, "delivery_ok", True)
+                    delivered = delivery.ok
                 self.tracer.end_span(span, metadata={"response_len": len(response_text or "")})
                 # A turn that returned without raising still may not have FINISHED
                 # the task: a failed delivery, or a provider error / budget /
@@ -1343,7 +1340,7 @@ class AgentLoop:
                 # a reply but left the task incomplete. Fault the terminal state so
                 # neither cron history nor the board shows an undelivered or
                 # half-done turn as done.
-                if not delivery_ok:
+                if not delivered:
                     await self._record_cron_outcome(event, "error", "delivery failed")
                     await self._record_task_outcome(event, "error", "delivery failed")
                 elif getattr(result, "task_incomplete", False):
@@ -1478,7 +1475,6 @@ class AgentLoop:
             outbound_sent=result.outbound_sent,
             degraded_notices=result.degraded_notices,
             task_incomplete=result.task_incomplete,
-            delivery_ok=result.delivery_ok,
         )
 
     async def _handle_approval_command(self, event: InboundEvent) -> str | None:
