@@ -14,7 +14,7 @@ from echo_agent.gateway.api.cron_api import CronAPI
 from echo_agent.storage.sqlite import SQLiteBackend
 from echo_agent.tasks.dispatcher import TaskDispatcher, new_owner_id
 from echo_agent.tasks.manager import TaskManager
-from echo_agent.tasks.models import TaskStatus, _now_ms
+from echo_agent.tasks.models import TaskCASConflict, TaskRecord, TaskStatus, _now_ms
 
 
 class _FakeBus:
@@ -110,8 +110,9 @@ async def test_e2e_new_instance_reclaims_expired_running(tmp_path):
     task = await manager.create(title="stranded")
     await manager.transition(task.id, TaskStatus.QUEUED)
     await manager.transition(task.id, TaskStatus.RUNNING)
-    # 旧实例遗留:owner=OLD,租约已过期。
-    await manager.set_running_context(task.id, "task:x", "evt", owner_id="OLD", lease_ttl_ms=-1)
+    # 遗留 RUNNING 的 owner 就是当前实例("NEW"),仅靠租约过期(lease_ttl_ms=-1)
+    # 才能触发回收 —— 排除外来 owner 分支,单独隔离过期租约这条路径。
+    await manager.set_running_context(task.id, "task:x", "evt", owner_id="NEW", lease_ttl_ms=-1)
 
     reclaimed = await manager.reclaim_expired_running(current_owner_id="NEW", now_ms=_now_ms())
     assert task.id in reclaimed
@@ -119,9 +120,19 @@ async def test_e2e_new_instance_reclaims_expired_running(tmp_path):
     await backend.close()
 
 
-# ④ 并发 cancel + complete → 终态唯一。
+# ④ 并发竞争两个终态 → CAS 恰好一方胜出、另一方被拒(终态唯一、无丢失)。
 @pytest.mark.asyncio
 async def test_e2e_concurrent_cancel_and_complete_terminal_unique(tmp_path):
+    """并发从同一 RUNNING 起点竞争两个不同终态时,CAS 必须让恰好一方胜出改写
+    终态,另一方被拒绝。
+
+    仅断言 final.status ∈ {CANCELLED, FAILED} 且其可迁移集为空,无法守护 CAS
+    不变式:两个终态在状态机里可迁移集本来就都是空(models.py 的 SUCCESS /
+    CANCELLED / FAILED),所以"终态粘滞"由状态机单独保证 —— 即便去掉
+    cas_store_task 退化成 last-write-wins(后写覆盖先写已落盘的终态),最终状态
+    仍落在这两个终态之一,断言照样通过,给出对 CAS 层的虚假信心。这里改为直接
+    捕获两个并发协程的返回值,断言恰好一个 TaskRecord(胜者)、一个异常(败者),
+    并核对持久化终态等于胜者状态,才能真正验证"终态唯一、无丢失"。"""
     backend = SQLiteBackend(tmp_path / "db.sqlite")
     await backend.initialize()
     manager = TaskManager(backend)
@@ -129,23 +140,29 @@ async def test_e2e_concurrent_cancel_and_complete_terminal_unique(tmp_path):
     await manager.transition(task.id, TaskStatus.QUEUED)
     await manager.transition(task.id, TaskStatus.RUNNING)
 
-    async def cancel():
-        try:
-            return await manager.transition(task.id, TaskStatus.CANCELLED)
-        except Exception:
-            return None
+    # Head-to-head: two direct terminal-bound transitions from the shared RUNNING
+    # start toward two DIFFERENT terminal states. Do NOT swallow exceptions — let
+    # them surface so we can prove exactly one won and the other was rejected.
+    results = await asyncio.gather(
+        manager.transition(task.id, TaskStatus.CANCELLED),
+        manager.transition(task.id, TaskStatus.FAILED, error="x"),
+        return_exceptions=True,
+    )
 
-    async def review_then_success():
-        try:
-            await manager.transition(task.id, TaskStatus.REVIEW)
-            return await manager.transition(task.id, TaskStatus.SUCCESS)
-        except Exception:
-            return None
+    # Exactly one coroutine must win (returns a TaskRecord); the other must be
+    # rejected. The loser either re-reads a now-terminal status whose allowed-set
+    # excludes its target (ValueError) or exhausts CAS retries (TaskCASConflict).
+    records = [r for r in results if isinstance(r, TaskRecord)]
+    errors = [r for r in results if isinstance(r, Exception)]
+    assert len(records) == 1, f"exactly one winner expected, got {results!r}"
+    assert len(errors) == 1, f"exactly one loser expected, got {results!r}"
+    assert isinstance(errors[0], (ValueError, TaskCASConflict)), repr(errors[0])
 
-    await asyncio.gather(cancel(), review_then_success())
+    winner = records[0]
+    assert winner.status in (TaskStatus.CANCELLED, TaskStatus.FAILED)
+
+    # The persisted terminal status must equal the WINNER's — no lost update where
+    # a later write silently overwrites the terminal state the winner committed.
     final = await manager.get(task.id)
-    assert final.status in (TaskStatus.CANCELLED, TaskStatus.SUCCESS)
-    # 终态唯一且不可再迁移(CAS 未把已终态又翻成另一个终态)。
-    from echo_agent.tasks.models import VALID_TASK_TRANSITIONS
-    assert VALID_TASK_TRANSITIONS[final.status] == set()
+    assert final.status == winner.status
     await backend.close()
