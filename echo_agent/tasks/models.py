@@ -48,6 +48,17 @@ def _gen_id(prefix: str = "t") -> str:
 def _now() -> str:
     return datetime.now().isoformat()
 
+
+def _now_ms() -> int:
+    import time
+    return int(time.time() * 1000)
+
+
+class TaskCASConflict(Exception):
+    """Raised when an optimistic-lock (version CAS) update lost the race after
+    all retries. The caller must re-read the record and decide afresh — the DB
+    state is authoritative, not the stale in-memory copy that tried to write."""
+
 @dataclass
 class TaskRecord:
     id: str = field(default_factory=lambda: _gen_id("t"))
@@ -73,6 +84,10 @@ class TaskRecord:
     started_at: str = ""
     completed_at: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    owner_id: str = ""
+    lease_until_ms: int | None = None
+    attempt_id: str = ""
+    version: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -88,6 +103,8 @@ class TaskRecord:
             "created_at": self.created_at, "updated_at": self.updated_at,
             "started_at": self.started_at, "completed_at": self.completed_at,
             "metadata": self.metadata,
+            "owner_id": self.owner_id, "lease_until_ms": self.lease_until_ms,
+            "attempt_id": self.attempt_id, "version": self.version,
         }
 
     @classmethod
@@ -108,6 +125,10 @@ class TaskRecord:
             created_at=d.get("created_at", ""), updated_at=d.get("updated_at", ""),
             started_at=d.get("started_at", ""), completed_at=d.get("completed_at", ""),
             metadata=d.get("metadata", {}),
+            owner_id=d.get("owner_id", ""),
+            lease_until_ms=d.get("lease_until_ms"),
+            attempt_id=d.get("attempt_id", ""),
+            version=d.get("version", 0),
         )
 
 

@@ -186,6 +186,13 @@ _MIGRATIONS: list[tuple[int, str]] = [
     (25, """CREATE UNIQUE INDEX IF NOT EXISTS uq_episodes_span
             ON memory_episodes(session_key, message_range_start, message_range_end)
             WHERE NOT (message_range_start = 0 AND message_range_end = 0)"""),
+    # 26-29:tasks 表引入租约(owner/lease/attempt)+乐观锁 version,支撑
+    # dispatcher 崩溃回收与终态 CAS。存量行:version=0、lease NULL、owner/attempt 空串,
+    # 平滑升级。新库建表未含这些列,ALTER 报 duplicate column 由 _run_migrations 跳过。
+    (26, "ALTER TABLE tasks ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''"),
+    (27, "ALTER TABLE tasks ADD COLUMN lease_until_ms INTEGER"),
+    (28, "ALTER TABLE tasks ADD COLUMN attempt_id TEXT NOT NULL DEFAULT ''"),
+    (29, "ALTER TABLE tasks ADD COLUMN version INTEGER NOT NULL DEFAULT 0"),
 ]
 
 
