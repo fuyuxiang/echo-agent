@@ -392,14 +392,41 @@ class SQLiteBackend(StorageBackend):
         now = datetime.now().isoformat()
         try:
             await db.execute(
-                "INSERT OR REPLACE INTO tasks (id, workflow_id, status, data, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, COALESCE((SELECT created_at FROM tasks WHERE id=?), ?), ?)",
+                "INSERT OR REPLACE INTO tasks "
+                "(id, workflow_id, status, data, owner_id, lease_until_ms, attempt_id, version, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM tasks WHERE id=?), ?), ?)",
                 (task_id, data.get("workflow_id", ""), data.get("status", "pending"),
-                 json.dumps(data, ensure_ascii=False), task_id, now, now),
+                 json.dumps(data, ensure_ascii=False),
+                 data.get("owner_id", ""), data.get("lease_until_ms"),
+                 data.get("attempt_id", ""), data.get("version", 0),
+                 task_id, now, now),
             )
             await db.commit()
         except Exception as e:
             logger.error("Failed to store task '{}': {}", task_id, e)
+            raise
+
+    async def cas_store_task(self, task_id: str, data: dict[str, Any], expected_version: int) -> bool:
+        """Compare-and-swap write: only persists when the row's current version
+        still equals ``expected_version``, then bumps it. Returns True on a
+        winning swap, False when another writer already advanced the version
+        (stale caller must re-read). This is the one write path allowed to move a
+        task's terminal/lease state under concurrency without clobbering a peer."""
+        db = await self._ensure_connection()
+        now = datetime.now().isoformat()
+        try:
+            cur = await db.execute(
+                "UPDATE tasks SET status=?, data=?, owner_id=?, lease_until_ms=?, "
+                "attempt_id=?, version=version+1, updated_at=? WHERE id=? AND version=?",
+                (data.get("status", "pending"),
+                 json.dumps(data, ensure_ascii=False),
+                 data.get("owner_id", ""), data.get("lease_until_ms"),
+                 data.get("attempt_id", ""), now, task_id, expected_version),
+            )
+            await db.commit()
+            return cur.rowcount == 1
+        except Exception as e:
+            logger.error("CAS store task '{}' failed: {}", task_id, e)
             raise
 
     async def load_task(self, task_id: str) -> dict[str, Any] | None:
