@@ -15,6 +15,8 @@ from typing import Any
 
 from loguru import logger
 
+from echo_agent.storage.errors import CorruptData, StorageUnavailable
+
 
 @dataclass
 class Session:
@@ -165,10 +167,13 @@ class SessionManager:
         return await self._load_from_file(key)
 
     async def _load_from_storage(self, key: str) -> Session | None:
+        # StorageUnavailable / CorruptData propagate to get_or_create, which must
+        # NOT fabricate an empty session (that would overwrite real history on the
+        # next save). Only a genuine NotFound (load_session -> None) returns None.
+        data = await self._storage.load_session(key)
+        if not data:
+            return None
         try:
-            data = await self._storage.load_session(key)
-            if not data:
-                return None
             return Session(
                 key=key,
                 messages=data.get("messages", []),
@@ -178,9 +183,9 @@ class SessionManager:
                 last_consolidated=data.get("last_consolidated", 0),
                 status=data.get("status", "active"),
             )
-        except Exception as e:
-            logger.warning("Failed to load session {} from storage: {}", key, e)
-            return None
+        except (ValueError, TypeError, KeyError) as e:
+            logger.error("Corrupt session record for '{}': {}", key, e)
+            raise CorruptData(f"session '{key}' fields are not parseable: {e}") from e
 
     async def _load_from_file(self, key: str) -> Session | None:
         path = self._session_path(key)
