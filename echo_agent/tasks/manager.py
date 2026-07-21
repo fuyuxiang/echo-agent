@@ -9,6 +9,7 @@ from loguru import logger
 from echo_agent.tasks.models import (
     TaskRecord,
     TaskStatus,
+    TaskCASConflict,
     VALID_TASK_TRANSITIONS,
     TERMINAL_TASK_STATUSES,
     _now,
@@ -83,26 +84,44 @@ class TaskManager:
         return TaskRecord.from_dict(data)
 
     async def transition(self, task_id: str, new_status: TaskStatus, **kwargs: Any) -> TaskRecord:
-        task = await self.get(task_id)
-        if not task:
-            raise ValueError(f"Task '{task_id}' not found")
-        allowed = VALID_TASK_TRANSITIONS.get(task.status, set())
-        if new_status not in allowed:
-            raise ValueError(f"Invalid transition: {task.status.value} → {new_status.value}")
-        task.status = new_status
-        task.updated_at = _now()
-        if new_status == TaskStatus.RUNNING and not task.started_at:
-            task.started_at = task.updated_at
-        if new_status in TERMINAL_TASK_STATUSES:
-            task.completed_at = task.updated_at
-        if "result" in kwargs:
-            task.result = kwargs["result"]
-        if "error" in kwargs:
-            task.error = kwargs["error"]
-        await self._storage.store_task(task.id, task.to_dict())
-        logger.info("Task {} → {}", task_id, new_status.value)
-        await self._emit("task_transitioned", task)
-        return task
+        for _ in range(3):
+            task = await self.get(task_id)
+            if not task:
+                raise ValueError(f"Task '{task_id}' not found")
+            allowed = VALID_TASK_TRANSITIONS.get(task.status, set())
+            if new_status not in allowed:
+                raise ValueError(f"Invalid transition: {task.status.value} → {new_status.value}")
+            expected_version = task.version
+            task.status = new_status
+            task.updated_at = _now()
+            if new_status == TaskStatus.RUNNING and not task.started_at:
+                task.started_at = task.updated_at
+            if new_status in TERMINAL_TASK_STATUSES:
+                task.completed_at = task.updated_at
+            if "result" in kwargs:
+                task.result = kwargs["result"]
+            if "error" in kwargs:
+                task.error = kwargs["error"]
+            if await self._cas_persist(task, expected_version):
+                logger.info("Task {} → {}", task_id, new_status.value)
+                await self._emit("task_transitioned", task)
+                return task
+        raise TaskCASConflict(f"Task '{task_id}' transition to {new_status.value} lost CAS after retries")
+
+    async def _cas_persist(self, task: TaskRecord, expected_version: int) -> bool:
+        """Persist a mutated task under optimistic lock. Uses the backend CAS path
+        when available (production SQLite), bumping the in-memory version to match
+        the row's new value; falls back to a plain store for backends without CAS
+        (in-memory test doubles), where there is no concurrency to guard."""
+        cas = getattr(self._storage, "cas_store_task", None)
+        if cas is None:
+            await self._storage.store_task(task.id, task.to_dict())
+            return True
+        task.version = expected_version + 1
+        ok = await cas(task.id, task.to_dict(), expected_version)
+        if not ok:
+            task.version = expected_version  # roll back optimistic bump before retry
+        return ok
 
     async def retry(self, task_id: str) -> TaskRecord:
         task = await self.get(task_id)

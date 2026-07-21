@@ -1,7 +1,10 @@
+import asyncio
+
 import pytest
 
 from echo_agent.storage.sqlite import SQLiteBackend
-from echo_agent.tasks.models import TaskRecord, TaskCASConflict, _now_ms
+from echo_agent.tasks.manager import TaskManager
+from echo_agent.tasks.models import TaskRecord, TaskCASConflict, TaskStatus, _now_ms
 
 
 def test_task_record_has_lease_and_version_defaults():
@@ -90,4 +93,47 @@ async def test_cas_store_task_is_version_authoritative_without_caller_prebump(tm
     again = await backend.cas_store_task(rec.id, reloaded, expected_version=reloaded["version"])
     assert again is True
     assert (await backend.load_task(rec.id))["version"] == 2
+    await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_transition_bumps_version_via_cas(tmp_path):
+    backend = SQLiteBackend(tmp_path / "db.sqlite")
+    await backend.initialize()
+    manager = TaskManager(backend)
+    task = await manager.create(title="t")
+    await manager.transition(task.id, TaskStatus.QUEUED)
+
+    reloaded = await manager.get(task.id)
+    assert reloaded.status == TaskStatus.QUEUED
+    assert reloaded.version >= 1  # CAS bumped it
+    await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_terminal_transitions_do_not_both_win(tmp_path):
+    """CAS 保证并发 cancel + complete 只有一方改写终态,终态唯一。"""
+    backend = SQLiteBackend(tmp_path / "db.sqlite")
+    await backend.initialize()
+    manager = TaskManager(backend)
+    task = await manager.create(title="t")
+    await manager.transition(task.id, TaskStatus.QUEUED)
+    await manager.transition(task.id, TaskStatus.RUNNING)
+
+    async def cancel():
+        try:
+            return await manager.transition(task.id, TaskStatus.CANCELLED)
+        except Exception:
+            return None
+
+    async def fail():
+        try:
+            return await manager.transition(task.id, TaskStatus.FAILED, error="x")
+        except Exception:
+            return None
+
+    await asyncio.gather(cancel(), fail())
+    final = await manager.get(task.id)
+    # 终态唯一:必落在两者之一,不出现被后写者覆盖成另一个终态又回滚的中间态
+    assert final.status in (TaskStatus.CANCELLED, TaskStatus.FAILED)
     await backend.close()

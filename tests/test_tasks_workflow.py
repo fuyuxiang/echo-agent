@@ -31,6 +31,19 @@ def _make_storage():
     s = AsyncMock()
     s.store_task = AsyncMock(side_effect=lambda tid, d: store.__setitem__(f"task:{tid}", d))
     s.load_task = AsyncMock(side_effect=lambda tid: store.get(f"task:{tid}"))
+
+    async def _cas_store_task(tid, d, expected_version):
+        # Mirror SQLiteBackend.cas_store_task: only persist when the stored row's
+        # version still equals expected_version, then authoritatively set the
+        # blob's version to expected_version+1 (column and JSON stay in sync).
+        cur = store.get(f"task:{tid}")
+        cur_version = cur.get("version", 0) if cur else 0
+        if cur_version != expected_version:
+            return False
+        store[f"task:{tid}"] = {**d, "version": expected_version + 1}
+        return True
+
+    s.cas_store_task = AsyncMock(side_effect=_cas_store_task)
     s.list_tasks = AsyncMock(side_effect=lambda **kw: [
         v for k, v in store.items()
         if k.startswith("task:")
