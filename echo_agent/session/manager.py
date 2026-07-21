@@ -353,7 +353,10 @@ class SessionManager:
         async with self._lock:
             session = self._cache.get(key)
         if session is None:
-            session = await self._load_from_storage(key)
+            # Mode-aware load: in file mode _load_from_storage would hit a None
+            # backend and (previously) swallow the error, leaving cleanup_expired
+            # reporting processed=1 while the on-disk status stayed "active".
+            session = await self._load(key)
         if session is None:
             return
         session.status = "expired"
@@ -364,7 +367,7 @@ class SessionManager:
             async with self._lock:
                 session = self._cache.get(key)
             if session is None:
-                session = await self._load_from_storage(key)
+                session = await self._load(key)
             if session is None:
                 return False
             session.status = "archived"

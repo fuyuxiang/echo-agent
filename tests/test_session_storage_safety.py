@@ -82,3 +82,25 @@ async def test_storage_unavailable_does_not_read_stale_file(tmp_path: Path):
     # Must surface the outage, not silently serve the (possibly stale) file.
     with pytest.raises(StorageUnavailable):
         await mgr.get_or_create("chan:10")
+
+
+from datetime import datetime, timedelta
+
+
+@pytest.mark.asyncio
+async def test_cleanup_expired_persists_status_in_file_mode(tmp_path: Path):
+    mgr = SessionManager(sessions_dir=tmp_path / "sessions", expiry_hours=1)
+
+    stale = Session(key="chan:old")
+    stale.add_message("user", "hi")
+    stale.updated_at = datetime.now() - timedelta(hours=48)
+    await mgr._save_to_file(stale)
+    await mgr.invalidate("chan:old")
+
+    processed = await mgr.cleanup_expired()
+    assert processed == 1
+
+    # Reload from disk: the persisted status must actually be "expired".
+    await mgr.invalidate("chan:old")
+    reloaded = await mgr.get_or_create("chan:old")
+    assert reloaded.status == "expired"
