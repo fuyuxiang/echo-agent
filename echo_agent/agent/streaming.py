@@ -28,6 +28,11 @@ class ProcessResult:
     outbound_sent: bool = False
     degraded_notices: list[str] = field(default_factory=list)
     task_incomplete: bool = False
+    # Real fate of a streamed delivery: ResponseStage.finalize returns a
+    # DeliveryResult and writes its .ok here, so the loop's terminal writeback
+    # can fault a streamed turn whose message never left the process. True when
+    # nothing was streamed (the loop's non-streaming publish carries the fate).
+    delivery_ok: bool = True
 
 
 class TokenStreamPublisher:

@@ -1317,23 +1317,40 @@ class AgentLoop:
                 # needed: streamed turns already delivered it.
                 final_text = "" if result.outbound_sent else response_text
 
+                # Terminal state must reflect the REAL delivery fate, not merely
+                # that we called publish. A non-streaming publish returns a
+                # DeliveryResult; a streamed turn's fate rode back on
+                # result.delivery_ok (ResponseStage.finalize). Default True so a
+                # turn with nothing to publish (e.g. silenced inspection) is not
+                # falsely faulted.
+                delivery_ok = True
                 if final_text and _should_publish_reply(event, final_text):
                     out = OutboundEvent.from_text_with_media(
                         channel=event.channel, chat_id=event.chat_id, text=final_text, reply_to_id=event.reply_to_id,
                     )
                     out.metadata = dict(event.metadata)
                     out.metadata["_inbound_event_id"] = event.event_id
-                    await self.bus.publish_outbound(out)
+                    delivery = await self.bus.publish_outbound(out)
+                    delivery_ok = delivery.ok
+                elif result.outbound_sent:
+                    # Streamed turn already delivered inside ResponseStage; its
+                    # finalize receipt was carried out on result.delivery_ok.
+                    delivery_ok = getattr(result, "delivery_ok", True)
                 self.tracer.end_span(span, metadata={"response_len": len(response_text or "")})
-                await self._record_cron_outcome(event, "completed")
                 # A turn that returned without raising still may not have FINISHED
-                # the task: provider error, budget/iteration exhaustion, forced
-                # convergence or user interrupt all produce a reply but leave the
-                # task incomplete. Write such a dispatched task back as FAILED, not
-                # SUCCESS, so the board doesn't show a half-done task as done.
-                if getattr(result, "task_incomplete", False):
+                # the task: a failed delivery, or a provider error / budget /
+                # iteration ceiling / forced convergence / interrupt that produced
+                # a reply but left the task incomplete. Fault the terminal state so
+                # neither cron history nor the board shows an undelivered or
+                # half-done turn as done.
+                if not delivery_ok:
+                    await self._record_cron_outcome(event, "error", "delivery failed")
+                    await self._record_task_outcome(event, "error", "delivery failed")
+                elif getattr(result, "task_incomplete", False):
+                    await self._record_cron_outcome(event, "completed")
                     await self._record_task_outcome(event, "incomplete")
                 else:
+                    await self._record_cron_outcome(event, "completed")
                     await self._record_task_outcome(event, "completed")
             except Exception as e:
                 logger.error("Processing failed for event {}: {}", event.event_id, e)
@@ -1461,6 +1478,7 @@ class AgentLoop:
             outbound_sent=result.outbound_sent,
             degraded_notices=result.degraded_notices,
             task_incomplete=result.task_incomplete,
+            delivery_ok=result.delivery_ok,
         )
 
     async def _handle_approval_command(self, event: InboundEvent) -> str | None:

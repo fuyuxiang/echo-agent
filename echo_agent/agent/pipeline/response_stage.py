@@ -28,6 +28,9 @@ class ProcessResult:
     outbound_sent: bool = False
     degraded_notices: list[str] = field(default_factory=list)
     task_incomplete: bool = False
+    # Mirror of streaming.ProcessResult.delivery_ok — real fate of the streamed
+    # delivery (finalize's DeliveryResult.ok). Add fields to BOTH mirrors.
+    delivery_ok: bool = True
 
 
 # Channels whose traffic is synthetic (evaluation/benchmark/test harnesses) and
@@ -206,12 +209,17 @@ class ResponseStage:
 
         # Finalize streaming
         outbound_sent = False
+        delivery_ok = True
         if ctx.publish_response and ctx.stream_publisher:
             # finalize now returns a DeliveryResult. Only a real delivery (or
             # accepted) receipt suppresses the plain final republish; NO_HANDLER
             # (streaming path not taken) and FAILED both fall through to it.
             receipt = await ctx.stream_publisher.finalize(response_text)
             outbound_sent = receipt.ok
+            # Carry the streamed delivery's real fate to the loop's terminal
+            # writeback. Only meaningful when the stream actually delivered
+            # (outbound_sent); otherwise the loop's own publish decides the fate.
+            delivery_ok = receipt.ok
 
         # Reply is now out the door. Prefetch the NEXT turn's retrieval using
         # this turn's query and write it to the per-session cache, so a
@@ -240,6 +248,7 @@ class ResponseStage:
             outbound_sent=outbound_sent,
             degraded_notices=list(result.degraded_notices),
             task_incomplete=result.task_incomplete,
+            delivery_ok=delivery_ok,
         )
 
     def _update_working_memory(self, session_key: str, event: Any, response_text: str) -> None:
