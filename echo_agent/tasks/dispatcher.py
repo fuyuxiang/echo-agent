@@ -17,6 +17,7 @@ Design decisions (confirmed with product owner):
 from __future__ import annotations
 
 import asyncio
+import uuid
 from typing import Any
 
 from loguru import logger
@@ -54,17 +55,30 @@ class TaskDispatcher:
         *,
         poll_interval_sec: float = 3.0,
         max_concurrent: int = 3,
+        owner_id: str = "",
+        lease_ttl_ms: int = 60000,
+        renew_interval_sec: float = 20.0,
+        stop_grace_sec: float = 30.0,
     ):
         self._bus = bus
         self._tasks = task_manager
         self._poll_interval = poll_interval_sec
+        self._owner_id = owner_id
+        self._lease_ttl_ms = lease_ttl_ms
+        self._renew_interval = renew_interval_sec
+        self._stop_grace = stop_grace_sec
         self._running = False
         self._tick_task: asyncio.Task[None] | None = None
-        # Tasks already handed off this process — avoids re-dispatching a task
-        # that is queued in the DB but whose turn hasn't started/finished yet
-        # (the queued→running transition is our real de-dup, but the poll can
-        # race ahead of the async turn pickup).
+        self._renew_task: asyncio.Task[None] | None = None
         self._inflight: set[str] = set()
+        # Strong refs to in-flight dispatch coroutines: without this,
+        # asyncio.create_task returns a task the event loop only weakly
+        # references, so a slow turn's dispatch can be GC'd mid-flight.
+        self._dispatch_tasks: set[asyncio.Task[None]] = set()
+        # Per-task future resolved when the task hits a terminal state; the
+        # dispatch coroutine awaits it before releasing the concurrency slot so
+        # one slot covers the WHOLE turn, not just the publish (decision d).
+        self._pending_release: dict[str, asyncio.Future[None]] = {}
         self._sem = asyncio.Semaphore(max_concurrent)
 
     async def start(self) -> None:
@@ -72,17 +86,34 @@ class TaskDispatcher:
             return
         self._running = True
         self._tick_task = asyncio.create_task(self._tick_loop())
+        self._renew_task = asyncio.create_task(self._renew_loop())
         logger.info("Task dispatcher started (poll={}s)", self._poll_interval)
 
     async def stop(self) -> None:
         self._running = False
-        if self._tick_task:
-            self._tick_task.cancel()
+        for t in (self._tick_task, self._renew_task):
+            if t:
+                t.cancel()
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
+        self._tick_task = None
+        self._renew_task = None
+        # Wait for in-flight dispatches to finish their turn, but bounded: a turn
+        # that never reaches terminal must not hang shutdown, so cancel on grace
+        # timeout (the task stays RUNNING in the DB and a later instance reclaims
+        # it via the lease).
+        if self._dispatch_tasks:
+            pending = list(self._dispatch_tasks)
             try:
-                await self._tick_task
-            except asyncio.CancelledError:
-                pass
-            self._tick_task = None
+                await asyncio.wait_for(
+                    asyncio.gather(*pending, return_exceptions=True), timeout=self._stop_grace
+                )
+            except asyncio.TimeoutError:
+                for t in pending:
+                    t.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
         logger.info("Task dispatcher stopped")
 
     async def _tick_loop(self) -> None:
@@ -101,42 +132,79 @@ class TaskDispatcher:
             if task.id in self._inflight:
                 continue
             self._inflight.add(task.id)
-            asyncio.create_task(self._dispatch(task))
+            dtask = asyncio.create_task(self._dispatch(task))
+            self._dispatch_tasks.add(dtask)
+            dtask.add_done_callback(self._dispatch_tasks.discard)
 
     async def _dispatch(self, task: Any) -> None:
-        async with self._sem:
+        await self._sem.acquire()
+        released = False
+        try:
+            session_key = f"task:{task.id}"
+            attempt_id = uuid.uuid4().hex
+            event = InboundEvent(
+                event_type=EventType.SYSTEM,
+                channel="task",
+                sender_id="dispatcher",
+                chat_id=task.id,
+                content=[ContentBlock(type=ContentType.TEXT, text=render_task_prompt(task))],
+                session_key_override=session_key,
+                # No human at the keyboard. Deliberately NOT cron_authorized:
+                # board tasks must not silently bypass EXEC/dangerous-tool
+                # approval the way an up-front-approved cron job does.
+                unattended=True,
+                metadata={"task_id": task.id},
+            )
+            fut: asyncio.Future[None] = asyncio.get_event_loop().create_future()
+            self._pending_release[task.id] = fut
             try:
                 # Move to running BEFORE publishing so a second scan (or another
-                # instance) won't pick the same task up again. If the publish is
-                # rejected we roll RUNNING back to QUEUED below — otherwise the
-                # task would be stuck at RUNNING with no turn to ever close it.
-                session_key = f"task:{task.id}"
-                event = InboundEvent(
-                    event_type=EventType.SYSTEM,
-                    channel="task",
-                    sender_id="dispatcher",
-                    chat_id=task.id,
-                    content=[ContentBlock(type=ContentType.TEXT, text=render_task_prompt(task))],
-                    session_key_override=session_key,
-                    # No human at the keyboard. Deliberately NOT cron_authorized:
-                    # board tasks must not silently bypass EXEC/dangerous-tool
-                    # approval the way an up-front-approved cron job does.
-                    unattended=True,
-                    metadata={"task_id": task.id},
-                )
+                # instance) won't pick the same task up again.
                 await self._tasks.transition(task.id, TaskStatus.RUNNING)
-                await self._tasks.set_running_context(task.id, session_key, event.event_id)
+                await self._tasks.set_running_context(
+                    task.id, session_key, event.event_id,
+                    owner_id=self._owner_id, lease_ttl_ms=self._lease_ttl_ms,
+                    attempt_id=attempt_id,
+                )
                 accepted = await self._bus.publish_inbound(event)
-                if not accepted:
-                    # The turn never entered the bus, so no AgentLoop turn will
-                    # ever run or write a terminal state for this task. Roll the
-                    # optimistic RUNNING back to QUEUED so a later scan re-picks
-                    # it instead of leaving it stuck at RUNNING forever.
-                    logger.warning("Task {} dispatch rejected by bus (full/stopping), re-queueing", task.id)
-                    await self._tasks.requeue_dispatch_failed(task.id)
             except Exception as e:
+                # 缺口(a):transition/context/publish 任一步异常都回队,
+                # 否则任务卡在 RUNNING 无 turn 收尾。
                 logger.error("Failed to dispatch task {}: {}", task.id, e)
-            finally:
-                # Drop from inflight so a task that finished (or failed to
-                # dispatch and got re-queued) can be re-picked on a later scan.
-                self._inflight.discard(task.id)
+                await self._tasks.requeue_dispatch_failed(task.id)
+                return
+            if not accepted:
+                logger.warning("Task {} dispatch rejected by bus (full/stopping), re-queueing", task.id)
+                await self._tasks.requeue_dispatch_failed(task.id)
+                return
+            # 缺口(d):publish 成功,持槽等到 turn 终态(或租约超时兜底)才释放。
+            try:
+                await asyncio.wait_for(fut, timeout=self._lease_ttl_ms / 1000)
+            except asyncio.TimeoutError:
+                logger.warning("Task {} turn did not reach terminal within lease, releasing slot", task.id)
+        finally:
+            self._pending_release.pop(task.id, None)
+            self._inflight.discard(task.id)
+            if not released:
+                self._sem.release()
+
+    async def _on_task_terminal(self, task_id: str, status: Any) -> None:
+        """Terminal listener (registered on TaskManager): unblock the dispatch
+        coroutine holding this task's slot so it releases the semaphore. Async
+        (matches TaskManager._fire_terminal's ``await listener(...)``) and
+        exception-free so a manager _fire_terminal never breaks on us."""
+        fut = self._pending_release.get(task_id)
+        if fut is not None and not fut.done():
+            fut.set_result(None)
+
+    async def _renew_loop(self) -> None:
+        """Periodically extend the lease of tasks whose turn is still in flight so
+        another instance's reclaim scan doesn't steal a task that is actively
+        running here."""
+        while self._running:
+            for task_id in list(self._pending_release.keys()):
+                try:
+                    await self._tasks.renew_lease(task_id, self._owner_id, self._lease_ttl_ms)
+                except Exception as e:
+                    logger.debug("Lease renew failed for task {}: {}", task_id, e)
+            await asyncio.sleep(self._renew_interval)

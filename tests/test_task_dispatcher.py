@@ -220,3 +220,95 @@ async def test_event_sink_failure_does_not_break_operation():
 
     task = await manager.create(title="t")  # must not raise
     assert (await manager.get(task.id)).status == TaskStatus.PENDING
+
+
+class _FakeStorage:
+    def __init__(self):
+        self._tasks: dict[str, dict] = {}
+
+    async def store_task(self, task_id, data):
+        self._tasks[task_id] = data
+
+    async def load_task(self, task_id):
+        return self._tasks.get(task_id)
+
+    async def list_tasks(self, workflow_id=None, status=None, board_id=None, assignee=None, label=None):
+        rows = list(self._tasks.values())
+        if status:
+            rows = [r for r in rows if r.get("status") == status]
+        return rows
+
+
+class _FakeBus:
+    def __init__(self, accept=True):
+        self.accept = accept
+        self.published = []
+
+    async def publish_inbound(self, event):
+        self.published.append(event)
+        return self.accept
+
+
+@pytest.mark.asyncio
+async def test_exception_between_transition_and_publish_requeues():
+    """缺口(a):不止 publish 拒绝,transition 后 publish 前任何异常都要回 QUEUED。"""
+    storage = _FakeStorage()
+    manager = TaskManager(storage)
+    bus = _FakeBus()
+    task = await manager.create(title="boom")
+    await manager.transition(task.id, TaskStatus.QUEUED)
+
+    async def _raise(event):
+        raise RuntimeError("publish blew up")
+
+    bus.publish_inbound = _raise
+    dispatcher = TaskDispatcher(bus, manager, owner_id="inst-1")
+    await dispatcher._dispatch(task)
+
+    assert (await manager.get(task.id)).status == TaskStatus.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_semaphore_released_only_after_terminal():
+    """缺口(d):publish 成功后信号量不释放,直到任务进终态。"""
+    storage = _FakeStorage()
+    manager = TaskManager(storage)
+    bus = _FakeBus()
+    task = await manager.create(title="holds slot")
+    await manager.transition(task.id, TaskStatus.QUEUED)
+
+    dispatcher = TaskDispatcher(bus, manager, owner_id="inst-1", max_concurrent=1, lease_ttl_ms=60000)
+    manager.add_terminal_listener(dispatcher._on_task_terminal)
+
+    d_task = asyncio.create_task(dispatcher._dispatch(task))
+    await asyncio.sleep(0.05)
+    # 已 publish 但信号量仍被占:另一个 acquire 拿不到。
+    assert dispatcher._sem.locked()
+    assert len(bus.published) == 1
+
+    # 任务进终态后,信号量应被释放,_dispatch 收尾。
+    # (_dispatch 已把任务置 RUNNING,这里直接推入终态即可。)
+    await manager.transition(task.id, TaskStatus.CANCELLED)
+    await asyncio.wait_for(d_task, timeout=1.0)
+    assert not dispatcher._sem.locked()
+
+
+@pytest.mark.asyncio
+async def test_stop_waits_for_inflight_then_times_out():
+    """缺口(b)(c):在途 dispatch task 被强引用,stop 带超时等待,超时 cancel。"""
+    storage = _FakeStorage()
+    manager = TaskManager(storage)
+    bus = _FakeBus()
+    task = await manager.create(title="inflight")
+    await manager.transition(task.id, TaskStatus.QUEUED)
+
+    dispatcher = TaskDispatcher(bus, manager, owner_id="inst-1", max_concurrent=1,
+                                lease_ttl_ms=60000, stop_grace_sec=0.2)
+    manager.add_terminal_listener(dispatcher._on_task_terminal)
+    await dispatcher._scan_once()
+    await asyncio.sleep(0.05)
+    assert dispatcher._dispatch_tasks  # 被强引用,未被 GC
+
+    # 任务永不进终态 → stop 等 grace 后 cancel 在途,不挂死。
+    await dispatcher.stop()
+    assert all(t.done() for t in dispatcher._dispatch_tasks) or not dispatcher._dispatch_tasks
