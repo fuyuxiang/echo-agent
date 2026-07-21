@@ -188,6 +188,26 @@ async def test_create_cron_job_accepts_command_payload(mock_server, api):
 
 
 @pytest.mark.asyncio
+async def test_create_cron_job_accepts_message_only(mock_server, api):
+    """message-only payload (no command) must be accepted: delivery reads
+    command then falls back to message, so a non-empty message alone is a
+    valid trigger. Locks in the command/message fallback contract against a
+    regression that would require command specifically."""
+    from echo_agent.scheduler.service import ScheduledJob, TriggerKind
+    created = ScheduledJob(id="j_msg", name="msg_only", trigger=TriggerKind.CRON, cron_expr="*/5 * * * *")
+    mock_server._agent_loop.scheduler.add_job = MagicMock(return_value=created)
+
+    app = web.Application()
+    app.router.add_post("/api/v1/cron", api.create_job)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/api/v1/cron", json={
+            "name": "msg_only", "cron_expr": "*/5 * * * *",
+            "payload": {"message": "hi"},
+        })
+        assert resp.status == 201
+
+
+@pytest.mark.asyncio
 async def test_job_to_dict_marks_config_valid(mock_server, api):
     from echo_agent.scheduler.service import ScheduledJob, TriggerKind
     good = ScheduledJob(id="g", name="g", trigger=TriggerKind.CRON, cron_expr="* * * * *",
