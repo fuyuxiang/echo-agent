@@ -94,12 +94,6 @@ async def bootstrap(
     # so a duplicate process bails out here rather than concurrently initializing
     # the database. Raising before any resource is opened means nothing to leak.
     async with AsyncExitStack() as stack:
-        instance_lock: Any = None
-        if single_instance and config.runtime.single_instance and not force:
-            from echo_agent.runtime_lock import acquire_instance_lock
-            instance_lock = acquire_instance_lock(ws, role=role)
-            stack.callback(instance_lock.release)
-
         async def _rollback(name: str, coro_factory: Any) -> None:
             # Guard each teardown so one failing rollback step cannot abort
             # the unwind of the others (mirrors AppRuntime._stop_step).
@@ -107,6 +101,20 @@ async def bootstrap(
                 await coro_factory()
             except Exception as e:
                 logger.warning("Bootstrap rollback: error cleaning up {}: {}", name, e)
+
+        instance_lock: Any = None
+        if single_instance and config.runtime.single_instance and not force:
+            from echo_agent.runtime_lock import acquire_instance_lock
+            instance_lock = acquire_instance_lock(ws, role=role)
+
+            async def _release_lock() -> None:
+                # InstanceLock.release() is sync and no-arg; wrap it so the
+                # guarded _rollback path can await it like the other teardowns.
+                instance_lock.release()
+
+            # Registered first (before storage/bus/etc.) so the lock still
+            # unwinds LAST under LIFO, now via the guarded rollback path.
+            stack.push_async_callback(_rollback, "lock", _release_lock)
 
         storage = SQLiteBackend(ws / config.storage.database_path)
         await storage.initialize()
