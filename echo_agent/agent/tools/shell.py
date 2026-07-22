@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from echo_agent.agent.executors.base import BaseExecutor, ExecRequest
+from echo_agent.agent.proc_lifecycle import subprocess_kwargs, terminate_tree
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
 from echo_agent.security.guards import evaluate_shell_command
 from echo_agent.security.path_policy import check_cwd
@@ -111,6 +112,7 @@ class ShellTool(Tool):
         if policy_violation:
             return ToolResult(success=False, error=policy_violation)
 
+        proc = None
         try:
             try:
                 cwd = self._resolve_cwd(cwd)
@@ -135,6 +137,7 @@ class ShellTool(Tool):
                     stderr=asyncio.subprocess.PIPE,
                     cwd=cwd,
                     env={**os.environ, "WORKSPACE": self._workspace},
+                    **subprocess_kwargs(),
                 )
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
                 output = stdout.decode(errors="replace")
@@ -156,8 +159,12 @@ class ShellTool(Tool):
                 metadata={"return_code": return_code, "executor": executor_name},
             )
         except asyncio.TimeoutError:
+            if proc is not None:
+                await terminate_tree(proc)
             return ToolResult(success=False, error=f"Command timed out after {timeout}s")
         except Exception as e:
+            if proc is not None and proc.returncode is None:
+                await terminate_tree(proc)
             return ToolResult(success=False, error=str(e))
 
     def execution_mode(self, params: dict[str, Any]) -> str:

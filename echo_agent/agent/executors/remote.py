@@ -10,6 +10,7 @@ from pathlib import Path
 from loguru import logger
 
 from echo_agent.agent.executors.base import BaseExecutor, ExecRequest, ExecResponse
+from echo_agent.agent.proc_lifecycle import subprocess_kwargs, terminate_tree
 from echo_agent.security.guards import command_uses_network
 
 
@@ -75,12 +76,14 @@ class ContainerExecutor(BaseExecutor):
             cmd.extend(["-w", cwd])
         cmd.extend([self._container_id, "sh", "-c", request.command])
 
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 stdin=asyncio.subprocess.PIPE if request.stdin else None,
+                **subprocess_kwargs(),
             )
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(request.stdin.encode() if request.stdin else None),
@@ -94,8 +97,12 @@ class ContainerExecutor(BaseExecutor):
                 executor=self.name,
             )
         except asyncio.TimeoutError:
+            if proc is not None:
+                await terminate_tree(proc)
             return ExecResponse(success=False, stderr=f"Timeout after {request.timeout}s", return_code=-1, executor=self.name)
         except Exception as e:
+            if proc is not None and proc.returncode is None:
+                await terminate_tree(proc)
             return ExecResponse(success=False, stderr=str(e), return_code=-1, executor=self.name)
 
     def _container_cwd(self, cwd: str) -> str:
@@ -169,12 +176,14 @@ class RemoteExecutor(BaseExecutor):
         ssh_cmd = self._build_ssh_base()
         ssh_cmd.append(self._build_remote_command(request))
 
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *ssh_cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 stdin=asyncio.subprocess.PIPE if request.stdin else None,
+                **subprocess_kwargs(),
             )
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(request.stdin.encode() if request.stdin else None),
@@ -188,6 +197,10 @@ class RemoteExecutor(BaseExecutor):
                 executor=self.name,
             )
         except asyncio.TimeoutError:
+            if proc is not None:
+                await terminate_tree(proc)
             return ExecResponse(success=False, stderr=f"Timeout after {request.timeout}s", return_code=-1, executor=self.name)
         except Exception as e:
+            if proc is not None and proc.returncode is None:
+                await terminate_tree(proc)
             return ExecResponse(success=False, stderr=str(e), return_code=-1, executor=self.name)

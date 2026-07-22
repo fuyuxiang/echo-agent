@@ -18,6 +18,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from echo_agent.agent.proc_lifecycle import subprocess_kwargs, terminate_tree
 from echo_agent.security.guards import command_uses_network
 
 
@@ -89,6 +90,7 @@ class LocalExecutor(BaseExecutor):
         env.update(request.env)
         start = datetime.now()
 
+        proc = None
         try:
             proc = await asyncio.create_subprocess_shell(
                 request.command,
@@ -97,6 +99,7 @@ class LocalExecutor(BaseExecutor):
                 stdin=asyncio.subprocess.PIPE if request.stdin else None,
                 cwd=cwd,
                 env=env,
+                **subprocess_kwargs(),
             )
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(request.stdin.encode() if request.stdin else None),
@@ -112,8 +115,12 @@ class LocalExecutor(BaseExecutor):
                 executor=self.name,
             )
         except asyncio.TimeoutError:
+            if proc is not None:
+                await terminate_tree(proc)
             return ExecResponse(success=False, stderr=f"Timeout after {request.timeout}s", return_code=-1, executor=self.name)
         except Exception as e:
+            if proc is not None and proc.returncode is None:
+                await terminate_tree(proc)
             return ExecResponse(success=False, stderr=str(e), return_code=-1, executor=self.name)
 
 
@@ -181,6 +188,7 @@ class SandboxExecutor(BaseExecutor):
         env["PATH"] = os.environ.get("PATH", "/usr/bin:/bin")
 
         start = datetime.now()
+        proc = None
         try:
             proc = await asyncio.create_subprocess_shell(
                 request.command,
@@ -189,6 +197,7 @@ class SandboxExecutor(BaseExecutor):
                 stdin=asyncio.subprocess.PIPE if request.stdin else None,
                 cwd=cwd,
                 env=env,
+                **subprocess_kwargs(),
             )
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(request.stdin.encode() if request.stdin else None),
@@ -204,8 +213,12 @@ class SandboxExecutor(BaseExecutor):
                 executor=self.name,
             )
         except asyncio.TimeoutError:
+            if proc is not None:
+                await terminate_tree(proc)
             return ExecResponse(success=False, stderr=f"Timeout after {request.timeout}s", return_code=-1, executor=self.name)
         except Exception as e:
+            if proc is not None and proc.returncode is None:
+                await terminate_tree(proc)
             return ExecResponse(success=False, stderr=str(e), return_code=-1, executor=self.name)
 
     def _resolve_cwd(self, requested_cwd: str) -> Path:

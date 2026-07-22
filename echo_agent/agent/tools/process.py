@@ -9,6 +9,7 @@ from typing import Any
 
 from loguru import logger
 
+from echo_agent.agent.proc_lifecycle import subprocess_kwargs, terminate_tree
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
 from echo_agent.security.guards import evaluate_shell_command
 
@@ -71,6 +72,7 @@ class ProcessTool(Tool):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=self._workspace,
+            **subprocess_kwargs(),
         )
         pid = f"proc_{proc.pid}"
         self._processes[pid] = {
@@ -106,9 +108,10 @@ class ProcessTool(Tool):
     async def _watchdog(self, pid: str, timeout: float) -> None:
         """Kill a process that outlives its timeout, marking it timed_out.
 
-        terminate() first for a graceful stop, wait up to 5s, then kill() —
-        mirrors the escalation in _stop. Cancelled quietly when the process
-        exits on its own (watchdog is cancelled in _stop/aclose).
+        Reaps the whole process group (see terminate_tree) so pipeline and
+        backgrounded grandchildren die too, not just the direct shell.
+        Cancelled quietly when the process exits on its own (watchdog is
+        cancelled in _stop/aclose).
         """
         info = self._processes.get(pid)
         if not info:
@@ -120,13 +123,7 @@ class ProcessTool(Tool):
         except asyncio.TimeoutError:
             pass
         info["timed_out"] = True
-        if proc.returncode is None:
-            proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
+        await terminate_tree(proc)
 
     def _list(self) -> ToolResult:
         if not self._processes:
@@ -159,13 +156,7 @@ class ProcessTool(Tool):
             return ToolResult(success=False, error=f"Process '{pid}' not found")
         info = self._processes[pid]
         proc = info["process"]
-        if proc.returncode is None:
-            proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
+        await terminate_tree(proc)
         for key in ("collector", "watchdog"):
             task = info.get(key)
             if task is not None:
@@ -181,13 +172,7 @@ class ProcessTool(Tool):
         """
         for pid, info in list(self._processes.items()):
             proc = info["process"]
-            if proc.returncode is None:
-                proc.terminate()
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=5)
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    await proc.wait()
+            await terminate_tree(proc)
             tasks = [info.get("collector"), info.get("watchdog")]
             for task in tasks:
                 if task is not None:
