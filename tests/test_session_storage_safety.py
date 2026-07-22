@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -82,9 +83,6 @@ async def test_storage_unavailable_does_not_read_stale_file(tmp_path: Path):
     # Must surface the outage, not silently serve the (possibly stale) file.
     with pytest.raises(StorageUnavailable):
         await mgr.get_or_create("chan:10")
-
-
-from datetime import datetime, timedelta
 
 
 @pytest.mark.asyncio
