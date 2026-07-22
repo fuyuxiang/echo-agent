@@ -8,42 +8,18 @@ import time
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
-from textual.theme import Theme
 from textual.widgets import OptionList, Static
 
 from echo_agent.cli.tui.transcript import TranscriptView
 from echo_agent.cli.tui.prompt_input import PromptInput
 from echo_agent.cli.tui.status_bar import StatusBar
 from echo_agent.cli.tui.blocks import ApprovalBlock, ChoiceBlock
-from echo_agent.cli.tui.completion import completion_insert, filter_commands
+from echo_agent.cli.tui.completion import completion_insert, filter_commands, help_text
+from echo_agent.cli.tui.theme import ECHO_THEME, ECHO_THEME_LIGHT, resolve_theme_name
+from echo_agent.cli.tui.brand import load_brand
 from echo_agent.cli.tui.protocol import (
     CogEvent, approve_command, deny_command, clarify_command,
 )
-
-# Modern-minimal design tokens. A single teal accent over a calm neutral-dark
-# surface — the palette every widget/CSS rule pulls from, so recolouring is a
-# one-place change and every block stays visually coherent. Registered as a
-# Textual theme so $primary/$accent/$surface/$boost resolve app-wide.
-ECHO_THEME = Theme(
-    name="echo",
-    primary="#4fd1c5",     # teal — user/accent bar, headings
-    secondary="#7f9cf5",   # indigo — cognitive (thinking/memory)
-    accent="#4fd1c5",
-    success="#68d391",     # green — tool ✓, connected
-    warning="#f6ad55",     # amber — approvals, mid gauge
-    error="#fc8181",       # soft red — tool ✗, disconnected
-    foreground="#e6edf3",
-    background="#0d1117",
-    surface="#161b22",
-    panel="#1c2128",
-    dark=True,
-    variables={
-        # Muted foreground for secondary text (tool operands, hints) so the
-        # eye lands on the primary content first.
-        "text-muted": "#8b949e",
-    },
-)
-
 
 class EchoTUI(App):
     CSS_PATH = "app.tcss"
@@ -94,6 +70,9 @@ class EchoTUI(App):
         # _send (ordinary messages) so an interrupt never becomes a chat turn.
         self._interrupt = interrupt_coro
         self._session_key = session_key
+        # Brand strings (name/prompt/welcome/goodbye) are configurable via
+        # ECHO_BRAND_* so a white-label deployment can rebrand without code edits.
+        self._brand = load_brand()
         self._replies: dict[str, object] = {}
         # event_id of the turn currently in flight, captured from its `accepted`
         # frame. Ctrl+C scopes its interrupt to this ID so a stop frame delayed
@@ -128,7 +107,7 @@ class EchoTUI(App):
         panel.display = False
         yield panel
         with Horizontal(id="input_row"):
-            yield Static("❯", id="prompt_sigil")
+            yield Static(self._brand.prompt, id="prompt_sigil")
             yield PromptInput()
         yield Static("输入消息…", id="placeholder")
         yield StatusBar()
@@ -138,8 +117,11 @@ class EchoTUI(App):
         # connected. StatusBar is yielded in compose() and mounted by now, so
         # query_one is safe without a guard (unlike notify_disconnected, where
         # the socket may die before mount).
+        # Register both palettes and pick one by probing the terminal (light
+        # profiles get the readable light theme; everything else stays dark).
         self.register_theme(ECHO_THEME)
-        self.theme = "echo"
+        self.register_theme(ECHO_THEME_LIGHT)
+        self.theme = resolve_theme_name()
         self._mount_banner()
         bar = self.query_one(StatusBar)
         bar.set_session(self._session_key)
@@ -151,7 +133,12 @@ class EchoTUI(App):
         from echo_agent.cli.tui.blocks import Banner
 
         try:
-            self._tv.mount(Banner(self._session_key))
+            self._tv.mount(Banner(
+                self._session_key,
+                name=self._brand.name,
+                tagline=self._brand.tagline,
+                welcome=self._brand.welcome,
+            ))
         except Exception:
             pass
 
@@ -323,6 +310,9 @@ class EchoTUI(App):
             return
         # Local commands execute inside the TUI and are never sent upstream;
         # server commands (/approve, /deny, /approvals) fall through to send.
+        if text == "/help":
+            self._tv.add_notice(help_text())
+            return
         if text == "/clear":
             self._tv.clear()
             return
@@ -331,6 +321,9 @@ class EchoTUI(App):
             return
         if text == "/copy" or text == "/copy all":
             self._do_copy(whole=text == "/copy all")
+            return
+        if text == "/theme" or text.startswith("/theme "):
+            self._do_theme(text[len("/theme"):].strip())
             return
         self._tv.add_user(text)
         self.query_one(StatusBar).start_turn_timer()
@@ -349,6 +342,19 @@ class EchoTUI(App):
         self.copy_to_clipboard(text)
         scope = "整段对话" if whole else "最近回复"
         self.notify(f"已复制{scope}（{len(text)} 字）到剪贴板", timeout=3)
+
+    def _do_theme(self, arg: str) -> None:
+        """/theme — switch or report the active palette. `light`/`dark` set it;
+        no arg reports the current one. Both palettes are registered in on_mount,
+        so switching is just reassigning self.theme."""
+        arg = arg.lower()
+        if arg in ("light", "dark"):
+            self.theme = "echo-light" if arg == "light" else "echo"
+        elif arg:
+            self._tv.add_notice("[$warning]用法: /theme [light|dark][/]")
+            return
+        current = "浅色" if self.theme == "echo-light" else "深色"
+        self._tv.add_notice(f"当前主题: [b]{current}[/b]")
 
     def on_prompt_input_content_changed(
         self, message: PromptInput.ContentChanged

@@ -258,6 +258,9 @@ async def run_client(
             pump_task.cancel()
             await asyncio.gather(pump_task, return_exceptions=True)
             await ws.close()
+    # Farewell line after the TUI tears down, so the terminal doesn't just snap
+    # back to the shell prompt. Configurable via ECHO_BRAND_GOODBYE.
+    print(app._brand.goodbye)
     return 0
 
 

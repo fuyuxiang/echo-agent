@@ -16,6 +16,7 @@ from echo_agent.cli.tui.blocks import (
     UserTurn,
 )
 from echo_agent.cli.tui.protocol import CogEvent
+from echo_agent.cli.tui.status_phrases import choose_status_phrase
 
 
 class _Heartbeat(AgentReply):
@@ -38,6 +39,9 @@ class TranscriptView(VerticalScroll):
         self._tool_blocks: dict[str, ToolCallBlock] = {}
         self._last_memory: CognitiveBlock | None = None
         self._last_thinking: CognitiveBlock | None = None
+        # Rolling window of recently shown status phrases so the heartbeat line
+        # rotates without immediate repeats.
+        self._status_recent: list[str] = []
 
     def on_mount(self) -> None:
         # Anchor to the bottom so newly mounted blocks (replies, streaming
@@ -60,6 +64,7 @@ class TranscriptView(VerticalScroll):
         self._tool_blocks.clear()
         self._last_memory = None
         self._last_thinking = None
+        self._status_recent.clear()
 
     def add_user(self, text: str) -> UserTurn:
         w = UserTurn(text)
@@ -121,6 +126,17 @@ class TranscriptView(VerticalScroll):
         self.mount(b)
         return b
 
+    def add_notice(self, markup: str) -> AgentReply:
+        """Show a client-local informational line (e.g. /help output, /theme
+        confirmation). Reuses AgentReply's Static base but flags is_status so
+        /copy skips it — it is UI chatter, not a real agent reply. The markup is
+        author-trusted (not user text), so it is rendered verbatim."""
+        w = AgentReply()
+        w.is_status = True
+        self.mount(w)
+        w.set_markup(markup)
+        return w
+
     def add_error(self, msg: str) -> AgentReply:
         """Show a server-side error frame (e.g. rate limited) in the transcript.
 
@@ -134,13 +150,18 @@ class TranscriptView(VerticalScroll):
         return w
 
     def heartbeat_line(self, inbound_event_id: str, note: str) -> _Heartbeat:
+        # Show a friendly rotating phrase rather than the raw server note: the
+        # note can be monotonous or leak model scratch text, and the concrete
+        # progress already lives in the tool/thinking blocks above. Each tick
+        # re-picks (avoiding recent repeats) so the line feels alive.
+        phrase = choose_status_phrase(self._status_recent)
         hb = self._heartbeats.get(inbound_event_id)
         if hb is None:
-            hb = _Heartbeat(note)
+            hb = _Heartbeat(phrase)
             self._heartbeats[inbound_event_id] = hb
             self.mount(hb)
         else:
-            hb.update_note(note)
+            hb.update_note(phrase)
         return hb
 
     def last_memory_block(self) -> CognitiveBlock | None:

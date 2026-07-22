@@ -40,6 +40,32 @@ def humanize_tool(name: str) -> str:
     return _TOOL_VERB.get(name, name)
 
 
+# Tools whose result text is a unified-style diff worth coloring line by line.
+_DIFF_TOOLS = {"edit_file", "patch", "write_file"}
+
+
+def colorize_diff(text: str, max_lines: int = 40) -> str:
+    """Color a unified-diff-ish blob: +added lines green, -removed lines red,
+    @@ hunk headers muted. Each line is escaped before the color tag is added so
+    diff content can never inject markup. Returns Rich markup, capped so a huge
+    diff can't flood the transcript."""
+    out: list[str] = []
+    lines = text.splitlines()
+    for raw in lines[:max_lines]:
+        line = escape(raw)
+        if raw.startswith("+") and not raw.startswith("+++"):
+            out.append(f"[$success]{line}[/]")
+        elif raw.startswith("-") and not raw.startswith("---"):
+            out.append(f"[$error]{line}[/]")
+        elif raw.startswith("@@") or raw.startswith("+++") or raw.startswith("---"):
+            out.append(f"[$text-muted]{line}[/]")
+        else:
+            out.append(line)
+    if len(lines) > max_lines:
+        out.append(f"[$text-muted]… (还有 {len(lines) - max_lines} 行)[/]")
+    return "\n".join(out)
+
+
 def _clip(s: str, n: int) -> str:
     s = " ".join(str(s).split())
     return s if len(s) <= n else s[: n - 1] + "…"
@@ -81,22 +107,55 @@ def summarize_result(
     return preview or "完成"
 
 
+# Block-letter ECHO logo. A 3-stop gradient (primary → accent → secondary) is
+# applied per line so the wordmark reads as one branded object; the
+# gradient banner is kept compact (5 rows) so it never dominates the first screen.
+_LOGO_ART = (
+    "███████╗ ██████╗██╗  ██╗ ██████╗ ",
+    "██╔════╝██╔════╝██║  ██║██╔═══██╗",
+    "█████╗  ██║     ███████║██║   ██║",
+    "██╔══╝  ██║     ██╔══██║██║   ██║",
+    "███████╗╚██████╗██║  ██║╚██████╔╝",
+)
+# One theme color per logo row, top→bottom.
+_LOGO_GRADIENT = ("$primary", "$primary", "$accent", "$secondary", "$secondary")
+
+
 class Banner(Static):
-    """Modern-minimal brand banner shown on the transcript's first screen.
+    """Brand banner shown on the transcript's first screen: a gradient block-
+    letter wordmark, a tagline, and the welcome hint. Brand strings and colors
+    are injected so a white-label build restyles it without code edits.
 
     Kept as a pure render (build_text) so it is unit-testable without a live
     screen, mirroring the other blocks."""
 
-    def __init__(self, session_key: str = "") -> None:
+    def __init__(
+        self,
+        session_key: str = "",
+        *,
+        name: str = "echo",
+        tagline: str = "agent",
+        welcome: str = "输入消息开始对话  ·  /help 查看命令  ·  Ctrl+C 停止任务/退出",
+    ) -> None:
         self.session_key = session_key
+        self.brand_name = name
+        self.brand_tagline = tagline
+        self.brand_welcome = welcome
         super().__init__(self.build_text())
 
     def build_text(self) -> str:
+        # Custom brand names can't use the fixed ECHO art, so fall back to a
+        # simple bold wordmark when the name isn't the default "echo".
+        if self.brand_name.lower() == "echo":
+            logo = "\n".join(
+                f"[{color}]{escape(row)}[/]"
+                for row, color in zip(_LOGO_ART, _LOGO_GRADIENT)
+            )
+        else:
+            logo = f"[bold $primary]{escape(self.brand_name)}[/]"
         sess = f"  ·  会话 {self.session_key}" if self.session_key else ""
-        return (
-            f"[bold $primary]echo[/] [$text-muted]· agent[/]{sess}\n"
-            f"[$text-muted]输入消息开始对话  ·  /help 查看命令  ·  Ctrl+C 停止任务/退出[/]"
-        )
+        tagline = f"[$text-muted]· {escape(self.brand_tagline)}[/]{sess}"
+        return f"{logo}\n{tagline}\n[$text-muted]{escape(self.brand_welcome)}[/]"
 
 
 class UserTurn(Static):
@@ -138,6 +197,15 @@ class AgentReply(Static):
     def set_final(self, text: str) -> None:
         self._buf = text
         self.update(f"[$primary]●[/] {escape(self._buf)}")
+
+    def set_markup(self, markup: str) -> None:
+        """Render pre-built Rich markup verbatim (NOT escaped), keeping the ●
+        sigil. Used for client-local notices (/help, /theme) whose markup we
+        author ourselves and trust — unlike streamed reply text, which is always
+        escaped. _buf keeps a plain-ish copy so /copy stays harmless if reached
+        (notices set is_status and are skipped anyway)."""
+        self._buf = markup
+        self.update(f"[$primary]●[/] {markup}")
 
     def _bullet_color(self) -> str:
         """Resolve the theme's ``primary`` colour so the ``●`` matches the
@@ -245,7 +313,18 @@ class ToolCallBlock(Static):
             joined = ", ".join(f"{k}={_clip(v, 60)}" for k, v in self.params.items())
             lines.append(f"    [$text-muted]↳ 参数 {escape(joined)}[/]")
         if self.result_text:
-            lines.append(f"    [$text-muted]↳ 结果 {escape(_clip(self.result_text, 200))}[/]")
+            # Edit-family tools return a diff — color it so added/removed lines
+            # read at a glance. Everything else keeps the compact text preview.
+            looks_like_diff = "\n" in self.result_text and any(
+                ln[:1] in "+-@" for ln in self.result_text.splitlines()
+            )
+            if self.tool_name in _DIFF_TOOLS and looks_like_diff:
+                lines.append("    [$text-muted]↳ 变更[/]")
+                lines.append(colorize_diff(self.result_text))
+            else:
+                lines.append(
+                    f"    [$text-muted]↳ 结果 {escape(_clip(self.result_text, 200))}[/]"
+                )
         return "\n".join(lines)
 
     def mark_done(

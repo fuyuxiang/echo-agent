@@ -88,7 +88,10 @@ async def test_transcript_heartbeat_updates_in_place():
         tv = app.query_one(TranscriptView)
         tv.heartbeat_line("in_1", "检索中")
         first = tv.heartbeat_line("in_1", "生成中")  # 同一 id 复用
-        assert first.renderable_note == "生成中"
+        # 心跳行现在显示轮换的友好短语，不再回显服务端原始 note；
+        # 展示的短语必来自措辞库。
+        from echo_agent.cli.tui.status_phrases import _PHRASES
+        assert first.renderable_note in _PHRASES
         assert tv.heartbeat_count == 1  # 未新增第二条
 
 
