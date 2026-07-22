@@ -9,16 +9,43 @@ Provides:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
 
-def _status() -> None:
-    """Print a status table of all skill dependencies."""
+def _status(as_json: bool = False) -> int:
+    """Print a status table of all skill dependencies.
+
+    Returns a process exit code: 0 when every feature is ready, 1 when any
+    feature is missing dependencies (so scripts/CI can gate on it). ``as_json``
+    emits a structured document with color forced off.
+    """
+    from echo_agent.cli.colors import set_color_override
     from echo_agent.dependencies.lazy_deps import check_all_features
 
     report = check_all_features()
     available = [f for f, info in report.items() if info["available"]]
     missing = [f for f, info in report.items() if not info["available"]]
+
+    if as_json:
+        set_color_override(False)
+        try:
+            payload = {
+                "total": len(report),
+                "ready": sorted(available),
+                "missing": [
+                    {
+                        "feature": f,
+                        "packages": [str(p) for p in report[f]["missing"]],  # type: ignore[union-attr]
+                        "command": report[f]["command"],
+                    }
+                    for f in sorted(missing)
+                ],
+            }
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        finally:
+            set_color_override(None)
+        return 1 if missing else 0
 
     print(f"\n{'='*60}")
     print(" Echo Agent Skill Dependencies Status")
@@ -42,6 +69,7 @@ def _status() -> None:
     print(f"\n{'='*60}")
     print(f" Total: {len(report)} features, {len(available)} ready, {len(missing)} missing")
     print(f"{'='*60}\n")
+    return 1 if missing else 0
 
 
 def _install(feature: str) -> None:
@@ -130,15 +158,22 @@ def _refresh() -> None:
         print(f"  [{symbol}] {feature}: {status}")
 
 
-def main(argv: list[str] | None = None) -> None:
-    """Entry point for deps CLI."""
+def main(argv: list[str] | None = None) -> int:
+    """Entry point for deps CLI. Returns a process exit code."""
     parser = argparse.ArgumentParser(
         prog="echo-agent deps",
         description="Manage skill dependencies",
     )
+    # Accepted at both the top level and per-subcommand so `deps --json status`
+    # and `deps status --json` both work (argparse.REMAINDER passes the tail
+    # verbatim from the outer parser).
+    parser.add_argument("--json", action="store_true", dest="json",
+                        help="Emit machine-readable JSON (status only)")
     sub = parser.add_subparsers(dest="command")
 
-    sub.add_parser("status", help="Show dependency status for all skills")
+    p_status = sub.add_parser("status", help="Show dependency status for all skills")
+    p_status.add_argument("--json", action="store_true", dest="json",
+                          help="Emit machine-readable JSON")
 
     p_install = sub.add_parser("install", help="Install deps for a skill feature")
     p_install.add_argument(
@@ -149,19 +184,23 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("refresh", help="Update all previously installed deps")
 
     args = parser.parse_args(argv)
+    as_json = getattr(args, "json", False)
 
     if args.command == "status":
-        _status()
+        return _status(as_json=as_json)
     elif args.command == "install":
         if args.feature:
             _install(args.feature)
         else:
             _install_all()
+        return 0
     elif args.command == "refresh":
         _refresh()
+        return 0
     else:
         parser.print_help()
+        return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

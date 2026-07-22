@@ -43,14 +43,22 @@ def run_plugin_command(
 def _get_config_and_workspace(
     config_path: str | None, workspace: str | None
 ) -> tuple[Any, Path]:
-    """Load config and resolve workspace."""
+    """Load config and resolve workspace via the one authoritative rule.
+
+    Uses :func:`resolve_effective_workspace` so ``plugin``/``checkpoint``/
+    ``migrate`` land on the exact same directory as ``app.bootstrap`` for a
+    given ``workspace: ./data`` — previously this resolved against the shell cwd
+    and drifted from bootstrap's config-file-relative rule."""
+    from echo_agent.cli.workspace import resolve_effective_workspace
     from echo_agent.config.loader import load_config, resolve_config_file
 
     config_file = resolve_config_file(config_path, search_dir=workspace)
     overrides = {"workspace": workspace} if workspace else None
     config = load_config(config_path=config_file, overrides=overrides)
 
-    ws = Path(config.workspace).expanduser().resolve()
+    ws = resolve_effective_workspace(
+        config, str(config_file) if config_file else None, workspace
+    )
     return config, ws
 
 

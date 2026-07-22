@@ -17,6 +17,7 @@ from echo_agent.cli.tui.blocks import ApprovalBlock, ChoiceBlock
 from echo_agent.cli.tui.completion import completion_insert, filter_commands, help_text
 from echo_agent.cli.tui.theme import ECHO_THEME, ECHO_THEME_LIGHT, resolve_theme_name
 from echo_agent.cli.tui.brand import load_brand
+from echo_agent.cli.tui.turns import TurnRegistry
 from echo_agent.cli.tui.protocol import (
     CogEvent, approve_command, deny_command, clarify_command,
 )
@@ -62,23 +63,34 @@ class EchoTUI(App):
         Binding("enter", "clarify_accept", show=False),
     ]
 
-    def __init__(self, send_coro=None, session_key: str = "", interrupt_coro=None) -> None:
+    def __init__(self, send_coro=None, session_key: str = "", interrupt_coro=None,
+                 reconnect_coro=None) -> None:
         super().__init__()
         self._send = send_coro
         # Sends a control-only interrupt frame ({"type":"interrupt"}) upstream so
         # the gateway can cooperatively stop the running turn. Distinct from
         # _send (ordinary messages) so an interrupt never becomes a chat turn.
         self._interrupt = interrupt_coro
+        # Rebuilds the WS connection after a drop (re-auth + restart pump),
+        # injected by run_client. None in unit tests / when unsupported. Invoked
+        # by the /reconnect command and the auto-retry path.
+        self._reconnect = reconnect_coro
         self._session_key = session_key
+        # Connection state gates input: after a silent ws drop, submitting would
+        # send into a dead socket and silently lose the message. False disables
+        # the prompt until a reconnect succeeds.
+        self._connected = True
         # Brand strings (name/prompt/welcome/goodbye) are configurable via
         # ECHO_BRAND_* so a white-label deployment can rebrand without code edits.
         self._brand = load_brand()
         self._replies: dict[str, object] = {}
-        # event_id of the turn currently in flight, captured from its `accepted`
-        # frame. Ctrl+C scopes its interrupt to this ID so a stop frame delayed
-        # past the turn's end can't clip the next turn. Cleared when the turn
-        # ends (final reply or terminal error).
-        self._active_event_id: str = ""
+        # Model of in-flight turns keyed by event_id. Replaces the old single
+        # _active_event_id string, which a control reply's (approve/deny/clarify)
+        # accepted frame — or a second queued turn — would overwrite, making
+        # Ctrl+C target the wrong turn and letting the approval prompt end the
+        # original turn early. The registry keeps primary (conversation) turns
+        # separate from control events; see turns.TurnRegistry.
+        self._turns = TurnRegistry()
         # A single pending-approval slot is sufficient (no queue needed):
         # approval requests are serialized server-side by inference_stage Phase A
         # — that check is a serial for-loop where cli blocks in wait_for_decision
@@ -101,6 +113,14 @@ class EchoTUI(App):
     # 2s window used by shells and other agent CLIs).
     CTRL_C_EXIT_WINDOW = 2.0
 
+    @property
+    def goodbye_message(self) -> str:
+        """Public accessor for the farewell line printed after teardown. Callers
+        (run_client) use this instead of reaching into the private _brand field,
+        so a test double or an alternate front-end can supply its own without
+        replicating brand internals."""
+        return self._brand.goodbye
+
     def compose(self) -> ComposeResult:
         yield TranscriptView()
         panel = OptionList(id="slash_panel")
@@ -109,7 +129,11 @@ class EchoTUI(App):
         with Horizontal(id="input_row"):
             yield Static(self._brand.prompt, id="prompt_sigil")
             yield PromptInput()
-        yield Static("输入消息…", id="placeholder")
+            # Placeholder is overlaid inside the input row (layer) rather than a
+            # separate row below it — TextArea has no native placeholder, but a
+            # dedicated line made the empty state look like a stray caption. It
+            # sits over the input area and hides on first keystroke.
+            yield Static(self._brand.placeholder, id="placeholder")
         yield StatusBar()
 
     def on_mount(self) -> None:
@@ -167,9 +191,11 @@ class EchoTUI(App):
 
     # --- WSBridge sink ---
     def on_turn_accepted(self, event_id: str) -> None:
-        """Record the in-flight turn's event_id (from its `accepted` frame) so a
-        Ctrl+C interrupt can target exactly this turn."""
-        self._active_event_id = event_id
+        """Classify an `accepted` frame against the oldest un-acked send. A
+        primary (conversation) turn becomes the interrupt target; a control
+        reply (approve/deny/clarify) is tracked separately so it never becomes
+        the Ctrl+C target nor stops the running turn's timer."""
+        self._turns.on_accepted(event_id)
 
     def on_user_reply_token(self, inbound_id: str, text: str) -> None:
         r = self._replies.get(inbound_id)
@@ -186,8 +212,13 @@ class EchoTUI(App):
         # Streaming (append_token) stays plain text since partial markdown
         # is broken and re-parsing every token would flicker.
         r.set_markdown(text)
-        self._active_event_id = ""
-        self.query_one(StatusBar).stop_turn_timer()
+        # Retire this turn from the registry. Only stop the timer once NO primary
+        # (conversation) turn remains outstanding — a control reply's final
+        # (approve/deny/clarify ack) must not stop the original turn's timer, and
+        # a queued second turn must keep it running.
+        self._turns.on_final(inbound_id)
+        if not self._turns.has_active_primary:
+            self.query_one(StatusBar).stop_turn_timer()
 
     def on_cognitive(self, ev: CogEvent) -> None:
         if ev.cog_type == "heartbeat":
@@ -248,11 +279,11 @@ class EchoTUI(App):
         # transcript rather than flipping the status bar to "disconnected",
         # which would mislead the user into debugging their connection.
         self._tv.add_error(msg or "未知错误")
-        self._active_event_id = ""
         # A gateway error frame is terminal for the turn: the request was
         # rejected, so no reply will land to clear the active flag. End the turn
         # now, otherwise the Ctrl+C guard would keep trying to interrupt a turn
         # that already died server-side.
+        self._turns.on_terminal_error()
         try:
             self.query_one(StatusBar).stop_turn_timer()
         except Exception:
@@ -262,9 +293,38 @@ class EchoTUI(App):
         """Flip the status bar to the disconnected state after a silent ws
         close (gateway drops the socket with no error frame). Called by pump()
         when its async-for over the socket ends. Defensive: the app may not be
-        fully mounted yet if the socket dies during startup."""
+        fully mounted yet if the socket dies during startup.
+
+        Also blocks conversation sends so the user can't submit into a dead
+        socket (the message would be silently lost). The prompt stays editable so
+        /reconnect and other local commands remain reachable; a notice points at
+        it."""
+        self._connected = False
         try:
             self.query_one(StatusBar).set_connection(False)
+        except Exception:
+            pass
+        # One notice per drop (not on every re-entry), so a flapping link doesn't
+        # spam the transcript.
+        try:
+            self._tv.add_error("连接已断开。输入 /reconnect 重连（Ctrl+D 退出）。")
+        except Exception:
+            pass
+
+    def notify_reconnected(self) -> None:
+        """Restore the connected state after a successful reconnect. Called by
+        the reconnect path in run_client."""
+        self._connected = True
+        try:
+            self.query_one(StatusBar).set_connection(True)
+        except Exception:
+            pass
+        try:
+            self.query_one(PromptInput).focus()
+        except Exception:
+            pass
+        try:
+            self._tv.add_notice("[$success]● 已重新连接[/]")
         except Exception:
             pass
 
@@ -325,10 +385,41 @@ class EchoTUI(App):
         if text == "/theme" or text.startswith("/theme "):
             self._do_theme(text[len("/theme"):].strip())
             return
+        if text == "/reconnect":
+            await self._do_reconnect()
+            return
+        # Block conversation turns while disconnected — a send into a dead socket
+        # is silently lost. Local commands above still work; point the user at
+        # /reconnect instead of accepting a turn that goes nowhere.
+        if not self._connected:
+            self._tv.add_error("未连接。请先输入 /reconnect 重连。")
+            return
         self._tv.add_user(text)
         self.query_one(StatusBar).start_turn_timer()
+        # Tag this as a primary (conversation) turn so its accepted frame becomes
+        # the Ctrl+C interrupt target — not a later control reply's frame.
+        self._turns.note_send("primary")
         if self._send is not None:
             await self._send(text)
+
+    async def _do_reconnect(self) -> None:
+        """/reconnect — rebuild the WS connection after a drop. No-op (with a
+        hint) when already connected or when no reconnect handler was injected."""
+        if self._connected:
+            self._tv.add_notice("[$text-muted]当前已连接，无需重连。[/]")
+            return
+        if self._reconnect is None:
+            self._tv.add_error("此环境不支持重连，请重新启动 echo-agent cli。")
+            return
+        self._tv.add_notice("[$text-muted]正在重连…[/]")
+        try:
+            ok = await self._reconnect()
+        except Exception:
+            ok = False
+        if ok:
+            self.notify_reconnected()
+        else:
+            self._tv.add_error("重连失败。请确认网关仍在运行后重试 /reconnect。")
 
     def _do_copy(self, whole: bool) -> None:
         """Copy the last reply (default) or the whole transcript (/copy all) to
@@ -456,16 +547,17 @@ class EchoTUI(App):
         # The stop is best-effort and lands at the inference loop's next
         # checkpoint (it cannot abort a single long tool call mid-run), so we
         # tell the user it was requested rather than claiming an instant stop.
-        try:
-            turn_active = self.query_one(StatusBar).is_turn_active
-        except Exception:
-            turn_active = False
+        # Key off the registry (not the display timer): a primary turn is active
+        # from submit until its final reply, spanning tool rounds and approval
+        # waits, and unaffected by control replies.
+        turn_active = self._turns.has_active_primary
         if turn_active and self._interrupt is not None:
             self._last_ctrl_c = 0.0
-            # Scope the stop to the in-flight turn so a delayed frame can't clip
-            # the next one. Empty (no accepted frame seen yet) → server stops
-            # whatever is running, preserving the old behavior.
-            await self._interrupt(self._active_event_id)
+            # Scope the stop to the oldest outstanding PRIMARY turn (the one the
+            # gateway is running) — never a control reply's id, and never a
+            # queued later turn. Empty (no accepted frame seen yet) → server
+            # stops whatever is running, preserving the old behavior.
+            await self._interrupt(self._turns.active_turn_id)
             # A stop while parked on a clarify also cancels it server-side
             # (loop._handle_interrupt calls clarify.cancel_session). Drop the
             # TUI's pending clarify too, or the next thing the user types would
@@ -486,10 +578,7 @@ class EchoTUI(App):
             self.exit()
             return
         self._last_ctrl_c = now
-        try:
-            active = self.query_one(StatusBar).is_turn_active
-        except Exception:
-            active = False
+        active = self._turns.has_active_primary
         hint = (
             "回复仍在服务端生成，无法中断；再次按 Ctrl+C 退出"
             if active else "再次按 Ctrl+C 退出（Ctrl+D 直接退出）"
@@ -504,6 +593,9 @@ class EchoTUI(App):
         if self._send is not None:
             cmd = (approve_command(blk.request_id, level) if decision == "approve"
                    else deny_command(blk.request_id))
+            # Control send: its accepted frame and ack reply must NOT become the
+            # interrupt target nor stop the original (still-parked) turn's timer.
+            self._turns.note_send("control")
             await self._send(cmd)
         self._pending_approval = None
         # Return focus to the prompt for the next turn.
@@ -527,6 +619,9 @@ class EchoTUI(App):
             return
         blk.mark(answer)
         if self._send is not None:
+            # Control send (clarify answer): tracked separately so it doesn't
+            # clobber the primary turn that is parked waiting for this answer.
+            self._turns.note_send("control")
             await self._send(clarify_command(blk.clarify_id, answer))
         self._pending_clarify = None
         self._clarify_free_input = False

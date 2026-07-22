@@ -156,6 +156,30 @@ class GatewayServer:
 
         self._running = True
 
+        # Persist the actually bound endpoint so attach / `service status` can
+        # discover the real port even when gateway.port=0 (ephemeral) — until
+        # now it only surfaced on stdout, unreadable to anything not parsing the
+        # log. Best-effort: a write failure must not abort a healthy bind.
+        import os as _os
+
+        from echo_agent.cli.workspace import clear_runtime_endpoint, write_runtime_endpoint
+
+        try:
+            write_runtime_endpoint(
+                self._workspace,
+                host=self._config.host,
+                port=actual_port,
+                pid=_os.getpid(),
+                ws_path=self._config.ws_path,
+            )
+            # atexit backstop: if the process exits without a clean stop()
+            # (unhandled exception, os._exit), still drop the stale endpoint.
+            import atexit
+
+            atexit.register(clear_runtime_endpoint, self._workspace)
+        except Exception as e:
+            logger.warning("Failed to write gateway runtime endpoint: {}", e)
+
         import sys
         print(
             f"ECHO_AGENT_READY port={actual_port} ws={self._config.ws_path} health={self._config.api_prefix}/health",
@@ -203,6 +227,12 @@ class GatewayServer:
             await self._site.stop()
         if self._runner:
             await self._runner.cleanup()
+
+        # Remove the runtime-endpoint file so a later `service status` doesn't
+        # report a stale port for a gateway that has since exited.
+        from echo_agent.cli.workspace import clear_runtime_endpoint
+
+        clear_runtime_endpoint(self._workspace)
 
         await self.media_cache.cleanup()
         logger.info("Gateway stopped")

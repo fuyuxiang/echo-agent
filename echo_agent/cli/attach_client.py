@@ -204,12 +204,17 @@ async def run_client(
             session_key=f"cli:{user_id}", token=token,
         )
 
+        # Mutable connection holder: the live ws is swapped in place on reconnect
+        # so send/interrupt closures always target the current socket without
+        # being rebound. pump_task is likewise replaced when the pump restarts.
+        conn: dict = {"ws": ws, "pump_task": None}
+
         async def send_coro(text: str) -> None:
             # The gateway may have closed the socket without an error frame; a
             # send on a dead ws would raise. Swallow it and reflect the drop in
             # the status bar instead of crashing the input handler.
             try:
-                await ws.send_json({"type": "message", "text": text})
+                await conn["ws"].send_json({"type": "message", "text": text})
             except (aiohttp.ClientError, ConnectionError, RuntimeError):
                 app.notify_disconnected()
 
@@ -224,21 +229,15 @@ async def run_client(
             if target_event_id:
                 frame["event_id"] = target_event_id
             try:
-                await ws.send_json(frame)
+                await conn["ws"].send_json(frame)
             except (aiohttp.ClientError, ConnectionError, RuntimeError):
                 app.notify_disconnected()
-
-        app = EchoTUI(
-            send_coro=send_coro, session_key=session_key,
-            interrupt_coro=interrupt_coro,
-        )
-        bridge = WSBridge(app)
 
         async def pump() -> None:
             # app.run_async() and this coroutine share one event loop, so
             # bridge.dispatch (which updates widgets) is called directly — no
             # call_from_thread needed.
-            async for msg in ws:
+            async for msg in conn["ws"]:
                 if msg.type != aiohttp.WSMsgType.TEXT:
                     break
                 try:
@@ -251,24 +250,70 @@ async def run_client(
             # status bar to disconnected here rather than leaving it "●已连接".
             app.notify_disconnected()
 
-        pump_task = asyncio.create_task(pump())
+        async def reconnect_coro() -> bool:
+            # Rebuild the socket and re-auth reusing the SAME session_key so the
+            # gateway rebinds this cli session (server-side history/turn state is
+            # keyed by it). Returns True on success. On failure the old (dead)
+            # state is left as-is and the caller keeps the disconnected UI.
+            try:
+                new_ws = await connect_ws(session, url)
+                await authenticate(
+                    new_ws, platform="cli", user_id=user_id,
+                    session_key=session_key, token=token,
+                )
+            except (NoGatewayError, AuthError, aiohttp.ClientError, OSError):
+                return False
+            # Tear down the stale pump before swapping the socket so two pumps
+            # never read the same holder.
+            old = conn.get("pump_task")
+            if old is not None:
+                old.cancel()
+                await asyncio.gather(old, return_exceptions=True)
+            old_ws = conn["ws"]
+            conn["ws"] = new_ws
+            conn["pump_task"] = asyncio.create_task(pump())
+            try:
+                await old_ws.close()
+            except Exception:
+                pass
+            return True
+
+        app = EchoTUI(
+            send_coro=send_coro, session_key=session_key,
+            interrupt_coro=interrupt_coro, reconnect_coro=reconnect_coro,
+        )
+        bridge = WSBridge(app)
+
+        conn["pump_task"] = asyncio.create_task(pump())
         try:
             await app.run_async()
         finally:
-            pump_task.cancel()
-            await asyncio.gather(pump_task, return_exceptions=True)
-            await ws.close()
+            pt = conn.get("pump_task")
+            if pt is not None:
+                pt.cancel()
+                await asyncio.gather(pt, return_exceptions=True)
+            await conn["ws"].close()
     # Farewell line after the TUI tears down, so the terminal doesn't just snap
-    # back to the shell prompt. Configurable via ECHO_BRAND_GOODBYE.
-    print(app._brand.goodbye)
+    # back to the shell prompt. Configurable via ECHO_BRAND_GOODBYE. Read via
+    # the public accessor (with a getattr fallback) so we don't couple to the
+    # App's private _brand field — a test double may not replicate it.
+    goodbye = getattr(app, "goodbye_message", None)
+    if goodbye:
+        print(goodbye)
     return 0
 
 
 def resolve_defaults(
     config_path: str | None, workspace: str | None
 ) -> tuple[str, int, str, str]:
-    """Read connection defaults from the EXISTING gateway config (no new
-    config fields). Host is pinned to loopback — cli is local-only."""
+    """Read connection defaults from the EXISTING gateway config. Host is pinned
+    to loopback — cli is local-only.
+
+    When the config uses ``gateway.port = 0`` (OS-assigned dynamic port) the
+    static config can't tell us the real bound port, so fall back to the runtime
+    endpoint file the gateway writes on bind (``<workspace>/.echo-agent/
+    gateway.json``). Without this, attaching to a dynamic-port gateway would try
+    to connect to ``127.0.0.1:0`` and always fail."""
     try:
         from echo_agent.config.loader import load_config, resolve_config_file
         if config_path is None and workspace:
@@ -276,9 +321,30 @@ def resolve_defaults(
         cfg = load_config(config_path=config_path)
         gw = cfg.gateway
         token = gw.auth.api_tokens[0] if gw.auth.api_tokens else ""
-        return "127.0.0.1", int(gw.port), gw.ws_path, token
+        port = int(gw.port)
+        ws_path = gw.ws_path
+        if port == 0:
+            ep = _runtime_endpoint(cfg, config_path, workspace)
+            if ep and ep.get("port"):
+                port = int(ep["port"])
+                ws_path = ep.get("ws_path") or ws_path
+        return "127.0.0.1", port, ws_path, token
     except Exception:
         return "127.0.0.1", 58123, "/ws", ""
+
+
+def _runtime_endpoint(cfg, config_path: str | None, workspace: str | None) -> dict | None:
+    """Best-effort read of the gateway's runtime endpoint file. Resolves the
+    effective workspace the same way the gateway does so both point at the same
+    ``.echo-agent/gateway.json``. Returns None if unavailable."""
+    try:
+        from echo_agent.cli.workspace import (
+            read_runtime_endpoint, resolve_effective_workspace,
+        )
+        ws = resolve_effective_workspace(cfg, config_path, workspace)
+        return read_runtime_endpoint(ws)
+    except Exception:
+        return None
 
 
 def run_cli_attach(

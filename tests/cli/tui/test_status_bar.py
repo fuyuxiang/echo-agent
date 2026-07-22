@@ -78,3 +78,44 @@ def test_timer_runs_continuously_until_stopped():
     bar.stop_turn_timer()
     assert bar._turn_start is None
     assert bar.is_turn_active is False
+
+
+def test_uses_theme_tokens_not_raw_ansi():
+    """The status bar must render with theme tokens ([$success]/[$accent]/…),
+    not hardcoded Rich ANSI colours (cyan/magenta/green/red/yellow) that were
+    illegible on the light palette's white surface."""
+    bar = StatusBar()
+    bar.set_connection(True)
+    bar.set_model("opus")
+    bar.set_context(10, 100)
+    bar.set_memory_count(3)
+    text = bar._compose_text()
+    for raw in ("[bold cyan]", "[green]", "[red]", "[magenta]", "[yellow]", "[dim]"):
+        assert raw not in text, f"raw ANSI colour {raw} leaked into status bar"
+    assert "[$accent]" in text or "$accent" in text
+
+
+def test_responsive_tiers_drop_segments_when_narrow():
+    """Narrow width drops the heavy segments instead of overflowing/clipping."""
+    bar = StatusBar()
+    bar.set_connection(True)
+    bar.set_model("opus")
+    bar.set_context(18200, 65536)
+    bar.set_cost(0.042)
+    bar.set_memory_count(47)
+
+    # Force each tier by stubbing the width probe.
+    bar._tier = lambda: "narrow"          # type: ignore[method-assign]
+    narrow = bar._compose_text()
+    assert "opus" in narrow and "⏱" in narrow
+    assert "🧠" not in narrow and "$0.0420" not in narrow and "18.2K" not in narrow
+
+    bar._tier = lambda: "mid"             # type: ignore[method-assign]
+    mid = bar._compose_text()
+    assert "$0.0420" in mid               # cost shows at mid
+    assert "🧠" not in mid and "18.2K" not in mid
+
+    bar._tier = lambda: "wide"            # type: ignore[method-assign]
+    wide = bar._compose_text()
+    assert "18.2K" in wide and "🧠" in wide and "$0.0420" in wide
+

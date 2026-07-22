@@ -20,6 +20,7 @@ class Brand:
     name: str = "echo"
     tagline: str = "agent"
     prompt: str = "❯"
+    placeholder: str = "输入消息…"
     welcome: str = "输入消息开始对话  ·  /help 查看命令  ·  Ctrl+C 停止任务/退出"
     goodbye: str = "再见 👋"
 
@@ -39,6 +40,7 @@ def load_brand(env: Mapping[str, str] | None = None) -> Brand:
         name=_clean(e.get("ECHO_BRAND_NAME"), d.name),
         tagline=_clean(e.get("ECHO_BRAND_TAGLINE"), d.tagline),
         prompt=_clean(e.get("ECHO_BRAND_PROMPT"), d.prompt),
+        placeholder=_clean(e.get("ECHO_BRAND_PLACEHOLDER"), d.placeholder),
         welcome=_clean(e.get("ECHO_BRAND_WELCOME"), d.welcome),
         goodbye=_clean(e.get("ECHO_BRAND_GOODBYE"), d.goodbye),
     )

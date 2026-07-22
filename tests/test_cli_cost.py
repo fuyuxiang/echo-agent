@@ -145,3 +145,57 @@ def test_cost_subcommand_days_default():
     ns = parser.parse_args(["cost"])
     assert ns.command == "cost"
     assert ns.days == 7
+
+
+def test_cost_subcommand_accepts_json_flag():
+    from echo_agent.__main__ import _build_parser
+    parser = _build_parser()
+    ns = parser.parse_args(["cost", "--json"])
+    assert ns.json is True
+
+
+def test_show_cost_json_and_exit_code_missing_db(tmp_path, capsys):
+    # No DB -> table unavailable -> JSON emitted, exit code 1, no ANSI.
+    import json as _json
+
+    from echo_agent.cli.cost import show_cost
+
+    missing_ws = tmp_path / "nope"
+    rc = show_cost(config_path=None, workspace=str(missing_ws), days=7, as_json=True)
+    out = capsys.readouterr().out
+    assert "\033[" not in out
+    data = _json.loads(out)
+    assert data["table_available"] is False
+    assert data["today"] == []
+    assert rc == 1
+
+
+def test_show_cost_exit_code_zero_when_table_present(tmp_path, capsys):
+    # Seed a real DB so cost_ledger_dim exists -> exit code 0.
+    import asyncio
+
+    from echo_agent.cli.cost import show_cost
+
+    ws = tmp_path / "ws"
+    db = ws / "echo_agent.db"
+    db.parent.mkdir(parents=True)
+
+    async def _seed_db():
+        storage = SQLiteBackend(db)
+        await storage.initialize()
+        await storage.close()
+
+    asyncio.run(_seed_db())
+
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    cfg = SimpleNamespace(
+        workspace=str(ws),
+        storage=SimpleNamespace(database_path="echo_agent.db"),
+    )
+    with patch("echo_agent.cli.cost.resolve_config_file", return_value=None), \
+         patch("echo_agent.cli.cost.load_config", return_value=cfg), \
+         patch("echo_agent.cli.cost._effective_workspace", return_value=ws):
+        rc = show_cost(workspace=str(ws), days=7)
+    assert rc == 0

@@ -150,6 +150,44 @@ def test_main_no_command_prints_help(capsys):
     assert "usage" in capsys.readouterr().out.lower()
 
 
+# ── deps CLI: --json output + exit codes ─────────────────────────────────────
+
+
+def test_status_json_all_ready_exit_zero(capsys):
+    report = {"skill.calc": {"available": True, "missing": [], "command": None}}
+    with patch("echo_agent.dependencies.lazy_deps.check_all_features", return_value=report):
+        rc = deps_cli._status(as_json=True)
+    out = capsys.readouterr().out
+    assert "\033[" not in out
+    import json as _json
+    data = _json.loads(out)
+    assert data["ready"] == ["skill.calc"]
+    assert data["missing"] == []
+    assert rc == 0
+
+
+def test_status_json_missing_exit_nonzero(capsys):
+    report = {
+        "skill.calc": {"available": True, "missing": [], "command": None},
+        "skill.excel": {"available": False, "missing": ["openpyxl>=3.1"],
+                        "command": "uv pip install 'openpyxl>=3.1'"},
+    }
+    with patch("echo_agent.dependencies.lazy_deps.check_all_features", return_value=report):
+        rc = deps_cli._status(as_json=True)
+    import json as _json
+    data = _json.loads(capsys.readouterr().out)
+    assert data["missing"][0]["feature"] == "skill.excel"
+    assert data["missing"][0]["packages"] == ["openpyxl>=3.1"]
+    assert rc == 1
+
+
+def test_main_status_json_returns_exit_code():
+    report = {"skill.excel": {"available": False, "missing": ["x"], "command": "c"}}
+    with patch("echo_agent.dependencies.lazy_deps.check_all_features", return_value=report):
+        rc = deps_cli.main(["status", "--json"])
+    assert rc == 1
+
+
 # ── skill_require.require ────────────────────────────────────────────────────
 
 

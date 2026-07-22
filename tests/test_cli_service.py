@@ -173,7 +173,6 @@ def test_allows_status_from_inside_gateway(monkeypatch):
 @pytest.mark.parametrize(
     "action,method,kwargs",
     [
-        ("install", "install", {"workspace": None, "force": False, "config": None}),
         ("uninstall", "uninstall", {}),
         ("start", "start", {}),
         ("stop", "stop", {}),
@@ -187,6 +186,42 @@ def test_run_service_action_dispatches(action, method, kwargs, monkeypatch):
     with patch(f"{_PKG}.detect_backend", return_value=backend):
         service.run_service_action(action)
     getattr(backend, method).assert_called_once_with(**kwargs)
+
+
+def test_install_freezes_absolute_paths(monkeypatch, tmp_path):
+    # install 前解析出绝对 workspace/config,固化进服务文件,后台服务不再依赖
+    # cwd 或 ~/.echo-agent 兜底(任务二)。这里断言传给 backend.install 的是绝对路径。
+    monkeypatch.delenv(base.GATEWAY_ENV_FLAG, raising=False)
+    backend = MagicMock()
+    ws = tmp_path / "ws"
+    with patch(f"{_PKG}.detect_backend", return_value=backend), \
+         patch(f"{_PKG}._resolve_install_paths", return_value=(str(ws), str(tmp_path / "echo-agent.yaml"))):
+        service.run_service_action("install", workspace="./ws")
+    backend.install.assert_called_once_with(
+        workspace=str(ws), force=False, config=str(tmp_path / "echo-agent.yaml")
+    )
+
+
+def test_resolve_install_paths_returns_absolute(tmp_path, monkeypatch):
+    # 相对 -w 按 cwd 解析为绝对;无 config 时返回空串(install 转成 None)。
+    monkeypatch.chdir(tmp_path)
+    with patch("echo_agent.config.loader.resolve_config_file", return_value=None):
+        abs_ws, abs_config = service._resolve_install_paths("data", None)
+    assert Path(abs_ws).is_absolute()
+    assert abs_ws == str((tmp_path / "data").resolve())
+    assert abs_config == ""
+
+
+def test_resolve_install_paths_freezes_config(tmp_path, monkeypatch):
+    # 给定显式 config,固化为绝对路径。
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "echo-agent.yaml"
+    cfg.write_text("workspace: ./data\n", encoding="utf-8")
+    abs_ws, abs_config = service._resolve_install_paths(None, str(cfg))
+    assert abs_config == str(cfg.resolve())
+    # 无 -w 时相对 workspace 按 config 文件所在目录解析。
+    assert abs_ws == str((tmp_path / "data").resolve())
+
 
 
 def test_run_service_action_no_backend_exits_with_hints(monkeypatch, capsys):

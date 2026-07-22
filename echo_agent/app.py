@@ -76,6 +76,8 @@ async def bootstrap(
     from echo_agent.scheduler.delivery import build_scheduled_job_handler
     from echo_agent.storage.sqlite import SQLiteBackend
 
+    from echo_agent.cli.workspace import resolve_effective_workspace
+
     # 不带 -c 时用 workspace 作查找目录,避免子命令回退到 ~/.echo-agent 的全局
     # 配置(与 run_gateway 的预解析、cost/config 命令行为保持一致)。
     search_dir = overrides.get("workspace") if overrides else None
@@ -83,11 +85,13 @@ async def bootstrap(
     config = load_config(config_path=config_file, overrides=overrides)
     configure_logging(config.observability.log_level)
 
-    workspace_value = Path(config.workspace).expanduser()
-    if not workspace_value.is_absolute():
-        workspace_base = Path.cwd() if overrides and "workspace" in overrides else (config_file.parent if config_file else Path.cwd())
-        workspace_value = workspace_base / workspace_value
-    ws = workspace_value.resolve()
+    # 唯一权威解析:显式 -w(overrides["workspace"])按 cwd 解析,否则相对
+    # workspace 按配置文件所在目录解析,与所有子命令保持同一份规则。
+    ws = resolve_effective_workspace(
+        config,
+        str(config_file) if config_file else None,
+        overrides.get("workspace") if overrides else None,
+    )
     ws.mkdir(parents=True, exist_ok=True)
 
     # Acquire the single-instance lock before opening SQLite / running migrations

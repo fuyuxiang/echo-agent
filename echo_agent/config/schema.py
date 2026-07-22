@@ -1230,6 +1230,14 @@ class BrowserToolConfig(_Base):
 
 
 class ImageGenConfig(_Base):
+    enabled: bool = Field(
+        default=True,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/tools/__init__.py:220",
+            "desc_zh": "是否启用图像生成工具(取消后即使填了 key 也不注册)",
+            "desc_en": "Enable the image generation tool (unset skips registration even if a key is present)",
+        },
+    )
     backend: str = Field(
         default="openai",
         json_schema_extra={
@@ -1283,6 +1291,14 @@ class ImageGenConfig(_Base):
 
 
 class TTSConfig(_Base):
+    enabled: bool = Field(
+        default=True,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/tools/__init__.py:263",
+            "desc_zh": "是否启用 TTS 语音合成工具(取消后不注册,保留已填凭证)",
+            "desc_en": "Enable the TTS tool (unset skips registration; stored credentials are kept)",
+        },
+    )
     openai_api_key: str = Field(
         default="",
         json_schema_extra={
@@ -1443,6 +1459,23 @@ class MCPServerConfig(_Base):
     )
 
 
+class MCPToolConfig(_Base):
+    """Top-level MCP switch for the tools section.
+
+    Individual servers live in ``tools.mcp_servers``; this holds the single
+    on/off flag the setup wizard writes so un-checking MCP is a real config
+    change rather than a print-only no-op.
+    """
+    enabled: bool = Field(
+        default=True,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/loop.py:552",
+            "desc_zh": "是否启用 MCP 工具接入(取消后不加载任何 MCP 服务)",
+            "desc_en": "Enable MCP tool integration (unset skips loading all MCP servers)",
+        },
+    )
+
+
 class ToolsConfig(_Base):
     # Keep in sync with default.yaml (tools.profile). "full" is the packaged
     # default; both must agree so the effective profile is unambiguous.
@@ -1535,6 +1568,7 @@ class ToolsConfig(_Base):
     image_gen: ImageGenConfig = Field(default_factory=ImageGenConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
     code_exec: CodeExecConfig = Field(default_factory=CodeExecConfig)
+    mcp: MCPToolConfig = Field(default_factory=MCPToolConfig)
 
 
 # ── Execution environment configs ────────────────────────────────────────────
@@ -3016,10 +3050,19 @@ class GatewayConfig(_Base):
         default=58123,
         json_schema_extra={
             "status": "effective", "ref": "gateway/server.py:129",
-            "desc_zh": "网关监听端口",
-            "desc_en": "Gateway listen port",
+            "desc_zh": "网关监听端口(0 表示动态分配,真实端口写入 workspace/.echo-agent/gateway.json)",
+            "desc_en": "Gateway listen port (0 = dynamically assigned; the real port is written to workspace/.echo-agent/gateway.json)",
         },
     )
+
+    @field_validator("port")
+    @classmethod
+    def _validate_port(cls, v: int) -> int:
+        # 0 = 让 OS 挑临时端口(真实端口经端点文件对外暴露);其余须为合法 TCP 端口。
+        # 越界值(负数/>65535)fail-closed 拒绝启动,而非等到 bind 时才报晦涩的 OSError。
+        if v != 0 and not (1 <= v <= 65535):
+            raise ValueError("port 必须为 0(动态分配)或 1-65535 之间的合法端口")
+        return v
     api_prefix: str = Field(
         default="/api/v1",
         json_schema_extra={
@@ -3091,6 +3134,14 @@ class GatewayConfig(_Base):
 # ── Skills configs ───────────────────────────────────────────────────────────
 
 class SkillsConfig(_Base):
+    enabled: bool = Field(
+        default=True,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/loop.py:227",
+            "desc_zh": "是否启用技能系统",
+            "desc_en": "Enable the skills system",
+        },
+    )
     skills_dir: str = Field(
         default="skills",
         json_schema_extra={

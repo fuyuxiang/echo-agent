@@ -65,3 +65,51 @@ def test_resolve_defaults_host_pinned_to_loopback(monkeypatch):
     assert port == 8123
     assert ws_path == "/socket"
     assert token == "secret-token"
+
+
+# ── status / cost / deps propagate a stable exit code via sys.exit ────────────
+
+
+def test_status_dispatch_exits_with_show_status_rc():
+    argv = ["echo-agent", "status", "--json"]
+    with mock.patch.object(sys, "argv", argv), \
+         mock.patch("echo_agent.cli.status.show_status", return_value=3) as fn, \
+         mock.patch("sys.exit") as ex:
+        m._dispatch()
+    assert fn.call_args.kwargs["as_json"] is True
+    ex.assert_called_once_with(3)
+
+
+def test_cost_dispatch_exits_with_show_cost_rc():
+    argv = ["echo-agent", "cost", "--json", "--days", "5"]
+    with mock.patch.object(sys, "argv", argv), \
+         mock.patch("echo_agent.cli.cost.show_cost", return_value=1) as fn, \
+         mock.patch("sys.exit") as ex:
+        m._dispatch()
+    assert fn.call_args.kwargs["as_json"] is True
+    assert fn.call_args.kwargs["days"] == 5
+    ex.assert_called_once_with(1)
+
+
+def test_deps_dispatch_exits_with_deps_main_rc():
+    argv = ["echo-agent", "deps", "status", "--json"]
+    with mock.patch.object(sys, "argv", argv), \
+         mock.patch("echo_agent.dependencies.cli.main", return_value=1) as fn, \
+         mock.patch("sys.exit") as ex:
+        m._dispatch()
+    # --json passes through argparse.REMAINDER verbatim to the inner parser.
+    assert fn.call_args.args[0] == ["status", "--json"]
+    ex.assert_called_once_with(1)
+
+
+def test_status_parser_has_json_flag():
+    parser = m._build_parser()
+    ns = parser.parse_args(["status", "--json"])
+    assert ns.json is True
+
+
+def test_plugin_and_checkpoint_parsers_have_json_flag():
+    parser = m._build_parser()
+    assert parser.parse_args(["plugin", "list", "--json"]).json is True
+    assert parser.parse_args(["checkpoint", "list", "--json"]).json is True
+    assert parser.parse_args(["setup", "doctor", "--json"]).json is True

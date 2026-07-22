@@ -22,14 +22,16 @@ def _ctx_bar(percent: int, width: int = 10) -> str:
     clamped = max(0, min(100, percent))
     filled = round(clamped / 100 * width)
     empty = width - filled
+    # Theme tokens (not raw ANSI) so the gauge adapts to light/dark — green/amber/
+    # red were illegible on the light palette's white surface.
     if clamped >= 80:
-        color = "red"
+        color = "$error"
     elif clamped >= 50:
-        color = "yellow"
+        color = "$warning"
     else:
-        color = "green"
+        color = "$success"
     bar = "█" * filled + "░" * empty
-    return f"[{color}]{bar}[/{color}]"
+    return f"[{color}]{bar}[/]"
 
 
 def _fmt_duration(seconds: float) -> str:
@@ -77,46 +79,72 @@ class StatusBar(Static):
             if self._timer is not None:
                 self._timer.pause()
 
+    def _tier(self) -> str:
+        """Responsive tier from the current width. Narrow terminals drop the
+        heavier segments (context gauge, cost, memory) instead of letting the
+        single-line bar overflow and clip mid-field.
+          wide  (>=80): connection + model + context + timer + cost + memory
+          mid   (>=50): connection + model + timer + cost
+          narrow(< 50): connection + model + timer"""
+        try:
+            width = self.size.width or self.app.size.width
+        except Exception:
+            width = 0
+        if width and width < 50:
+            return "narrow"
+        if width and width < 80:
+            return "mid"
+        return "wide"
+
     def _compose_text(self) -> str:
+        tier = self._tier()
         segments: list[str] = []
 
-        # 0. Connection + session
-        conn = "[green]●已连接[/green]" if self._ok else "[red]○已断开[/red]"
-        if self._session:
+        # 0. Connection + session (all tiers). Theme tokens so the light palette
+        # stays legible — raw green/red on white failed the contrast bar.
+        conn = "[$success]●已连接[/]" if self._ok else "[$error]○已断开[/]"
+        if self._session and tier == "wide":
             segments.append(f"{conn} {self._session}")
         else:
             segments.append(conn)
 
-        # 1. Model
+        # 1. Model (all tiers)
         model_display = self._model or "—"
-        segments.append(f"[bold cyan]⚡ {model_display}[/bold cyan]")
+        segments.append(f"[b $accent]⚡ {model_display}[/]")
 
-        # 2. Context gauge
-        if self._context_max > 0:
-            used_str = _fmt_tokens(self._context_used)
-            max_str = _fmt_tokens(self._context_max)
-            percent = min(100, round(self._context_used / self._context_max * 100))
-            bar = _ctx_bar(percent)
-            segments.append(f"{used_str}/{max_str} {bar} {percent}%")
-        else:
-            segments.append("[dim]上下文 —[/dim]")
+        # 2. Context gauge (wide only)
+        if tier == "wide":
+            if self._context_max > 0:
+                used_str = _fmt_tokens(self._context_used)
+                max_str = _fmt_tokens(self._context_max)
+                percent = min(100, round(self._context_used / self._context_max * 100))
+                bar = _ctx_bar(percent)
+                segments.append(f"{used_str}/{max_str} {bar} {percent}%")
+            else:
+                segments.append("[$text-muted]上下文 —[/]")
 
-        # 3. Timer
+        # 3. Timer (all tiers)
         if self._turn_start is not None:
             elapsed = time.time() - self._turn_start
-            segments.append(f"[bold]⏱ {_fmt_duration(elapsed)}[/bold]")
+            segments.append(f"[b]⏱ {_fmt_duration(elapsed)}[/b]")
         elif self._turn_elapsed > 0:
             segments.append(f"⏱ {_fmt_duration(self._turn_elapsed)}")
         else:
-            segments.append("[dim]⏱ 0s[/dim]")
+            segments.append("[$text-muted]⏱ 0s[/]")
 
-        # 4. Cost
-        segments.append(f"${self._cost:.4f}")
+        # 4. Cost (wide + mid)
+        if tier in ("wide", "mid"):
+            segments.append(f"${self._cost:.4f}")
 
-        # 5. Memory count
-        segments.append(f"[magenta]🧠 {self._memory_count}[/magenta]")
+        # 5. Memory count (wide only)
+        if tier == "wide":
+            segments.append(f"[$secondary]🧠 {self._memory_count}[/]")
 
         return " │ ".join(segments)
+
+    def on_resize(self) -> None:
+        # Re-render on width change so the responsive tier updates live.
+        self._refresh()
 
     def _refresh(self) -> None:
         if not self._mounted:

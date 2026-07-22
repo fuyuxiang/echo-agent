@@ -16,7 +16,7 @@ from urllib.parse import quote
 
 from loguru import logger
 
-from echo_agent.storage.errors import CorruptData, StorageUnavailable
+from echo_agent.storage.errors import CorruptData
 
 
 @dataclass

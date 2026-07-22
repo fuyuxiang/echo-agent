@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
-from echo_agent.cli.colors import Colors, color, print_header, print_warning
+from echo_agent.cli.colors import Colors, color, print_header, print_warning, set_color_override
 from echo_agent.cli.status import _effective_workspace
 from echo_agent.config.loader import load_config, resolve_config_file
 
@@ -105,7 +106,15 @@ def _render_trend(rows) -> None:
 
 
 def show_cost(config_path: str | Path | None = None,
-              workspace: str | Path | None = None, days: int = 7) -> None:
+              workspace: str | Path | None = None, days: int = 7,
+              as_json: bool = False) -> int:
+    """Render the cost report and return a process exit code.
+
+    Returns 0 on success (data present or a legitimately empty ledger) and 1
+    when the cost table is unavailable (missing/legacy/unreadable DB) — a
+    signal CI or scripts can gate on. ``as_json`` emits structured JSON with
+    color forced off.
+    """
     config_file = resolve_config_file(config_path=config_path, search_dir=workspace)
     overrides = {"workspace": str(workspace)} if workspace else None
     config = load_config(config_path=config_file, overrides=overrides)
@@ -116,35 +125,55 @@ def show_cost(config_path: str | Path | None = None,
     )
     db_path = effective_workspace / config.storage.database_path
 
-    async def _run() -> None:
-        # Reports are read-only in intent but NOT in effect: SQLiteBackend
-        # connects by running migrations, so opening a legacy DB here will
-        # create cost_ledger_dim (accepted by design). A fresh workspace has
-        # no DB file yet; connecting to a non-existent path makes sqlite raise
-        # OperationalError. Treat absence as the missing-table case and degrade
-        # gracefully instead of crashing.
+    async def _collect() -> tuple[Any, float, list, bool]:
+        """Return (today_rows, total, trend_rows, table_available)."""
         today = date.today().isoformat()
         if not db_path.exists():
-            _render_today(None, 0.0, today)
-            return
+            return None, 0.0, [], False
         from echo_agent.storage.sqlite import SQLiteBackend
         storage = SQLiteBackend(db_path)
         try:
-            # Guard only the connect/query phase: a present-but-invalid DB file
-            # (not a real sqlite DB) makes the first statement raise. Degrade to
-            # the missing-table path rather than crashing. Kept narrow so real
-            # logic bugs still surface.
             try:
                 rows, total = await _today_report(storage, today)
                 since = (date.today() - timedelta(days=max(1, days) - 1)).isoformat()
                 trend = await _trend_report(storage, since)
             except Exception as exc:  # noqa: BLE001 - degrade on unreadable DB
                 logger.warning("cost report: failed to read DB at {}: {}", db_path, exc)
-                _render_today(None, 0.0, today)
-                return
-            _render_today(rows, total, today)
-            _render_trend(trend)
+                return None, 0.0, [], False
+            return rows, total, trend, rows is not None
         finally:
             await storage.close()
 
-    asyncio.run(_run())
+    rows, total, trend, table_available = asyncio.run(_collect())
+    today = date.today().isoformat()
+
+    if as_json:
+        set_color_override(False)
+        try:
+            payload = {
+                "date": today,
+                "table_available": table_available,
+                "total": round(float(total), 6),
+                "today": [
+                    {
+                        "channel": r["channel"] or None,
+                        "model": r["model"],
+                        "spent": round(float(r["spent"]), 6),
+                        "input_tokens": int(r["input_tokens"]),
+                        "output_tokens": int(r["output_tokens"]),
+                    }
+                    for r in (rows or [])
+                ],
+                "trend": [
+                    {"date": r["window_date"], "total": round(float(r["total"]), 6)}
+                    for r in (trend or [])
+                ],
+            }
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        finally:
+            set_color_override(None)
+        return 0 if table_available else 1
+
+    _render_today(rows, total, today)
+    _render_trend(trend)
+    return 0 if table_available else 1

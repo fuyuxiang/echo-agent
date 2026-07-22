@@ -134,15 +134,15 @@ def migrate_heartbeat_config(data: dict[str, Any]) -> dict[str, Any]:
     if legacy is not None:
         if legacy == "every":
             hb.setdefault("verbosity", "every_tool")
-            logger.info("config: on_uneditable=every migrated to heartbeat.verbosity=every_tool")
+            logger.debug("config: on_uneditable=every migrated to heartbeat.verbosity=every_tool")
         else:
-            logger.info(
+            logger.debug(
                 "config: on_uneditable={} is obsolete and ignored; "
                 "heartbeat now adapts per channel capability", legacy,
             )
     if "interval_sec" in hb and "min_interval_sec" not in hb:
         hb["min_interval_sec"] = hb.pop("interval_sec")
-        logger.info("config: heartbeat.interval_sec migrated to min_interval_sec")
+        logger.debug("config: heartbeat.interval_sec migrated to min_interval_sec")
     else:
         hb.pop("interval_sec", None)
     return data
@@ -156,7 +156,11 @@ def load_config(
 
     path = resolve_config_file(config_path)
     if path and path.exists():
-        logger.info("Loading config from {}", path)
+        # debug, not info: load_config runs on every CLI invocation (status,
+        # cost, deps...) and loguru's default sink is stderr, so an info line
+        # here leaks into otherwise-clean command output. Gateway logging is
+        # unaffected — only this per-command load message is quieted.
+        logger.debug("Loading config from {}", path)
         data = _deep_merge(data, _load_yaml_file(path))
 
     env = _env_overrides()

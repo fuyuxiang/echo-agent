@@ -9,6 +9,7 @@ from rich.markdown import Markdown
 from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
+from rich.theme import Theme as RichTheme
 from textual.widgets import Static
 
 from echo_agent.cli.tui.protocol import CogEvent
@@ -38,6 +39,37 @@ _OBJECT_KEY = {
 def humanize_tool(name: str) -> str:
     """Tool id -> Chinese verb. Unknown tools fall back to the raw id."""
     return _TOOL_VERB.get(name, name)
+
+
+class ExpandableBlock(Static):
+    """A Static whose summary/detail flips via ``toggle()``, wired to real user
+    input: it is focusable (Tab/arrow reach it), clickable (mouse), and toggles
+    on Enter/Space. Subclasses implement render_summary/render_detail and set
+    ``expanded``. Previously ToolCallBlock/CognitiveBlock had toggle() but no
+    input path, so their detail/diff view was unreachable except via the
+    last-block ctrl+r/ctrl+o shortcuts — this makes every such block openable."""
+
+    can_focus = True
+
+    def render_summary(self) -> str:  # pragma: no cover - overridden
+        raise NotImplementedError
+
+    def render_detail(self) -> str:  # pragma: no cover - overridden
+        raise NotImplementedError
+
+    def toggle(self) -> None:
+        self.expanded = not self.expanded
+        self.update(self.render_detail() if self.expanded else self.render_summary())
+
+    def on_click(self) -> None:
+        self.toggle()
+
+    def key_enter(self) -> None:
+        self.toggle()
+
+    def key_space(self) -> None:
+        self.toggle()
+
 
 
 # Tools whose result text is a unified-style diff worth coloring line by line.
@@ -141,18 +173,36 @@ class Banner(Static):
         self.brand_name = name
         self.brand_tagline = tagline
         self.brand_welcome = welcome
+        # Narrow terminals collapse the 5-row ASCII wordmark to a single-line
+        # brand so it doesn't dominate a short screen; recomputed on resize.
+        self._narrow = False
         super().__init__(self.build_text())
+
+    # Below this width the block-letter logo is too wide / too tall relative to
+    # the screen, so fall back to a one-line wordmark.
+    NARROW_WIDTH = 40
+
+    def on_resize(self) -> None:
+        try:
+            width = self.size.width or self.app.size.width
+        except Exception:
+            width = 0
+        narrow = bool(width) and width < self.NARROW_WIDTH
+        if narrow != self._narrow:
+            self._narrow = narrow
+            self.update(self.build_text())
 
     def build_text(self) -> str:
         # Custom brand names can't use the fixed ECHO art, so fall back to a
-        # simple bold wordmark when the name isn't the default "echo".
-        if self.brand_name.lower() == "echo":
+        # simple bold wordmark when the name isn't the default "echo" OR the
+        # terminal is too narrow for the 5-row block letters.
+        if self._narrow or self.brand_name.lower() != "echo":
+            logo = f"[bold $primary]{escape(self.brand_name)}[/]"
+        else:
             logo = "\n".join(
                 f"[{color}]{escape(row)}[/]"
                 for row, color in zip(_LOGO_ART, _LOGO_GRADIENT)
             )
-        else:
-            logo = f"[bold $primary]{escape(self.brand_name)}[/]"
         sess = f"  ·  会话 {self.session_key}" if self.session_key else ""
         tagline = f"[$text-muted]· {escape(self.brand_tagline)}[/]{sess}"
         return f"{logo}\n{tagline}\n[$text-muted]{escape(self.brand_welcome)}[/]"
@@ -167,6 +217,42 @@ class UserTurn(Static):
         # Markup keeps the sigil in the accent colour and the task text bright,
         # so the title reads as the strongest element in each turn.
         super().__init__(f"[bold $primary]❯[/] [b]{escape(text)}[/b]")
+
+
+class ThemedMarkdown(Markdown):
+    """Rich Markdown whose named styles (headings, code, links, block quotes)
+    are mapped to Echo theme colours instead of Rich's default ANSI palette.
+
+    Rich resolves ``markdown.h1``/``markdown.code``/… from the console's style
+    stack; the defaults render headings in bright magenta and code in a fixed
+    hue, both of which clash with the teal/indigo brand and fail contrast on the
+    light palette. We push a per-render theme so those styles resolve to our
+    palette, then pop it — no global console mutation."""
+
+    def __init__(self, text: str, *, palette: dict[str, str]) -> None:
+        super().__init__(text, inline_code_theme="ansi_dark")
+        self._palette = palette
+
+    def __rich_console__(self, console, options):
+        primary = self._palette.get("primary", "")
+        secondary = self._palette.get("secondary", "")
+        accent = self._palette.get("accent", "")
+        muted = self._palette.get("muted", "")
+        theme = RichTheme({
+            "markdown.h1": f"bold {primary}" if primary else "bold",
+            "markdown.h2": f"bold {primary}" if primary else "bold",
+            "markdown.h3": f"bold {accent}" if accent else "bold",
+            "markdown.h4": f"bold {accent}" if accent else "bold",
+            "markdown.h5": "bold",
+            "markdown.h6": "bold",
+            "markdown.link": f"underline {secondary}" if secondary else "underline",
+            "markdown.link_url": secondary or "",
+            "markdown.item.bullet": accent or "",
+            "markdown.block_quote": muted or "",
+            "markdown.hr": muted or "",
+        }, inherit=True)
+        with console.use_theme(theme):
+            yield from super().__rich_console__(console, options)
 
 
 class AgentReply(Static):
@@ -224,16 +310,42 @@ class AgentReply(Static):
         """Render the finished reply as markdown, keeping the ``●`` sigil inline
         with the body's first line. A two-column grid places the accent bullet
         beside the markdown so the turn still reads as "the agent is speaking",
-        and wrapped/subsequent lines stay aligned under the body."""
+        and wrapped/subsequent lines stay aligned under the body.
+
+        Markdown styles (headings, code, links, emphasis) are mapped to the Echo
+        theme instead of Rich's default ANSI palette — the defaults rendered
+        headings in bright magenta, clashing with the teal/indigo brand and
+        failing contrast on the light palette."""
         self._buf = text
         grid = Table.grid(padding=(0, 1, 0, 0))
         grid.add_column()
         grid.add_column()
-        grid.add_row(Text("●", style=self._bullet_color()), Markdown(text))
+        grid.add_row(
+            Text("●", style=self._bullet_color()),
+            ThemedMarkdown(text, palette=self._md_palette()),
+        )
         self.update(grid)
 
+    def _md_palette(self) -> dict[str, str]:
+        """Resolve theme colours for markdown styles. Rich renderables bypass
+        Textual's ``$var`` markup substitution, so we look the hues up from the
+        active theme here. Empty dict when no theme is attached (unit tests) →
+        ThemedMarkdown falls back to Rich defaults without crashing."""
+        try:
+            theme = self.app.current_theme
+            if theme is not None:
+                return {
+                    "primary": theme.primary or "",
+                    "secondary": theme.secondary or "",
+                    "accent": theme.accent or theme.primary or "",
+                    "muted": (theme.variables or {}).get("text-muted", ""),
+                }
+        except Exception:
+            pass
+        return {}
 
-class CognitiveBlock(Static):
+
+class CognitiveBlock(ExpandableBlock):
     def __init__(self, ev: CogEvent) -> None:
         self.ev = ev
         self.expanded = False
@@ -259,12 +371,8 @@ class CognitiveBlock(Static):
             lines.append(f"    [$text-muted]{escape(str(d['text']))}[/]")
         return "\n".join(lines)
 
-    def toggle(self) -> None:
-        self.expanded = not self.expanded
-        self.update(self.render_detail() if self.expanded else self.render_summary())
 
-
-class ToolCallBlock(Static):
+class ToolCallBlock(ExpandableBlock):
     """One tool invocation. Flips in place from running (🔧 … ) to done
     (🔧 … · summary ✓/✗). Paired across the two frames by tool_call_id."""
 
@@ -334,10 +442,6 @@ class ToolCallBlock(Static):
         self.result_meta = result_meta
         self.result_text = result_text
         self.duration_ms = duration_ms
-        self.update(self.render_detail() if self.expanded else self.render_summary())
-
-    def toggle(self) -> None:
-        self.expanded = not self.expanded
         self.update(self.render_detail() if self.expanded else self.render_summary())
 
 

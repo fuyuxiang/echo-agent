@@ -143,11 +143,17 @@ def _build_parser() -> argparse.ArgumentParser:
                               help="Override interface language (default: auto-detect from OS)")
     setup_parser.add_argument("--flow", choices=["quickstart", "full"], default=None,
                               help="Skip the menu and run a specific flow")
+    # doctor/check sections can emit machine-readable output; the setup impl
+    # (owned elsewhere) reads getattr(args, "json", False).
+    setup_parser.add_argument("--json", action="store_true", dest="json",
+                              help="Emit machine-readable JSON for the doctor/check section (no ANSI)")
 
     # status
     status_parser = subparsers.add_parser("status", help="Show current configuration status")
     status_parser.add_argument("-c", "--config", help="Path to config file")
     status_parser.add_argument("-w", "--workspace", help="Workspace directory")
+    status_parser.add_argument("--json", action="store_true", dest="json",
+                               help="Emit machine-readable JSON (no ANSI)")
 
     # cost
     cost_parser = subparsers.add_parser("cost", help="Show cost attribution report")
@@ -155,6 +161,8 @@ def _build_parser() -> argparse.ArgumentParser:
     cost_parser.add_argument("-w", "--workspace", help="Workspace directory")
     cost_parser.add_argument("--days", type=int, default=7,
                              help="Trend window in days (default: 7)")
+    cost_parser.add_argument("--json", action="store_true", dest="json",
+                             help="Emit machine-readable JSON (no ANSI)")
 
     # gateway — foreground run (default) or service lifecycle management
     gw_parser = subparsers.add_parser(
@@ -210,6 +218,8 @@ def _build_parser() -> argparse.ArgumentParser:
     plugin_parser.add_argument("name", nargs="?", default="", help="Plugin name (for info/enable/disable)")
     plugin_parser.add_argument("-c", "--config", help="Path to config file")
     plugin_parser.add_argument("-w", "--workspace", help="Workspace directory")
+    plugin_parser.add_argument("--json", action="store_true", dest="json",
+                               help="Emit machine-readable JSON (no ANSI)")
 
     # evolution
     evo_parser = subparsers.add_parser("evolution", help="Manage the self-evolving skill harness")
@@ -254,6 +264,8 @@ def _build_parser() -> argparse.ArgumentParser:
     cp_parser.add_argument("-c", "--config", help="Path to config file")
     cp_parser.add_argument("-w", "--workspace", help="Workspace directory")
     cp_parser.add_argument("-y", "--yes", action="store_true", help="Skip restore confirmation")
+    cp_parser.add_argument("--json", action="store_true", dest="json",
+                           help="Emit machine-readable JSON (no ANSI)")
 
     # migrate
     mig_parser = subparsers.add_parser("migrate", help="Run data migrations (memory scope)")
@@ -305,17 +317,24 @@ def _dispatch() -> None:
 
     if args.command == "status":
         from echo_agent.cli.status import show_status
-        show_status(config_path=args.config or args.top_config, workspace=args.workspace or args.top_workspace)
-        return
+        import sys as _sys
+        rc = show_status(
+            config_path=args.config or args.top_config,
+            workspace=args.workspace or args.top_workspace,
+            as_json=getattr(args, "json", False),
+        )
+        _sys.exit(rc)
 
     if args.command == "cost":
         from echo_agent.cli.cost import show_cost
-        show_cost(
+        import sys as _sys
+        rc = show_cost(
             config_path=args.config or args.top_config,
             workspace=args.workspace or args.top_workspace,
             days=args.days,
+            as_json=getattr(args, "json", False),
         )
-        return
+        _sys.exit(rc)
 
     if args.command == "gateway":
         if args.action:
@@ -342,10 +361,12 @@ def _dispatch() -> None:
 
     if args.command == "deps":
         from echo_agent.dependencies.cli import main as deps_main
+        import sys as _sys
         # 始终传列表(哪怕为空):传 None 会让内层 argparse 回读真实
         # sys.argv 从而把外层的 "deps" 当成子命令,报 invalid choice。
-        deps_main(args.deps_args)
-        return
+        # --json 经 argparse.REMAINDER 原样透传给内层解析器。
+        rc = deps_main(args.deps_args)
+        _sys.exit(rc if rc is not None else 0)
 
     if args.command == "service":
         from echo_agent.cli.service import run_action

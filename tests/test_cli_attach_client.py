@@ -200,7 +200,8 @@ async def test_run_client_passes_handshake_session_key_into_tui(monkeypatch):
     monkeypatch.setattr(ac, "connect_ws", fake_connect)
 
     class _FakeApp:
-        def __init__(self, send_coro=None, session_key="", interrupt_coro=None):
+        def __init__(self, send_coro=None, session_key="", interrupt_coro=None,
+                     reconnect_coro=None):
             captured["session_key"] = session_key
         def notify_disconnected(self):
             pass
@@ -243,3 +244,46 @@ def test_run_cli_attach_missing_textual_prints_install_hint_not_gateway(
     # 必须 NOT 落到网关诊断分支
     assert "未发现本机常驻 echo-agent" not in out
     assert "gateway.enabled" not in out
+
+
+def test_resolve_defaults_reads_static_port(tmp_path, monkeypatch):
+    """普通固定端口：直接从配置读取。"""
+    from echo_agent.cli import attach_client as ac
+    cfg = tmp_path / "echo-agent.yaml"
+    cfg.write_text("gateway:\n  enabled: true\n  port: 51999\n  wsPath: /ws\n")
+    host, port, ws_path, _token = ac.resolve_defaults(str(cfg), None)
+    assert host == "127.0.0.1"
+    assert port == 51999
+    assert ws_path == "/ws"
+
+
+def test_resolve_defaults_port_zero_falls_back_to_runtime_endpoint(tmp_path):
+    """gateway.port=0（系统动态分配）时，attach 必须从 gateway 写入的运行时
+    端点文件读到真实端口，否则会连到 127.0.0.1:0 必然失败。"""
+    from echo_agent.cli import attach_client as ac
+    from echo_agent.cli.workspace import write_runtime_endpoint
+    cfg = tmp_path / "echo-agent.yaml"
+    # workspace 相对配置文件目录解析 → tmp_path
+    cfg.write_text(
+        "workspace: .\n"
+        "gateway:\n  enabled: true\n  port: 0\n  wsPath: /ws\n"
+    )
+    # 模拟 gateway 绑定后写入真实端口。
+    write_runtime_endpoint(tmp_path, host="127.0.0.1", port=62345,
+                           pid=1234, ws_path="/ws")
+    host, port, ws_path, _token = ac.resolve_defaults(str(cfg), None)
+    assert host == "127.0.0.1"
+    assert port == 62345          # 来自运行时端点，而非配置里的 0
+    assert ws_path == "/ws"
+
+
+def test_resolve_defaults_port_zero_without_endpoint_stays_zero(tmp_path):
+    """端点文件不存在时不崩溃，退回配置端口（0）。上层据此报错，而非误连。"""
+    from echo_agent.cli import attach_client as ac
+    cfg = tmp_path / "echo-agent.yaml"
+    cfg.write_text(
+        "workspace: .\n"
+        "gateway:\n  enabled: true\n  port: 0\n  wsPath: /ws\n"
+    )
+    _host, port, _ws_path, _token = ac.resolve_defaults(str(cfg), None)
+    assert port == 0

@@ -38,6 +38,7 @@ from echo_agent.cli.colors import (
     print_warning,
 )
 from echo_agent.cli import ui
+from echo_agent.cli.health import OK, WARN, run_health_checks
 from echo_agent.cli.i18n import detect_locale, get_locale, set_locale, t
 from echo_agent.cli.prompt import (
     is_interactive,
@@ -422,10 +423,20 @@ def setup_tools(config: dict) -> None:
     if (tools.get("web", {}) or {}).get("enabled"):
         pre_selected.append(TOOL_OPTIONS.index("web"))
     image_block = tools.get("image_gen") or tools.get("imageGen") or {}
-    if image_block.get("api_key") or image_block.get("apiKey") or image_block.get("fal_key") or image_block.get("falKey"):
+    # Respect an explicit enabled flag if present; otherwise infer from
+    # whether credentials were ever entered (back-compat with older configs).
+    image_on = image_block.get("enabled") if "enabled" in image_block else bool(
+        image_block.get("api_key") or image_block.get("apiKey")
+        or image_block.get("fal_key") or image_block.get("falKey")
+    )
+    if image_on:
         pre_selected.append(TOOL_OPTIONS.index("image_gen"))
     tts_block = tools.get("tts", {}) or {}
-    if tts_block.get("openai_api_key") or tts_block.get("openaiApiKey") or tts_block.get("default_backend"):
+    tts_on = tts_block.get("enabled") if "enabled" in tts_block else bool(
+        tts_block.get("openai_api_key") or tts_block.get("openaiApiKey")
+        or tts_block.get("default_backend")
+    )
+    if tts_on:
         pre_selected.append(TOOL_OPTIONS.index("tts"))
     code_exec_block = tools.get("code_exec") or tools.get("codeExec") or {}
     if code_exec_block.get("enabled", True):
@@ -434,9 +445,17 @@ def setup_tools(config: dict) -> None:
         pre_selected.append(TOOL_OPTIONS.index("knowledge"))
     if (config.get("scheduler", {}) or {}).get("enabled", True):
         pre_selected.append(TOOL_OPTIONS.index("cron"))
-    if tools.get("mcp_servers") or tools.get("mcpServers"):
+    mcp_block = tools.get("mcp") or {}
+    mcp_on = mcp_block.get("enabled") if "enabled" in mcp_block else bool(
+        tools.get("mcp_servers") or tools.get("mcpServers")
+    )
+    if mcp_on:
         pre_selected.append(TOOL_OPTIONS.index("mcp"))
-    if (config.get("skills", {}) or {}).get("skills_dir") or (config.get("skills", {}) or {}).get("skillsDir"):
+    skills_block = config.get("skills", {}) or {}
+    skills_on = skills_block.get("enabled") if "enabled" in skills_block else bool(
+        skills_block.get("skills_dir") or skills_block.get("skillsDir")
+    )
+    if skills_on:
         pre_selected.append(TOOL_OPTIONS.index("skills"))
     if (config.get("plugins", {}) or {}).get("enabled", True):
         pre_selected.append(TOOL_OPTIONS.index("plugins"))
@@ -474,6 +493,7 @@ def setup_tools(config: dict) -> None:
 
     if "image_gen" in chosen:
         ig = _ensure_dict(tools, "image_gen")
+        ig["enabled"] = True
         backend_options = [t("tools.image_backend_openai"), t("tools.image_backend_fal")]
         backend_values = ["openai", "fal"]
         cur_backend = ig.get("backend", "openai")
@@ -507,6 +527,7 @@ def setup_tools(config: dict) -> None:
 
     if "tts" in chosen:
         tts = _ensure_dict(tools, "tts")
+        tts["enabled"] = True
         # 只列运行时(agent/tools/tts.py)真正实现的后端。曾提供 elevenlabs,
         # 但运行时无该实现,选中后会被静默降级为 Edge TTS,故移除。
         backends = ["edge", "openai"]
@@ -531,8 +552,30 @@ def setup_tools(config: dict) -> None:
     _ensure_dict(config, "scheduler")["enabled"] = "cron" in chosen
     _ensure_dict(config, "plugins")["enabled"] = "plugins" in chosen
 
+    # Symmetric real switches for the remaining tools. Previously image_gen
+    # and tts were only touched when selected (un-checking left a stale
+    # enabled/credentials behind), mcp was never persisted (print-only), and
+    # skills had no write-back at all — all "fake" toggles. Now un-checking any
+    # of them flips a real enabled=False in the config.
+    #
+    # image_gen / tts: only the enabled flag is flipped; api_key / fal_key /
+    # backend are preserved so re-enabling later doesn't lose credentials.
+    if "image_gen" not in chosen:
+        _ensure_dict(tools, "image_gen")["enabled"] = False
+    if "tts" not in chosen:
+        _ensure_dict(tools, "tts")["enabled"] = False
+
+    # mcp has no dedicated enabled field in the schema (only tools.mcp_servers),
+    # so introduce tools.mcp.enabled as the explicit switch while keeping the
+    # "no servers configured" hint.
+    mcp_block = _ensure_dict(tools, "mcp")
+    mcp_block["enabled"] = "mcp" in chosen
     if "mcp" in chosen and not (tools.get("mcp_servers") or tools.get("mcpServers")):
         print_info(t("tools.mcp_skip_hint"))
+
+    # skills config lives at the top-level `skills` section (SkillsConfig);
+    # add an explicit enabled switch there so un-checking really disables it.
+    _ensure_dict(config, "skills")["enabled"] = "skills" in chosen
 
     extras_str = ", ".join(t(f"tools.{k}") for k in TOOL_OPTIONS if k in chosen) or t("common.no")
     print_success(t("tools.saved", profile=t(f"tools.profile_{profile_keys[p_idx]}"), extras=extras_str))
@@ -579,6 +622,18 @@ def setup_channels(config: dict) -> None:
         preselected=[str(i) for i in pre_selected],
     )
     selected = [int(v) for v in selected_vals]
+    selected_keys = {CHANNEL_DEFS[idx][0] for idx in selected}
+
+    # Symmetric persistence: every candidate channel gets an explicit
+    # enabled flag written. Un-checking a channel must flip its persisted
+    # enabled:true → false, otherwise the UI shows it off while the service
+    # keeps listening. Empty selection is handled here too (all → False)
+    # rather than early-returning without writing anything. CLI is the
+    # implicit default channel (not in CHANNEL_DEFS) and is left untouched.
+    for ch_key, _label, _fields in CHANNEL_DEFS:
+        if ch_key not in selected_keys:
+            _ensure_dict(existing, ch_key)["enabled"] = False
+
     if not selected:
         print_info(t("channels.no_extra"))
         return
@@ -1051,14 +1106,38 @@ def _capability_check(config: dict) -> list[tuple[str, bool, str]]:
     return checks
 
 
+def _doctor_mark(status: str) -> str:
+    """Map a health status to a coloured glyph (ok/warn/fail → ✓/!/✗)."""
+    if status == OK:
+        return color("✓", Colors.GREEN)
+    if status == WARN:
+        return color("!", Colors.YELLOW)
+    return color("✗", Colors.RED)
+
+
 def setup_doctor(config: dict) -> None:
     _print_section_header("doctor")
     print_info(t("doctor.intro"))
     print()
-    checks = _capability_check(config)
-    ok_count = sum(1 for _, ok, _ in checks if ok)
-    print_info(t("doctor.summary_count", ok=ok_count, total=len(checks)))
+
+    # Real environment probes (ports, paths, credentials, PATH binaries).
+    # These replace the old hard-coded "OK"s with actual detection.
+    probes = run_health_checks(config)
+    ok_count = sum(1 for p in probes if p["status"] == OK)
+    print_info(t("doctor.summary_count", ok=ok_count, total=len(probes)))
     print()
+    for probe in probes:
+        mark = _doctor_mark(probe["status"])
+        line = f"  {mark} {probe['name']}"
+        if probe.get("detail"):
+            line += color(f"  ({probe['detail']})", Colors.DIM)
+        print(line)
+    print()
+
+    # Retained config echo: a quick read-out of what the config declares
+    # (profile / approval mode / channels / observability), distinct from the
+    # live probes above.
+    checks = _capability_check(config)
     for label, ok, extra in checks:
         mark = color("✓", Colors.GREEN) if ok else color("✗", Colors.RED)
         line = f"  {mark} {label}"

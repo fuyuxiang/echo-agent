@@ -33,8 +33,21 @@ AgentReply {
     margin: 0 0 1 0;
 }
 
+/* Tool/cognitive trace lines are interactive: click or focus + Enter/Space
+   toggles their detail/diff view. A hover + focus cue makes that discoverable
+   (they were previously togglable in code but had no input path). */
 ToolCallBlock, CognitiveBlock {
     padding: 0 1;
+}
+
+ToolCallBlock:hover, CognitiveBlock:hover {
+    background: $boost;
+}
+
+ToolCallBlock:focus, CognitiveBlock:focus {
+    background: $boost;
+    border-left: thick $accent;
+    padding-left: 0;
 }
 
 ApprovalBlock {
@@ -57,6 +70,7 @@ ChoiceBlock {
     min-height: 1;
     border-top: solid $primary;
     border-bottom: solid $primary;
+    layers: base hint;
 }
 
 #prompt_sigil {
@@ -68,12 +82,18 @@ ChoiceBlock {
 PromptInput {
     height: auto;
     border: none;
+    layer: base;
 }
 
+/* Placeholder overlays the input area (hint layer) instead of taking its own
+   row, so the empty state no longer shows a stray caption line under the box.
+   It is hidden on first keystroke (display toggled by ContentChanged). */
 #placeholder {
+    layer: hint;
+    offset: 3 0;
+    width: 1fr;
     height: 1;
     color: $text-muted;
-    padding-left: 2;
 }
 
 StatusBar {

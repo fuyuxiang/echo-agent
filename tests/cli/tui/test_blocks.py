@@ -74,6 +74,58 @@ def test_approval_block_marks_decision():
     assert a.decision == "approve"
 
 
+def test_themed_markdown_maps_headings_to_theme_palette():
+    """Headings must render in the brand palette (teal primary), not Rich's
+    default magenta. Render to a plain Console and assert the primary hue shows
+    up in the styled output for an h1."""
+    from rich.console import Console
+    from echo_agent.cli.tui.blocks import ThemedMarkdown
+
+    md = ThemedMarkdown("# 标题", palette={
+        "primary": "#4fd1c5", "secondary": "#7f9cf5",
+        "accent": "#4fd1c5", "muted": "#8b949e",
+    })
+    console = Console(width=40, color_system="truecolor", force_terminal=True)
+    with console.capture() as cap:
+        console.print(md)
+    out = cap.get()
+    # The teal primary (#4fd1c5 → 79;209;197) drives the h1, not magenta.
+    assert "79;209;197" in out
+    assert "标题" in out
+
+
+def test_themed_markdown_no_palette_does_not_crash():
+    """Empty palette (no app attached, e.g. unit tests) must still render."""
+    from rich.console import Console
+    from echo_agent.cli.tui.blocks import ThemedMarkdown
+
+    md = ThemedMarkdown("# 标题\n\n正文", palette={})
+    console = Console(width=40)
+    with console.capture() as cap:
+        console.print(md)
+    assert "标题" in cap.get()
+
+
+def test_banner_collapses_to_wordmark_when_narrow():
+    """The 5-row block-letter logo collapses to a one-line wordmark on a narrow
+    terminal so it doesn't dominate a short screen."""
+    from echo_agent.cli.tui.blocks import Banner, _LOGO_ART
+
+    b = Banner.__new__(Banner)
+    b.session_key = ""
+    b.brand_name = "echo"
+    b.brand_tagline = "agent"
+    b.brand_welcome = "hi"
+    b._narrow = False
+    wide = b.build_text()
+    assert _LOGO_ART[0] in wide          # full ASCII art on wide
+
+    b._narrow = True
+    narrow = b.build_text()
+    assert _LOGO_ART[0] not in narrow    # collapsed
+    assert "echo" in narrow
+
+
 @pytest.mark.asyncio
 async def test_transcript_heartbeat_updates_in_place():
     from textual.app import App

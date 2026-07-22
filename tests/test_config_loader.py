@@ -210,6 +210,42 @@ def test_migrate_every_maps_to_every_tool():
     assert "on_uneditable" not in out["agent"]["heartbeat"]
 
 
+def test_load_config_does_not_emit_info_log(tmp_path):
+    """The per-command 'Loading config' line is now debug, so an INFO-level
+    sink (loguru's default is INFO+) must not capture it — otherwise it leaks
+    into clean command output like `status`/`cost`."""
+    from loguru import logger
+
+    cfg_file = tmp_path / "echo-agent.yaml"
+    cfg_file.write_text("planning:\n  enabled: true\n")
+
+    captured: list[str] = []
+    sink_id = logger.add(lambda msg: captured.append(str(msg)), level="INFO")
+    try:
+        load_config(config_path=cfg_file)
+    finally:
+        logger.remove(sink_id)
+
+    assert not any("Loading config" in line for line in captured)
+
+
+def test_load_config_debug_log_still_available(tmp_path):
+    """At DEBUG level the load line is still emitted (diagnostics preserved)."""
+    from loguru import logger
+
+    cfg_file = tmp_path / "echo-agent.yaml"
+    cfg_file.write_text("planning:\n  enabled: true\n")
+
+    captured: list[str] = []
+    sink_id = logger.add(lambda msg: captured.append(str(msg)), level="DEBUG")
+    try:
+        load_config(config_path=cfg_file)
+    finally:
+        logger.remove(sink_id)
+
+    assert any("Loading config" in line for line in captured)
+
+
 def test_migrate_first_only_drops_without_setting_verbosity():
     data = {"agent": {"heartbeat": {"on_uneditable": "first_only"}}}
     out = migrate_heartbeat_config(data)

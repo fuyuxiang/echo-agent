@@ -192,3 +192,188 @@ async def test_on_mount_writes_session_and_connected():
         text = str(bar.render())
         assert "●已连接" in text
         assert "cli:local" in text
+
+
+@pytest.mark.asyncio
+async def test_tool_block_toggles_on_click_and_enter():
+    # The P2 fix: ToolCallBlock detail/diff was togglable in code but had no
+    # user input path. It is now focusable and toggles on click / Enter.
+    from echo_agent.cli.tui.app import EchoTUI
+    from echo_agent.cli.tui.blocks import ToolCallBlock
+    from echo_agent.cli.tui.bridge import WSBridge
+    app = EchoTUI()
+    async with app.run_test() as pilot:
+        bridge = WSBridge(app)
+        bridge.dispatch({"type": "message", "message_kind": "cognitive",
+                         "text": "🔧 read", "metadata": {
+                             "cog_type": "tool_call", "cog_event_id": "e1",
+                             "_inbound_event_id": "in1",
+                             "data": {"name": "read_file", "status": "ok",
+                                      "params": {"path": "a.py"},
+                                      "result_text": "内容预览",
+                                      "tool_call_id": "tc1"}}})
+        await pilot.pause()
+        blk = app.query_one(ToolCallBlock)
+        assert blk.can_focus is True
+        assert blk.expanded is False
+        blk.focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        assert blk.expanded is True
+        blk.on_click()   # mouse click toggles back
+        assert blk.expanded is False
+
+
+@pytest.mark.asyncio
+async def test_approval_sequence_keeps_original_turn_active():
+    """P0 end-to-end: while a turn is parked in approval, the redundant approval
+    prompt text must NOT end the turn, and the /approve reply's accepted frame
+    must NOT steal the interrupt target. Ctrl+C must still target the original
+    turn until its own final reply lands."""
+    from echo_agent.cli.tui.app import EchoTUI
+    from echo_agent.cli.tui.bridge import WSBridge
+    from echo_agent.cli.tui.blocks import ApprovalBlock
+    from echo_agent.cli.tui.status_bar import StatusBar
+    sent = []
+    interrupts = []
+    async def fake_send(text): sent.append(text)
+    async def fake_interrupt(eid=""): interrupts.append(eid)
+    app = EchoTUI(send_coro=fake_send, interrupt_coro=fake_interrupt)
+    async with app.run_test() as pilot:
+        bridge = WSBridge(app)
+        bar = app.query_one(StatusBar)
+
+        # 1. User submits a real turn → accepted with the turn's event id.
+        from echo_agent.cli.tui.prompt_input import PromptInput
+        pi = app.query_one(PromptInput)
+        pi.text = "帮我删除临时文件"
+        await pilot.press("enter")
+        await pilot.pause()
+        bridge.dispatch({"type": "accepted", "event_id": "turn-1"})
+        assert app._turns.active_turn_id == "turn-1"
+        assert bar.is_turn_active is True
+
+        # 2. Server sends the redundant approval-prompt TEXT (is_final, tagged
+        #    _approval_request) — must be ignored, not end the turn.
+        bridge.dispatch({"type": "message", "message_kind": "final",
+                         "text": "⚠️ 需要确认执行 /approve req1",
+                         "is_final": True,
+                         "metadata": {"_inbound_event_id": "turn-1",
+                                      "_approval_request": True}})
+        await pilot.pause()
+        assert bar.is_turn_active is True             # turn NOT ended
+        assert app._turns.active_turn_id == "turn-1"
+
+        # 3. The interactive approval frame renders the ApprovalBlock.
+        app.on_cognitive(CogEvent("approval_request", "cog1", "turn-1",
+                                  {"request_id": "req1", "action": "exec",
+                                   "params": {}, "risk": "EXEC"}, "确认"))
+        await pilot.pause()
+        assert app.query_one(ApprovalBlock) is not None
+
+        # 4. User approves (y) → /approve sent, gets its OWN accepted frame.
+        await pilot.press("y")
+        await pilot.pause()
+        assert sent[-1] == "/approve req1"
+        bridge.dispatch({"type": "accepted", "event_id": "approve-evt"})
+        # The approval reply's id must NOT become the interrupt target.
+        assert app._turns.active_turn_id == "turn-1"
+        assert bar.is_turn_active is True
+
+        # 5. Ctrl+C now must interrupt the ORIGINAL turn, not the approval reply.
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert interrupts == ["turn-1"]
+
+        # 6. Only the original turn's own final reply ends the turn.
+        bridge.dispatch({"type": "message", "message_kind": "final",
+                         "text": "已完成", "is_final": True,
+                         "metadata": {"_inbound_event_id": "turn-1"}})
+        await pilot.pause()
+        assert bar.is_turn_active is False
+
+
+@pytest.mark.asyncio
+async def test_queued_second_turn_does_not_steal_interrupt_target():
+    """P0: a second turn submitted while the first runs queues behind it; Ctrl+C
+    still targets the running (first) turn."""
+    from echo_agent.cli.tui.app import EchoTUI
+    from echo_agent.cli.tui.bridge import WSBridge
+    from echo_agent.cli.tui.prompt_input import PromptInput
+    interrupts = []
+    async def fake_send(text): pass
+    async def fake_interrupt(eid=""): interrupts.append(eid)
+    app = EchoTUI(send_coro=fake_send, interrupt_coro=fake_interrupt)
+    async with app.run_test() as pilot:
+        bridge = WSBridge(app)
+        pi = app.query_one(PromptInput)
+        pi.text = "任务一"
+        await pilot.press("enter")
+        await pilot.pause()
+        bridge.dispatch({"type": "accepted", "event_id": "turn-1"})
+        pi.text = "任务二"
+        await pilot.press("enter")
+        await pilot.pause()
+        bridge.dispatch({"type": "accepted", "event_id": "turn-2"})
+        # Ctrl+C targets the running (oldest) turn.
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert interrupts == ["turn-1"]
+
+
+@pytest.mark.asyncio
+async def test_disconnect_blocks_conversation_but_allows_reconnect():
+    """After a drop, a conversation turn is refused (would be silently lost);
+    /reconnect is still reachable and restores the connected state."""
+    from echo_agent.cli.tui.app import EchoTUI
+    from echo_agent.cli.tui.prompt_input import PromptInput
+    from echo_agent.cli.tui.status_bar import StatusBar
+    sent = []
+    reconnected = {"n": 0}
+    async def fake_send(text): sent.append(text)
+    async def fake_reconnect():
+        reconnected["n"] += 1
+        return True
+    app = EchoTUI(send_coro=fake_send, reconnect_coro=fake_reconnect)
+    async with app.run_test() as pilot:
+        app.notify_disconnected()
+        await pilot.pause()
+        assert app._connected is False
+        # A conversation turn is refused while disconnected.
+        pi = app.query_one(PromptInput)
+        pi.text = "继续任务"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert sent == []
+        # /reconnect works and restores state.
+        pi.text = "/reconnect"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert reconnected["n"] == 1
+        assert app._connected is True
+        assert app.query_one(StatusBar)._ok is True
+        # Now a turn goes through.
+        pi.text = "继续任务"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert sent == ["继续任务"]
+
+
+@pytest.mark.asyncio
+async def test_reconnect_failure_keeps_disconnected():
+    from echo_agent.cli.tui.app import EchoTUI
+    from echo_agent.cli.tui.prompt_input import PromptInput
+    async def fake_send(text): pass
+    async def fake_reconnect():
+        return False
+    app = EchoTUI(send_coro=fake_send, reconnect_coro=fake_reconnect)
+    async with app.run_test() as pilot:
+        app.notify_disconnected()
+        await pilot.pause()
+        pi = app.query_one(PromptInput)
+        pi.text = "/reconnect"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app._connected is False
+
+
