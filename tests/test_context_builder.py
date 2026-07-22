@@ -219,6 +219,16 @@ class TestContextBuilderIdentity:
         identity = cb._identity()
         assert str(tmp_path.resolve()) in identity
 
+    def test_identity_steers_options_to_clarify_tool(self, tmp_path: Path):
+        # Options written as plain reply text are not clickable in the CLI; only
+        # the clarify tool renders an interactive picker. The identity guidelines
+        # must tell the model to route choices through clarify, or it defaults to
+        # unselectable text lists (the original bug).
+        cb = ContextBuilder(workspace=tmp_path)
+        identity = cb._identity()
+        assert "clarify" in identity
+        assert "options" in identity
+
 
 # ---------------------------------------------------------------------------
 # ContextBuilder._load_bootstrap_files

@@ -66,6 +66,19 @@ def test_timeout_seconds_is_large():
     assert ClarifyTool.timeout_seconds >= 3600
 
 
+def test_schema_steers_model_to_use_options():
+    # The model decides when to call a tool almost entirely from its description
+    # and parameter docs. Options rendered by clarify are the ONLY interactive
+    # (clickable) picker in the CLI; a plain-text numbered list in the reply is
+    # dead. This assertion guards the guidance so a future edit can't quietly
+    # drop it and regress selectable options back to unselectable text.
+    desc = ClarifyTool.description.lower()
+    assert "options" in desc
+    assert "selectable" in desc or "interactive" in desc or "picker" in desc
+    opt_desc = ClarifyTool.parameters["properties"]["options"]["description"].lower()
+    assert "pick" in opt_desc or "choose" in opt_desc or "picker" in opt_desc
+
+
 @pytest.mark.asyncio
 async def test_interrupted_returns_notice():
     mgr = ClarifyManager()

@@ -17,7 +17,14 @@ CLI_CHANNEL = "gateway:cli"
 
 class ClarifyTool(Tool):
     name = "clarify"
-    description = "Ask the user a clarifying question, optionally with multiple-choice options."
+    description = (
+        "Ask the user a clarifying question, optionally with multiple-choice options. "
+        "This is the ONLY way to present the user with selectable choices: options passed "
+        "here render as an interactive picker (number keys / arrows+enter) that the user can "
+        "actually click. Always use this tool — with the choices in `options` — instead of "
+        "writing a numbered/bulleted list of options into your reply text, because plain-text "
+        "options are not selectable."
+    )
     parameters = {
         "type": "object",
         "properties": {
@@ -25,7 +32,11 @@ class ClarifyTool(Tool):
             "options": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional list of choices for the user.",
+                "description": (
+                    "The choices to offer the user, one per entry. Provide these whenever the "
+                    "user should pick from a fixed set — they become an interactive, clickable "
+                    "picker. Omit only for a genuinely open-ended (free-text) question."
+                ),
             },
         },
         "required": ["question"],
