@@ -1,0 +1,6 @@
+{
+  "timeRange": "时间范围:",
+  "today": "今天",
+  "days": "{{count}}天",
+  "tokenTrend": "Token 消耗趋势"
+}
