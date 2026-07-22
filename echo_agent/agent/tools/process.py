@@ -174,10 +174,10 @@ class ProcessTool(Tool):
         return ToolResult(output=f"Stopped {pid}")
 
     async def aclose(self) -> None:
-        """Terminate every live child process and cancel its collector.
+        """Terminate every live child process and cancel its collectors.
 
         Called from AgentLoop.stop() so background processes do not outlive the
-        agent. Kept idempotent — a second call over an empty table is a no-op.
+        agent. Idempotent — a second call over an empty table is a no-op.
         """
         for pid, info in list(self._processes.items()):
             proc = info["process"]
@@ -188,10 +188,17 @@ class ProcessTool(Tool):
                 except asyncio.TimeoutError:
                     proc.kill()
                     await proc.wait()
-            for key in ("collector", "watchdog"):
-                task = info.get(key)
+            tasks = [info.get("collector"), info.get("watchdog")]
+            for task in tasks:
                 if task is not None:
                     task.cancel()
+            # Await cancellation so no reader task survives the event loop.
+            for task in tasks:
+                if task is not None:
+                    try:
+                        await task
+                    except (asyncio.CancelledError, Exception):
+                        pass
         self._processes.clear()
 
     async def _collect_output(self, pid: str) -> None:

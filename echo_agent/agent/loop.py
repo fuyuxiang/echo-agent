@@ -1031,6 +1031,14 @@ class AgentLoop:
             await _browser_manager.close_all()
         except Exception as e:
             logger.debug("browser manager close_all raised (ignored): {}", e)
+        # Terminate any background processes started via ProcessTool so they do
+        # not outlive the agent (orphaned children would keep running).
+        proc_tool = self.tools.get("process")
+        if proc_tool is not None and hasattr(proc_tool, "aclose"):
+            try:
+                await proc_tool.aclose()
+            except Exception as e:
+                logger.debug("ProcessTool aclose raised (ignored): {}", e)
         # All background work is spawned via ``_spawn_background`` and owned by
         # the scheduler; ``aclose`` cancels discardable tasks and flushes durable
         # ones. This is the single shutdown path for background work.

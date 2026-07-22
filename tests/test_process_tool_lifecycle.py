@@ -71,3 +71,51 @@ async def test_timeout_kills_and_marks_process(tmp_path):
     poll = await tool._poll(pid)
     assert "timed out" in poll.output.lower()
     await tool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_aclose_terminates_processes_and_clears_table(tmp_path):
+    tool = ProcessTool(str(tmp_path))
+    pid = await _start(tool, "sleep 30")
+    proc = tool._processes[pid]["process"]
+    assert proc.returncode is None
+    await tool.aclose()
+    # Process killed and table emptied.
+    assert proc.returncode is not None
+    assert tool._processes == {}
+    # Idempotent: a second aclose over an empty table must not raise.
+    await tool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_agent_stop_closes_process_tool(tmp_path, monkeypatch):
+    from echo_agent.agent.loop import AgentLoop
+    from echo_agent.config.loader import load_config
+    from echo_agent.bus.queue import MessageBus
+    from echo_agent.models.provider import LLMProvider, LLMResponse
+
+    # A minimal real provider — AgentLoop.__init__ dereferences
+    # provider.chat_with_retry (via MemoryConsolidator), so provider=None crashes
+    # construction before stop() is ever reached.
+    class _StubProvider(LLMProvider):
+        async def chat(self, messages, tools=None, model=None, tool_choice=None, **kwargs):
+            return LLMResponse(content="ok", finish_reason="stop")
+
+        def get_default_model(self):
+            return "stub"
+
+    config = load_config(overrides={"workspace": str(tmp_path)})
+    config.tools.exec.enabled = True
+    loop = AgentLoop(bus=MessageBus(), config=config, provider=_StubProvider(), workspace=tmp_path)
+    proc_tool = loop.tools.get("process")
+    assert proc_tool is not None
+    closed = {"n": 0}
+    orig = proc_tool.aclose
+
+    async def _spy():
+        closed["n"] += 1
+        await orig()
+
+    monkeypatch.setattr(proc_tool, "aclose", _spy)
+    await loop.stop()
+    assert closed["n"] == 1
