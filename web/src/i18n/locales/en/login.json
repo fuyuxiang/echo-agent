@@ -1,0 +1,7 @@
+{
+  "title": "Echo Agent Dashboard",
+  "tokenLabel": "Admin Token",
+  "tokenPlaceholder": "Enter admin token",
+  "submit": "Log in",
+  "invalidToken": "Invalid token or service unreachable"
+}

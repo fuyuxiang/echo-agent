@@ -1,9 +1,11 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import { useAuthStore } from "../stores/auth";
 import { apiFetch } from "../lib/api";
 
 export function Login() {
+  const { t } = useTranslation("login");
   const [token, setToken] = useState("");
   const [error, setError] = useState("");
   const navigate = useNavigate();
@@ -27,25 +29,25 @@ export function Login() {
         localStorage.removeItem("echo_token");
       }
       useAuthStore.setState({ token: prev });
-      setError("Token 无效或服务不可达");
+      setError(t("invalidToken"));
     }
   };
 
   return (
     <div className="flex items-center justify-center h-screen bg-gray-50">
       <form onSubmit={handleSubmit} className="bg-white p-8 rounded-lg shadow-md w-96">
-        <h1 className="text-xl font-bold mb-4">Echo Agent Dashboard</h1>
-        <label className="block text-sm text-gray-600 mb-1">Admin Token</label>
+        <h1 className="text-xl font-bold mb-4">{t("title")}</h1>
+        <label className="block text-sm text-gray-600 mb-1">{t("tokenLabel")}</label>
         <input
           type="password"
           value={token}
           onChange={(e) => setToken(e.target.value)}
           className="w-full border rounded-md px-3 py-2 mb-4"
-          placeholder="输入 admin token"
+          placeholder={t("tokenPlaceholder")}
         />
         {error && <p className="text-red-500 text-sm mb-4">{error}</p>}
         <button type="submit" className="w-full bg-blue-600 text-white py-2 rounded-md hover:bg-blue-700">
-          登录
+          {t("submit")}
         </button>
       </form>
     </div>
