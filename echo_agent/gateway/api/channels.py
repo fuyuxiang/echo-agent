@@ -23,8 +23,15 @@ class ChannelsAPI:
         manager = self._server.channel_manager
         active = manager.active_channels
 
+        # "cli" is intentionally omitted: it is not a standing delivery channel.
+        # The in-process CLIChannel only runs when the gateway owns an
+        # interactive tty (sys.stdin.isatty()), so under the normal
+        # daemon-gateway + attach deployment it can never be `running` and would
+        # sit here permanently "offline", which is misleading. Interactive CLI
+        # sessions attach over the /ws socket instead and are surfaced by the
+        # health endpoint's ws_clients count, not the channel list.
         channel_names = [
-            "telegram", "discord", "webhook", "cli", "cron", "slack",
+            "telegram", "discord", "webhook", "cron", "slack",
             "whatsapp", "weixin", "qqbot", "feishu", "dingtalk",
             "email", "wecom", "matrix",
         ]
@@ -47,6 +54,8 @@ class ChannelsAPI:
             })
 
         for name in active:
+            if name == "cli":
+                continue
             if not any(c["name"] == name for c in channels):
                 channels.append({"name": name, "enabled": True, "running": True})
 

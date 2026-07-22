@@ -1007,6 +1007,29 @@ class TestChannelsAPI:
         assert "discord" not in names
 
     @pytest.mark.asyncio
+    async def test_list_channels_omits_cli(self):
+        # 回归：cli 不是常驻投递通道，daemon 网关下 CLIChannel 永不 running，
+        # 概览页会把它恒显示为“离线”，误导。即便 cli 已启用且恰好 active，
+        # 也不应出现在通道列表里（交互式 CLI 走 /ws，由 health.ws_clients 反映）。
+        api, server = self._make()
+        server.channel_manager.active_channels = ["cli"]
+        channels_cfg = MagicMock()
+        cli = MagicMock()
+        cli.enabled = True
+        for name in (
+            "telegram", "discord", "webhook", "cron", "slack", "whatsapp",
+            "weixin", "qqbot", "feishu", "dingtalk", "email", "wecom", "matrix",
+        ):
+            setattr(channels_cfg, name, None)
+        channels_cfg.cli = cli
+        server._agent_loop.config.channels = channels_cfg
+
+        resp = await api.list_channels(_Request())
+        data = await _payload(resp)
+        names = {c["name"] for c in data["channels"]}
+        assert "cli" not in names
+
+    @pytest.mark.asyncio
     async def test_list_channels_active_not_in_config(self):
         api, server = self._make()
         server.channel_manager.active_channels = ["custom_channel"]
