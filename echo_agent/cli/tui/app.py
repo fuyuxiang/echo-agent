@@ -435,7 +435,7 @@ class EchoTUI(App):
         the system clipboard via OSC 52. Terminal support varies (works in
         iTerm2/WezTerm/kitty; macOS Terminal.app does not), so we notify with
         the copied length rather than silently succeeding."""
-        text = self._tv.export_text() if whole else self._tv.last_reply_text()
+        text = self._tv.export_text() if whole else self._tv.last_turn_reply_text()
         if not text:
             self.notify("暂无可复制的内容", severity="warning", timeout=3)
             return

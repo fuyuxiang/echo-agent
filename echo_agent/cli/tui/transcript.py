@@ -197,6 +197,33 @@ class TranscriptView(VerticalScroll):
                 return w.text
         return None
 
+    def last_turn_reply_text(self) -> str | None:
+        """Plain text of the most recent *turn's* full reply, or None if there
+        is no reply yet. A single logical answer is frequently split across
+        several AgentReply blocks (the gateway emits text → tool call → more
+        text as separate final frames), so returning only the last block —
+        which is what ``last_reply_text`` does — copies just the tail the user
+        can see at the bottom of the screen, dropping the earlier parts of the
+        same answer. This walks back to the last UserTurn and joins every real
+        AgentReply after it, so /copy captures the whole latest answer.
+        Heartbeats (progress lines) and status lines (server errors) reuse
+        AgentReply but are excluded — they are UI chatter, not the answer."""
+        parts: list[str] = []
+        for w in reversed(list(self.children)):
+            if isinstance(w, UserTurn):
+                break
+            if isinstance(w, _Heartbeat):
+                continue
+            if isinstance(w, AgentReply):
+                if getattr(w, "is_status", False):
+                    continue
+                if w.text:
+                    parts.append(w.text)
+        if not parts:
+            return None
+        parts.reverse()
+        return "\n\n".join(parts)
+
     def export_text(self) -> str:
         """The whole conversation as a plain-text transcript (user turns and
         agent replies in order), for /copy all. Cognitive/tool/heartbeat lines
