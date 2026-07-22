@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useApi } from "../hooks/use-api";
 import { apiFetch } from "../lib/api";
 import { runMutation } from "../stores/toast";
@@ -25,6 +26,7 @@ interface SearchResult {
 }
 
 export function Memory() {
+  const { t } = useTranslation("memory");
   const [tier, setTier] = useState<string>("working");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<MemoryEntry[] | null>(null);
@@ -43,12 +45,12 @@ export function Memory() {
       });
       // 解包 {entry, score} → MemoryEntry[](按相关度已由后端排序)。
       setSearchResults(res.results.map((r) => r.entry));
-    }, { error: "搜索失败" });
+    }, { error: t("searchFailed") });
   };
 
   const handleDelete = async (id: string) => {
     const ok = await runMutation(() => apiFetch(`/memory/${id}`, { method: "DELETE" }), {
-      success: "已删除", error: "删除失败",
+      success: t("deleteSuccess"), error: t("deleteFailed"),
     });
     if (ok) {
       // 搜索结果视图下本地剔除,列表视图下重新拉取。
@@ -59,7 +61,7 @@ export function Memory() {
 
   const renderEntries = (entries: MemoryEntry[]) => (
     <div className="space-y-2">
-      {entries.length === 0 && <div className="text-gray-400 text-center py-8">无记忆条目</div>}
+      {entries.length === 0 && <div className="text-gray-400 text-center py-8">{t("empty")}</div>}
       {entries.map((entry) => (
         <div key={entry.id} className="bg-white border rounded-lg p-4 flex justify-between items-start">
           <div className="flex-1">
@@ -83,7 +85,7 @@ export function Memory() {
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-          placeholder="语义搜索（全局）..."
+          placeholder={t("searchPlaceholder")}
           className="border rounded px-3 py-1.5 flex-1"
         />
         <button onClick={handleSearch} className="p-2 bg-gray-100 rounded hover:bg-gray-200">
@@ -108,7 +110,7 @@ export function Memory() {
       {searchResults !== null ? (
         renderEntries(searchResults)
       ) : (
-        <Loadable loading={loading} error={error} data={data} emptyText="无记忆条目">
+        <Loadable loading={loading} error={error} data={data} emptyText={t("empty")}>
           {(d) => renderEntries(d.entries)}
         </Loadable>
       )}
