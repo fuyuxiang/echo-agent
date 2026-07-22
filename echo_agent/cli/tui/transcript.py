@@ -33,6 +33,18 @@ class _Heartbeat(AgentReply):
 
 
 class TranscriptView(VerticalScroll):
+    # A VerticalScroll defaults to can_focus=True and binds up/down to
+    # scroll_up/scroll_down. That put the container itself in the Tab focus
+    # ring (…block → block → PromptInput → TranscriptView → block…), so after
+    # the user visited the prompt and Tabbed back, focus landed on the
+    # *container* rather than a block. From there the arrow keys hit the
+    # container's own scroll bindings — the scrollbar "stole" up/down and block
+    # selection was dead until the user Tabbed past it. The container is only a
+    # scroll viewport for its blocks, never a selection target, so it should not
+    # be focusable itself; its children stay focusable (can_focus_children
+    # defaults to True) and Textual still scrolls a focused block into view.
+    can_focus = False
+
     def __init__(self) -> None:
         super().__init__()
         self._heartbeats: dict[str, _Heartbeat] = {}
