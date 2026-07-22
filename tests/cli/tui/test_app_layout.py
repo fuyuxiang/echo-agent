@@ -17,6 +17,33 @@ async def test_sigil_and_input_are_siblings_in_row():
 
 
 @pytest.mark.asyncio
+async def test_sigil_and_input_do_not_overlap():
+    # 回归：PromptInput 一旦被塞进某个 layer（如 layer: base）就脱离 Horizontal
+    # 排布流，改按容器原点 x=0 定位，与宽 2 格的 prompt_sigil 重叠。中文首字是
+    # 宽字符占 0-1 列，正好被 sigil 盖住，表现为“输入‘你好’只显示‘好’”。
+    # 断言两者渲染区域左边界不同，即输入框排在 sigil 右侧而非叠在其上。
+    app = EchoTUI()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        sig = app.query_one("#prompt_sigil")
+        pi = app.query_one(PromptInput)
+        assert pi.region.x >= sig.region.x + sig.region.width
+
+
+@pytest.mark.asyncio
+async def test_first_wide_char_is_rendered():
+    # 回归：逐键输入宽字符后，输入框首个可视行须完整含首字（此前首字被 sigil 覆盖）。
+    app = EchoTUI()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        pi = app.query_one(PromptInput)
+        await pilot.press("你", "好")
+        await pilot.pause()
+        assert pi.text == "你好"
+        assert pi.render_line(0).text.startswith("你好")
+
+
+@pytest.mark.asyncio
 async def test_placeholder_visible_when_empty_hidden_when_typed():
     app = EchoTUI()
     async with app.run_test() as pilot:

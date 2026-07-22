@@ -82,7 +82,6 @@ ChoiceBlock {
 PromptInput {
     height: auto;
     border: none;
-    layer: base;
 }
 
 /* Placeholder overlays the input area (hint layer) instead of taking its own
