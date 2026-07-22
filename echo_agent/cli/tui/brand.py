@@ -14,6 +14,17 @@ from dataclasses import dataclass
 
 _MAX_LEN = 80
 
+# Kept alongside the brand strings so the setup wizard can mirror the TUI
+# wordmark without importing Textual. Setup maps these roles to ANSI colors.
+ECHO_LOGO_ART = (
+    "███████╗ ██████╗██╗  ██╗ ██████╗ ",
+    "██╔════╝██╔════╝██║  ██║██╔═══██╗",
+    "█████╗  ██║     ███████║██║   ██║",
+    "██╔══╝  ██║     ██╔══██║██║   ██║",
+    "███████╗╚██████╗██║  ██║╚██████╔╝",
+)
+ECHO_LOGO_GRADIENT = ("primary", "primary", "accent", "secondary", "secondary")
+
 
 @dataclass(frozen=True)
 class Brand:

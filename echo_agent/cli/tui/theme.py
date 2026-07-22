@@ -14,27 +14,28 @@ Anything undecided stays dark — the default Echo palette is the dark one.
 
 from __future__ import annotations
 
-import os
 from collections.abc import Mapping
 
 from textual.theme import Theme
+
+from echo_agent.cli.palette import DARK_PALETTE, LIGHT_PALETTE, detect_light_mode
 
 # Muted foreground for secondary text (tool operands, hints) so the eye lands on
 # the primary content first. Shared shape across both palettes.
 ECHO_THEME = Theme(
     name="echo",
-    primary="#4fd1c5",     # teal — user/accent bar, headings
-    secondary="#7f9cf5",   # indigo — cognitive (thinking/memory)
-    accent="#4fd1c5",
-    success="#68d391",     # green — tool ✓, connected
-    warning="#f6ad55",     # amber — approvals, mid gauge
-    error="#fc8181",       # soft red — tool ✗, disconnected
-    foreground="#e6edf3",
-    background="#0d1117",
-    surface="#161b22",
-    panel="#1c2128",
+    primary=DARK_PALETTE["primary"],
+    secondary=DARK_PALETTE["secondary"],
+    accent=DARK_PALETTE["accent"],
+    success=DARK_PALETTE["success"],
+    warning=DARK_PALETTE["warning"],
+    error=DARK_PALETTE["error"],
+    foreground=DARK_PALETTE["foreground"],
+    background=DARK_PALETTE["background"],
+    surface=DARK_PALETTE["surface"],
+    panel=DARK_PALETTE["panel"],
     dark=True,
-    variables={"text-muted": "#8b949e"},
+    variables={"text-muted": DARK_PALETTE["text-muted"]},
 )
 
 # Light palette: darker teals/indigos that stay legible on white. Same variable
@@ -42,54 +43,19 @@ ECHO_THEME = Theme(
 # identically — only the hues change.
 ECHO_THEME_LIGHT = Theme(
     name="echo-light",
-    primary="#0e7c7b",     # deep teal — readable on white
-    secondary="#4c63d2",   # indigo
-    accent="#0e7c7b",
-    success="#2f855a",     # green
-    warning="#b7791f",     # amber
-    error="#c53030",       # red
-    foreground="#1a202c",
-    background="#ffffff",
-    surface="#f0f2f5",
-    panel="#e6e9ef",
+    primary=LIGHT_PALETTE["primary"],
+    secondary=LIGHT_PALETTE["secondary"],
+    accent=LIGHT_PALETTE["accent"],
+    success=LIGHT_PALETTE["success"],
+    warning=LIGHT_PALETTE["warning"],
+    error=LIGHT_PALETTE["error"],
+    foreground=LIGHT_PALETTE["foreground"],
+    background=LIGHT_PALETTE["background"],
+    surface=LIGHT_PALETTE["surface"],
+    panel=LIGHT_PALETTE["panel"],
     dark=False,
-    variables={"text-muted": "#5a6472"},
+    variables={"text-muted": LIGHT_PALETTE["text-muted"]},
 )
-
-_TRUE = {"1", "true", "yes", "on"}
-_FALSE = {"0", "false", "no", "off"}
-_LIGHT_TERM_PROGRAMS = {"Apple_Terminal"}
-
-
-def detect_light_mode(env: Mapping[str, str] | None = None) -> bool:
-    """True if the terminal looks light. See module docstring for the order."""
-    e = env if env is not None else os.environ
-
-    theme_flag = str(e.get("ECHO_TUI_THEME", "")).strip().lower()
-    if theme_flag == "light":
-        return True
-    if theme_flag == "dark":
-        return False
-
-    light_flag = str(e.get("ECHO_TUI_LIGHT", "")).strip().lower()
-    if light_flag in _TRUE:
-        return True
-    if light_flag in _FALSE:
-        return False
-
-    colorfgbg = str(e.get("COLORFGBG", "")).strip()
-    if colorfgbg:
-        last = colorfgbg.split(";")[-1]
-        if last.isdigit():
-            bg = int(last)
-            if bg in (7, 15):
-                return True
-            if 0 <= bg < 16:
-                # Any other 0..15 slot is the dark half — trust it as
-                # authoritative so the TERM_PROGRAM allow-list can't override it.
-                return False
-
-    return str(e.get("TERM_PROGRAM", "")).strip() in _LIGHT_TERM_PROGRAMS
 
 
 def resolve_theme_name(env: Mapping[str, str] | None = None) -> str:

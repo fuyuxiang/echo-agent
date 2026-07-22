@@ -32,14 +32,11 @@ from typing import Any, Callable
 from echo_agent.cli.colors import (
     Colors,
     color,
-    print_error,
-    print_info,
-    print_success,
-    print_warning,
 )
 from echo_agent.cli import ui
 from echo_agent.cli.health import OK, WARN, run_health_checks
 from echo_agent.cli.i18n import detect_locale, get_locale, set_locale, t
+from echo_agent.cli.palette import ansi
 from echo_agent.cli.prompt import (
     is_interactive,
     prompt_yes_no,
@@ -47,8 +44,27 @@ from echo_agent.cli.prompt import (
 from echo_agent.cli.setup import providers as provider_catalog
 from echo_agent.cli.setup.model_verify import VerifyResult, list_models, verify_model
 from echo_agent.cli.setup.providers import find as find_provider, grouped_catalog
+from echo_agent.cli.tui.brand import ECHO_LOGO_ART, ECHO_LOGO_GRADIENT, load_brand
 from echo_agent.config.loader import find_local_config_file, resolve_config_file, save_config
 from echo_agent.runtime_paths import default_config_path
+
+
+# Keep the section implementations readable while routing all setup notices
+# through the same glyphs and palette as the interactive prompt layer.
+def print_info(message: str) -> None:
+    ui.note(message, "info")
+
+
+def print_success(message: str) -> None:
+    ui.note(message, "success")
+
+
+def print_warning(message: str) -> None:
+    ui.note(message, "warning")
+
+
+def print_error(message: str) -> None:
+    ui.note(message, "error")
 
 
 # ── Channel presets ────────────────────────────────────────────────────────────
@@ -73,25 +89,24 @@ CHANNEL_DEFS: list[tuple[str, str, list[tuple[str, str]]]] = [
 # ── Banner & helpers ──────────────────────────────────────────────────────────
 
 def _print_banner() -> None:
-    title = t("banner.title")
+    brand = load_brand()
     subtitle = t("banner.subtitle")
     exit_hint = t("banner.exit_hint")
-    width = max(len(title), len(subtitle), len(exit_hint), 50)
-    inner = width + 4
     print()
-    print(color("  ┌" + "─" * inner + "┐", Colors.CYAN))
-    print(color(f"  │  {title.center(width)}  │", Colors.CYAN))
-    print(color("  ├" + "─" * inner + "┤", Colors.CYAN))
-    print(color(f"  │  {subtitle.ljust(width)}  │", Colors.CYAN))
-    print(color(f"  │  {exit_hint.ljust(width)}  │", Colors.CYAN))
-    print(color("  └" + "─" * inner + "┘", Colors.CYAN))
+    if brand.name.lower() == "echo":
+        for line, role in zip(ECHO_LOGO_ART, ECHO_LOGO_GRADIENT):
+            print(color(f"  {line}", Colors.BOLD, ansi(role)))
+    else:
+        print(color(f"  {brand.name}", Colors.BOLD, ansi("primary")))
+    print(color(f"  · {brand.tagline} · {t('banner.mode')}", ansi("text-muted")))
+    print()
+    print(f"  {subtitle}")
+    print(color(f"  {exit_hint}", ansi("text-muted")))
 
 
 def _print_section_header(key: str) -> None:
     label = t(f"section.{key}")
-    print()
-    print(color(f"  ◆ {label}", Colors.CYAN, Colors.BOLD))
-    print(color("  " + "─" * (len(label) + 2), Colors.DIM))
+    ui.intro(label)
 
 
 def _ensure_dict(parent: dict, key: str) -> dict:
@@ -153,11 +168,11 @@ def setup_model(config: dict) -> None:
 
     api_base = entry.api_base
     if entry.needs_api_base:
-        api_base = ui.text(f"  {t('model.api_base')}", default=existing.get("apiBase", "") or api_base)
+        api_base = ui.text(t("model.api_base"), default=existing.get("apiBase", "") or api_base)
 
     api_key = ""
     if entry.dialect != "bedrock":
-        api_key = ui.password(f"  {t_provider_label(entry)} {t('model.api_key')}")
+        api_key = ui.password(f"{t_provider_label(entry)} {t('model.api_key')}")
         if not api_key and existing.get("apiKey") and _detect_catalog_id(existing) == entry_id:
             api_key = existing.get("apiKey", "")
 
@@ -171,11 +186,11 @@ def setup_model(config: dict) -> None:
     if models:
         choices = [(m, m, "") for m in models] + [("__custom__", t("model.model_custom"), "")]
         picked = ui.select(t("model.model_select"), choices, default=models[0])
-        default_model = ui.text(f"  {t('model.model_name')}") if picked == "__custom__" else picked
+        default_model = ui.text(t("model.model_name")) if picked == "__custom__" else picked
     else:
         default_model = ""
         while not default_model:
-            default_model = ui.text(f"  {t('model.model_name')}")
+            default_model = ui.text(t("model.model_name"))
 
     if default_model and entry.dialect != "bedrock":
         with ui.spinner(t("model.verifying")):
@@ -235,12 +250,12 @@ def _handle_verify(result: "VerifyResult", entry, api_key, api_base, model):
     if action == "skip":
         return model, api_key
     if action == "retry":
-        new_key = ui.password(f"  {t_provider_label(entry)} {t('model.api_key')}")
+        new_key = ui.password(f"{t_provider_label(entry)} {t('model.api_key')}")
         with ui.spinner(t("model.verifying")):
             res2 = verify_model(entry.dialect, new_key, api_base, model)
         return _handle_verify(res2, entry, new_key, api_base, model)
     # change model
-    new_model = ui.text(f"  {t('model.model_name')}")
+    new_model = ui.text(t("model.model_name"))
     with ui.spinner(t("model.verifying")):
         res2 = verify_model(entry.dialect, api_key, api_base, new_model)
     return _handle_verify(res2, entry, api_key, api_base, new_model)
@@ -266,7 +281,7 @@ def setup_permissions(config: dict) -> None:
 
     if chosen_mode == "smart":
         existing_smart_model = approval.get("smart_model", "") or approval.get("smartModel", "")
-        smart_model = ui.text(f"  {t('permissions.smart_model')}", default=existing_smart_model)
+        smart_model = ui.text(t("permissions.smart_model"), default=existing_smart_model)
         if smart_model:
             approval["smart_model"] = smart_model
         else:
@@ -306,13 +321,13 @@ def setup_terminal(config: dict) -> None:
 
     if chosen == "container":
         existing_image = execution.get("container_image") or execution.get("containerImage") or ""
-        image = ui.text(f"  {t('terminal.container_image')}", default=existing_image or "python:3.11-slim")
+        image = ui.text(t("terminal.container_image"), default=existing_image or "python:3.11-slim")
         execution["container_image"] = image
     elif chosen == "remote":
-        execution["remote_host"] = ui.text(f"  {t('terminal.remote_host')}", default=execution.get("remote_host", ""))
-        execution["remote_user"] = ui.text(f"  {t('terminal.remote_user')}", default=execution.get("remote_user", "root"))
+        execution["remote_host"] = ui.text(t("terminal.remote_host"), default=execution.get("remote_host", ""))
+        execution["remote_user"] = ui.text(t("terminal.remote_user"), default=execution.get("remote_user", "root"))
         existing_key = execution.get("remote_key_path") or execution.get("remoteKeyPath") or ""
-        execution["remote_key_path"] = ui.text(f"  {t('terminal.remote_key')}", default=existing_key)
+        execution["remote_key_path"] = ui.text(t("terminal.remote_key"), default=existing_key)
 
     network_keys = ["allow", "deny", "restricted"]
     network_labels = [t(f"terminal.network_{k}") for k in network_keys]
@@ -343,7 +358,7 @@ def setup_agent(config: dict) -> None:
     agent = _ensure_dict(config, "agent")
     current_iter = int(agent.get("max_iterations") or agent.get("maxIterations") or 40)
     print_info(t("agent.max_iter_hint"))
-    raw = ui.text(f"  {t('agent.max_iter')}", default=str(current_iter))
+    raw = ui.text(t("agent.max_iter"), default=str(current_iter))
     try:
         agent["max_iterations"] = max(1, int(raw))
     except ValueError:
@@ -355,7 +370,7 @@ def setup_agent(config: dict) -> None:
     if compression["enabled"]:
         current_thr = float(compression.get("trigger_ratio") or compression.get("triggerRatio") or 0.7)
         print_info(t("agent.compression_threshold_hint"))
-        raw = ui.text(f"  {t('agent.compression_threshold')}", default=f"{current_thr:.2f}")
+        raw = ui.text(t("agent.compression_threshold"), default=f"{current_thr:.2f}")
         try:
             value = float(raw)
             if 0.5 <= value <= 0.95:
@@ -375,14 +390,14 @@ def setup_agent(config: dict) -> None:
     sp["mode"] = reset_keys[reset_idx]
     if reset_keys[reset_idx] in ("idle", "both"):
         cur_idle = int(sp.get("idleTimeoutMinutes") or sp.get("idle_timeout_minutes") or 1440)
-        raw = ui.text(f"  {t('agent.idle_minutes')}", default=str(cur_idle))
+        raw = ui.text(t("agent.idle_minutes"), default=str(cur_idle))
         try:
             sp["idleTimeoutMinutes"] = max(1, int(raw))
         except ValueError:
             sp["idleTimeoutMinutes"] = cur_idle
     if reset_keys[reset_idx] in ("daily", "both"):
         cur_hr = int(sp.get("dailyResetHour") or sp.get("daily_reset_hour") or 4)
-        raw = ui.text(f"  {t('agent.daily_hour')}", default=str(cur_hr))
+        raw = ui.text(t("agent.daily_hour"), default=str(cur_hr))
         try:
             v = int(raw)
             sp["dailyResetHour"] = v if 0 <= v <= 23 else cur_hr
@@ -480,11 +495,11 @@ def setup_tools(config: dict) -> None:
         web["search_provider"] = provider_choices[prov_idx]
         existing_key = web.get("search_api_key") or web.get("searchApiKey") or ""
         if existing_key:
-            new_key = ui.password(f"  {t('tools.web_api_key')} [****{t('common.saved')}]")
+            new_key = ui.password(f"{t('tools.web_api_key')} [****{t('common.saved')}]")
             if new_key:
                 web["search_api_key"] = new_key
         else:
-            new_key = ui.password(f"  {t('tools.web_api_key')}")
+            new_key = ui.password(t("tools.web_api_key"))
             if new_key:
                 web["search_api_key"] = new_key
     else:
@@ -504,26 +519,26 @@ def setup_tools(config: dict) -> None:
         if backend_values[b_idx] == "fal":
             existing = ig.get("fal_key") or ig.get("falKey") or ""
             if existing:
-                new_key = ui.password(f"  {t('tools.image_fal_key')} [****{t('common.saved')}]")
+                new_key = ui.password(f"{t('tools.image_fal_key')} [****{t('common.saved')}]")
                 if new_key:
                     ig["fal_key"] = new_key
             else:
-                new_key = ui.password(f"  {t('tools.image_fal_key')}")
+                new_key = ui.password(t("tools.image_fal_key"))
                 if new_key:
                     ig["fal_key"] = new_key
-            ig["fal_model"] = ui.text(f"  {t('tools.image_fal_model')}", default=ig.get("fal_model") or ig.get("falModel") or "fal-ai/flux/schnell")
+            ig["fal_model"] = ui.text(t("tools.image_fal_model"), default=ig.get("fal_model") or ig.get("falModel") or "fal-ai/flux/schnell")
         else:
             existing = ig.get("api_key") or ig.get("apiKey") or ""
             if existing:
-                new_key = ui.password(f"  {t('tools.image_api_key')} [****{t('common.saved')}]")
+                new_key = ui.password(f"{t('tools.image_api_key')} [****{t('common.saved')}]")
                 if new_key:
                     ig["api_key"] = new_key
             else:
-                new_key = ui.password(f"  {t('tools.image_api_key')}")
+                new_key = ui.password(t("tools.image_api_key"))
                 if new_key:
                     ig["api_key"] = new_key
-            ig["api_base"] = ui.text(f"  {t('tools.image_api_base')}", default=ig.get("api_base") or ig.get("apiBase") or "https://api.openai.com/v1")
-            ig["model"] = ui.text(f"  {t('tools.image_model')}", default=ig.get("model", "dall-e-3"))
+            ig["api_base"] = ui.text(t("tools.image_api_base"), default=ig.get("api_base") or ig.get("apiBase") or "https://api.openai.com/v1")
+            ig["model"] = ui.text(t("tools.image_model"), default=ig.get("model", "dall-e-3"))
 
     if "tts" in chosen:
         tts = _ensure_dict(tools, "tts")
@@ -538,13 +553,13 @@ def setup_tools(config: dict) -> None:
         if backends[b_idx] == "openai":
             existing = tts.get("openai_api_key") or tts.get("openaiApiKey") or ""
             if existing:
-                new_key = ui.password(f"  {t('tools.tts_openai_key')} [****{t('common.saved')}]")
+                new_key = ui.password(f"{t('tools.tts_openai_key')} [****{t('common.saved')}]")
                 if new_key:
                     tts["openai_api_key"] = new_key
             else:
-                tts["openai_api_key"] = ui.password(f"  {t('tools.tts_openai_key')}")
-            tts["openai_api_base"] = ui.text(f"  {t('tools.tts_openai_base')}", default=tts.get("openai_api_base", "https://api.openai.com/v1"))
-            tts["model"] = ui.text(f"  {t('tools.tts_model')}", default=tts.get("model", "tts-1"))
+                tts["openai_api_key"] = ui.password(t("tools.tts_openai_key"))
+            tts["openai_api_base"] = ui.text(t("tools.tts_openai_base"), default=tts.get("openai_api_base", "https://api.openai.com/v1"))
+            tts["model"] = ui.text(t("tools.tts_model"), default=tts.get("model", "tts-1"))
 
     code_exec = _ensure_dict(tools, "code_exec")
     code_exec["enabled"] = "code_exec" in chosen
@@ -641,7 +656,7 @@ def setup_channels(config: dict) -> None:
     for idx in selected:
         ch_key, ch_label, fields = CHANNEL_DEFS[idx]
         print()
-        print(color(f"  ── {t('channels.config_for', label=ch_label)} ──", Colors.CYAN))
+        print(color(f"  ● {t('channels.config_for', label=ch_label)}", ansi("secondary")))
         ch = _ensure_dict(existing, ch_key)
         ch["enabled"] = True
 
@@ -652,16 +667,16 @@ def setup_channels(config: dict) -> None:
         for field_key, field_label in fields:
             secret = any(s in field_key.lower() for s in ("key", "secret", "token", "password"))
             if secret:
-                value = ui.password(f"  {field_label}")
+                value = ui.password(field_label)
             else:
-                value = ui.text(f"  {field_label}", default=ch.get(field_key, ""))
+                value = ui.text(field_label, default=ch.get(field_key, ""))
             if value:
                 ch[field_key] = value
 
         if ch_key in ("telegram", "discord", "slack", "qqbot", "email", "weixin", "dingtalk"):
             existing_allow = ch.get("allow_from") or ch.get("allowFrom") or []
             allow_default = ",".join(existing_allow) if isinstance(existing_allow, list) else str(existing_allow or "")
-            allow_raw = ui.text(f"  {t('channels.allow_from')}", default=allow_default)
+            allow_raw = ui.text(t("channels.allow_from"), default=allow_default)
             if allow_raw:
                 ch["allow_from"] = [s.strip() for s in allow_raw.split(",") if s.strip()]
             else:
@@ -670,7 +685,7 @@ def setup_channels(config: dict) -> None:
                 print_warning(t("channels.allow_warn"))
 
             home_existing = ch.get("home_channel") or ch.get("homeChannel") or ""
-            home = ui.text(f"  {t('channels.home_channel')}", default=home_existing)
+            home = ui.text(t("channels.home_channel"), default=home_existing)
             if home:
                 ch["home_channel"] = home
 
@@ -689,8 +704,8 @@ def setup_gateway(config: dict) -> None:
     if not gw["enabled"]:
         return
 
-    gw["host"] = ui.text(f"  {t('gateway.host')}", default=str(gw.get("host", "0.0.0.0")))
-    port_str = ui.text(f"  {t('gateway.port')}", default=str(gw.get("port", 58123)))
+    gw["host"] = ui.text(t("gateway.host"), default=str(gw.get("host", "0.0.0.0")))
+    port_str = ui.text(t("gateway.port"), default=str(gw.get("port", 58123)))
     try:
         gw["port"] = int(port_str)
     except ValueError:
@@ -723,11 +738,11 @@ def setup_gateway(config: dict) -> None:
     if auth_keys[a_idx] in ("allowlist", "pairing"):
         existing_tokens = auth.get("api_tokens") or auth.get("apiTokens") or []
         token_default = existing_tokens[0] if existing_tokens else ""
-        token = ui.password(f"  {t('gateway.api_token')}") or token_default
+        token = ui.password(t("gateway.api_token")) or token_default
         if not token:
             import secrets
             token = secrets.token_urlsafe(32)
-            print_info(f"  Generated token: {token}")
+            print_info(f"Generated token: {token}")
         auth["api_tokens"] = [token]
     else:
         # open 模式:清理遗留的 api_tokens(含驼峰键),否则 server 只要发现
@@ -804,9 +819,9 @@ def setup_observability(config: dict) -> None:
     otel_on = ui.confirm(t("observability.otel"), default=bool(obs.get("otel_enabled", False)))
     obs["otel_enabled"] = otel_on
     if otel_on:
-        obs["otel_endpoint"] = ui.text(f"  {t('observability.otel_endpoint')}",
+        obs["otel_endpoint"] = ui.text(t("observability.otel_endpoint"),
                                        default=obs.get("otel_endpoint") or obs.get("otelEndpoint") or "http://localhost:4317")
-        obs["otel_service_name"] = ui.text(f"  {t('observability.otel_service')}",
+        obs["otel_service_name"] = ui.text(t("observability.otel_service"),
                                            default=obs.get("otel_service_name") or obs.get("otelServiceName") or "echo-agent")
 
     print_success(t("observability.saved",
@@ -858,7 +873,7 @@ def setup_evolution(config: dict) -> None:
 
     if trigger == "threshold":
         cur = int(evo.get("threshold_trajectories") or evo.get("thresholdTrajectories") or 50)
-        raw = ui.text(f"  {t('evolution.threshold')}", default=str(cur))
+        raw = ui.text(t("evolution.threshold"), default=str(cur))
         try:
             evo["threshold_trajectories"] = max(1, int(raw))
         except ValueError:
@@ -866,12 +881,12 @@ def setup_evolution(config: dict) -> None:
             evo["threshold_trajectories"] = cur
     elif trigger == "scheduled":
         cur = evo.get("cron_expression") or evo.get("cronExpression") or "0 4 * * *"
-        raw = ui.text(f"  {t('evolution.cron')}", default=cur)
+        raw = ui.text(t("evolution.cron"), default=cur)
         evo["cron_expression"] = raw or cur
 
     # Eval dataset path
     cur_dataset = evo.get("eval_dataset_path") or evo.get("evalDatasetPath") or "data/eval/baseline.yaml"
-    raw = ui.text(f"  {t('evolution.dataset_path')}", default=cur_dataset)
+    raw = ui.text(t("evolution.dataset_path"), default=cur_dataset)
     evo["eval_dataset_path"] = raw or cur_dataset
 
     # Strict / regression policy
@@ -881,7 +896,7 @@ def setup_evolution(config: dict) -> None:
     )
     cur_thr = float(evo.get("regression_threshold") or evo.get("regressionThreshold") or 0.05)
     print_info(t("evolution.regression_hint"))
-    raw = ui.text(f"  {t('evolution.regression')}", default=f"{cur_thr:.2f}")
+    raw = ui.text(t("evolution.regression"), default=f"{cur_thr:.2f}")
     try:
         v = float(raw)
         if 0.0 <= v <= 0.5:
@@ -897,14 +912,14 @@ def setup_evolution(config: dict) -> None:
         default=bool(evo.get("candidate_review_required", False)),
     )
     cur_cand = int(evo.get("max_candidates_per_run") or evo.get("maxCandidatesPerRun") or 3)
-    raw = ui.text(f"  {t('evolution.max_candidates')}", default=str(cur_cand))
+    raw = ui.text(t("evolution.max_candidates"), default=str(cur_cand))
     try:
         evo["max_candidates_per_run"] = max(1, int(raw))
     except ValueError:
         evo["max_candidates_per_run"] = cur_cand
 
     cur_retain = int(evo.get("trajectory_retention_days") or evo.get("trajectoryRetentionDays") or 30)
-    raw = ui.text(f"  {t('evolution.retention_days')}", default=str(cur_retain))
+    raw = ui.text(t("evolution.retention_days"), default=str(cur_retain))
     try:
         evo["trajectory_retention_days"] = max(0, int(raw))
     except ValueError:
@@ -921,14 +936,14 @@ def setup_evolution(config: dict) -> None:
 
     # Eval execution knobs (used by PromotionGate)
     cur_par = int(evo.get("eval_parallel") or evo.get("evalParallel") or 2)
-    raw = ui.text(f"  {t('evolution.eval_parallel')}", default=str(cur_par))
+    raw = ui.text(t("evolution.eval_parallel"), default=str(cur_par))
     try:
         evo["eval_parallel"] = max(1, int(raw))
     except ValueError:
         evo["eval_parallel"] = cur_par
 
     cur_to = int(evo.get("eval_timeout_seconds") or evo.get("evalTimeoutSeconds") or 60)
-    raw = ui.text(f"  {t('evolution.eval_timeout')}", default=str(cur_to))
+    raw = ui.text(t("evolution.eval_timeout"), default=str(cur_to))
     try:
         evo["eval_timeout_seconds"] = max(1, int(raw))
     except ValueError:
@@ -977,7 +992,7 @@ def setup_cost(config: dict) -> None:
         return
 
     cur_budget = float(cost.get("daily_budget_usd") or cost.get("dailyBudgetUsd") or 0.0)
-    raw = ui.text(f"  {t('cost.daily_budget')}", default=f"{cur_budget:.2f}")
+    raw = ui.text(t("cost.daily_budget"), default=f"{cur_budget:.2f}")
     try:
         budget = float(raw)
         if not math.isfinite(budget):
@@ -1109,10 +1124,10 @@ def _capability_check(config: dict) -> list[tuple[str, bool, str]]:
 def _doctor_mark(status: str) -> str:
     """Map a health status to a coloured glyph (ok/warn/fail → ✓/!/✗)."""
     if status == OK:
-        return color("✓", Colors.GREEN)
+        return color("✓", ansi("success"))
     if status == WARN:
-        return color("!", Colors.YELLOW)
-    return color("✗", Colors.RED)
+        return color("!", ansi("warning"))
+    return color("✗", ansi("error"))
 
 
 def setup_doctor(config: dict) -> None:
@@ -1130,7 +1145,7 @@ def setup_doctor(config: dict) -> None:
         mark = _doctor_mark(probe["status"])
         line = f"  {mark} {probe['name']}"
         if probe.get("detail"):
-            line += color(f"  ({probe['detail']})", Colors.DIM)
+            line += color(f"  ({probe['detail']})", ansi("text-muted"))
         print(line)
     print()
 
@@ -1139,10 +1154,10 @@ def setup_doctor(config: dict) -> None:
     # live probes above.
     checks = _capability_check(config)
     for label, ok, extra in checks:
-        mark = color("✓", Colors.GREEN) if ok else color("✗", Colors.RED)
+        mark = color("✓", ansi("success")) if ok else color("✗", ansi("error"))
         line = f"  {mark} {label}"
         if extra:
-            line += color(f"  ({extra})", Colors.DIM)
+            line += color(f"  ({extra})", ansi("text-muted"))
         print(line)
     print()
 
@@ -1184,38 +1199,36 @@ def _ensure_credential_key(workspace: Path) -> None:
 # ── Summary ───────────────────────────────────────────────────────────────────
 
 def _print_summary(config: dict, config_path: Path) -> None:
-    print()
-    print(color(f"  ◆ {t('summary.header')}", Colors.CYAN, Colors.BOLD))
+    ui.intro(t("summary.header"))
     models = config.get("models", {}) or {}
     providers = models.get("providers", []) or []
     model_name = models.get("defaultModel") or models.get("default_model") or "-"
     prov_name = providers[0].get("name", "?") if providers else "?"
-    print_info(f"  {t('summary.model')}: {prov_name} · {model_name}")
+    print_info(f"{t('summary.model')}: {prov_name} · {model_name}")
 
     enabled = [k for k, v in (config.get("channels", {}) or {}).items()
                if isinstance(v, dict) and v.get("enabled") and k != "cli"]
     if enabled:
-        print_info(f"  {t('summary.channels')}: {', '.join(enabled)}")
+        print_info(f"{t('summary.channels')}: {', '.join(enabled)}")
     else:
-        print_info(f"  {t('summary.channels')}: {t('summary.channels_cli_only')}  → echo-agent setup channel")
+        print_info(f"{t('summary.channels')}: {t('summary.channels_cli_only')}  → echo-agent setup channel")
 
     if not (config.get("gateway", {}) or {}).get("enabled"):
-        print_info(f"  {t('summary.gateway_off')}  → echo-agent gateway install")
+        print_info(f"{t('summary.gateway_off')}  → echo-agent gateway install")
 
-    print_info(f"  {t('summary.config_file')}: {config_path}")
+    print_info(f"{t('summary.config_file')}: {config_path}")
     print()
-    print(color(f"  {t('summary.next_steps')}", Colors.CYAN))
-    print(color(t("summary.next_run"), Colors.GREEN))
-    print(color(t("summary.next_setup"), Colors.GREEN))
-    print(color(t("summary.next_status"), Colors.GREEN))
+    print(color(f"  {t('summary.next_steps')}", Colors.BOLD, ansi("primary")))
+    print(color(t("summary.next_run"), ansi("secondary")))
+    print(color(t("summary.next_setup"), ansi("secondary")))
+    print(color(t("summary.next_status"), ansi("secondary")))
     print()
 
 
 # ── Headless / non-interactive guidance ───────────────────────────────────────
 
 def _print_headless_guidance() -> None:
-    print()
-    print(color(f"  ◆ {t('headless.guide_title')}", Colors.CYAN, Colors.BOLD))
+    ui.intro(t("headless.guide_title"))
     print()
     print_warning(t("headless.warning"))
     print_info(t("headless.guide_intro"))
@@ -1414,4 +1427,3 @@ def prompt_first_run_setup(
     print_info(t("summary.first_run_skip_msg"))
     print_info(t("summary.first_run_skip_hint"))
     return False
-

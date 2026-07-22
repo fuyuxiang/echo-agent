@@ -23,6 +23,7 @@ MESSAGES = {
     },
     "banner": {
         "title": "Echo Agent 配置向导",
+        "mode": "setup",
         "subtitle": "配置 Echo Agent 运行环境。",
         "exit_hint": "可随时按 Ctrl+C 退出。",
     },

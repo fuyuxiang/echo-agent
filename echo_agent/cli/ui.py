@@ -12,9 +12,8 @@ import sys
 from contextlib import contextmanager
 from typing import Iterator
 
-from echo_agent.cli.colors import (
-    Colors, color, print_error, print_info, print_success, print_warning,
-)
+from echo_agent.cli.colors import Colors, color
+from echo_agent.cli.palette import active_palette, ansi
 from echo_agent.cli.prompt import (
     is_interactive, prompt, prompt_checklist, prompt_choice, prompt_yes_no,
 )
@@ -32,19 +31,20 @@ except Exception:  # pragma: no cover - import guard
 # Shared visual identity for every interactive prompt. Centralized here so the
 # whole setup wizard looks consistent — tweak once, all menus follow.
 _POINTER = "❯"
-_QMARK = "◆"
+_QMARK = "●"
 
 if _HAS_Q:
+    _palette = active_palette()
     _STYLE = _q.Style([
-        ("qmark", "fg:#00afaf bold"),          # leading marker (cyan)
+        ("qmark", f"fg:{_palette['primary']} bold"),
         ("question", "bold"),                  # the prompt text
-        ("pointer", "fg:#00afaf bold"),        # arrow on the focused row
-        ("highlighted", "fg:#00afaf bold"),    # focused choice label
-        ("selected", "fg:#00af5f"),            # chosen value (green)
-        ("separator", "fg:#6c6c6c bold"),      # group headers (dim, weighty)
-        ("answer", "fg:#00afaf bold"),         # echoed answer after submit
-        ("instruction", "fg:#6c6c6c"),         # (Use arrow keys) hint
-        ("disabled", "fg:#6c6c6c italic"),
+        ("pointer", f"fg:{_palette['primary']} bold"),
+        ("highlighted", f"fg:{_palette['primary']} bold"),
+        ("selected", f"fg:{_palette['success']}"),
+        ("separator", f"fg:{_palette['text-muted']} bold"),
+        ("answer", f"fg:{_palette['primary']} bold"),
+        ("instruction", f"fg:{_palette['text-muted']}"),
+        ("disabled", f"fg:{_palette['text-muted']} italic"),
     ])
 else:  # pragma: no cover - import guard
     _STYLE = None
@@ -145,24 +145,26 @@ def confirm(message: str, default: bool = True) -> bool:
 
 
 def note(message: str, kind: str = "info") -> None:
-    {"success": print_success, "warning": print_warning,
-     "error": print_error, "info": print_info}.get(kind, print_info)(message)
+    glyph = {"success": "✓", "warning": "!", "error": "✗", "info": "·"}.get(kind, "·")
+    role = {"success": "success", "warning": "warning", "error": "error",
+            "info": "text-muted"}.get(kind, "text-muted")
+    print(color(f"  {glyph} {message}", ansi(role)))
 
 
 def intro(title: str) -> None:
     print()
-    print(color(f"  ◆  {title}", Colors.CYAN, Colors.BOLD))
+    print(color(f"  ❯ {title}", Colors.BOLD, ansi("primary")))
 
 
 def outro(message: str) -> None:
     print()
-    print(color(f"  ◆  {message}", Colors.CYAN, Colors.BOLD))
+    print(color(f"  ● {message}", Colors.BOLD, ansi("success")))
     print()
 
 
 @contextmanager
 def spinner(message: str) -> Iterator[None]:
-    print(color(f"  ⋯ {message}", Colors.DIM))
+    print(color(f"  ⋯ {message}", ansi("text-muted")))
     try:
         yield
     finally:

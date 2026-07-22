@@ -23,6 +23,7 @@ MESSAGES = {
     },
     "banner": {
         "title": "Echo Agent Setup Wizard",
+        "mode": "setup",
         "subtitle": "Configure your Echo Agent installation.",
         "exit_hint": "Press Ctrl+C at any time to exit.",
     },

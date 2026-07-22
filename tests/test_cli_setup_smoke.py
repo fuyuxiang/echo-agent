@@ -19,6 +19,7 @@ import pytest
 
 from echo_agent.cli import setup as setup_mod
 from echo_agent.cli.i18n import get_locale, set_locale
+from echo_agent.cli.tui.brand import Brand, ECHO_LOGO_ART
 
 set_locale("en")
 _T = "echo_agent.cli.setup"
@@ -102,6 +103,25 @@ def test_resolve_initial_locale_saved_pref():
     out = setup_mod._resolve_initial_locale({"ui": {"locale": "zh"}}, None)
     assert out == "zh"
     set_locale("en")
+
+
+def test_banner_mirrors_cli_brand_without_legacy_box(capsys):
+    set_locale("en")
+    with patch(f"{_T}.load_brand", return_value=Brand()):
+        setup_mod._print_banner()
+    out = capsys.readouterr().out
+    assert ECHO_LOGO_ART[0] in out
+    assert "· agent · setup" in out
+    assert "┌" not in out
+    assert "◆" not in out
+
+
+def test_section_header_uses_cli_prompt_sigil(capsys):
+    set_locale("en")
+    setup_mod._print_section_header("model")
+    out = capsys.readouterr().out
+    assert "❯ Model & Provider" in out
+    assert "◆" not in out
 
 
 # ── _capability_check ──────────────────────────────────────────────────────────
