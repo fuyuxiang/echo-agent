@@ -210,3 +210,39 @@ class TranscriptView(VerticalScroll):
             elif isinstance(w, AgentReply):
                 parts.append(w.text)
         return "\n\n".join(p for p in parts if p)
+
+    def export_markdown(self, *, session_key: str = "", when: str = "") -> str:
+        """The conversation as a readable Markdown document, for /save. Same
+        content selection as export_text (user turns + real agent replies; UI
+        scaffolding skipped), but rendered with a heading, an optional metadata
+        block, and one ``## 用户`` / ``## 助手`` section per message so the
+        file reads well in any Markdown viewer. Status lines (is_status) reuse
+        AgentReply and are excluded — they are UI chatter, not conversation."""
+        lines: list[str] = ["# Echo 对话记录", ""]
+        meta: list[str] = []
+        if session_key:
+            meta.append(f"- 会话: `{session_key}`")
+        if when:
+            meta.append(f"- 导出时间: {when}")
+        if meta:
+            lines.extend(meta)
+            lines.append("")
+        for w in self.children:
+            if isinstance(w, _Heartbeat):
+                continue
+            if isinstance(w, UserTurn):
+                lines.append("## 用户")
+                lines.append("")
+                lines.append(w.raw_text)
+                lines.append("")
+            elif isinstance(w, AgentReply):
+                if getattr(w, "is_status", False):
+                    continue
+                body = w.text
+                if not body:
+                    continue
+                lines.append("## 助手")
+                lines.append("")
+                lines.append(body)
+                lines.append("")
+        return "\n".join(lines).rstrip() + "\n"

@@ -190,7 +190,8 @@ class OutboundRenderer:
 
 
 async def run_client(
-    *, host: str, port: int, ws_path: str, user_id: str, token: str
+    *, host: str, port: int, ws_path: str, user_id: str, token: str,
+    save_dir=None
 ) -> int:
     _require_textual()
     from echo_agent.cli.tui.app import EchoTUI
@@ -281,6 +282,7 @@ async def run_client(
         app = EchoTUI(
             send_coro=send_coro, session_key=session_key,
             interrupt_coro=interrupt_coro, reconnect_coro=reconnect_coro,
+            save_dir=save_dir,
         )
         bridge = WSBridge(app)
 
@@ -347,14 +349,34 @@ def _runtime_endpoint(cfg, config_path: str | None, workspace: str | None) -> di
         return None
 
 
+def _resolve_save_dir(config_path: str | None, workspace: str | None):
+    """Directory /save writes to by default: <effective workspace>/transcripts.
+    Resolved the same way the gateway resolves its workspace so saved
+    conversations land next to the rest of the workspace data. Returns None on
+    any failure (missing config, load error) so the TUI falls back to its own
+    default (./transcripts) rather than crashing the attach."""
+    try:
+        from echo_agent.config.loader import load_config, resolve_config_file
+        from echo_agent.cli.workspace import resolve_effective_workspace
+        cp = config_path
+        if cp is None and workspace:
+            cp = resolve_config_file(search_dir=workspace)
+        cfg = load_config(config_path=cp)
+        ws = resolve_effective_workspace(cfg, cp, workspace)
+        return ws / "transcripts"
+    except Exception:
+        return None
+
+
 def run_cli_attach(
     *, host: str, port: int, ws_path: str, user_id: str, token: str,
     config_path: str | None = None, workspace: str | None = None
 ) -> int:
+    save_dir = _resolve_save_dir(config_path, workspace)
     try:
         return asyncio.run(run_client(
             host=host, port=port, ws_path=ws_path,
-            user_id=user_id, token=token,
+            user_id=user_id, token=token, save_dir=save_dir,
         ))
     except MissingTUIDependencyError as e:
         # The gateway may be perfectly healthy — this is purely a missing

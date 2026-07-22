@@ -64,9 +64,15 @@ class EchoTUI(App):
     ]
 
     def __init__(self, send_coro=None, session_key: str = "", interrupt_coro=None,
-                 reconnect_coro=None) -> None:
+                 reconnect_coro=None, save_dir=None) -> None:
         super().__init__()
         self._send = send_coro
+        # Default directory for /save without an explicit path. run_cli_attach
+        # passes <workspace>/transcripts so saved conversations sit next to the
+        # rest of the workspace data; None falls back to ./transcripts under the
+        # cwd (unit tests / standalone runs where no workspace was resolved).
+        from pathlib import Path
+        self._save_dir = Path(save_dir) if save_dir is not None else Path.cwd() / "transcripts"
         # Sends a control-only interrupt frame ({"type":"interrupt"}) upstream so
         # the gateway can cooperatively stop the running turn. Distinct from
         # _send (ordinary messages) so an interrupt never becomes a chat turn.
@@ -382,6 +388,9 @@ class EchoTUI(App):
         if text == "/copy" or text == "/copy all":
             self._do_copy(whole=text == "/copy all")
             return
+        if text == "/save" or text.startswith("/save "):
+            self._do_save(text[len("/save"):].strip())
+            return
         if text == "/theme" or text.startswith("/theme "):
             self._do_theme(text[len("/theme"):].strip())
             return
@@ -433,6 +442,56 @@ class EchoTUI(App):
         self.copy_to_clipboard(text)
         scope = "整段对话" if whole else "最近回复"
         self.notify(f"已复制{scope}（{len(text)} 字）到剪贴板", timeout=3)
+
+    def _do_save(self, arg: str) -> None:
+        """/save [路径] — write the whole conversation to a Markdown file.
+        Unlike /copy this persists to disk (OSC 52 clipboard is flaky and caps
+        out on long transcripts). With no arg it writes an auto-named file under
+        self._save_dir (<workspace>/transcripts); an arg is taken as a target:
+        a directory (or trailing-slash path) keeps the auto name inside it, any
+        other value is used as the filename verbatim (``.md`` appended if
+        missing). Relative args resolve against the default save dir so a bare
+        ``/save notes`` lands with the rest, not wherever the gateway was
+        launched."""
+        from datetime import datetime
+        from pathlib import Path
+
+        # export_text is empty exactly when there is no real conversation
+        # (no user turns / non-status agent replies) — a cleaner emptiness
+        # check than string-matching the Markdown header, which always carries
+        # the session/timestamp metadata block.
+        if not self._tv.export_text().strip():
+            self.notify("暂无可保存的对话", severity="warning", timeout=3)
+            return
+        md = self._tv.export_markdown(
+            session_key=self._session_key,
+            when=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        auto_name = f"echo-{stamp}.md"
+        base = self._save_dir
+        if not arg:
+            target = base / auto_name
+        else:
+            raw = Path(arg).expanduser()
+            # A trailing slash or an existing directory means "put the
+            # auto-named file in here"; otherwise treat arg as the filename.
+            is_dir = arg.endswith("/") or raw.is_dir()
+            if is_dir:
+                target = (raw if raw.is_absolute() else base / raw) / auto_name
+            else:
+                if raw.suffix.lower() != ".md":
+                    raw = raw.with_name(raw.name + ".md")
+                target = raw if raw.is_absolute() else base / raw
+
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(md, encoding="utf-8")
+        except OSError as e:
+            self.notify(f"保存失败: {e}", severity="error", timeout=5)
+            return
+        self.notify(f"已保存对话到 {target}（{len(md)} 字）", timeout=4)
 
     def _do_theme(self, arg: str) -> None:
         """/theme — switch or report the active palette. `light`/`dark` set it;

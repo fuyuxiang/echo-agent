@@ -23,6 +23,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/help", "", "列出所有命令", "local", False),
     SlashCommand("/clear", "", "清空当前转录流", "local", False),
     SlashCommand("/copy", "[all]", "复制最近回复（all=整段对话）", "local", True),
+    SlashCommand("/save", "[路径]", "保存对话为 Markdown（默认存到 transcripts/）", "local", True),
     SlashCommand("/theme", "[light|dark]", "切换或查看亮/暗主题", "local", True),
     SlashCommand("/reconnect", "", "断线后重新连接网关", "local", False),
     SlashCommand("/quit", "", "退出", "local", False),
