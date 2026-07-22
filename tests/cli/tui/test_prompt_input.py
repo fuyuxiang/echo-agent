@@ -1,7 +1,7 @@
 import pytest
 from textual.app import App
 
-from echo_agent.cli.tui.prompt_input import PromptInput
+from echo_agent.cli.tui.prompt_input import _MAX_ROWS, PromptInput
 
 
 class _Host(App):
@@ -90,3 +90,39 @@ async def test_down_keeps_draft_when_not_browsing():
         await pilot.press("down")
         await pilot.pause()
         assert pi.text == "新草稿还没发"
+
+
+@pytest.mark.asyncio
+async def test_single_row_when_empty():
+    app = _Host()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        pi = app.query_one(PromptInput)
+        assert pi._visual_rows() == 1
+
+
+@pytest.mark.asyncio
+async def test_long_wrapped_line_grows_box():
+    # 回归：一行很长的文本在软折行下应把输入框撑高（此前只数硬换行，
+    # line_count 恒为 1，长文本被压在一行看不全）。
+    app = _Host()
+    async with app.run_test(size=(40, 24)) as pilot:
+        await pilot.pause()
+        pi = app.query_one(PromptInput)
+        # 没有任何 \n，但远超一行宽度，软折行后必然多于 1 可视行。
+        pi.text = "长文本" * 60
+        await pilot.pause()
+        assert "\n" not in pi.text                 # 确实是单个硬行
+        assert pi.document.line_count == 1          # 旧逻辑会停在 1
+        assert pi._visual_rows() > 1                # 新逻辑按可视折行长高
+
+
+@pytest.mark.asyncio
+async def test_row_count_capped_at_max():
+    app = _Host()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        pi = app.query_one(PromptInput)
+        pi.text = "\n".join(str(i) for i in range(_MAX_ROWS + 20))
+        await pilot.pause()
+        assert pi._visual_rows() == _MAX_ROWS

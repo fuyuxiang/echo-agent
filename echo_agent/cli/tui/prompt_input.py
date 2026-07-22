@@ -1,10 +1,13 @@
 """Prompt input box. Enter submits, Shift+Enter inserts a newline, Up/Down
 recall history (only when the cursor is on the first/last line so multi-line
-cursor movement is preserved). Height auto-grows 1..10 lines.
+cursor movement is preserved). Height auto-grows 1..10 rows to fit the text,
+counting soft-wrapped lines (long lines that wrap on screen), not just hard
+newlines — so a long single-line paste grows the box too.
 
 Textual 8.2.8: Key events encode shift in the key name ("shift+enter"), and
 TextArea has no native placeholder/auto-height — the app layer overlays a
-placeholder driven by ContentChanged, and height is recomputed here."""
+placeholder driven by ContentChanged, and height is recomputed here from
+wrapped_document.height."""
 
 from __future__ import annotations
 
@@ -53,13 +56,29 @@ class PromptInput(TextArea):
         super().on_mount()
         self._resize()
 
+    def _visual_rows(self) -> int:
+        """Number of *visible* rows the current text occupies, capped at 1.._MAX_ROWS.
+
+        soft_wrap is on, so a single long line wraps on screen without adding a
+        newline. document.line_count only counts hard newlines and would keep the
+        box at one row while wrapped text overflows out of sight. wrapped_document
+        knows the real on-screen height (hard newlines + soft wraps) once a width
+        is known; before first layout its height is 0, so fall back to line_count.
+        """
+        wrapped = self.wrapped_document.height or self.document.line_count
+        return max(1, min(_MAX_ROWS, wrapped))
+
     def _resize(self) -> None:
-        rows = max(1, min(_MAX_ROWS, self.document.line_count))
-        self.styles.height = rows
+        self.styles.height = self._visual_rows()
 
     def on_text_area_changed(self, event) -> None:
         self._resize()
         self.post_message(self.ContentChanged(self.is_empty, self.text))
+
+    def on_resize(self, event) -> None:
+        # A narrower terminal wraps the same text onto more visual rows, so the
+        # box height must be recomputed on width changes too — not only on edits.
+        self._resize()
 
     class PanelNav(Message):
         """Ask the app to move the completion-panel highlight. Sent only while

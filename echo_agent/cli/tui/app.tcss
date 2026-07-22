@@ -12,14 +12,16 @@ Banner {
     color: $text;
 }
 
-/* User task title: a left accent bar + subtle boost background + blank lines
-   above/below, so each submitted task stands out and reads as a clear divider
-   between turns. Colors use theme variables so they adapt to light/dark. */
+/* User task title: a left accent bar + a full-row tinted background + blank
+   lines above/below, so each submitted task stands out and reads as a clear
+   divider between turns. $primary-muted (not the near-invisible $boost) fills
+   the whole row in the brand hue, matching the accent bar and the ● reply
+   sigil; it is a theme variable so it adapts to light/dark automatically. */
 UserTurn {
     margin: 1 0;
     padding: 0 1;
     border-left: thick $accent;
-    background: $boost;
+    background: $primary-muted;
     color: $text;
 }
 
