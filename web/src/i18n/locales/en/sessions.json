@@ -2,7 +2,7 @@
   "unknownTime": "Unknown time",
   "searchPlaceholder": "Search sessions...",
   "empty": "No sessions",
-  "messageCount": "{{count}} msgs · {{time}}",
+  "messageCount": "{{count}} · {{time}}",
   "historyFailed": "Failed to load history: {{error}}",
   "selectHint": "Select a session to view history"
 }

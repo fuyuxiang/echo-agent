@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { useApi } from "../hooks/use-api";
+import { statusLabel } from "../stores/kanban";
 import { Activity, Radio, Brain, Coins, Plug, AlertCircle, CheckCircle, AlertTriangle } from "lucide-react";
 
 interface HealthData {
@@ -62,7 +63,7 @@ export function Overview() {
           <div className="flex gap-2 flex-wrap">
             {["pending", "queued", "running", "blocked", "review", "success"].map((s) => (
               <span key={s} className="px-2 py-1 bg-gray-100 rounded text-sm">
-                {s}: {statusCounts[s] ?? 0}
+                {statusLabel(s)}: {statusCounts[s] ?? 0}
               </span>
             ))}
           </div>

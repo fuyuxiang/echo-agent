@@ -12,7 +12,10 @@ describe("statusMeta 随语言切换", () => {
     await i18n.changeLanguage("en");
     expect(statusMeta("running").label).toBe("Running");
   });
-  it("配色不随语言变", () => {
-    expect(statusMeta("running").chip).toContain("indigo");
+  it("配色不随语言变", async () => {
+    const zhChip = statusMeta("running").chip;
+    expect(zhChip).toContain("indigo");
+    await i18n.changeLanguage("en");
+    expect(statusMeta("running").chip).toBe(zhChip);
   });
 });
