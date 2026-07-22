@@ -1,0 +1,13 @@
+{
+  "upload": "Upload document",
+  "rebuild": "Rebuild index",
+  "status": "{{count}} indexed · Last rebuild: {{last}}",
+  "never": "Never",
+  "empty": "No documents",
+  "uploadSuccess": "Uploaded",
+  "uploadFailed": "Upload failed",
+  "rebuildTriggered": "Rebuild triggered",
+  "rebuildFailed": "Rebuild failed",
+  "deleteSuccess": "Deleted",
+  "deleteFailed": "Delete failed"
+}

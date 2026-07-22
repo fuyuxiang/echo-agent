@@ -1,0 +1,13 @@
+{
+  "upload": "上传文档",
+  "rebuild": "重建索引",
+  "status": "已索引 {{count}} 篇 · 最后重建: {{last}}",
+  "never": "从未",
+  "empty": "暂无文档",
+  "uploadSuccess": "上传成功",
+  "uploadFailed": "上传失败",
+  "rebuildTriggered": "已触发重建",
+  "rebuildFailed": "重建失败",
+  "deleteSuccess": "已删除",
+  "deleteFailed": "删除失败"
+}
