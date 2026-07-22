@@ -1,0 +1,25 @@
+{
+  "title": "Cron jobs",
+  "new": "New",
+  "create": "Create",
+  "form": {
+    "name": "Job name",
+    "expr": "cron expression",
+    "command": "Command (required, instruction for the Agent)",
+    "deliverChannel": "Deliver channel (deliver_channel, optional)",
+    "deliverChatId": "Chat ID (deliver_chat_id, optional)",
+    "sourceSessionKey": "Session target source_session_key (optional, auto-resolves channel)"
+  },
+  "col": { "name": "Name", "cron": "Cron", "status": "Status", "lastResult": "Last result", "nextRun": "Next run", "actions": "Actions" },
+  "invalidConfig": "Invalid config",
+  "active": "Active",
+  "paused": "Paused",
+  "triggerNow": "Run now",
+  "empty": "No cron jobs",
+  "triggerSuccess": "Triggered",
+  "triggerFailed": "Trigger failed",
+  "deleteSuccess": "Deleted",
+  "deleteFailed": "Delete failed",
+  "createSuccess": "Created",
+  "createFailed": "Create failed"
+}

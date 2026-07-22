@@ -1,0 +1,25 @@
+{
+  "title": "定时任务",
+  "new": "新建",
+  "create": "创建",
+  "form": {
+    "name": "任务名称",
+    "expr": "cron 表达式",
+    "command": "任务内容(必填,交给 Agent 执行的指令)",
+    "deliverChannel": "投递渠道(deliver_channel,可选)",
+    "deliverChatId": "会话/群 ID(deliver_chat_id,可选)",
+    "sourceSessionKey": "会话目标 source_session_key(可选,填了可自动解析渠道)"
+  },
+  "col": { "name": "名称", "cron": "Cron", "status": "状态", "lastResult": "最近结果", "nextRun": "下次执行", "actions": "操作" },
+  "invalidConfig": "配置无效",
+  "active": "活跃",
+  "paused": "暂停",
+  "triggerNow": "立即执行",
+  "empty": "暂无定时任务",
+  "triggerSuccess": "已触发执行",
+  "triggerFailed": "触发失败",
+  "deleteSuccess": "已删除",
+  "deleteFailed": "删除失败",
+  "createSuccess": "已创建",
+  "createFailed": "创建失败"
+}
