@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useApi } from "../hooks/use-api";
 import { Loadable } from "../components/Loadable";
 
@@ -10,6 +11,7 @@ interface Channel {
 }
 
 export function Channels() {
+  const { t } = useTranslation(["channels", "common"]);
   const { data, loading, error } = useApi<{ channels: Channel[] }>("/channels");
 
   return (
@@ -18,7 +20,7 @@ export function Channels() {
       error={error}
       data={data}
       isEmpty={(d) => d.channels.length === 0}
-      emptyText="暂无已启用的通道"
+      emptyText={t("empty")}
     >
       {(d) => (
         <div className="space-y-2">
@@ -27,10 +29,10 @@ export function Channels() {
               <span className={`w-3 h-3 rounded-full ${ch.running ? "bg-green-500" : "bg-gray-300"}`} />
               <div className="flex-1">
                 <div className="font-medium text-sm">{ch.name}</div>
-                <div className="text-xs text-gray-500">{ch.enabled ? "已启用" : "未启用"}</div>
+                <div className="text-xs text-gray-500">{ch.enabled ? t("common:enabled") : t("common:disabled")}</div>
               </div>
               <span className={`text-xs px-2 py-0.5 rounded ${ch.running ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
-                {ch.running ? "在线" : "离线"}
+                {ch.running ? t("common:online") : t("common:offline")}
               </span>
             </div>
           ))}
