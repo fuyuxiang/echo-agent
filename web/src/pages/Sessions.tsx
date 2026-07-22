@@ -1,8 +1,9 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useApi } from "../hooks/use-api";
 import { apiFetch } from "../lib/api";
 import { formatDistanceToNow } from "date-fns";
-import { zhCN } from "date-fns/locale";
+import { zhCN, enUS } from "date-fns/locale";
 
 interface SessionItem {
   key: string;
@@ -17,21 +18,23 @@ interface Message {
   content: string;
 }
 
-// 时间可能缺失或非法,formatDistanceToNow 遇到 Invalid Date 会抛 RangeError
-// 导致整个列表 render 崩溃,这里统一兜底。
-function formatLastActive(value: string | undefined): string {
-  if (!value) return "时间未知";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "时间未知";
-  return formatDistanceToNow(date, { locale: zhCN, addSuffix: true });
-}
-
 export function Sessions() {
+  const { t, i18n } = useTranslation(["sessions", "common"]);
   const { data, loading, error } = useApi<{ sessions: SessionItem[] }>("/sessions");
   const [selected, setSelected] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [search, setSearch] = useState("");
   const [historyError, setHistoryError] = useState<string | null>(null);
+
+  // 时间可能缺失或非法,formatDistanceToNow 遇到 Invalid Date 会抛 RangeError
+  // 导致整个列表 render 崩溃,这里统一兜底。
+  const dfLocale = i18n.resolvedLanguage === "en" ? enUS : zhCN;
+  const formatLastActive = (value: string | undefined): string => {
+    if (!value) return t("unknownTime");
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return t("unknownTime");
+    return formatDistanceToNow(date, { locale: dfLocale, addSuffix: true });
+  };
 
   const loadHistory = async (key: string) => {
     setSelected(key);
@@ -55,16 +58,16 @@ export function Sessions() {
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="搜索会话..."
+          placeholder={t("searchPlaceholder")}
           className="border rounded px-3 py-1.5 mb-3"
         />
         <div className="flex-1 overflow-y-auto space-y-1">
-          {loading && <div className="text-gray-400 text-sm px-3 py-2">加载中...</div>}
+          {loading && <div className="text-gray-400 text-sm px-3 py-2">{t("common:loading")}</div>}
           {error && !loading && (
-            <div className="text-red-500 text-sm px-3 py-2">加载失败：{error}</div>
+            <div className="text-red-500 text-sm px-3 py-2">{t("common:loadFailed", { error })}</div>
           )}
           {!loading && !error && filtered.length === 0 && (
-            <div className="text-gray-400 text-sm px-3 py-2">暂无会话</div>
+            <div className="text-gray-400 text-sm px-3 py-2">{t("empty")}</div>
           )}
           {filtered.map((s) => (
             <button
@@ -76,7 +79,7 @@ export function Sessions() {
             >
               <div className="font-medium truncate">{s.key}</div>
               <div className="text-xs text-gray-500">
-                {s.message_count} 条 · {formatLastActive(s.updated_at)}
+                {t("messageCount", { count: s.message_count, time: formatLastActive(s.updated_at) })}
               </div>
             </button>
           ))}
@@ -85,7 +88,7 @@ export function Sessions() {
 
       <div className="flex-1 overflow-y-auto space-y-3">
         {historyError && (
-          <div className="text-red-500 text-sm text-center mt-20">加载历史失败：{historyError}</div>
+          <div className="text-red-500 text-sm text-center mt-20">{t("historyFailed", { error: historyError })}</div>
         )}
         {!historyError && messages.map((msg, i) => (
           <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
@@ -98,7 +101,7 @@ export function Sessions() {
             </div>
           </div>
         ))}
-        {!selected && <div className="text-gray-400 text-center mt-20">选择一个会话查看历史</div>}
+        {!selected && <div className="text-gray-400 text-center mt-20">{t("selectHint")}</div>}
       </div>
     </div>
   );

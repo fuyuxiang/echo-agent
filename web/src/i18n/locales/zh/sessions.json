@@ -1,0 +1,8 @@
+{
+  "unknownTime": "时间未知",
+  "searchPlaceholder": "搜索会话...",
+  "empty": "暂无会话",
+  "messageCount": "{{count}} 条 · {{time}}",
+  "historyFailed": "加载历史失败：{{error}}",
+  "selectHint": "选择一个会话查看历史"
+}
