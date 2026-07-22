@@ -1,29 +1,31 @@
 import { NavLink } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import {
   LayoutDashboard, MessageSquare, Brain, Zap, BookOpen,
   Radio, Clock, Kanban, ScrollText, Settings, BarChart3
 } from "lucide-react";
 
 const NAV = [
-  { to: "/", icon: LayoutDashboard, label: "概览" },
-  { to: "/sessions", icon: MessageSquare, label: "会话" },
-  { to: "/memory", icon: Brain, label: "记忆" },
-  { to: "/skills", icon: Zap, label: "技能" },
-  { to: "/knowledge", icon: BookOpen, label: "知识库" },
-  { to: "/channels", icon: Radio, label: "通道" },
-  { to: "/cron", icon: Clock, label: "定时任务" },
-  { to: "/kanban", icon: Kanban, label: "看板" },
-  { to: "/logs", icon: ScrollText, label: "日志" },
-  { to: "/config", icon: Settings, label: "配置" },
-  { to: "/analytics", icon: BarChart3, label: "统计" },
-];
+  { to: "/", icon: LayoutDashboard, key: "overview" },
+  { to: "/sessions", icon: MessageSquare, key: "sessions" },
+  { to: "/memory", icon: Brain, key: "memory" },
+  { to: "/skills", icon: Zap, key: "skills" },
+  { to: "/knowledge", icon: BookOpen, key: "knowledge" },
+  { to: "/channels", icon: Radio, key: "channels" },
+  { to: "/cron", icon: Clock, key: "cron" },
+  { to: "/kanban", icon: Kanban, key: "kanban" },
+  { to: "/logs", icon: ScrollText, key: "logs" },
+  { to: "/config", icon: Settings, key: "config" },
+  { to: "/analytics", icon: BarChart3, key: "analytics" },
+] as const;
 
 export function Sidebar() {
+  const { t, i18n } = useTranslation("nav");
   return (
     <aside className="w-56 bg-white border-r border-gray-200 flex flex-col">
-      <div className="p-4 font-bold text-lg border-b">Echo Agent</div>
+      <div className="p-4 font-bold text-lg border-b">{t("appName")}</div>
       <nav className="flex-1 p-2 space-y-1">
-        {NAV.map(({ to, icon: Icon, label }) => (
+        {NAV.map(({ to, icon: Icon, key }) => (
           <NavLink
             key={to}
             to={to}
@@ -34,10 +36,23 @@ export function Sidebar() {
             }
           >
             <Icon size={18} />
-            {label}
+            {t(key)}
           </NavLink>
         ))}
       </nav>
+      <div className="p-2 border-t flex gap-1">
+        {(["zh", "en"] as const).map((lng) => (
+          <button
+            key={lng}
+            onClick={() => i18n.changeLanguage(lng)}
+            className={`flex-1 text-xs py-1 rounded ${
+              i18n.resolvedLanguage === lng ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600"
+            }`}
+          >
+            {lng === "zh" ? t("langZh") : t("langEn")}
+          </button>
+        ))}
+      </div>
     </aside>
   );
 }

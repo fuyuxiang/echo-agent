@@ -1,0 +1,16 @@
+{
+  "appName": "Echo Agent",
+  "overview": "Overview",
+  "sessions": "Sessions",
+  "memory": "Memory",
+  "skills": "Skills",
+  "knowledge": "Knowledge",
+  "channels": "Channels",
+  "cron": "Cron",
+  "kanban": "Kanban",
+  "logs": "Logs",
+  "config": "Config",
+  "analytics": "Analytics",
+  "langZh": "中",
+  "langEn": "EN"
+}

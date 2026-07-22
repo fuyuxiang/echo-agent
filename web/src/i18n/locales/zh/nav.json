@@ -1,0 +1,16 @@
+{
+  "appName": "Echo Agent",
+  "overview": "概览",
+  "sessions": "会话",
+  "memory": "记忆",
+  "skills": "技能",
+  "knowledge": "知识库",
+  "channels": "通道",
+  "cron": "定时任务",
+  "kanban": "看板",
+  "logs": "日志",
+  "config": "配置",
+  "analytics": "统计",
+  "langZh": "中",
+  "langEn": "EN"
+}
