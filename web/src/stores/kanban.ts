@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { apiFetch } from "../lib/api";
 import { toast } from "./toast";
+import i18n from "../i18n";
 
 export interface TaskCard {
   id: string;
@@ -22,7 +23,7 @@ export interface TaskCard {
   updated_at: string;
 }
 
-// 状态元数据:中文名 + 配色 + 一句说明。覆盖后端全部 9 个状态(models.py TaskStatus)。
+// 状态元数据:名称 + 配色 + 一句说明。覆盖后端全部 9 个状态(models.py TaskStatus)。
 // 界面一律读这里,避免再出现英文状态直出与中英混杂。
 export interface StatusMeta {
   label: string;
@@ -30,20 +31,29 @@ export interface StatusMeta {
   chip: string; // 列标题计数/卡片角标配色
 }
 
-export const TASK_STATUS_META: Record<string, StatusMeta> = {
-  pending: { label: "收件箱", hint: "新建但尚未排队的任务", chip: "bg-gray-200 text-gray-600" },
-  queued: { label: "排队中", hint: "等待 Agent 认领执行", chip: "bg-blue-100 text-blue-700" },
-  running: { label: "执行中", hint: "Agent 正在处理", chip: "bg-indigo-100 text-indigo-700" },
-  blocked: { label: "阻塞", hint: "缺少条件,无法继续", chip: "bg-orange-100 text-orange-700" },
-  review: { label: "待审", hint: "已完成,等待人工审核", chip: "bg-purple-100 text-purple-700" },
-  success: { label: "已完成", hint: "已通过并结束", chip: "bg-green-100 text-green-700" },
-  failed: { label: "失败", hint: "执行出错,可重试", chip: "bg-red-100 text-red-700" },
-  cancelled: { label: "已取消", hint: "被人工取消", chip: "bg-gray-200 text-gray-500" },
-  suspended: { label: "挂起", hint: "暂时搁置", chip: "bg-yellow-100 text-yellow-700" },
+// 配色留在代码里(与文案无关);label/hint 运行时按当前语言取。
+const STATUS_CHIP: Record<string, string> = {
+  pending: "bg-gray-200 text-gray-600",
+  queued: "bg-blue-100 text-blue-700",
+  running: "bg-indigo-100 text-indigo-700",
+  blocked: "bg-orange-100 text-orange-700",
+  review: "bg-purple-100 text-purple-700",
+  success: "bg-green-100 text-green-700",
+  failed: "bg-red-100 text-red-700",
+  cancelled: "bg-gray-200 text-gray-500",
+  suspended: "bg-yellow-100 text-yellow-700",
 };
 
+export function statusMeta(status: string): StatusMeta {
+  return {
+    label: i18n.t(`kanban:status.${status}.label`, { defaultValue: status }),
+    hint: i18n.t(`kanban:status.${status}.hint`, { defaultValue: "" }),
+    chip: STATUS_CHIP[status] ?? "bg-gray-200",
+  };
+}
+
 export function statusLabel(status: string): string {
-  return TASK_STATUS_META[status]?.label ?? status;
+  return statusMeta(status).label;
 }
 
 // 常驻列:失败也常驻(需要人工重试),不再让失败任务从看板消失。
@@ -102,7 +112,7 @@ export const useKanbanStore = create<KanbanState>((set) => ({
       const data = await apiFetch<{ tasks: TaskCard[] }>("/tasks?board_id=default");
       set({ tasks: data.tasks });
     } catch (e) {
-      toast.error(`任务加载失败：${e instanceof Error ? e.message : String(e)}`);
+      toast.error(i18n.t("kanban:toast.loadFailed", { error: e instanceof Error ? e.message : String(e) }));
     } finally {
       set({ loading: false });
     }
@@ -121,7 +131,7 @@ export const useKanbanStore = create<KanbanState>((set) => ({
         tasks: s.tasks.map((t) => (t.id === id ? { ...t, ...data.task } : t)),
       }));
     } catch (e) {
-      toast.error(`流转失败：${e instanceof Error ? e.message : String(e)}`);
+      toast.error(i18n.t("kanban:toast.transitionFailed", { error: e instanceof Error ? e.message : String(e) }));
       throw e;
     }
   },
@@ -139,7 +149,7 @@ export const useKanbanStore = create<KanbanState>((set) => ({
         tasks: s.tasks.map((t) => (t.id === id ? { ...t, ...data.task } : t)),
       }));
     } catch (e) {
-      toast.error(`重试失败：${e instanceof Error ? e.message : String(e)}`);
+      toast.error(i18n.t("kanban:toast.retryFailed", { error: e instanceof Error ? e.message : String(e) }));
       throw e;
     }
   },
@@ -154,7 +164,7 @@ export const useKanbanStore = create<KanbanState>((set) => ({
       set((s) => ({ tasks: [...s.tasks, data.task] }));
       return true;
     } catch (e) {
-      toast.error(`创建失败：${e instanceof Error ? e.message : String(e)}`);
+      toast.error(i18n.t("kanban:toast.createFailed", { error: e instanceof Error ? e.message : String(e) }));
       return false;
     }
   },

@@ -1,18 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { DndContext, DragEndEvent, DragStartEvent, closestCenter, useDroppable, useDraggable } from "@dnd-kit/core";
 import {
   useKanbanStore,
   PRIMARY_COLUMNS,
   ARCHIVED_COLUMNS,
-  TASK_STATUS_META,
+  statusMeta,
   TaskCard,
   canTransition,
 } from "../stores/kanban";
 import { useWsSubscribe } from "../hooks/use-ws";
 import { toast } from "../stores/toast";
+import i18n from "../i18n";
 import { Plus, X, RotateCcw, Check, Undo2, Play } from "lucide-react";
 
 export function Kanban() {
+  const { t } = useTranslation("kanban");
   const { tasks, loading, fetchTasks, transitionTask, createTask, updateLocal, addLocal } = useKanbanStore();
   const [newTitle, setNewTitle] = useState("");
   const [showArchived, setShowArchived] = useState(false);
@@ -70,7 +73,7 @@ export function Kanban() {
     if (ok) setNewTitle("");
   };
 
-  if (loading) return <div className="p-8 text-center text-gray-500">加载中…</div>;
+  if (loading) return <div className="p-8 text-center text-gray-500">{t("loading")}</div>;
 
   return (
     <div className="h-full flex flex-col">
@@ -78,19 +81,19 @@ export function Kanban() {
         <input
           value={newTitle}
           onChange={(e) => setNewTitle(e.target.value)}
-          placeholder="新建任务…"
+          placeholder={t("newPlaceholder")}
           className="border rounded px-3 py-1.5 flex-1"
         />
         <button type="submit" className="bg-blue-600 text-white px-3 py-1.5 rounded flex items-center gap-1">
-          <Plus size={16} /> 创建
+          <Plus size={16} /> {t("create")}
         </button>
       </form>
 
       <div className="flex items-center justify-between mb-3 text-xs text-gray-500">
-        <span>收件箱里的任务点“开始执行”(或拖到“排队中”)后,Agent 会自动认领执行。</span>
+        <span>{t("autoClaimHint")}</span>
         <label className="flex items-center gap-1 cursor-pointer select-none">
           <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
-          显示已取消 / 挂起
+          {t("showArchived")}
         </label>
       </div>
 
@@ -120,7 +123,8 @@ function KanbanColumn({
   draggingFrom: string | null;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
-  const meta = TASK_STATUS_META[status];
+  const { t } = useTranslation("kanban");
+  const meta = statusMeta(status);
 
   // 拖拽中:高亮合法落点、灰化非法列,给出“能不能放这里”的即时反馈。
   const isValidTarget = draggingFrom !== null && draggingFrom !== status && canTransition(draggingFrom, status);
@@ -145,12 +149,12 @@ function KanbanColumn({
       ref={setNodeRef}
       className={`flex-shrink-0 w-64 rounded-lg p-2 flex flex-col transition-colors ${bg}`}
     >
-      <div className="font-semibold text-sm mb-2 flex items-center gap-2" title={meta?.hint}>
-        {meta?.label ?? status}
-        <span className={`text-xs rounded-full px-2 ${meta?.chip ?? "bg-gray-200"}`}>{tasks.length}</span>
+      <div className="font-semibold text-sm mb-2 flex items-center gap-2" title={meta.hint}>
+        {meta.label}
+        <span className={`text-xs rounded-full px-2 ${meta.chip}`}>{tasks.length}</span>
       </div>
       <div className="flex-1 space-y-2 overflow-y-auto">
-        {sorted.length === 0 && <div className="text-xs text-gray-400 py-2 text-center">暂无任务</div>}
+        {sorted.length === 0 && <div className="text-xs text-gray-400 py-2 text-center">{t("emptyColumn")}</div>}
         {sorted.map((task) => (
           <KanbanCard key={task.id} task={task} />
         ))}
@@ -181,22 +185,23 @@ function useCardActions(task: TaskCard) {
     updateLocal(task.id, { status: "queued" }); // 乐观更新
     try {
       await retryTask(task.id);
-      toast.success("已重新排队");
+      toast.success(i18n.t("kanban:toast.requeued"));
     } catch {
       updateLocal(task.id, { status: prev }); // 失败回滚(错误提示已由 retryTask 弹出)
     }
   };
 
   return {
-    start: () => run("queued", "已排队,等待执行"),
-    cancel: () => run("cancelled", "已取消任务"),
+    start: () => run("queued", i18n.t("kanban:toast.queued")),
+    cancel: () => run("cancelled", i18n.t("kanban:toast.cancelled")),
     retry: doRetry,
-    approve: () => run("success", "已通过审核"),
-    reject: () => run("queued", "已打回重排"),
+    approve: () => run("success", i18n.t("kanban:toast.approved")),
+    reject: () => run("queued", i18n.t("kanban:toast.rejected")),
   };
 }
 
 function KanbanCard({ task }: { task: TaskCard }) {
+  const { t } = useTranslation("kanban");
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({ id: task.id });
   const actions = useCardActions(task);
 
@@ -229,7 +234,7 @@ function KanbanCard({ task }: { task: TaskCard }) {
       <div {...listeners} {...attributes} className="cursor-grab active:cursor-grabbing">
         <div className="flex items-start justify-between gap-2">
           <div className="text-sm font-medium flex-1">{task.title}</div>
-          <span className="text-[10px] text-gray-400 shrink-0 mt-0.5" title="优先级">P{task.priority}</span>
+          <span className="text-[10px] text-gray-400 shrink-0 mt-0.5" title={t("priorityTitle")}>P{task.priority}</span>
         </div>
         {detail && <div className="text-xs text-gray-500 mt-1 line-clamp-2">{detail}</div>}
         {task.assignee && <div className="text-xs text-gray-500 mt-1">@{task.assignee}</div>}
@@ -241,34 +246,34 @@ function KanbanCard({ task }: { task: TaskCard }) {
           </div>
         )}
         {task.status === "failed" && task.retry_count > 0 && (
-          <div className="text-[10px] text-gray-400 mt-1">已重试 {task.retry_count}/{task.max_retries}</div>
+          <div className="text-[10px] text-gray-400 mt-1">{t("retried", { count: task.retry_count, max: task.max_retries })}</div>
         )}
       </div>
 
       {/* 操作条:hover 显现,避免常态干扰。 */}
       <div className="flex gap-1 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
         {canStart && (
-          <button onClick={actions.start} className="p-1 hover:bg-blue-50 rounded text-blue-600" title="开始执行(交给 Agent)">
+          <button onClick={actions.start} className="p-1 hover:bg-blue-50 rounded text-blue-600" title={t("action.start")}>
             <Play size={14} />
           </button>
         )}
         {inReview && (
           <>
-            <button onClick={actions.approve} className="p-1 hover:bg-green-50 rounded text-green-600" title="通过审核">
+            <button onClick={actions.approve} className="p-1 hover:bg-green-50 rounded text-green-600" title={t("action.approve")}>
               <Check size={14} />
             </button>
-            <button onClick={actions.reject} className="p-1 hover:bg-gray-100 rounded text-gray-500" title="打回重排">
+            <button onClick={actions.reject} className="p-1 hover:bg-gray-100 rounded text-gray-500" title={t("action.reject")}>
               <Undo2 size={14} />
             </button>
           </>
         )}
         {canRetry && (
-          <button onClick={actions.retry} className="p-1 hover:bg-blue-50 rounded text-blue-600" title="重试">
+          <button onClick={actions.retry} className="p-1 hover:bg-blue-50 rounded text-blue-600" title={t("action.retry")}>
             <RotateCcw size={14} />
           </button>
         )}
         {canCancel && (
-          <button onClick={actions.cancel} className="p-1 hover:bg-red-50 rounded text-red-500" title="取消任务">
+          <button onClick={actions.cancel} className="p-1 hover:bg-red-50 rounded text-red-500" title={t("action.cancel")}>
             <X size={14} />
           </button>
         )}

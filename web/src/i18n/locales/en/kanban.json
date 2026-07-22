@@ -1,0 +1,31 @@
+{
+  "loading": "Loading…",
+  "newPlaceholder": "New task…",
+  "create": "Create",
+  "autoClaimHint": "Click \"Start\" (or drag to \"Queued\") on an inbox task; the Agent will claim and run it automatically.",
+  "showArchived": "Show cancelled / suspended",
+  "emptyColumn": "No tasks",
+  "priorityTitle": "Priority",
+  "retried": "Retried {{count}}/{{max}}",
+  "action": {
+    "start": "Start (hand to Agent)", "approve": "Approve", "reject": "Send back",
+    "retry": "Retry", "cancel": "Cancel task"
+  },
+  "toast": {
+    "requeued": "Re-queued", "queued": "Queued, awaiting execution", "cancelled": "Task cancelled",
+    "approved": "Approved", "rejected": "Sent back to queue",
+    "loadFailed": "Failed to load tasks: {{error}}", "transitionFailed": "Transition failed: {{error}}",
+    "retryFailed": "Retry failed: {{error}}", "createFailed": "Create failed: {{error}}"
+  },
+  "status": {
+    "pending": { "label": "Inbox", "hint": "Created but not yet queued" },
+    "queued": { "label": "Queued", "hint": "Waiting for the Agent to claim" },
+    "running": { "label": "Running", "hint": "Agent is processing" },
+    "blocked": { "label": "Blocked", "hint": "Missing prerequisites, cannot continue" },
+    "review": { "label": "Review", "hint": "Done, awaiting human review" },
+    "success": { "label": "Done", "hint": "Approved and finished" },
+    "failed": { "label": "Failed", "hint": "Errored, can retry" },
+    "cancelled": { "label": "Cancelled", "hint": "Cancelled by human" },
+    "suspended": { "label": "Suspended", "hint": "Temporarily shelved" }
+  }
+}

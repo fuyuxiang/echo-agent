@@ -1,0 +1,31 @@
+{
+  "loading": "加载中…",
+  "newPlaceholder": "新建任务…",
+  "create": "创建",
+  "autoClaimHint": "收件箱里的任务点“开始执行”(或拖到“排队中”)后,Agent 会自动认领执行。",
+  "showArchived": "显示已取消 / 挂起",
+  "emptyColumn": "暂无任务",
+  "priorityTitle": "优先级",
+  "retried": "已重试 {{count}}/{{max}}",
+  "action": {
+    "start": "开始执行(交给 Agent)", "approve": "通过审核", "reject": "打回重排",
+    "retry": "重试", "cancel": "取消任务"
+  },
+  "toast": {
+    "requeued": "已重新排队", "queued": "已排队,等待执行", "cancelled": "已取消任务",
+    "approved": "已通过审核", "rejected": "已打回重排",
+    "loadFailed": "任务加载失败：{{error}}", "transitionFailed": "流转失败：{{error}}",
+    "retryFailed": "重试失败：{{error}}", "createFailed": "创建失败：{{error}}"
+  },
+  "status": {
+    "pending": { "label": "收件箱", "hint": "新建但尚未排队的任务" },
+    "queued": { "label": "排队中", "hint": "等待 Agent 认领执行" },
+    "running": { "label": "执行中", "hint": "Agent 正在处理" },
+    "blocked": { "label": "阻塞", "hint": "缺少条件,无法继续" },
+    "review": { "label": "待审", "hint": "已完成,等待人工审核" },
+    "success": { "label": "已完成", "hint": "已通过并结束" },
+    "failed": { "label": "失败", "hint": "执行出错,可重试" },
+    "cancelled": { "label": "已取消", "hint": "被人工取消" },
+    "suspended": { "label": "挂起", "hint": "暂时搁置" }
+  }
+}
