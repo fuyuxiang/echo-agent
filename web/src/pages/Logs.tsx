@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useApi } from "../hooks/use-api";
 import { RefreshCw } from "lucide-react";
 
@@ -11,6 +12,7 @@ interface LogEntry {
 }
 
 export function Logs() {
+  const { t } = useTranslation(["logs", "common"]);
   const [level, setLevel] = useState<string>("");
   const [search, setSearch] = useState("");
 
@@ -30,19 +32,19 @@ export function Logs() {
     <div className="flex flex-col h-full">
       <div className="flex gap-2 items-center mb-3">
         <select value={level} onChange={(e) => setLevel(e.target.value)} className="border rounded px-2 py-1 text-sm">
-          <option value="">全部级别</option>
+          <option value="">{t("allLevels")}</option>
           {LEVELS.map((l) => <option key={l} value={l}>{l}</option>)}
         </select>
-        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索..." className="border rounded px-3 py-1 text-sm flex-1" />
-        <button onClick={() => refetch()} className="flex items-center gap-1 border rounded px-2 py-1 text-sm hover:bg-gray-100" title="刷新">
-          <RefreshCw size={14} /> 刷新
+        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={t("searchPlaceholder")} className="border rounded px-3 py-1 text-sm flex-1" />
+        <button onClick={() => refetch()} className="flex items-center gap-1 border rounded px-2 py-1 text-sm hover:bg-gray-100" title={t("common:refresh")}>
+          <RefreshCw size={14} /> {t("common:refresh")}
         </button>
       </div>
 
       <div className="flex-1 overflow-y-auto bg-gray-900 rounded-lg p-4 font-mono text-xs">
-        {error && <div className="text-red-400">加载失败：{error}</div>}
-        {!error && loading && !data && <div className="text-gray-500">加载中...</div>}
-        {!error && data && entries.length === 0 && <div className="text-gray-500">暂无日志</div>}
+        {error && <div className="text-red-400">{t("common:loadFailed", { error })}</div>}
+        {!error && loading && !data && <div className="text-gray-500">{t("common:loading")}</div>}
+        {!error && data && entries.length === 0 && <div className="text-gray-500">{t("empty")}</div>}
         {entries.map((entry, i) => (
           <div key={i} className="flex gap-2">
             <span className="text-gray-500 shrink-0">{entry.ts?.slice(11, 19)}</span>
