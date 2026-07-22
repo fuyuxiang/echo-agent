@@ -57,3 +57,17 @@ async def test_heavy_stderr_does_not_deadlock(tmp_path):
     # Ring truncation kept stderr bounded.
     assert len(tool._processes[pid]["stderr_buf"]) <= 100_000
     await tool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_timeout_kills_and_marks_process(tmp_path):
+    tool = ProcessTool(str(tmp_path))
+    pid = await _start(tool, "sleep 30", timeout=1)
+    proc = tool._processes[pid]["process"]
+    # Watchdog must fire ~1s in, terminate/kill the child, and mark it timed_out.
+    await asyncio.wait_for(proc.wait(), timeout=10)
+    assert proc.returncode is not None
+    assert tool._processes[pid]["timed_out"] is True
+    poll = await tool._poll(pid)
+    assert "timed out" in poll.output.lower()
+    await tool.aclose()

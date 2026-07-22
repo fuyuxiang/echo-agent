@@ -79,6 +79,7 @@ class ProcessTool(Tool):
             "started": time.time(),
             "stdout_buf": b"",
             "stderr_buf": b"",
+            "timed_out": False,
         }
 
         # Keep a strong reference in the registry — a bare create_task result
@@ -89,7 +90,43 @@ class ProcessTool(Tool):
             and logger.warning("Output collector for {} failed: {}", pid, t.exception())
         )
         self._processes[pid]["collector"] = collector
+
+        # Timeout watchdog: the `timeout` param was declared in the schema but
+        # never read, so long-running commands ran unbounded. Arm a watchdog
+        # that terminates (then kills) the child after `timeout` seconds.
+        timeout = float(params.get("timeout", 300) or 300)
+        watchdog = asyncio.create_task(self._watchdog(pid, timeout))
+        watchdog.add_done_callback(
+            lambda t: not t.cancelled() and t.exception()
+            and logger.warning("Watchdog for {} failed: {}", pid, t.exception())
+        )
+        self._processes[pid]["watchdog"] = watchdog
         return ToolResult(output=f"Started process {pid}: {cmd}", metadata={"process_id": pid})
+
+    async def _watchdog(self, pid: str, timeout: float) -> None:
+        """Kill a process that outlives its timeout, marking it timed_out.
+
+        terminate() first for a graceful stop, wait up to 5s, then kill() —
+        mirrors the escalation in _stop. Cancelled quietly when the process
+        exits on its own (watchdog is cancelled in _stop/aclose).
+        """
+        info = self._processes.get(pid)
+        if not info:
+            return
+        proc = info["process"]
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=timeout)
+            return  # exited before the deadline — nothing to do
+        except asyncio.TimeoutError:
+            pass
+        info["timed_out"] = True
+        if proc.returncode is None:
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
 
     def _list(self) -> ToolResult:
         if not self._processes:
@@ -108,6 +145,8 @@ class ProcessTool(Tool):
         info = self._processes[pid]
         proc = info["process"]
         status = "running" if proc.returncode is None else f"exited({proc.returncode})"
+        if info.get("timed_out"):
+            status += " timed out"
         stdout = info["stdout_buf"].decode(errors="replace")[-8000:]
         stderr = info["stderr_buf"].decode(errors="replace")[-4000:]
         output = f"[{status}]\n{stdout}"
@@ -127,9 +166,10 @@ class ProcessTool(Tool):
             except asyncio.TimeoutError:
                 proc.kill()
                 await proc.wait()
-        collector = info.get("collector")
-        if collector is not None:
-            collector.cancel()
+        for key in ("collector", "watchdog"):
+            task = info.get(key)
+            if task is not None:
+                task.cancel()
         del self._processes[pid]
         return ToolResult(output=f"Stopped {pid}")
 
