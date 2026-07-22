@@ -51,8 +51,8 @@ _RELEASE_PACKAGES: dict[str, dict[str, Any]] = {
         "cache_subdir": "fast-bge-small-zh-v1.5",
         "sha256": "d095c530b22f384d4d19a79c5862b65e8fff104af64ce9bb9e89690c186d418f",
         "urls": [
-            "https://gitee.com/fuyuxiang/echo-agent/releases/download/v1.1.0/bge-small-zh-v1.5-fastembed.tar.gz",
-            "https://github.com/fuyuxiang/echo-agent/releases/download/V1.1.0/bge-small-zh-v1.5-fastembed.tar.gz",
+            "https://gitee.com/fuyuxiang/echo-agent/releases/download/v0.3.5/bge-small-zh-v1.5-fastembed.tar.gz",
+            "https://github.com/fuyuxiang/echo-agent/releases/download/v0.3.5/bge-small-zh-v1.5-fastembed.tar.gz",
         ],
     },
 }
