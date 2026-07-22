@@ -16,6 +16,7 @@ from typing import Any
 from loguru import logger
 
 from echo_agent.config.schema import ModelsConfig, ModelRouteConfig
+from echo_agent.models.model_windows import resolve_context_window
 from echo_agent.models.provider import LLMProvider
 
 
@@ -90,15 +91,34 @@ class ProviderHealth:
 class ModelRouter:
     """Routes requests to the best model based on task type, cost, and availability."""
 
-    def __init__(self, config: ModelsConfig, cooldown_seconds: int = 120, health_file: Path | None = None):
+    def __init__(
+        self,
+        config: ModelsConfig,
+        cooldown_seconds: int = 120,
+        health_file: Path | None = None,
+        default_context_window: int = 0,
+    ):
         self._config = config
         self._providers: dict[str, LLMProvider] = {}
         self._health: dict[str, ProviderHealth] = {}
         self._cooldown_seconds = cooldown_seconds
         self._health_file = health_file
         self._health_save_lock = threading.Lock()
+        # Global fallback window (session.context_window_tokens); the lowest
+        # priority in resolve_context_window, above only the hard 256K default.
+        self._default_context_window = default_context_window
         if health_file:
             self._load_health()
+
+    def _resolve_window(self, model: str, provider: str = "", route_override: int = 0) -> int:
+        """Resolve the real context window for a routed model (see model_windows)."""
+        return resolve_context_window(
+            model,
+            provider=provider,
+            route_override=route_override,
+            captured_windows=self._config.model_windows,
+            config_default=self._default_context_window,
+        )
 
     def register_provider(self, name: str, provider: LLMProvider) -> None:
         self._providers[name] = provider
@@ -119,6 +139,7 @@ class ModelRouter:
             model=self._config.default_model,
             reason="default model",
             max_tokens=8192,
+            context_window=self._resolve_window(self._config.default_model),
         )
 
     def route_candidates(
@@ -149,12 +170,15 @@ class ModelRouter:
             if key in seen:
                 continue
             seen.add(key)
+            # index 0 keeps the task route's resolved window (honors a route
+            # override); fallback models re-resolve against their own id.
+            window = base.context_window if index == 0 else self._resolve_window(model, provider=provider_name)
             decision = RouteDecision(
                 provider_name=provider_name,
                 model=model,
                 fallback_chain=model_chain[index + 1:],
                 reason=base.reason if index == 0 else f"fallback after {base.model}",
-                context_window=base.context_window,
+                context_window=window,
                 max_tokens=base.max_tokens,
                 temperature=base.temperature,
             )
@@ -168,14 +192,15 @@ class ModelRouter:
             if key in seen:
                 continue
             seen.add(key)
+            fb_model = default_model or base.model
             candidates.append((provider_name, provider, RouteDecision(
                 provider_name=provider_name,
-                model=default_model or base.model,
+                model=fb_model,
                 fallback_chain=[],
                 reason="available provider fallback",
                 max_tokens=base.max_tokens,
                 temperature=base.temperature,
-                context_window=base.context_window,
+                context_window=self._resolve_window(fb_model, provider=provider_name),
             )))
         return candidates
 
@@ -273,6 +298,9 @@ class ModelRouter:
             max_tokens=route.max_tokens,
             temperature=route.temperature,
             reason="route match",
+            context_window=self._resolve_window(
+                route.model, provider=route.provider, route_override=route.context_window,
+            ),
         )
 
     def _matches_task(self, route: ModelRouteConfig, task_type: str) -> bool:

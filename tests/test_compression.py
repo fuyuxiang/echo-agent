@@ -660,3 +660,50 @@ class TestConversationCompressor:
         )
         result = await c.compress(msgs)
         assert result.stats.total_tokens_saved >= 0
+
+
+# ---------------------------------------------------------------------------
+# 9. Runtime window retargeting (dynamic per-model context window)
+# ---------------------------------------------------------------------------
+
+class TestRuntimeWindowUpdate:
+    def test_engine_update_diverges_display_and_compression(self):
+        eng = _ConcreteEngine(context_window_tokens=100000, trigger_ratio=0.5)
+        eng.update_context_window(1_000_000, 200_000)
+        # Display tracks the real window; compression stays capped.
+        assert eng.context_window_tokens == 1_000_000
+        assert eng.compression_window_tokens == 200_000
+        # Threshold is computed from the compression window, not the display one.
+        assert eng.should_compress([_msg("user", "x" * (95_000 * 4))]) is False
+
+    def test_engine_update_ignores_nonpositive(self):
+        eng = _ConcreteEngine(context_window_tokens=65536, trigger_ratio=0.7)
+        eng.update_context_window(0, 0)
+        assert eng.context_window_tokens == 65536
+        assert eng.compression_window_tokens == 65536
+
+    def test_compressor_propagates_window_to_subcomponents(self):
+        cfg = _make_config()
+        c = ConversationCompressor(
+            config=cfg, context_window_tokens=10000,
+            provider=AsyncMock(), default_model="m",
+        )
+        c.update_context_window(1_000_000, 200_000)
+        # boundary/pruner budget against the compression window, derived live.
+        assert c._boundary.context_window_tokens == 200_000
+        assert c._boundary._tail_budget == int(200_000 * cfg.tail_budget_ratio)
+        assert c._pruner.context_window_tokens == 200_000
+        assert c._pruner._tail_budget == int(200_000 * cfg.tool_pruning_tail_budget_ratio)
+        # Engine display value still reflects the real window.
+        assert c.context_window_tokens == 1_000_000
+
+    def test_tail_budget_is_live_not_frozen(self):
+        # Regression: tail budget must recompute from the current window, not
+        # stay frozen at construction (the whole point of the property).
+        pruner = ToolOutputPruner(
+            tail_budget_ratio=0.3, context_window_tokens=10000,
+            token_estimator=lambda m: 0,
+        )
+        assert pruner._tail_budget == 3000
+        pruner.context_window_tokens = 200000
+        assert pruner._tail_budget == 60000

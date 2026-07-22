@@ -42,7 +42,12 @@ from echo_agent.cli.prompt import (
     prompt_yes_no,
 )
 from echo_agent.cli.setup import providers as provider_catalog
-from echo_agent.cli.setup.model_verify import VerifyResult, list_models, verify_model
+from echo_agent.cli.setup.model_verify import (
+    VerifyResult,
+    list_model_windows,
+    list_models,
+    verify_model,
+)
 from echo_agent.cli.setup.providers import find as find_provider, grouped_catalog
 from echo_agent.cli.tui.brand import ECHO_LOGO_ART, ECHO_LOGO_GRADIENT, load_brand
 from echo_agent.config.loader import find_local_config_file, resolve_config_file, save_config
@@ -177,9 +182,15 @@ def setup_model(config: dict) -> None:
             api_key = existing.get("apiKey", "")
 
     models = []
+    model_windows: dict[str, int] = {}
     if entry.models_endpoint:
         with ui.spinner(t("model.fetching")):
             models = list_models(entry, api_key, api_base)
+            # Capture per-model context windows from the same listing so the
+            # runtime gauge/compression track the real window. Best-effort:
+            # providers that omit it (e.g. OpenAI native) yield {} and the
+            # built-in registry takes over.
+            model_windows = list_model_windows(entry, api_key, api_base)
     if not models:
         models = list(entry.fallback_models)
 
@@ -213,6 +224,16 @@ def setup_model(config: dict) -> None:
     models_block = _ensure_dict(config, "models")
     models_block["defaultModel"] = default_model
     models_block["providers"] = [provider_entry]
+    # Merge captured windows into models.modelWindows (keep any prior entries
+    # from other providers/re-runs). Only keep the models we actually offer plus
+    # the picked one, to avoid bloating the config with the full catalog.
+    if model_windows:
+        keep = set(models) | ({default_model} if default_model else set())
+        captured = {mid: win for mid, win in model_windows.items() if mid in keep}
+        if captured:
+            existing_windows = dict(models_block.get("modelWindows") or {})
+            existing_windows.update(captured)
+            models_block["modelWindows"] = existing_windows
     ui.note(t("model.saved", provider=t_provider_label(entry), model=default_model), "success")
 
 

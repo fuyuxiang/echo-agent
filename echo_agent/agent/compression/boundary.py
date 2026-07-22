@@ -21,8 +21,15 @@ class BoundaryResolver:
         token_estimator: Callable[[list[dict[str, Any]]], int],
     ):
         self._head_protect = head_protect_count
-        self._tail_budget = int(context_window_tokens * tail_budget_ratio)
+        # Derive the tail budget on read so a runtime window change (model
+        # switch) takes effect immediately instead of staying frozen here.
+        self._tail_budget_ratio = tail_budget_ratio
+        self.context_window_tokens = context_window_tokens
         self._estimate = token_estimator
+
+    @property
+    def _tail_budget(self) -> int:
+        return int(self.context_window_tokens * self._tail_budget_ratio)
 
     def resolve(self, messages: list[dict[str, Any]]) -> BoundaryResult:
         n = len(messages)

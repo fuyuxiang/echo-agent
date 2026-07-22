@@ -273,9 +273,34 @@ class InferenceStage:
             f"🔧 {name} · {status}",
         )
 
+    def _sync_context_window(self, display_window: int) -> None:
+        """Retarget the shared compressor to the model that just answered.
+
+        display_window is the routed model's real window (for the gauge); the
+        compression budget is capped by session.compression_window_cap so a
+        large-window model does not defer compression until context balloons.
+        """
+        if not display_window or display_window <= 0:
+            return
+        compressor = getattr(self, "_compressor", None)
+        if compressor is None or not hasattr(compressor, "update_context_window"):
+            return
+        cap = getattr(self._config.session, "compression_window_cap", 0) or 0
+        comp_window = min(display_window, cap) if cap > 0 else display_window
+        try:
+            compressor.update_context_window(display_window, comp_window)
+        except Exception:
+            logger.debug("context window sync failed", exc_info=True)
+
     async def _emit_cost(self, event, turn_tokens, turn_cost, total_cost,
-                         model: str = "", messages: list | None = None) -> None:
-        """Surface a cost update to the cognition stream (cli-gated)."""
+                         model: str = "", messages: list | None = None,
+                         measured_used: int = 0) -> None:
+        """Surface a cost update to the cognition stream (cli-gated).
+
+        ``measured_used`` is the provider-reported prompt-token count for the
+        round — the true occupancy. It is preferred over the local estimate;
+        the estimate is only a fallback when the provider omitted usage.
+        """
         if self._cog is None:
             return
         context_used = 0
@@ -283,7 +308,9 @@ class InferenceStage:
         compressor = getattr(self, "_compressor", None)
         if compressor is not None:
             context_max = getattr(compressor, "context_window_tokens", 0) or 0
-            if messages:
+            if measured_used and measured_used > 0:
+                context_used = int(measured_used)
+            elif messages:
                 context_used = compressor.estimate_tokens(messages)
         memory_count = 0
         memory_store = getattr(self, "_memory_store", None)
@@ -635,12 +662,19 @@ class InferenceStage:
                     or (int(_u.get("prompt_tokens") or _u.get("input_tokens") or 0)
                         + int(_u.get("completion_tokens") or _u.get("output_tokens") or 0))
                 )
+                # Prompt tokens = the real current-window occupancy for the gauge.
+                _measured_used = int(_u.get("prompt_tokens") or _u.get("input_tokens") or 0)
+                # Push the routed model's real window into the (shared) compressor
+                # so the gauge shows the true max and compression triggers against
+                # the capped budget — both track the model that actually answered.
+                self._sync_context_window(route_decision.context_window)
                 await self._emit_cost(
                     event, _turn_tokens,
                     self._cost_tracker.spent_usd - _cost_before,
                     self._cost_tracker.spent_usd,
                     model=route_decision.model,
                     messages=messages,
+                    measured_used=_measured_used,
                 )
 
             issues = self._inference.validate_response(response)

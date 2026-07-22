@@ -34,6 +34,7 @@ from echo_agent.memory.service import MemoryService
 from echo_agent.memory.store import MemoryStore
 from echo_agent.models.inference import InferenceController
 from echo_agent.models.provider import LLMProvider
+from echo_agent.models.model_windows import compression_window, resolve_context_window
 from echo_agent.models.router import ModelRouter
 from echo_agent.observability.monitor import TraceLogger
 from echo_agent.permissions.manager import ApprovalManager, ApprovalStatus, CredentialManager
@@ -291,14 +292,28 @@ class AgentLoop:
             doc_max_chars=config.tools.inbound_document_max_chars,
             understanders=understanders,
         )
+        # Resolve the default model's real window up front so the gauge and
+        # compression threshold start correct, before any LLM round runs. The
+        # inference stage re-syncs this per round to the model that answers.
+        self._initial_context_window = resolve_context_window(
+            self._default_model,
+            captured_windows=config.models.model_windows,
+            config_default=config.session.context_window_tokens,
+        )
+        _comp_window = compression_window(
+            self._initial_context_window, config.session.compression_window_cap,
+        )
         self.compressor = ConversationCompressor(
             config=config.compression,
-            context_window_tokens=config.session.context_window_tokens,
+            context_window_tokens=_comp_window,
             provider=provider,
             default_model=self._default_model,
             storage=storage,
             router=router,
         )
+        # Display gauge should show the real window; only the compression budget
+        # is capped. context_window_tokens holds the real value for display.
+        self.compressor.context_window_tokens = self._initial_context_window
         try:
             from echo_agent.models.tokenizer import TokenCounter
             provider_name = getattr(config.models, "default_provider", "") or ""
@@ -355,7 +370,7 @@ class AgentLoop:
         self.consolidator = MemoryConsolidator(
             memory_store=self.memory,
             llm_call=self.provider.chat_with_retry,
-            context_window_tokens=config.session.context_window_tokens,
+            context_window_tokens=self._initial_context_window,
             consolidation_threshold=config.memory.consolidation_threshold,
         )
 

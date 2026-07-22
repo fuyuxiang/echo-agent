@@ -22,8 +22,16 @@ class ToolOutputPruner:
         context_window_tokens: int,
         token_estimator: Callable[[list[dict[str, Any]]], int],
     ):
-        self._tail_budget = int(context_window_tokens * tail_budget_ratio)
+        # Store the ratio + live window separately so a runtime window change
+        # (model switch) is reflected immediately — the tail budget is derived
+        # on read, never frozen at construction.
+        self._tail_budget_ratio = tail_budget_ratio
+        self.context_window_tokens = context_window_tokens
         self._estimate = token_estimator
+
+    @property
+    def _tail_budget(self) -> int:
+        return int(self.context_window_tokens * self._tail_budget_ratio)
 
     def prune(self, messages: list[dict[str, Any]]) -> PruneResult:
         if not messages:

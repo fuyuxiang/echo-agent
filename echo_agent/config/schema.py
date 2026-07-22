@@ -985,6 +985,16 @@ class ModelRouteConfig(_Base):
             "desc_en": "Sampling temperature for this route",
         },
     )
+    context_window: int = Field(
+        default=0,
+        json_schema_extra={
+            "status": "effective", "ref": "models/router.py:268",
+            "desc_zh": "该路由模型的上下文窗口显式覆盖(0 为不指定,自动按模型解析);"
+                       "优先级高于内置注册表与全局兜底",
+            "desc_en": "Explicit context-window override for this route's model (0 = unset, resolved "
+                       "automatically); takes precedence over the built-in registry and global fallback",
+        },
+    )
 
 
 class ModelsConfig(_Base):
@@ -1018,6 +1028,16 @@ class ModelsConfig(_Base):
             "status": "effective", "ref": "models/router.py:147",
             "desc_zh": "全局兜底模型",
             "desc_en": "Global fallback model",
+        },
+    )
+    model_windows: dict[str, int] = Field(
+        default_factory=dict,
+        json_schema_extra={
+            "status": "effective", "ref": "models/router.py:268",
+            "desc_zh": "模型 ID 到上下文窗口 token 数的映射(setup 从提供商元数据自动捕获,也可手填);"
+                       "解析窗口时优先级低于路由显式覆盖、高于内置注册表",
+            "desc_en": "Map of model id to context-window tokens (auto-captured by setup from provider "
+                       "metadata, or hand-set); ranks below a route override and above the built-in registry",
         },
     )
 
@@ -1833,9 +1853,22 @@ class SessionConfig(_Base):
     context_window_tokens: int = Field(
         default=65536,
         json_schema_extra={
-            "status": "effective", "ref": "agent/loop.py:122",
-            "desc_zh": "上下文窗口 token 上限",
-            "desc_en": "Context window token budget",
+            "status": "effective", "ref": "models/model_windows.py:88",
+            "desc_zh": "上下文窗口 token 上限的全局兜底值(仅当模型未命中内置注册表且路由/setup 未指定窗口时生效;"
+                       "实际窗口优先按当前模型动态解析)",
+            "desc_en": "Global fallback context-window budget (used only when the model misses the built-in "
+                       "registry and no route/setup window is set; the real window is resolved per-model at runtime)",
+        },
+    )
+    compression_window_cap: int = Field(
+        default=200000,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/pipeline/inference_stage.py:285",
+            "desc_zh": "压缩预算上限(0 为不封顶):模型真实窗口用于显示,但压缩触发按 min(真实窗口, 此上限) 计算,"
+                       "避免大窗口模型让上下文膨胀到很大才压缩、抬高单请求成本与延迟",
+            "desc_en": "Compression-budget cap (0 = uncapped): the model's real window drives the display, but "
+                       "compression triggers against min(real_window, cap) so a large-window model does not let "
+                       "context balloon before compressing, which would raise per-request cost and latency",
         },
     )
     introduction_enabled: bool = Field(

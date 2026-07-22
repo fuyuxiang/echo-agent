@@ -76,6 +76,19 @@ class ConversationCompressor(ContextEngine):
         self._assembler = MessageAssembler()
         self._validator = MessageValidator()
 
+    def update_context_window(self, display_window: int, compression_window: int = 0) -> None:
+        """Push a runtime window change down into the sub-components too.
+
+        boundary/pruner derive their tail budget from the compression window
+        (the budget compression actually plans against), while the engine's
+        context_window_tokens tracks the real window for display.
+        """
+        super().update_context_window(display_window, compression_window)
+        cw = self.compression_window_tokens
+        if self._pruner is not None:
+            self._pruner.context_window_tokens = cw
+        self._boundary.context_window_tokens = cw
+
     def should_compress(self, messages: list[dict[str, Any]]) -> bool:
         if not self._config.enabled:
             return False

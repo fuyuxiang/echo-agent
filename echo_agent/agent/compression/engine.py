@@ -17,7 +17,12 @@ class ContextEngine(ABC):
     """
 
     def __init__(self, context_window_tokens: int, trigger_ratio: float = 0.7):
+        # context_window_tokens = the model's real window (used for display).
+        # compression_window_tokens = the budget compression triggers against
+        # (may be capped below the real window to bound cost/latency). They
+        # start equal; update_context_window can diverge them at runtime.
         self.context_window_tokens = context_window_tokens
+        self.compression_window_tokens = context_window_tokens
         self.trigger_ratio = trigger_ratio
         self._stats = CompressionStats()
         self._session_key: str | None = None
@@ -26,8 +31,21 @@ class ContextEngine(ABC):
     def set_token_counter(self, counter) -> None:
         self._token_counter = counter
 
+    def update_context_window(self, display_window: int, compression_window: int = 0) -> None:
+        """Reassign the window at runtime (e.g. after routing to a new model).
+
+        Subclasses that own sub-components carrying a window (boundary/pruner)
+        must override to propagate; the base only updates its own fields so
+        should_compress and any display reader pick up the new value at once.
+        """
+        if display_window and display_window > 0:
+            self.context_window_tokens = int(display_window)
+        cw = compression_window if compression_window and compression_window > 0 else display_window
+        if cw and cw > 0:
+            self.compression_window_tokens = int(cw)
+
     def should_compress(self, messages: list[dict[str, Any]]) -> bool:
-        threshold = int(self.context_window_tokens * self.trigger_ratio)
+        threshold = int(self.compression_window_tokens * self.trigger_ratio)
         return self.estimate_tokens(messages) > threshold
 
     @abstractmethod

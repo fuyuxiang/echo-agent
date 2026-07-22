@@ -60,6 +60,66 @@ def _parse_models(dialect: str, body: dict) -> list[str]:
         return []
 
 
+def list_model_windows(entry: ProviderCatalogEntry, api_key: str, api_base: str = "") -> dict[str, int]:
+    """Best-effort per-model context windows from the provider's /models listing.
+
+    Mirrors list_models but keeps the window metadata that _parse_models drops
+    (OpenRouter context_length, Gemini inputTokenLimit). Providers that don't
+    report a window (e.g. OpenAI native /models) yield an empty dict, and the
+    built-in registry takes over. Any failure degrades to {} — never blocks setup.
+    """
+    endpoint = entry.models_endpoint
+    if not endpoint:
+        return {}
+    if api_base and entry.api_base and endpoint.startswith(entry.api_base):
+        endpoint = api_base.rstrip("/") + endpoint[len(entry.api_base.rstrip("/")):]
+    headers = {}
+    if api_key:
+        if entry.dialect == "anthropic":
+            headers["x-api-key"] = api_key
+            headers["anthropic-version"] = "2023-06-01"
+        else:
+            headers["Authorization"] = f"Bearer {api_key}"
+    params = {}
+    if entry.dialect == "gemini" and api_key:
+        params["key"] = api_key
+        headers.pop("Authorization", None)
+    try:
+        resp = httpx.get(endpoint, headers=headers, params=params, timeout=DEFAULT_TIMEOUT)
+        resp.raise_for_status()
+        body = resp.json()
+    except Exception:
+        return {}
+    return _parse_model_windows(entry.dialect, body)
+
+
+def _parse_model_windows(dialect: str, body: dict) -> dict[str, int]:
+    out: dict[str, int] = {}
+    try:
+        if dialect == "gemini":
+            for m in body.get("models", []):
+                name = (m.get("name") or "").split("/")[-1]
+                limit = m.get("inputTokenLimit")
+                if name and isinstance(limit, (int, float)) and limit > 0:
+                    out[name] = int(limit)
+            return out
+        # openai / openrouter / anthropic and compatibles use a "data" list.
+        for m in body.get("data", []):
+            mid = m.get("id")
+            if not mid:
+                continue
+            # OpenRouter exposes context_length at top level and/or top_provider.
+            win = m.get("context_length")
+            if not win:
+                tp = m.get("top_provider") or {}
+                win = tp.get("context_length")
+            if isinstance(win, (int, float)) and win > 0:
+                out[mid] = int(win)
+        return out
+    except Exception:
+        return {}
+
+
 @dataclass
 class VerifyResult:
     status: str  # "ok" | "error" | "unreachable"

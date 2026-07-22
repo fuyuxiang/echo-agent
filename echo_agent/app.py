@@ -135,7 +135,10 @@ async def bootstrap(
             burst=config.rate_limit.session_burst,
         ))
         stack.push_async_callback(_rollback, "bus", bus.stop)
-        router = ModelRouter(config.models)
+        router = ModelRouter(
+            config.models,
+            default_context_window=config.session.context_window_tokens,
+        )
         provider: LLMProvider | None = None
         provider_errors: list[str] = []
 
