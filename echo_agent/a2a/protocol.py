@@ -7,6 +7,7 @@ from typing import Any, Callable, Awaitable
 from loguru import logger
 
 from echo_agent.a2a.models import A2ATask, A2AMessage, TaskState
+from echo_agent.a2a.task_store import TaskStore
 
 # JSON-RPC 2.0 标准错误码
 _JSONRPC_PARSE_ERROR = -32700
@@ -20,9 +21,21 @@ _TERMINAL_STATES = frozenset({TaskState.COMPLETED, TaskState.FAILED, TaskState.C
 class A2AProtocol:
     """Handles A2A JSON-RPC methods: tasks/send, tasks/get, tasks/cancel."""
 
-    def __init__(self, process_fn: Callable[[A2ATask], Awaitable[A2ATask]]):
+    def __init__(
+        self,
+        process_fn: Callable[[A2ATask], Awaitable[A2ATask]],
+        *,
+        task_ttl_seconds: float = 3600.0,
+        max_tasks: int = 1000,
+        clock: Callable[[], float] | None = None,
+    ):
         self._process = process_fn
-        self._tasks: dict[str, A2ATask] = {}
+        # Bounded, TTL store replaces the previous unbounded dict so terminal
+        # tasks are reclaimed instead of leaking for the process lifetime.
+        store_kwargs: dict[str, Any] = {"ttl_seconds": task_ttl_seconds, "max_tasks": max_tasks}
+        if clock is not None:
+            store_kwargs["clock"] = clock
+        self._tasks: TaskStore = TaskStore(**store_kwargs)
 
     async def handle(self, request: dict[str, Any]) -> dict[str, Any]:
         """分发 JSON-RPC 请求到对应的处理方法。
