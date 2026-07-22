@@ -1,0 +1,12 @@
+{
+  "status": { "unknown": "Unknown" },
+  "metrics": {
+    "activeSessions": "Active sessions",
+    "channelsOnline": "Channels online",
+    "cliClients": "CLI clients",
+    "memoryCount": "Memory entries",
+    "runningTasks": "Running tasks"
+  },
+  "kanbanSummary": "Kanban summary",
+  "channelStatus": "Channel status"
+}

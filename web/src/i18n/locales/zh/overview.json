@@ -1,0 +1,12 @@
+{
+  "status": { "unknown": "未知" },
+  "metrics": {
+    "activeSessions": "活跃会话",
+    "channelsOnline": "通道在线",
+    "cliClients": "CLI 客户端",
+    "memoryCount": "记忆条数",
+    "runningTasks": "运行中任务"
+  },
+  "kanbanSummary": "看板摘要",
+  "channelStatus": "通道状态"
+}

@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useApi } from "../hooks/use-api";
 import { Activity, Radio, Brain, Coins, Plug, AlertCircle, CheckCircle, AlertTriangle } from "lucide-react";
 
@@ -27,6 +28,7 @@ const STATUS_ICON: Record<string, React.ReactNode> = {
 };
 
 export function Overview() {
+  const { t } = useTranslation(["overview", "common"]);
   const { data: health } = useApi<HealthData>("/health");
   const { data: channels } = useApi<{ channels: ChannelItem[] }>("/channels");
   const { data: tasks } = useApi<TasksData>("/tasks?board_id=default");
@@ -43,20 +45,20 @@ export function Overview() {
     <div className="space-y-6">
       <div className="flex items-center gap-2">
         {STATUS_ICON[health?.status || "unhealthy"]}
-        <span className="text-lg font-semibold capitalize">{health?.status || "unknown"}</span>
+        <span className="text-lg font-semibold capitalize">{health?.status || t("status.unknown")}</span>
       </div>
 
       <div className="grid grid-cols-5 gap-4">
-        <MetricCard icon={<Activity size={18} />} label="活跃会话" value={health?.active_sessions ?? 0} />
-        <MetricCard icon={<Radio size={18} />} label="通道在线" value={onlineChannels} />
-        <MetricCard icon={<Plug size={18} />} label="CLI 客户端" value={health?.ws_clients ?? 0} />
-        <MetricCard icon={<Brain size={18} />} label="记忆条数" value={memory?.total ?? 0} />
-        <MetricCard icon={<Coins size={18} />} label="Running 任务" value={statusCounts["running"] ?? 0} />
+        <MetricCard icon={<Activity size={18} />} label={t("metrics.activeSessions")} value={health?.active_sessions ?? 0} />
+        <MetricCard icon={<Radio size={18} />} label={t("metrics.channelsOnline")} value={onlineChannels} />
+        <MetricCard icon={<Plug size={18} />} label={t("metrics.cliClients")} value={health?.ws_clients ?? 0} />
+        <MetricCard icon={<Brain size={18} />} label={t("metrics.memoryCount")} value={memory?.total ?? 0} />
+        <MetricCard icon={<Coins size={18} />} label={t("metrics.runningTasks")} value={statusCounts["running"] ?? 0} />
       </div>
 
       <div className="grid grid-cols-2 gap-6">
         <section>
-          <h2 className="font-semibold mb-2">看板摘要</h2>
+          <h2 className="font-semibold mb-2">{t("kanbanSummary")}</h2>
           <div className="flex gap-2 flex-wrap">
             {["pending", "queued", "running", "blocked", "review", "success"].map((s) => (
               <span key={s} className="px-2 py-1 bg-gray-100 rounded text-sm">
@@ -66,13 +68,13 @@ export function Overview() {
           </div>
         </section>
         <section>
-          <h2 className="font-semibold mb-2">通道状态</h2>
+          <h2 className="font-semibold mb-2">{t("channelStatus")}</h2>
           <div className="space-y-1">
             {channels?.channels.map((ch) => (
               <div key={ch.name} className="flex items-center gap-2 text-sm">
                 <span className={`w-2 h-2 rounded-full ${ch.running ? "bg-green-500" : "bg-gray-300"}`} />
                 <span>{ch.name}</span>
-                <span className="text-gray-400">{ch.running ? "在线" : "离线"}</span>
+                <span className="text-gray-400">{ch.running ? t("common:online") : t("common:offline")}</span>
               </div>
             ))}
           </div>
