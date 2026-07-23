@@ -260,6 +260,8 @@ def test_choice_block_renders_numbered_options():
     assert "1. 方案A" in body
     assert "2. 方案B" in body
     assert "3. 方案C" in body
+    # 末尾追加虚拟"其他(自行输入)"哨兵项(编号紧随真实选项)
+    assert "4. 其他（自行输入）" in body
     assert "按数字" in body  # 操作提示存在
 
 
@@ -275,7 +277,10 @@ def test_choice_block_number_mapping():
     b = ChoiceBlock("c1", "q", ["A", "B"])
     assert b.option_for_number(1) == "A"
     assert b.option_for_number(2) == "B"
+    # 3 是末尾"其他"哨兵项:不返回答案值,而是标记为自由输入入口
     assert b.option_for_number(3) is None
+    assert b.is_free_input_option(3) is True
+    assert b.is_free_input_option(2) is False
     assert b.option_for_number(0) is None
 
 
@@ -287,8 +292,10 @@ def test_choice_block_highlight_move_and_clamp():
     assert b.highlighted_option() == "B"
     b.move(-5)                    # 下越界钳制
     assert b.highlighted == 0
-    b.move(99)                    # 上越界钳制
-    assert b.highlighted == 2
+    b.move(99)                    # 上越界钳制:钳到末尾哨兵项(index 3),非最后一个真实选项
+    assert b.highlighted == 3
+    assert b.highlighted_is_free_input() is True
+    assert b.highlighted_option() is None
 
 
 def test_choice_block_mark_switches_render():

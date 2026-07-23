@@ -535,6 +535,27 @@ class ChoiceBlock(Static):
         self.answer: str | None = None
         super().__init__(self.render_body())
 
+    # A virtual "其他(自行输入)" entry is appended after the real options
+    # whenever there are options, so picking it (by number, or arrows+enter)
+    # switches to free-text input. Its index/number is len(self.options) /
+    # len(self.options)+1. It is NOT stored in options/_answers — it has no
+    # answer value; it is a mode switch, identified by is_free_input_option.
+    @property
+    def _free_input_index(self) -> int:
+        return len(self.options)
+
+    @property
+    def _slot_count(self) -> int:
+        # Navigable slots: real options plus the virtual free-input entry.
+        return len(self.options) + 1
+
+    def is_free_input_option(self, n: int) -> bool:
+        # n is 1-based (as pressed / displayed). True for the virtual entry.
+        return bool(self.options) and n == self._free_input_index + 1
+
+    def highlighted_is_free_input(self) -> bool:
+        return bool(self.options) and self.highlighted == self._free_input_index
+
     def render_body(self) -> str:
         q = escape(str(self.question))
         if self.answer is not None:
@@ -542,7 +563,10 @@ class ChoiceBlock(Static):
         if not self.options:
             return f"[$secondary]❓[/] {q}\n    [$text-muted](请输入回答)[/]"
         lines = [f"[$secondary]❓[/] [b]{q}[/b]"]
-        for i, opt in enumerate(self.options):
+        # Real options followed by the virtual "其他(自行输入)" entry, so it
+        # renders and highlights exactly like a normal numbered choice.
+        labels = list(self.options) + ["其他（自行输入）"]
+        for i, opt in enumerate(labels):
             # Keep "{n}. {opt}" contiguous (no tag between number and text) so
             # the label reads as one unit; only the marker/tone differs by state.
             label = f"{i + 1}. {escape(str(opt))}"
@@ -550,24 +574,25 @@ class ChoiceBlock(Static):
                 lines.append(f"  [$primary]› {label}[/]")
             else:
                 lines.append(f"    [$text-muted]{label}[/]")
-        lines.append("    [$text-muted](按数字选择 · ↑↓ 移动后回车 · 或直接输入其他答案)[/]")
+        lines.append("    [$text-muted](按数字选择 · ↑↓ 移动后回车 · 选\"其他\"可自行输入)[/]")
         return "\n".join(lines)
 
     def move(self, delta: int) -> None:
         if not self.options:
             return
-        self.highlighted = max(0, min(len(self.options) - 1, self.highlighted + delta))
+        self.highlighted = max(0, min(self._slot_count - 1, self.highlighted + delta))
         self.update(self.render_body())
 
     def option_for_number(self, n: int) -> str | None:
         # Return the ANSWER value, not the display label: for a dict option the
         # user sees "value — description" but the server must receive only value.
+        # The virtual free-input entry has no answer value (see is_free_input_option).
         if not self.options or n < 1 or n > len(self.options):
             return None
         return self._answers[n - 1]
 
     def highlighted_option(self) -> str | None:
-        if not self.options:
+        if not self.options or self.highlighted >= len(self.options):
             return None
         return self._answers[self.highlighted]
 

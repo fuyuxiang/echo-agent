@@ -225,6 +225,15 @@ class EchoTUI(App):
         self._turns.on_final(inbound_id)
         if not self._turns.has_active_primary:
             self.query_one(StatusBar).stop_turn_timer()
+            # Defensive: a primary turn ending with a clarify/approval still
+            # marked pending means the server resolved/ended it without the
+            # normal answer path firing (e.g. timeout, error). Clear the stale
+            # pending state and re-enable the prompt so it can't stay locked.
+            if self._pending_clarify is not None or self._pending_approval is not None:
+                self._pending_clarify = None
+                self._pending_approval = None
+                self._clarify_free_input = False
+                self._unlock_prompt(focus=False)
 
     def on_cognitive(self, ev: CogEvent) -> None:
         if ev.cog_type == "heartbeat":
@@ -237,9 +246,10 @@ class EchoTUI(App):
             self._pending_approval = self._tv.add_approval(
                 d.get("request_id", ""), d.get("action", ""),
                 d.get("params", {}), d.get("risk", ""))
-            # Blur the prompt so App-level y/n/a bindings are not filtered out
-            # by the focused TextArea (textual 8.2.8 check_consume_key).
-            self.set_focus(None)
+            # Disable the prompt so App-level y/n/a bindings are not filtered
+            # out by a focused TextArea (textual 8.2.8 check_consume_key), and
+            # so a mouse click cannot re-focus it and swallow the keys.
+            self._lock_prompt()
             return
         if ev.cog_type == "clarify_request":
             d = ev.data
@@ -248,9 +258,10 @@ class EchoTUI(App):
                 d.get("options", []) or [],
             )
             self._clarify_free_input = False
-            # Blur the prompt so App-level number/arrow bindings win over the
-            # focused TextArea (textual 8.2.8 check_consume_key).
-            self.set_focus(None)
+            # Disable the prompt so App-level number/arrow bindings win over a
+            # focused TextArea (textual 8.2.8 check_consume_key), and so a mouse
+            # click cannot re-focus it and break option selection.
+            self._lock_prompt()
             return
         if ev.cog_type == "cost_update":
             bar = self.query_one(StatusBar)
@@ -373,15 +384,39 @@ class EchoTUI(App):
         event.prevent_default()
         event.stop()
 
-    def _enter_clarify_free_input(self, char: str) -> None:
-        # Seed a free-text clarify answer: focus the prompt, mark the next
-        # submit as a clarify answer, and insert the first character. Shared by
-        # on_key (printable non-digit) and the out-of-range digit fallback in
-        # action_clarify_pick.
-        pi = self.query_one(PromptInput)
+    def _lock_prompt(self) -> None:
+        # A pending clarify/approval owns the keyboard: disable the prompt so
+        # the number/arrow/enter (or y/n/a) App-level bindings win. Disabling
+        # (not just blurring) is what makes it robust against a mouse click —
+        # textual won't focus a disabled widget, and disabling auto-blurs it if
+        # it currently holds focus, so App.focused settles to None. Blurring
+        # alone left a click able to re-focus the prompt and swallow the keys.
+        try:
+            self.query_one(PromptInput).disabled = True
+        except Exception:
+            pass
+
+    def _unlock_prompt(self, *, focus: bool = True) -> None:
+        # Re-enable the prompt (and optionally focus it) once the pending
+        # clarify/approval is resolved or the user steps into free-text input.
+        # Enable MUST precede focus(): focus() is a no-op on a disabled widget.
+        try:
+            pi = self.query_one(PromptInput)
+            pi.disabled = False
+            if focus:
+                pi.focus()
+        except Exception:
+            pass
+
+    def _enter_clarify_free_input(self, char: str = "") -> None:
+        # Step from option-picking into free-text: re-enable + focus the prompt,
+        # mark the next submit as a clarify answer, and seed the first character
+        # if one was given. Shared by on_key (printable non-digit), the
+        # out-of-range digit fallback, and the "其他(自行输入)" sentinel option.
         self._clarify_free_input = True
-        pi.focus()
-        pi.insert(char)
+        self._unlock_prompt()
+        if char:
+            self.query_one(PromptInput).insert(char)
 
     # --- input ---
     async def on_prompt_input_submitted(
@@ -643,10 +678,7 @@ class EchoTUI(App):
             if self._pending_clarify is not None:
                 self._pending_clarify = None
                 self._clarify_free_input = False
-                try:
-                    self.query_one(PromptInput).focus()
-                except Exception:
-                    pass
+                self._unlock_prompt()
             self.notify("已请求停止当前任务…", severity="warning", timeout=3)
             return
 
@@ -676,11 +708,8 @@ class EchoTUI(App):
             self._turns.note_send("control")
             await self._send(cmd)
         self._pending_approval = None
-        # Return focus to the prompt for the next turn.
-        try:
-            self.query_one(PromptInput).focus()
-        except Exception:
-            pass
+        # Re-enable and refocus the prompt for the next turn.
+        self._unlock_prompt()
 
     async def action_approve(self) -> None:
         await self._decide("approve")
@@ -703,14 +732,15 @@ class EchoTUI(App):
             await self._send(clarify_command(blk.clarify_id, answer))
         self._pending_clarify = None
         self._clarify_free_input = False
-        try:
-            self.query_one(PromptInput).focus()
-        except Exception:
-            pass
+        self._unlock_prompt()
 
     async def action_clarify_pick(self, number: int) -> None:
         blk = self._pending_clarify
         if blk is None:
+            return
+        if blk.is_free_input_option(number):
+            # The "其他(自行输入)" sentinel: step into free-text, no seed char.
+            self._enter_clarify_free_input()
             return
         opt = blk.option_for_number(number)
         if opt is None:
@@ -728,6 +758,10 @@ class EchoTUI(App):
     async def action_clarify_accept(self) -> None:
         blk = self._pending_clarify
         if blk is None:
+            return
+        if blk.highlighted_is_free_input():
+            # The "其他(自行输入)" sentinel is highlighted: step into free-text.
+            self._enter_clarify_free_input()
             return
         opt = blk.highlighted_option()
         if opt is not None:

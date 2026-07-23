@@ -81,6 +81,7 @@ async def test_app_renders_cognitive_and_toggles_memory():
 async def test_app_approval_y_sends_command():
     from echo_agent.cli.tui.app import EchoTUI
     from echo_agent.cli.tui.protocol import CogEvent
+    from echo_agent.cli.tui.prompt_input import PromptInput
     sent = []
     async def fake_send(text): sent.append(text)
     app = EchoTUI(send_coro=fake_send)
@@ -90,6 +91,36 @@ async def test_app_approval_y_sends_command():
                       "⚠️ 需要确认: shell")
         app.on_cognitive(ev)
         await pilot.pause()
+        assert app.query_one(PromptInput).disabled is True
+        await pilot.press("y")
+        await pilot.pause()
+        assert sent == ["/approve req9"]
+        # 决定后输入框重新启用
+        assert app.query_one(PromptInput).disabled is False
+
+
+@pytest.mark.asyncio
+async def test_app_approval_mouse_click_cannot_break_yna():
+    """回归:审批待定时鼠标点输入框,过去会让 y/n/a 被输入框吞掉而失灵。
+
+    输入框禁用后点击无法聚焦它,y 仍走 App 级 binding 正常批准。"""
+    from echo_agent.cli.tui.app import EchoTUI
+    from echo_agent.cli.tui.protocol import CogEvent
+    from echo_agent.cli.tui.prompt_input import PromptInput
+    sent = []
+    async def fake_send(text): sent.append(text)
+    app = EchoTUI(send_coro=fake_send)
+    async with app.run_test() as pilot:
+        ev = CogEvent("approval_request", "e2", "in1",
+                      {"request_id": "req9", "action": "shell", "params": {}, "risk": "EXEC"},
+                      "⚠️ 需要确认: shell")
+        app.on_cognitive(ev)
+        await pilot.pause()
+        pi = app.query_one(PromptInput)
+        await pilot.click(PromptInput)      # 禁用态下点击不应聚焦
+        await pilot.pause()
+        assert pi.disabled is True
+        assert app.focused is None
         await pilot.press("y")
         await pilot.pause()
         assert sent == ["/approve req9"]

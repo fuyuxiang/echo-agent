@@ -84,6 +84,14 @@ PromptInput {
     border: none;
 }
 
+/* Disabled while a clarify/approval owns the keyboard: dim it so the user
+   sees the prompt is inert and their number/arrow/y-n-a keys drive the
+   pending prompt instead. textual does not dim disabled widgets on its own. */
+PromptInput:disabled {
+    color: $text-muted;
+    text-opacity: 60%;
+}
+
 /* Placeholder overlays the input area (hint layer) instead of taking its own
    row, so the empty state no longer shows a stray caption line under the box.
    It is hidden on first keystroke (display toggled by ContentChanged). */
