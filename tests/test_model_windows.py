@@ -2,11 +2,28 @@
 
 from __future__ import annotations
 
+import pytest
+
 from echo_agent.models.model_windows import (
     DEFAULT_CONTEXT_WINDOW,
     compression_window,
     resolve_context_window,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_models_dev(monkeypatch):
+    """Neutralize the live models.dev layer by default.
+
+    The resolver consults models.dev between the captured and registry layers.
+    In unit tests we force it to miss (return 0) so the other layers are tested
+    in isolation and no background network thread is spawned. Tests that target
+    the models.dev layer override this patch explicitly.
+    """
+    monkeypatch.setattr(
+        "echo_agent.models.models_dev.lookup_context",
+        lambda model, provider="", **kw: 0,
+    )
 
 
 class TestResolvePriority:
@@ -45,9 +62,23 @@ class TestResolvePriority:
         # "gpt-4o-mini" (longer key) must win over "gpt-4o" for a mini id.
         assert resolve_context_window("gpt-4o-mini") == 128_000
 
-    def test_config_default_when_no_registry_match(self):
+    def test_minimax_m3_registry_pad(self):
+        # MiniMax-M3 must resolve to its real 1M window from the registry pad,
+        # not fall through to the config default (regression for the 65.5K bug).
+        assert resolve_context_window("MiniMax-M3") == 1_000_000
+        # The family catch-all covers older M-series ids.
+        assert resolve_context_window("minimax-abab6") == 204_800
+
+    def test_explicit_config_default_when_no_registry_match(self):
+        # A positive config_default is still honored for an unknown model.
         win = resolve_context_window("some-unknown-model-xyz", config_default=54321)
         assert win == 54321
+
+    def test_unknown_model_lands_on_baseline_not_small_default(self):
+        # Regression: with config_default unset (0), an unknown model must land
+        # on the honest 256K baseline, never an arbitrary small window.
+        win = resolve_context_window("some-unknown-model-xyz", config_default=0)
+        assert win == DEFAULT_CONTEXT_WINDOW
 
     def test_hard_fallback_when_nothing_matches(self):
         win = resolve_context_window("some-unknown-model-xyz")
@@ -62,6 +93,43 @@ class TestResolvePriority:
             config_default=0,
         )
         assert win == 128_000  # registry
+
+
+class TestModelsDevLayer:
+    def test_models_dev_beats_registry(self, monkeypatch):
+        # A live models.dev hit takes priority over the built-in registry.
+        monkeypatch.setattr(
+            "echo_agent.models.models_dev.lookup_context",
+            lambda model, provider="", **kw: 1_048_576,
+        )
+        # gpt-4o is 128K in the registry; models.dev override must win.
+        assert resolve_context_window("gpt-4o") == 1_048_576
+
+    def test_models_dev_below_captured_override(self, monkeypatch):
+        # Captured metadata (setup) still outranks models.dev.
+        monkeypatch.setattr(
+            "echo_agent.models.models_dev.lookup_context",
+            lambda model, provider="", **kw: 999,
+        )
+        win = resolve_context_window("gpt-4o", captured_windows={"gpt-4o": 111111})
+        assert win == 111111
+
+    def test_models_dev_miss_falls_through_to_registry(self, monkeypatch):
+        monkeypatch.setattr(
+            "echo_agent.models.models_dev.lookup_context",
+            lambda model, provider="", **kw: 0,
+        )
+        assert resolve_context_window("gpt-4o") == 128_000
+
+    def test_models_dev_error_is_swallowed(self, monkeypatch):
+        # A catalog failure must never break resolution — fall through cleanly.
+        def _boom(model, provider="", **kw):
+            raise RuntimeError("catalog down")
+
+        monkeypatch.setattr(
+            "echo_agent.models.models_dev.lookup_context", _boom
+        )
+        assert resolve_context_window("gpt-4o") == 128_000
 
 
 class TestCompressionWindow:

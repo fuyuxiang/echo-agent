@@ -1851,13 +1851,14 @@ class SessionConfig(_Base):
         },
     )
     context_window_tokens: int = Field(
-        default=65536,
+        default=0,
         json_schema_extra={
             "status": "effective", "ref": "models/model_windows.py:88",
-            "desc_zh": "上下文窗口 token 上限的全局兜底值(仅当模型未命中内置注册表且路由/setup 未指定窗口时生效;"
-                       "实际窗口优先按当前模型动态解析)",
-            "desc_en": "Global fallback context-window budget (used only when the model misses the built-in "
-                       "registry and no route/setup window is set; the real window is resolved per-model at runtime)",
+            "desc_zh": "上下文窗口 token 上限的全局兜底值(0=不设,让未知模型落到 256K 现代基线;"
+                       "仅当你为某些无法动态解析的私有/本地模型显式设成正数时才生效,优先级低于 models.dev/内置注册表)",
+            "desc_en": "Global fallback context-window budget (0 = unset, so an unknown model lands on the 256K "
+                       "modern baseline; only an explicit positive value takes effect, for private/local models "
+                       "that cannot be resolved dynamically, and it ranks below models.dev and the built-in registry)",
         },
     )
     compression_window_cap: int = Field(

@@ -93,6 +93,31 @@ def list_model_windows(entry: ProviderCatalogEntry, api_key: str, api_base: str 
     return _parse_model_windows(entry.dialect, body)
 
 
+# Field names OpenAI-compatible /models endpoints use for a model's context
+# window. Different providers pick different keys, so we probe a set rather than
+# a single name (mirrors hermes-agent's _CONTEXT_LENGTH_KEYS). Ordered by how
+# authoritative/common the key is; first positive hit wins.
+_CONTEXT_WINDOW_KEYS = (
+    "context_length",
+    "context_window",
+    "context_size",
+    "max_context_length",
+    "max_model_len",
+    "max_input_tokens",
+    "max_sequence_length",
+    "max_seq_len",
+)
+
+
+def _first_window(payload: dict) -> int:
+    """First positive context-window value among the known keys. 0 if none."""
+    for key in _CONTEXT_WINDOW_KEYS:
+        val = payload.get(key)
+        if isinstance(val, (int, float)) and val > 0:
+            return int(val)
+    return 0
+
+
 def _parse_model_windows(dialect: str, body: dict) -> dict[str, int]:
     out: dict[str, int] = {}
     try:
@@ -108,13 +133,15 @@ def _parse_model_windows(dialect: str, body: dict) -> dict[str, int]:
             mid = m.get("id")
             if not mid:
                 continue
-            # OpenRouter exposes context_length at top level and/or top_provider.
-            win = m.get("context_length")
+            # Probe the common window keys at the top level, then fall back to
+            # OpenRouter's nested top_provider.context_length.
+            win = _first_window(m)
             if not win:
                 tp = m.get("top_provider") or {}
-                win = tp.get("context_length")
-            if isinstance(win, (int, float)) and win > 0:
-                out[mid] = int(win)
+                if isinstance(tp, dict):
+                    win = _first_window(tp)
+            if win > 0:
+                out[mid] = win
         return out
     except Exception:
         return {}

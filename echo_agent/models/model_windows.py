@@ -9,11 +9,16 @@ registry pattern.
 Resolution order (highest priority first):
   1. route/provider explicit override  (route_override, user knows best)
   2. setup-captured API metadata        (captured_windows, per-model)
-  3. built-in registry                  (prefix match, ships with the app)
-  4. global config default              (config_default, session.context_window_tokens)
-  5. hard fallback DEFAULT_CONTEXT_WINDOW
+  3. models.dev live catalog            (4000+ models, cached; blank on cold start)
+  4. built-in registry                  (prefix match, ships with the app)
+  5. global config default              (config_default) — only an explicit,
+     non-zero user setting; a 0/unset default falls through so an unknown model
+     lands on the honest 256K baseline instead of an arbitrary small number
+  6. hard fallback DEFAULT_CONTEXT_WINDOW
 
-Nothing here mutates state; callers decide what to do with the number.
+The models.dev layer never blocks: it reads a background-refreshed cache and
+returns 0 (fall through to the registry) until the cache is warm. Nothing here
+mutates state; callers decide what to do with the number.
 """
 
 from __future__ import annotations
@@ -62,6 +67,11 @@ _CONTEXT_WINDOWS: dict[str, int] = {
     "qwen": 128_000,
     "moonshot": 128_000,
     "kimi": 128_000,
+    # MiniMax (OpenAI-compatible endpoint; setup capture misses its window, so
+    # the registry is the cold-start pad until models.dev warms up). M3 is 1M;
+    # the family catch-all stays conservative for older M-series models.
+    "minimax-m3": 1_000_000,
+    "minimax": 204_800,
 }
 
 
@@ -105,16 +115,30 @@ def resolve_context_window(
         if win and int(win) > 0:
             return int(win)
 
-    # 3. Built-in registry.
+    # 3. models.dev live catalog (cached, non-blocking; 0 until the cache warms).
+    #    Imported lazily so this stateless module stays import-light and the
+    #    network/cache machinery only loads when actually resolving.
+    try:
+        from echo_agent.models.models_dev import lookup_context
+
+        live = lookup_context(model, provider)
+        if live and live > 0:
+            return int(live)
+    except Exception:  # noqa: BLE001 - catalog is best-effort, never fatal
+        pass
+
+    # 4. Built-in registry.
     registry = _match_registry(model)
     if registry > 0:
         return registry
 
-    # 4. Global config default.
+    # 5. Global config default — only honor an explicit, non-zero user setting.
+    #    A 0/unset default falls through to the honest 256K baseline so an
+    #    unknown model is never pinned to an arbitrary small window.
     if config_default and config_default > 0:
         return int(config_default)
 
-    # 5. Hard fallback.
+    # 6. Hard fallback.
     return DEFAULT_CONTEXT_WINDOW
 
 
