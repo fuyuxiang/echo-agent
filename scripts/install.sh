@@ -577,12 +577,12 @@ EMBED_CACHE_DIR="${ECHO_EMBED_CACHE_DIR:-$ECHO_HOME/models/fastembed}"
 EMBED_PREFETCH_TIMEOUT="${ECHO_EMBED_PREFETCH_TIMEOUT:-900}"
 
 # Release-hosted model package (self-owned mirrors, tried before HF/GCS).
-# NOTE: tags differ in case between the two forges (Gitee v1.1.0 / GitHub V1.1.0).
+# Keep the tag in sync with _RELEASE_PACKAGES in echo_agent/memory/local_embed.py.
 EMBED_PKG_NAME="bge-small-zh-v1.5-fastembed.tar.gz"
 EMBED_PKG_SHA256="d095c530b22f384d4d19a79c5862b65e8fff104af64ce9bb9e89690c186d418f"
 EMBED_PKG_URLS=(
-    "https://gitee.com/fuyuxiang/echo-agent/releases/download/v1.1.0/$EMBED_PKG_NAME"
-    "https://github.com/fuyuxiang/echo-agent/releases/download/V1.1.0/$EMBED_PKG_NAME"
+    "https://gitee.com/fuyuxiang/echo-agent/releases/download/v0.3.5/$EMBED_PKG_NAME"
+    "https://github.com/fuyuxiang/echo-agent/releases/download/v0.3.5/$EMBED_PKG_NAME"
 )
 # The directory fastembed expects inside the cache (== tar top-level dir).
 EMBED_PKG_DIR="fast-bge-small-zh-v1.5"
