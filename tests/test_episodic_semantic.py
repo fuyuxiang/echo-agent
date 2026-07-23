@@ -67,6 +67,40 @@ async def test_semantic_search_respects_session_filter(episodic):
 
 
 @pytest.mark.asyncio
+async def test_semantic_floor_drops_low_cosine_episode(storage):
+    """min_similarity 下限:与查询余弦过低的 episode 不进语义候选(源头拦截)。"""
+    index = VectorIndex(storage, dimensions=4, model_id=MODEL)
+    await index.initialize()
+    mgr = EpisodicManager(storage)
+    embed = _embed_factory({
+        "部署": [1.0, 0.0, 0.0, 0.0],
+        "宠物": [0.0, 1.0, 0.0, 0.0],  # 与"部署"正交,余弦≈0
+    })
+    mgr.attach_embedding(embed, index, min_similarity=0.5)
+    await mgr.create_episode("s1", [], "聊了宠物猫的名字")
+    # 查询"部署"与"宠物"episode 余弦≈0 < 0.5 → 语义候选为空;
+    # summary 不含"部署" → LIKE 也空 → 整体空。
+    results = await mgr.search_episodes("部署", session_key="s1", limit=3)
+    assert results == [], "低余弦 episode 不应进语义候选"
+
+
+@pytest.mark.asyncio
+async def test_semantic_floor_keeps_relevant_episode(storage):
+    """下限不误杀:余弦达标的 episode 仍被语义召回。"""
+    index = VectorIndex(storage, dimensions=4, model_id=MODEL)
+    await index.initialize()
+    mgr = EpisodicManager(storage)
+    embed = _embed_factory({
+        "部署": [1.0, 0.0, 0.0, 0.0],
+        "上线": [0.9, 0.1, 0.0, 0.0],  # 与"部署"余弦≈0.994
+    })
+    mgr.attach_embedding(embed, index, min_similarity=0.5)
+    ep = await mgr.create_episode("s1", [], "讨论了项目部署方案")
+    results = await mgr.search_episodes("上线", session_key="s1", limit=3)
+    assert results and results[0].id == ep.id
+
+
+@pytest.mark.asyncio
 async def test_fallback_to_like_without_embedding(storage):
     mgr = EpisodicManager(storage)  # 未 attach → LIKE 路径
     ep = await mgr.create_episode("s1", [], "讨论了项目部署方案")

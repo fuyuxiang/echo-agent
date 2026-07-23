@@ -869,7 +869,13 @@ class AgentLoop:
         self.memory.set_embed_fn(embed_fn)
         self.consolidator.set_embed_fn(embed_fn)
         if self._episodic is not None and embed_fn is not None:
-            self._episodic.attach_embedding(embed_fn, vector_index)
+            # Same vector floor as the hybrid retriever: a low-cosine episode
+            # must not enter the candidate pool (it would only be filtered later
+            # at the retrieve() admission gate — cheaper to drop it at source).
+            self._episodic.attach_embedding(
+                embed_fn, vector_index,
+                min_similarity=config.memory.rrf_min_similarity,
+            )
         self._wire_vector_consumers(vector_index, embed_fn)
 
     def _wire_vector_consumers(self, vector_index: Any, embed_fn: Any) -> None:
@@ -962,8 +968,36 @@ class AgentLoop:
         )
         self._response_stage._prefetcher = self._prefetcher
 
+    async def _warmup_embedding(self) -> None:
+        """Prime the embedding backend once at startup.
+
+        The inline retrieval budget (memory.retrieval_miss_timeout_seconds,
+        default 0.8s) is spent almost entirely on the FIRST embedding call —
+        a local fastembed model lazy-loads/JITs on first use, then serves
+        subsequent queries in ~10-50ms. Without a warmup the first real turn
+        (and every topic-switch cache miss until the model is hot) times out
+        and degrades to keyword-only — dropping the one signal that carries
+        absolute relevance. A throwaway embed here moves that cost off the
+        user-facing path. Best-effort: failure just leaves the old lazy
+        behavior intact.
+        """
+        if self._embed_fn is None:
+            return
+        try:
+            await asyncio.wait_for(
+                self._embed_fn("warmup"),
+                timeout=self.config.memory.embed_load_timeout_seconds,
+            )
+            logger.info("Embedding backend warmed up")
+        except Exception as e:
+            logger.debug("Embedding warmup skipped ({}); first query will lazy-load", e)
+
     async def start(self) -> None:
         await self._resolve_embed_and_index(self._storage)
+        if self._embed_fn is not None:
+            # Off the critical path: warm the model in the background so startup
+            # isn't blocked, but the first retrieval likely finds it hot.
+            self._spawn_background(self._warmup_embedding())
         if self._vector_index is not None:
             # Order matters: purge orphan rows BEFORE the index loads (so they
             # never enter the matrix), then queue re-embeds for entries whose

@@ -28,7 +28,7 @@ from typing import Any, Callable, Iterable
 from loguru import logger
 
 from echo_agent.memory.types import MemoryEntry, MemoryTier, MemoryType, source_priority
-from echo_agent.memory.text import cjk_tokens
+from echo_agent.memory.text import cjk_tokens, is_discriminative
 from echo_agent.memory.forgetting import ForgettingCurve
 from echo_agent.memory.eligibility import Audience, is_eligible
 
@@ -1314,11 +1314,22 @@ class MemoryStore:
                 )
             ]
 
+        # Discriminative query tokens (CJK bigram / multi-char latin). A match on
+        # ONLY a single common char (的/是/我…) must not admit an entry — same
+        # relevance gate the hybrid retriever applies, so this keyword fallback
+        # (degrade path, no vectors) doesn't become a no-threshold injection.
+        # If the query has no discriminative token at all, keep every match
+        # (gate off) so a legitimate single-char query still recalls.
+        disc_words = {w for w in words if is_discriminative(w)}
+        gate_active = bool(disc_words)
+
         scored: list[tuple[MemoryEntry, float]] = []
         for entry in self._filtered_entries(mem_type, session_key, audience=audience):
             haystack = f"{entry.key} {entry.content} {' '.join(entry.tags)}".lower()
             word_hits = sum(1 for word in words if word in haystack)
             if word_hits == 0:
+                continue
+            if gate_active and not any(w in haystack for w in disc_words):
                 continue
             coverage = word_hits / len(words)
             eff_imp = self._forgetting.effective_importance(entry)

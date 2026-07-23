@@ -66,10 +66,15 @@ class EpisodicManager:
         self._storage = storage
         self._embed_fn = None
         self._vector_index = None
+        # Similarity floor for episodic semantic search. Mirrors the hybrid
+        # retriever's vector floor so a low-cosine episode never enters the
+        # candidate pool. 0 == disabled (legacy: take whatever the index returns).
+        self._min_similarity = 0.0
 
-    def attach_embedding(self, embed_fn, vector_index) -> None:
+    def attach_embedding(self, embed_fn, vector_index, min_similarity: float = 0.0) -> None:
         self._embed_fn = embed_fn
         self._vector_index = vector_index
+        self._min_similarity = max(0.0, float(min_similarity))
 
     async def create_episode(
         self,
@@ -226,7 +231,13 @@ class EpisodicManager:
         except Exception as e:
             logger.debug("Episodic semantic search failed: {}", e)
             return []
-        episode_ids = [sid[3:] for sid, _ in hits if sid.startswith("ep:")]
+        # Similarity floor: a low-cosine episode is not a relevant candidate.
+        # Previously the score was discarded (`for sid, _`) and every hit passed
+        # through, so an unrelated episode still entered the RRF candidate pool.
+        episode_ids = [
+            sid[3:] for sid, score in hits
+            if sid.startswith("ep:") and score >= self._min_similarity
+        ]
         if not episode_ids:
             return []
         placeholders = ",".join("?" for _ in episode_ids)

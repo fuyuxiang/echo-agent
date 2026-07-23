@@ -2215,11 +2215,11 @@ class MemoryConfig(_Base):
         },
     )
     rrf_min_similarity: float = Field(
-        default=0.25,
+        default=0.30,
         json_schema_extra={
             "status": "effective", "ref": "memory/retrieval.py:vec_rank_map",
-            "desc_zh": "RRF 向量召回相似度下限(可调),向量命中分数低于该值则不占 rank 槽、不贡献 RRF 分,避免低相似度命中污染真实候选;BM25 侧不设(量纲不同)",
-            "desc_en": "RRF vector-recall similarity floor (tunable); vector hits scoring below it occupy no rank slot and contribute no RRF term, preventing low-similarity hits from polluting real candidates. Not applied to BM25 (different scale).",
+            "desc_zh": "RRF 向量召回相似度下限(可调)。向量命中余弦低于该值则不占 rank 槽、不贡献 RRF 分,且不构成'向量达标'准入通路——避免低相似度命中污染真实候选。对归一化句向量,0.25 基本是'勉强沾边',0.30 是更稳的下限;BM25 侧改用判别性 token 门控(单个常见汉字命中不准入),不设分数下限(量纲不同)",
+            "desc_en": "RRF vector-recall similarity floor (tunable). Vector hits below this cosine occupy no rank slot, contribute no RRF term, and do not count as a vector-admission path — keeping low-similarity hits from polluting real candidates. For normalized sentence embeddings 0.25 is 'barely related'; 0.30 is a safer floor. The BM25 side instead uses a discriminative-token gate (a single common CJK char never admits) rather than a score floor (different scale).",
         },
     )
     embed_load_timeout_seconds: float = Field(

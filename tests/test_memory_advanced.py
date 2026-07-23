@@ -477,16 +477,20 @@ class TestHybridRetriever:
             _make_entry(id="c", key="cooking", content="how to cook pasta"),
         ]
         retriever = self._make_retriever(entries)
-        results = retriever._bm25_search("python programming", entries, limit=10)
+        # _bm25_search 现返回 (ranked, lexically_strong_ids);解包取排名列表。
+        results, strong = retriever._bm25_search("python programming", entries, limit=10)
         assert len(results) > 0
         # python entry should rank first
         assert results[0][0] == "a"
+        # 判别性 latin 词命中→强命中集合非空
+        assert "a" in strong
 
     def test_bm25_search_no_match(self):
         entries = [_make_entry(id="a", content="hello world")]
         retriever = self._make_retriever(entries)
-        results = retriever._bm25_search("zzzznonexistent", entries, limit=10)
+        results, strong = retriever._bm25_search("zzzznonexistent", entries, limit=10)
         assert len(results) == 0
+        assert strong == set()
 
     @pytest.mark.asyncio
     async def test_retrieve_keyword_only(self):

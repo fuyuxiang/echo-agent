@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 from echo_agent.memory.types import MemoryEntry, MemoryType, Episode
 from echo_agent.memory.forgetting import ForgettingCurve
-from echo_agent.memory.text import tokenize as _tokenize_shared
+from echo_agent.memory.text import tokenize as _tokenize_shared, is_discriminative
 from echo_agent.memory.eligibility import Audience, is_eligible
 
 _RRF_K = 60
@@ -150,8 +150,9 @@ class HybridRetriever:
             return []
 
         pool = limit * 3
-        # BM25 ranking
-        bm25_ranked = self._bm25_search(query, candidates, pool)
+        # BM25 ranking. strong_ids = candidates matched by a DISCRIMINATIVE query
+        # token (CJK bigram / multi-char latin), i.e. lexically trustworthy hits.
+        bm25_ranked, lexical_strong_ids = self._bm25_search(query, candidates, pool)
         bm25_rank_map = {eid: rank for rank, (eid, _) in enumerate(bm25_ranked)}
 
         # Vector ranking. The shared vector index also holds superseded /
@@ -172,8 +173,25 @@ class HybridRetriever:
                 )
             }
 
+        # Relevance-admission gate (applied BEFORE RRF scoring). RRF is purely
+        # rank-based — it discards the raw cosine magnitude, so the #1 candidate
+        # gets full RRF weight whether it's a perfect match or the least-bad of a
+        # garbage set. That is why recall "looks unrelated" when the store holds
+        # no strongly-relevant entry: a lexical hit on a single common char, or a
+        # low-cosine vector hit, still ranks #1 and gets injected. Fix: a
+        # candidate is admitted only if it clears a real relevance bar on at
+        # least one modality —
+        #   • lexical:  matched a DISCRIMINATIVE query token (not a lone 的/是/我)
+        #   • vector:   cosine ≥ self._min_similarity (already enforced in
+        #               vec_rank_map construction above)
+        # vec_rank_map only ever contains ids that passed the similarity floor,
+        # so its keys ARE the vector-admitted set. A candidate matched only by a
+        # single common char is in bm25_rank_map but neither strong nor vector-
+        # admitted → dropped, instead of padding the quota.
+        admitted = lexical_strong_ids | set(vec_rank_map)
+
         # RRF fusion
-        all_ids = set(bm25_rank_map) | set(vec_rank_map)
+        all_ids = (set(bm25_rank_map) | set(vec_rank_map)) & admitted
         entry_map = {c.id: c for c in candidates}
         scored: list[tuple[MemoryEntry | Episode, float]] = []
         for cid in all_ids:
@@ -224,11 +242,27 @@ class HybridRetriever:
 
     # -- BM25 ----------------------------------------------------------------
 
-    def _bm25_search(self, query: str, entries: list, limit: int) -> list[tuple[str, float]]:
+    def _bm25_search(
+        self, query: str, entries: list, limit: int
+    ) -> tuple[list[tuple[str, float]], set[str]]:
+        """BM25 ranking.
+
+        Returns (ranked, lexically_strong_ids). `ranked` is the usual top-`limit`
+        (id, score) list used for RRF ordering. `lexically_strong_ids` is the
+        subset of candidates that matched at least one DISCRIMINATIVE query token
+        (a CJK bigram or a multi-char latin word — see text.is_discriminative).
+        The admission gate uses it so a candidate matched ONLY by a single common
+        char (的/是/我…) is NOT admitted on lexical grounds — the root cause of
+        "recall looks unrelated". When the query itself has no discriminative
+        token (e.g. a bare single-char query), the gate is a no-op: every matched
+        candidate is treated as strong so we never zero out such a query.
+        """
         k1, b = 1.5, 0.75
         q_tokens = self._tokenize(query)
         if not q_tokens:
-            return []
+            return [], set()
+        disc_q = {qt for qt in q_tokens if is_discriminative(qt)}
+        gate_active = bool(disc_q)
         doc_tokens = [self._tokenize(f"{e.key} {e.content} {' '.join(e.tags)}") for e in entries]
         n = len(entries)
         avgdl = sum(len(d) for d in doc_tokens) / max(n, 1)
@@ -239,6 +273,7 @@ class HybridRetriever:
                 if qt in seen:
                     df[qt] += 1
         results: list[tuple[str, float]] = []
+        strong_ids: set[str] = set()
         for i, e in enumerate(entries):
             dl = len(doc_tokens[i])
             freq = Counter(doc_tokens[i])
@@ -251,8 +286,10 @@ class HybridRetriever:
                 score += idf * tf
             if score > 0:
                 results.append((e.id, score))
+                if not gate_active or disc_q & freq.keys():
+                    strong_ids.add(e.id)
         results.sort(key=lambda x: x[1], reverse=True)
-        return results[:limit]
+        return results[:limit], strong_ids
 
     # -- vector search -------------------------------------------------------
 

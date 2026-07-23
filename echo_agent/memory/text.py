@@ -48,3 +48,21 @@ def tokenize(text: str) -> list[str]:
     tokens = [t for t in _TOKEN_RE.findall(lower) if t not in _STOP_WORDS]
     tokens.extend(cjk_tokens(lower))
     return tokens
+
+
+def is_discriminative(token: str) -> bool:
+    """True when a token carries real relevance signal (not near-ubiquitous noise).
+
+    Single CJK chars are the dominant false-match source in keyword retrieval:
+    Chinese has no whitespace, so cjk_tokens emits every char, and a common char
+    (的/是/我/了…) appears in a large fraction of the corpus — its IDF is low but
+    nonzero, so in a small memory store (~1.5k entries) it still lets any entry
+    sharing that one char enter the candidate pool. A CJK BIGRAM (len==2) or a
+    multi-char latin token, by contrast, encodes a real phrase/word and is a
+    trustworthy relevance signal. Single latin chars are likewise non-signal.
+
+    This is the "at least one discriminative overlap" admission rule's predicate:
+    a candidate matched ONLY by non-discriminative tokens is not admitted on
+    lexical grounds alone (it may still be admitted via a vector-similarity hit).
+    """
+    return len(token) >= 2
