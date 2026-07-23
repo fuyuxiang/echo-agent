@@ -343,6 +343,10 @@ async def test_queued_second_turn_does_not_steal_interrupt_target():
         await pilot.pause()
         bridge.dispatch({"type": "accepted", "event_id": "turn-1"})
         pi.text = "任务二"
+        # Queuing a second turn while the first runs now needs a confirming
+        # second Enter (queue-guard); the first Enter only arms the window.
+        await pilot.press("enter")
+        await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
         bridge.dispatch({"type": "accepted", "event_id": "turn-2"})

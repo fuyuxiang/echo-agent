@@ -114,10 +114,23 @@ class EchoTUI(App):
         # Timestamp of the last Ctrl+C that armed the exit guard. A second
         # Ctrl+C within CTRL_C_EXIT_WINDOW seconds exits; 0.0 means unarmed.
         self._last_ctrl_c = 0.0
+        # Timestamp of the last submit that armed the "a turn is still running —
+        # send anyway?" confirmation. A second submit within
+        # QUEUE_CONFIRM_WINDOW seconds actually sends it as a queued turn; 0.0
+        # means unarmed. Guards against a reply-to-question being swallowed as an
+        # out-of-context new turn while the previous turn is mid-flight (the
+        # gateway serializes primary turns per session, so it would just queue
+        # behind the running one rather than answer the question on screen).
+        self._last_queue_confirm = 0.0
 
     # Seconds within which a second Ctrl+C confirms exit (matches the common
     # 2s window used by shells and other agent CLIs).
     CTRL_C_EXIT_WINDOW = 2.0
+
+    # Seconds within which a second submit confirms "send anyway while a turn is
+    # running". Slightly longer than the Ctrl+C window: the user must read the
+    # hint and decide, not just double-tap Enter reflexively.
+    QUEUE_CONFIRM_WINDOW = 4.0
 
     @property
     def goodbye_message(self) -> str:
@@ -457,6 +470,34 @@ class EchoTUI(App):
         if not self._connected:
             self._tv.add_error("未连接。请先输入 /reconnect 重连。")
             return
+        # Queue-guard: a real conversation turn (not a server control command
+        # like /approve /deny) submitted while a primary turn is still running
+        # would be classified as a NEW primary turn and — because the gateway
+        # serializes primary turns per session — queued behind the running one
+        # rather than answered in place. That is exactly how a reply to the
+        # model's on-screen question ("全删还是逐条勾?") gets swallowed as an
+        # out-of-context new turn. Require a second submit within the window to
+        # confirm the user really means to queue a new turn, not answer the
+        # question. Control commands (/approve …) are excluded: they act on the
+        # running turn and must go through immediately.
+        if not text.startswith("/") and self._turns.has_active_primary:
+            now = time.monotonic()
+            if now - self._last_queue_confirm >= self.QUEUE_CONFIRM_WINDOW:
+                # First submit (or a stale one): arm the window, keep the text in
+                # the box so a second Enter resends it, and tell the user why.
+                self._last_queue_confirm = now
+                self.query_one(PromptInput).text = text
+                self._tv.add_notice(
+                    "[$text-muted]上一轮仍在进行中。当前回复不会打断它，"
+                    "而是作为新一轮排在其后。再次回车确认发送，"
+                    "或按 Ctrl+C 停止当前任务。[/]"
+                )
+                return
+            # Second submit within the window: confirmed — fall through to send.
+        # Clear the arm unconditionally on any real send so a stale timestamp
+        # (e.g. the running turn ended before the second submit) can never make
+        # a later, unrelated submit look pre-confirmed.
+        self._last_queue_confirm = 0.0
         self._tv.add_user(text)
         self.query_one(StatusBar).start_turn_timer()
         # Tag this as a primary (conversation) turn so its accepted frame becomes
