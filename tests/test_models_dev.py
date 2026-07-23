@@ -91,6 +91,32 @@ class TestLookup:
         _patch_fetch(monkeypatch, _SAMPLE_CATALOG)
         assert models_dev.lookup_context("", "openai", blocking=True) == 0
 
+    def test_cross_provider_scan_uses_consensus_not_first_hit(self, monkeypatch):
+        # Regression: a MiniMax model configured under provider name "openai"
+        # (apiBase pointing at MiniMax) misses the mapped openai provider and
+        # scans all. Several third-party mirrors mis-report the window; the
+        # first dict hit was a wrong 512K. Consensus must pick the true 1M
+        # reported by the majority of providers, regardless of iteration order.
+        catalog = {
+            "llmgateway": {"models": {"MiniMax-M3": {"limit": {"context": 524_288}}}},
+            "kenari": {"models": {"MiniMax-M3": {"limit": {"context": 512_000}}}},
+            "minimax": {"models": {"MiniMax-M3": {"limit": {"context": 1_000_000}}}},
+            "minimax-cn": {"models": {"MiniMax-M3": {"limit": {"context": 1_000_000}}}},
+            "opencode-go": {"models": {"MiniMax-M3": {"limit": {"context": 1_000_000}}}},
+        }
+        _patch_fetch(monkeypatch, catalog)
+        assert models_dev.lookup_context("MiniMax-M3", "openai", blocking=True) == 1_000_000
+
+    def test_consensus_tie_breaks_toward_larger_window(self, monkeypatch):
+        # Even split (1 vs 1): prefer the larger window, since under-reporting
+        # over-triggers compression — the more harmful failure.
+        catalog = {
+            "a": {"models": {"some-model": {"limit": {"context": 200_000}}}},
+            "b": {"models": {"some-model": {"limit": {"context": 1_000_000}}}},
+        }
+        _patch_fetch(monkeypatch, catalog)
+        assert models_dev.lookup_context("some-model", "", blocking=True) == 1_000_000
+
 
 class TestCacheTiers:
     def test_network_result_is_persisted_to_disk(self, monkeypatch):

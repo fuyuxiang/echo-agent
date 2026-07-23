@@ -216,8 +216,10 @@ def lookup_context(model: str, provider: str = "", *, blocking: bool = False) ->
 
     Never blocks on the network (unless ``blocking=True`` for tests): reads the
     cache, triggering an async refresh when stale. When ``provider`` maps to a
-    known models.dev id we search that provider first; otherwise (or on a miss)
-    we scan every provider's models for the id.
+    known models.dev id we trust that provider's window directly. On an unknown/
+    unmapped provider or a miss there, we scan every provider and return the
+    consensus (most-reported) window rather than the first hit, so a single
+    third-party mirror that mis-reports the window cannot decide the answer.
     """
     if not model:
         return 0
@@ -236,6 +238,16 @@ def lookup_context(model: str, provider: str = "", *, blocking: bool = False) ->
                     return ctx
 
     # Provider unknown, unmapped, or miss within the mapped provider: scan all.
+    #
+    # The same model id appears under dozens of third-party providers (mirrors,
+    # aggregators, resellers) whose reported windows disagree — e.g. MiniMax-M3
+    # shows up as 1000000 (six providers), 512000 (four), 524288 (one) and
+    # 1048576 (one). Returning the FIRST hit means dict iteration order silently
+    # decides the answer, so a single provider that mis-reports 512K can win over
+    # the six that report the true 1M. Instead collect every hit and take the
+    # mode (most-reported value); on a tie prefer the larger window, since an
+    # under-report wrongly over-triggers compression.
+    hits: list[int] = []
     for pdata in data.values():
         if not isinstance(pdata, dict):
             continue
@@ -243,8 +255,23 @@ def lookup_context(model: str, provider: str = "", *, blocking: bool = False) ->
         if isinstance(models, dict):
             ctx = _lookup_in_provider(models, model)
             if ctx:
-                return ctx
-    return 0
+                hits.append(ctx)
+    return _consensus_window(hits)
+
+
+def _consensus_window(hits: list[int]) -> int:
+    """Pick the most-reported window from cross-provider hits; 0 if none.
+
+    Ties break toward the larger value: an under-reported window makes the
+    compressor trigger too early, which is the more harmful failure mode.
+    """
+    if not hits:
+        return 0
+    counts: dict[int, int] = {}
+    for value in hits:
+        counts[value] = counts.get(value, 0) + 1
+    # max by (frequency, value) -> most common wins, larger value breaks ties.
+    return max(counts, key=lambda v: (counts[v], v))
 
 
 def _reset_for_tests() -> None:
