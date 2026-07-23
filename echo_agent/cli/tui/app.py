@@ -329,6 +329,25 @@ class EchoTUI(App):
             self.query_one(PromptInput).focus()
         except Exception:
             pass
+
+    def replay_missed_reply(self, text: str) -> None:
+        """Show a final reply recovered from history after a reconnect.
+
+        The gateway drops live pushes to a dead socket without replay, so a reply
+        produced during an outage would otherwise be lost to the CLI. Dedup
+        against the last on-screen reply so a reconnect that missed nothing does
+        not echo the previous answer again."""
+        if not text or not text.strip():
+            return
+        try:
+            last = self._tv.last_turn_reply_text()
+        except Exception:
+            last = ""
+        if last and last.strip() == text.strip():
+            return
+        self._tv.add_notice("[$text-muted]（补显示断连期间的回复）[/]")
+        r = self._tv.start_reply()
+        r.set_markdown(text)
         try:
             self._tv.add_notice("[$success]● 已重新连接[/]")
         except Exception:

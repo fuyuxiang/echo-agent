@@ -89,6 +89,22 @@ async def test_cli_auto_approve_lets_execute_code_run():
 
 
 @pytest.mark.asyncio
+async def test_cli_auto_approve_applies_to_gateway_cli_channel():
+    """CLI auto-approve must also cover the attached-cli channel 'gateway:cli'.
+
+    Regression: the cli attaches OVER the gateway, so its channel is
+    'gateway:cli', but _should_auto_approve_cli only matched {'cli','direct',''}.
+    A flagged EXEC (e.g. the weather skill's `curl`) then skipped auto-approve
+    and fell into the smart/manual approval path, stalling the turn. The channel
+    set is now shared with _is_interactive_channel, so both spellings pass.
+    """
+    cfg = load_config()
+    result = await _run_through_gate(cfg, "gateway:cli")
+    assert result.success is True, f"expected success, got error: {result.error}"
+    assert "2" in (result.output or "")
+
+
+@pytest.mark.asyncio
 async def test_weixin_manual_flow_still_runs():
     """The previously-working manual-approval path must keep working."""
     cfg = load_config()

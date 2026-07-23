@@ -3112,6 +3112,17 @@ class GatewayConfig(_Base):
             "desc_en": "Gateway WebSocket path",
         },
     )
+    ws_heartbeat_seconds: float = Field(
+        default=30.0,
+        json_schema_extra={
+            "status": "effective", "ref": "gateway/server.py:716",
+            "desc_zh": "服务端 WebSocket 主动心跳间隔(秒,0 为关闭):服务端定期 ping 客户端并要求 pong,"
+                       "避免长回合期间连接单边失效而无人察觉导致回复投递不到 CLI",
+            "desc_en": "Server-side WebSocket heartbeat interval in seconds (0 = off): the server pings "
+                       "clients and expects a pong, so a connection cannot silently die during a long turn "
+                       "and cause the reply to miss the CLI",
+        },
+    )
     session_policy: GatewaySessionPolicyConfig = Field(default_factory=GatewaySessionPolicyConfig)
     auth: GatewayAuthConfig = Field(default_factory=GatewayAuthConfig)
     platforms: dict[str, GatewayPlatformConfig] = Field(

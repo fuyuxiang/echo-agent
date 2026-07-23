@@ -360,23 +360,31 @@ class ApprovalGate:
             return True
         return False
 
+    # Channels that denote a local, human-at-the-keyboard session. The cli
+    # attaches OVER the gateway, so its channel is "gateway:cli" — leaving that
+    # spelling out sends attached cli into the unattended/manual-approval paths
+    # and defeats cli_auto_approve. Both auto-approve and interactive checks read
+    # this one set so they can never drift apart again (the earlier bug: only
+    # _is_interactive_channel had been fixed to include "gateway:cli").
+    _INTERACTIVE_CHANNELS = frozenset({"cli", "direct", "", "gateway:cli"})
+
     def _should_auto_approve_cli(self, channel: str) -> bool:
         approval_cfg = self._config.permissions.approval
         return (
             self._config.security.profile == "personal_cli"
             and approval_cfg.cli_auto_approve
-            and channel in {"cli", "direct", ""}
+            and channel in self._INTERACTIVE_CHANNELS
         )
 
     def _is_trusted_channel(self, channel: str) -> bool:
         return channel in self._config.permissions.approval.trusted_channels
 
-    @staticmethod
-    def _is_interactive_channel(channel: str) -> bool:
-        """cli attaches over the gateway, so its channel is 'gateway:cli' — the
-        bare {'cli','direct',''} check would misroute it into unattended/auto
-        paths. Treat both spellings as interactive."""
-        return channel in {"cli", "direct", "", "gateway:cli"}
+    @classmethod
+    def _is_interactive_channel(cls, channel: str) -> bool:
+        """Local human-at-keyboard session. cli attaches over the gateway, so its
+        channel is 'gateway:cli'; the bare {'cli','direct',''} check would misroute
+        it into unattended/auto paths."""
+        return channel in cls._INTERACTIVE_CHANNELS
 
     def _is_unattended(self, event: InboundEvent | None, channel: str) -> bool:
         # Read the typed trust field, never metadata: only a trusted producer

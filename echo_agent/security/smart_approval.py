@@ -2,12 +2,49 @@
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Literal
 
 from loguru import logger
 
 if TYPE_CHECKING:
     from echo_agent.models.provider import LLMProvider
+
+
+_THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think>", re.IGNORECASE | re.DOTALL)
+# An unterminated reasoning block (truncated by max_tokens): drop everything
+# from <think> onward so a cut-off "<think> ... APPROV" can't be misread.
+_THINK_OPEN_RE = re.compile(r"<think\b[^>]*>.*$", re.IGNORECASE | re.DOTALL)
+_VERDICTS = {"APPROVE": "approve", "DENY": "deny", "ESCALATE": "escalate"}
+
+
+def _strip_reasoning(text: str) -> str:
+    """Remove chain-of-thought <think>...</think> spans before verdict parsing.
+
+    Reasoning models (e.g. MiniMax-M3) emit the answer AFTER a <think> block, so
+    the first token is "<think>" — never the verdict word. Stripping the block
+    (closed or truncated) leaves the actual one-word decision as the leading
+    token."""
+    text = _THINK_BLOCK_RE.sub(" ", text)
+    text = _THINK_OPEN_RE.sub(" ", text)
+    return text.strip()
+
+
+def _parse_verdict(raw_text: str) -> str:
+    """Extract an APPROVE/DENY/ESCALATE verdict from the reply's LEADING token.
+
+    Returns the lowercase verdict, or "" if the reply does not start with one.
+    The verdict must be the first word (trailing explanation like "APPROVE —
+    safe" is fine); a verdict merely mentioned inside a sentence ("I would
+    APPROVE this but…") is deliberation, not a decision, and stays "" so the
+    caller escalates. Chain-of-thought is stripped first so a reasoning model's
+    real answer — a bare verdict after </think> — becomes the leading token."""
+    cleaned = _strip_reasoning(raw_text)
+    if not cleaned:
+        return ""
+    # First token, stripped of surrounding punctuation (APPROVE. / **DENY** …).
+    first = cleaned.split()[0].strip("*_`.!:,;。！：，；").upper()
+    return _VERDICTS.get(first, "")
 
 
 def _sanitize_for_prompt(s: str, max_len: int = 1000) -> str:
@@ -60,7 +97,11 @@ async def smart_approve(
         response = await provider.chat_with_retry(
             messages=[{"role": "user", "content": prompt}],
             model=model or None,
-            max_tokens=16,
+            # Reasoning models (MiniMax-M3 etc.) spend tokens on a <think> block
+            # BEFORE the one-word verdict; a 16-token cap truncated the reply to
+            # pure reasoning and the verdict never arrived (parsed as
+            # unrecognized -> escalate). Give enough room to think and answer.
+            max_tokens=512,
             temperature=0.0,
         )
         raw_text = (response.content or "").strip()
@@ -71,17 +112,20 @@ async def smart_approve(
             # of silently escalating into a blocking wait.
             logger.warning("Smart approval: empty response (provider unavailable) for '{}'", tool_name)
             return "unavailable"
-        first_word = raw_text.split()[0].upper() if raw_text.split() else ""
-        if first_word == "APPROVE":
+        # Reasoning-aware parse: strip <think> spans and find the verdict word
+        # anywhere in the answer, rather than trusting the first token (which is
+        # "<think>" for chain-of-thought models).
+        verdict = _parse_verdict(raw_text)
+        if verdict == "approve":
             logger.info("Smart approval: APPROVE for '{}' — {}", tool_name, command[:100])
             return "approve"
-        if first_word == "DENY":
+        if verdict == "deny":
             logger.warning("Smart approval: DENY for '{}' — {}", tool_name, command[:100])
             return "deny"
-        if first_word == "ESCALATE":
+        if verdict == "escalate":
             logger.info("Smart approval: ESCALATE for '{}' — {}", tool_name, raw_text[:50])
             return "escalate"
-        logger.info("Smart approval: unrecognized response (escalating) for '{}' — {}", tool_name, raw_text[:50])
+        logger.info("Smart approval: unrecognized response (escalating) for '{}' — {}", tool_name, raw_text[:80])
         return "escalate"
     except Exception as e:
         logger.warning("Smart approval failed (provider unavailable): {}", e)

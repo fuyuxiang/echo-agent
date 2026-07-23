@@ -117,3 +117,39 @@ class TestSmartApproveRouterWiring:
         assert result == "deny"
         original_provider.chat_with_retry.assert_not_called()
         new_provider.chat_with_retry.assert_called_once()
+
+
+@pytest.mark.asyncio
+class TestReasoningModelVerdict:
+    """Regression: reasoning models (MiniMax-M3 etc.) emit <think>…</think>
+    before the verdict, so the leading token used to be '<think>' and every
+    flagged command was misparsed as 'unrecognized -> escalate'. The parser
+    now strips the reasoning block first."""
+
+    async def test_think_block_then_approve(self):
+        provider = _make_provider(
+            "<think>The command curl wttr.in is a harmless weather fetch.</think>\nAPPROVE"
+        )
+        result = await smart_approve("exec", "curl -s wttr.in/Beijing", "network", provider)
+        assert result == "approve"
+
+    async def test_think_block_then_deny(self):
+        provider = _make_provider(
+            "<think>rm -rf / wipes the disk — clearly destructive.</think>\nDENY"
+        )
+        result = await smart_approve("exec", "rm -rf /", "danger", provider)
+        assert result == "deny"
+
+    async def test_truncated_think_no_verdict_escalates(self):
+        # max_tokens cut the reply off mid-reasoning: no verdict emitted → the
+        # unterminated <think> is dropped and the result escalates (conservative).
+        provider = _make_provider("<think>Let me analyze this command step by")
+        result = await smart_approve("exec", "curl x", "network", provider)
+        assert result == "escalate"
+
+    async def test_verdict_inside_reasoning_only_escalates(self):
+        # The verdict word appears ONLY inside the think block, never as the
+        # actual answer → must not be read as a decision.
+        provider = _make_provider("<think>I might APPROVE but I'm unsure.</think>")
+        result = await smart_approve("exec", "ls", "shell", provider)
+        assert result == "escalate"

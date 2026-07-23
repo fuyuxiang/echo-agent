@@ -140,6 +140,51 @@ async def authenticate(
     return msg.get("session_key", session_key)
 
 
+async def fetch_last_assistant_reply(
+    session: aiohttp.ClientSession,
+    *,
+    host: str,
+    port: int,
+    api_prefix: str,
+    session_key: str,
+    token: str,
+) -> str:
+    """Fetch the most recent assistant reply for a session over the history API.
+
+    Used after a reconnect to recover a final reply that the live WS push
+    dropped while the socket was down (the gateway does not replay missed
+    outbound). Best-effort: any failure returns "" and the caller shows nothing
+    extra rather than surfacing a spurious error. Returns the last assistant
+    message's text, or "" if none / on failure."""
+    prefix = api_prefix if api_prefix.startswith("/") else "/" + api_prefix
+    url = f"http://{host}:{port}{prefix.rstrip('/')}/sessions/{session_key}/history?limit=8"
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    try:
+        async with session.get(url, headers=headers) as resp:
+            if resp.status != 200:
+                return ""
+            body = await resp.json()
+    except (aiohttp.ClientError, OSError, ValueError):
+        return ""
+    messages = body.get("messages") or []
+    for msg in reversed(messages):
+        if msg.get("role") == "assistant":
+            content = msg.get("content")
+            if isinstance(content, str) and content.strip():
+                return content
+            # Block-style content: concatenate text blocks.
+            if isinstance(content, list):
+                parts = [
+                    b.get("text", "") for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                ]
+                joined = "".join(parts).strip()
+                if joined:
+                    return joined
+            return ""
+    return ""
+
+
 class OutboundRenderer:
     """Renders gateway outbound payloads to the terminal, mirroring the local
     CLIChannel stream/final de-dup logic (see channels/cli.py:_send_stream).
@@ -191,7 +236,7 @@ class OutboundRenderer:
 
 async def run_client(
     *, host: str, port: int, ws_path: str, user_id: str, token: str,
-    save_dir=None
+    save_dir=None, api_prefix: str = "/api/v1"
 ) -> int:
     _require_textual()
     from echo_agent.cli.tui.app import EchoTUI
@@ -275,6 +320,20 @@ async def run_client(
             conn["pump_task"] = asyncio.create_task(pump())
             try:
                 await old_ws.close()
+            except Exception:
+                pass
+            # Recover any final reply the gateway produced while we were down.
+            # The gateway drops live pushes to a closed socket and never replays,
+            # so a reply that landed during the outage is only in history — pull
+            # the latest assistant message and let the TUI show it if it differs
+            # from what is already on screen (dedup lives in the sink).
+            try:
+                missed = await fetch_last_assistant_reply(
+                    session, host=host, port=port, api_prefix=api_prefix,
+                    session_key=session_key, token=token,
+                )
+                if missed:
+                    app.replay_missed_reply(missed)
             except Exception:
                 pass
             return True
@@ -368,15 +427,32 @@ def _resolve_save_dir(config_path: str | None, workspace: str | None):
         return None
 
 
+def _resolve_api_prefix(config_path: str | None, workspace: str | None) -> str:
+    """The gateway's HTTP api_prefix (default /api/v1), read from the same config
+    the gateway uses. Needed to build the history URL for reconnect replay.
+    Falls back to the default on any failure."""
+    try:
+        from echo_agent.config.loader import load_config, resolve_config_file
+        cp = config_path
+        if cp is None and workspace:
+            cp = resolve_config_file(search_dir=workspace)
+        cfg = load_config(config_path=cp)
+        return cfg.gateway.api_prefix or "/api/v1"
+    except Exception:
+        return "/api/v1"
+
+
 def run_cli_attach(
     *, host: str, port: int, ws_path: str, user_id: str, token: str,
     config_path: str | None = None, workspace: str | None = None
 ) -> int:
     save_dir = _resolve_save_dir(config_path, workspace)
+    api_prefix = _resolve_api_prefix(config_path, workspace)
     try:
         return asyncio.run(run_client(
             host=host, port=port, ws_path=ws_path,
             user_id=user_id, token=token, save_dir=save_dir,
+            api_prefix=api_prefix,
         ))
     except MissingTUIDependencyError as e:
         # The gateway may be perfectly healthy — this is purely a missing

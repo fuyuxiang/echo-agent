@@ -713,7 +713,13 @@ class GatewayServer:
             self.auth.audit("ws_auth", ok=False, reason=f"cross-site origin rejected: {origin or '?'}")
             return web.json_response({"error": "cross-site request forbidden"}, status=403)
 
-        websocket = web.WebSocketResponse()
+        # Server-driven heartbeat: without it keepalive was entirely client-side
+        # (the CLI pings, but nothing pinged the CLI), so a stalled/blocked client
+        # during a long turn could die unnoticed and the final reply would be
+        # dropped silently. aiohttp auto-pongs peer pings and drops the socket if
+        # our ping goes unanswered, surfacing the dead connection promptly.
+        hb = self._config.ws_heartbeat_seconds
+        websocket = web.WebSocketResponse(heartbeat=hb if hb and hb > 0 else None)
         await websocket.prepare(request)
 
         delivery_key = None
@@ -944,15 +950,32 @@ class GatewayServer:
                     pass
                 self._pending_http.pop(correlation_id, None)
 
-        await self.broadcast_to_ws(session_key, payload)
+        delivered = await self.broadcast_to_ws(session_key, payload)
+        # A dropped FINAL reply is the severe case: the turn's answer was
+        # produced and persisted to history but never reached the live client
+        # (closed/rebound socket), and there is no replay — so the CLI shows
+        # nothing. Log it loudly with the routing key so the silent-drop is
+        # diagnosable instead of vanishing. Streaming interim frames drop
+        # quietly (the final still carries the full text).
+        if not delivered and (event.is_final or event.message_kind == "final"):
+            logger.warning(
+                "Outbound FINAL reply not delivered to live client "
+                "(session_key={}, event_id={}): socket missing or closed. "
+                "Reply is persisted to history but the attached client missed it.",
+                session_key, event.event_id,
+            )
 
     async def broadcast_to_ws(self, session_key: str, data: dict[str, Any]) -> bool:
         ws = self._ws_clients.get(session_key)
-        if ws is None or ws.closed:
+        if ws is None:
+            logger.debug("broadcast_to_ws: no live client for session_key={}", session_key)
+            return False
+        if ws.closed:
+            logger.debug("broadcast_to_ws: client socket closed for session_key={}", session_key)
             return False
         try:
             await ws.send_json(data)
             return True
         except Exception as e:
-            logger.warning("Failed to send WebSocket message: {}", e)
+            logger.warning("Failed to send WebSocket message (session_key={}): {}", session_key, e)
             return False
