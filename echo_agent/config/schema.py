@@ -2246,6 +2246,46 @@ class MemoryConfig(_Base):
             "desc_en": "RRF vector-recall similarity floor (tunable). Vector hits below this cosine occupy no rank slot, contribute no RRF term, and do not count as a vector-admission path — keeping low-similarity hits from polluting real candidates. For normalized sentence embeddings 0.25 is 'barely related'; 0.30 is a safer floor. The BM25 side instead uses a discriminative-token gate (a single common CJK char never admits) rather than a score floor (different scale).",
         },
     )
+    rerank_enabled: bool = Field(
+        default=False,
+        json_schema_extra={
+            "status": "effective", "ref": "memory/retrieval.py:_rerank",
+            "desc_zh": "是否启用 cross-encoder 精排。RRF 只融合两路顺序、不懂'到底多相关',cross-encoder 对 (query,doc) 联合打分是相关性金标准。开启后对融合 top-K 重排(仅 top-K,开销小),超时/失败回退 RRF 原序。默认关:需下载重排模型(约数百 MB)且每轮增加数十~上百 ms 延迟,重召回质量场景再开",
+            "desc_en": "Enable cross-encoder reranking. RRF only fuses rank order; a cross-encoder scores (query,doc) jointly — the relevance gold standard. When on, the fused top-K is reranked (top-K only, cheap); timeout/failure falls back to the RRF order. Default off: it downloads a reranker model (~hundreds of MB) and adds tens-to-hundreds of ms per turn — enable when recall quality matters most.",
+        },
+    )
+    rerank_model: str = Field(
+        default="BAAI/bge-reranker-base",
+        json_schema_extra={
+            "status": "effective", "ref": "memory/local_rerank.py",
+            "desc_zh": "cross-encoder 精排模型(fastembed TextCrossEncoder 支持的模型名)。中文/多语可选 BAAI/bge-reranker-base 或 jinaai/jina-reranker-v2-base-multilingual",
+            "desc_en": "Cross-encoder rerank model (a fastembed TextCrossEncoder model name). For CN/multilingual use BAAI/bge-reranker-base or jinaai/jina-reranker-v2-base-multilingual.",
+        },
+    )
+    rerank_top_k: int = Field(
+        default=20,
+        json_schema_extra={
+            "status": "effective", "ref": "memory/retrieval.py:_rerank",
+            "desc_zh": "精排作用的融合 top-K 数量。只对 RRF 融合后的前 K 条重排,其余保持原序,控制精排开销",
+            "desc_en": "Number of fused top-K candidates the reranker rescores; the rest keep RRF order. Bounds rerank cost.",
+        },
+    )
+    rerank_min_score: float = Field(
+        default=0.0,
+        json_schema_extra={
+            "status": "effective", "ref": "memory/retrieval.py:_rerank",
+            "desc_zh": "精排绝对相关性下限(0=只重排不剔除)。>0 时重排分低于该值的候选被丢弃(仅在重排 top-K 内,且全被丢时回退不过滤,防止误配阈值清空召回)",
+            "desc_en": "Rerank absolute relevance floor (0 = reorder only, drop nothing). When >0, reranked candidates below it are dropped (within the top-K only; if the floor drops everything it falls back to unfiltered, so a miscalibrated threshold can't empty recall).",
+        },
+    )
+    rerank_timeout_seconds: float = Field(
+        default=2.0,
+        json_schema_extra={
+            "status": "effective", "ref": "memory/local_rerank.py",
+            "desc_zh": "精排模型单次加载/推理的等待预算(秒),超时本轮回退 RRF 原序,后台继续加载",
+            "desc_en": "Per-call wait budget (seconds) for reranker load/inference; on timeout this turn keeps the RRF order while the load continues in the background.",
+        },
+    )
     embed_load_timeout_seconds: float = Field(
         default=60.0,
         json_schema_extra={

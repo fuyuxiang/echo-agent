@@ -38,7 +38,7 @@ dependencies = [
     "aiosqlite>=0.20",
     "croniter>=1.4",
     "numpy>=1.24",
-    "fastembed>=0.4",
+    "fastembed>=0.6",  # >=0.6 for rerank.cross_encoder.TextCrossEncoder
     "questionary>=2.0",
     "httpx>=0.23",
 ]

@@ -382,6 +382,7 @@ class AgentLoop:
         self._vector_index = None
         self._embed_fn = None
         self._local_embedder = None
+        self._reranker = None
         self._embed_model_id = ""
         self._episodic = None
         # 两阶段接线的默认值：memory 关闭时 _init_advanced_memory 不跑，
@@ -939,6 +940,37 @@ class AgentLoop:
                 query, session_key=session_key or None, limit=limit
             )
 
+        # Optional cross-encoder reranker (off by default — downloads a model and
+        # adds per-turn latency). Built once here; the rerank_fn closure bounds
+        # each call with rerank_timeout so a slow/loading model degrades THIS turn
+        # to the un-reranked RRF order instead of stalling the reply.
+        rerank_fn = None
+        rerank_min_score = None
+        if config.memory.rerank_enabled:
+            from echo_agent.memory.local_rerank import LocalReranker
+            self._reranker = LocalReranker(
+                model_name=config.memory.rerank_model,
+                load_timeout_seconds=config.memory.rerank_timeout_seconds,
+                hf_endpoint=config.memory.hf_embedding_endpoint,
+                cache_dir=config.memory.local_embedding_cache_dir,
+                max_load_attempts=config.memory.local_embedding_max_load_attempts,
+                retry_backoff_seconds=config.memory.local_embedding_retry_backoff_seconds,
+            )
+            _reranker = self._reranker
+            _rerank_budget = max(0.1, float(config.memory.rerank_timeout_seconds))
+
+            async def rerank_fn(query: str, docs: list) -> "list[float] | None":
+                try:
+                    return await asyncio.wait_for(
+                        _reranker.rerank(query, docs), timeout=_rerank_budget
+                    )
+                except (asyncio.TimeoutError, TimeoutError):
+                    logger.debug("Rerank exceeded {}s budget; keeping RRF order", _rerank_budget)
+                    return None
+
+            _floor = float(config.memory.rerank_min_score)
+            rerank_min_score = _floor if _floor > 0 else None
+
         self._hybrid_retriever = HybridRetriever(
             entries_fn=entries_fn,
             vector_index=vector_index,
@@ -949,6 +981,9 @@ class AgentLoop:
             episode_search_fn=_episode_search if episodic_mgr is not None else None,
             is_unresolved_fn=self.memory.is_unresolved,
             min_similarity=config.memory.rrf_min_similarity,
+            rerank_fn=rerank_fn,
+            rerank_top_k=config.memory.rerank_top_k,
+            rerank_min_score=rerank_min_score,
         )
         self.memory.set_retriever(self._hybrid_retriever)
         # context_stage 在 __init__ 里按值持有了 None，这里重指最终检索器。
@@ -1108,6 +1143,12 @@ class AgentLoop:
                 self._local_embedder.close()
             except Exception as e:
                 logger.debug("Local embedder close raised (ignored): {}", e)
+        # Same for the reranker's dedicated pool.
+        if self._reranker is not None:
+            try:
+                self._reranker.close()
+            except Exception as e:
+                logger.debug("Local reranker close raised (ignored): {}", e)
         logger.info("Agent loop stopped")
 
     def _spawn_background(self, coro: Any, *, tier: Any = None) -> None:

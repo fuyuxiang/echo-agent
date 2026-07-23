@@ -55,6 +55,9 @@ class HybridRetriever:
         episode_candidate_limit: int = 10,
         is_unresolved_fn: Callable[[str], bool] | None = None,
         min_similarity: float = 0.25,
+        rerank_fn: Callable[[str, list[str]], Awaitable[list[float] | None]] | None = None,
+        rerank_top_k: int = 20,
+        rerank_min_score: float | None = None,
     ):
         self._entries_fn = entries_fn
         # No detector wired ⇒ never treat anything as unresolved, so eligibility
@@ -86,6 +89,19 @@ class HybridRetriever:
         # this floor are dropped before rank enumeration. BM25 side has no floor
         # (BM25 scores are a different scale). Tunable via memory.rrf_min_similarity.
         self._min_similarity = float(min_similarity)
+        # Optional cross-encoder reranker. RRF only fuses rank ORDER; a
+        # cross-encoder scores (query, doc) jointly — the precision gold standard
+        # for "is this actually relevant". Applied to the fused top-K only (cheap)
+        # AFTER RRF ordering and BEFORE the quota cut, so it reorders what gets
+        # injected without touching candidate generation. None ⇒ off (pure RRF).
+        # A failure/timeout inside rerank_fn returns None and keeps the RRF order:
+        # reranking is a pure enhancement, never a recall gate.
+        self._rerank_fn = rerank_fn
+        self._rerank_top_k = max(1, int(rerank_top_k))
+        # Optional absolute relevance floor on the cross-encoder score. Candidates
+        # scoring below it are dropped after rerank (bounded — only within the
+        # reranked top-K). None ⇒ reorder only, drop nothing.
+        self._rerank_min_score = rerank_min_score
 
     async def retrieve(
         self, query: str, limit: int = 8,
@@ -216,6 +232,12 @@ class HybridRetriever:
 
         scored.sort(key=lambda x: x[1], reverse=True)
 
+        # Cross-encoder rerank of the fused top-K (precision pass over the RRF
+        # order). Cheap because it only sees the top-K, not the whole store. A
+        # failure/timeout returns the list unchanged — pure enhancement.
+        if self._rerank_fn is not None and scored:
+            scored = await self._rerank(query, scored)
+
         # Quota: memory <=5, episode <=3
         result: list[tuple[MemoryEntry | Episode, float]] = []
         mem_count = ep_count = 0
@@ -233,6 +255,52 @@ class HybridRetriever:
         logger.debug("RRF retrieve: {} candidates, {} results ({}mem+{}ep)",
                      len(scored), len(result), mem_count, ep_count)
         return result
+
+    # -- cross-encoder rerank ------------------------------------------------
+
+    @staticmethod
+    def _candidate_text(item: MemoryEntry | Episode) -> str:
+        """Text handed to the cross-encoder: memory content, or episode summary."""
+        if isinstance(item, Episode):
+            return item.summary or ""
+        key = getattr(item, "key", "")
+        content = getattr(item, "content", "")
+        return f"{key}: {content}" if key else content
+
+    async def _rerank(
+        self, query: str, scored: list[tuple[MemoryEntry | Episode, float]],
+    ) -> list[tuple[MemoryEntry | Episode, float]]:
+        """Reorder the fused top-K by cross-encoder relevance.
+
+        Only the top-K (rerank_top_k) are scored; the tail keeps its RRF order and
+        is appended after. On any failure the original list is returned unchanged
+        (reranking never drops recall). When rerank_min_score is set, reranked
+        candidates below it are dropped — but only within the scored head, so the
+        floor can't silently empty a result that RRF considered relevant.
+        """
+        head = scored[: self._rerank_top_k]
+        tail = scored[self._rerank_top_k :]
+        docs = [self._candidate_text(item) for item, _ in head]
+        try:
+            rer_scores = await self._rerank_fn(query, docs)
+        except Exception as e:
+            logger.debug("Rerank failed, keeping RRF order: {}", e)
+            return scored
+        if not rer_scores or len(rer_scores) != len(head):
+            # Misaligned/empty output is not trustworthy — keep RRF order.
+            return scored
+        reranked = list(zip(head, rer_scores))
+        if self._rerank_min_score is not None:
+            kept = [(pair, s) for pair, s in reranked if s >= self._rerank_min_score]
+            # Guard: if the floor drops everything, fall back to the un-filtered
+            # reranked head so a miscalibrated threshold can't zero out recall.
+            if kept:
+                reranked = kept
+        reranked.sort(key=lambda x: x[1], reverse=True)
+        # Carry the ORIGINAL RRF score forward as the item's score (rerank decides
+        # order, not the surfaced score, which downstream treats as an RRF value).
+        new_head = [pair for pair, _ in reranked]
+        return new_head + tail
 
     # -- tokenizer -----------------------------------------------------------
 
