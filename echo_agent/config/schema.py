@@ -2111,6 +2111,30 @@ class MemoryConfig(_Base):
             "desc_en": "Inject memory snapshots into context",
         },
     )
+    snapshot_layering: bool = Field(
+        default=True,
+        json_schema_extra={
+            "status": "effective", "ref": "memory/store.py:get_snapshot_with_ids",
+            "desc_zh": "快照分层:常驻核心只保留 top-K(按有效重要度)+ 显式 pinned 条目,长尾不再每轮无条件注入 system prompt,改由 query 驱动的召回按需带出。关闭则回退旧行为(USER≤50/ENV≤30 全量注入)。解决'常驻画像与当前问题无关'的注入路径",
+            "desc_en": "Snapshot layering: the always-on core keeps only top-K (by effective importance) plus explicitly pinned entries; the long tail is no longer injected into the system prompt every turn but surfaces via query-driven recall. Disable to revert to the legacy full snapshot (USER≤50/ENV≤30). Addresses the query-independent 'always-on profile looks unrelated' injection path.",
+        },
+    )
+    snapshot_user_core_max: int = Field(
+        default=12,
+        json_schema_extra={
+            "status": "effective", "ref": "memory/store.py:get_snapshot_with_ids",
+            "desc_zh": "分层开启时 USER 常驻核心的最大条目数(top-K + pinned)。长尾靠召回带出",
+            "desc_en": "Max USER entries in the always-on core when layering is on (top-K + pinned). The long tail surfaces via recall.",
+        },
+    )
+    snapshot_env_core_max: int = Field(
+        default=8,
+        json_schema_extra={
+            "status": "effective", "ref": "memory/store.py:get_snapshot_with_ids",
+            "desc_zh": "分层开启时 ENVIRONMENT 常驻核心的最大条目数(top-K + pinned)",
+            "desc_en": "Max ENVIRONMENT entries in the always-on core when layering is on (top-K + pinned).",
+        },
+    )
     contradiction_detection: bool = Field(
         default=True,
         json_schema_extra={

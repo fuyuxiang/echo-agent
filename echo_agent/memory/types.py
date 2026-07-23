@@ -63,6 +63,12 @@ class MemoryEntry:
     version: int = 1
     superseded_by: str = ""
     source: str = "legacy"
+    # Snapshot layering: pinned entries ALWAYS enter the always-on core snapshot
+    # regardless of importance rank (e.g. an allergy, a hard constraint the model
+    # must never forget even when the query doesn't mention it). Non-pinned facts
+    # only enter the core if they rank in the top-K; the long tail surfaces via
+    # query-driven recall instead of being injected on every turn.
+    pinned: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -83,6 +89,7 @@ class MemoryEntry:
             "version": self.version,
             "superseded_by": self.superseded_by,
             "source": self.source,
+            "pinned": self.pinned,
         }
 
     @classmethod
@@ -105,6 +112,7 @@ class MemoryEntry:
             version=data.get("version", 1),
             superseded_by=data.get("superseded_by", ""),
             source=data.get("source", "legacy"),
+            pinned=bool(data.get("pinned", False)),
         )
 
     def effective_importance(self, decay_half_life_days: float = 30.0) -> float:

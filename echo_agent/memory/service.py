@@ -131,6 +131,7 @@ class MemoryService:
         tags: list[str] | None = None,
         importance: float = 0.5,
         source: str,
+        pinned: bool = False,
     ) -> WriteResult:
         """新增记忆条目,走完整八步写序。新 key 无既有 target 故跳过 provenance。"""
         tags = list(tags or [])
@@ -152,6 +153,7 @@ class MemoryService:
             importance=importance,
             source=source,
             source_session=ctx.memory_scope,
+            pinned=pinned,
         )
         try:
             with self._service_write():

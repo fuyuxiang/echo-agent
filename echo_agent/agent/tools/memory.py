@@ -62,6 +62,16 @@ class MemoryTool(Tool):
                 "type": "number",
                 "description": "Importance score 0.0-1.0 (default 0.5)",
             },
+            "pinned": {
+                "type": "boolean",
+                "description": (
+                    "Pin this fact into the always-on core so it is present in "
+                    "context on EVERY turn regardless of the current question "
+                    "(for add). Reserve for must-never-forget facts (e.g. a hard "
+                    "constraint, an allergy). Unpinned facts still surface via "
+                    "recall when relevant. Defaults to false."
+                ),
+            },
             "source": {
                 "type": "string",
                 "enum": ["user_stated", "model_inferred"],
@@ -175,6 +185,7 @@ class MemoryTool(Tool):
         source = params.get("source", "")
         if source not in ("user_stated", "model_inferred"):
             source = "model_inferred"
+        pinned = bool(params.get("pinned", False))
 
         res = await self._service.add(
             actor_ctx,
@@ -184,6 +195,7 @@ class MemoryTool(Tool):
             tags=tags,
             importance=importance,
             source=source,
+            pinned=pinned,
         )
         if not res.ok:
             return self._map_reject(res, "add", key)

@@ -258,6 +258,9 @@ class AgentLoop:
             # R1 Task8:唯一写口。所有写者经 self._memory_service 单例(下方构造)
             # 走八步写序,故 store 置 service_only,外部绕过 service 直写即软告警。
             service_only=config.memory.enabled,
+            snapshot_layering=config.memory.snapshot_layering,
+            snapshot_user_core_max=config.memory.snapshot_user_core_max,
+            snapshot_env_core_max=config.memory.snapshot_env_core_max,
         )
         # R1 Task8:统一装配的 MemoryService 单例——所有写者(工具/reviewer/REST/
         # promotion/reflection/detector/归档)共享此实例,失效/flush/审计集中一处,

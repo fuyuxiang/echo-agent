@@ -164,6 +164,9 @@ class MemoryStore:
         lineage_max_versions: int = 3,
         lineage_retention_days: int = 90,
         service_only: bool = False,
+        snapshot_layering: bool = True,
+        snapshot_user_core_max: int = 12,
+        snapshot_env_core_max: int = 8,
     ):
         self.memory_dir = memory_dir
         self.memory_dir.mkdir(parents=True, exist_ok=True)
@@ -176,6 +179,14 @@ class MemoryStore:
         self._decay_half_life = decay_half_life_days
         self._user_snapshot_char_limit = user_snapshot_char_limit
         self._env_snapshot_char_limit = env_snapshot_char_limit
+        # Snapshot layering: cap the always-on core to top-K (by effective
+        # importance) per type, plus any explicitly pinned entry. The long tail
+        # is no longer injected every turn — it surfaces via query-driven recall
+        # (hardened with the relevance-admission gate). Disabling reverts to the
+        # legacy full snapshot (bounded only by the 50/30 entry caps below).
+        self._snapshot_layering = snapshot_layering
+        self._snapshot_user_core_max = max(1, int(snapshot_user_core_max))
+        self._snapshot_env_core_max = max(1, int(snapshot_env_core_max))
         self._entries: dict[str, MemoryEntry] = {}
         self._key_index: dict[str, set[str]] = {}  # key -> set of entry IDs for O(1) conflict lookup
         self._storage = storage
@@ -1023,7 +1034,12 @@ class MemoryStore:
         try:
             if not is_eligible(entry, Audience.SNAPSHOT, is_unresolved_fn=self.is_unresolved):
                 return False
-            if entry.type == MemoryType.USER:
+            # Explicitly pinned facts are exempt from the USER confidence soft
+            # gate: pinning means "must never forget" (an allergy, a hard
+            # constraint), so a low raw-importance / unvisited pinned fact must
+            # still enter the core. The HARD eligibility gate above still applies
+            # — a superseded / unresolved / archived pinned entry stays excluded.
+            if entry.type == MemoryType.USER and not getattr(entry, "pinned", False):
                 if self._forgetting.effective_importance(entry) < self._SNAPSHOT_MIN_EFFECTIVE_IMPORTANCE:
                     return False
                 if entry.access_count == 0 and entry.importance < self._SNAPSHOT_MIN_IMPORTANCE_UNVISITED:
@@ -1401,12 +1417,28 @@ class MemoryStore:
         overflow_notice: str | None = None,
         admit: "Callable[[MemoryEntry], bool] | None" = None,
         collect_ids: list[str] | None = None,
+        pin_first: bool = False,
     ) -> str:
-        all_entries = sorted(
-            self.list_all(mem_type, session_key=session_key),
-            key=lambda entry: self._forgetting.effective_importance(entry),
-            reverse=True,
-        )
+        # pin_first: explicitly pinned entries sort ahead of everyone else, so
+        # under a tight core cap (snapshot layering) they always make the cut
+        # regardless of importance rank. Within each group the effective-
+        # importance order is preserved. Off by default → legacy pure-importance
+        # ordering for every non-snapshot caller.
+        if pin_first:
+            all_entries = sorted(
+                self.list_all(mem_type, session_key=session_key),
+                key=lambda entry: (
+                    getattr(entry, "pinned", False),
+                    self._forgetting.effective_importance(entry),
+                ),
+                reverse=True,
+            )
+        else:
+            all_entries = sorted(
+                self.list_all(mem_type, session_key=session_key),
+                key=lambda entry: self._forgetting.effective_importance(entry),
+                reverse=True,
+            )
         if admit is not None:
             all_entries = [e for e in all_entries if admit(e)]
         entries = all_entries[:max_entries]
@@ -1461,28 +1493,41 @@ class MemoryStore:
         # (user/env 段 + pending 冲突提示),MD 降为人类可读视图,由 render.py
         # 单独渲染,不再进 system prompt。
 
+        # Snapshot layering: cap the always-on core to top-K (+ pinned). The long
+        # tail is NOT injected every turn — it surfaces via query-driven recall,
+        # which shares entries_fn and de-dups against this snapshot's ids
+        # (filter_recall_by_snapshot). Disabling reverts to the legacy 50/30 full
+        # snapshot. The overflow_notice tells the model more durable facts exist
+        # than the core shows, so it can consolidate / rely on recall.
+        layering = self._snapshot_layering
+        user_max = self._snapshot_user_core_max if layering else 50
+        env_max = self._snapshot_env_core_max if layering else 30
+
         user_ctx = self.get_context(
             MemoryType.USER,
-            max_entries=50,
+            max_entries=user_max,
             max_chars=self._user_snapshot_char_limit,
             session_key=session_key,
             overflow_notice=(
-                "- _(+{dropped} more durable facts about the user not shown — "
-                "consider consolidating with the memory tool)_"
+                "- _(+{dropped} more durable facts about the user not shown here — "
+                "they surface via recall when relevant; consolidate with the "
+                "memory tool if a core fact is missing)_"
             ),
             admit=self._admit_to_snapshot,
             collect_ids=collected,
+            pin_first=layering,
         )
         if user_ctx:
             parts.append(f"## What I Know About You\n\n{user_ctx}")
 
         env_ctx = self.get_context(
             MemoryType.ENVIRONMENT,
-            max_entries=30,
+            max_entries=env_max,
             max_chars=self._env_snapshot_char_limit,
             session_key=session_key,
             admit=self._admit_to_snapshot,
             collect_ids=collected,
+            pin_first=layering,
         )
         if env_ctx:
             parts.append(f"## Environment Memory\n\n{env_ctx}")
