@@ -247,6 +247,15 @@ class EchoTUI(App):
                 self._pending_approval = None
                 self._clarify_free_input = False
                 self._unlock_prompt(focus=False)
+            # Return keyboard focus to the prompt now the turn is done. During
+            # the turn, focus can drift off PromptInput onto a transcript block
+            # (tool/cognitive blocks are focusable so a mouse click or Tab lands
+            # on them) — and nothing on the normal reply path brought it back,
+            # so the next keystroke went to that block (which ignores printable
+            # keys) and the box looked frozen. Skip only while a pending
+            # clarify/approval intentionally holds the keyboard (prompt disabled).
+            if self._pending_clarify is None and self._pending_approval is None:
+                self._refocus_prompt()
 
     def on_cognitive(self, ev: CogEvent) -> None:
         if ev.cog_type == "heartbeat":
@@ -318,6 +327,12 @@ class EchoTUI(App):
             self.query_one(StatusBar).stop_turn_timer()
         except Exception:
             pass
+        # Same focus recovery as the normal reply path: an error ends the turn,
+        # so pull keyboard focus back to the prompt in case it drifted onto a
+        # transcript block. Skip while a pending clarify/approval owns the
+        # keyboard (prompt disabled → focus() is a no-op anyway).
+        if self._pending_clarify is None and self._pending_approval is None:
+            self._refocus_prompt()
 
     def notify_disconnected(self) -> None:
         """Flip the status bar to the disconnected state after a silent ws
@@ -418,6 +433,18 @@ class EchoTUI(App):
             pi.disabled = False
             if focus:
                 pi.focus()
+        except Exception:
+            pass
+
+    def _refocus_prompt(self) -> None:
+        # Put keyboard focus back on the prompt without touching its enabled
+        # state (unlike _unlock_prompt, which also flips disabled). Used at turn
+        # end to recover from focus drifting onto a transcript block during the
+        # turn. focus() is a no-op on a disabled widget, so a still-locked prompt
+        # (pending clarify/approval) is left alone. Best-effort — never crash the
+        # sink if the widget isn't mounted.
+        try:
+            self.query_one(PromptInput).focus()
         except Exception:
             pass
 

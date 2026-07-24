@@ -62,7 +62,17 @@ class ExpandableBlock(Static):
         self.update(self.render_detail() if self.expanded else self.render_summary())
 
     def on_click(self) -> None:
+        # Toggle on click, but hand keyboard focus straight back to the prompt.
+        # The block is focusable (so Tab can reach it), and a click would
+        # otherwise leave focus parked here — this block only responds to
+        # enter/space, so the user's next keystroke would be swallowed and the
+        # input box would look frozen. Tab/arrow focus is unaffected (that path
+        # doesn't go through on_click). Best-effort: no prompt mounted → skip.
         self.toggle()
+        try:
+            self.app.query_one("PromptInput").focus()
+        except Exception:
+            pass
 
     def key_enter(self) -> None:
         self.toggle()
