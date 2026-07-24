@@ -153,9 +153,38 @@ async def test_vector_disabled_still_wires_keyword_consumers(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_rerank_disabled_by_default_no_reranker(agent_loop_factory):
-    """默认 rerank_enabled=False:不构造 reranker,检索器无 rerank_fn。"""
+async def test_rerank_enabled_by_default_builds_reranker(agent_loop_factory):
+    """默认 rerank_enabled=True:构造 reranker 并接入 rerank_fn(懒加载,构造不下载)。"""
     loop = agent_loop_factory(embedding_backend="local", provider_embeds=[0.1])
+    await loop.start()
+    assert loop._reranker is not None
+    assert loop._hybrid_retriever._rerank_fn is not None
+    loop._reranker.close()
+
+
+@pytest.mark.asyncio
+async def test_rerank_can_be_disabled(tmp_path):
+    """显式关闭 → 不构造 reranker,检索器无 rerank_fn。"""
+    config = load_config(overrides={"workspace": str(tmp_path)})
+    config.memory.enabled = True
+    config.memory.vector_enabled = False
+    config.memory.rerank_enabled = False
+    config.knowledge.enabled = False
+    config.planning.enabled = False
+    config.multi_agent.enabled = False
+    config.observability.otel_enabled = False
+    config.observability.trace_enabled = False
+
+    provider = MagicMock(spec=LLMProvider)
+    provider.supports_embed = MagicMock(return_value=True)
+    provider.embed = AsyncMock(return_value=[0.1])
+    provider.get_default_model = MagicMock(return_value="stub")
+    provider.chat_with_retry = AsyncMock()
+
+    loop = AgentLoop(
+        bus=MessageBus(), config=config, provider=provider,
+        workspace=tmp_path, storage=SQLiteBackend(tmp_path / "mem_norr.db"),
+    )
     await loop.start()
     assert loop._reranker is None
     assert loop._hybrid_retriever._rerank_fn is None
