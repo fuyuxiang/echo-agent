@@ -7,8 +7,6 @@ RRF 是纯 rank-based,只融合两路的顺序、不懂"这条到底和问题多
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
-
 import pytest
 
 from echo_agent.memory.forgetting import ForgettingCurve

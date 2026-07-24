@@ -15,7 +15,7 @@ import pytest
 from echo_agent.memory.forgetting import ForgettingCurve
 from echo_agent.memory.retrieval import HybridRetriever
 from echo_agent.memory.store import MemoryStore
-from echo_agent.memory.types import Episode, MemoryEntry, MemoryType
+from echo_agent.memory.types import MemoryEntry, MemoryType
 
 
 def _entry(eid, key, content, importance=0.5):
