@@ -89,6 +89,26 @@ class TurnRegistry:
         self._pending_primary = 0
         self._pending_kinds.clear()
 
+    def reset_on_reconnect(self) -> None:
+        """Drop ALL in-flight correlation after a socket reconnect.
+
+        Correlation (send → accepted → final) is only valid within a single
+        connection: the gateway emits each `accepted` inline in its read loop and
+        never re-sends it, and a final produced while the socket was down is
+        dropped (recovered only as display text via replay_missed_reply, which
+        carries no event_id). So after a reconnect none of the outstanding ids
+        can ever be retired by an incoming frame — leaving them here would pin
+        has_active_primary True forever and the queue-guard would block every
+        subsequent submit until the process restarts. Clearing control state too
+        (unlike on_terminal_error): an approve/deny/clarify ack in flight across
+        the drop is equally unrecoverable. Any turn still running server-side
+        will deliver its final as an uncorrelated (standalone) reply, which still
+        renders correctly."""
+        self._primary.clear()
+        self._control.clear()
+        self._pending_primary = 0
+        self._pending_kinds.clear()
+
     @property
     def active_turn_id(self) -> str:
         """The event_id Ctrl+C should target: the oldest outstanding primary

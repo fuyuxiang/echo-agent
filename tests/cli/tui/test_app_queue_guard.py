@@ -118,6 +118,36 @@ async def test_local_command_works_while_turn_running():
 
 
 @pytest.mark.asyncio
+async def test_reconnect_clears_stuck_turn_and_unblocks_submit():
+    # 真 bug 端到端回归：turn 在飞时断线，其 final 断连期间丢失永远到不了 CLI。
+    # 重连后必须清掉残留的 in-flight 关联，否则 has_active_primary 永久为真、
+    # queue-guard 永久拦截，用户直到重启才能再发消息。
+    sent: list[str] = []
+
+    async def fake_send(text):
+        sent.append(text)
+
+    async def fake_reconnect():
+        return True
+
+    app = EchoTUI(send_coro=fake_send, session_key="s1", reconnect_coro=fake_reconnect)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _mark_turn_running(app, "evt-lost")
+        assert app._turns.has_active_primary is True
+        # 断线 → 重连成功。
+        app.notify_disconnected()
+        app.notify_reconnected()
+        await pilot.pause()
+        # 残留已清，重连后第一条消息应直接发送，不被 queue-guard 拦。
+        assert app._turns.has_active_primary is False
+        await app.on_prompt_input_submitted(_submitted("重连后的新消息"))
+        await pilot.pause()
+        assert sent == ["重连后的新消息"]
+        assert app._last_queue_confirm == 0.0
+
+
+@pytest.mark.asyncio
 async def test_clarify_free_input_takes_precedence_over_queue_guard():
     # clarify 自由文本答复优先于排队确认：即使有在飞 turn，也直接作为 clarify 答案。
     sent: list[str] = []

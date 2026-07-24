@@ -360,14 +360,29 @@ class EchoTUI(App):
         """Restore the connected state after a successful reconnect. Called by
         the reconnect path in run_client."""
         self._connected = True
+        # Drop in-flight turn correlation: a turn outstanding across the drop can
+        # never be retired by an incoming frame (accepted is not re-sent, a final
+        # produced during the outage was dropped and only its text is recovered
+        # via replay_missed_reply). Without this, _primary/_pending_primary stay
+        # set, has_active_primary is pinned True, and the queue-guard blocks every
+        # later submit until the process restarts. Any turn still running
+        # server-side delivers its final as a standalone reply, which still shows.
+        self._turns.reset_on_reconnect()
+        # Also clear the pending clarify/approval slots and re-enable the prompt:
+        # their in-flight acks are unrecoverable across the drop too, and a stale
+        # pending slot would keep the keyboard captured / prompt disabled.
+        self._pending_clarify = None
+        self._pending_approval = None
+        self._clarify_free_input = False
         try:
-            self.query_one(StatusBar).set_connection(True)
+            bar = self.query_one(StatusBar)
+            bar.set_connection(True)
+            # No primary turn is tracked anymore, so a still-running elapsed
+            # timer would tick against nothing — stop it to match the reset state.
+            bar.stop_turn_timer()
         except Exception:
             pass
-        try:
-            self.query_one(PromptInput).focus()
-        except Exception:
-            pass
+        self._unlock_prompt(focus=True)
 
     def replay_missed_reply(self, text: str) -> None:
         """Show a final reply recovered from history after a reconnect.
