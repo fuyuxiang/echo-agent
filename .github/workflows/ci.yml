@@ -17,8 +17,12 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install ruff
-        run: pip install ruff
+      # Install the pinned ruff from the dev extra instead of a bare
+      # `pip install ruff` (which floats to the latest release). This keeps the
+      # ruff version in one place — [project.optional-dependencies] dev — so CI
+      # and local `pip install -e ".[dev]"` always run the same linter.
+      - name: Install ruff (pinned via dev extra)
+        run: pip install -e ".[dev]"
 
       - name: Run ruff
         run: ruff check .
