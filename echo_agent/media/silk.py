@@ -80,6 +80,7 @@ async def encode_to_silk(src_path: str) -> tuple[str, int]:
     os.close(pcm_fd)
     silk_fd, silk_path = tempfile.mkstemp(suffix=".silk")
     os.close(silk_fd)
+    ok = False
     try:
         await _ffmpeg_to_pcm(src_path, pcm_path)
         # pilk.encode is CPU-bound and synchronous → run off the event loop.
@@ -88,11 +89,16 @@ async def encode_to_silk(src_path: str) -> tuple[str, int]:
         )
         pcm_bytes = os.path.getsize(pcm_path)
         duration_ms = int(pcm_bytes / (_BYTES_PER_SAMPLE * _PCM_RATE) * 1000)
+        ok = True
         return silk_path, duration_ms
-    except Exception:
-        if os.path.exists(silk_path):
-            os.unlink(silk_path)
-        raise
     finally:
+        # Both temp files are cleaned on every non-success exit, cancellation
+        # included. The previous `except Exception` missed CancelledError (a
+        # BaseException since 3.8) — and cancellation is a real path here, both
+        # awaits can raise it — so an aborted send left an empty .silk behind
+        # every time. `ok` rather than exception matching: only a completed
+        # encode hands silk_path to the caller, so only then must we keep it.
+        if not ok and os.path.exists(silk_path):
+            os.unlink(silk_path)
         if os.path.exists(pcm_path):
             os.unlink(pcm_path)
