@@ -44,6 +44,15 @@ class TurnRegistry:
         # Count of primary sends dispatched but not yet accepted. Keeps the turn
         # considered "active" in the gap between submit and its accepted frame.
         self._pending_primary = 0
+        # Set when a reconnect dropped correlation while work was outstanding.
+        # "We can no longer name the running turn" and "nothing is running" are
+        # different facts, and conflating them cost the user control: with no
+        # target id AND no active-primary flag, Ctrl+C fell through to the exit
+        # guard, so a turn still running server-side could be neither stopped nor
+        # interrupted. This flag keeps the interrupt path reachable while leaving
+        # the queue guard open (correlation really is gone, so blocking new
+        # submits forever would be worse).
+        self._server_may_be_busy = False
 
     def note_send(self, kind: str) -> None:
         """Record that a frame of ``kind`` ("primary" or "control") was sent, so
@@ -88,6 +97,7 @@ class TurnRegistry:
         self._primary.clear()
         self._pending_primary = 0
         self._pending_kinds.clear()
+        self._server_may_be_busy = False
 
     def reset_on_reconnect(self) -> None:
         """Drop ALL in-flight correlation after a socket reconnect.
@@ -103,11 +113,28 @@ class TurnRegistry:
         (unlike on_terminal_error): an approve/deny/clarify ack in flight across
         the drop is equally unrecoverable. Any turn still running server-side
         will deliver its final as an uncorrelated (standalone) reply, which still
-        renders correctly."""
+        renders correctly.
+
+        What is NOT forgotten: that work may still be running there. Clearing the
+        ids answers "can we name it?" (no), not "is it over?" (unknown). The
+        distinction is recorded so Ctrl+C can still send a targetless interrupt —
+        the gateway stops whatever is running — instead of falling through to the
+        exit prompt while the agent works on."""
+        had_work = self.has_active_primary
         self._primary.clear()
         self._control.clear()
         self._pending_primary = 0
         self._pending_kinds.clear()
+        self._server_may_be_busy = self._server_may_be_busy or had_work
+
+    def note_turn_settled(self) -> None:
+        """A reply/error arrived, so the pre-reconnect turn is accounted for.
+
+        Called on any terminal frame — including the uncorrelated standalone
+        reply a pre-reconnect turn produces — so the "server may be busy" flag
+        does not stay armed for the rest of the session and keep offering an
+        interrupt for work that already finished."""
+        self._server_may_be_busy = False
 
     @property
     def active_turn_id(self) -> str:
@@ -122,6 +149,17 @@ class TurnRegistry:
         awaiting its accepted frame. Drives both the turn timer and the Ctrl+C
         guard so they span the whole turn, never a control event."""
         return bool(self._primary) or self._pending_primary > 0
+
+    @property
+    def may_be_running_uncorrelated(self) -> bool:
+        """True when work may still be running server-side under no known id.
+
+        Only a reconnect that dropped an outstanding turn sets this. It is
+        deliberately NOT folded into has_active_primary: that property gates the
+        queue guard and the turn timer, which must stay open (we can never retire
+        this turn, so blocking submits on it would lock the session for good).
+        This one gates the interrupt path only."""
+        return self._server_may_be_busy
 
     @property
     def queued_count(self) -> int:

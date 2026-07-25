@@ -248,7 +248,12 @@ class EchoTUI(App):
         # (conversation) turn remains outstanding — a control reply's final
         # (approve/deny/clarify ack) must not stop the original turn's timer, and
         # a queued second turn must keep it running.
-        self._turns.on_final(inbound_id)
+        kind = self._turns.on_final(inbound_id)
+        if kind != "control":
+            # A conversation reply (correlated or the uncorrelated standalone one
+            # a pre-reconnect turn produces) means that work is accounted for, so
+            # stop offering an interrupt for it.
+            self._turns.note_turn_settled()
         if not self._turns.has_active_primary:
             self.query_one(StatusBar).stop_turn_timer()
             # Defensive: a primary turn ending with a clarify/approval still
@@ -760,7 +765,12 @@ class EchoTUI(App):
         # from submit until its final reply, spanning tool rounds and approval
         # waits, and unaffected by control replies.
         turn_active = self._turns.has_active_primary
-        if turn_active and self._interrupt is not None:
+        # Also offer the interrupt when a reconnect left work running under an id
+        # we can no longer name: the gateway stops whatever is running when the
+        # target is empty. Without this, Ctrl+C during a post-reconnect turn armed
+        # the exit prompt instead of stopping the agent — the user had no way to
+        # halt work they could still see happening.
+        if (turn_active or self._turns.may_be_running_uncorrelated) and self._interrupt is not None:
             self._last_ctrl_c = 0.0
             # Scope the stop to the oldest outstanding PRIMARY turn (the one the
             # gateway is running) — never a control reply's id, and never a

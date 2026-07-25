@@ -117,3 +117,79 @@ async def test_ctrl_c_keypress_routes_to_interrupt():
         await pilot.pause()
         assert app._exit is False
         assert app._last_ctrl_c > 0.0
+
+
+# ── 重连后仍要保住对服务端在跑回合的控制权 ──────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_ctrl_c_after_reconnect_still_interrupts_running_turn():
+    """回归:重连后 Ctrl+C 必须发无目标中断,而不是进入退出确认。
+
+    重连会清掉全部 turn 关联(必须清:那些 id 永远无法被后续帧回收,留着会永久拦住
+    提交)。但清掉关联不等于回合结束 —— 服务端可能还在跑。原实现两者混为一谈,于是
+    Ctrl+C 落到第 4 分支武装退出,用户失去了停止手段。
+    """
+    interrupts: list[str] = []
+
+    async def fake_interrupt(target_event_id: str = ""):
+        interrupts.append(target_event_id)
+
+    app = EchoTUI(interrupt_coro=fake_interrupt)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._turns.note_send("primary")
+        app.on_turn_accepted("evt-1")
+        app.notify_reconnected()              # 断线重连:关联全部失效
+        await pilot.pause()
+
+        await app.action_interrupt()
+        await pilot.pause()
+
+        # 空目标 = "停掉正在跑的那个",网关支持这个语义。
+        assert interrupts == [""], f"重连后未发出中断: {interrupts}"
+        assert app._exit is False, "不该进入退出流程"
+        assert app._last_ctrl_c == 0.0, "不该武装退出窗口"
+
+
+@pytest.mark.asyncio
+async def test_ctrl_c_after_reconnect_when_idle_arms_exit():
+    """空闲时重连后 Ctrl+C 仍应是正常的两段式退出 —— 没有工作可中断。"""
+    interrupts: list[str] = []
+
+    async def fake_interrupt(target_event_id: str = ""):
+        interrupts.append(target_event_id)
+
+    app = EchoTUI(interrupt_coro=fake_interrupt)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.notify_reconnected()              # 空闲重连
+        await pilot.pause()
+        await app.action_interrupt()
+        await pilot.pause()
+        assert interrupts == [], "无在飞工作时不该发中断"
+        assert app._last_ctrl_c > 0.0
+
+
+@pytest.mark.asyncio
+async def test_reply_after_reconnect_disarms_the_interrupt_path():
+    """断连前的回合以无关联回复落地后,Ctrl+C 应恢复为退出确认。"""
+    interrupts: list[str] = []
+
+    async def fake_interrupt(target_event_id: str = ""):
+        interrupts.append(target_event_id)
+
+    app = EchoTUI(interrupt_coro=fake_interrupt)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._turns.note_send("primary")
+        app.on_turn_accepted("evt-1")
+        app.notify_reconnected()
+        # 服务端把回合跑完了,final 以无关联回复到达。
+        app.on_user_reply_final("evt-1", "答案")
+        await pilot.pause()
+
+        await app.action_interrupt()
+        await pilot.pause()
+        assert interrupts == [], "回合已结束,不该再发中断"
+        assert app._last_ctrl_c > 0.0
