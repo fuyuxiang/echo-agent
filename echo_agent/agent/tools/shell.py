@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from echo_agent.agent.executors.base import BaseExecutor, ExecRequest
-from echo_agent.agent.proc_lifecycle import subprocess_kwargs, terminate_tree
+from echo_agent.agent.proc_lifecycle import spawn_shell, terminate_tree
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
 from echo_agent.security.guards import evaluate_shell_command
 from echo_agent.security.path_policy import check_cwd
@@ -131,13 +131,12 @@ class ShellTool(Tool):
                 return_code = response.return_code
                 executor_name = response.executor
             else:
-                proc = await asyncio.create_subprocess_shell(
+                proc = await spawn_shell(
                     command,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=cwd,
                     env={**os.environ, "WORKSPACE": self._workspace},
-                    **subprocess_kwargs(),
                 )
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
                 output = stdout.decode(errors="replace")
@@ -163,7 +162,10 @@ class ShellTool(Tool):
                 await terminate_tree(proc)
             return ToolResult(success=False, error=f"Command timed out after {timeout}s")
         except Exception as e:
-            if proc is not None and proc.returncode is None:
+            if proc is not None:
+                # Not gated on `returncode is None`: an exited leader can still
+                # have left backgrounded grandchildren in its group, and this
+                # tool holds the only handle to them.
                 await terminate_tree(proc)
             return ToolResult(success=False, error=str(e))
 

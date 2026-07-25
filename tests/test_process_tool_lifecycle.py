@@ -181,3 +181,71 @@ async def test_running_process_never_reclaimed(tmp_path):
         await asyncio.wait_for(tool._processes[done]["collector"], timeout=5)
     assert live in tool._processes, "活跃进程不得被回收"
     await tool.aclose()
+
+
+# ── 回收的两个前置条件:输出已排空、进程组已排空 ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_entry_kept_while_background_work_runs(tmp_path):
+    """回归:leader 退出但进程组还在跑时,表项必须保留。
+
+    背景命令(`sleep &`)的 shell 立刻以 0 退出,原实现只看 returncode 就把表项当
+    "已退出"回收,于是 stop/aclose 再也没有句柄去停那个仍在运行的后台进程。
+    """
+    tool = ProcessTool(str(tmp_path))
+    tool._MAX_EXITED_ENTRIES = 0
+    tool._EXITED_TTL_SECONDS = 0.0
+
+    # 孙进程重定向自己的 stdio,才不会撑着 leader 的管道 —— 否则 leader 不会先退出。
+    pid = await _start(tool, "sleep 60 >/dev/null 2>&1 &")
+    proc = tool._processes[pid]["process"]
+    await asyncio.wait_for(proc.wait(), timeout=5)
+    assert proc.returncode == 0, "leader 应在启动后台任务后立即退出"
+    await asyncio.wait_for(tool._processes[pid]["collector"], timeout=5)
+
+    tool._reap_finished()
+    assert pid in tool._processes, "组内仍有后台工作时不得回收表项"
+
+    # poll 也要如实报告"leader 退了但后台还在跑",而不是干脆说 exited(0)。
+    poll = await tool._poll(pid)
+    assert "background work running" in poll.output
+
+    await tool.aclose()
+    assert tool._processes == {}
+
+
+@pytest.mark.asyncio
+async def test_watchdog_bounds_backgrounded_work(tmp_path):
+    """回归:timeout 必须约束整棵进程树,而不只是 leader。
+
+    原 watchdog 是 `await wait_for(proc.wait(), timeout)`,leader 一退出就 return
+    —— 而 `cmd &` 的 shell 恰好立刻退出,于是后台工作彻底没有超时上界,能一直跑到
+    agent 进程自己结束。
+    """
+    from echo_agent.agent.proc_lifecycle import process_group_alive
+
+    tool = ProcessTool(str(tmp_path))
+    tool._GROUP_WAIT_INTERVAL = 0.05
+    # 孙进程重定向 stdio,否则 leader 会被管道拖住不先退出。
+    pid = await _start(tool, "sleep 60 >/dev/null 2>&1 &", timeout=1)
+    proc = tool._processes[pid]["process"]
+    await asyncio.wait_for(proc.wait(), timeout=5)
+    assert proc.returncode == 0, "leader 应立即退出"
+
+    # watchdog 必须在 timeout 到点后回收整组并标记超时。
+    await asyncio.wait_for(tool._processes[pid]["watchdog"], timeout=15)
+    assert tool._processes[pid]["timed_out"] is True, "后台工作未被超时约束"
+    assert not process_group_alive(proc), "超时后整组必须被回收"
+    await tool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_watchdog_does_not_flag_tree_that_finishes_in_time(tmp_path):
+    """树在期限内自然排空时不得标记超时,也不得误杀。"""
+    tool = ProcessTool(str(tmp_path))
+    tool._GROUP_WAIT_INTERVAL = 0.05
+    pid = await _start(tool, "sleep 0.2 >/dev/null 2>&1 &", timeout=10)
+    await asyncio.wait_for(tool._processes[pid]["watchdog"], timeout=15)
+    assert tool._processes[pid]["timed_out"] is False
+    await tool.aclose()

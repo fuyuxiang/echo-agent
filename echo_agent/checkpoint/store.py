@@ -7,7 +7,7 @@ import hashlib
 import os
 from pathlib import Path
 
-from echo_agent.agent.proc_lifecycle import subprocess_kwargs, terminate_tree
+from echo_agent.agent.proc_lifecycle import spawn_exec, terminate_tree
 
 # Upper bound for a single git invocation. Snapshot commands are local and
 # normally finish in well under a second, but git can block indefinitely on an
@@ -60,10 +60,9 @@ class ShadowGitStore:
         self._store.mkdir(parents=True, exist_ok=True)
         (self._store / "indexes").mkdir(parents=True, exist_ok=True)
         if not (self._store / "objects").exists():
-            proc = await asyncio.create_subprocess_exec(
+            proc = await spawn_exec(
                 "git", "init", "--bare", str(self._store),
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                **subprocess_kwargs(),
             )
             await self._communicate(proc, "init --bare")
         self._initialized = True
@@ -104,10 +103,9 @@ class ShadowGitStore:
         env.setdefault("GIT_COMMITTER_NAME", "echo-agent")
         env.setdefault("GIT_COMMITTER_EMAIL", "checkpoint@echo-agent.local")
         env.update(extra_env or {})
-        proc = await asyncio.create_subprocess_exec(
+        proc = await spawn_exec(
             "git", *args, env=env,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            **subprocess_kwargs(),
         )
         out, err = await self._communicate(proc, " ".join(args))
         rc = proc.returncode or 0

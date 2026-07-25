@@ -9,7 +9,11 @@ from typing import Any
 
 from loguru import logger
 
-from echo_agent.agent.proc_lifecycle import subprocess_kwargs, terminate_tree
+from echo_agent.agent.proc_lifecycle import (
+    process_group_alive,
+    spawn_shell,
+    terminate_tree,
+)
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
 from echo_agent.security.guards import evaluate_shell_command
 
@@ -38,6 +42,9 @@ class ProcessTool(Tool):
     # never reclaimed regardless of these limits.
     _EXITED_TTL_SECONDS = 1800.0
     _MAX_EXITED_ENTRIES = 64
+    # Poll interval for the watchdog's post-leader group wait. Grandchildren are
+    # not our children, so there is nothing to await — only existence to probe.
+    _GROUP_WAIT_INTERVAL = 0.2
 
     def __init__(self, workspace: str, *, exec_policy: Any | None = None, network_policy: str = "allow"):
         self._workspace = workspace
@@ -76,12 +83,11 @@ class ProcessTool(Tool):
         if decision.action == "deny" or (decision.action == "ask" and not approved):
             return ToolResult(success=False, error=f"Process blocked by execution policy: {decision.reason}")
 
-        proc = await asyncio.create_subprocess_shell(
+        proc = await spawn_shell(
             cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=self._workspace,
-            **subprocess_kwargs(),
         )
         pid = f"proc_{proc.pid}"
         # Reclaim before inserting, so the cap counts entries already in the
@@ -120,16 +126,23 @@ class ProcessTool(Tool):
         return ToolResult(output=f"Started process {pid}: {cmd}", metadata={"process_id": pid})
 
     def _reap_finished(self) -> None:
-        """Drop bookkeeping for exited processes past their retention window.
+        """Drop bookkeeping for finished processes past their retention window.
 
-        Entries are eligible only once the child has actually exited (returncode
-        is not None); a running process is never reclaimed, however old. Called
-        on every `start` so the table is bounded by use rather than by a timer.
+        "Finished" means two things must both hold: the leader has exited AND
+        nothing is left in its process group. The group check is what stops a
+        backgrounding command (`server &`) from being reclaimed — its shell exits
+        with 0 immediately while the real work keeps running, and dropping the
+        entry there would delete the only handle `stop`/`aclose` could use, so
+        the work would run until the agent's own process died.
+
+        Called on every `start`/`list` so the table is bounded by use rather than
+        by a timer.
         """
         now = time.time()
         exited = [
             (pid, info) for pid, info in self._processes.items()
             if info["process"].returncode is not None
+            and not process_group_alive(info["process"])
         ]
         stale = {
             pid for pid, info in exited
@@ -144,24 +157,59 @@ class ProcessTool(Tool):
             self._processes.pop(pid, None)
 
     async def _watchdog(self, pid: str, timeout: float) -> None:
-        """Kill a process that outlives its timeout, marking it timed_out.
+        """Kill a process tree that outlives its timeout, marking it timed_out.
 
-        Reaps the whole process group (see terminate_tree) so pipeline and
-        backgrounded grandchildren die too, not just the direct shell.
-        Cancelled quietly when the process exits on its own (watchdog is
+        Waits on the whole *group*, not just the leader: `sleep 300 &` makes the
+        shell exit instantly, so a watchdog that returned on the leader's exit
+        would leave the backgrounded work with no deadline at all. Reaps via
+        terminate_tree so pipeline and backgrounded grandchildren die too.
+        Cancelled quietly when the tree drains on its own (the watchdog is also
         cancelled in _stop/aclose).
         """
         info = self._processes.get(pid)
         if not info:
             return
         proc = info["process"]
+        deadline = time.monotonic() + timeout
         try:
             await asyncio.wait_for(proc.wait(), timeout=timeout)
-            return  # exited before the deadline — nothing to do
         except asyncio.TimeoutError:
-            pass
+            # Leader still running at the deadline — kill the tree.
+            info["timed_out"] = True
+            await terminate_tree(proc)
+            return
+
+        # Leader exited on its own, but the group may still hold backgrounded
+        # work. Keep watching against the same deadline; there is nothing to
+        # await for grandchildren (they are not our children), so poll.
+        while time.monotonic() < deadline:
+            if not process_group_alive(proc):
+                return  # tree fully drained in time
+            await asyncio.sleep(self._GROUP_WAIT_INTERVAL)
+        if not process_group_alive(proc):
+            return
         info["timed_out"] = True
         await terminate_tree(proc)
+
+    @staticmethod
+    def _status_of(info: dict[str, Any]) -> str:
+        """Human status for one entry, distinguishing the leader from the tree.
+
+        A backgrounding command (`server &`) exits its shell with 0 while the
+        real work continues in the same group. Reporting a bare "exited(0)" there
+        told the model the job was done, so it stopped polling and never called
+        stop — the reason this reads the group and not just the returncode.
+        """
+        proc = info["process"]
+        if proc.returncode is None:
+            status = "running"
+        elif process_group_alive(proc):
+            status = f"leader exited({proc.returncode}), background work running"
+        else:
+            status = f"exited({proc.returncode})"
+        if info.get("timed_out"):
+            status += " timed out"
+        return status
 
     def _list(self) -> ToolResult:
         # Also reclaim here: a process that exits after the last `start` would
@@ -172,20 +220,15 @@ class ProcessTool(Tool):
             return ToolResult(output="No background processes.")
         lines = []
         for pid, info in self._processes.items():
-            proc = info["process"]
-            status = "running" if proc.returncode is None else f"exited({proc.returncode})"
             elapsed = int(time.time() - info["started"])
-            lines.append(f"{pid}: [{status}] {elapsed}s — {info['command'][:80]}")
+            lines.append(f"{pid}: [{self._status_of(info)}] {elapsed}s — {info['command'][:80]}")
         return ToolResult(output="\n".join(lines))
 
     async def _poll(self, pid: str) -> ToolResult:
         if pid not in self._processes:
             return ToolResult(success=False, error=f"Process '{pid}' not found")
         info = self._processes[pid]
-        proc = info["process"]
-        status = "running" if proc.returncode is None else f"exited({proc.returncode})"
-        if info.get("timed_out"):
-            status += " timed out"
+        status = self._status_of(info)
         stdout = info["stdout_buf"].decode(errors="replace")[-8000:]
         stderr = info["stderr_buf"].decode(errors="replace")[-4000:]
         output = f"[{status}]\n{stdout}"

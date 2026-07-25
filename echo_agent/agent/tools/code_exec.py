@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from echo_agent.agent.executors.base import BaseExecutor, ExecRequest
-from echo_agent.agent.proc_lifecycle import subprocess_kwargs, terminate_tree
+from echo_agent.agent.proc_lifecycle import spawn_shell, terminate_tree
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
 from echo_agent.security.guards import evaluate_code_execution
 
@@ -111,13 +111,12 @@ class CodeExecTool(Tool):
                 exit_code = response.return_code
                 executor_name = response.executor
             else:
-                proc = await asyncio.create_subprocess_shell(
+                proc = await spawn_shell(
                     command,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     stdin=asyncio.subprocess.PIPE,
                     cwd=str(self._workspace),
-                    **subprocess_kwargs(),
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(code.encode()), timeout=timeout)

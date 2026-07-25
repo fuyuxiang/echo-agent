@@ -18,7 +18,11 @@ from pathlib import Path
 
 from loguru import logger
 
-from echo_agent.agent.proc_lifecycle import subprocess_kwargs, terminate_tree
+from echo_agent.agent.proc_lifecycle import (
+    record_process_group,
+    subprocess_kwargs,
+    terminate_tree,
+)
 from echo_agent.security.guards import command_uses_network
 
 
@@ -101,6 +105,10 @@ class LocalExecutor(BaseExecutor):
                 env=env,
                 **subprocess_kwargs(),
             )
+            # Record the PGID while the leader is alive: a command that
+            # backgrounds work outlives its shell, and after the leader is
+            # reaped its group is no longer discoverable.
+            record_process_group(proc, own_session=True)
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(request.stdin.encode() if request.stdin else None),
                 timeout=request.timeout,
@@ -119,7 +127,9 @@ class LocalExecutor(BaseExecutor):
                 await terminate_tree(proc)
             return ExecResponse(success=False, stderr=f"Timeout after {request.timeout}s", return_code=-1, executor=self.name)
         except Exception as e:
-            if proc is not None and proc.returncode is None:
+            if proc is not None:
+                # Sweep unconditionally: an exited leader can still have left
+                # backgrounded grandchildren in the group.
                 await terminate_tree(proc)
             return ExecResponse(success=False, stderr=str(e), return_code=-1, executor=self.name)
 
@@ -199,6 +209,7 @@ class SandboxExecutor(BaseExecutor):
                 env=env,
                 **subprocess_kwargs(),
             )
+            record_process_group(proc, own_session=True)
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(request.stdin.encode() if request.stdin else None),
                 timeout=request.timeout,
@@ -217,7 +228,7 @@ class SandboxExecutor(BaseExecutor):
                 await terminate_tree(proc)
             return ExecResponse(success=False, stderr=f"Timeout after {request.timeout}s", return_code=-1, executor=self.name)
         except Exception as e:
-            if proc is not None and proc.returncode is None:
+            if proc is not None:
                 await terminate_tree(proc)
             return ExecResponse(success=False, stderr=str(e), return_code=-1, executor=self.name)
 
