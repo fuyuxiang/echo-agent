@@ -187,6 +187,31 @@ async def test_running_process_never_reclaimed(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_capacity_eviction_keeps_undrained_entry(tmp_path):
+    """回归:容量淘汰不得优先删掉刚退出、collector 尚未排空的条目。
+
+    原实现把 finished_at=None 的条目也算进淘汰候选,并用 `or 0.0` 把 None 当成
+    "最老",于是最新、输出还没读完的结果反而排在最前面被删,模型再也拿不到它。
+    """
+    tool = ProcessTool(str(tmp_path))
+    tool._MAX_EXITED_ENTRIES = 1
+
+    old = await _start(tool, "echo old")
+    await asyncio.wait_for(tool._processes[old]["collector"], timeout=5)
+    assert tool._processes[old]["finished_at"] is not None
+
+    fresh = await _start(tool, "echo fresh")
+    # 人为制造"已退出但尚未排空"的窗口:等进程结束,但不等 collector。
+    await asyncio.wait_for(tool._processes[fresh]["process"].wait(), timeout=5)
+    tool._processes[fresh]["finished_at"] = None
+
+    tool._reap_finished()
+
+    assert fresh in tool._processes, "尚未排空输出的新条目不得被淘汰"
+    await tool.aclose()
+
+
+@pytest.mark.asyncio
 async def test_entry_kept_while_background_work_runs(tmp_path):
     """回归:leader 退出但进程组还在跑时,表项必须保留。
 

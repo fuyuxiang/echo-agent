@@ -135,23 +135,30 @@ class ProcessTool(Tool):
         entry there would delete the only handle `stop`/`aclose` could use, so
         the work would run until the agent's own process died.
 
+        Entries are also kept until `finished_at` is stamped (both pipes at EOF),
+        because until then the collector has output the model has not seen yet.
         Called on every `start`/`list` so the table is bounded by use rather than
         by a timer.
         """
         now = time.time()
-        exited = [
+        # Reclaimable = leader exited, group empty, and output fully drained.
+        # A None finished_at means the collector is still running: keep it.
+        reclaimable = [
             (pid, info) for pid, info in self._processes.items()
             if info["process"].returncode is not None
+            and info.get("finished_at") is not None
             and not process_group_alive(info["process"])
         ]
         stale = {
-            pid for pid, info in exited
-            if now - (info.get("finished_at") or now) >= self._EXITED_TTL_SECONDS
+            pid for pid, info in reclaimable
+            if now - info["finished_at"] >= self._EXITED_TTL_SECONDS
         }
-        # Oldest-first beyond the cap, so recent results stay pollable.
-        overflow = len(exited) - self._MAX_EXITED_ENTRIES
+        # Oldest-first beyond the cap, so recent results stay pollable. Every
+        # candidate has a real finished_at here, so the sort key is never a
+        # placeholder that would order a fresh entry ahead of an old one.
+        overflow = len(reclaimable) - self._MAX_EXITED_ENTRIES
         if overflow > 0:
-            by_age = sorted(exited, key=lambda kv: kv[1].get("finished_at") or 0.0)
+            by_age = sorted(reclaimable, key=lambda kv: kv[1]["finished_at"])
             stale.update(pid for pid, _ in by_age[:overflow])
         for pid in stale:
             self._processes.pop(pid, None)
