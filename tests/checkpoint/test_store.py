@@ -280,3 +280,72 @@ def test_snapshot_exclude_derives_from_config(tmp_path: Path):
     )
     excl = snapshot_exclude(config, ws)
     assert excl == ("data/", "checkpoints/", "*.db-wal", "*.db-shm", "*.db-journal")
+
+
+# ── git 子进程有超时上界并回收进程组 ──────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_wedged_git_times_out_and_is_reaped(tmp_path: Path, monkeypatch):
+    """卡死的 git 必须超时报错并被回收,而非让调用方永久挂住。
+
+    原实现是裸 `await proc.communicate()`:git 在 index.lock 争用、网络文件系统
+    停顿或超大工作树下可能长时间不返回,checkpoint 保存/恢复会被整体挂死,且卡住的
+    git 进程永不回收。
+    """
+    import asyncio
+
+    from echo_agent.checkpoint import store as store_mod
+
+    store = ShadowGitStore(tmp_path / "store")
+    store._initialized = True  # 跳过 init,直接测 _run_git 路径
+    monkeypatch.setattr(store_mod, "_GIT_TIMEOUT", 0.3)
+
+    # 先抓住真函数再打补丁,否则 fake 内部的调用会落回自己造成无限递归。
+    real_exec = asyncio.create_subprocess_exec
+
+    # 用 sleep 冒充卡死的 git:进程存在、永不返回。
+    async def _fake_exec(*args, **kwargs):
+        return await real_exec(
+            "sleep", "30",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            start_new_session=kwargs.get("start_new_session", False),
+        )
+
+    monkeypatch.setattr(store_mod.asyncio, "create_subprocess_exec", _fake_exec)
+
+    with pytest.raises(RuntimeError, match="timed out"):
+        await store._run_git(["status"])
+
+
+@pytest.mark.asyncio
+async def test_cancelled_git_is_reaped(tmp_path: Path, monkeypatch):
+    """调用方被取消(关停/断连)时,git 子进程也必须被回收而不是变孤儿。"""
+    import asyncio
+
+    from echo_agent.checkpoint import store as store_mod
+
+    store = ShadowGitStore(tmp_path / "store")
+    store._initialized = True
+    spawned = []
+    real_exec = asyncio.create_subprocess_exec  # 见上:避免 fake 自递归
+
+    async def _fake_exec(*args, **kwargs):
+        proc = await real_exec(
+            "sleep", "30",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            start_new_session=kwargs.get("start_new_session", False),
+        )
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(store_mod.asyncio, "create_subprocess_exec", _fake_exec)
+
+    task = asyncio.create_task(store._run_git(["status"]))
+    await asyncio.sleep(0.2)  # 让 git 起来并进入 communicate
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert spawned, "测试自身失效:未真正拉起子进程"
+    assert spawned[0].returncode is not None, "取消后子进程必须已被回收"

@@ -7,6 +7,15 @@ import hashlib
 import os
 from pathlib import Path
 
+from echo_agent.agent.proc_lifecycle import subprocess_kwargs, terminate_tree
+
+# Upper bound for a single git invocation. Snapshot commands are local and
+# normally finish in well under a second, but git can block indefinitely on an
+# index.lock held by another process, a stalled network filesystem, or a very
+# large work tree. Without a bound the caller (a checkpoint save/restore) hangs
+# forever and the stuck git process is never reaped.
+_GIT_TIMEOUT = 120.0
+
 
 class ShadowGitStore:
     """A single external bare-ish git repo driven via GIT_DIR/GIT_WORK_TREE.
@@ -54,9 +63,27 @@ class ShadowGitStore:
             proc = await asyncio.create_subprocess_exec(
                 "git", "init", "--bare", str(self._store),
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                **subprocess_kwargs(),
             )
-            await proc.communicate()
+            await self._communicate(proc, "init --bare")
         self._initialized = True
+
+    @staticmethod
+    async def _communicate(proc: "asyncio.subprocess.Process", label: str) -> tuple[bytes, bytes]:
+        """communicate() with a hard timeout, reaping the process group on expiry.
+
+        A bare communicate() on a wedged git blocks the caller forever and leaves
+        the child (and any grandchildren) running.
+        """
+        try:
+            return await asyncio.wait_for(proc.communicate(), timeout=_GIT_TIMEOUT)
+        except (asyncio.TimeoutError, TimeoutError):
+            await terminate_tree(proc)
+            raise RuntimeError(f"git {label} timed out after {_GIT_TIMEOUT}s") from None
+        except asyncio.CancelledError:
+            # Caller went away (shutdown, client disconnect): don't strand git.
+            await terminate_tree(proc)
+            raise
 
     async def _run_git(
         self, args: list[str], workspace: Path | None = None, check: bool = True,
@@ -80,8 +107,9 @@ class ShadowGitStore:
         proc = await asyncio.create_subprocess_exec(
             "git", *args, env=env,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            **subprocess_kwargs(),
         )
-        out, err = await proc.communicate()
+        out, err = await self._communicate(proc, " ".join(args))
         rc = proc.returncode or 0
         if check and rc != 0:
             raise RuntimeError(f"git {' '.join(args)} failed ({rc}): {err.decode(errors='replace')}")
