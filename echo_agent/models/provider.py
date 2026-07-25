@@ -256,20 +256,29 @@ class LLMProvider(ABC):
         model: str | None = None,
         tool_choice: str | dict | None = None,
         on_delta: StreamDeltaCallback | None = None,
+        draft_policy: str | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
         emitted = False
         timeout = self._stream_timeout
-        # When tools are offered, the model may stream a "pre-tool" preamble
-        # ("let me check ...") and then return tool_calls instead of a final
-        # answer. Streaming that preamble to the user and then replacing it with
-        # the real answer from a later iteration shows divergent text. So while
-        # tools are in play we BUFFER deltas instead of emitting them, and only
-        # release them once we know the response is a terminal answer (no
-        # tool_calls). Tool-bearing turns are not ones the user watches stream
-        # token-by-token, so the buffered release (full text at end) is an
-        # acceptable trade for not leaking a contradictory draft.
-        buffering = tools is not None
+        # A tool-bearing call may stream a "pre-tool" preamble ("let me check
+        # ...") and then return tool_calls instead of a final answer. Whether
+        # that draft may be shown is NOT ours to decide: it depends on the
+        # channel (can it retract/redraw what was already sent?), which only the
+        # caller knows. So the caller passes draft_policy:
+        #
+        #   "buffer" — hold deltas until we know the turn is a terminal answer,
+        #              then release; drop them if it turned out to be a tool
+        #              call. Safe for send-only channels. Costs realtime feel.
+        #   "stream" — emit deltas as they arrive; the caller is responsible for
+        #              retracting the draft if tool_calls come back.
+        #
+        # Default when unset: "buffer" for tool-bearing calls, "stream"
+        # otherwise — the historical behaviour, kept so existing callers and
+        # send-only channels stay safe by default.
+        if draft_policy is None:
+            draft_policy = "buffer" if tools is not None else "stream"
+        buffering = draft_policy == "buffer" and tools is not None
         buffered: list[str] = []
 
         async def wrapped(delta: str) -> None:

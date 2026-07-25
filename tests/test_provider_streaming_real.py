@@ -506,3 +506,56 @@ async def test_no_tools_streams_in_realtime():
         on_delta=lambda d: seen.append(d),
     )
     assert seen == ["hello ", "world"]  # 逐块到达，未被合并成整段
+
+
+# --- draft_policy: 是否放行工具前草稿由调用方决定，不再由 provider 从 tools 推断 ---
+
+
+@pytest.mark.asyncio
+async def test_draft_policy_stream_emits_deltas_despite_tools():
+    # 调用方显式选 stream：即使带 tools 也逐 delta 直发（调用方自负撤回责任）。
+    resp = LLMResponse(content="it is sunny", finish_reason="stop")
+    p = _ScriptedStreamProvider(["it ", "is ", "sunny"], resp)
+    seen = []
+    await p.chat_stream_with_retry(
+        messages=[{"role": "user", "content": "weather?"}],
+        tools=[{"function": {"name": "get_weather"}}],
+        on_delta=lambda d: seen.append(d),
+        draft_policy="stream",
+    )
+    assert seen == ["it ", "is ", "sunny"]  # 未被攒成一整段
+
+
+@pytest.mark.asyncio
+async def test_draft_policy_stream_leaks_pretool_draft_by_design():
+    # stream 策略下工具前草稿会真的发出去 —— 这是刻意的取舍，撤回由调用方负责。
+    from echo_agent.models.provider import ToolCallRequest
+    resp = LLMResponse(
+        content="let me check",
+        tool_calls=[ToolCallRequest(id="t1", name="get_weather", arguments={})],
+        finish_reason="tool_calls",
+    )
+    p = _ScriptedStreamProvider(["let me ", "check"], resp)
+    seen = []
+    out = await p.chat_stream_with_retry(
+        messages=[{"role": "user", "content": "weather?"}],
+        tools=[{"function": {"name": "get_weather"}}],
+        on_delta=lambda d: seen.append(d),
+        draft_policy="stream",
+    )
+    assert seen == ["let me ", "check"]
+    assert out.has_tool_calls  # 调用方据此触发撤回
+
+
+@pytest.mark.asyncio
+async def test_draft_policy_defaults_to_buffer_for_tool_bearing_calls():
+    # 不传 draft_policy 时保持历史行为：带 tools → 缓冲，仅在终态答案时整段释放。
+    resp = LLMResponse(content="it is sunny", finish_reason="stop")
+    p = _ScriptedStreamProvider(["it ", "is ", "sunny"], resp)
+    seen = []
+    await p.chat_stream_with_retry(
+        messages=[{"role": "user", "content": "weather?"}],
+        tools=[{"function": {"name": "get_weather"}}],
+        on_delta=lambda d: seen.append(d),
+    )
+    assert seen == ["it is sunny"]  # 整段一次释放

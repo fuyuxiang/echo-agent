@@ -182,9 +182,84 @@ class TestInferenceStageApprovalDenied:
         assert result.response_text == "Understood, denied."
 
 
+class TestInferenceStageOptimisticStreaming:
+    """乐观流式:能就地重绘的通道逐 delta 直发,工具轮的草稿事后撤回。"""
+
+    @staticmethod
+    def _ctx_on(channel: str):
+        # ChannelsConfig 真实默认值,让 _can_retract_draft 走真实判定。
+        from echo_agent.config.schema import ChannelsConfig
+        ctx = _make_ctx()
+        ctx.event.channel = channel
+        ctx.stream_publisher.discard = AsyncMock()
+        return ctx, ChannelsConfig()
+
+    @pytest.mark.asyncio
+    async def test_cli_tool_turn_retracts_draft(self):
+        from echo_agent.agent.tools.base import ToolResult
+        tc = ToolCallRequest(id="call_1", name="search", arguments={"q": "beijing"})
+        provider = AsyncMock()
+        provider.chat_stream_with_retry = AsyncMock(side_effect=[
+            LLMResponse(content="let me check", tool_calls=[tc], finish_reason="tool_calls"),
+            LLMResponse(content="It is sunny.", finish_reason="stop"),
+        ])
+        tools = MagicMock()
+        tools.execute = AsyncMock(return_value=ToolResult(success=True, output="sunny"))
+        tools.has = MagicMock(return_value=False)
+
+        stage, _ = _make_stage(provider=provider, tools=tools)
+        ctx, channels = self._ctx_on("gateway:cli")
+        stage._config.channels = channels
+
+        result = await stage.run(ctx)
+
+        # 第一轮(工具轮)的草稿被撤回,恰好一次;最终答案照常返回。
+        assert ctx.stream_publisher.discard.await_count == 1
+        assert result.response_text == "It is sunny."
+        # 该通道用 stream 策略下发,不走 provider 缓冲。
+        assert provider.chat_stream_with_retry.await_args_list[0].kwargs["draft_policy"] == "stream"
+
+    @pytest.mark.asyncio
+    async def test_cli_text_only_turn_never_retracts(self):
+        provider = AsyncMock()
+        provider.chat_stream_with_retry = AsyncMock(
+            return_value=LLMResponse(content="Hello world", finish_reason="stop")
+        )
+        stage, _ = _make_stage(provider=provider)
+        ctx, channels = self._ctx_on("gateway:cli")
+        stage._config.channels = channels
+
+        result = await stage.run(ctx)
+
+        assert ctx.stream_publisher.discard.await_count == 0
+        assert result.response_text == "Hello world"
+
+    @pytest.mark.asyncio
+    async def test_send_only_channel_uses_buffer_and_never_retracts(self):
+        # webhook 无法撤回已发内容 → 必须走 buffer,且永不调 discard。
+        from echo_agent.agent.tools.base import ToolResult
+        tc = ToolCallRequest(id="call_1", name="search", arguments={"q": "x"})
+        provider = AsyncMock()
+        provider.chat_stream_with_retry = AsyncMock(side_effect=[
+            LLMResponse(content="let me check", tool_calls=[tc], finish_reason="tool_calls"),
+            LLMResponse(content="It is sunny.", finish_reason="stop"),
+        ])
+        tools = MagicMock()
+        tools.execute = AsyncMock(return_value=ToolResult(success=True, output="sunny"))
+        tools.has = MagicMock(return_value=False)
+
+        stage, _ = _make_stage(provider=provider, tools=tools)
+        ctx, channels = self._ctx_on("webhook")
+        stage._config.channels = channels
+
+        await stage.run(ctx)
+
+        assert ctx.stream_publisher.discard.await_count == 0
+        assert provider.chat_stream_with_retry.await_args_list[0].kwargs["draft_policy"] == "buffer"
+
+
 class TestInferenceStageRepeatGuard:
     """Same tool + arguments called >= 4 times is blocked."""
-
     @pytest.mark.asyncio
     async def test_repeat_call_blocked(self):
         tc = ToolCallRequest(id="call_1", name="search", arguments={"q": "test"})

@@ -44,6 +44,7 @@ from echo_agent.skills.store import SkillStore
 from echo_agent.agent.streaming import (
     ProcessResult as _ProcessResult,
     TokenStreamPublisher as _TokenStreamPublisher,
+    channel_matches as _channel_matches,
 )
 from echo_agent.agent.progress_heartbeat import ProgressHeartbeat, SharedActivityState
 from echo_agent.agent.degraded_notice import GENERIC_FALLBACK_TEXT
@@ -1513,13 +1514,14 @@ class AgentLoop:
 
         should_introduce = self._should_introduce(session)
         intro_text = self._build_introduction(event) if should_introduce else ""
+        _flush_chars, _flush_interval_ms, _paragraph_mode = self._stream_flush_params(event.channel)
         stream_publisher = _TokenStreamPublisher(
             self.bus,
             event,
             enabled=publish_response and self._should_stream_channel(event.channel),
-            flush_chars=self.config.channels.stream_flush_chars,
-            flush_interval_ms=self.config.channels.stream_flush_interval_ms,
-            paragraph_mode=self.config.channels.stream_paragraph_mode,
+            flush_chars=_flush_chars,
+            flush_interval_ms=_flush_interval_ms,
+            paragraph_mode=_paragraph_mode,
             intro_text=intro_text,
         )
         if publish_response:
@@ -1788,14 +1790,29 @@ class AgentLoop:
             logger.warning("Invalid session introduction template, using raw text")
             return template
 
+    @staticmethod
+    def _channel_matches(channel: str, patterns: list[str]) -> bool:
+        # Thin alias kept for existing call sites/tests; the implementation lives
+        # in agent.streaming so the inference stage can share it.
+        return _channel_matches(channel, patterns)
+
     def _should_stream_channel(self, channel: str) -> bool:
-        channels = set(self.config.channels.stream_channels)
-        if channel in channels:
-            return True
-        for pattern in channels:
-            if pattern.endswith(":*") and channel.startswith(pattern[:-1]):
-                return True
-        return False
+        return _channel_matches(channel, self.config.channels.stream_channels)
+
+    def _stream_flush_params(self, channel: str) -> tuple[int, int, bool]:
+        """Return (flush_chars, flush_interval_ms, paragraph_mode) for a channel.
+
+        Local channels (cli, gateway websocket) get the low-latency tier: frames
+        cost nothing and the TUI redraws in place, so there is no reason to sit
+        on tokens for a 180-char paragraph boundary. IM channels keep the
+        paragraph-mode defaults, which exist to stay inside edit-API budgets.
+        """
+        ch = self.config.channels
+        if ch.stream_local_flush_chars > 0 and _channel_matches(
+            channel, ch.stream_local_channels
+        ):
+            return (ch.stream_local_flush_chars, ch.stream_local_flush_interval_ms, False)
+        return (ch.stream_flush_chars, ch.stream_flush_interval_ms, ch.stream_paragraph_mode)
 
     async def process_direct(self, content: str, session_key: str = "cli:direct", channel: str = "cli") -> str:
         """Process a message directly (for CLI or testing)."""

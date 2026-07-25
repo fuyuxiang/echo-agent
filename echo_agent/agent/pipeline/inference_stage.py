@@ -27,6 +27,7 @@ from echo_agent.agent.pipeline.types import InferenceResult, PipelineContext
 from echo_agent.agent.tools.base import ToolExecutionContext, build_idempotency_key
 from echo_agent.agent.tools.circuit_breaker import ToolCircuitBreaker
 from echo_agent.agent.progress_heartbeat import ActivitySnapshot, friendly_activity
+from echo_agent.agent.streaming import channel_matches
 from echo_agent.bus.events import OutboundEvent
 from echo_agent.cost.budget import BudgetExceeded
 from echo_agent.models.provider import LLMResponse
@@ -541,6 +542,12 @@ class InferenceStage:
         )
 
         on_delta = stream_publisher.on_delta if ctx.publish_response else None
+        # Whether this channel may show a draft that might later be retracted.
+        # Decided here (not in the provider) because only this layer knows the
+        # channel; see chat_stream_with_retry's draft_policy contract.
+        _draft_policy = (
+            "stream" if self._can_retract_draft(event.channel) else "buffer"
+        )
 
         for iteration in range(self._max_iterations):
             # Cooperative interrupt checkpoint. A Ctrl+C interrupt frame set this
@@ -618,7 +625,19 @@ class InferenceStage:
                 on_delta=on_delta,
                 task_type=ctx.task_type,
                 content=event.text,
+                draft_policy=_draft_policy,
             )
+
+            # Optimistic streaming: the draft we just published belongs to this
+            # iteration only. If the model chose to call a tool, that text was a
+            # pre-tool preamble and the real answer comes from a later
+            # iteration — retract it so the two never appear concatenated.
+            if (
+                _draft_policy == "stream"
+                and on_delta is not None
+                and response.has_tool_calls
+            ):
+                await stream_publisher.discard()
 
             # Surface model reasoning as a thinking event when the provider
             # returns reasoning content (real signal on LLMResponse).
@@ -1199,6 +1218,21 @@ class InferenceStage:
                 # background review succeeds, so a failed review re-triggers next
                 # turn instead of dropping this batch permanently.
 
+    def _can_retract_draft(self, channel: str) -> bool:
+        """True when *channel* can visually replace text it already delivered,
+        which is what makes optimistic streaming safe (see
+        channels.stream_optimistic_channels).
+
+        Anything other than a real list of patterns (missing key on an older
+        config, a partially-built stub) reads as "not allowed" — the buffered
+        path is the safe default, so an unrecognised config must never opt a
+        send-only channel into showing retractable drafts.
+        """
+        patterns = getattr(self._config.channels, "stream_optimistic_channels", None)
+        if not isinstance(patterns, list) or not patterns:
+            return False
+        return channel_matches(channel, patterns)
+
     async def _chat_stream_with_routing(
         self,
         *,
@@ -1207,6 +1241,7 @@ class InferenceStage:
         on_delta: Any | None,
         task_type: str,
         content: str,
+        draft_policy: str | None = None,
     ) -> tuple[LLMResponse, RouteDecision]:
         """Route to appropriate model with fallback chain and streaming."""
         if not self._router:
@@ -1215,6 +1250,7 @@ class InferenceStage:
                 tools=tools,
                 model=self._default_model or None,
                 on_delta=on_delta,
+                draft_policy=draft_policy,
             )
             return response, RouteDecision(provider_name="default", model=self._default_model, reason="no router")
 
@@ -1238,6 +1274,7 @@ class InferenceStage:
                 on_delta=routed_delta if on_delta else None,
                 max_tokens=decision.max_tokens,
                 temperature=decision.temperature,
+                draft_policy=draft_policy,
             )
             last_response = response
             last_decision = decision
@@ -1256,5 +1293,6 @@ class InferenceStage:
             tools=tools,
             model=self._default_model or None,
             on_delta=on_delta,
+            draft_policy=draft_policy,
         )
         return response, RouteDecision(provider_name="default", model=self._default_model, reason="router empty")

@@ -149,3 +149,54 @@ class TestTokenStreamPublisherCodeBlock:
         # Code block content should not have triggered a paragraph flush
         # (it only flushes when pending >= flush_chars * 3 inside code)
         assert "```python\n" in pub._full_text
+
+
+class TestTokenStreamPublisherDiscard:
+    """discard() 撤回乐观流式发出的工具前草稿。"""
+
+    @pytest.mark.asyncio
+    async def test_discard_clears_streamed_state(self):
+        pub, _ = _make_publisher(enabled=True, flush_chars=5, flush_interval_ms=1)
+        await pub.on_delta("let me check the weather")
+        assert pub._full_text
+        await pub.discard()
+        assert pub._full_text == ""
+        assert pub._pending == ""
+        assert pub._sent_nonfinal is False
+
+    @pytest.mark.asyncio
+    async def test_finalize_after_discard_sends_full_text_final(self):
+        # 撤回后 finalize 必须走"从未流式"路径,整段全文一次性发出,
+        # 而不是与被丢弃的草稿做增量 diff。
+        pub, bus = _make_publisher(enabled=True, flush_chars=5, flush_interval_ms=1)
+        await pub.on_delta("let me check")
+        await pub.discard()
+        bus.publish_outbound.reset_mock()
+        await pub.finalize("It is sunny in Beijing.")
+        bus.publish_outbound.assert_called_once()
+        sent = bus.publish_outbound.call_args[0][0]
+        assert sent.is_final is True
+        assert sent.text == "It is sunny in Beijing."
+        assert sent.metadata.get("_stream_full_text") is True
+
+    @pytest.mark.asyncio
+    async def test_discard_does_not_duplicate_intro(self):
+        # response_stage 自己会把 intro 拼到 response_text 前面,
+        # 所以 discard 不能把 intro 重新塞回缓冲,否则开场语会出现两次。
+        pub, bus = _make_publisher(
+            enabled=True, intro_text="Hi there", flush_chars=5, flush_interval_ms=1
+        )
+        await pub.start()
+        await pub.on_delta("let me check")
+        await pub.discard()
+        assert pub._full_text == ""
+        bus.publish_outbound.reset_mock()
+        await pub.finalize("Hi there\n\nIt is sunny.")
+        sent = bus.publish_outbound.call_args[0][0]
+        assert sent.text.count("Hi there") == 1
+
+    @pytest.mark.asyncio
+    async def test_discard_noop_when_disabled(self):
+        pub, bus = _make_publisher(enabled=False)
+        await pub.discard()
+        bus.publish_outbound.assert_not_called()

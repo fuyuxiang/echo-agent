@@ -839,6 +839,55 @@ class ChannelsConfig(_Base):
             "desc_en": "Flush streaming output on paragraph boundaries",
         },
     )
+    # The stream_flush_* / stream_paragraph_mode defaults above are tuned for IM
+    # channels, where every incremental update costs an edit API call and risks
+    # rate limits. Local channels (cli / gateway websocket) have no such budget:
+    # frames are cheap and the TUI redraws the whole block anyway, so they get
+    # their own low-latency tier below. Setting stream_local_flush_chars to 0
+    # makes local channels fall back to the shared values above.
+    stream_local_flush_chars: int = Field(
+        default=24,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/loop.py:1516",
+            "desc_zh": "本地通道(cli/gateway)流式推送的字符阈值,0 表示复用通用配置",
+            "desc_en": "Flush threshold for local channels (cli/gateway); 0 reuses the shared value",
+        },
+    )
+    stream_local_flush_interval_ms: int = Field(
+        default=100,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/loop.py:1516",
+            "desc_zh": "本地通道(cli/gateway)流式推送的最大时间间隔(毫秒)",
+            "desc_en": "Maximum interval between flushes for local channels (cli/gateway), in ms",
+        },
+    )
+    stream_local_channels: list[str] = Field(
+        default_factory=lambda: ["cli", "gateway:*"],
+        json_schema_extra={
+            "status": "effective", "ref": "agent/loop.py:1516",
+            "desc_zh": "使用本地低延迟流式档位的通道列表(支持 prefix:* 通配)",
+            "desc_en": "Channels that use the local low-latency streaming tier (supports prefix:*)",
+        },
+    )
+    # Channels listed here stream the model's text as it arrives, even on turns
+    # that may end in a tool call. If such a turn does call a tool, the streamed
+    # draft ("let me check ...") is retracted and the block redrawn. Only list
+    # channels that can visually REPLACE what they already showed.
+    #
+    # gateway:cli qualifies: the TUI keeps a reply widget per turn and rewrites it
+    # via set_markdown. The plain "cli" channel does NOT — it prints straight to
+    # stdout and cannot unprint, so a retraction there would leave the draft on
+    # screen above the answer. IM channels are excluded too: editing is possible
+    # but each edit burns API budget. Empty list = buffer everywhere, i.e. the
+    # pre-existing conservative behaviour.
+    stream_optimistic_channels: list[str] = Field(
+        default_factory=lambda: ["gateway:cli"],
+        json_schema_extra={
+            "status": "effective", "ref": "agent/pipeline/inference_stage.py:617",
+            "desc_zh": "允许乐观流式(工具前草稿先发后撤回)的通道列表;仅限能就地重绘的通道",
+            "desc_en": "Channels allowed to stream optimistically (pre-tool draft sent then retracted); only channels that can redraw in place",
+        },
+    )
     transcription_api_key: str = Field(
         default="",
         json_schema_extra={

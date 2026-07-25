@@ -30,6 +30,19 @@ class ProcessResult:
     task_incomplete: bool = False
 
 
+def channel_matches(channel: str, patterns: list[str]) -> bool:
+    """Exact name match, or a trailing ':*' prefix wildcard (``gateway:*``
+    covers ``gateway:cli``, ``gateway:web``, ...).
+
+    Lives here rather than on AgentLoop because both the loop and the inference
+    stage need it, and the stage cannot import the loop (the loop imports the
+    stage).
+    """
+    if channel in patterns:
+        return True
+    return any(p.endswith(":*") and channel.startswith(p[:-1]) for p in patterns)
+
+
 class TokenStreamPublisher:
     _PARAGRAPH_RE = re.compile(r"\n\n")
     _SENTENCE_RE = re.compile(r"[。！？!?]\s|[。！？!?]$")
@@ -111,6 +124,30 @@ class TokenStreamPublisher:
         else:
             if len(self._pending) >= self._flush_chars or now - self._last_flush >= self._flush_interval:
                 await self._flush(is_final=False)
+
+    async def discard(self) -> None:
+        """Retract the text streamed so far for this turn.
+
+        Used when an optimistically-streamed draft turned out to be a pre-tool
+        preamble: the real answer comes from a later iteration, so everything
+        published so far must be disowned. Resetting _sent_nonfinal makes the
+        eventual finalize() take the "never streamed" path and publish the answer
+        as one full-text final frame instead of diffing against the abandoned
+        draft. Channels that redraw in place (cli TUI set_markdown, IM edit)
+        thereby overwrite it; send-only channels must not use this path at all —
+        they get draft_policy="buffer" instead.
+
+        Everything is cleared, including any intro text: response_stage prepends
+        ctx.intro_text to the final response_text itself, so re-seeding it here
+        would make the introduction appear twice.
+        """
+        if not self._enabled:
+            return
+        self._full_text = ""
+        self._pending = ""
+        self._sent_nonfinal = False
+        self._in_code_block = False
+        self._needs_intro_separator = False
 
     async def finalize(self, final_text: str) -> "DeliveryResult":
         # NO_HANDLER signals "streaming path not taken" so the caller falls back
