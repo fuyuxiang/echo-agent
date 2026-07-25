@@ -115,6 +115,14 @@ class TaskStore:
     # --- dict-like protocol ---------------------------------------------------
 
     def __setitem__(self, key: str, task: A2ATask) -> None:
+        # Purge before inserting. Expiry used to run only on the read paths, so a
+        # workload that only ever writes (anonymous tasks that never get fetched)
+        # let the table grow past max_tasks even when every entry was long past
+        # its TTL — nothing reclaimed them until some later read happened to run.
+        # Purging here also means capacity eviction sees an already-clean table,
+        # so it evicts live-but-old entries only when there is genuinely no
+        # expired one to reclaim first.
+        self._purge_expired()
         self._tasks[key] = task
         self._tasks.move_to_end(key)  # freshest at the end for LRU eviction
         self._stored_at[key] = self._clock()
