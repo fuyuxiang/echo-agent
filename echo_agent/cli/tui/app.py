@@ -223,6 +223,19 @@ class EchoTUI(App):
             self._replies[inbound_id] = r
         r.append_token(text)
 
+    def on_user_reply_reset(self, inbound_id: str) -> None:
+        """Drop the draft streamed so far for this turn.
+
+        The server retracted an optimistic draft (it turned out to be a pre-tool
+        preamble). Tokens accumulate into one widget per turn, so the next
+        iteration's text would otherwise be appended to the abandoned draft and
+        the user would see the two spliced together until the final frame landed.
+        The widget is kept and cleared rather than removed, so the reply stays in
+        place in the transcript and the next token just refills it."""
+        r = self._replies.get(inbound_id)
+        if r is not None:
+            r.clear_stream()
+
     def on_user_reply_final(self, inbound_id: str, text: str) -> None:
         r = self._replies.pop(inbound_id, None)
         if r is None:

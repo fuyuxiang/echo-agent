@@ -65,6 +65,16 @@ class CLIChannel(BaseChannel):
         is_final = getattr(event, "message_kind", "final") == "final"
 
         if not is_final:
+            if event.metadata.get("_stream_reset"):
+                # A draft retraction. This channel is excluded from optimistic
+                # streaming precisely because stdout cannot unprint, so this
+                # should not arrive — but if a config change opts it in, forget
+                # the draft rather than let the final frame be diffed against
+                # text that is no longer a prefix of the answer.
+                if eid in self._stream_printed:
+                    print("\n[草稿已撤回]\n", flush=True)
+                    self._stream_printed[eid] = ""
+                return SendResult(success=True)
             if eid not in self._stream_printed:
                 print()  # open the reply block
                 self._stream_printed[eid] = ""

@@ -290,6 +290,16 @@ class AgentReply(Static):
         self._buf += t
         self.update(f"[$primary]●[/] {escape(self._buf)}")
 
+    def clear_stream(self) -> None:
+        """Drop the streamed text, keeping the widget in place.
+
+        Used when the server retracts an optimistic draft: the next iteration's
+        tokens must start from empty rather than extend the abandoned text. The
+        widget stays mounted so the reply keeps its position in the transcript.
+        """
+        self._buf = ""
+        self.update("[$primary]●[/] ")
+
     def set_final(self, text: str) -> None:
         self._buf = text
         self.update(f"[$primary]●[/] {escape(self._buf)}")

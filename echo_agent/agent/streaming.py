@@ -130,10 +130,21 @@ class TokenStreamPublisher:
 
         Used when an optimistically-streamed draft turned out to be a pre-tool
         preamble: the real answer comes from a later iteration, so everything
-        published so far must be disowned. Resetting _sent_nonfinal makes the
-        eventual finalize() take the "never streamed" path and publish the answer
-        as one full-text final frame instead of diffing against the abandoned
-        draft. Channels that redraw in place (cli TUI set_markdown, IM edit)
+        published so far must be disowned.
+
+        Resetting internal state is not enough on its own. Consumers accumulate
+        streamed deltas keyed by the inbound event id (the CLI TUI appends to one
+        reply widget, attach_client appends to a printed block), so the next
+        iteration's tokens would be concatenated onto the abandoned draft and the
+        user would watch a spliced answer until the final frame replaced it. So we
+        also publish an explicit reset frame — a streaming frame carrying
+        `_stream_reset` — telling consumers to drop what they have for this turn
+        and start over. Consumers that don't understand the flag see an empty
+        streaming chunk, which is harmless.
+
+        Resetting _sent_nonfinal additionally makes the eventual finalize() take
+        the "never streamed" path and publish the answer as one full-text final
+        frame. Channels that redraw in place (cli TUI set_markdown, IM edit)
         thereby overwrite it; send-only channels must not use this path at all —
         they get draft_policy="buffer" instead.
 
@@ -143,11 +154,17 @@ class TokenStreamPublisher:
         """
         if not self._enabled:
             return
+        had_published = self._sent_nonfinal
         self._full_text = ""
         self._pending = ""
         self._sent_nonfinal = False
         self._in_code_block = False
         self._needs_intro_separator = False
+        # Only announce a retraction if something was actually shown. A draft that
+        # never left the buffer needs no reset frame, and sending one would make
+        # channels open an empty reply block.
+        if had_published:
+            await self._publish("", is_final=False, reset=True)
 
     async def finalize(self, final_text: str) -> "DeliveryResult":
         # NO_HANDLER signals "streaming path not taken" so the caller falls back
@@ -215,7 +232,9 @@ class TokenStreamPublisher:
         self._pending = self._pending[pos:]
         await self._publish(text, is_final=is_final)
 
-    async def _publish(self, text: str, *, is_final: bool, full_text: bool = False) -> "DeliveryResult":
+    async def _publish(
+        self, text: str, *, is_final: bool, full_text: bool = False, reset: bool = False,
+    ) -> "DeliveryResult":
         from echo_agent.bus.events import OutboundEvent
 
         if is_final and full_text:
@@ -239,6 +258,10 @@ class TokenStreamPublisher:
         outbound.metadata["_token_stream"] = True
         if full_text:
             outbound.metadata["_stream_full_text"] = True
+        if reset:
+            # "Drop everything streamed for this turn so far." Carried in
+            # metadata so channels that ignore it just see an empty chunk.
+            outbound.metadata["_stream_reset"] = True
         result = await self._bus.publish_outbound(outbound)
         self._last_flush = time.monotonic()
         if not is_final and text:

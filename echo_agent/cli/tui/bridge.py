@@ -59,6 +59,14 @@ class WSBridge:
         streaming = bool(meta.get("_token_stream"))
         is_final = payload.get("is_final", True) or payload.get("message_kind") == "final"
         if streaming and not is_final:
+            # An optimistically-streamed draft turned out to be a pre-tool
+            # preamble and was retracted server-side. Tokens accumulate in one
+            # reply widget, so without acting on this the next iteration's text
+            # would be appended to the abandoned draft and the user would watch a
+            # spliced answer until the final frame replaced it.
+            if meta.get("_stream_reset"):
+                self._sink.on_user_reply_reset(inbound_id)
+                return
             self._sink.on_user_reply_token(inbound_id, text)
         else:
             self._sink.on_user_reply_final(inbound_id, text)

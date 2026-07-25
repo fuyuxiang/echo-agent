@@ -210,6 +210,17 @@ class OutboundRenderer:
         eid = str(meta.get("_inbound_event_id", ""))
         is_final = payload.get("is_final", True) or payload.get("message_kind") == "final"
         if not is_final:
+            if meta.get("_stream_reset"):
+                # The server retracted the draft it had streamed. stdout cannot
+                # unprint, so the text stays on screen — but the bookkeeping must
+                # forget it, or the final frame would be diffed against a draft
+                # that is no longer a prefix of the answer and we'd reprint the
+                # whole reply under "完整回复". Mark the retraction inline so the
+                # already-printed draft is not mistaken for part of the answer.
+                if eid in self._stream_printed:
+                    print("\n[草稿已撤回]\n", flush=True)
+                    self._stream_printed[eid] = ""
+                return
             if eid not in self._stream_printed:
                 print()  # open the reply block
                 self._stream_printed[eid] = ""

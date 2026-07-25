@@ -9,6 +9,7 @@ class Sink:
         self.events = []
     def on_user_reply_token(self, i, t): self.events.append(("tok", i, t))
     def on_user_reply_final(self, i, t): self.events.append(("fin", i, t))
+    def on_user_reply_reset(self, i): self.events.append(("reset", i))
     def on_cognitive(self, ev): self.events.append(("cog", ev.cog_type, ev.cog_event_id))
     def on_error(self, m): self.events.append(("err", m))
 
