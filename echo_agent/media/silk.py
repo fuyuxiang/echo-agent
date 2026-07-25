@@ -14,8 +14,16 @@ import tempfile
 
 from loguru import logger
 
+from echo_agent.agent.proc_lifecycle import subprocess_kwargs, terminate_tree
+
 _PCM_RATE = 24000  # Weixin voice sample rate
 _BYTES_PER_SAMPLE = 2  # s16le → 2 bytes/sample, mono
+# Upper bound for one ffmpeg transcode. Voice messages are short, so this is
+# generous; it exists because ffmpeg can stall indefinitely on a truncated or
+# malformed input, and nothing upstream bounds this call — channels.weixin
+# awaits encode_to_silk directly, so a wedged ffmpeg would hang voice sending
+# and leak the process.
+_FFMPEG_TIMEOUT = 120.0
 
 
 def _resolve_ffmpeg() -> str:
@@ -41,8 +49,17 @@ async def _ffmpeg_to_pcm(src_path: str, pcm_path: str) -> None:
         "-f", "s16le", "-acodec", "pcm_s16le",
         "-ar", str(_PCM_RATE), "-ac", "1", "-y", pcm_path,
         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        **subprocess_kwargs(),
     )
-    _, stderr = await proc.communicate()
+    try:
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=_FFMPEG_TIMEOUT)
+    except (asyncio.TimeoutError, TimeoutError):
+        await terminate_tree(proc)
+        raise RuntimeError(f"ffmpeg timed out after {_FFMPEG_TIMEOUT}s") from None
+    except asyncio.CancelledError:
+        # Caller went away (shutdown, send aborted): don't leave ffmpeg running.
+        await terminate_tree(proc)
+        raise
     if proc.returncode != 0:
         raise RuntimeError(
             f"ffmpeg failed (rc={proc.returncode}): {stderr.decode(errors='ignore')[:300]}"
