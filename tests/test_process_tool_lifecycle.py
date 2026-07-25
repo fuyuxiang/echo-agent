@@ -119,3 +119,65 @@ async def test_agent_stop_closes_process_tool(tmp_path, monkeypatch):
     monkeypatch.setattr(proc_tool, "aclose", _spy)
     await loop.stop()
     assert closed["n"] == 1
+
+
+# ── 已退出条目的回收:进程表不能无上界增长 ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_exited_entries_reclaimed_by_ttl(tmp_path):
+    """已退出进程的条目超过保留期后回收;在此之前 poll 仍能取回输出。
+
+    原实现只在 _stop(模型显式调用)与 aclose(agent 关停)清表,自然退出和被
+    watchdog 杀掉的进程条目永久驻留,每条还留着最多 100KB 输出缓冲。
+    """
+    tool = ProcessTool(str(tmp_path))
+    pid = await _start(tool, "echo hi")
+    await asyncio.wait_for(tool._processes[pid]["collector"], timeout=5)
+
+    # 保留期内:条目仍在,输出可取回。
+    poll = await tool.execute({"action": "poll", "process_id": pid})
+    assert poll.success and "hi" in poll.output
+
+    # 把完成时间推回到保留期之外,再起一个进程触发回收。
+    tool._processes[pid]["finished_at"] -= tool._EXITED_TTL_SECONDS + 1
+    pid2 = await _start(tool, "echo second")
+    assert pid not in tool._processes, "过期的已退出条目必须被回收"
+    assert pid2 in tool._processes, "新进程条目必须保留"
+    await tool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_exited_entries_bounded_by_capacity(tmp_path):
+    """已退出条目数超过上限时按最老优先淘汰,近期结果仍可 poll。
+
+    回收由操作触发(start/list),所以最后一个退出的条目要等下一次操作才被计入 ——
+    这里显式调一次 list,也贴近真实用法。
+    """
+    tool = ProcessTool(str(tmp_path))
+    tool._MAX_EXITED_ENTRIES = 3
+    pids = []
+    for i in range(6):
+        pid = await _start(tool, f"echo {i}")
+        await asyncio.wait_for(tool._processes[pid]["collector"], timeout=5)
+        pids.append(pid)
+
+    await tool.execute({"action": "list"})
+    exited = [p for p in tool._processes if tool._processes[p]["process"].returncode is not None]
+    assert len(exited) <= 3, f"已退出条目应被容量上限约束,实际 {len(exited)}"
+    assert pids[-1] in tool._processes, "最新条目必须保留"
+    await tool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_running_process_never_reclaimed(tmp_path):
+    """在跑的进程无论多老都不回收 —— 回收它会让 poll/stop 失去目标。"""
+    tool = ProcessTool(str(tmp_path))
+    tool._MAX_EXITED_ENTRIES = 0
+    tool._EXITED_TTL_SECONDS = 0.0
+    live = await _start(tool, "sleep 30")
+    for i in range(3):
+        done = await _start(tool, f"echo {i}")
+        await asyncio.wait_for(tool._processes[done]["collector"], timeout=5)
+    assert live in tool._processes, "活跃进程不得被回收"
+    await tool.aclose()

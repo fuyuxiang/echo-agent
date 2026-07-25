@@ -30,6 +30,15 @@ class ProcessTool(Tool):
     }
     timeout_seconds = 10
 
+    # Retention for entries whose process has exited. They cannot be dropped the
+    # moment the child dies — `poll` must still return the output and exit code —
+    # but they must not accumulate either: each entry pins a Process object plus
+    # up to 100KB of stdout and stderr buffers, so a long-lived agent that keeps
+    # starting background commands would grow without bound. Live processes are
+    # never reclaimed regardless of these limits.
+    _EXITED_TTL_SECONDS = 1800.0
+    _MAX_EXITED_ENTRIES = 64
+
     def __init__(self, workspace: str, *, exec_policy: Any | None = None, network_policy: str = "allow"):
         self._workspace = workspace
         self._exec_policy = exec_policy
@@ -75,6 +84,9 @@ class ProcessTool(Tool):
             **subprocess_kwargs(),
         )
         pid = f"proc_{proc.pid}"
+        # Reclaim before inserting, so the cap counts entries already in the
+        # table and the fresh one is never itself a candidate.
+        self._reap_finished()
         self._processes[pid] = {
             "process": proc,
             "command": cmd,
@@ -82,6 +94,8 @@ class ProcessTool(Tool):
             "stdout_buf": b"",
             "stderr_buf": b"",
             "timed_out": False,
+            # Set by _collect_output once both pipes hit EOF; drives reclamation.
+            "finished_at": None,
         }
 
         # Keep a strong reference in the registry — a bare create_task result
@@ -105,6 +119,30 @@ class ProcessTool(Tool):
         self._processes[pid]["watchdog"] = watchdog
         return ToolResult(output=f"Started process {pid}: {cmd}", metadata={"process_id": pid})
 
+    def _reap_finished(self) -> None:
+        """Drop bookkeeping for exited processes past their retention window.
+
+        Entries are eligible only once the child has actually exited (returncode
+        is not None); a running process is never reclaimed, however old. Called
+        on every `start` so the table is bounded by use rather than by a timer.
+        """
+        now = time.time()
+        exited = [
+            (pid, info) for pid, info in self._processes.items()
+            if info["process"].returncode is not None
+        ]
+        stale = {
+            pid for pid, info in exited
+            if now - (info.get("finished_at") or now) >= self._EXITED_TTL_SECONDS
+        }
+        # Oldest-first beyond the cap, so recent results stay pollable.
+        overflow = len(exited) - self._MAX_EXITED_ENTRIES
+        if overflow > 0:
+            by_age = sorted(exited, key=lambda kv: kv[1].get("finished_at") or 0.0)
+            stale.update(pid for pid, _ in by_age[:overflow])
+        for pid in stale:
+            self._processes.pop(pid, None)
+
     async def _watchdog(self, pid: str, timeout: float) -> None:
         """Kill a process that outlives its timeout, marking it timed_out.
 
@@ -126,6 +164,10 @@ class ProcessTool(Tool):
         await terminate_tree(proc)
 
     def _list(self) -> ToolResult:
+        # Also reclaim here: a process that exits after the last `start` would
+        # otherwise linger until the next one, and `list` is the natural point at
+        # which a caller observes the table.
+        self._reap_finished()
         if not self._processes:
             return ToolResult(output="No background processes.")
         lines = []
@@ -207,9 +249,21 @@ class ProcessTool(Tool):
             # Drain stdout AND stderr concurrently. Reading only stdout lets the
             # stderr pipe buffer fill (~64KB on Linux) and the child blocks on
             # its next stderr write forever — a classic subprocess deadlock.
-            await asyncio.gather(
+            # return_exceptions keeps one stream's failure from cancelling the
+            # other mid-drain, which would leave the child blocked on a full pipe.
+            results = await asyncio.gather(
                 _drain(proc.stdout, "stdout_buf"),
                 _drain(proc.stderr, "stderr_buf"),
+                return_exceptions=True,
             )
+            for r in results:
+                if isinstance(r, BaseException):
+                    logger.debug("Error reading process output for {}: {}", pid, r)
         except Exception as e:
             logger.debug("Error reading process output: {}", e)
+        finally:
+            # Stamp the reclaim clock: both pipes are at EOF, so the child has
+            # exited (or is about to be reaped). _reap_finished uses this to age
+            # the entry out while keeping it pollable in the meantime.
+            if info.get("finished_at") is None:
+                info["finished_at"] = time.time()
