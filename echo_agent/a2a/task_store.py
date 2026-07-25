@@ -37,6 +37,7 @@ class TaskStore:
         max_tasks: int = 1000,
         active_ttl_seconds: float = 86400.0,
         clock: Callable[[], float] = time.monotonic,
+        on_drop: Callable[[str], None] | None = None,
     ) -> None:
         # Fail fast rather than silently: a non-positive ttl or capacity made
         # every terminal task vanish the moment it was stored, so tasks/send
@@ -56,6 +57,10 @@ class TaskStore:
         # leak guard, not a task deadline.
         self._active_ttl = active_ttl_seconds
         self._clock = clock
+        # Called with each reclaimed task id. Lets an owner (A2AProtocol) drop
+        # its own per-task bookkeeping in lockstep, so side tables cannot become
+        # the new unbounded leak once the store itself is bounded.
+        self._on_drop = on_drop
         # task_id -> monotonic time of the last write; used by the active-task
         # backstop, kept for every entry (terminal or not).
         self._stored_at: dict[str, float] = {}
@@ -85,6 +90,11 @@ class TaskStore:
         self._tasks.pop(tid, None)
         self._expire_at.pop(tid, None)
         self._stored_at.pop(tid, None)
+        if self._on_drop is not None:
+            try:
+                self._on_drop(tid)
+            except Exception:  # pragma: no cover - owner bookkeeping is best-effort
+                pass
 
     def _evict_for_capacity(self) -> None:
         """When over capacity, evict oldest terminal tasks; keep active ones."""
