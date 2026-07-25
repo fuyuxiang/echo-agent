@@ -27,11 +27,24 @@ class A2AServer:
         agent_loop: DirectProcessor,
         agent_card: AgentCard,
         auth_fn: AuthFn | None = None,
+        *,
+        task_ttl_seconds: float | None = None,
+        max_tasks: int | None = None,
+        active_task_ttl_seconds: float | None = None,
     ):
         self._loop = agent_loop
         self._card = agent_card
         self._auth_fn = auth_fn
-        self._protocol = A2AProtocol(self._process_task)
+        # Only forward what the caller actually set, so A2AProtocol's own
+        # defaults stay the single source of truth for retention.
+        store_opts: dict[str, float | int] = {}
+        if task_ttl_seconds is not None:
+            store_opts["task_ttl_seconds"] = task_ttl_seconds
+        if max_tasks is not None:
+            store_opts["max_tasks"] = max_tasks
+        if active_task_ttl_seconds is not None:
+            store_opts["active_task_ttl_seconds"] = active_task_ttl_seconds
+        self._protocol = A2AProtocol(self._process_task, **store_opts)
 
     def register_routes(self, app: web.Application) -> None:
         app.router.add_get("/.well-known/agent.json", self._handle_agent_card)

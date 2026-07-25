@@ -272,6 +272,9 @@ class GatewayServer:
                 self._agent_loop,
                 card,
                 auth_fn=lambda req: self._require_api_token(req, action="a2a:rpc"),
+                task_ttl_seconds=self._a2a_config.task_ttl_seconds,
+                max_tasks=self._a2a_config.max_tasks,
+                active_task_ttl_seconds=self._a2a_config.active_task_ttl_seconds,
             )
             a2a.register_routes(app)
 

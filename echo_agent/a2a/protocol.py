@@ -2,20 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Callable, Awaitable
 
 from loguru import logger
 
 from echo_agent.a2a.models import A2ATask, A2AMessage, TaskState
-from echo_agent.a2a.task_store import TaskStore
+from echo_agent.a2a.task_store import TERMINAL_STATES as _TERMINAL_STATES, TaskStore
 
 # JSON-RPC 2.0 标准错误码
 _JSONRPC_PARSE_ERROR = -32700
 _JSONRPC_METHOD_NOT_FOUND = -32601
 _JSONRPC_INTERNAL_ERROR = -32603
-
-# Task states from which no further transition is allowed.
-_TERMINAL_STATES = frozenset({TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELED})
 
 
 class A2AProtocol:
@@ -27,12 +25,15 @@ class A2AProtocol:
         *,
         task_ttl_seconds: float = 3600.0,
         max_tasks: int = 1000,
+        active_task_ttl_seconds: float | None = None,
         clock: Callable[[], float] | None = None,
     ):
         self._process = process_fn
         # Bounded, TTL store replaces the previous unbounded dict so terminal
         # tasks are reclaimed instead of leaking for the process lifetime.
         store_kwargs: dict[str, Any] = {"ttl_seconds": task_ttl_seconds, "max_tasks": max_tasks}
+        if active_task_ttl_seconds is not None:
+            store_kwargs["active_ttl_seconds"] = active_task_ttl_seconds
         if clock is not None:
             store_kwargs["clock"] = clock
         self._tasks: TaskStore = TaskStore(**store_kwargs)
@@ -73,10 +74,25 @@ class A2AProtocol:
             if task_id:
                 task.id = task_id
             task.messages.append(A2AMessage.from_dict(message))
-            self._tasks[task.id] = task
 
+        # A2ATask is a mutable dataclass, so assigning .state only changes the
+        # object — the store's TTL bookkeeping is keyed off __setitem__. Every
+        # state change must therefore be written back, including this one: it
+        # re-arms a revived terminal task as active so a later _purge_expired
+        # cannot reclaim it while _process is still running.
         task.state = TaskState.WORKING
-        task = await self._process(task)
+        self._tasks[task.id] = task
+        try:
+            task = await self._process(task)
+        except BaseException as e:
+            # Includes CancelledError: aiohttp cancels the request coroutine when
+            # a client disconnects, and _process is the long await where that
+            # lands. Without this, the task would stay WORKING forever — immune
+            # to TTL expiry AND to capacity eviction, since the store never
+            # evicts what it believes is still in flight.
+            task.state = TaskState.CANCELED if isinstance(e, asyncio.CancelledError) else TaskState.FAILED
+            self._tasks[task.id] = task
+            raise
         self._tasks[task.id] = task
         return task.to_dict()
 
@@ -98,6 +114,10 @@ class A2AProtocol:
         if task.state in _TERMINAL_STATES:
             raise ValueError(f"Task '{task_id}' is already {task.state.value} and cannot be canceled")
         task.state = TaskState.CANCELED
+        # Write back so the store arms this task's TTL. Skipping it leaves the
+        # entry permanently un-expirable and — because capacity eviction only
+        # considers TTL-armed entries — stalls eviction for every task behind it.
+        self._tasks[task_id] = task
         return task.to_dict()
 
     @staticmethod

@@ -3507,6 +3507,33 @@ class A2AConfig(_Base):
             "desc_en": "Capability tags advertised in the A2A AgentCard",
         },
     )
+    # Task retention. The store is in-memory only, so these bound how much a
+    # long-running server accumulates; operators need them reachable to shrink
+    # retention under load.
+    task_ttl_seconds: float = Field(
+        default=3600.0, gt=0,
+        json_schema_extra={
+            "status": "effective", "ref": "a2a/server.py:34",
+            "desc_zh": "A2A 终态任务保留时长(秒),超时后回收;tasks/get 在此窗口内仍可取回结果",
+            "desc_en": "How long terminal A2A tasks are retained (seconds) before reclamation",
+        },
+    )
+    max_tasks: int = Field(
+        default=1000, gt=0,
+        json_schema_extra={
+            "status": "effective", "ref": "a2a/server.py:34",
+            "desc_zh": "A2A 任务仓库容量上限,超出时淘汰最老的终态任务",
+            "desc_en": "Capacity of the A2A task store; oldest terminal tasks are evicted past it",
+        },
+    )
+    active_task_ttl_seconds: float = Field(
+        default=86400.0, gt=0,
+        json_schema_extra={
+            "status": "effective", "ref": "a2a/task_store.py:52",
+            "desc_zh": "未达终态任务的兜底保留时长(秒),防卡住的任务永久占用;非任务超时",
+            "desc_en": "Backstop retention for non-terminal A2A tasks (seconds); a leak guard, not a task deadline",
+        },
+    )
 
 
 class PluginsConfig(_Base):
