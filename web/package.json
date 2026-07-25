@@ -21,7 +21,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-i18next": "^15.7.4",
-    "react-router-dom": "^7.0.0",
+    "react-router": "^8.3.0",
     "recharts": "^3.9.2",
     "tailwind-merge": "^2.6.0",
     "zustand": "^5.0.0"
@@ -36,7 +36,7 @@
     "@vitejs/plugin-react": "^4.4.0",
     "autoprefixer": "^10.4.0",
     "jsdom": "^25.0.1",
-    "postcss": "^8.4.0",
+    "postcss": "^8.5.23",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.7.0",
     "vite": "^6.0.0",

@@ -1,4 +1,4 @@
-import { NavLink } from "react-router-dom";
+import { NavLink } from "react-router";
 import { useTranslation } from "react-i18next";
 import {
   LayoutDashboard, MessageSquare, Brain, Zap, BookOpen,
