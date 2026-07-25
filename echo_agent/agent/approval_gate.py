@@ -208,6 +208,10 @@ class ApprovalGate:
     ) -> ApprovalCheck:
         approval_req = self._approval.request_approval(
             tool_name, tool_name=tool_name, params=arguments, user_id=sender_id,
+            # Tags the request with its conversation so a channel disconnect can
+            # release it instead of leaving this turn parked for the full
+            # wait_timeout_seconds with the session lock held.
+            session_key=session_key,
         )
         if approval_req.status == ApprovalStatus.DENIED:
             return ApprovalCheck(ToolResult(

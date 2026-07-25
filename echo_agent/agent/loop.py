@@ -1727,6 +1727,13 @@ class AgentLoop:
         # wait_for_answer until the 24h registry backstop. Internal control
         # command — no user-facing reply.
         self.clarify.cancel_session(event.session_key)
+        # Same reasoning for approvals: a turn parked on wait_for_decision is
+        # waiting for a human who is no longer connected, and it holds the session
+        # lock while it waits. Releasing only clarify left that case blocked for
+        # the full wait_timeout_seconds (300s), during which the user's next
+        # message queued behind a decision nobody could make. Denying is the safe
+        # direction — the call needed a human and none is present.
+        self.approval.cancel_session(event.session_key)
 
     _INTERRUPT_CMD = "/__interrupt__"
 
@@ -1745,6 +1752,12 @@ class AgentLoop:
         target_event_id = str(event.metadata.get("_interrupt_target_event_id", ""))
         self.interrupt.interrupt(event.session_key, target_event_id)
         self.clarify.cancel_session(event.session_key)
+        # A turn parked on an approval must be stoppable too. The interrupt flag
+        # is only polled at the inference loop's checkpoints, and a turn blocked
+        # in wait_for_decision never reaches one — so a Ctrl+C would appear to do
+        # nothing until the 300s approval timeout expired. Deny the prompt to
+        # unblock it, mirroring the disconnect escape valve.
+        self.approval.cancel_session(event.session_key, reason="interrupted by user")
 
     async def _handle_clarify_command(self, event: InboundEvent) -> str | None:
         # Format: /clarify <clarify_id> <answer...>  (answer may contain spaces)
