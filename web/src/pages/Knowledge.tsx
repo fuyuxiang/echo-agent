@@ -1,13 +1,12 @@
 import { useApi } from "../hooks/use-api";
 import { apiFetch, getToken } from "../lib/api";
+import { relativeTime } from "../lib/datetime";
 import { runMutation } from "../stores/toast";
 import { Loadable } from "../components/Loadable";
 import { useConfirm } from "../components/ConfirmDialog";
 import { Upload, Trash2, RefreshCw } from "lucide-react";
 import { useRef } from "react";
 import { useTranslation } from "react-i18next";
-import { formatDistanceToNow } from "date-fns";
-import { zhCN, enUS } from "date-fns/locale";
 
 interface Document {
   path: string;
@@ -30,19 +29,11 @@ export function Knowledge() {
   const { data, loading, error, refetch } = useApi<{ documents: Document[] }>("/knowledge/documents");
   const { data: status, refetch: refetchStatus } = useApi<KnowledgeStatus>("/knowledge/status");
   const fileRef = useRef<HTMLInputElement>(null);
-  const { t, i18n } = useTranslation(["knowledge", "common"]);
+  const { t } = useTranslation(["knowledge", "common"]);
   const confirm = useConfirm();
 
-  // last_rebuild is the index file's mtime; null when never built. Guard the
-  // parse the way Sessions does — an Invalid Date would make date-fns throw
-  // and take the whole page down.
-  const dfLocale = i18n.resolvedLanguage === "en" ? enUS : zhCN;
-  const lastRebuild = (): string => {
-    if (!status?.last_rebuild) return t("never");
-    const date = new Date(status.last_rebuild);
-    if (Number.isNaN(date.getTime())) return t("never");
-    return formatDistanceToNow(date, { locale: dfLocale, addSuffix: true });
-  };
+  // last_rebuild 是索引文件的 mtime,从未构建时为 null。
+  const lastRebuild = () => relativeTime(status?.last_rebuild, t("never"));
 
   const upload = async (file: File) => {
     const ok = await runMutation(async () => {

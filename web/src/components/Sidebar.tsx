@@ -22,25 +22,32 @@ const NAV = [
 export function Sidebar() {
   const { t, i18n } = useTranslation("nav");
   return (
-    <aside className="w-56 bg-white border-r border-gray-200 flex flex-col">
-      <div className="p-4 font-bold text-lg border-b">{t("appName")}</div>
-      <nav className="flex-1 p-2 space-y-1">
+    // 窄屏收成图标条(w-14),lg 以上展开为带文字的 w-56。此前固定 w-56 无折叠,
+    // 在笔记本分屏/平板上会把主内容区压到不可读。
+    <aside className="w-14 lg:w-56 shrink-0 bg-white border-r border-gray-200 flex flex-col">
+      <div className="p-4 font-bold text-lg border-b truncate">
+        <span className="hidden lg:inline">{t("appName")}</span>
+        <span className="lg:hidden" aria-hidden="true">E</span>
+      </div>
+      <nav className="flex-1 p-2 space-y-1 overflow-y-auto">
         {NAV.map(({ to, icon: Icon, key }) => (
           <NavLink
             key={to}
             to={to}
+            end={to === "/"}
+            title={t(key)}
             className={({ isActive }) =>
               `flex items-center gap-2 px-3 py-2 rounded-md text-sm ${
                 isActive ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-100"
               }`
             }
           >
-            <Icon size={18} />
-            {t(key)}
+            <Icon size={18} className="shrink-0" />
+            <span className="hidden lg:inline">{t(key)}</span>
           </NavLink>
         ))}
       </nav>
-      <div className="p-2 border-t flex gap-1">
+      <div className="p-2 border-t flex flex-col lg:flex-row gap-1">
         {(["zh", "en"] as const).map((lng) => (
           <button
             key={lng}

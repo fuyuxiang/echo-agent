@@ -1,5 +1,7 @@
 {
   "toggleFailed": "Toggle failed",
   "empty": "No skills",
-  "noDescription": "No description"
+  "noDescription": "No description",
+  "enableAria": "Enable skill {{name}}",
+  "disableAria": "Disable skill {{name}}"
 }

@@ -2,5 +2,11 @@
   "timeRange": "时间范围:",
   "today": "今天",
   "days": "{{count}}天",
-  "tokenTrend": "Token 消耗趋势"
+  "tokenTrend": "Token 消耗趋势",
+  "costTrend": "成本趋势",
+  "channelAttribution": "渠道成本归因",
+  "inputTokens": "输入",
+  "outputTokens": "输出",
+  "costUsd": "成本(USD)",
+  "totalCost": "区间总成本：${{cost}}"
 }

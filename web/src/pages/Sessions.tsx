@@ -2,8 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useApi } from "../hooks/use-api";
 import { apiFetch } from "../lib/api";
-import { formatDistanceToNow } from "date-fns";
-import { zhCN, enUS } from "date-fns/locale";
+import { relativeTime } from "../lib/datetime";
 
 interface SessionItem {
   key: string;
@@ -19,22 +18,14 @@ interface Message {
 }
 
 export function Sessions() {
-  const { t, i18n } = useTranslation(["sessions", "common"]);
+  const { t } = useTranslation(["sessions", "common"]);
   const { data, loading, error } = useApi<{ sessions: SessionItem[] }>("/sessions");
   const [selected, setSelected] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [search, setSearch] = useState("");
   const [historyError, setHistoryError] = useState<string | null>(null);
 
-  // 时间可能缺失或非法,formatDistanceToNow 遇到 Invalid Date 会抛 RangeError
-  // 导致整个列表 render 崩溃,这里统一兜底。
-  const dfLocale = i18n.resolvedLanguage === "en" ? enUS : zhCN;
-  const formatLastActive = (value: string | undefined): string => {
-    if (!value) return t("unknownTime");
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return t("unknownTime");
-    return formatDistanceToNow(date, { locale: dfLocale, addSuffix: true });
-  };
+  // 时间格式化(含 Invalid Date 兜底与 i18n locale)统一收口在 lib/datetime。
 
   const loadHistory = async (key: string) => {
     setSelected(key);
@@ -53,12 +44,13 @@ export function Sessions() {
   ) ?? [];
 
   return (
-    <div className="flex h-full gap-4">
-      <div className="w-72 flex flex-col border-r pr-4">
+    <div className="flex flex-col md:flex-row h-full gap-4">
+      <div className="w-full md:w-72 md:shrink-0 flex flex-col md:border-r md:pr-4 max-h-64 md:max-h-none">
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder={t("searchPlaceholder")}
+          aria-label={t("searchPlaceholder")}
           className="border rounded px-3 py-1.5 mb-3"
         />
         <div className="flex-1 overflow-y-auto space-y-1">
@@ -79,25 +71,28 @@ export function Sessions() {
             >
               <div className="font-medium truncate">{s.key}</div>
               <div className="text-xs text-gray-500">
-                {t("messageCount", { count: s.message_count, time: formatLastActive(s.updated_at) })}
+                {t("messageCount", { count: s.message_count, time: relativeTime(s.updated_at, t("unknownTime")) })}
               </div>
             </button>
           ))}
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto space-y-3">
+      <div className="flex-1 min-w-0 overflow-y-auto space-y-3">
         {historyError && (
           <div className="text-red-500 text-sm text-center mt-20">{t("historyFailed", { error: historyError })}</div>
         )}
         {!historyError && messages.map((msg, i) => (
           <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
             <div
-              className={`max-w-[70%] rounded-lg px-4 py-2 text-sm ${
+              className={`max-w-[85%] md:max-w-[70%] rounded-lg px-4 py-2 text-sm ${
                 msg.role === "user" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-800"
               }`}
             >
-              {msg.content}
+              {/* Agent 回复通常是 Markdown(代码块、列表)。这里不引入渲染器,但
+                  pre-wrap + break-words 至少保住换行与长行折叠——此前长代码块挤成
+                  一行且不换行,基本没法读。 */}
+              <div className="whitespace-pre-wrap break-words">{msg.content}</div>
             </div>
           </div>
         ))}

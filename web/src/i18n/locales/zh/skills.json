@@ -1,5 +1,7 @@
 {
   "toggleFailed": "切换失败",
   "empty": "暂无技能",
-  "noDescription": "无描述"
+  "noDescription": "无描述",
+  "enableAria": "启用技能 {{name}}",
+  "disableAria": "停用技能 {{name}}"
 }

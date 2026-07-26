@@ -40,8 +40,11 @@ export function Skills() {
                   <span className="font-medium text-sm">{skill.name}</span>
                 </div>
                 <button
+                  role="switch"
+                  aria-checked={skill.enabled}
+                  aria-label={t(skill.enabled ? "disableAria" : "enableAria", { name: skill.name })}
                   onClick={() => toggle(skill.name)}
-                  className={`w-10 h-5 rounded-full transition-colors ${skill.enabled ? "bg-blue-600" : "bg-gray-300"}`}
+                  className={`w-10 h-5 rounded-full transition-colors shrink-0 ${skill.enabled ? "bg-blue-600" : "bg-gray-300"}`}
                 >
                   <div className={`w-4 h-4 bg-white rounded-full shadow transition-transform ${skill.enabled ? "translate-x-5" : "translate-x-0.5"}`} />
                 </button>

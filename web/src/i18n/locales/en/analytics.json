@@ -2,5 +2,11 @@
   "timeRange": "Time range:",
   "today": "Today",
   "days": "{{count}}d",
-  "tokenTrend": "Token usage trend"
+  "tokenTrend": "Token usage trend",
+  "costTrend": "Cost trend",
+  "channelAttribution": "Cost by channel",
+  "inputTokens": "Input",
+  "outputTokens": "Output",
+  "costUsd": "Cost (USD)",
+  "totalCost": "Total for range: ${{cost}}"
 }
