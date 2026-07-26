@@ -2299,8 +2299,8 @@ class MemoryConfig(_Base):
         default=True,
         json_schema_extra={
             "status": "effective", "ref": "memory/retrieval.py:_rerank",
-            "desc_zh": "是否启用 cross-encoder 精排。RRF 只融合两路顺序、不懂'到底多相关',cross-encoder 对 (query,doc) 联合打分是相关性金标准。开启后对融合 top-K 重排(仅 top-K,开销小),超时/失败回退 RRF 原序。默认开:首次会从自建镜像(GitHub release)拉取重排模型(约 1GB,sha256 校验后离线命中);模型未就绪时本轮自动降级为 RRF 原序,不阻塞回复。关闭可完全省去该模型与每轮数十~上百 ms 精排延迟",
-            "desc_en": "Enable cross-encoder reranking. RRF only fuses rank order; a cross-encoder scores (query,doc) jointly — the relevance gold standard. When on, the fused top-K is reranked (top-K only, cheap); timeout/failure falls back to the RRF order. Default on: the reranker model (~1GB, sha256-verified) is fetched once from the self-hosted GitHub release mirror and then served offline; until it is ready each turn degrades to the RRF order without blocking the reply. Disable to drop the model and the per-turn rerank latency entirely.",
+            "desc_zh": "是否启用 cross-encoder 精排。RRF 只融合两路顺序、不懂'到底多相关',cross-encoder 对 (query,doc) 联合打分是相关性金标准。开启后对融合 top-K 重排(仅 top-K,开销小),超时/失败回退 RRF 原序。默认开:重排模型(约 941MB,sha256 校验后离线命中)在安装期就从自建镜像预取(Gitee 分卷优先,再 GitHub 整包),安装期漏下时运行期按退避重下;模型未就绪时本轮自动降级为 RRF 原序,不阻塞回复。关闭可完全省去该模型与每轮数十~上百 ms 精排延迟",
+            "desc_en": "Enable cross-encoder reranking. RRF only fuses rank order; a cross-encoder scores (query,doc) jointly — the relevance gold standard. When on, the fused top-K is reranked (top-K only, cheap); timeout/failure falls back to the RRF order. Default on: the reranker model (~941MB, sha256-verified) is prefetched at install time from the self-hosted mirrors (Gitee split volumes first, then the whole file from GitHub) and then served offline; if the prefetch was missed the runtime downloads it with backoff. Until it is ready each turn degrades to the RRF order without blocking the reply. Disable to drop the model and the per-turn rerank latency entirely.",
         },
     )
     rerank_model: str = Field(

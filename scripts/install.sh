@@ -1374,6 +1374,194 @@ PYEOF
     return 0
 }
 
+# Warm the local cross-encoder reranker the same way as the embedding model, and
+# for the same reason: memory.rerank_enabled defaults to TRUE, so without this a
+# fresh install pays a ~941MB download at runtime, where every turn until it
+# lands silently degrades to the un-reranked RRF order.
+#
+# Two shapes of the same tarball: Gitee caps a release asset at 100MiB so the
+# CN-friendly mirror hosts 10 ordered volumes that concatenate back into the
+# exact same file, while GitHub serves it whole. The pinned sha256 belongs to the
+# ASSEMBLED tarball (the volumes have no digests of their own), so it is always
+# verified after joining — a truncated or misordered join fails like a corrupt
+# download. Keep all of this in sync with _RELEASE_PACKAGES in
+# echo_agent/memory/local_rerank.py.
+RERANK_MODEL="${ECHO_RERANK_MODEL:-BAAI/bge-reranker-base}"
+RERANK_PREFETCH_TIMEOUT="${ECHO_RERANK_PREFETCH_TIMEOUT:-1800}"
+RERANK_PKG_NAME="bge-reranker-base-fastembed.tar.gz"
+RERANK_PKG_SHA256="be3bcc7b24448b3467318f6b4e14fdf0f3e8d4ad0e3c2f1b612a1dd011163fd1"
+RERANK_PKG_PART_COUNT=10
+RERANK_PKG_PARTS_BASE="https://gitee.com/fuyuxiang/echo-agent/releases/download/v0.3.6/$RERANK_PKG_NAME.part-"
+RERANK_PKG_WHOLE_URLS=(
+    "https://github.com/fuyuxiang/echo-agent/releases/download/v0.3.6/$RERANK_PKG_NAME"
+)
+# The reranker's offline path is fastembed's HuggingFace hub cache layout, so the
+# tar's top-level dir is this `models--…` directory (NOT the flat fastembed dir
+# the embedding package uses).
+RERANK_PKG_DIR="models--BAAI--bge-reranker-base"
+
+# True when the cache already holds a ready reranker: an ONNX weights file that
+# resolves (through the HF blob symlink) to a non-empty file. Mirrors
+# _hf_cache_has_ready_model() so a half-extracted tree re-downloads instead of
+# being trusted.
+rerank_cache_ready() {
+    local onnx
+    for onnx in "$EMBED_CACHE_DIR/$RERANK_PKG_DIR"/snapshots/*/onnx/model.onnx; do
+        if [ -f "$onnx" ] && [ -s "$onnx" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Download the 10 Gitee volumes and concatenate them, in order, into $1.
+# Any missing volume fails the whole source: a partial join can only fail the
+# sha256 check later, and failing here keeps the warning on the URL that broke.
+fetch_reranker_parts() {
+    local out="$1" i part_url part_tmp
+    : > "$out" || return 1
+    for i in $(seq 0 $((RERANK_PKG_PART_COUNT - 1))); do
+        part_url="$(printf '%s%02d' "$RERANK_PKG_PARTS_BASE" "$i")"
+        part_tmp="$out.part"
+        log_info "  volume $((i + 1))/$RERANK_PKG_PART_COUNT ..."
+        if ! curl -fsSL --retry 2 --connect-timeout 15 --max-time 900 \
+                -o "$part_tmp" "$part_url"; then
+            log_warn "Volume $i failed to download; abandoning this mirror."
+            rm -f "$part_tmp"
+            return 1
+        fi
+        cat "$part_tmp" >> "$out" || { rm -f "$part_tmp"; return 1; }
+        rm -f "$part_tmp"
+    done
+    return 0
+}
+
+# Populate the fastembed HF cache from our own mirrors: Gitee volumes first (CN
+# networks), then the whole file from GitHub. Best-effort — a non-zero return
+# just means the runtime downloads it later with backoff.
+fetch_reranker_model_from_release() {
+    # Only the default model is packaged; a custom ECHO_RERANK_MODEL must use the
+    # runtime's HF path.
+    if [ "$RERANK_MODEL" != "BAAI/bge-reranker-base" ]; then
+        return 1
+    fi
+    if rerank_cache_ready; then
+        log_info "Reranker model already cached; skipping release download."
+        return 0
+    fi
+    if ! command -v curl >/dev/null 2>&1; then
+        return 1
+    fi
+
+    mkdir -p "$EMBED_CACHE_DIR"
+    local tmp_tar="$EMBED_CACHE_DIR/.$RERANK_PKG_NAME.joining"
+    local staging actual url ok=1
+
+    log_info "Downloading reranker model (~941MB) from Gitee volumes ..."
+    if fetch_reranker_parts "$tmp_tar"; then
+        ok=0
+    else
+        rm -f "$tmp_tar"
+        for url in "${RERANK_PKG_WHOLE_URLS[@]}"; do
+            log_info "Downloading reranker model from release: $url"
+            if curl -fsSL --retry 2 --connect-timeout 15 --max-time 1800 \
+                    -o "$tmp_tar" "$url"; then
+                ok=0
+                break
+            fi
+            log_warn "Download failed from $url."
+            rm -f "$tmp_tar"
+        done
+    fi
+    if [ "$ok" -ne 0 ]; then
+        return 1
+    fi
+
+    actual="$(file_sha256 "$tmp_tar")"
+    if [ "$actual" != "$RERANK_PKG_SHA256" ]; then
+        log_warn "Reranker sha256 mismatch (got ${actual:-none}); discarding download."
+        rm -f "$tmp_tar"
+        return 1
+    fi
+
+    # Extract to a same-disk staging dir, then swap in atomically, so an
+    # interrupted extract never leaves a half-tree that rerank_cache_ready trusts.
+    staging="${EMBED_CACHE_DIR:?}/.staging-rerank.$$"
+    rm -rf "$staging"
+    mkdir -p "$staging" || { rm -f "$tmp_tar"; return 1; }
+    if ! tar -xzf "$tmp_tar" -C "$staging"; then
+        log_warn "Reranker extraction failed."
+        rm -rf "$staging"
+        rm -f "$tmp_tar"
+        return 1
+    fi
+    rm -f "$tmp_tar"
+    rm -rf "${EMBED_CACHE_DIR:?}/$RERANK_PKG_DIR"
+    if ! mv "$staging/$RERANK_PKG_DIR" "$EMBED_CACHE_DIR/$RERANK_PKG_DIR"; then
+        log_warn "Reranker install failed (unexpected archive layout)."
+        rm -rf "$staging"
+        return 1
+    fi
+    rm -rf "$staging"
+    log_success "Reranker model fetched from release mirror (offline-ready)."
+    return 0
+}
+
+prefetch_reranker_model() {
+    local venv_python="$INSTALL_DIR/venv/bin/python"
+    if [ ! -x "$venv_python" ]; then
+        log_warn "Skipping reranker prefetch (venv python not found)."
+        return 0
+    fi
+    if [ -z "$RERANK_MODEL" ] || [ "${ECHO_SKIP_RERANK_PREFETCH:-0}" = "1" ]; then
+        log_info "Reranker prefetch disabled."
+        return 0
+    fi
+
+    # Same non-fatal contract as the embedding prefetch: this is pure
+    # optimization, so the whole thing runs as an `if` condition and always
+    # returns 0. `trap - ERR` alone would NOT suppress `set -e`.
+    local rc=0
+    if fetch_reranker_model_from_release; then
+        rc=0
+    else
+        rc=1
+    fi
+
+    if [ "$rc" -eq 0 ]; then
+        # Verify the cache actually loads offline, which is the only check that
+        # proves the runtime will get a hit rather than re-downloading.
+        if HF_HUB_OFFLINE=1 \
+           run_with_timeout "$RERANK_PREFETCH_TIMEOUT" "$venv_python" - \
+                "$RERANK_MODEL" "$EMBED_CACHE_DIR" <<'PYEOF'
+import sys
+model_name, cache_dir = sys.argv[1], sys.argv[2]
+try:
+    from fastembed.rerank.cross_encoder import TextCrossEncoder
+    enc = TextCrossEncoder(
+        model_name=model_name, cache_dir=cache_dir, local_files_only=True
+    )
+    next(iter(enc.rerank("预热", ["预热文档"])), None)
+    print("ok")
+except Exception as e:  # noqa: BLE001 - best-effort prefetch, never fatal
+    print(f"rerank prefetch failed: {e}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+        then
+            log_success "Reranker model cached (offline-ready)."
+        else
+            log_warn "Reranker cache present but failed to load offline."
+            log_warn "Retrieval keeps the RRF order and the runtime retries later."
+        fi
+    else
+        log_warn "Reranker model prefetch failed or was skipped."
+        log_warn "Retrieval starts in un-reranked RRF order and the runtime"
+        log_warn "downloads the model on demand with backoff. To skip entirely,"
+        log_warn "set memory.rerank_enabled=false in $ECHO_HOME/echo-agent.yaml."
+    fi
+    return 0
+}
+
 # The Dashboard SPA is built from web/ in this checkout. We deliberately do NOT
 # download a prebuilt bundle: the sources are already here, so building them is
 # locally verifiable, whereas fetching an artifact would mean trusting that some
@@ -1811,6 +1999,7 @@ main() {
     setup_venv
     install_deps
     prefetch_embedding_model
+    prefetch_reranker_model
     check_node
     build_dashboard
     setup_path

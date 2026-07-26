@@ -37,16 +37,41 @@ _DEFAULT_MODEL = "BAAI/bge-reranker-base"
 # cache layout `models--<repo>/{blobs,refs,snapshots}/`. So the tar's top-level
 # dir MUST be that `models--…` directory, extracted straight into cache_dir; then
 # fastembed's local_files_only load hits it. Verified offline before shipping.
+#
+# `sources` is tried in order and each entry is either a single-file tarball
+# (`url`) or a set of ordered split volumes (`parts`) that concatenate back into
+# the exact same tarball. Gitee caps a release asset at 100 MiB, and this tar is
+# ~941 MiB, so the CN-friendly mirror can only host it as parts — which is why a
+# parts source exists at all, and why it must be verified AFTER joining (the
+# pinned sha256 is the whole tarball's, individual volumes have no digest).
+# Gitee goes first: for CN networks GitHub release downloads are the flaky ones,
+# and this is the same mirror order as the embedding package.
 _RELEASE_PACKAGES: dict[str, dict[str, Any]] = {
     "BAAI/bge-reranker-base": {
         # The directory fastembed's HF cache expects inside cache_dir.
         "cache_subdir": "models--BAAI--bge-reranker-base",
         "sha256": "be3bcc7b24448b3467318f6b4e14fdf0f3e8d4ad0e3c2f1b612a1dd011163fd1",
-        "urls": [
-            "https://github.com/fuyuxiang/echo-agent/releases/download/v0.3.6/bge-reranker-base-fastembed.tar.gz",
+        "sources": [
+            {
+                "parts": [
+                    "https://gitee.com/fuyuxiang/echo-agent/releases/download/v0.3.6/bge-reranker-base-fastembed.tar.gz.part-%02d" % i
+                    for i in range(10)
+                ],
+            },
+            {
+                "url": "https://github.com/fuyuxiang/echo-agent/releases/download/v0.3.6/bge-reranker-base-fastembed.tar.gz",
+            },
         ],
     },
 }
+
+
+def _source_label(source: dict[str, Any]) -> str:
+    """Human-readable name for a release source (a URL, or "N parts from <url0>")."""
+    parts = source.get("parts")
+    if parts:
+        return f"{len(parts)} parts from {parts[0]}"
+    return str(source.get("url", "<unknown>"))
 
 
 def _hf_cache_has_ready_model(cache_subdir: Path) -> bool:
@@ -118,32 +143,35 @@ class LocalReranker:
         tar's top-level dir is the HF-layout `models--…` directory, extracted
         straight into cache_dir. Download → sha256 verify → extract to a same-disk
         staging dir → atomic rename, so an interrupted fetch never leaves a
-        half-tree that a later cache-hit check would trust."""
+        half-tree that a later cache-hit check would trust.
+
+        A source is either one tarball or ordered split volumes joined back into
+        it; either way the pinned sha256 is checked on the assembled file, so a
+        truncated or out-of-order join is rejected exactly like a corrupt
+        download."""
         pkg = _RELEASE_PACKAGES.get(self._model_name)
         if pkg is None or not self._cache_dir:
             return False
-        import hashlib
         import shutil
         import tarfile
         import tempfile
-        import urllib.request
 
         cache_root = Path(self._cache_dir).resolve()
         target = cache_root / pkg["cache_subdir"]
         if _hf_cache_has_ready_model(target):
             return True
         os.makedirs(self._cache_dir, exist_ok=True)
-        for url in pkg["urls"]:
+        for source in pkg["sources"]:
             tmp = None
             staging = None
             try:
-                with urllib.request.urlopen(url, timeout=30) as resp, \
-                        tempfile.NamedTemporaryFile(dir=self._cache_dir, delete=False) as f:
-                    tmp = f.name
-                    shutil.copyfileobj(resp, f)
-                digest = hashlib.sha256(Path(tmp).read_bytes()).hexdigest()
+                tmp, digest = self._download_source(source)
+                if tmp is None:
+                    continue
                 if digest != pkg["sha256"]:
-                    logger.warning("Reranker release sha256 mismatch from {}", url)
+                    logger.warning(
+                        "Reranker release sha256 mismatch from {}", _source_label(source)
+                    )
                     continue
                 staging = tempfile.mkdtemp(dir=self._cache_dir, prefix=".staging-")
                 staging_root = Path(staging).resolve()
@@ -157,21 +185,61 @@ class LocalReranker:
                     tar.extractall(staging)
                 extracted = staging_root / pkg["cache_subdir"]
                 if not _hf_cache_has_ready_model(extracted):
-                    logger.warning("Reranker release incomplete after extract from {}", url)
+                    logger.warning(
+                        "Reranker release incomplete after extract from {}",
+                        _source_label(source),
+                    )
                     continue
                 if target.exists():
                     shutil.rmtree(target, ignore_errors=True)
                 os.replace(extracted, target)
-                logger.info("Reranker model fetched from release mirror: {}", url)
+                logger.info(
+                    "Reranker model fetched from release mirror: {}", _source_label(source)
+                )
                 return True
             except Exception as e:
-                logger.warning("Reranker release fetch failed from {}: {}", url, e)
+                logger.warning(
+                    "Reranker release fetch failed from {}: {}", _source_label(source), e
+                )
             finally:
                 if tmp:
                     Path(tmp).unlink(missing_ok=True)
                 if staging:
                     shutil.rmtree(staging, ignore_errors=True)
         return False
+
+    def _download_source(self, source: dict[str, Any]) -> tuple[str | None, str]:
+        """Download one source to a temp file; returns (path, sha256) or (None, "").
+
+        Volumes are streamed straight into a single file in order and hashed as
+        they land, so a ~1GB package never needs to be held in memory or stored
+        twice on disk. Any missing volume aborts the whole source — a partial
+        join would only fail the digest check later, so failing here keeps the
+        warning pointed at the URL that actually broke."""
+        import hashlib
+        import tempfile
+        import urllib.request
+
+        urls = source.get("parts") or [source["url"]]
+        hasher = hashlib.sha256()
+        tmp = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=self._cache_dir, delete=False) as f:
+                tmp = f.name
+                for url in urls:
+                    with urllib.request.urlopen(url, timeout=30) as resp:
+                        while True:
+                            chunk = resp.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            hasher.update(chunk)
+                            f.write(chunk)
+            return tmp, hasher.hexdigest()
+        except Exception as e:
+            logger.warning("Reranker release download failed: {}", e)
+            if tmp:
+                Path(tmp).unlink(missing_ok=True)
+            return None, ""
 
     def _load_model_sync(self) -> Any | None:
         try:
