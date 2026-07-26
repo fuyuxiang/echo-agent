@@ -121,6 +121,23 @@ class PromptInput(TextArea):
         self.text = completed
         self.move_cursor(self.document.end)
 
+    def restore_draft(self, text: str) -> None:
+        """Put a just-submitted line back in the box, undoing its history entry.
+
+        Used by the app's queue-guard, which asks for a second Enter before
+        actually sending. ``_submit`` had already recorded the line in history, so
+        naively re-assigning ``.text`` left a duplicate entry once the confirming
+        submit recorded it again. Assigning ``.text`` also routes through
+        ``load_text``, which resets the cursor to (0, 0) — the user's cursor
+        jumped to the start of their own sentence, and Up/Down then browsed
+        history instead of moving within the line.
+        """
+        if self._history and self._history[-1] == text:
+            self._history.pop()
+        self._hist_idx = len(self._history)
+        self.text = text
+        self.move_cursor(self.document.end)
+
     def _submit(self) -> None:
         text = self.text.strip()
         if not text:

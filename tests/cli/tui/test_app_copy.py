@@ -58,7 +58,7 @@ async def test_copy_excludes_heartbeat_lines():
         # 心跳行是 AgentReply 子类，必须被排除，否则 /copy 会抓到进度行
         app.on_cognitive(CogEvent("heartbeat", "e1", "in2", {"note": "处理中"}, "处理中"))
         await pilot.pause()
-        assert app._tv.last_reply_text() == "真正的回复"
+        assert app._tv.last_turn_reply_text() == "真正的回复"
         assert "处理中" not in app._tv.export_text()
 
     await _drive(app, body)

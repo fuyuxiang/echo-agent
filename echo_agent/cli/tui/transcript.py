@@ -68,10 +68,23 @@ class TranscriptView(VerticalScroll):
     def heartbeat_count(self) -> int:
         return len(self._heartbeats)
 
-    def clear(self) -> None:
+    def clear(self, *, keep: list | None = None) -> None:
         """Remove all mounted blocks and reset the per-turn indexes.
-        Used by the client-local /clear command — screen only, session intact."""
-        self.remove_children()
+        Used by the client-local /clear command — screen only, session intact.
+
+        ``keep`` holds widgets that must survive (a pending approval/clarify the
+        user still has to answer): everything else is removed around them, so the
+        interactive prompt that the disabled input box refers to stays on screen
+        with its internal state intact.
+        """
+        survivors = [w for w in (keep or []) if w in self.children]
+        for w in list(self.children):
+            if w in survivors:
+                continue
+            try:
+                w.remove()
+            except Exception:
+                pass
         self._heartbeats.clear()
         self._tool_blocks.clear()
         self._last_memory = None
@@ -176,37 +189,75 @@ class TranscriptView(VerticalScroll):
             hb.update_note(phrase)
         return hb
 
+    def repaint_replies(self) -> None:
+        """Re-render every markdown reply against the active theme.
+
+        Called after a ``/theme`` switch: markdown replies bake their colours in
+        at render time (Rich renderables bypass Textual's ``$var`` resolution),
+        so without this the switch only affected content rendered afterwards and
+        the existing conversation kept the old palette's hues.
+        """
+        for w in self.children:
+            if isinstance(w, AgentReply):
+                try:
+                    w.repaint()
+                except Exception:
+                    pass
+
     def last_memory_block(self) -> CognitiveBlock | None:
         return self._last_memory
 
+    def clear_heartbeats(self) -> None:
+        """Remove the rotating "⏳ …" progress lines.
+
+        They were mounted per inbound_event_id and never removed, so every past
+        turn left a phantom "还在处理" line in the transcript and ``_heartbeats``
+        grew without bound across a session.
+
+        Safe to call whenever a reply lands, including on the intermediate
+        ``is_final`` frames the gateway emits mid-turn (text → tool → more text):
+        the index is cleared too, so a later heartbeat simply mounts a fresh
+        line rather than updating a removed widget.
+        """
+        for hb in list(self._heartbeats.values()):
+            try:
+                hb.remove()
+            except Exception:
+                pass
+        self._heartbeats.clear()
+
+    def end_turn_cleanup(self) -> None:
+        """Retire progress scaffolding after a turn died without finishing
+        (gateway ``error`` frame, socket drop).
+
+        Beyond the heartbeat lines, this settles tool lines whose paired "done"
+        frame will now never arrive: they stayed rendered as ``🔧 执行 …``,
+        indistinguishable from a command still running.
+
+        Deliberately NOT called on the normal reply path. The gateway splits one
+        answer across several ``is_final`` frames, so a final can arrive while
+        tools are still executing — marking those "未完成" would be wrong, and
+        dropping their correlation would make the real done frame mount a second,
+        duplicate line for the same call.
+        """
+        self.clear_heartbeats()
+        for tcid, block in list(self._tool_blocks.items()):
+            if block.status == "running":
+                block.mark_interrupted()
+            del self._tool_blocks[tcid]
+
     def last_thinking_block(self) -> CognitiveBlock | None:
         return self._last_thinking
-
-    def last_reply_text(self) -> str | None:
-        """Plain text of the most recent agent reply, or None if there is no
-        reply yet. Heartbeats subclass AgentReply, so they are excluded to keep
-        /copy pointed at the actual answer, not a progress line. Status lines
-        (server errors) reuse AgentReply but set is_status — also excluded, so a
-        rate-limit/error right before /copy doesn't clobber the real last reply."""
-        for w in reversed(list(self.children)):
-            if isinstance(w, _Heartbeat):
-                continue
-            if isinstance(w, AgentReply):
-                if getattr(w, "is_status", False):
-                    continue
-                return w.text
-        return None
 
     def last_turn_reply_text(self) -> str | None:
         """Plain text of the most recent *turn's* full reply, or None if there
         is no reply yet. A single logical answer is frequently split across
         several AgentReply blocks (the gateway emits text → tool call → more
-        text as separate final frames), so returning only the last block —
-        which is what ``last_reply_text`` does — copies just the tail the user
-        can see at the bottom of the screen, dropping the earlier parts of the
-        same answer. This walks back to the last UserTurn and joins every real
-        AgentReply after it, so /copy captures the whole latest answer.
-        Heartbeats (progress lines) and status lines (server errors) reuse
+        text as separate final frames), so returning only the last block copies
+        just the tail the user can see at the bottom of the screen, dropping the
+        earlier parts of the same answer. This walks back to the last UserTurn and
+        joins every real AgentReply after it, so /copy captures the whole latest
+        answer. Heartbeats (progress lines) and status lines (server errors) reuse
         AgentReply but are excluded — they are UI chatter, not the answer."""
         parts: list[str] = []
         for w in reversed(list(self.children)):
@@ -227,7 +278,13 @@ class TranscriptView(VerticalScroll):
     def export_text(self) -> str:
         """The whole conversation as a plain-text transcript (user turns and
         agent replies in order), for /copy all. Cognitive/tool/heartbeat lines
-        are skipped — they are UI scaffolding, not content worth copying."""
+        are skipped — they are UI scaffolding, not content worth copying.
+
+        Status lines (is_status) are skipped for the same reason, matching
+        export_markdown: /help output, /theme confirmations and disconnect
+        notices are client-local chatter, and because they carry hand-built Rich
+        markup they landed in the clipboard as raw "[$text-muted]…[/]" tags.
+        """
         parts: list[str] = []
         for w in self.children:
             if isinstance(w, _Heartbeat):
@@ -235,6 +292,8 @@ class TranscriptView(VerticalScroll):
             if isinstance(w, UserTurn):
                 parts.append(f"❯ {w.raw_text}")
             elif isinstance(w, AgentReply):
+                if getattr(w, "is_status", False):
+                    continue
                 parts.append(w.text)
         return "\n\n".join(p for p in parts if p)
 

@@ -37,7 +37,14 @@ class EchoTUI(App):
         # pending approval, else clears prompt text, else arms a 2s "press
         # again to exit" window. Ctrl+D stays the immediate escape hatch.
         Binding("ctrl+c", "interrupt", "中断/退出", show=False, priority=True),
-        Binding("ctrl+d", "quit", "退出", show=False),
+        # priority=True is load-bearing: TextArea binds "delete,ctrl+d" to
+        # delete_right, and PromptInput holds focus in the normal case
+        # (AUTO_FOCUS), so without priority the widget consumed Ctrl+D and the
+        # app never quit — it deleted a character instead. Three separate hints
+        # ("Ctrl+D 退出" in the banner, the disconnect notice, and the Ctrl+C
+        # exit prompt) promise this key works, and after a drop it is the only
+        # exit the user is told about.
+        Binding("ctrl+d", "quit", "退出", show=False, priority=True),
         # y/n/a are declared as bindings (not on_key) because a focused
         # PromptInput (TextArea) consumes printable keys before on_key runs in
         # textual 8.2.8. check_action gates them so they only fire while an
@@ -196,11 +203,18 @@ class EchoTUI(App):
             )
             return True if pending else None
         if action in ("clarify_pick", "clarify_move", "clarify_accept"):
-            # Only while a clarify is pending AND the prompt is not focused
-            # (blurred on mount of the block). When the user has stepped into
-            # free-text input the prompt is focused again, so these bindings
-            # yield to normal typing/submit.
-            active = self._pending_clarify is not None and self.focused is None
+            # Only while a clarify is pending AND the user has not stepped into
+            # free-text input. The test is "is the PROMPT focused?", not "is
+            # anything focused?": transcript blocks (tool/cognitive) are
+            # focusable, so a single Tab moved focus onto one of them and the old
+            # `self.focused is None` check went False — every number/arrow/enter
+            # key was then filtered out while the prompt stayed disabled, leaving
+            # the user with no way to answer the clarify at all. Mirrors how the
+            # approval keys gate (on pending state, not focus).
+            active = (
+                self._pending_clarify is not None
+                and not self._clarify_free_input
+            )
             return True if active else None
         return True
 
@@ -256,6 +270,12 @@ class EchoTUI(App):
             self._turns.note_turn_settled()
         if not self._turns.has_active_primary:
             self.query_one(StatusBar).stop_turn_timer()
+            # Retire this turn's heartbeat line — the answer is on screen, so a
+            # "还在处理" line below it is stale. Only once NO primary turn remains,
+            # so a queued second turn's live progress is not wiped. Tool lines are
+            # deliberately left alone here: the gateway splits one answer across
+            # several final frames, so tools may still be running.
+            self._tv.clear_heartbeats()
             # Defensive: a primary turn ending with a clarify/approval still
             # marked pending means the server resolved/ended it without the
             # normal answer path firing (e.g. timeout, error). Clear the stale
@@ -345,6 +365,18 @@ class EchoTUI(App):
             self.query_one(StatusBar).stop_turn_timer()
         except Exception:
             pass
+        # The turn died server-side, so its heartbeat line and any tool line
+        # still rendered as running are now lying about what is happening. Retire
+        # them the same way the normal reply path does.
+        try:
+            self._tv.end_turn_cleanup()
+        except Exception:
+            pass
+        # Drop stream correlation for the dead turn(s): only on_user_reply_final
+        # pops from _replies, so a turn ended by an error/interrupt left its entry
+        # behind forever — one leaked widget reference per affected turn for the
+        # life of the process.
+        self._replies.clear()
         # Same focus recovery as the normal reply path: an error ends the turn,
         # so pull keyboard focus back to the prompt in case it drifted onto a
         # transcript block. Skip while a pending clarify/approval owns the
@@ -361,7 +393,14 @@ class EchoTUI(App):
         Also blocks conversation sends so the user can't submit into a dead
         socket (the message would be silently lost). The prompt stays editable so
         /reconnect and other local commands remain reachable; a notice points at
-        it."""
+        it.
+
+        Idempotent per drop: attach_client calls this from three places
+        (send_coro, interrupt_coro and the pump's exit), so one real disconnect
+        easily triggers several calls. Re-entering while already disconnected
+        returns immediately rather than stacking another identical notice."""
+        if not self._connected:
+            return
         self._connected = False
         try:
             self.query_one(StatusBar).set_connection(False)
@@ -371,6 +410,14 @@ class EchoTUI(App):
         # spam the transcript.
         try:
             self._tv.add_error("连接已断开。输入 /reconnect 重连（Ctrl+D 退出）。")
+        except Exception:
+            pass
+        # No further frames can arrive on this socket, so a heartbeat line or a
+        # running tool line would sit there implying live progress. Retire them;
+        # the turn may well still be running server-side, but this client can no
+        # longer show it, and replay_missed_reply covers the recovered answer.
+        try:
+            self._tv.end_turn_cleanup()
         except Exception:
             pass
 
@@ -392,6 +439,11 @@ class EchoTUI(App):
         self._pending_clarify = None
         self._pending_approval = None
         self._clarify_free_input = False
+        # Stream correlation is per-connection too: a partially-streamed reply
+        # from before the drop can never receive its final, so its _replies entry
+        # would linger and a same-id frame after the reconnect would append into
+        # the old, abandoned widget.
+        self._replies.clear()
         try:
             bar = self.query_one(StatusBar)
             bar.set_connection(True)
@@ -426,11 +478,14 @@ class EchoTUI(App):
             pass
 
     def on_key(self, event) -> None:
-        # Enter free-text clarify input: only while a clarify is pending and
-        # the prompt is blurred. A single printable character (not consumed by
-        # the number/arrow/enter bindings) focuses the prompt, seeds that char,
-        # and marks the next submit as a clarify answer.
-        if self._pending_clarify is None or self.focused is not None:
+        # Enter free-text clarify input: only while a clarify is pending and the
+        # user has not already stepped into free-text. A single printable
+        # character (not consumed by the number/arrow/enter bindings) focuses the
+        # prompt, seeds that char, and marks the next submit as a clarify answer.
+        # Gated on _clarify_free_input rather than "nothing is focused" so a Tab
+        # onto a transcript block cannot strand the user with a disabled prompt
+        # and no working keys (same reasoning as check_action).
+        if self._pending_clarify is None or self._clarify_free_input:
             return
         ch = event.character
         if ch is None or not ch.isprintable() or ch == " ":
@@ -496,33 +551,25 @@ class EchoTUI(App):
         self, message: PromptInput.Submitted
     ) -> None:
         text = message.text
+        # Local commands execute inside the TUI and are never sent upstream;
+        # server commands (/approve, /deny, /approvals) fall through to send.
+        #
+        # These are checked BEFORE the clarify free-text branch for the few
+        # commands that must stay reachable while a clarify is pending. Typing
+        # "/reconnect" into a clarify used to be sent verbatim as the ANSWER
+        # ("/clarify c1 /reconnect"), so a drop that happened while the agent was
+        # waiting for an answer left the user locked inside an unanswerable
+        # clarify on a dead socket, with the completion panel still popping up as
+        # if the command would run. Answer-shaped input (anything else) still
+        # goes to the clarify.
+        if await self._run_local_command(text, during_clarify=True):
+            return
         # A clarify free-text answer is routed to the pending clarify, not sent
         # as a new conversation turn.
         if self._clarify_free_input and self._pending_clarify is not None:
             await self._answer_clarify(text)
             return
-        # Local commands execute inside the TUI and are never sent upstream;
-        # server commands (/approve, /deny, /approvals) fall through to send.
-        if text == "/help":
-            self._tv.add_notice(help_text())
-            return
-        if text == "/clear":
-            self._tv.clear()
-            return
-        if text == "/quit":
-            self.exit()
-            return
-        if text == "/copy" or text == "/copy all":
-            self._do_copy(whole=text == "/copy all")
-            return
-        if text == "/save" or text.startswith("/save "):
-            self._do_save(text[len("/save"):].strip())
-            return
-        if text == "/theme" or text.startswith("/theme "):
-            self._do_theme(text[len("/theme"):].strip())
-            return
-        if text == "/reconnect":
-            await self._do_reconnect()
+        if await self._run_local_command(text, during_clarify=False):
             return
         # Block conversation turns while disconnected — a send into a dead socket
         # is silently lost. Local commands above still work; point the user at
@@ -546,7 +593,7 @@ class EchoTUI(App):
                 # First submit (or a stale one): arm the window, keep the text in
                 # the box so a second Enter resends it, and tell the user why.
                 self._last_queue_confirm = now
-                self.query_one(PromptInput).text = text
+                self.query_one(PromptInput).restore_draft(text)
                 self._tv.add_notice(
                     "[$text-muted]上一轮仍在进行中。当前回复不会打断它，"
                     "而是作为新一轮排在其后。再次回车确认发送，"
@@ -565,6 +612,71 @@ class EchoTUI(App):
         self._turns.note_send("primary")
         if self._send is not None:
             await self._send(text)
+
+    # Local commands that stay reachable while a clarify is pending: escape
+    # hatches and read-only helpers. Anything that would answer or mutate the
+    # conversation is excluded, so ordinary answers still reach the clarify.
+    _CLARIFY_SAFE_COMMANDS = frozenset({"/help", "/quit", "/reconnect"})
+
+    async def _run_local_command(self, text: str, *, during_clarify: bool) -> bool:
+        """Execute a client-local command. Returns True if ``text`` was handled.
+
+        The command name is matched case-insensitively: the completion panel
+        filters with ``text.lower()``, so typing "/HELP" showed "/help" as a
+        valid match while dispatch compared exactly and sent "/HELP" upstream as
+        a conversation turn. The argument is passed through with its original
+        case (paths and theme names are the user's own text).
+
+        ``during_clarify`` restricts the set to _CLARIFY_SAFE_COMMANDS so this
+        can run ahead of the clarify-answer branch without swallowing answers.
+        """
+        head, _, raw_arg = text.partition(" ")
+        name = head.lower()
+        arg = raw_arg.strip()
+        if during_clarify:
+            if self._pending_clarify is None or name not in self._CLARIFY_SAFE_COMMANDS:
+                return False
+        if name == "/help":
+            self._tv.add_notice(help_text())
+            return True
+        if name == "/clear":
+            self._do_clear()
+            return True
+        if name == "/quit":
+            self.exit()
+            return True
+        if name == "/copy" and arg in ("", "all"):
+            self._do_copy(whole=arg == "all")
+            return True
+        if name == "/save":
+            self._do_save(arg)
+            return True
+        if name == "/theme":
+            self._do_theme(arg)
+            return True
+        if name == "/reconnect":
+            await self._do_reconnect()
+            return True
+        return False
+
+    def _do_clear(self) -> None:
+        """/clear — wipe the transcript (screen only; the session is intact).
+
+        A pending approval/clarify block is KEPT rather than removed. The prompt
+        is disabled while one is outstanding, so clearing the block that
+        explained why left a dead input box on an empty screen with no hint about
+        which key to press — while the server sat parked waiting for the answer.
+        The widgets are preserved in place (not rebuilt) so their internal state
+        — a dict option's real answer value, the current highlight — survives.
+        """
+        keep = [
+            w for w in (self._pending_approval, self._pending_clarify)
+            if w is not None
+        ]
+        self._tv.clear(keep=keep)
+        # The reply widgets those ids pointed at are gone, so a still-streaming
+        # turn must start a fresh one instead of appending into a removed widget.
+        self._replies.clear()
 
     async def _do_reconnect(self) -> None:
         """/reconnect — rebuild the WS connection after a drop. No-op (with a
@@ -611,10 +723,10 @@ class EchoTUI(App):
         from datetime import datetime
         from pathlib import Path
 
-        # export_text is empty exactly when there is no real conversation
-        # (no user turns / non-status agent replies) — a cleaner emptiness
-        # check than string-matching the Markdown header, which always carries
-        # the session/timestamp metadata block.
+        # export_text is empty exactly when there is no real conversation (no
+        # user turns / non-status agent replies), which is the same content
+        # selection export_markdown uses — so this can never report "saved" for a
+        # file that turns out to hold only the metadata header.
         if not self._tv.export_text().strip():
             self.notify("暂无可保存的对话", severity="warning", timeout=3)
             return
@@ -655,6 +767,11 @@ class EchoTUI(App):
         arg = arg.lower()
         if arg in ("light", "dark"):
             self.theme = "echo-light" if arg == "light" else "echo"
+            # Markdown replies bake their colours in at render time, so the
+            # switch alone left the existing conversation in the old palette
+            # (dark teal + low-contrast grey on a white surface — the very
+            # unreadability the light theme fixes). Repaint what's on screen.
+            self._tv.repaint_replies()
         elif arg:
             self._tv.add_notice("[$warning]用法: /theme [light|dark][/]")
             return

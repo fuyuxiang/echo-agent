@@ -64,9 +64,13 @@ ChoiceBlock {
     background: $boost;
 }
 
+/* max-height covers the two border rows (top + bottom) on top of the text
+   area, so it must be PromptInput's _MAX_ROWS + 2. At the old value of 10 the
+   box grew to 10 text rows but only 8 were inside the frame, so from the 9th
+   line on the user was typing into a line they could not see. */
 #input_row {
     height: auto;
-    max-height: 10;
+    max-height: 12;
     min-height: 1;
     border-top: solid $primary;
     border-bottom: solid $primary;

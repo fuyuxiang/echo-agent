@@ -113,6 +113,50 @@ def _clip(s: str, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+# Parameter names whose value must never be shown verbatim. The approval panel
+# and the tool detail view render whatever the model passed, and that routinely
+# includes credentials — which then sit in the transcript and get written to disk
+# by /save. Matched as a substring on the lowercased key, so "api_key",
+# "authorization" and "DB_PASSWORD" are all covered.
+_SECRET_KEY_HINTS = (
+    "password", "passwd", "secret", "token", "api_key", "apikey",
+    "credential", "authorization", "auth_header", "private_key", "access_key",
+)
+
+
+def _is_secret_key(key: str) -> bool:
+    lowered = str(key).lower()
+    return any(hint in lowered for hint in _SECRET_KEY_HINTS)
+
+
+def _mask(value: str) -> str:
+    """Replace a secret value with a length-preserving placeholder, keeping the
+    last 4 characters so the user can still tell two credentials apart."""
+    text = str(value)
+    if len(text) <= 4:
+        return "••••"
+    return "••••" + text[-4:]
+
+
+def format_params(params: dict, *, value_width: int = 60) -> list[str]:
+    """Render call parameters as one ``key=value`` line per entry, with secrets
+    masked.
+
+    Both the approval panel and the tool detail view used to print ``str(dict)``,
+    i.e. a raw Python repr: it wrapped unreadably for anything non-trivial and
+    leaked credentials verbatim on the exact screen where the user is asked to
+    authorize a high-risk action.
+    """
+    lines: list[str] = []
+    for key, value in (params or {}).items():
+        if _is_secret_key(key):
+            shown = _mask(value)
+        else:
+            shown = _clip(value, value_width)
+        lines.append(f"{key}={shown}")
+    return lines
+
+
 def pick_object(name: str, params: dict) -> str:
     """The primary argument shown as the tool's operand."""
     params = params or {}
@@ -274,6 +318,10 @@ class AgentReply(Static):
 
     def __init__(self) -> None:
         self._buf = ""
+        # True once set_markdown has rendered this reply, i.e. its colours are
+        # baked in and a theme switch needs an explicit repaint(). Markup paths
+        # (streaming/status lines) re-resolve $vars themselves, so they stay False.
+        self._is_markdown = False
         # Status lines (server errors, etc.) reuse this widget but are NOT real
         # agent replies. Flagged so /copy skips them and stays pointed at the
         # last genuine answer.
@@ -288,6 +336,7 @@ class AgentReply(Static):
 
     def append_token(self, t: str) -> None:
         self._buf += t
+        self._is_markdown = False
         self.update(f"[$primary]●[/] {escape(self._buf)}")
 
     def clear_stream(self) -> None:
@@ -298,10 +347,12 @@ class AgentReply(Static):
         widget stays mounted so the reply keeps its position in the transcript.
         """
         self._buf = ""
+        self._is_markdown = False
         self.update("[$primary]●[/] ")
 
     def set_final(self, text: str) -> None:
         self._buf = text
+        self._is_markdown = False
         self.update(f"[$primary]●[/] {escape(self._buf)}")
 
     def set_markup(self, markup: str) -> None:
@@ -311,6 +362,7 @@ class AgentReply(Static):
         escaped. _buf keeps a plain-ish copy so /copy stays harmless if reached
         (notices set is_status and are skipped anyway)."""
         self._buf = markup
+        self._is_markdown = False
         self.update(f"[$primary]●[/] {markup}")
 
     def _bullet_color(self) -> str:
@@ -337,6 +389,7 @@ class AgentReply(Static):
         headings in bright magenta, clashing with the teal/indigo brand and
         failing contrast on the light palette."""
         self._buf = text
+        self._is_markdown = True
         grid = Table.grid(padding=(0, 1, 0, 0))
         grid.add_column()
         grid.add_column()
@@ -363,6 +416,21 @@ class AgentReply(Static):
         except Exception:
             pass
         return {}
+
+    def repaint(self) -> None:
+        """Re-render with the CURRENTLY active theme.
+
+        set_markdown resolves theme hues eagerly (Rich renderables don't
+        participate in Textual's ``$var`` substitution) and bakes them into the
+        renderable, so a later ``/theme`` switch left every reply already on
+        screen in the old palette — dark-palette teal and its low-contrast muted
+        grey on the light theme's white surface, which is exactly the
+        unreadability the light palette exists to fix. Markup-based lines
+        (streaming text, notices, errors) re-resolve ``$var`` on their own, so
+        only the markdown path needs redoing.
+        """
+        if self._is_markdown:
+            self.set_markdown(self._buf)
 
 
 class CognitiveBlock(ExpandableBlock):
@@ -427,6 +495,11 @@ class ToolCallBlock(ExpandableBlock):
             head += f" [$text-muted]{obj}[/]"
         if self.status == "running":
             return f"{head} [$text-muted]…[/]"
+        if self.status == "interrupted":
+            # The turn ended (error / interrupt) before this tool's paired done
+            # frame arrived. Say so instead of leaving the running "…", which
+            # read as "still executing" for work that had already stopped.
+            return f"{head} [$text-muted]·[/] [$text-muted]未完成[/] [$warning]—[/]"
         ok = self.status == "ok"
         mark = "[$success]✓[/]" if ok else "[$error]✗[/]"
         summary = escape(summarize_result(
@@ -438,8 +511,13 @@ class ToolCallBlock(ExpandableBlock):
     def render_detail(self) -> str:
         lines = [self.render_summary()]
         if self.params:
-            joined = ", ".join(f"{k}={_clip(v, 60)}" for k, v in self.params.items())
-            lines.append(f"    [$text-muted]↳ 参数 {escape(joined)}[/]")
+            # One line per parameter with secrets masked — a raw str(dict) both
+            # wrapped unreadably and leaked credentials into the transcript. The
+            # "参数" header keeps the group labelled now that the entries are
+            # split across lines.
+            lines.append("    [$text-muted]↳ 参数[/]")
+            for entry in format_params(self.params):
+                lines.append(f"      [$text-muted]{escape(entry)}[/]")
         if self.result_text:
             # Edit-family tools return a diff — color it so added/removed lines
             # read at a glance. Everything else keeps the compact text preview.
@@ -464,6 +542,15 @@ class ToolCallBlock(ExpandableBlock):
         self.duration_ms = duration_ms
         self.update(self.render_detail() if self.expanded else self.render_summary())
 
+    def mark_interrupted(self) -> None:
+        """Flip a still-running line to "未完成" when the turn ended without its
+        paired done frame (gateway error, user interrupt). Only touches running
+        blocks so a completed result is never overwritten."""
+        if self.status != "running":
+            return
+        self.status = "interrupted"
+        self.update(self.render_detail() if self.expanded else self.render_summary())
+
 
 class ApprovalBlock(Static):
     def __init__(self, request_id: str, action: str, params: dict, risk: str) -> None:
@@ -480,12 +567,24 @@ class ApprovalBlock(Static):
             return f"[$warning]⚠️[/] {action} — [$success]✅ 已批准[/]"
         if self.decision == "deny":
             return f"[$warning]⚠️[/] {action} — [$error]❌ 已拒绝[/]"
-        return (
-            f"[$warning]⚠️ 需要确认:[/] [b]{action}[/b]\n"
-            f"    [$text-muted]{escape(str(self.risk))}[/]\n"
-            f"    [$text-muted]params={escape(str(self.params))}[/]\n"
-            f"    [$success]\\[y] 批准[/]  [$error]\\[n] 拒绝[/]  [$warning]\\[a] 本会话始终允许[/]"
+        lines = [
+            f"[$warning]⚠️ 需要确认:[/] [b]{action}[/b]",
+            f"    [$text-muted]{escape(str(self.risk))}[/]",
+        ]
+        # This is the screen the user authorizes a high-risk action from, so the
+        # parameters go one per line (a raw str(dict) wrapped into an unreadable
+        # blob) with credential-shaped values masked (they used to be printed
+        # verbatim, and /save wrote them to disk).
+        param_lines = format_params(self.params, value_width=80)
+        if param_lines:
+            lines.append("    [$text-muted]参数:[/]")
+            for entry in param_lines:
+                lines.append(f"      [$text-muted]{escape(entry)}[/]")
+        lines.append(
+            "    [$success]\\[y] 批准[/]  [$error]\\[n] 拒绝[/]"
+            "  [$warning]\\[a] 本会话始终允许[/]"
         )
+        return "\n".join(lines)
 
     def mark(self, decision: str) -> None:
         self.decision = decision
@@ -587,14 +686,25 @@ class ChoiceBlock(Static):
         # renders and highlights exactly like a normal numbered choice.
         labels = list(self.options) + ["其他（自行输入）"]
         for i, opt in enumerate(labels):
-            # Keep "{n}. {opt}" contiguous (no tag between number and text) so
-            # the label reads as one unit; only the marker/tone differs by state.
-            label = f"{i + 1}. {escape(str(opt))}"
+            # Only the first 9 slots get a number: quick-select bindings exist
+            # for 1-9 only, and pressing "1" fires immediately, so there is no
+            # way to type "10". Numbering them anyway advertised a shortcut that
+            # could not be used — and when a clarify had 9+ options that included
+            # the "其他" escape hatch, which then looked unreachable.
+            # Unnumbered slots are still reachable with ↑↓ + enter.
+            label = escape(str(opt))
+            if i < 9:
+                label = f"{i + 1}. {label}"
             if i == self.highlighted:
                 lines.append(f"  [$primary]› {label}[/]")
             else:
                 lines.append(f"    [$text-muted]{label}[/]")
-        lines.append("    [$text-muted](按数字选择 · ↑↓ 移动后回车 · 选\"其他\"可自行输入)[/]")
+        hint = (
+            "(按数字选择 · ↑↓ 移动后回车 · 选\"其他\"可自行输入)"
+            if len(labels) <= 9 else
+            "(前 9 项可按数字选择 · 其余用 ↑↓ 移动后回车 · 选\"其他\"可自行输入)"
+        )
+        lines.append(f"    [$text-muted]{hint}[/]")
         return "\n".join(lines)
 
     def move(self, delta: int) -> None:
