@@ -24,8 +24,23 @@ NC='\033[0m'
 BOLD='\033[1m'
 
 # --- Constants ---
-REPO_URL_SSH="git@github.com:fuyuxiang/echo-agent.git"
-REPO_URL_HTTPS="https://github.com/fuyuxiang/echo-agent.git"
+# Code hosts carrying this repo. The two are kept in sync (origin pushes to
+# both), so either is a complete source. Cloning from github.com is the single
+# most likely step to fail for users in mainland China, and a failed clone is
+# fatal to the whole install — so the host is chosen by measured reachability
+# rather than hardcoded. Order within the array is only the tie-break used when
+# probing is disabled or nothing responds.
+REPO_HOSTS=(
+    "github|git@github.com:fuyuxiang/echo-agent.git|https://github.com/fuyuxiang/echo-agent.git"
+    "gitee|git@gitee.com:fuyuxiang/echo-agent.git|https://gitee.com/fuyuxiang/echo-agent.git"
+)
+# Force one host and skip probing: --repo github|gitee, or ECHO_REPO_HOST.
+REPO_HOST="${ECHO_REPO_HOST:-}"
+# Filled in by select_repo_host(). REPO_LABEL names the chosen host and drives
+# the clone order in clone_repo (which reads the URLs out of REPO_HOSTS itself);
+# REPO_URL_HTTPS is the fetch fallback used by update_repo.
+REPO_LABEL=""
+REPO_URL_HTTPS=""
 # The runtime resolves its home as Path.home()/".echo-agent" with no env-var
 # override (echo_agent/runtime_paths.py), and that same literal is hardcoded
 # independently in path_policy, plugins/loader, the channel data dirs and the
@@ -114,6 +129,14 @@ while [[ $# -gt 0 ]]; do
         --branch) require_value "$1" "${2:-}"; BRANCH="$2"; shift 2 ;;
         --dir) require_value "$1" "${2:-}"; INSTALL_DIR="$2"; shift 2 ;;
         --no-mirror-probe) MIRROR_PROBE=false; shift ;;
+        --repo)
+            require_value "$1" "${2:-}"
+            case "$2" in
+                github|gitee) REPO_HOST="$2" ;;
+                *) echo "Option --repo accepts 'github' or 'gitee' (got: $2)" >&2; exit 1 ;;
+            esac
+            shift 2
+            ;;
         --skip-dashboard) SKIP_DASHBOARD=true; shift ;;
         -h|--help)
             echo "Echo Agent Installer"
@@ -125,6 +148,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --branch NAME      Git branch to install (default: master)"
             echo "  --dir PATH         Installation directory (default: ~/.echo-agent/echo-agent)"
             echo "  --no-mirror-probe  Skip PyPI mirror speed test; use uv defaults"
+            echo "  --repo HOST        Clone from 'github' or 'gitee' instead of"
+            echo "                     picking whichever responds faster"
             echo "  --skip-dashboard   Don't build the web Dashboard (skips Node.js/pnpm);"
             echo "                     the gateway serves its built-in playground UI instead"
             echo "  -h, --help         Show this help"
@@ -133,6 +158,7 @@ while [[ $# -gt 0 ]]; do
             echo "  ECHO_PYPI_INDEX    Force a specific PyPI index URL (skips probing)"
             echo "  ECHO_DEPS_TIMEOUT  Dependency install timeout in seconds (default: 600)"
             echo "  ECHO_INSTALL_DIR   Same as --dir"
+            echo "  ECHO_REPO_HOST     Same as --repo (github|gitee)"
             echo ""
             echo "Notes:"
             echo "  Config and data always live in ~/.echo-agent — the runtime hardcodes"
@@ -434,7 +460,12 @@ check_network() {
     # Probe a small per-package page, NOT https://pypi.org/simple/ — the full
     # index is ~42MB and takes longer than the 10s budget on an average link,
     # so it reported "cannot reach PyPI" on perfectly good connections.
-    for url in "https://pypi.org/simple/pip/" "https://github.com" "https://nodejs.org"; do
+    #
+    # github.com is deliberately NOT probed here: it is commonly blocked in
+    # mainland China while the install still succeeds entirely via the Gitee
+    # mirror, so warning about it would be noise. select_repo_host() reports the
+    # code host it actually picked.
+    for url in "https://pypi.org/simple/pip/" "https://nodejs.org"; do
         if ! curl -sSf --connect-timeout 5 --max-time 10 "$url" >/dev/null 2>&1; then
             log_warn "Cannot reach $url — some steps may fail."
             all_ok=false
@@ -750,6 +781,71 @@ check_node() {
 # Repository & environment setup
 # =============================================================================
 
+# Pick the code host to clone from. Measures real reachability instead of
+# guessing by locale/GeoIP, so a VPN, a corporate link or a blocked github.com
+# all resolve correctly. Sets REPO_LABEL and REPO_URL_HTTPS; clone_repo reads the
+# per-host URLs straight out of REPO_HOSTS, keyed by REPO_LABEL.
+#
+# The probe hits the git smart-HTTP endpoint rather than the project web page, so
+# a host that serves HTML but cannot complete a clone is not selected. Only HTTPS
+# is probed — SSH key availability is orthogonal, and clone_repo already falls
+# back from SSH to HTTPS per host.
+select_repo_host() {
+    local entry label https_url
+
+    # An explicit choice wins and skips the network entirely.
+    if [ -n "$REPO_HOST" ]; then
+        for entry in "${REPO_HOSTS[@]}"; do
+            label="${entry%%|*}"
+            if [ "$label" = "$REPO_HOST" ]; then
+                REPO_LABEL="$label"; REPO_URL_HTTPS="${entry##*|}"
+                log_success "Using $label as the code host (requested explicitly)"
+                return 0
+            fi
+        done
+        log_warn "Unknown repo host '$REPO_HOST'; falling back to probing."
+    fi
+
+    # Default to the first entry so a failed probe still yields a usable source.
+    entry="${REPO_HOSTS[0]}"
+    REPO_LABEL="${entry%%|*}"
+    REPO_URL_HTTPS="${entry##*|}"
+
+    if [ "$MIRROR_PROBE" != true ]; then
+        log_info "Host probe disabled; using $REPO_LABEL."
+        return 0
+    fi
+
+    log_info "Probing code hosts (github/gitee) for the fastest reachable one..."
+    local best_label="" best_https="" best_t="999" t
+    for entry in "${REPO_HOSTS[@]}"; do
+        label="${entry%%|*}"
+        https_url="${entry##*|}"
+        # %{time_total} gives sub-second resolution, which `date +%s` cannot.
+        # Gate on curl's exit status: the time is printed even for a failed
+        # request, so a fast failure would otherwise look like the best host.
+        if t="$(curl -fsSL -o /dev/null -w '%{time_total}' --connect-timeout 3 --max-time 8 \
+                "${https_url}/info/refs?service=git-upload-pack" 2>/dev/null)"; then
+            log_info "  $label: reachable (${t}s)"
+            # LC_ALL=C pins the radix character: curl always writes '.', but awk
+            # under a comma-decimal locale would read "0.11" as 0.
+            if LC_ALL=C awk "BEGIN{exit !($t < $best_t)}"; then
+                best_t="$t"; best_label="$label"; best_https="$https_url"
+            fi
+        else
+            log_warn "  $label: unreachable"
+        fi
+    done
+
+    if [ -n "$best_label" ]; then
+        REPO_LABEL="$best_label"; REPO_URL_HTTPS="$best_https"
+        log_success "Code host: $REPO_LABEL (${best_t}s)"
+    else
+        log_warn "No code host responded; will still try $REPO_LABEL."
+        log_info "If you are in mainland China and github.com is blocked, try: --repo gitee"
+    fi
+}
+
 clone_repo() {
     log_info "Preparing repository in $INSTALL_DIR..."
 
@@ -776,23 +872,48 @@ clone_repo() {
         exit 1
     fi
 
-    log_info "Trying SSH clone..."
-    if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
-        run_with_timeout 300 git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
-        log_success "Cloned via SSH"
-        return 0
-    fi
-    # A failed SSH attempt can leave a partial directory behind, which would
-    # make the HTTPS clone fail with "destination path already exists".
-    rm -rf "$INSTALL_DIR"
+    # Try the selected host first, then the other one. The probe measures
+    # reachability, but a clone is a much bigger transfer than a refs
+    # advertisement and can still fail (flaky link, partial outage) — and a
+    # fatal clone failure aborts the entire install, so spend the second host
+    # before giving up rather than telling the user to fix their network.
+    local order=("$REPO_LABEL") entry label
+    for entry in "${REPO_HOSTS[@]}"; do
+        label="${entry%%|*}"
+        [ "$label" = "$REPO_LABEL" ] || order+=("$label")
+    done
 
-    log_info "SSH unavailable, trying HTTPS..."
-    if ! run_with_timeout 300 git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
-        log_error "Failed to clone the repository."
-        log_info "Check network access to github.com and retry."
-        exit 1
-    fi
-    log_success "Cloned via HTTPS"
+    local ssh_url https_url
+    for label in "${order[@]}"; do
+        for entry in "${REPO_HOSTS[@]}"; do
+            [ "${entry%%|*}" = "$label" ] || continue
+            ssh_url="${entry#*|}"; ssh_url="${ssh_url%%|*}"
+            https_url="${entry##*|}"
+        done
+
+        log_info "Trying SSH clone from $label..."
+        if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
+            run_with_timeout 300 git clone --branch "$BRANCH" "$ssh_url" "$INSTALL_DIR" 2>/dev/null; then
+            log_success "Cloned via SSH from $label"
+            return 0
+        fi
+        # A failed SSH attempt can leave a partial directory behind, which would
+        # make the HTTPS clone fail with "destination path already exists".
+        rm -rf "$INSTALL_DIR"
+
+        log_info "SSH unavailable, trying HTTPS from $label..."
+        if run_with_timeout 300 git clone --branch "$BRANCH" "$https_url" "$INSTALL_DIR"; then
+            log_success "Cloned via HTTPS from $label"
+            return 0
+        fi
+        rm -rf "$INSTALL_DIR"
+        log_warn "Clone from $label failed."
+    done
+
+    log_error "Failed to clone the repository from any host (${order[*]})."
+    log_info "Check your network, or pick a host explicitly: --repo gitee"
+    log_info "Branch '$BRANCH' must exist on the host — verify with --branch."
+    exit 1
 }
 
 # Update an existing checkout to origin/$BRANCH.
@@ -832,22 +953,65 @@ update_repo() {
     # which makes each update proportional to the total number of branches.
     git remote set-branches origin "$BRANCH" 2>/dev/null || true
     if ! run_with_timeout 300 git fetch origin "$BRANCH"; then
-        log_warn "Fetch failed; keeping the current checkout."
-        restore_stash "$stash_ref"
-        return 0
+        # An existing checkout keeps whatever remote it was cloned from, which
+        # may now be the unreachable one (a user who cloned from github before
+        # it got blocked, or vice versa). Retry against the host selected for
+        # this run before giving up — without rewriting origin, so the user's own
+        # remote configuration is left alone.
+        local retried=false
+        if [ -n "$REPO_URL_HTTPS" ] && ! git remote get-url origin 2>/dev/null | grep -qF "$REPO_URL_HTTPS"; then
+            log_warn "Fetch from origin failed; retrying against $REPO_LABEL..."
+            if run_with_timeout 300 git fetch "$REPO_URL_HTTPS" "$BRANCH"; then
+                # FETCH_HEAD now holds the branch tip; point the tracking ref at
+                # it so the comparisons below have something to work with.
+                git update-ref "refs/remotes/origin/$BRANCH" FETCH_HEAD
+                retried=true
+                log_success "Fetched from $REPO_LABEL"
+            fi
+        fi
+        if [ "$retried" != true ]; then
+            log_warn "Fetch failed; keeping the current checkout."
+            log_info "The install continues with the code already on disk."
+            log_info "If your usual host is blocked, retry with: --repo gitee (or --repo github)"
+            restore_stash "$stash_ref"
+            return 0
+        fi
     fi
 
     git checkout "$BRANCH"
-    if ! git pull --ff-only origin "$BRANCH"; then
-        # Only safe because the working tree is clean at this point: anything the
-        # user had was captured in the stash above, which we restore below.
-        if [ -n "$stash_ref" ] || [ -z "$(git status --porcelain)" ]; then
-            log_warn "Fast-forward not possible; resetting this managed checkout to origin/$BRANCH."
-            git reset --hard "origin/$BRANCH"
-        else
-            log_warn "Fast-forward not possible and the tree is dirty; leaving it alone."
+    # Fast-forward from the tracking ref we just fetched, not `git pull origin
+    # $BRANCH`: pull would open a second connection to origin — which is the
+    # wrong host when the fetch above fell back to the other mirror, turning a
+    # recovered update back into a failure. The ref is already local here, so
+    # merge --ff-only needs no network at all.
+    if ! git merge --ff-only "refs/remotes/origin/$BRANCH"; then
+        # Fast-forward failed, so the branch has diverged from origin. Decide by
+        # what would actually be DESTROYED, which is local commits — not the
+        # working tree. `git status --porcelain` only reports uncommitted edits
+        # and is always empty for a committed-but-unpushed change, so gating the
+        # reset on it discarded the user's commits silently (the autostash above
+        # captures the working tree only; it cannot hold a commit).
+        local local_commits=""
+        local_commits="$(git rev-list --count "origin/$BRANCH..HEAD" 2>/dev/null || echo "0")"
+        if [ "${local_commits:-0}" -gt 0 ]; then
+            log_warn "Fast-forward not possible: this checkout has $local_commits local commit(s)"
+            log_warn "that are not on origin/$BRANCH. Leaving the code as it is —"
+            log_warn "updating would throw those commits away."
+            log_info "Keep them by pushing or moving them to a branch:"
+            log_info "  git -C $INSTALL_DIR log origin/$BRANCH..HEAD    # see them"
+            log_info "  git -C $INSTALL_DIR branch my-work              # park them"
+            log_info "Or discard them deliberately, then rerun this installer:"
+            log_info "  git -C $INSTALL_DIR reset --hard origin/$BRANCH"
+            log_warn "The install continues with the code currently checked out."
+            restore_stash "$stash_ref"
             return 0
         fi
+        # No local commits to lose: the divergence is rewritten history upstream
+        # (force-push, rebase). Realigning is safe — the working tree is either
+        # clean or already captured in the stash restored below.
+        log_warn "Fast-forward not possible; realigning this managed checkout to origin/$BRANCH."
+        log_info "No local commits would be lost."
+        git reset --hard "origin/$BRANCH"
     fi
     log_success "Repository updated to $(git rev-parse --short HEAD)"
 
@@ -1009,18 +1173,34 @@ install_deps() {
         local label="$1" spec="$2" budget rc=0
         budget="$(remaining_budget)"
         log_info "Installing dependencies ($label, up to ${budget}s)..."
-        # Capture the status with `|| rc=$?` rather than testing the command in
-        # an `if`: after `if cmd; then ... fi`, `$?` is the status of the `if`
-        # itself (0), so a timeout's 124 would be invisible.
-        run_with_timeout "$budget" "$UV_CMD" pip install "${index_args[@]}" -e "$spec" 2>"$deps_log" || rc=$?
+
+        # uv writes everything (resolution, downloads, errors) to stderr, so
+        # sending it to a file alone left this — the longest phase of the
+        # install, up to DEPS_TIMEOUT seconds on `.[all]` — completely silent and
+        # easy to mistake for a hang. We still need the text on disk for
+        # suggest_build_tools, so duplicate both streams with `tee`.
+        #
+        # Process substitution, deliberately NOT `uv ... 2>&1 | tee`:
+        #   - A pipeline puts uv on the left, so `$?` becomes *tee's* status (0
+        #     even when uv fails) and the 124 timeout signal is lost — the same
+        #     class of bug as the `if`-swallows-$? one fixed earlier.
+        #   - Worse, the shell then waits for tee's EOF, which a build
+        #     subprocess surviving the kill keeps open: measured 60s of hang on a
+        #     3s budget, i.e. the pipe quietly defeats the timeout entirely.
+        # With `> >(tee)` the command stays the foreground job, so `|| rc=$?`
+        # sees uv's own status and the deadline is still enforced. Verified on
+        # both the GNU-timeout path and the pure-shell fallback.
+        : > "$deps_log"
+        run_with_timeout "$budget" "$UV_CMD" pip install "${index_args[@]}" -e "$spec" \
+            > >(tee -a "$deps_log") 2> >(tee -a "$deps_log" >&2) || rc=$?
+
         if [ "$rc" -eq 0 ]; then
             return 0
         fi
         if [ "$rc" -eq 124 ]; then
             log_warn "Tier '$label' timed out after ${budget}s."
         else
-            log_warn "Tier '$label' failed (exit $rc). First lines of output:"
-            head -8 "$deps_log" | sed 's/^/    /' >&2
+            log_warn "Tier '$label' failed (exit $rc)."
             suggest_build_tools "$deps_log"
         fi
         return 1
@@ -1626,6 +1806,7 @@ main() {
     check_git
     install_uv
     check_python
+    select_repo_host
     clone_repo
     setup_venv
     install_deps

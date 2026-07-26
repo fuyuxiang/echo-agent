@@ -66,8 +66,16 @@ echo-agent run
 ```bash
 # 一键安装脚本（仅支持 Linux / macOS / WSL2，会从源码安装到 ~/.echo-agent
 # 并可注册后台常驻服务；建议先审查脚本内容再执行）
+# 国内从 Gitee 拉脚本：
+curl -fsSL -o install.sh https://gitee.com/fuyuxiang/echo-agent/raw/master/scripts/install.sh
+# 国外从 GitHub 拉脚本：
 curl -fsSL -o install.sh https://raw.githubusercontent.com/fuyuxiang/echo-agent/master/scripts/install.sh
+
 less install.sh && bash install.sh
+
+# 脚本会实测 Gitee 与 GitHub 的响应速度后自动选择克隆源；也可以手动指定：
+bash install.sh --repo gitee     # 强制走 Gitee
+bash install.sh --repo github    # 强制走 GitHub
 ```
 
 </details>

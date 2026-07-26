@@ -71,6 +71,9 @@ echo-agent run
 # into ~/.echo-agent and can register a background service — review before running)
 curl -fsSL -o install.sh https://raw.githubusercontent.com/fuyuxiang/echo-agent/master/scripts/install.sh
 less install.sh && bash install.sh
+
+# The script probes GitHub and the Gitee mirror and clones from whichever
+# answers faster. Override it with --repo github or --repo gitee.
 ```
 
 </details>

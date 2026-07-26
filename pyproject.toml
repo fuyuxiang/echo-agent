@@ -104,17 +104,19 @@ echo-agent = "echo_agent.__main__:main"
 # External plugins register here via their own pyproject.toml
 
 [tool.hatch.build]
+# Anchored (leading slash) so nothing matches inside web/node_modules — see the
+# note on the sdist target below.
 include = [
-    "echo_agent/**/*.py",
-    "echo_agent/config/**/*.yaml",
-    "echo_agent/gateway/static/**/*",
-    "skills/**/*.md",
-    "skills/**/*.py",
-    "skills/**/*.sh",
-    "README.md",
-    "LICENSE",
-    "scripts/install.sh",
-    "hatch_build.py",
+    "/echo_agent/**/*.py",
+    "/echo_agent/config/**/*.yaml",
+    "/echo_agent/gateway/static/**/*",
+    "/skills/**/*.md",
+    "/skills/**/*.py",
+    "/skills/**/*.sh",
+    "/README.md",
+    "/LICENSE",
+    "/scripts/install.sh",
+    "/hatch_build.py",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -139,13 +141,17 @@ path = "hatch_build.py"
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "echo_agent/",
-    "skills/",
-    "scripts/install.sh",
-    "README.md",
-    "LICENSE",
-    "pyproject.toml",
-    "hatch_build.py",
+    # Every pattern is anchored with a leading slash. Unanchored patterns match
+    # at any depth, which dragged 300+ files out of web/node_modules into the
+    # published sdist: bare "README.md"/"LICENSE" matched each dependency's
+    # copies, and bare "skills/" matched @reduxjs/toolkit's own skills/ dir.
+    "/echo_agent/",
+    "/skills/",
+    "/scripts/install.sh",
+    "/README.md",
+    "/LICENSE",
+    "/pyproject.toml",
+    "/hatch_build.py",
 ]
 
 [tool.ruff]
