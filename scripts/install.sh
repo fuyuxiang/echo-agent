@@ -47,8 +47,6 @@ RUN_SETUP=true
 # fastest one, instead of guessing by GeoIP/locale. Disable with --no-mirror-probe.
 MIRROR_PROBE=true
 DEPS_TIMEOUT="${ECHO_DEPS_TIMEOUT:-600}"
-# Prefer the CI-built Dashboard bundle over a local Node/pnpm build.
-DASHBOARD_ARTIFACT=true
 # Candidate mirrors raced by probe_pypi_index (label|url). The official PyPI is
 # always kept as the extra fallback index so a mirror missing a package still
 # resolves. Users can skip probing entirely by exporting UV_DEFAULT_INDEX /
@@ -62,8 +60,20 @@ PYPI_MIRRORS=(
 )
 # Resolved by probe_pypi_index(); empty means "use uv defaults / user config".
 PYPI_INDEX=""
+# Node.js download hosts, raced the same way as the PyPI mirrors. The mirrors
+# serve byte-identical tarballs (their SHASUMS256.txt matches nodejs.org), and
+# downloads are verified against the official checksums regardless of source.
+NODE_DIST_OFFICIAL="https://nodejs.org/dist"
+NODE_DIST_MIRRORS=(
+    "https://cdn.npmmirror.com/binaries/node"
+    "https://mirrors.aliyun.com/nodejs-release"
+    "https://nodejs.org/dist"
+)
 HAS_NODE=false
 DASHBOARD_BUILT=false
+# Skip the Dashboard build entirely (--skip-dashboard). The gateway then serves
+# its built-in playground UI instead of the SPA.
+SKIP_DASHBOARD=false
 # Platform facts filled in by detect_os / detect_linux_flavor.
 DISTRO="unknown"
 IS_MUSL=false
@@ -104,7 +114,7 @@ while [[ $# -gt 0 ]]; do
         --branch) require_value "$1" "${2:-}"; BRANCH="$2"; shift 2 ;;
         --dir) require_value "$1" "${2:-}"; INSTALL_DIR="$2"; shift 2 ;;
         --no-mirror-probe) MIRROR_PROBE=false; shift ;;
-        --no-dashboard-artifact) DASHBOARD_ARTIFACT=false; shift ;;
+        --skip-dashboard) SKIP_DASHBOARD=true; shift ;;
         -h|--help)
             echo "Echo Agent Installer"
             echo ""
@@ -115,8 +125,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --branch NAME      Git branch to install (default: master)"
             echo "  --dir PATH         Installation directory (default: ~/.echo-agent/echo-agent)"
             echo "  --no-mirror-probe  Skip PyPI mirror speed test; use uv defaults"
-            echo "  --no-dashboard-artifact"
-            echo "                     Skip the prebuilt Dashboard download; build it locally"
+            echo "  --skip-dashboard   Don't build the web Dashboard (skips Node.js/pnpm);"
+            echo "                     the gateway serves its built-in playground UI instead"
             echo "  -h, --help         Show this help"
             echo ""
             echo "Environment:"
@@ -563,48 +573,79 @@ install_node() {
     esac
 
     local node_dir="$ECHO_HOME/node"
-    # Resolve the latest LTS version for the major version instead of hardcoding
-    # a patch release that may not exist or contain known vulnerabilities.
+
+    # Resolve which patch release to install from the OFFICIAL host only. The
+    # mirrors lag (npmmirror served v22.20.0 while nodejs.org had v22.23.1) and
+    # aliyun has no latest-vXX.x/ path at all, so letting a mirror pick the
+    # version would silently install a stale Node — possibly one with known
+    # CVEs. Version choice is official; only the bytes may come from a mirror.
     local node_full_ver=""
-    node_full_ver=$(curl -sSf --connect-timeout 5 "https://nodejs.org/dist/latest-v${NODE_VERSION}.x/" 2>/dev/null \
+    node_full_ver=$(curl -sSfL --connect-timeout 5 --max-time 20 \
+        "${NODE_DIST_OFFICIAL}/latest-v${NODE_VERSION}.x/SHASUMS256.txt" 2>/dev/null \
         | grep -oE "node-v${NODE_VERSION}\.[0-9]+\.[0-9]+" | head -1 | sed 's/node-//')
     if [ -z "$node_full_ver" ]; then
-        node_full_ver="v${NODE_VERSION}.0.0"
-        log_warn "Could not resolve latest Node ${NODE_VERSION}.x version, falling back to ${node_full_ver}"
+        log_warn "Could not resolve the latest Node ${NODE_VERSION}.x release from nodejs.org."
+        log_info "Install Node.js >= 20 yourself, then rerun to build the Dashboard."
+        return 1
     fi
-    local base_url="https://nodejs.org/dist/${node_full_ver}"
+
     local pkg_name="node-${node_full_ver}-${node_os}-${arch}"
     local tmp_dir
     tmp_dir="$(mktemp -d)"
     # Always reclaim the temp dir, including on an early return below.
     trap 'rm -rf "$tmp_dir"' RETURN
 
-    # Official checksums for this release; used to reject a truncated or
-    # corrupted download before we touch the existing install.
+    # Official checksums for exactly that release. Every candidate download is
+    # verified against these, so a mirror serving different bytes is rejected.
     local sums_file="$tmp_dir/SHASUMS256.txt"
-    if ! run_with_timeout 60 curl -fsSL "${base_url}/SHASUMS256.txt" -o "$sums_file"; then
+    if ! run_with_timeout 60 curl -fsSL "${NODE_DIST_OFFICIAL}/${node_full_ver}/SHASUMS256.txt" -o "$sums_file"; then
         log_warn "Could not fetch Node.js checksums; skipping Node auto-install."
         return 1
     fi
 
-    local downloaded=false ext url expected actual
-    # Prefer .tar.xz, fall back to .tar.gz. Each step is guarded so a failure
-    # tries the next extension instead of aborting the whole installer via set -e.
-    for ext in "tar.xz" "tar.gz"; do
-        url="${base_url}/${pkg_name}.${ext}"
-        log_info "Downloading ${pkg_name}.${ext}..."
-        if ! run_with_timeout 300 curl -fSL --progress-bar "$url" -o "$tmp_dir/node.${ext}"; then
-            log_warn "Download failed for ${pkg_name}.${ext}."
-            continue
-        fi
+    # Choose a download host: race the mirrors for the *specific* release we
+    # settled on, since a mirror that lags won't have it at all.
+    local node_base="$NODE_DIST_OFFICIAL"
+    if [ "$MIRROR_PROBE" = true ]; then
+        local cand best_t="999" t
+        for cand in "${NODE_DIST_MIRRORS[@]}"; do
+            if t="$(curl -fsSL -o /dev/null -w '%{time_total}' --connect-timeout 3 --max-time 6 \
+                    -r 0-0 "${cand}/${node_full_ver}/SHASUMS256.txt" 2>/dev/null)"; then
+                if LC_ALL=C awk "BEGIN{exit !($t < $best_t)}"; then
+                    best_t="$t"; node_base="$cand"
+                fi
+            fi
+        done
+        log_info "Node.js ${node_full_ver} download source: $node_base"
+    fi
 
-        expected="$(grep " ${pkg_name}.${ext}\$" "$sums_file" 2>/dev/null | awk '{print $1}')"
-        actual="$(file_sha256 "$tmp_dir/node.${ext}")"
-        if [ -z "$expected" ] || [ "$actual" != "$expected" ]; then
-            log_warn "Checksum mismatch for ${pkg_name}.${ext} (got ${actual:-none}); discarding."
-            rm -f "$tmp_dir/node.${ext}"
-            continue
-        fi
+    local downloaded=false ext url host expected actual
+    # Prefer .tar.xz, fall back to .tar.gz; for each, try the chosen host and
+    # then the official one. Every step is guarded so a failure moves on instead
+    # of aborting the whole installer via set -e.
+    for ext in "tar.xz" "tar.gz"; do
+        for host in "$node_base" "$NODE_DIST_OFFICIAL"; do
+            url="${host}/${node_full_ver}/${pkg_name}.${ext}"
+            log_info "Downloading ${pkg_name}.${ext} from ${host}..."
+            if ! run_with_timeout 300 curl -fSL --progress-bar "$url" -o "$tmp_dir/node.${ext}"; then
+                log_warn "Download failed from ${host}."
+                rm -f "$tmp_dir/node.${ext}"
+                [ "$host" = "$NODE_DIST_OFFICIAL" ] && break
+                continue
+            fi
+
+            expected="$(grep " ${pkg_name}.${ext}\$" "$sums_file" 2>/dev/null | awk '{print $1}')"
+            actual="$(file_sha256 "$tmp_dir/node.${ext}")"
+            if [ -z "$expected" ] || [ "$actual" != "$expected" ]; then
+                log_warn "Checksum mismatch from ${host} (got ${actual:-none}); discarding."
+                rm -f "$tmp_dir/node.${ext}"
+                [ "$host" = "$NODE_DIST_OFFICIAL" ] && break
+                continue
+            fi
+            break
+        done
+        # Nothing verified for this extension — try the next archive format.
+        [ -f "$tmp_dir/node.${ext}" ] || continue
 
         if [ "$ext" = "tar.xz" ]; then
             tar -xJf "$tmp_dir/node.${ext}" -C "$tmp_dir" || {
@@ -665,6 +706,11 @@ install_node() {
 }
 
 check_node() {
+    if [ "$SKIP_DASHBOARD" = true ]; then
+        # Node exists in this install only to build the Dashboard.
+        HAS_NODE=false
+        return 0
+    fi
     log_info "Checking Node.js..."
 
     # Check system node
@@ -1148,156 +1194,89 @@ PYEOF
     return 0
 }
 
-# The Dashboard SPA is a deterministic build artifact: CI builds it once per
-# web/ change and publishes it to a rolling release, so a normal install can
-# download ~1MB instead of provisioning Node 22 + pnpm and running
-# `tsc -b && vite build` locally. web/dist is exactly where the gateway looks
-# for a source checkout (echo_agent/gateway/server.py:_resolve_dashboard_dir).
+# The Dashboard SPA is built from web/ in this checkout. We deliberately do NOT
+# download a prebuilt bundle: the sources are already here, so building them is
+# locally verifiable, whereas fetching an artifact would mean trusting that some
+# external release matches this tree. The wheel on PyPI carries a prebuilt copy
+# for `pip install` users (hatch_build.py bundles web/dist into
+# echo_agent/_bundled/dashboard); a source install builds its own. Those are the
+# only two dashboard channels — there is intentionally no third one.
 #
-# HTTPS is the trust anchor here; the accompanying sha256 guards against a
-# truncated or corrupted download, not against a compromised release.
-#
-# Only GitHub is listed because that is where .github/workflows/dashboard.yml
-# publishes. If these bundles are ever mirrored to Gitee for CN networks, add
-# that base URL first — the loop below tries each source in order.
-DASHBOARD_RELEASE_TAG="dashboard-latest"
-DASHBOARD_PKG_URLS=(
-    "https://github.com/fuyuxiang/echo-agent/releases/download/$DASHBOARD_RELEASE_TAG"
-)
-
-fetch_dashboard_from_release() {
-    if [ "$DASHBOARD_ARTIFACT" != true ]; then
-        log_info "Prebuilt Dashboard disabled (--no-dashboard-artifact)."
-        return 1
-    fi
-    if ! command -v curl >/dev/null 2>&1; then
-        return 1
-    fi
-
-    # Identify the artifact by the git tree hash of web/, so the bundle always
-    # corresponds to the frontend sources in this checkout. If web/ was modified
-    # locally the hash won't match any published artifact and we fall through to
-    # a local build, which is the correct outcome.
-    local web_sha=""
-    web_sha="$(git -C "$INSTALL_DIR" rev-parse "HEAD:web" 2>/dev/null || echo "")"
-    if [ -z "$web_sha" ]; then
-        return 1
-    fi
-
-    local pkg="dashboard-${web_sha}.tar.gz"
-    local tmp_dir
-    tmp_dir="$(mktemp -d)"
-    trap 'rm -rf "$tmp_dir"' RETURN
-
-    local base url expected actual
-    for base in "${DASHBOARD_PKG_URLS[@]}"; do
-        url="$base/$pkg"
-        log_info "Fetching prebuilt Dashboard: $url"
-        # A missing bundle is an expected, non-noteworthy outcome (locally
-        # modified web/, or CI hasn't published this revision yet), so keep
-        # curl's 404 chatter out of the transcript.
-        if ! run_with_timeout 180 curl -fsSL --retry 2 --connect-timeout 10 \
-                -o "$tmp_dir/$pkg" "$url" 2>/dev/null; then
-            log_info "  not available from this source."
-            continue
-        fi
-        if ! run_with_timeout 60 curl -fsSL --connect-timeout 10 \
-                -o "$tmp_dir/$pkg.sha256" "$url.sha256" 2>/dev/null; then
-            log_warn "  bundle found but its checksum is missing; ignoring it."
-            continue
-        fi
-        expected="$(awk '{print $1}' "$tmp_dir/$pkg.sha256" 2>/dev/null)"
-        actual="$(file_sha256 "$tmp_dir/$pkg")"
-        if [ -z "$expected" ] || [ "$actual" != "$expected" ]; then
-            log_warn "  checksum mismatch (got ${actual:-none}); ignoring it."
-            continue
-        fi
-
-        # Unpack to a staging dir first, then swap, so a partial extraction
-        # can't leave a half-populated web/dist that the gateway would serve.
-        mkdir -p "$tmp_dir/stage"
-        if ! tar -xzf "$tmp_dir/$pkg" -C "$tmp_dir/stage"; then
-            log_warn "  extraction failed; ignoring it."
-            continue
-        fi
-        if [ ! -f "$tmp_dir/stage/index.html" ]; then
-            log_warn "  bundle has no index.html; ignoring it."
-            continue
-        fi
-        mkdir -p "$INSTALL_DIR/web"
-        rm -rf "$INSTALL_DIR/web/dist.new"
-        if mv "$tmp_dir/stage" "$INSTALL_DIR/web/dist.new"; then
-            rm -rf "$INSTALL_DIR/web/dist"
-            mv "$INSTALL_DIR/web/dist.new" "$INSTALL_DIR/web/dist"
-            DASHBOARD_BUILT=true
-            log_success "Dashboard installed from prebuilt bundle (no Node.js needed)."
-            return 0
-        fi
-        log_warn "  could not stage the bundle into $INSTALL_DIR/web."
-    done
-    return 1
-}
-
-# Get a usable Dashboard: prefer the prebuilt bundle, and only provision Node
-# and build locally when that isn't available.
-fetch_dashboard() {
-    if fetch_dashboard_from_release; then
-        return 0
-    fi
-    log_info "No prebuilt Dashboard available; falling back to a local build."
-    check_node
-    build_dashboard
-}
+# web/dist is exactly where the gateway looks for a source checkout
+# (echo_agent/gateway/server.py:_resolve_dashboard_dir).
 
 build_dashboard() {
     cd "$INSTALL_DIR"
 
-    if [ "$HAS_NODE" = false ]; then
-        log_warn "Skipping Dashboard build (no Node.js available)."
-        log_info "Install Node.js >= 20 then run: cd $INSTALL_DIR/web && pnpm install && pnpm build"
+    if [ "$SKIP_DASHBOARD" = true ]; then
+        log_info "Skipping Dashboard build (--skip-dashboard)."
+        dashboard_skip_note
         return 0
     fi
 
-    # Ensure pnpm is available
+    if [ "$HAS_NODE" = false ]; then
+        log_warn "Skipping Dashboard build (no Node.js available)."
+        dashboard_skip_note
+        return 0
+    fi
+
+    # pnpm is the package manager this project's lockfile belongs to; npm/yarn
+    # would resolve different versions.
     if ! command -v pnpm >/dev/null 2>&1; then
         log_info "Installing pnpm..."
-        if command -v corepack >/dev/null 2>&1; then
-            corepack enable pnpm 2>/dev/null || npm install -g pnpm 2>/dev/null || {
-                log_warn "Cannot install pnpm, skipping Dashboard build."
-                log_info "Install pnpm then run: cd $INSTALL_DIR/web && pnpm install && pnpm build"
-                return 0
-            }
+        # corepack only writes a shim — the real download happens on first use,
+        # so verify pnpm actually runs before relying on it.
+        if command -v corepack >/dev/null 2>&1 && corepack enable pnpm >/dev/null 2>&1 \
+           && pnpm --version >/dev/null 2>&1; then
+            log_success "pnpm $(pnpm --version) (via corepack)"
+        elif npm install -g pnpm >/dev/null 2>&1 && command -v pnpm >/dev/null 2>&1; then
+            log_success "pnpm $(pnpm --version)"
         else
-            npm install -g pnpm 2>/dev/null || {
-                log_warn "Cannot install pnpm, skipping Dashboard build."
-                log_info "Install pnpm then run: cd $INSTALL_DIR/web && pnpm install && pnpm build"
-                return 0
-            }
+            log_warn "Could not install pnpm; skipping Dashboard build."
+            dashboard_skip_note
+            return 0
         fi
     fi
 
     log_info "Building Dashboard frontend..."
     cd "$INSTALL_DIR/web"
 
-    # Keep pnpm's output: when the build is the thing that failed, the reason is
-    # the only useful thing we have to give the user.
+    # --frozen-lockfile with NO fallback to a loose install. web/package.json
+    # pins nothing (every dependency is a caret range), so pnpm-lock.yaml is the
+    # only thing making this build reproducible. Silently retrying without it
+    # would let each machine resolve different versions and produce a different
+    # Dashboard — a stale lockfile is a repo bug to fix, not something to paper
+    # over on the user's machine.
     if ! run_with_timeout 300 pnpm install --frozen-lockfile; then
-        log_warn "Frozen-lockfile install failed; retrying without it..."
-        if ! run_with_timeout 300 pnpm install; then
-            log_warn "pnpm install failed. Dashboard build skipped."
-            log_info "Retry manually: cd $INSTALL_DIR/web && pnpm install && pnpm build"
-            return 0
-        fi
+        log_warn "pnpm install --frozen-lockfile failed; skipping Dashboard build."
+        log_info "This usually means web/pnpm-lock.yaml is out of sync with web/package.json."
+        log_info "To build anyway (may resolve different dependency versions):"
+        log_info "  cd $INSTALL_DIR/web && pnpm install && pnpm build"
+        dashboard_skip_note
+        return 0
     fi
 
     # `tsc -b && vite build` on a cold cache regularly exceeds two minutes.
     if run_with_timeout 600 pnpm build; then
-        DASHBOARD_BUILT=true
-        log_success "Dashboard built successfully"
+        if [ -f "$INSTALL_DIR/web/dist/index.html" ]; then
+            DASHBOARD_BUILT=true
+            log_success "Dashboard built successfully"
+            return 0
+        fi
+        log_warn "Build reported success but web/dist/index.html is missing."
     else
-        log_warn "Dashboard build failed. The agent will work without the web UI."
-        log_info "Fix issues then run: cd $INSTALL_DIR/web && pnpm build"
+        log_warn "Dashboard build failed."
     fi
+    log_info "Fix the issue then run: cd $INSTALL_DIR/web && pnpm build"
+    dashboard_skip_note
+}
+
+# Explain what running without the SPA actually means. The gateway falls back to
+# its built-in playground page rather than serving nothing, so this is a reduced
+# UI — not a broken install.
+dashboard_skip_note() {
+    log_info "The agent and gateway still work; the web UI falls back to the"
+    log_info "built-in playground at http://localhost:58123/ instead of the full Dashboard."
 }
 
 # =============================================================================
@@ -1606,9 +1585,9 @@ print_success() {
     fi
 
     if [ "$DASHBOARD_BUILT" != true ]; then
-        echo -e "${YELLOW}${BOLD}Note:${NC} Dashboard assets are not present; the gateway will"
-        echo "  serve the minimal playground UI instead."
-        echo "  To build manually: cd $INSTALL_DIR/web && pnpm install && pnpm build"
+        echo -e "${YELLOW}${BOLD}Note:${NC} The full Dashboard was not built, so the gateway"
+        echo "  serves its built-in playground UI instead."
+        echo "  To build it: cd $INSTALL_DIR/web && pnpm install && pnpm build"
         echo ""
     fi
 
@@ -1651,7 +1630,8 @@ main() {
     setup_venv
     install_deps
     prefetch_embedding_model
-    fetch_dashboard
+    check_node
+    build_dashboard
     setup_path
     run_setup_wizard
     setup_service

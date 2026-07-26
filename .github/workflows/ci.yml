@@ -86,3 +86,42 @@ jobs:
 
       - name: Run pip-audit
         run: pip-audit
+
+  # The Dashboard SPA is built from source by scripts/install.sh (and by
+  # scripts/publish.sh when producing the wheel), so a broken web/ breaks user
+  # installs. Nothing in CI compiled the frontend before this job: TypeScript
+  # errors and a lockfile drifting out of sync with package.json both landed on
+  # master with CI fully green.
+  dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      # Mirrors what the installer does. No fallback to a loose `pnpm install`:
+      # web/package.json pins nothing (all caret ranges), so the lockfile is the
+      # only thing keeping the build reproducible, and drift must fail here
+      # rather than on each user's machine.
+      - name: Install frontend dependencies
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Dashboard
+        working-directory: web
+        run: pnpm build
+
+      - name: Verify build output
+        run: test -f web/dist/index.html
+
+      - name: Run frontend tests
+        working-directory: web
+        run: pnpm test --run
