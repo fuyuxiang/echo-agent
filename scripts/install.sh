@@ -1,7 +1,10 @@
 #!/bin/bash
 # Echo Agent installer for Linux, macOS, and WSL2.
 
-set -e
+# -E propagates the ERR trap into functions. Without it every failure inside a
+# function (i.e. all real work — main() only calls functions) exits silently
+# with a bare status and the on_error diagnostics below never print.
+set -eE
 
 # --- Environment sanitization ---
 # UV_NO_CONFIG ignores uv config *files* only (uv.toml/pyproject), not env vars
@@ -23,9 +26,19 @@ BOLD='\033[1m'
 # --- Constants ---
 REPO_URL_SSH="git@github.com:fuyuxiang/echo-agent.git"
 REPO_URL_HTTPS="https://github.com/fuyuxiang/echo-agent.git"
-ECHO_HOME="${ECHO_HOME:-$HOME/.echo-agent}"
-INSTALL_DIR="${ECHO_INSTALL_DIR:-$ECHO_HOME/echo-agent}"
+# The runtime resolves its home as Path.home()/".echo-agent" with no env-var
+# override (echo_agent/runtime_paths.py), and that same literal is hardcoded
+# independently in path_policy, plugins/loader, the channel data dirs and the
+# config schema defaults. An installer-side override could therefore only ever
+# move *part* of the tree: setup would still write ~/.echo-agent/echo-agent.yaml
+# while the service ran with -w <other>, leaving the foreground CLI and the
+# service on two different databases. So the home is fixed here on purpose —
+# use `echo-agent setup -w /path` for a project-local workspace instead.
+ECHO_HOME="$HOME/.echo-agent"
 ECHO_COMMAND_LINK_DIR="${ECHO_COMMAND_LINK_DIR:-}"
+# Derived from ECHO_HOME but overridable; resolved after argument parsing so
+# --dir is honored (see resolve_paths).
+INSTALL_DIR="${ECHO_INSTALL_DIR:-}"
 PYTHON_VERSION="3.11"
 NODE_VERSION="22"
 BRANCH="master"
@@ -34,6 +47,8 @@ RUN_SETUP=true
 # fastest one, instead of guessing by GeoIP/locale. Disable with --no-mirror-probe.
 MIRROR_PROBE=true
 DEPS_TIMEOUT="${ECHO_DEPS_TIMEOUT:-600}"
+# Prefer the CI-built Dashboard bundle over a local Node/pnpm build.
+DASHBOARD_ARTIFACT=true
 # Candidate mirrors raced by probe_pypi_index (label|url). The official PyPI is
 # always kept as the extra fallback index so a mirror missing a package still
 # resolves. Users can skip probing entirely by exporting UV_DEFAULT_INDEX /
@@ -49,6 +64,13 @@ PYPI_MIRRORS=(
 PYPI_INDEX=""
 HAS_NODE=false
 DASHBOARD_BUILT=false
+# Platform facts filled in by detect_os / detect_linux_flavor.
+DISTRO="unknown"
+IS_MUSL=false
+IS_WSL=false
+# Set when the background service could not be registered, so the closing
+# summary can tell the user how to run the gateway instead.
+SERVICE_SKIPPED=false
 
 # --- Interactive detection ---
 if [ -t 0 ]; then
@@ -67,13 +89,22 @@ on_error() {
 trap 'on_error $LINENO' ERR
 
 # --- CLI argument parsing ---
+# require_value guards `shift 2` on flags that take an argument: without it a
+# trailing `--branch` makes shift fail and abort with a raw bash error.
+require_value() {
+    if [ -z "${2:-}" ]; then
+        echo "Option $1 requires a value" >&2
+        exit 1
+    fi
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --skip-setup) RUN_SETUP=false; shift ;;
-        --branch) BRANCH="$2"; shift 2 ;;
-        --dir) INSTALL_DIR="$2"; shift 2 ;;
-        --echo-home) ECHO_HOME="$2"; shift 2 ;;
+        --branch) require_value "$1" "${2:-}"; BRANCH="$2"; shift 2 ;;
+        --dir) require_value "$1" "${2:-}"; INSTALL_DIR="$2"; shift 2 ;;
         --no-mirror-probe) MIRROR_PROBE=false; shift ;;
+        --no-dashboard-artifact) DASHBOARD_ARTIFACT=false; shift ;;
         -h|--help)
             echo "Echo Agent Installer"
             echo ""
@@ -83,13 +114,20 @@ while [[ $# -gt 0 ]]; do
             echo "  --skip-setup       Skip interactive setup wizard"
             echo "  --branch NAME      Git branch to install (default: master)"
             echo "  --dir PATH         Installation directory (default: ~/.echo-agent/echo-agent)"
-            echo "  --echo-home PATH   Echo home directory (default: ~/.echo-agent)"
             echo "  --no-mirror-probe  Skip PyPI mirror speed test; use uv defaults"
+            echo "  --no-dashboard-artifact"
+            echo "                     Skip the prebuilt Dashboard download; build it locally"
             echo "  -h, --help         Show this help"
             echo ""
             echo "Environment:"
             echo "  ECHO_PYPI_INDEX    Force a specific PyPI index URL (skips probing)"
             echo "  ECHO_DEPS_TIMEOUT  Dependency install timeout in seconds (default: 600)"
+            echo "  ECHO_INSTALL_DIR   Same as --dir"
+            echo ""
+            echo "Notes:"
+            echo "  Config and data always live in ~/.echo-agent — the runtime hardcodes"
+            echo "  that location. For a project-local workspace, install normally and"
+            echo "  then run: echo-agent setup -w /path/to/workspace"
             exit 0
             ;;
         *)
@@ -98,6 +136,20 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Resolve paths that derive from the options above. Doing this after parsing is
+# what makes --dir actually take effect.
+resolve_paths() {
+    if [ -z "$INSTALL_DIR" ]; then
+        INSTALL_DIR="$ECHO_HOME/echo-agent"
+    fi
+    # The prefetch cache must match the runtime's configured location
+    # (memory.local_embedding_cache_dir defaults to ~/.echo-agent/models/fastembed
+    # in echo_agent/config/schema.py); a mismatch silently wastes the download
+    # and makes the runtime fetch the model again on first use.
+    EMBED_CACHE_DIR="$ECHO_HOME/models/fastembed"
+}
+resolve_paths
 
 # =============================================================================
 # Logging helpers
@@ -158,13 +210,75 @@ prompt_yes_no() {
 
 run_with_timeout() {
     local timeout_sec="$1"; shift
+
+    # Normalize to a bare integer so the pure-shell loop below can count.
+    case "$timeout_sec" in
+        ''|*[!0-9]*) timeout_sec=600 ;;
+    esac
+
+    local timeout_bin=""
     if command -v timeout >/dev/null 2>&1; then
-        timeout "$timeout_sec" "$@"
+        timeout_bin="timeout"
     elif command -v gtimeout >/dev/null 2>&1; then
-        gtimeout "$timeout_sec" "$@"
-    else
-        "$@"
+        timeout_bin="gtimeout"
     fi
+
+    if [ -n "$timeout_bin" ]; then
+        # --foreground keeps the child in the shell's foreground process group
+        # so Ctrl+C reaches it; -k 10 escalates to SIGKILL 10s past the
+        # deadline. Both are GNU-only, so probe once and fall back to plain
+        # timeout on BusyBox (Alpine).
+        if "$timeout_bin" --foreground -k 10 1 true >/dev/null 2>&1; then
+            "$timeout_bin" --foreground -k 10 "$timeout_sec" "$@"
+        else
+            "$timeout_bin" "$timeout_sec" "$@"
+        fi
+        return $?
+    fi
+
+    # Stock macOS ships neither binary. Previously this branch ran the command
+    # with no bound at all, so every timeout in this script (clone 120s, deps
+    # 600s, prefetch 900s) silently became infinite and a stalled download could
+    # only be escaped with Ctrl+C. Run it in its own process group instead and
+    # poll, so we can kill the whole subtree on expiry.
+    set -m
+    ( "$@" ) &
+    local cmd_pid=$!
+    set +m
+
+    local waited=0
+    local rc=0
+    while [ "$waited" -lt "$timeout_sec" ]; do
+        if ! kill -0 "$cmd_pid" 2>/dev/null; then
+            rc=0; wait "$cmd_pid" 2>/dev/null || rc=$?
+            return "$rc"
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    # The command may have exited during the final poll interval — don't kill
+    # (and mislabel as timed out) something that already finished cleanly.
+    if ! kill -0 "$cmd_pid" 2>/dev/null; then
+        rc=0; wait "$cmd_pid" 2>/dev/null || rc=$?
+        return "$rc"
+    fi
+
+    kill -TERM "-$cmd_pid" 2>/dev/null || kill -TERM "$cmd_pid" 2>/dev/null || true
+    sleep 2
+    kill -KILL "-$cmd_pid" 2>/dev/null || kill -KILL "$cmd_pid" 2>/dev/null || true
+    wait "$cmd_pid" 2>/dev/null || true
+    return 124
+}
+
+# sha256 of a file, portable across macOS (shasum) and Linux (sha256sum).
+file_sha256() {
+    local f="$1" out=""
+    out="$(shasum -a 256 "$f" 2>/dev/null | awk '{print $1}')"
+    if [ -z "$out" ]; then
+        out="$(sha256sum "$f" 2>/dev/null | awk '{print $1}')"
+    fi
+    echo "$out"
 }
 
 # =============================================================================
@@ -175,9 +289,9 @@ print_banner() {
     echo ""
     echo -e "${MAGENTA}${BOLD}"
     echo "┌─────────────────────────────────────────────────────────┐"
-    echo "│                 Echo Agent Installer                   │"
+    echo "│                  Echo Agent Installer                   │"
     echo "├─────────────────────────────────────────────────────────┤"
-    echo "│  Self-hosted AI agent runtime for your own workspace.  │"
+    echo "│  Self-hosted AI agent runtime for your own workspace.    │"
     echo "└─────────────────────────────────────────────────────────┘"
     echo -e "${NC}"
 }
@@ -186,6 +300,7 @@ detect_os() {
     case "$(uname -s)" in
         Linux*)
             OS="linux"
+            detect_linux_flavor
             ;;
         Darwin*)
             OS="macos"
@@ -203,11 +318,113 @@ detect_os() {
     log_success "Detected: $OS"
 }
 
+# Identify the Linux flavour we're on. Three things later depend on it: musl
+# has no upstream Node build and almost no manylinux wheels, WSL2 usually has
+# no running systemd, and the build-tools hint differs per package manager.
+detect_linux_flavor() {
+    DISTRO="unknown"
+    if [ -r /etc/os-release ]; then
+        # shellcheck disable=SC1091  # present at runtime, not in this repo
+        DISTRO="$( . /etc/os-release 2>/dev/null && echo "${ID:-unknown}" )"
+        [ -n "$DISTRO" ] || DISTRO="unknown"
+    fi
+
+    # musl vs glibc. `ldd --version` writes to stderr on musl and prints
+    # "musl libc"; on glibc it reports "GNU libc"/"GLIBC".
+    IS_MUSL=false
+    if command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl; then
+        IS_MUSL=true
+    elif [ -n "$(find /lib /usr/lib -maxdepth 1 -name 'libc.musl-*' -print -quit 2>/dev/null)" ]; then
+        IS_MUSL=true
+    fi
+
+    IS_WSL=false
+    if [ -r /proc/version ] && grep -qiE "microsoft|wsl" /proc/version 2>/dev/null; then
+        IS_WSL=true
+    fi
+
+    local extra=""
+    [ "$IS_WSL" = true ] && extra=" (WSL)"
+    [ "$IS_MUSL" = true ] && extra="$extra (musl)"
+    log_info "Linux flavour: ${DISTRO}${extra}"
+
+    if [ "$IS_MUSL" = true ]; then
+        log_warn "musl-based distro detected (Alpine and friends)."
+        log_warn "Upstream Node.js and many Python wheels (faiss-cpu, onnxruntime)"
+        log_warn "ship glibc-only builds, so parts of this install may fail or need"
+        log_warn "a compiler. Consider a glibc distro for a smoother experience:"
+        log_warn "  apk add build-base cmake python3-dev  # if you continue here"
+    fi
+}
+
+# Point the user at the toolchain when a dependency failed while compiling.
+# Cheap heuristic on the captured log; no-op when the failure looks unrelated.
+suggest_build_tools() {
+    local log_file="$1"
+    [ -r "$log_file" ] || return 0
+    grep -qiE "gcc|cc1|compiler|Microsoft Visual|python\.h|ffi\.h|cmake|maturin|failed building wheel|error: command" \
+        "$log_file" 2>/dev/null || return 0
+
+    log_warn "That looks like a build-from-source failure — the toolchain may be missing."
+    case "${DISTRO:-unknown}" in
+        ubuntu|debian|raspbian|pop|linuxmint|elementary|zorin|kali|parrot)
+            log_info "  sudo apt-get install -y build-essential python3-dev libffi-dev" ;;
+        fedora|rhel|centos|rocky|alma|ol)
+            log_info "  sudo dnf install -y gcc gcc-c++ make python3-devel libffi-devel" ;;
+        arch|manjaro|endeavouros|garuda|cachyos)
+            log_info "  sudo pacman -S --needed base-devel libffi" ;;
+        opensuse*|sles)
+            log_info "  sudo zypper install -y gcc gcc-c++ make python3-devel libffi-devel" ;;
+        alpine)
+            log_info "  sudo apk add build-base cmake python3-dev libffi-dev" ;;
+        *)
+            log_info "  Install a C toolchain plus your distro's python3 development headers." ;;
+    esac
+}
+
+check_prerequisites() {
+    local missing=()
+    command -v curl >/dev/null 2>&1 || missing+=("curl")
+    command -v tar  >/dev/null 2>&1 || missing+=("tar")
+
+    if [ ${#missing[@]} -eq 0 ]; then
+        return 0
+    fi
+
+    # Minimal Linux images (debian-slim, ubuntu, alpine, minimal RHEL) ship
+    # none of these. Every download path here needs curl, so fail early with an
+    # actionable message instead of a confusing error twenty lines later.
+    log_error "Missing required tool(s): ${missing[*]}"
+    case "${DISTRO:-unknown}" in
+        ubuntu|debian|raspbian|pop|linuxmint|elementary|zorin|kali|parrot)
+            log_info "  sudo apt-get update && sudo apt-get install -y ${missing[*]} ca-certificates" ;;
+        fedora|rhel|centos|rocky|alma|ol)
+            log_info "  sudo dnf install -y ${missing[*]} ca-certificates" ;;
+        arch|manjaro|endeavouros|garuda|cachyos)
+            log_info "  sudo pacman -S --needed ${missing[*]} ca-certificates" ;;
+        opensuse*|sles)
+            log_info "  sudo zypper install -y ${missing[*]} ca-certificates" ;;
+        alpine)
+            log_info "  sudo apk add ${missing[*]} ca-certificates" ;;
+        *)
+            if [ "$OS" = "macos" ]; then
+                log_info "  Install the Xcode command line tools: xcode-select --install"
+            else
+                log_info "  Install ${missing[*]} with your package manager, then rerun this script."
+            fi
+            ;;
+    esac
+    exit 1
+}
+
 check_network() {
     log_info "Checking network connectivity..."
     local all_ok=true
 
-    for url in "https://pypi.org/simple/" "https://github.com" "https://nodejs.org"; do
+    # Probe a small per-package page, NOT https://pypi.org/simple/ — the full
+    # index is ~42MB and takes longer than the 10s budget on an average link,
+    # so it reported "cannot reach PyPI" on perfectly good connections.
+    for url in "https://pypi.org/simple/pip/" "https://github.com" "https://nodejs.org"; do
         if ! curl -sSf --connect-timeout 5 --max-time 10 "$url" >/dev/null 2>&1; then
             log_warn "Cannot reach $url — some steps may fail."
             all_ok=false
@@ -252,21 +469,35 @@ install_uv() {
     fi
 
     log_info "Installing uv..."
-    if curl -LsSf https://astral.sh/uv/install.sh | sh; then
-        if [ -x "$HOME/.local/bin/uv" ]; then
-            UV_CMD="$HOME/.local/bin/uv"
-        elif command -v uv >/dev/null 2>&1; then
-            UV_CMD="uv"
-        else
-            log_error "uv installed but not found on PATH."
-            exit 1
-        fi
-        log_success "$($UV_CMD --version)"
-        return 0
+    # Download to a file first, then run it. `curl ... | sh` reports *sh's*
+    # status, and sh exits 0 on empty stdin — so a failed or missing curl was
+    # indistinguishable from a successful install.
+    local uv_installer
+    uv_installer="$(mktemp)"
+    if ! run_with_timeout 120 curl -fsSL https://astral.sh/uv/install.sh -o "$uv_installer"; then
+        rm -f "$uv_installer"
+        log_error "Failed to download the uv installer."
+        log_info "Check network access to astral.sh, or install uv manually:"
+        log_info "  https://docs.astral.sh/uv/getting-started/installation/"
+        exit 1
     fi
+    if ! sh "$uv_installer"; then
+        rm -f "$uv_installer"
+        log_error "The uv installer exited with an error."
+        exit 1
+    fi
+    rm -f "$uv_installer"
 
-    log_error "Failed to install uv."
-    exit 1
+    if [ -x "$HOME/.local/bin/uv" ]; then
+        UV_CMD="$HOME/.local/bin/uv"
+    elif command -v uv >/dev/null 2>&1; then
+        UV_CMD="uv"
+    else
+        log_error "uv installed but not found on PATH."
+        log_info "Expected it at ~/.local/bin/uv."
+        exit 1
+    fi
+    log_success "$($UV_CMD --version)"
 }
 
 check_python() {
@@ -299,6 +530,15 @@ node_version_ok() {
 
 install_node() {
     log_info "Installing Node.js v${NODE_VERSION} LTS..."
+
+    # nodejs.org publishes glibc-only builds. A glibc tarball on musl extracts
+    # fine and even keeps its executable bit, so it would get symlinked onto the
+    # user's PATH as a permanently broken node/npm/npx. Refuse instead.
+    if [ "${IS_MUSL:-false}" = true ]; then
+        log_warn "Skipping Node.js auto-install: no official musl build exists."
+        log_info "Install your distro's package instead, e.g.: sudo apk add nodejs npm"
+        return 1
+    fi
 
     local arch
     case "$(uname -m)" in
@@ -336,31 +576,78 @@ install_node() {
     local pkg_name="node-${node_full_ver}-${node_os}-${arch}"
     local tmp_dir
     tmp_dir="$(mktemp -d)"
+    # Always reclaim the temp dir, including on an early return below.
+    trap 'rm -rf "$tmp_dir"' RETURN
 
-    local downloaded=false
-    # Prefer .tar.xz, fallback to .tar.gz
+    # Official checksums for this release; used to reject a truncated or
+    # corrupted download before we touch the existing install.
+    local sums_file="$tmp_dir/SHASUMS256.txt"
+    if ! run_with_timeout 60 curl -fsSL "${base_url}/SHASUMS256.txt" -o "$sums_file"; then
+        log_warn "Could not fetch Node.js checksums; skipping Node auto-install."
+        return 1
+    fi
+
+    local downloaded=false ext url expected actual
+    # Prefer .tar.xz, fall back to .tar.gz. Each step is guarded so a failure
+    # tries the next extension instead of aborting the whole installer via set -e.
     for ext in "tar.xz" "tar.gz"; do
-        local url="${base_url}/${pkg_name}.${ext}"
+        url="${base_url}/${pkg_name}.${ext}"
         log_info "Downloading ${pkg_name}.${ext}..."
-        if run_with_timeout 120 curl -fSL --progress-bar "$url" -o "$tmp_dir/node.${ext}" 2>/dev/null; then
-            mkdir -p "$node_dir"
-            if [ "$ext" = "tar.xz" ]; then
-                tar -xJf "$tmp_dir/node.${ext}" -C "$tmp_dir"
-            else
-                tar -xzf "$tmp_dir/node.${ext}" -C "$tmp_dir"
-            fi
-            # Move contents into node_dir
-            rm -rf "$node_dir"
-            mv "$tmp_dir/$pkg_name" "$node_dir"
+        if ! run_with_timeout 300 curl -fSL --progress-bar "$url" -o "$tmp_dir/node.${ext}"; then
+            log_warn "Download failed for ${pkg_name}.${ext}."
+            continue
+        fi
+
+        expected="$(grep " ${pkg_name}.${ext}\$" "$sums_file" 2>/dev/null | awk '{print $1}')"
+        actual="$(file_sha256 "$tmp_dir/node.${ext}")"
+        if [ -z "$expected" ] || [ "$actual" != "$expected" ]; then
+            log_warn "Checksum mismatch for ${pkg_name}.${ext} (got ${actual:-none}); discarding."
+            rm -f "$tmp_dir/node.${ext}"
+            continue
+        fi
+
+        if [ "$ext" = "tar.xz" ]; then
+            tar -xJf "$tmp_dir/node.${ext}" -C "$tmp_dir" || {
+                log_warn "Extraction failed for ${ext} (xz support missing?); trying next format."
+                continue
+            }
+        else
+            tar -xzf "$tmp_dir/node.${ext}" -C "$tmp_dir" || {
+                log_warn "Extraction failed for ${ext}."
+                continue
+            }
+        fi
+
+        # Check it actually runs — an executable bit alone doesn't prove the
+        # binary matches this host's libc/arch.
+        if [ ! -x "$tmp_dir/$pkg_name/bin/node" ] || \
+           ! "$tmp_dir/$pkg_name/bin/node" -v >/dev/null 2>&1; then
+            log_warn "Extracted Node.js binary does not run on this host; trying next format."
+            continue
+        fi
+
+        # Only now touch the existing install: swap the fully-verified tree into
+        # place, keeping the old one until the move succeeds. The previous order
+        # (rm -rf then mv) destroyed a working Node whenever extraction or the
+        # move failed.
+        mkdir -p "$(dirname "$node_dir")"
+        local old_dir="${node_dir}.old-$$"
+        if [ -e "$node_dir" ] && ! mv "$node_dir" "$old_dir"; then
+            log_warn "Could not move the existing Node.js aside; keeping it."
+            return 1
+        fi
+        if mv "$tmp_dir/$pkg_name" "$node_dir"; then
+            rm -rf "$old_dir"
             downloaded=true
             break
         fi
+        log_warn "Could not install Node.js into $node_dir; restoring previous version."
+        [ -d "$old_dir" ] && mv "$old_dir" "$node_dir"
+        return 1
     done
 
-    rm -rf "$tmp_dir"
-
     if [ "$downloaded" = false ]; then
-        log_warn "Failed to download Node.js. Dashboard build will be skipped."
+        log_warn "Failed to install Node.js. Dashboard build will be skipped."
         return 1
     fi
 
@@ -418,57 +705,170 @@ check_node() {
 # =============================================================================
 
 clone_repo() {
-    mkdir -p "$ECHO_HOME"
     log_info "Preparing repository in $INSTALL_DIR..."
 
+    # An interrupted earlier clone leaves a .git with no commits. Every git
+    # operation below fails in that state ("you do not have the initial commit
+    # yet"), and the old code hit the "not a git repository" exit instead and
+    # wedged the installer permanently. Move it aside rather than deleting it.
+    if [ -d "$INSTALL_DIR/.git" ] && ! git -C "$INSTALL_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
+        local broken_dir
+        broken_dir="${INSTALL_DIR}.broken-$(date -u +%Y%m%d-%H%M%S)"
+        log_warn "Existing checkout has no commits (interrupted clone)."
+        log_warn "Moving it aside to $broken_dir before re-cloning."
+        mv "$INSTALL_DIR" "$broken_dir"
+    fi
+
     if [ -d "$INSTALL_DIR/.git" ]; then
-        cd "$INSTALL_DIR"
-        if [ -n "$(git status --porcelain)" ]; then
-            log_warn "Local changes detected in $INSTALL_DIR; skipping update."
-            log_info "Clean the repo manually if you want the installer to update it."
-        else
-            git fetch origin
-            git checkout "$BRANCH"
-            git pull --ff-only origin "$BRANCH"
-            log_success "Repository updated"
-        fi
+        update_repo
         return 0
     fi
 
     if [ -e "$INSTALL_DIR" ]; then
         log_error "Install directory exists but is not a git repository: $INSTALL_DIR"
+        log_info "Remove it, or choose another location with --dir PATH"
         exit 1
     fi
 
     log_info "Trying SSH clone..."
     if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
-        run_with_timeout 120 git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
+        run_with_timeout 300 git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
         log_success "Cloned via SSH"
         return 0
     fi
+    # A failed SSH attempt can leave a partial directory behind, which would
+    # make the HTTPS clone fail with "destination path already exists".
+    rm -rf "$INSTALL_DIR"
 
     log_info "SSH unavailable, trying HTTPS..."
-    run_with_timeout 120 git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"
+    if ! run_with_timeout 300 git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
+        log_error "Failed to clone the repository."
+        log_info "Check network access to github.com and retry."
+        exit 1
+    fi
     log_success "Cloned via HTTPS"
+}
+
+# Update an existing checkout to origin/$BRANCH.
+#
+# The previous behaviour was to skip the update entirely whenever `git status`
+# was dirty. Because a source install exists precisely to track code newer than
+# the last PyPI release, that turned any stray local edit — including lockfile
+# churn produced by the install itself — into a permanent freeze on an old
+# commit, announced with a single warning the user would likely miss.
+update_repo() {
+    cd "$INSTALL_DIR"
+    log_info "Existing installation found, updating..."
+
+    local stash_ref="" stash_name=""
+    if [ -n "$(git status --porcelain)" ]; then
+        # An interrupted earlier update can leave unmerged index entries, in
+        # which case `git stash` refuses to run and `git checkout` aborts.
+        # Clearing the index keeps working-tree edits (stashed just below) and
+        # only drops the conflict state.
+        if [ -n "$(git ls-files --unmerged)" ]; then
+            log_info "Clearing unmerged index entries from a previous conflict..."
+            git reset -q
+        fi
+        stash_name="echo-install-autostash-$(date -u +%Y%m%d-%H%M%S)"
+        log_info "Local changes detected; stashing them before the update..."
+        if git stash push --include-untracked -m "$stash_name" >/dev/null; then
+            stash_ref="stash@{0}"
+            log_info "Stashed as $stash_name"
+        else
+            log_warn "Could not stash local changes; skipping the update to avoid losing them."
+            log_info "Commit or clean $INSTALL_DIR, then rerun this installer."
+            return 0
+        fi
+    fi
+
+    # Fetch only the branch we need. A bare `git fetch origin` pulls every ref,
+    # which makes each update proportional to the total number of branches.
+    git remote set-branches origin "$BRANCH" 2>/dev/null || true
+    if ! run_with_timeout 300 git fetch origin "$BRANCH"; then
+        log_warn "Fetch failed; keeping the current checkout."
+        restore_stash "$stash_ref"
+        return 0
+    fi
+
+    git checkout "$BRANCH"
+    if ! git pull --ff-only origin "$BRANCH"; then
+        # Only safe because the working tree is clean at this point: anything the
+        # user had was captured in the stash above, which we restore below.
+        if [ -n "$stash_ref" ] || [ -z "$(git status --porcelain)" ]; then
+            log_warn "Fast-forward not possible; resetting this managed checkout to origin/$BRANCH."
+            git reset --hard "origin/$BRANCH"
+        else
+            log_warn "Fast-forward not possible and the tree is dirty; leaving it alone."
+            return 0
+        fi
+    fi
+    log_success "Repository updated to $(git rev-parse --short HEAD)"
+
+    restore_stash "$stash_ref"
+}
+
+# Reapply an autostash, asking first when we have a terminal: replaying local
+# edits onto updated code can conflict, and the user is better placed to decide.
+restore_stash() {
+    local ref="$1"
+    [ -n "$ref" ] || return 0
+
+    local restore="yes"
+    if [ "$IS_INTERACTIVE" = true ] || { [ -r /dev/tty ] && [ -w /dev/tty ]; }; then
+        echo ""
+        log_warn "Your local changes were stashed before updating."
+        log_warn "Reapplying them may conflict with the updated code."
+        if prompt_yes_no "Restore your local changes now?" "yes"; then
+            restore="yes"
+        else
+            restore="no"
+        fi
+    fi
+
+    if [ "$restore" != "yes" ]; then
+        log_info "Left your changes in the stash. Restore later with: git -C $INSTALL_DIR stash apply $ref"
+        return 0
+    fi
+
+    log_info "Restoring local changes..."
+    if git stash apply "$ref" >/dev/null 2>&1; then
+        git stash drop "$ref" >/dev/null 2>&1 || true
+        log_warn "Local changes reapplied on top of the updated code."
+        log_info "Review with: git -C $INSTALL_DIR diff"
+        return 0
+    fi
+
+    # A conflicting apply leaves conflict markers in the working tree and an
+    # unmerged index. Installing from that state would compile source files
+    # containing '<<<<<<<', so roll the tree back to the clean updated code and
+    # leave the changes in the stash for the user to merge deliberately.
+    log_warn "Your changes conflict with the updated code, so they were NOT reapplied."
+    git checkout -- . >/dev/null 2>&1 || true
+    git reset -q --hard HEAD >/dev/null 2>&1 || true
+    log_info "The checkout is on clean updated code; your changes are preserved in the stash."
+    log_info "Merge them yourself with: git -C $INSTALL_DIR stash apply $ref"
 }
 
 setup_venv() {
     cd "$INSTALL_DIR"
     log_info "Setting up virtual environment..."
 
-    # Idempotent: if venv exists and Python version matches, skip rebuild
+    # Idempotent: keep any venv whose interpreter satisfies requires-python
+    # (>=3.11 in pyproject.toml) rather than demanding exactly PYTHON_VERSION.
+    # An exact match would throw away a perfectly good 3.12/3.13 venv on every
+    # run and reinstall every dependency with it.
     if [ -d "venv" ] && [ -x "venv/bin/python" ]; then
         local existing_ver
         existing_ver="$(venv/bin/python --version 2>/dev/null | awk '{print $2}' || echo "")"
-        local required_major_minor="${PYTHON_VERSION}"
-        if echo "$existing_ver" | grep -q "^${required_major_minor}"; then
+        if venv/bin/python -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1; then
             log_success "Virtual environment already exists (Python $existing_ver)"
             return 0
         fi
-        log_info "Python version mismatch ($existing_ver vs ${required_major_minor}*), rebuilding venv..."
+        log_info "Existing venv Python ($existing_ver) is older than 3.11; rebuilding..."
+        rm -rf venv
     fi
 
-    rm -rf venv
     "$UV_CMD" venv venv --python "$PYTHON_PATH"
     log_success "Virtual environment ready"
 }
@@ -509,8 +909,11 @@ probe_pypi_index() {
             continue
         fi
         log_info "  $label: ${t}s"
-        # Numeric compare via awk (times are floats like 0.83).
-        if awk "BEGIN{exit !($t < $best_time)}"; then
+        # Numeric compare via awk (times are floats like 0.83). LC_ALL=C pins
+        # the radix character: curl always writes '.', but awk under a
+        # comma-decimal LC_NUMERIC would parse "0.83" as 0 and pick a mirror at
+        # random.
+        if LC_ALL=C awk "BEGIN{exit !($t < $best_time)}"; then
             best_time="$t"; best_label="$label"; best_url="$url"
         fi
     done
@@ -540,8 +943,45 @@ install_deps() {
         index_args+=(--index "$PYPI_INDEX" --default-index "$PYPI_OFFICIAL")
     fi
 
-    log_info "Installing Echo Agent dependencies (full)..."
-    if run_with_timeout "$DEPS_TIMEOUT" "$UV_CMD" pip install "${index_args[@]}" -e ".[all]"; then
+    # DEPS_TIMEOUT is a budget for the whole dependency phase, not per attempt.
+    # Giving each tier its own full timeout meant a user on a dead link waited
+    # 3 x 600s before learning the install had degraded.
+    local deadline=$(( $(date +%s) + DEPS_TIMEOUT ))
+    remaining_budget() {
+        local left=$(( deadline - $(date +%s) ))
+        [ "$left" -lt 30 ] && left=30   # always allow a real attempt
+        echo "$left"
+    }
+
+    local deps_log
+    deps_log="$(mktemp)"
+
+    # Run one tier. On failure, surface the head of uv's output — the previous
+    # 2>/dev/null discarded exactly the text needed to tell a network timeout
+    # apart from a missing compiler.
+    install_tier() {
+        local label="$1" spec="$2" budget rc=0
+        budget="$(remaining_budget)"
+        log_info "Installing dependencies ($label, up to ${budget}s)..."
+        # Capture the status with `|| rc=$?` rather than testing the command in
+        # an `if`: after `if cmd; then ... fi`, `$?` is the status of the `if`
+        # itself (0), so a timeout's 124 would be invisible.
+        run_with_timeout "$budget" "$UV_CMD" pip install "${index_args[@]}" -e "$spec" 2>"$deps_log" || rc=$?
+        if [ "$rc" -eq 0 ]; then
+            return 0
+        fi
+        if [ "$rc" -eq 124 ]; then
+            log_warn "Tier '$label' timed out after ${budget}s."
+        else
+            log_warn "Tier '$label' failed (exit $rc). First lines of output:"
+            head -8 "$deps_log" | sed 's/^/    /' >&2
+            suggest_build_tools "$deps_log"
+        fi
+        return 1
+    }
+
+    if install_tier "full" ".[all]"; then
+        rm -f "$deps_log"
         log_success "Dependencies installed (full)"
         return 0
     fi
@@ -550,8 +990,8 @@ install_deps() {
     # out on slow links. Fall back to the essential LLM SDKs so the setup wizard
     # can still verify a model, rather than dropping to a base install with no
     # provider SDK at all.
-    log_warn "Full install failed or timed out. Falling back to essential LLM providers..."
-    if run_with_timeout "$DEPS_TIMEOUT" "$UV_CMD" pip install "${index_args[@]}" -e ".[openai,anthropic,gemini]"; then
+    if install_tier "essential LLM providers" ".[openai,anthropic,gemini]"; then
+        rm -f "$deps_log"
         log_warn "Installed a REDUCED set (openai, anthropic, gemini)."
         log_warn "Some features (browser, documents, vector, TUI) are unavailable."
         log_info "To complete later, run:"
@@ -560,10 +1000,19 @@ install_deps() {
     fi
 
     log_warn "Provider install failed too. Falling back to BASE install (no LLM SDK)."
-    log_warn "The setup wizard's model verification will fail until you install a provider:"
-    log_warn "  cd $INSTALL_DIR && $UV_CMD pip install --python \"$INSTALL_DIR/venv/bin/python\" -e \".[openai]\"   # or .[all]"
-    run_with_timeout "$DEPS_TIMEOUT" "$UV_CMD" pip install "${index_args[@]}" -e "."
-    log_success "Dependencies installed (base only)"
+    if install_tier "base" "."; then
+        rm -f "$deps_log"
+        log_warn "Installed BASE only — no LLM provider SDK."
+        log_warn "The setup wizard's model verification will fail until you install one:"
+        log_warn "  cd $INSTALL_DIR && $UV_CMD pip install --python \"$INSTALL_DIR/venv/bin/python\" -e \".[openai]\"   # or .[all]"
+        return 0
+    fi
+
+    rm -f "$deps_log"
+    log_error "Dependency installation failed even with no extras."
+    log_info "Check network access to PyPI, then retry:"
+    log_info "  cd $INSTALL_DIR && $UV_CMD pip install -e \".[all]\""
+    return 1
 }
 
 # Warm the local embedding model into a STABLE cache so first-run memory vector
@@ -573,7 +1022,9 @@ install_deps() {
 # best-effort: a failure here never aborts the install — the runtime still works
 # in keyword-only mode and retries the download later with backoff.
 EMBED_MODEL="${ECHO_EMBED_MODEL:-BAAI/bge-small-zh-v1.5}"
-EMBED_CACHE_DIR="${ECHO_EMBED_CACHE_DIR:-$ECHO_HOME/models/fastembed}"
+# EMBED_CACHE_DIR is set by resolve_paths() to match the runtime's configured
+# cache location; it is deliberately not overridable here, because prefetching
+# into a directory the runtime does not read just wastes the download.
 EMBED_PREFETCH_TIMEOUT="${ECHO_EMBED_PREFETCH_TIMEOUT:-900}"
 
 # Release-hosted model package (self-owned mirrors, tried before HF/GCS).
@@ -617,8 +1068,7 @@ fetch_embedding_model_from_release() {
             rm -f "$tmp_tar"
             continue
         fi
-        actual=$(shasum -a 256 "$tmp_tar" 2>/dev/null | awk '{print $1}')
-        [ -n "$actual" ] || actual=$(sha256sum "$tmp_tar" 2>/dev/null | awk '{print $1}')
+        actual="$(file_sha256 "$tmp_tar")"
         if [ "$actual" != "$EMBED_PKG_SHA256" ]; then
             log_warn "sha256 mismatch from $url (got ${actual:-none}); trying next source."
             rm -f "$tmp_tar"
@@ -655,14 +1105,20 @@ prefetch_embedding_model() {
 
     # Tight HF timeouts so a dead mirror fails fast and fastembed reaches its GCS
     # fallback within the budget. HF_ENDPOINT respects an operator override.
-    # Bounded by run_with_timeout as a hard ceiling; the trap is disarmed so a
-    # non-zero exit here is swallowed rather than failing the whole install.
-    trap - ERR
-    HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-15}" \
-    HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-15}" \
-    HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}" \
-    FASTEMBED_CACHE_PATH="$EMBED_CACHE_DIR" \
-    run_with_timeout "$EMBED_PREFETCH_TIMEOUT" "$venv_python" - "$EMBED_MODEL" "$EMBED_CACHE_DIR" <<'PYEOF'
+    #
+    # The whole command is the condition of an `if`, which is what actually makes
+    # a failure non-fatal: `trap - ERR` alone does NOT suppress `set -e`, so the
+    # previous version aborted the entire installer here whenever the prefetch
+    # failed — skipping the PATH symlink, the setup wizard and the service
+    # registration, and leaving the user with no `echo-agent` command at all.
+    # This step is pure optimization: the runtime re-downloads on demand with
+    # backoff (echo_agent/memory/local_embed.py), so it must never be fatal.
+    local rc=0
+    if HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-15}" \
+       HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-15}" \
+       HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}" \
+       FASTEMBED_CACHE_PATH="$EMBED_CACHE_DIR" \
+       run_with_timeout "$EMBED_PREFETCH_TIMEOUT" "$venv_python" - "$EMBED_MODEL" "$EMBED_CACHE_DIR" <<'PYEOF'
 import sys
 model_name, cache_dir = sys.argv[1], sys.argv[2]
 try:
@@ -675,8 +1131,11 @@ except Exception as e:  # noqa: BLE001 - best-effort prefetch, never fatal
     print(f"prefetch failed: {e}", file=sys.stderr)
     sys.exit(1)
 PYEOF
-    local rc=$?
-    trap 'on_error $LINENO' ERR
+    then
+        rc=0
+    else
+        rc=$?
+    fi
 
     if [ "$rc" -eq 0 ]; then
         log_success "Embedding model cached (offline-ready)."
@@ -687,6 +1146,107 @@ PYEOF
         log_warn "  FASTEMBED_CACHE_PATH='$EMBED_CACHE_DIR' $INSTALL_DIR/venv/bin/python -c \"from fastembed import TextEmbedding; TextEmbedding(model_name='$EMBED_MODEL', cache_dir='$EMBED_CACHE_DIR')\""
     fi
     return 0
+}
+
+# The Dashboard SPA is a deterministic build artifact: CI builds it once per
+# web/ change and publishes it to a rolling release, so a normal install can
+# download ~1MB instead of provisioning Node 22 + pnpm and running
+# `tsc -b && vite build` locally. web/dist is exactly where the gateway looks
+# for a source checkout (echo_agent/gateway/server.py:_resolve_dashboard_dir).
+#
+# HTTPS is the trust anchor here; the accompanying sha256 guards against a
+# truncated or corrupted download, not against a compromised release.
+#
+# Only GitHub is listed because that is where .github/workflows/dashboard.yml
+# publishes. If these bundles are ever mirrored to Gitee for CN networks, add
+# that base URL first — the loop below tries each source in order.
+DASHBOARD_RELEASE_TAG="dashboard-latest"
+DASHBOARD_PKG_URLS=(
+    "https://github.com/fuyuxiang/echo-agent/releases/download/$DASHBOARD_RELEASE_TAG"
+)
+
+fetch_dashboard_from_release() {
+    if [ "$DASHBOARD_ARTIFACT" != true ]; then
+        log_info "Prebuilt Dashboard disabled (--no-dashboard-artifact)."
+        return 1
+    fi
+    if ! command -v curl >/dev/null 2>&1; then
+        return 1
+    fi
+
+    # Identify the artifact by the git tree hash of web/, so the bundle always
+    # corresponds to the frontend sources in this checkout. If web/ was modified
+    # locally the hash won't match any published artifact and we fall through to
+    # a local build, which is the correct outcome.
+    local web_sha=""
+    web_sha="$(git -C "$INSTALL_DIR" rev-parse "HEAD:web" 2>/dev/null || echo "")"
+    if [ -z "$web_sha" ]; then
+        return 1
+    fi
+
+    local pkg="dashboard-${web_sha}.tar.gz"
+    local tmp_dir
+    tmp_dir="$(mktemp -d)"
+    trap 'rm -rf "$tmp_dir"' RETURN
+
+    local base url expected actual
+    for base in "${DASHBOARD_PKG_URLS[@]}"; do
+        url="$base/$pkg"
+        log_info "Fetching prebuilt Dashboard: $url"
+        # A missing bundle is an expected, non-noteworthy outcome (locally
+        # modified web/, or CI hasn't published this revision yet), so keep
+        # curl's 404 chatter out of the transcript.
+        if ! run_with_timeout 180 curl -fsSL --retry 2 --connect-timeout 10 \
+                -o "$tmp_dir/$pkg" "$url" 2>/dev/null; then
+            log_info "  not available from this source."
+            continue
+        fi
+        if ! run_with_timeout 60 curl -fsSL --connect-timeout 10 \
+                -o "$tmp_dir/$pkg.sha256" "$url.sha256" 2>/dev/null; then
+            log_warn "  bundle found but its checksum is missing; ignoring it."
+            continue
+        fi
+        expected="$(awk '{print $1}' "$tmp_dir/$pkg.sha256" 2>/dev/null)"
+        actual="$(file_sha256 "$tmp_dir/$pkg")"
+        if [ -z "$expected" ] || [ "$actual" != "$expected" ]; then
+            log_warn "  checksum mismatch (got ${actual:-none}); ignoring it."
+            continue
+        fi
+
+        # Unpack to a staging dir first, then swap, so a partial extraction
+        # can't leave a half-populated web/dist that the gateway would serve.
+        mkdir -p "$tmp_dir/stage"
+        if ! tar -xzf "$tmp_dir/$pkg" -C "$tmp_dir/stage"; then
+            log_warn "  extraction failed; ignoring it."
+            continue
+        fi
+        if [ ! -f "$tmp_dir/stage/index.html" ]; then
+            log_warn "  bundle has no index.html; ignoring it."
+            continue
+        fi
+        mkdir -p "$INSTALL_DIR/web"
+        rm -rf "$INSTALL_DIR/web/dist.new"
+        if mv "$tmp_dir/stage" "$INSTALL_DIR/web/dist.new"; then
+            rm -rf "$INSTALL_DIR/web/dist"
+            mv "$INSTALL_DIR/web/dist.new" "$INSTALL_DIR/web/dist"
+            DASHBOARD_BUILT=true
+            log_success "Dashboard installed from prebuilt bundle (no Node.js needed)."
+            return 0
+        fi
+        log_warn "  could not stage the bundle into $INSTALL_DIR/web."
+    done
+    return 1
+}
+
+# Get a usable Dashboard: prefer the prebuilt bundle, and only provision Node
+# and build locally when that isn't available.
+fetch_dashboard() {
+    if fetch_dashboard_from_release; then
+        return 0
+    fi
+    log_info "No prebuilt Dashboard available; falling back to a local build."
+    check_node
+    build_dashboard
 }
 
 build_dashboard() {
@@ -719,14 +1279,19 @@ build_dashboard() {
     log_info "Building Dashboard frontend..."
     cd "$INSTALL_DIR/web"
 
-    if ! run_with_timeout 180 pnpm install --frozen-lockfile 2>/dev/null; then
-        if ! run_with_timeout 180 pnpm install; then
+    # Keep pnpm's output: when the build is the thing that failed, the reason is
+    # the only useful thing we have to give the user.
+    if ! run_with_timeout 300 pnpm install --frozen-lockfile; then
+        log_warn "Frozen-lockfile install failed; retrying without it..."
+        if ! run_with_timeout 300 pnpm install; then
             log_warn "pnpm install failed. Dashboard build skipped."
+            log_info "Retry manually: cd $INSTALL_DIR/web && pnpm install && pnpm build"
             return 0
         fi
     fi
 
-    if run_with_timeout 120 pnpm build; then
+    # `tsc -b && vite build` on a cold cache regularly exceeds two minutes.
+    if run_with_timeout 600 pnpm build; then
         DASHBOARD_BUILT=true
         log_success "Dashboard built successfully"
     else
@@ -755,6 +1320,8 @@ get_command_link_display_dir() {
     local link_dir
     link_dir="$(get_command_link_dir)"
     if [ "$link_dir" = "$HOME/.local/bin" ]; then
+        # Display form only — deliberately literal, never used as a path.
+        # shellcheck disable=SC2088
         echo "~/.local/bin"
         return 0
     fi
@@ -800,6 +1367,15 @@ setup_path() {
         bash)
             [ -f "$HOME/.bashrc" ] && SHELL_CONFIGS+=("$HOME/.bashrc")
             [ -f "$HOME/.bash_profile" ] && SHELL_CONFIGS+=("$HOME/.bash_profile")
+            # On most Linux distros a *login* shell (ssh, tty, display manager)
+            # reads ~/.profile and never sources ~/.bashrc — Debian/Ubuntu's
+            # default .bashrc even returns early for non-interactive shells. So
+            # write ~/.profile too, otherwise `echo-agent` is missing from
+            # exactly the sessions people log in with.
+            if [ "$OS" = "linux" ] && [ ! -f "$HOME/.bash_profile" ]; then
+                [ -f "$HOME/.profile" ] || touch "$HOME/.profile"
+                SHELL_CONFIGS+=("$HOME/.profile")
+            fi
             if [ ${#SHELL_CONFIGS[@]} -eq 0 ]; then
                 touch "$HOME/.bashrc"
                 SHELL_CONFIGS+=("$HOME/.bashrc")
@@ -814,24 +1390,38 @@ setup_path() {
         *)
             [ -f "$HOME/.bashrc" ] && SHELL_CONFIGS+=("$HOME/.bashrc")
             [ -f "$HOME/.zshrc" ] && SHELL_CONFIGS+=("$HOME/.zshrc")
+            # Fall back to the POSIX login file so an unrecognized shell still
+            # gets the command on PATH.
+            if [ ${#SHELL_CONFIGS[@]} -eq 0 ]; then
+                [ -f "$HOME/.profile" ] || touch "$HOME/.profile"
+                SHELL_CONFIGS+=("$HOME/.profile")
+            fi
             ;;
     esac
 
     PATH_LINE="export PATH=\"$link_dir:\$PATH\""
     for shell_config in "${SHELL_CONFIGS[@]}"; do
-        if ! grep -Fq "$link_dir" "$shell_config" 2>/dev/null; then
-            echo "" >> "$shell_config"
-            echo "# Echo Agent" >> "$shell_config"
-            echo "$PATH_LINE" >> "$shell_config"
+        # Match the exact line we would add, not just the directory anywhere in
+        # the file: a substring match let an unrelated mention (a comment, or a
+        # longer path containing this one) suppress the PATH export entirely.
+        if ! grep -Fqx "$PATH_LINE" "$shell_config" 2>/dev/null; then
+            {
+                echo ""
+                echo "# Echo Agent"
+                echo "$PATH_LINE"
+            } >> "$shell_config"
             log_success "Added $link_display_dir to PATH in $shell_config"
         fi
     done
 
     if [ "$IS_FISH" = true ]; then
-        if ! grep -Fq "$link_dir" "$FISH_CONFIG" 2>/dev/null; then
-            echo "" >> "$FISH_CONFIG"
-            echo "# Echo Agent" >> "$FISH_CONFIG"
-            echo "fish_add_path \"$link_dir\"" >> "$FISH_CONFIG"
+        FISH_PATH_LINE="fish_add_path \"$link_dir\""
+        if ! grep -Fqx "$FISH_PATH_LINE" "$FISH_CONFIG" 2>/dev/null; then
+            {
+                echo ""
+                echo "# Echo Agent"
+                echo "$FISH_PATH_LINE"
+            } >> "$FISH_CONFIG"
             log_success "Added $link_display_dir to PATH in $FISH_CONFIG"
         fi
     fi
@@ -845,6 +1435,11 @@ setup_path() {
 
 prepare_home() {
     mkdir -p "$ECHO_HOME"
+    # The wizard writes echo-agent.yaml here with provider API keys in it. With
+    # the common Linux umask of 022 the directory would be world-readable, so
+    # tighten it to the owner on a shared host. Applied every run so existing
+    # installs get repaired too.
+    chmod 700 "$ECHO_HOME" 2>/dev/null || true
     log_success "Home directory ready: $ECHO_HOME"
 }
 
@@ -862,10 +1457,47 @@ run_setup_wizard() {
     fi
 
     if prompt_yes_no "Run Echo Agent setup now?" "yes"; then
-        "$echo_cmd" setup
+        # Pass -w explicitly and run from a stable cwd. Without -w the wizard
+        # picks its config target by searching the current directory first, and
+        # cwd here is whatever the last step left behind ($INSTALL_DIR/web after
+        # a dashboard build) — which would drop echo-agent.yaml inside the
+        # checkout instead of the home the service and CLI actually read.
+        cd "$ECHO_HOME"
+        # Never let a wizard that the user aborted (Ctrl+C, or a non-zero exit
+        # in a CI shell) abort the whole installer via the ERR trap.
+        if ! "$echo_cmd" setup -w "$ECHO_HOME"; then
+            log_warn "Setup did not complete. Run it later with: echo-agent setup"
+        fi
     else
         log_info "You can run setup later with: echo-agent setup"
     fi
+}
+
+# True when a background service can actually be registered here. WSL2 without
+# `systemd=true` in /etc/wsl.conf, Docker, LXC and chroots all ship systemctl
+# without a running system manager, and `systemctl --user` additionally needs a
+# session bus that `sudo` strips.
+service_manager_available() {
+    if [ "$OS" = "macos" ]; then
+        return 0   # launchd is always present
+    fi
+    if [ "$OS" != "linux" ]; then
+        return 1
+    fi
+    command -v systemctl >/dev/null 2>&1 || return 1
+
+    local state=""
+    state="$(systemctl is-system-running 2>/dev/null || true)"
+    case "$state" in
+        ""|offline|unknown) return 1 ;;
+    esac
+
+    # Root manages a system-scope unit, which needs no session bus.
+    if [ "$(id -u)" -eq 0 ]; then
+        return 0
+    fi
+    # Non-root uses the user manager; verify its bus is reachable.
+    systemctl --user show-environment >/dev/null 2>&1
 }
 
 setup_service() {
@@ -883,11 +1515,55 @@ setup_service() {
         return 0
     fi
 
+    # Bail out before touching the service when there is no manager to talk to.
+    # `gateway install` exits non-zero in that case, which — under the ERR trap
+    # — used to abort the installer and report a failed install even though
+    # everything had in fact been installed correctly. This is the normal state
+    # on WSL2 without systemd, in containers, and under plain `sudo`.
+    if ! service_manager_available; then
+        SERVICE_SKIPPED=true
+        log_warn "No usable service manager detected; skipping background service registration."
+        if [ "$IS_WSL" = true ]; then
+            log_info "WSL2: enable systemd by adding to /etc/wsl.conf, then 'wsl --shutdown':"
+            log_info "    [boot]"
+            log_info "    systemd=true"
+        elif [ "$OS" = "linux" ] && [ "$(id -u)" -ne 0 ]; then
+            log_info "If you ran this under sudo, rerun it as your normal user, or use:"
+            log_info "  sudo echo-agent gateway install --system"
+        fi
+        log_info "Meanwhile, run the gateway in the foreground: echo-agent gateway"
+        log_info "  (or keep it alive with tmux/nohup)"
+        return 0
+    fi
+
+    # Root on Linux owns no user-scope manager; register a system unit instead.
+    local scope_args=()
+    if [ "$OS" = "linux" ] && [ "$(id -u)" -eq 0 ]; then
+        scope_args+=(--system)
+        log_info "Running as root — registering a system-scope service."
+    fi
+
     echo ""
     if prompt_yes_no "Register the Echo Agent gateway as a background service (auto-start on login)?" "yes"; then
-        "$echo_cmd" gateway install -w "$ECHO_HOME"
+        if ! "$echo_cmd" gateway install "${scope_args[@]}" -w "$ECHO_HOME"; then
+            SERVICE_SKIPPED=true
+            log_warn "Service registration failed; the install itself is fine."
+            log_info "Retry later with: echo-agent gateway install"
+            return 0
+        fi
         if prompt_yes_no "Start the service now?" "yes"; then
-            "$echo_cmd" gateway start
+            if ! "$echo_cmd" gateway start "${scope_args[@]}"; then
+                log_warn "Could not start the service. Inspect it with: echo-agent gateway status"
+            fi
+        fi
+        # A Linux user service stops when the login session ends unless
+        # lingering is enabled — surprising for something meant to run 24/7.
+        if [ "$OS" = "linux" ] && [ "$(id -u)" -ne 0 ]; then
+            if ! loginctl show-user "$(id -un)" 2>/dev/null | grep -q "^Linger=yes"; then
+                log_warn "The service will stop when you log out (user-scope systemd)."
+                log_info "To keep it running across logouts:"
+                log_info "  sudo loginctl enable-linger $(id -un)"
+            fi
         fi
     else
         log_info "You can register later with: echo-agent gateway install"
@@ -898,7 +1574,7 @@ print_success() {
     echo ""
     echo -e "${GREEN}${BOLD}"
     echo "┌─────────────────────────────────────────────────────────┐"
-    echo "│              Installation Complete                     │"
+    echo "│                 Installation Complete                   │"
     echo "└─────────────────────────────────────────────────────────┘"
     echo -e "${NC}"
     echo ""
@@ -919,8 +1595,19 @@ print_success() {
     echo "  http://localhost:58123/"
     echo ""
 
+    if [ "$SERVICE_SKIPPED" = true ]; then
+        echo -e "${YELLOW}${BOLD}Note:${NC} The background service was not registered."
+        echo "  Run the gateway in the foreground with: echo-agent gateway"
+        if [ "$IS_WSL" = true ]; then
+            echo "  On WSL2, enable systemd (/etc/wsl.conf -> [boot] systemd=true) to"
+            echo "  register it as a service, or keep it alive with tmux/nohup."
+        fi
+        echo ""
+    fi
+
     if [ "$DASHBOARD_BUILT" != true ]; then
-        echo -e "${YELLOW}${BOLD}Note:${NC} Dashboard was not built."
+        echo -e "${YELLOW}${BOLD}Note:${NC} Dashboard assets are not present; the gateway will"
+        echo "  serve the minimal playground UI instead."
         echo "  To build manually: cd $INSTALL_DIR/web && pnpm install && pnpm build"
         echo ""
     fi
@@ -954,6 +1641,8 @@ print_success() {
 main() {
     print_banner
     detect_os
+    check_prerequisites
+    prepare_home
     check_network
     check_git
     install_uv
@@ -962,10 +1651,8 @@ main() {
     setup_venv
     install_deps
     prefetch_embedding_model
-    check_node
-    build_dashboard
+    fetch_dashboard
     setup_path
-    prepare_home
     run_setup_wizard
     setup_service
     print_success

@@ -27,6 +27,18 @@ jobs:
       - name: Run ruff
         run: ruff check .
 
+      # scripts/install.sh is how most users get Echo Agent, yet it had no
+      # automated checking of any kind. shellcheck is preinstalled on the
+      # ubuntu runners. -x follows sourced files; SC1091 would otherwise flag
+      # files that only exist on a user's machine.
+      - name: Lint shell scripts
+        run: |
+          for f in scripts/*.sh; do
+            echo "== $f"
+            bash -n "$f"
+            shellcheck -x -e SC1091 "$f"
+          done
+
   test:
     runs-on: ubuntu-latest
     strategy:

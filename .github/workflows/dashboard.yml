@@ -1,0 +1,91 @@
+name: Dashboard bundle
+
+# Build the Dashboard SPA once per web/ change and publish it as a release
+# asset, so scripts/install.sh can download a ~1MB bundle instead of making
+# every user provision Node 22 + pnpm and run `tsc -b && vite build` locally.
+#
+# The asset is keyed by the git tree hash of web/ (`git rev-parse HEAD:web`),
+# which is what the installer computes from its own checkout. Identical
+# frontend sources therefore always resolve to the same artifact, and a
+# locally modified web/ resolves to none — correctly falling back to a
+# local build.
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - "web/**"
+      - ".github/workflows/dashboard.yml"
+  workflow_dispatch:
+
+# Needed to create/update the rolling release that holds the bundle.
+permissions:
+  contents: write
+
+concurrency:
+  group: dashboard-bundle
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve web/ tree hash
+        id: sha
+        run: echo "web_sha=$(git rev-parse HEAD:web)" >> "$GITHUB_OUTPUT"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      # --frozen-lockfile without a fallback: a lockfile that no longer matches
+      # package.json must fail the build here rather than silently publishing a
+      # bundle built from unpinned dependency versions.
+      - name: Install frontend dependencies
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Dashboard
+        working-directory: web
+        run: pnpm build
+
+      - name: Verify build output
+        run: test -f web/dist/index.html
+
+      - name: Package bundle
+        id: pkg
+        env:
+          WEB_SHA: ${{ steps.sha.outputs.web_sha }}
+        run: |
+          set -euo pipefail
+          pkg="dashboard-${WEB_SHA}.tar.gz"
+          # Archive the contents of dist/ (no leading directory) so the
+          # installer can extract straight into web/dist.
+          tar -czf "$pkg" -C web/dist .
+          sha256sum "$pkg" | awk '{print $1}' > "$pkg.sha256"
+          echo "pkg=$pkg" >> "$GITHUB_OUTPUT"
+          ls -lh "$pkg"
+
+      # Rolling tag: the installer resolves the exact bundle by filename, so a
+      # single release can hold the assets for several web/ revisions.
+      - name: Publish to rolling release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PKG: ${{ steps.pkg.outputs.pkg }}
+        run: |
+          set -euo pipefail
+          if ! gh release view dashboard-latest >/dev/null 2>&1; then
+            gh release create dashboard-latest \
+              --title "Dashboard bundles" \
+              --notes "Prebuilt Dashboard SPA bundles, keyed by the git tree hash of web/. Consumed by scripts/install.sh." \
+              --latest=false
+          fi
+          gh release upload dashboard-latest "$PKG" "$PKG.sha256" --clobber
