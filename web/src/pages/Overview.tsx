@@ -1,5 +1,7 @@
+import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useApi } from "../hooks/use-api";
+import { useWsSubscribe } from "../hooks/use-ws";
 import { statusLabel } from "../stores/kanban";
 import { Activity, Radio, Brain, Coins, Plug, AlertCircle, CheckCircle, AlertTriangle } from "lucide-react";
 
@@ -28,12 +30,35 @@ const STATUS_ICON: Record<string, React.ReactNode> = {
   unhealthy: <AlertCircle className="text-red-500" size={20} />,
 };
 
+/** 概览页轮询间隔。这是首屏“当前状态”视图,此前打开后数字就冻结了,不刷新页面
+ *  永远看不到变化。 */
+const POLL_INTERVAL_MS = 30_000;
+
 export function Overview() {
   const { t } = useTranslation(["overview", "common"]);
-  const { data: health } = useApi<HealthData>("/health");
-  const { data: channels } = useApi<{ channels: ChannelItem[] }>("/channels");
-  const { data: tasks } = useApi<TasksData>("/tasks?board_id=default");
-  const { data: memory } = useApi<{ total: number }>("/memory/stats");
+  const { data: health, refetch: refetchHealth } = useApi<HealthData>("/health");
+  const { data: channels, refetch: refetchChannels } = useApi<{ channels: ChannelItem[] }>("/channels");
+  const { data: tasks, refetch: refetchTasks } = useApi<TasksData>("/tasks?board_id=default");
+  const { data: memory, refetch: refetchMemory } = useApi<{ total: number }>("/memory/stats");
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      refetchHealth();
+      refetchChannels();
+      refetchTasks();
+      refetchMemory();
+    }, POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [refetchHealth, refetchChannels, refetchTasks, refetchMemory]);
+
+  // 任务计数额外订阅 WS,让状态变化即时反映而不必等下一轮轮询。只订阅 tasks:
+  // _EVENT_CHANNEL_MAP 里虽然列了 sessions/channels/memory,但服务端目前只有
+  // TaskManager 接了 broadcast sink(app.py),订阅其余频道会做成死功能。
+  useWsSubscribe(
+    ["tasks"],
+    () => { refetchTasks(); },
+    ["task_created", "task_transitioned", "task_updated"],
+  );
 
   const statusCounts: Record<string, number> = {};
   // Guard the array too, not just the response: an error/partial payload that
@@ -51,7 +76,8 @@ export function Overview() {
         <span className="text-lg font-semibold capitalize">{health?.status || t("status.unknown")}</span>
       </div>
 
-      <div className="grid grid-cols-5 gap-4">
+      {/* 5 张卡此前硬编码 grid-cols-5,窄屏(笔记本分屏、平板)直接横向溢出。 */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-4">
         <MetricCard icon={<Activity size={18} />} label={t("metrics.activeSessions")} value={health?.active_sessions ?? 0} />
         <MetricCard icon={<Radio size={18} />} label={t("metrics.channelsOnline")} value={onlineChannels} />
         <MetricCard icon={<Plug size={18} />} label={t("metrics.cliClients")} value={health?.ws_clients ?? 0} />
@@ -59,7 +85,7 @@ export function Overview() {
         <MetricCard icon={<Coins size={18} />} label={t("metrics.runningTasks")} value={statusCounts["running"] ?? 0} />
       </div>
 
-      <div className="grid grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <section>
           <h2 className="font-semibold mb-2">{t("kanbanSummary")}</h2>
           <div className="flex gap-2 flex-wrap">

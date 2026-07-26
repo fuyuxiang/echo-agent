@@ -1,6 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { DndContext, DragEndEvent, DragStartEvent, closestCenter, useDroppable, useDraggable } from "@dnd-kit/core";
+import {
+  DndContext,
+  DragEndEvent,
+  DragStartEvent,
+  closestCenter,
+  useDroppable,
+  useDraggable,
+  useSensor,
+  useSensors,
+  PointerSensor,
+  KeyboardSensor,
+} from "@dnd-kit/core";
 import {
   useKanbanStore,
   PRIMARY_COLUMNS,
@@ -11,6 +22,7 @@ import {
 } from "../stores/kanban";
 import { useWsSubscribe } from "../hooks/use-ws";
 import { toast } from "../stores/toast";
+import { TaskDetailDrawer } from "../components/TaskDetailDrawer";
 import i18n from "../i18n";
 import { Plus, X, RotateCcw, Check, Undo2, Play } from "lucide-react";
 
@@ -20,6 +32,14 @@ export function Kanban() {
   const [newTitle, setNewTitle] = useState("");
   const [showArchived, setShowArchived] = useState(false);
   const [draggingFrom, setDraggingFrom] = useState<string | null>(null);
+  const [detailId, setDetailId] = useState<string | null>(null);
+
+  // 键盘可拖拽:此前只配了默认(鼠标)传感器,键盘用户完全无法移动任务。
+  // PointerSensor 设 8px 激活距离,避免“点击查看详情”被误判成拖拽。
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(KeyboardSensor),
+  );
 
   useEffect(() => { fetchTasks(); }, [fetchTasks]);
 
@@ -43,6 +63,10 @@ export function Kanban() {
     [showArchived],
   );
 
+  // 抽屉里显示的是 store 中的实时记录:WS 推来状态变化时详情面板同步更新。
+  // 任务被删除(id 不在列表里)时抽屉自动关闭,不会留一个空壳。
+  const detailTask = detailId ? tasks.find((t) => t.id === detailId) ?? null : null;
+
   const handleDragStart = (event: DragStartEvent) => {
     const task = tasks.find((t) => t.id === event.active.id);
     setDraggingFrom(task ? task.status : null);
@@ -56,8 +80,20 @@ export function Kanban() {
     const taskId = active.id as string;
     const task = tasks.find((t) => t.id === taskId);
     if (!task || task.status === targetColumn) return;
-    // 非法流转直接忽略:不发请求、不弹错。合法性以前端镜像判定,后端仍会二次校验。
-    if (!canTransition(task.status, targetColumn)) return;
+    // 非法流转不发请求,但要解释原因:此前静默弹回原位,对不熟悉状态机的用户看起来
+    // 就是“拖拽坏了”。列高亮只在拖拽过程中可见,松手那一刻需要一条文字说明。
+    if (!canTransition(task.status, targetColumn)) {
+      const from = statusMeta(task.status);
+      const to = statusMeta(targetColumn);
+      toast.info(
+        i18n.t("kanban:toast.invalidTransition", {
+          from: from.label,
+          to: to.label,
+          hint: to.hint,
+        }),
+      );
+      return;
+    }
     const previousStatus = task.status;
     updateLocal(taskId, { status: targetColumn }); // 乐观更新
     transitionTask(taskId, targetColumn).catch(() => {
@@ -99,7 +135,7 @@ export function Kanban() {
         </label>
       </div>
 
-      <DndContext collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
         <div className="flex gap-3 flex-1 overflow-x-auto">
           {columns.map((col) => (
             <KanbanColumn
@@ -107,10 +143,13 @@ export function Kanban() {
               status={col}
               tasks={tasks.filter((t) => t.status === col)}
               draggingFrom={draggingFrom}
+              onOpenDetail={setDetailId}
             />
           ))}
         </div>
       </DndContext>
+
+      {detailTask && <TaskDetailDrawer task={detailTask} onClose={() => setDetailId(null)} />}
     </div>
   );
 }
@@ -119,10 +158,12 @@ function KanbanColumn({
   status,
   tasks,
   draggingFrom,
+  onOpenDetail,
 }: {
   status: string;
   tasks: TaskCard[];
   draggingFrom: string | null;
+  onOpenDetail: (id: string) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
   const { t } = useTranslation("kanban");
@@ -158,7 +199,7 @@ function KanbanColumn({
       <div className="flex-1 space-y-2 overflow-y-auto">
         {sorted.length === 0 && <div className="text-xs text-gray-400 py-2 text-center">{t("emptyColumn")}</div>}
         {sorted.map((task) => (
-          <KanbanCard key={task.id} task={task} />
+          <KanbanCard key={task.id} task={task} onOpenDetail={onOpenDetail} />
         ))}
       </div>
     </div>
@@ -202,7 +243,7 @@ function useCardActions(task: TaskCard) {
   };
 }
 
-function KanbanCard({ task }: { task: TaskCard }) {
+function KanbanCard({ task, onOpenDetail }: { task: TaskCard; onOpenDetail: (id: string) => void }) {
   const { t } = useTranslation("kanban");
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({ id: task.id });
   const actions = useCardActions(task);
@@ -232,8 +273,25 @@ function KanbanCard({ task }: { task: TaskCard }) {
       style={style}
       className={`group bg-white rounded-md border p-3 shadow-sm ${isDragging ? "opacity-50" : ""}`}
     >
-      {/* 拖拽把手区域:标题栏可拖,操作按钮不带 listeners 以免误触发拖拽。 */}
-      <div {...listeners} {...attributes} className="cursor-grab active:cursor-grabbing">
+      {/* 拖拽把手区域:标题栏可拖,操作按钮不带 listeners 以免误触发拖拽。
+          同一区域点击(未达 8px 拖拽阈值)打开详情抽屉——卡片上只能放两行截断文本,
+          description 与执行结果 result 需要一个完整的查看入口。 */}
+      <div
+        {...listeners}
+        {...attributes}
+        role="button"
+        tabIndex={0}
+        aria-label={t("detail.openAria", { title: task.title })}
+        onClick={() => onOpenDetail(task.id)}
+        onKeyDown={(e) => {
+          // Enter 打开详情;空格留给 dnd-kit 的键盘拖拽,不要抢。
+          if (e.key === "Enter") {
+            e.preventDefault();
+            onOpenDetail(task.id);
+          }
+        }}
+        className="cursor-grab active:cursor-grabbing text-left w-full"
+      >
         <div className="flex items-start justify-between gap-2">
           <div className="text-sm font-medium flex-1">{task.title}</div>
           <span className="text-[10px] text-gray-400 shrink-0 mt-0.5" title={t("priorityTitle")}>P{task.priority}</span>
@@ -255,27 +313,27 @@ function KanbanCard({ task }: { task: TaskCard }) {
       {/* 操作条:hover 显现,避免常态干扰。 */}
       <div className="flex gap-1 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
         {canStart && (
-          <button onClick={actions.start} className="p-1 hover:bg-blue-50 rounded text-blue-600" title={t("action.start")}>
+          <button onClick={actions.start} aria-label={t("action.start")} className="p-1 hover:bg-blue-50 rounded text-blue-600" title={t("action.start")}>
             <Play size={14} />
           </button>
         )}
         {inReview && (
           <>
-            <button onClick={actions.approve} className="p-1 hover:bg-green-50 rounded text-green-600" title={t("action.approve")}>
+            <button onClick={actions.approve} aria-label={t("action.approve")} className="p-1 hover:bg-green-50 rounded text-green-600" title={t("action.approve")}>
               <Check size={14} />
             </button>
-            <button onClick={actions.reject} className="p-1 hover:bg-gray-100 rounded text-gray-500" title={t("action.reject")}>
+            <button onClick={actions.reject} aria-label={t("action.reject")} className="p-1 hover:bg-gray-100 rounded text-gray-500" title={t("action.reject")}>
               <Undo2 size={14} />
             </button>
           </>
         )}
         {canRetry && (
-          <button onClick={actions.retry} className="p-1 hover:bg-blue-50 rounded text-blue-600" title={t("action.retry")}>
+          <button onClick={actions.retry} aria-label={t("action.retry")} className="p-1 hover:bg-blue-50 rounded text-blue-600" title={t("action.retry")}>
             <RotateCcw size={14} />
           </button>
         )}
         {canCancel && (
-          <button onClick={actions.cancel} className="p-1 hover:bg-red-50 rounded text-red-500" title={t("action.cancel")}>
+          <button onClick={actions.cancel} aria-label={t("action.cancel")} className="p-1 hover:bg-red-50 rounded text-red-500" title={t("action.cancel")}>
             <X size={14} />
           </button>
         )}

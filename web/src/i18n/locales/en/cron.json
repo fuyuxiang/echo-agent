@@ -21,5 +21,12 @@
   "deleteSuccess": "Deleted",
   "deleteFailed": "Delete failed",
   "createSuccess": "Created",
-  "createFailed": "Create failed"
+  "createFailed": "Create failed",
+  "pauseAria": "Pause cron job {{name}}",
+  "resumeAria": "Enable cron job {{name}}",
+  "pauseSuccess": "Paused",
+  "resumeSuccess": "Enabled",
+  "toggleFailed": "Could not change state",
+  "deleteConfirmTitle": "Delete cron job?",
+  "deleteConfirmMessage": "This deletes \"{{name}}\" and its run history, and cannot be undone. To stop it temporarily, click the status cell to pause instead."
 }

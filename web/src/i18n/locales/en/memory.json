@@ -1,7 +1,22 @@
 {
   "searchPlaceholder": "Semantic search (global)...",
+  "searchAria": "Run search",
   "searchFailed": "Search failed",
+  "searchResultCount": "Showing search results ({{count}} across all tiers)",
+  "clearSearch": "Clear search",
+  "tierDisabledHint": "Search spans all tiers — clear it to browse by tier",
+  "tier": {
+    "working": "Working",
+    "episodic": "Episodic",
+    "semantic": "Semantic",
+    "archival": "Archival"
+  },
+  "importance": "Importance",
+  "unknownTime": "Unknown time",
   "deleteSuccess": "Deleted",
   "deleteFailed": "Delete failed",
+  "deleteEntryAria": "Delete this memory entry",
+  "deleteConfirmTitle": "Delete memory entry?",
+  "deleteConfirmMessage": "This deletes the entry:\n{{content}}\n\nIt cannot be undone.",
   "empty": "No memory entries"
 }

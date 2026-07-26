@@ -10,5 +10,8 @@
   "rebuildTriggered": "已触发重建",
   "rebuildFailed": "重建失败",
   "deleteSuccess": "已删除",
-  "deleteFailed": "删除失败"
+  "deleteFailed": "删除失败",
+  "deleteConfirmTitle": "删除文档？",
+  "deleteConfirmMessage": "将删除「{{path}}」并重建整个知识库索引。此操作不可撤销。",
+  "deleteDocAria": "删除文档 {{path}}"
 }

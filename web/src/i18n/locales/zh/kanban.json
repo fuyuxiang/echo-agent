@@ -15,7 +15,23 @@
     "requeued": "已重新排队", "queued": "已排队,等待执行", "cancelled": "已取消任务",
     "approved": "已通过审核", "rejected": "已打回重排",
     "loadFailed": "任务加载失败：{{error}}", "transitionFailed": "流转失败：{{error}}",
-    "retryFailed": "重试失败：{{error}}", "createFailed": "创建失败：{{error}}"
+    "retryFailed": "重试失败：{{error}}", "createFailed": "创建失败：{{error}}",
+    "invalidTransition": "不能从「{{from}}」直接流转到「{{to}}」：{{hint}}"
+  },
+  "detail": {
+    "openAria": "查看任务详情：{{title}}",
+    "description": "任务描述",
+    "result": "执行结果",
+    "error": "错误信息",
+    "blockedReason": "阻塞原因",
+    "reviewSummary": "审核摘要",
+    "source": "来源",
+    "sessionId": "会话",
+    "retries": "重试",
+    "createdAt": "创建于",
+    "updatedAt": "更新于",
+    "id": "ID",
+    "staleWarning": "无法获取最新详情，以下为看板本地记录。"
   },
   "status": {
     "pending": { "label": "收件箱", "hint": "新建但尚未排队的任务" },

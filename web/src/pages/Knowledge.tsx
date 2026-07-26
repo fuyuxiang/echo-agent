@@ -2,6 +2,7 @@ import { useApi } from "../hooks/use-api";
 import { apiFetch, getToken } from "../lib/api";
 import { runMutation } from "../stores/toast";
 import { Loadable } from "../components/Loadable";
+import { useConfirm } from "../components/ConfirmDialog";
 import { Upload, Trash2, RefreshCw } from "lucide-react";
 import { useRef } from "react";
 import { useTranslation } from "react-i18next";
@@ -29,7 +30,8 @@ export function Knowledge() {
   const { data, loading, error, refetch } = useApi<{ documents: Document[] }>("/knowledge/documents");
   const { data: status, refetch: refetchStatus } = useApi<KnowledgeStatus>("/knowledge/status");
   const fileRef = useRef<HTMLInputElement>(null);
-  const { t, i18n } = useTranslation("knowledge");
+  const { t, i18n } = useTranslation(["knowledge", "common"]);
+  const confirm = useConfirm();
 
   // last_rebuild is the index file's mtime; null when never built. Guard the
   // parse the way Sessions does — an Invalid Date would make date-fns throw
@@ -71,6 +73,15 @@ export function Knowledge() {
   };
 
   const deleteDoc = async (path: string) => {
+    // Deleting a document also kicks off a full index rebuild server-side, so
+    // an accidental click costs more than the file. Say that in the prompt.
+    const confirmed = await confirm({
+      title: t("deleteConfirmTitle"),
+      message: t("deleteConfirmMessage", { path }),
+      confirmLabel: t("common:delete"),
+      destructive: true,
+    });
+    if (!confirmed) return;
     // Encode each segment separately: the backend lists nested docs as
     // "sub/doc.md" and routes the delete on a tail match, so the separators
     // must survive as real slashes. Encoding the whole path would send %2F,
@@ -118,7 +129,11 @@ export function Knowledge() {
                   <div className="text-sm font-medium">{doc.path}</div>
                   <div className="text-xs text-gray-400">{(doc.size / 1024).toFixed(1)} KB</div>
                 </div>
-                <button onClick={() => deleteDoc(doc.path)} className="text-red-400 hover:text-red-600">
+                <button
+                  onClick={() => deleteDoc(doc.path)}
+                  aria-label={t("deleteDocAria", { path: doc.path })}
+                  className="text-red-400 hover:text-red-600"
+                >
                   <Trash2 size={16} />
                 </button>
               </div>

@@ -15,7 +15,23 @@
     "requeued": "Re-queued", "queued": "Queued, awaiting execution", "cancelled": "Task cancelled",
     "approved": "Approved", "rejected": "Sent back to queue",
     "loadFailed": "Failed to load tasks: {{error}}", "transitionFailed": "Transition failed: {{error}}",
-    "retryFailed": "Retry failed: {{error}}", "createFailed": "Create failed: {{error}}"
+    "retryFailed": "Retry failed: {{error}}", "createFailed": "Create failed: {{error}}",
+    "invalidTransition": "Cannot move from \"{{from}}\" straight to \"{{to}}\": {{hint}}"
+  },
+  "detail": {
+    "openAria": "View task details: {{title}}",
+    "description": "Description",
+    "result": "Result",
+    "error": "Error",
+    "blockedReason": "Blocked reason",
+    "reviewSummary": "Review summary",
+    "source": "Source",
+    "sessionId": "Session",
+    "retries": "Retries",
+    "createdAt": "Created",
+    "updatedAt": "Updated",
+    "id": "ID",
+    "staleWarning": "Could not load the latest details; showing the board's local copy."
   },
   "status": {
     "pending": { "label": "Inbox", "hint": "Created but not yet queued" },

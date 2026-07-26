@@ -10,5 +10,8 @@
   "rebuildTriggered": "Rebuild triggered",
   "rebuildFailed": "Rebuild failed",
   "deleteSuccess": "Deleted",
-  "deleteFailed": "Delete failed"
+  "deleteFailed": "Delete failed",
+  "deleteConfirmTitle": "Delete document?",
+  "deleteConfirmMessage": "This deletes \"{{path}}\" and rebuilds the entire knowledge index. It cannot be undone.",
+  "deleteDocAria": "Delete document {{path}}"
 }

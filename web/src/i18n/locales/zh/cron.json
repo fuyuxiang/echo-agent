@@ -21,5 +21,12 @@
   "deleteSuccess": "已删除",
   "deleteFailed": "删除失败",
   "createSuccess": "已创建",
-  "createFailed": "创建失败"
+  "createFailed": "创建失败",
+  "pauseAria": "停用定时任务 {{name}}",
+  "resumeAria": "启用定时任务 {{name}}",
+  "pauseSuccess": "已停用",
+  "resumeSuccess": "已启用",
+  "toggleFailed": "切换状态失败",
+  "deleteConfirmTitle": "删除定时任务？",
+  "deleteConfirmMessage": "将删除「{{name}}」及其运行历史。此操作不可撤销；若只是想临时停止，点击状态列可直接停用。"
 }

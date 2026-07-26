@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route } from "react-router";
 import { Layout } from "./components/Layout";
 import { Toaster } from "./components/Toaster";
+import { ConfirmProvider } from "./components/ConfirmDialog";
 import { Login } from "./pages/Login";
 import { Overview } from "./pages/Overview";
 import { Kanban } from "./pages/Kanban";
@@ -17,23 +18,25 @@ import { Analytics } from "./pages/Analytics";
 export function App() {
   return (
     <BrowserRouter>
-      <Toaster />
-      <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route element={<Layout />}>
-          <Route index element={<Overview />} />
-          <Route path="sessions" element={<Sessions />} />
-          <Route path="memory" element={<Memory />} />
-          <Route path="skills" element={<Skills />} />
-          <Route path="knowledge" element={<Knowledge />} />
-          <Route path="channels" element={<Channels />} />
-          <Route path="cron" element={<Cron />} />
-          <Route path="kanban" element={<Kanban />} />
-          <Route path="logs" element={<Logs />} />
-          <Route path="config" element={<Config />} />
-          <Route path="analytics" element={<Analytics />} />
-        </Route>
-      </Routes>
+      <ConfirmProvider>
+        <Toaster />
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route element={<Layout />}>
+            <Route index element={<Overview />} />
+            <Route path="sessions" element={<Sessions />} />
+            <Route path="memory" element={<Memory />} />
+            <Route path="skills" element={<Skills />} />
+            <Route path="knowledge" element={<Knowledge />} />
+            <Route path="channels" element={<Channels />} />
+            <Route path="cron" element={<Cron />} />
+            <Route path="kanban" element={<Kanban />} />
+            <Route path="logs" element={<Logs />} />
+            <Route path="config" element={<Config />} />
+            <Route path="analytics" element={<Analytics />} />
+          </Route>
+        </Routes>
+      </ConfirmProvider>
     </BrowserRouter>
   );
 }
