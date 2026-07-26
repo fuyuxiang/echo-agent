@@ -1,8 +1,9 @@
 {
   "upload": "Upload document",
   "rebuild": "Rebuild index",
-  "status": "{{count}} indexed · Last rebuild: {{last}}",
+  "status": "{{count}} indexed · {{chunks}} chunks · Last rebuild: {{last}}",
   "never": "Never",
+  "stale": "Index is out of date, rebuild recommended",
   "empty": "No documents",
   "uploadSuccess": "Uploaded",
   "uploadFailed": "Upload failed",

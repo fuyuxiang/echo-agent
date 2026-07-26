@@ -36,6 +36,13 @@ class LogsAPI:
             logs = [entry for entry in logs if search.lower() in entry.get("message", "").lower()]
 
         total = len(logs)
+        # Newest first. The buffer is an append-ordered ring (oldest at index 0),
+        # so slicing it directly served the *oldest* window: once the deque hit
+        # its maxlen, page 1 showed records long since superseded and the newest
+        # entry was unreachable at any offset. Reversing before paging makes
+        # offset=0 the most recent page, which is what a log view means by
+        # "page 1" — and keeps offset paging walking backwards in time.
+        logs.reverse()
         logs = logs[offset:offset + limit]
 
         return web.json_response({"logs": logs, "total": total})

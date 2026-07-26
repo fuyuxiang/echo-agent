@@ -1,22 +1,46 @@
 import { useApi } from "../hooks/use-api";
-import { apiFetch } from "../lib/api";
+import { apiFetch, getToken } from "../lib/api";
 import { runMutation } from "../stores/toast";
 import { Loadable } from "../components/Loadable";
 import { Upload, Trash2, RefreshCw } from "lucide-react";
 import { useRef } from "react";
 import { useTranslation } from "react-i18next";
+import { formatDistanceToNow } from "date-fns";
+import { zhCN, enUS } from "date-fns/locale";
 
 interface Document {
   path: string;
   size: number;
-  indexed: boolean;
+  modified: number;
+}
+
+// Mirrors KnowledgeIndex.status(). The page previously declared
+// indexed_count/last_rebuild, neither of which the backend ever returned, so
+// the status line was pinned at "0 indexed · never" no matter how many
+// documents were in the index.
+interface KnowledgeStatus {
+  documents: number;
+  chunks: number;
+  stale: boolean;
+  last_rebuild: string | null;
 }
 
 export function Knowledge() {
   const { data, loading, error, refetch } = useApi<{ documents: Document[] }>("/knowledge/documents");
-  const { data: status } = useApi<{ indexed_count: number; last_rebuild: string }>("/knowledge/status");
+  const { data: status, refetch: refetchStatus } = useApi<KnowledgeStatus>("/knowledge/status");
   const fileRef = useRef<HTMLInputElement>(null);
-  const { t } = useTranslation("knowledge");
+  const { t, i18n } = useTranslation("knowledge");
+
+  // last_rebuild is the index file's mtime; null when never built. Guard the
+  // parse the way Sessions does — an Invalid Date would make date-fns throw
+  // and take the whole page down.
+  const dfLocale = i18n.resolvedLanguage === "en" ? enUS : zhCN;
+  const lastRebuild = (): string => {
+    if (!status?.last_rebuild) return t("never");
+    const date = new Date(status.last_rebuild);
+    if (Number.isNaN(date.getTime())) return t("never");
+    return formatDistanceToNow(date, { locale: dfLocale, addSuffix: true });
+  };
 
   const upload = async (file: File) => {
     const ok = await runMutation(async () => {
@@ -26,7 +50,7 @@ export function Knowledge() {
       // 并显式检查响应状态,否则失败会被静默忽略。
       const resp = await fetch("/api/v1/knowledge/upload", {
         method: "POST",
-        headers: { Authorization: `Bearer ${localStorage.getItem("echo_token")}` },
+        headers: { Authorization: `Bearer ${getToken()}` },
         body: form,
       });
       if (!resp.ok) {
@@ -34,22 +58,29 @@ export function Knowledge() {
         throw new Error(err.error || resp.statusText);
       }
     }, { success: t("uploadSuccess"), error: t("uploadFailed") });
-    if (ok) refetch();
+    // Every mutation here rebuilds the index server-side, so the status line
+    // (document/chunk counts, last rebuild) is stale unless it refetches too.
+    if (ok) { refetch(); refetchStatus(); }
   };
 
   const rebuild = async () => {
     const ok = await runMutation(() => apiFetch("/knowledge/rebuild", { method: "POST" }), {
       success: t("rebuildTriggered"), error: t("rebuildFailed"),
     });
-    if (ok) refetch();
+    if (ok) { refetch(); refetchStatus(); }
   };
 
   const deleteDoc = async (path: string) => {
+    // Encode each segment separately: the backend lists nested docs as
+    // "sub/doc.md" and routes the delete on a tail match, so the separators
+    // must survive as real slashes. Encoding the whole path would send %2F,
+    // which some proxies reject outright before it reaches the gateway.
+    const encoded = path.split("/").map(encodeURIComponent).join("/");
     const ok = await runMutation(
-      () => apiFetch(`/knowledge/documents/${encodeURIComponent(path)}`, { method: "DELETE" }),
+      () => apiFetch(`/knowledge/documents/${encoded}`, { method: "DELETE" }),
       { success: t("deleteSuccess"), error: t("deleteFailed") },
     );
-    if (ok) refetch();
+    if (ok) { refetch(); refetchStatus(); }
   };
 
   return (
@@ -62,7 +93,12 @@ export function Knowledge() {
           <RefreshCw size={16} /> {t("rebuild")}
         </button>
         <span className="text-sm text-gray-500">
-          {t("status", { count: status?.indexed_count ?? 0, last: status?.last_rebuild || t("never") })}
+          {t("status", {
+            count: status?.documents ?? 0,
+            chunks: status?.chunks ?? 0,
+            last: lastRebuild(),
+          })}
+          {status?.stale && <span className="ml-2 text-amber-600">{t("stale")}</span>}
         </span>
         <input ref={fileRef} type="file" className="hidden" onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])} />
       </div>

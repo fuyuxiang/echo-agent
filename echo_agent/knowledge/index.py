@@ -362,7 +362,19 @@ class KnowledgeIndex:
             "chunks": self.chunk_count,
             "allowed_extensions": sorted(self.allowed_extensions),
             "stale": self._is_stale(),
+            "last_rebuild": self._last_rebuild_iso(),
         }
+
+    def _last_rebuild_iso(self) -> str | None:
+        """When the index file was last written, as a local-time ISO string.
+
+        The index has no build timestamp of its own; ``_save`` rewrites the file
+        on every rebuild, so its mtime is exactly the last successful rebuild.
+        None means the index was never built.
+        """
+        if not self.index_path.exists():
+            return None
+        return datetime.fromtimestamp(self.index_path.stat().st_mtime).isoformat(timespec="seconds")
 
     def _ensure_loaded(self) -> None:
         if not self._loaded:

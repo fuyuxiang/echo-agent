@@ -1,7 +1,12 @@
 const API_BASE = "/api/v1";
 
-function getToken(): string {
-  return localStorage.getItem("echo_token") || "";
+export const TOKEN_STORAGE_KEY = "echo_token";
+
+/** Single read path for the stored token — callers that bypass apiFetch
+ *  (multipart upload, WS handshake) must use this instead of reaching into
+ *  localStorage with their own key string. */
+export function getToken(): string {
+  return localStorage.getItem(TOKEN_STORAGE_KEY) || "";
 }
 
 export async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {

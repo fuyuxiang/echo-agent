@@ -1,8 +1,9 @@
 {
   "upload": "上传文档",
   "rebuild": "重建索引",
-  "status": "已索引 {{count}} 篇 · 最后重建: {{last}}",
+  "status": "已索引 {{count}} 篇 · {{chunks}} 个片段 · 最后重建: {{last}}",
   "never": "从未",
+  "stale": "索引已过期，建议重建",
   "empty": "暂无文档",
   "uploadSuccess": "上传成功",
   "uploadFailed": "上传失败",
