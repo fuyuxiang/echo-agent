@@ -94,6 +94,8 @@ export function canTransition(from: string, to: string): boolean {
 interface KanbanState {
   tasks: TaskCard[];
   loading: boolean;
+  /** true 表示已成功拉取过一次;用于区分“首屏加载”与“刷新中”。 */
+  loaded: boolean;
   fetchTasks: () => Promise<void>;
   transitionTask: (id: string, to: string) => Promise<void>;
   retryTask: (id: string) => Promise<void>;
@@ -102,15 +104,48 @@ interface KanbanState {
   addLocal: (task: TaskCard) => void;
 }
 
-export const useKanbanStore = create<KanbanState>((set) => ({
+/**
+ * 用服务端快照合并本地列表,而不是整体替换。
+ *
+ * 请求在飞行期间,WS 可能已经把新任务/新状态写进 store(addLocal/updateLocal)。
+ * 直接 set({tasks: data.tasks}) 会把这些更新冲掉——窗口不大但真实存在,表现为
+ * “看板刷新后刚变的状态又跳回去了”。
+ *
+ * 合并规则以“请求发出那一刻的 id 集合”为分界:
+ * - 服务端记录一律为准(它是权威),覆盖本地同 id 的乐观状态;
+ * - 本地有、快照没有,且请求发出时**就已存在** → 服务端已删除,移除;
+ * - 本地有、快照没有,但请求发出后才出现 → WS 刚推来、拍快照时还不存在,保留。
+ *
+ * 少了最后这条分界,已删除的任务会永远留在看板上;少了它的反面,则会丢掉飞行期间
+ * 的新任务。两者都要靠这个时间点区分。
+ */
+function mergeSnapshot(
+  local: TaskCard[],
+  snapshot: TaskCard[],
+  idsAtRequestStart: Set<string>,
+): TaskCard[] {
+  const inSnapshot = new Set(snapshot.map((t) => t.id));
+  const arrivedDuringRequest = local.filter(
+    (t) => !inSnapshot.has(t.id) && !idsAtRequestStart.has(t.id),
+  );
+  return [...snapshot, ...arrivedDuringRequest];
+}
+
+export const useKanbanStore = create<KanbanState>((set, get) => ({
   tasks: [],
   loading: false,
+  loaded: false,
 
   fetchTasks: async () => {
+    // 快照发出前先记下当前 id 集合,作为“删除”与“新到”的分界(见 mergeSnapshot)。
+    const idsAtRequestStart = new Set(get().tasks.map((t) => t.id));
     set({ loading: true });
     try {
       const data = await apiFetch<{ tasks: TaskCard[] }>("/tasks?board_id=default");
-      set({ tasks: data.tasks });
+      set((s) => ({
+        tasks: mergeSnapshot(s.tasks, data.tasks ?? [], idsAtRequestStart),
+        loaded: true,
+      }));
     } catch (e) {
       toast.error(i18n.t("kanban:toast.loadFailed", { error: e instanceof Error ? e.message : String(e) }));
     } finally {

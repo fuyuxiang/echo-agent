@@ -1,7 +1,15 @@
 import { useState, useEffect, useCallback } from "react";
 import { apiFetch } from "../lib/api";
 
-export function useApi<T>(path: string, deps: unknown[] = []) {
+/**
+ * GET a path and expose the request as loading / error / data.
+ *
+ * Refetching is keyed on `path` alone: callers vary the query string (filters,
+ * pagination) and get a new request for free. There is deliberately no extra
+ * dependency array — spreading one into useEffect's deps made the array's
+ * length vary between renders, which React does not support.
+ */
+export function useApi<T>(path: string) {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -17,11 +25,9 @@ export function useApi<T>(path: string, deps: unknown[] = []) {
     } finally {
       setLoading(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path]);
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { refetch(); }, [refetch, ...deps]);
+  useEffect(() => { refetch(); }, [refetch]);
 
   return { data, loading, error, refetch };
 }

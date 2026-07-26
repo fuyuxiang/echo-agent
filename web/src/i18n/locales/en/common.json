@@ -7,5 +7,11 @@
   "online": "Online",
   "offline": "Offline",
   "enabled": "Enabled",
-  "disabled": "Disabled"
+  "disabled": "Disabled",
+  "retry": "Retry",
+  "cancel": "Cancel",
+  "confirm": "Confirm",
+  "close": "Close",
+  "renderErrorTitle": "This page failed to render",
+  "renderErrorHint": "The page hit unexpected data or an error. The rest of the dashboard still works — retry, or switch to another page."
 }

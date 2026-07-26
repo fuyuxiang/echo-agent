@@ -36,11 +36,13 @@ export function Overview() {
   const { data: memory } = useApi<{ total: number }>("/memory/stats");
 
   const statusCounts: Record<string, number> = {};
-  tasks?.tasks.forEach((t) => {
-    statusCounts[t.status] = (statusCounts[t.status] || 0) + 1;
+  // Guard the array too, not just the response: an error/partial payload that
+  // omits `tasks` would throw here and blank the page.
+  tasks?.tasks?.forEach((task) => {
+    statusCounts[task.status] = (statusCounts[task.status] || 0) + 1;
   });
 
-  const onlineChannels = channels?.channels.filter((c) => c.running).length ?? 0;
+  const onlineChannels = channels?.channels?.filter((c) => c.running).length ?? 0;
 
   return (
     <div className="space-y-6">
@@ -71,7 +73,7 @@ export function Overview() {
         <section>
           <h2 className="font-semibold mb-2">{t("channelStatus")}</h2>
           <div className="space-y-1">
-            {channels?.channels.map((ch) => (
+            {channels?.channels?.map((ch) => (
               <div key={ch.name} className="flex items-center gap-2 text-sm">
                 <span className={`w-2 h-2 rounded-full ${ch.running ? "bg-green-500" : "bg-gray-300"}`} />
                 <span>{ch.name}</span>

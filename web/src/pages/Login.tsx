@@ -2,7 +2,17 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
 import { useAuthStore } from "../stores/auth";
-import { apiFetch, TOKEN_STORAGE_KEY } from "../lib/api";
+import { apiFetch, TOKEN_STORAGE_KEY, RETURN_TO_STORAGE_KEY } from "../lib/api";
+
+/** Where to go after a successful login: back to whatever a 401 interrupted,
+ *  falling back to the overview. Only same-origin paths are honoured so a
+ *  poisoned sessionStorage value can't redirect off-site. */
+function consumeReturnTo(): string {
+  const raw = sessionStorage.getItem(RETURN_TO_STORAGE_KEY);
+  sessionStorage.removeItem(RETURN_TO_STORAGE_KEY);
+  if (!raw || !raw.startsWith("/") || raw.startsWith("//") || raw === "/login") return "/";
+  return raw;
+}
 
 export function Login() {
   const { t } = useTranslation("login");
@@ -26,7 +36,7 @@ export function Login() {
     setSubmitting(true);
     try {
       await apiFetch("/stats");
-      navigate("/", { replace: true });
+      navigate(consumeReturnTo(), { replace: true });
     } catch {
       if (prev !== null) {
         localStorage.setItem(TOKEN_STORAGE_KEY, prev);

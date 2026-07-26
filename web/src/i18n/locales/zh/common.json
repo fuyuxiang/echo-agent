@@ -7,5 +7,11 @@
   "online": "在线",
   "offline": "离线",
   "enabled": "已启用",
-  "disabled": "未启用"
+  "disabled": "未启用",
+  "retry": "重试",
+  "cancel": "取消",
+  "confirm": "确定",
+  "close": "关闭",
+  "renderErrorTitle": "页面渲染出错",
+  "renderErrorHint": "该页面遇到未预期的数据或异常，其余功能仍可正常使用。可以重试，或切换到其他页面。"
 }

@@ -16,12 +16,12 @@ import { Plus, X, RotateCcw, Check, Undo2, Play } from "lucide-react";
 
 export function Kanban() {
   const { t } = useTranslation("kanban");
-  const { tasks, loading, fetchTasks, transitionTask, createTask, updateLocal, addLocal } = useKanbanStore();
+  const { tasks, loading, loaded, fetchTasks, transitionTask, createTask, updateLocal, addLocal } = useKanbanStore();
   const [newTitle, setNewTitle] = useState("");
   const [showArchived, setShowArchived] = useState(false);
   const [draggingFrom, setDraggingFrom] = useState<string | null>(null);
 
-  useEffect(() => { fetchTasks(); }, []);
+  useEffect(() => { fetchTasks(); }, [fetchTasks]);
 
   // 实时同步:后端每次任务状态变更(create/transition/update)都会经 TaskManager
   // 通过 dashboard WS 广播,这里订阅 tasks 频道把变更并入本地——覆盖后台自动执行
@@ -73,7 +73,9 @@ export function Kanban() {
     if (ok) setNewTitle("");
   };
 
-  if (loading) return <div className="p-8 text-center text-gray-500">{t("loading")}</div>;
+  // 只有首屏(还没成功拉取过)才整页显示加载态。此前 loading 一置位就 return,
+  // 会卸载整个 DndContext——任何一次 refetch 都让看板闪一下,拖拽状态也随之丢失。
+  if (!loaded && loading) return <div className="p-8 text-center text-gray-500">{t("loading")}</div>;
 
   return (
     <div className="h-full flex flex-col">
