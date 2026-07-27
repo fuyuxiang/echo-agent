@@ -52,6 +52,29 @@ def resolve_effective_workspace(
     return (base / path).resolve()
 
 
+def load_config_and_workspace(
+    config_path: str | None, workspace: str | None
+) -> tuple["Config | Any", Path]:
+    """Load the config and resolve its effective workspace in one call.
+
+    The shared entrypoint for subcommands (``plugin``/``checkpoint``/
+    ``migrate``/``cost``) that need both: it pins config-file discovery to
+    ``search_dir=workspace`` and then applies :func:`resolve_effective_workspace`,
+    so every command lands on the exact same directory ``app.bootstrap`` would
+    for a given ``workspace: ./data``. Previously each command reimplemented
+    this (or imported another command's private helper) and they drifted.
+    """
+    from echo_agent.config.loader import load_config, resolve_config_file
+
+    config_file = resolve_config_file(config_path, search_dir=workspace)
+    overrides = {"workspace": workspace} if workspace else None
+    config = load_config(config_path=config_file, overrides=overrides)
+    ws = resolve_effective_workspace(
+        config, str(config_file) if config_file else None, workspace
+    )
+    return config, ws
+
+
 def endpoint_path(workspace: Path) -> Path:
     """Path of the gateway runtime-endpoint file inside ``workspace``."""
     return workspace / _ENDPOINT_DIR / _ENDPOINT_FILE

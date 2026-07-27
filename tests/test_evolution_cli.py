@@ -321,9 +321,9 @@ async def test_show_candidate_not_found(capsys):
     engine = _make_engine(candidate_lookup={})
     ctx = _make_ctx(engine)
     with _patch_bootstrap(ctx):
-        with pytest.raises(SystemExit) as exc:
-            await evolution_cmd._show_candidate("missing", None, None)
-    assert exc.value.code == 1
+        # 退出码由 helper 返回,sys.exit 归 __main__ 统一负责。
+        rc = await evolution_cmd._show_candidate("missing", None, None)
+    assert rc == 1
     assert "not found" in capsys.readouterr().out
 
 
@@ -359,9 +359,8 @@ async def test_promote_unknown_candidate_exits(capsys):
     engine = _make_engine(candidate_lookup={})
     ctx = _make_ctx(engine)
     with _patch_bootstrap(ctx):
-        with pytest.raises(SystemExit) as exc:
-            await evolution_cmd._promote_candidate("missing", None, None)
-    assert exc.value.code == 1
+        rc = await evolution_cmd._promote_candidate("missing", None, None)
+    assert rc == 1
     assert "not found" in capsys.readouterr().out
 
 
@@ -371,9 +370,8 @@ async def test_promote_rejects_candidate_in_terminal_status(capsys):
     engine = _make_engine(candidate_lookup={"cand_already": cand})
     ctx = _make_ctx(engine)
     with _patch_bootstrap(ctx):
-        with pytest.raises(SystemExit) as exc:
-            await evolution_cmd._promote_candidate("cand_already", None, None)
-    assert exc.value.code == 1
+        rc = await evolution_cmd._promote_candidate("cand_already", None, None)
+    assert rc == 1
     out = capsys.readouterr().out
     assert "promoted" in out
     assert "only pending" in out
@@ -431,9 +429,8 @@ async def test_rollback_failure_exits(capsys):
     engine = _make_engine(rollback_result=(False, "no promoted candidate"))
     ctx = _make_ctx(engine)
     with _patch_bootstrap(ctx):
-        with pytest.raises(SystemExit) as exc:
-            await evolution_cmd._rollback("missing", None, None)
-    assert exc.value.code == 1
+        rc = await evolution_cmd._rollback("missing", None, None)
+    assert rc == 1
     assert "no promoted candidate" in capsys.readouterr().out
 
 

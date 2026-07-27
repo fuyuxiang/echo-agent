@@ -77,11 +77,11 @@ def test_show_invalid_sha_prints_friendly_error(tmp_path: Path, capsys):
     orig = mod._resolve_config_and_ws
     mod._resolve_config_and_ws = lambda cp, w: (_fake_config(store_path), ws)
     try:
-        with pytest.raises(SystemExit) as exc:
-            run_checkpoint_command("show", sha="deadbeef", config_path=None, workspace=str(ws))
+        # 退出码由 run_checkpoint_command 返回,sys.exit 归 __main__ 统一负责。
+        rc = run_checkpoint_command("show", sha="deadbeef", config_path=None, workspace=str(ws))
     finally:
         mod._resolve_config_and_ws = orig
-    assert exc.value.code == 1
+    assert rc == 1
     out = capsys.readouterr().out
     assert "错误:" in out
 
@@ -95,12 +95,11 @@ def test_restore_invalid_sha_prints_friendly_error(tmp_path: Path, capsys):
     orig = mod._resolve_config_and_ws
     mod._resolve_config_and_ws = lambda cp, w: (_fake_config(store_path), ws)
     try:
-        with pytest.raises(SystemExit) as exc:
-            run_checkpoint_command(
-                "restore", sha="deadbeef", config_path=None, workspace=str(ws), yes=True
-            )
+        rc = run_checkpoint_command(
+            "restore", sha="deadbeef", config_path=None, workspace=str(ws), yes=True
+        )
     finally:
         mod._resolve_config_and_ws = orig
-    assert exc.value.code == 1
+    assert rc == 1
     out = capsys.readouterr().out
     assert "错误:" in out

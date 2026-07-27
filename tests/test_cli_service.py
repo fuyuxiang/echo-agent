@@ -153,9 +153,8 @@ def test_systemd_available_false_without_systemctl():
 @pytest.mark.parametrize("action", ["stop", "restart", "uninstall"])
 def test_refuses_lifecycle_from_inside_gateway(action, monkeypatch, capsys):
     monkeypatch.setenv(base.GATEWAY_ENV_FLAG, "1")
-    with pytest.raises(SystemExit) as exc:
-        service.run_service_action(action)
-    assert exc.value.code == 1
+    # 退出码由 run_service_action 返回,sys.exit 归 __main__ 统一负责。
+    assert service.run_service_action(action) == 1
     assert "inside the gateway" in capsys.readouterr().err
 
 
@@ -227,9 +226,7 @@ def test_resolve_install_paths_freezes_config(tmp_path, monkeypatch):
 def test_run_service_action_no_backend_exits_with_hints(monkeypatch, capsys):
     monkeypatch.delenv(base.GATEWAY_ENV_FLAG, raising=False)
     with patch(f"{_PKG}.detect_backend", return_value=None):
-        with pytest.raises(SystemExit) as exc:
-            service.run_service_action("install")
-    assert exc.value.code == 1
+        assert service.run_service_action("install") == 1
     out = capsys.readouterr().out
     assert "tmux" in out and "nohup" in out
 

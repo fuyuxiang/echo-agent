@@ -70,7 +70,7 @@ def test_show_cost_no_db_degrades(tmp_path, capsys):
     )
     with patch(f"{_T}.resolve_config_file", return_value=None), \
          patch(f"{_T}.load_config", return_value=cfg), \
-         patch(f"{_T}._effective_workspace", return_value=tmp_path):
+         patch(f"{_T}.resolve_effective_workspace", return_value=tmp_path):
         # No db file present -> renders missing-table warning, no crash.
         cost_mod.show_cost(workspace=str(tmp_path))
     assert "无成本归因表" in capsys.readouterr().out

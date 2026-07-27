@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import sys
+import json
 from pathlib import Path
 from typing import Any
 
+from echo_agent.cli.colors import Colors, color, set_color_override
 
 
 def run_plugin_command(
@@ -13,31 +14,57 @@ def run_plugin_command(
     name: str = "",
     config_path: str | None = None,
     workspace: str | None = None,
-) -> None:
-    """Handle plugin CLI subcommands."""
+    as_json: bool = False,
+) -> int:
+    """Handle plugin CLI subcommands and return a process exit code.
+
+    Returns instead of calling ``sys.exit`` so ``__main__`` owns the single
+    exit point for every subcommand. ``as_json`` switches every action to a
+    machine-readable document with ANSI forced off.
+    """
+    if as_json:
+        set_color_override(False)
+    try:
+        return _run(action, name, config_path, workspace, as_json)
+    finally:
+        if as_json:
+            set_color_override(None)
+
+
+def _run(
+    action: str, name: str, config_path: str | None, workspace: str | None, as_json: bool
+) -> int:
     if action == "list":
-        _list_plugins(config_path, workspace)
-    elif action == "info":
+        return _list_plugins(config_path, workspace, as_json)
+    if action in ("info", "enable", "disable"):
         if not name:
-            print("Usage: echo-agent plugin info <name>")
-            sys.exit(1)
-        _show_plugin_info(name, config_path, workspace)
-    elif action == "enable":
-        if not name:
-            print("Usage: echo-agent plugin enable <name>")
-            sys.exit(1)
-        _toggle_plugin(name, enable=True, config_path=config_path, workspace=workspace)
-    elif action == "disable":
-        if not name:
-            print("Usage: echo-agent plugin disable <name>")
-            sys.exit(1)
-        _toggle_plugin(name, enable=False, config_path=config_path, workspace=workspace)
-    elif action == "check":
-        sys.exit(_check_plugins(config_path, workspace))
+            return _usage_error(f"Usage: echo-agent plugin {action} <name>", as_json)
+        if action == "info":
+            return _show_plugin_info(name, config_path, workspace, as_json)
+        return _toggle_plugin(
+            name, enable=(action == "enable"), config_path=config_path,
+            workspace=workspace, as_json=as_json,
+        )
+    if action == "check":
+        return _check_plugins(config_path, workspace, as_json)
+    return _usage_error(
+        f"Unknown plugin action: {action}", as_json,
+        hint="Available: list, info, enable, disable, check",
+    )
+
+
+def _usage_error(message: str, as_json: bool, hint: str = "") -> int:
+    """Report a usage problem in the caller's requested format; always rc=1."""
+    if as_json:
+        payload: dict[str, Any] = {"ok": False, "error": message}
+        if hint:
+            payload["hint"] = hint
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
-        print(f"Unknown plugin action: {action}")
-        print("Available: list, info, enable, disable, check")
-        sys.exit(1)
+        print(message)
+        if hint:
+            print(hint)
+    return 1
 
 
 def _get_config_and_workspace(
@@ -45,82 +72,132 @@ def _get_config_and_workspace(
 ) -> tuple[Any, Path]:
     """Load config and resolve workspace via the one authoritative rule.
 
-    Uses :func:`resolve_effective_workspace` so ``plugin``/``checkpoint``/
-    ``migrate`` land on the exact same directory as ``app.bootstrap`` for a
-    given ``workspace: ./data`` — previously this resolved against the shell cwd
-    and drifted from bootstrap's config-file-relative rule."""
-    from echo_agent.cli.workspace import resolve_effective_workspace
-    from echo_agent.config.loader import load_config, resolve_config_file
+    Thin alias over :func:`echo_agent.cli.workspace.load_config_and_workspace`,
+    kept because this name is patched in tests and referenced across the plugin
+    actions."""
+    from echo_agent.cli.workspace import load_config_and_workspace
 
-    config_file = resolve_config_file(config_path, search_dir=workspace)
-    overrides = {"workspace": workspace} if workspace else None
-    config = load_config(config_path=config_file, overrides=overrides)
-
-    ws = resolve_effective_workspace(
-        config, str(config_file) if config_file else None, workspace
-    )
-    return config, ws
+    return load_config_and_workspace(config_path, workspace)
 
 
-def _list_plugins(config_path: str | None, workspace: str | None) -> None:
+def _plugin_status(name: str, deny_set: set[str], allow_set: set[str]) -> str:
+    if name in deny_set:
+        return "disabled"
+    if allow_set and name not in allow_set:
+        return "filtered"
+    return "available"
+
+
+def _list_plugins(
+    config_path: str | None, workspace: str | None, as_json: bool = False
+) -> int:
     """List all discovered plugins and their status."""
     config, ws = _get_config_and_workspace(config_path, workspace)
 
     from echo_agent.plugins.loader import discover_all
 
     records = discover_all(workspace=ws, extra_dirs=config.plugins.extra_dirs)
+    deny_set = set(config.plugins.deny)
+    allow_set = set(config.plugins.allow)
+    search_locations = [
+        "pip entry_points: echo_agent.plugins group",
+        "User dir: ~/.echo-agent/plugins/",
+        f"Project dir: {ws}/plugins/",
+    ]
+
+    if as_json:
+        print(json.dumps({
+            "ok": True,
+            "count": len(records),
+            "search_locations": search_locations,
+            "plugins": [
+                {
+                    "name": r.manifest.name,
+                    "version": r.manifest.version,
+                    "description": r.manifest.description or None,
+                    "status": _plugin_status(r.manifest.name, deny_set, allow_set),
+                    "source": r.source,
+                    "path": str(r.path) if r.path else None,
+                }
+                for r in records
+            ],
+        }, ensure_ascii=False, indent=2))
+        return 0
 
     if not records:
         print("No plugins discovered.")
         print("\nSearch locations:")
-        print("  pip entry_points: echo_agent.plugins group")
-        print("  User dir: ~/.echo-agent/plugins/")
-        print(f"  Project dir: {ws}/plugins/")
-        return
+        for line in search_locations:
+            print(f"  {line}")
+        return 0
 
-    deny_set = set(config.plugins.deny)
-    allow_set = set(config.plugins.allow)
+    # Status markers go through ``color()`` so NO_COLOR / non-TTY / --json all
+    # strip the escapes instead of corrupting captured output.
+    markers = {
+        "available": color("[available]", Colors.GREEN),
+        "disabled": color("[disabled] ", Colors.RED),
+        "filtered": color("[filtered]", Colors.YELLOW),
+    }
 
     print(f"Plugins ({len(records)} discovered):\n")
     for record in records:
         name = record.manifest.name
         version = record.manifest.version
         desc = record.manifest.description or "(no description)"
+        status = _plugin_status(name, deny_set, allow_set)
 
-        if name in deny_set:
-            status = "disabled"
-        elif allow_set and name not in allow_set:
-            status = "filtered"
-        else:
-            status = "available"
-
-        status_marker = {
-            "available": "\033[32m[available]\033[0m",
-            "disabled": "\033[31m[disabled] \033[0m",
-            "filtered": "\033[33m[filtered]\033[0m",
-        }.get(status, f"[{status}]")
-
-        print(f"  {status_marker}  {name:<30} v{version:<8} {desc}")
+        print(f"  {markers[status]}  {name:<30} v{version:<8} {desc}")
         print(f"             source: {record.source}", end="")
         if record.path:
             print(f"  path: {record.path}", end="")
         print()
+    return 0
 
 
-def _show_plugin_info(name: str, config_path: str | None, workspace: str | None) -> None:
+def _show_plugin_info(
+    name: str, config_path: str | None, workspace: str | None, as_json: bool = False
+) -> int:
     """Show detailed info about a specific plugin."""
     config, ws = _get_config_and_workspace(config_path, workspace)
 
     from echo_agent.plugins.loader import discover_all
+    from echo_agent.plugins.manifest import check_required_env
 
     records = discover_all(workspace=ws, extra_dirs=config.plugins.extra_dirs)
     record = next((r for r in records if r.manifest.name == name), None)
 
     if record is None:
-        print(f"Plugin '{name}' not found.")
-        sys.exit(1)
+        return _usage_error(f"Plugin '{name}' not found.", as_json)
 
     m = record.manifest
+    missing = check_required_env(m)
+
+    if as_json:
+        print(json.dumps({
+            "ok": True,
+            "plugin": {
+                "name": m.name,
+                "version": m.version,
+                "description": m.description,
+                "author": m.author,
+                "kind": m.kind,
+                "source": record.source,
+                "path": str(record.path) if record.path else None,
+                "requires_env": list(m.requires_env),
+                "missing_env": list(missing),
+                "provides": {
+                    "tools": list(m.provides.tools),
+                    "hooks": list(m.provides.hooks),
+                },
+                "depends_on": list(m.depends_on),
+                "config_key": (f"plugins.config.{m.config_key}" if m.config_key else None),
+                "status": _plugin_status(
+                    m.name, set(config.plugins.deny), set(config.plugins.allow)
+                ),
+            },
+        }, ensure_ascii=False, indent=2))
+        return 0
+
     print(f"Plugin: {m.name}")
     print(f"  Version:     {m.version}")
     print(f"  Description: {m.description}")
@@ -140,15 +217,16 @@ def _show_plugin_info(name: str, config_path: str | None, workspace: str | None)
     if m.config_key:
         print(f"  Config key: plugins.config.{m.config_key}")
 
-    from echo_agent.plugins.manifest import check_required_env
-    missing = check_required_env(m)
     if missing:
         print(f"\n  WARNING: Missing env vars: {', '.join(missing)}")
+    return 0
+# __APPEND_MARKER__
 
 
 def _toggle_plugin(
-    name: str, *, enable: bool, config_path: str | None, workspace: str | None = None
-) -> None:
+    name: str, *, enable: bool, config_path: str | None,
+    workspace: str | None = None, as_json: bool = False,
+) -> int:
     """Add/remove a plugin from the deny list in config.
 
     workspace 参与配置文件定位(search_dir),避免不带 -c 时误写 ~/.echo-agent
@@ -160,8 +238,9 @@ def _toggle_plugin(
 
     config_file = resolve_config_file(config_path, search_dir=workspace)
     if config_file is None or not config_file.exists():
-        print("No config file found. Create echo-agent.yaml first.")
-        sys.exit(1)
+        return _usage_error(
+            "No config file found. Create echo-agent.yaml first.", as_json
+        )
 
     content = config_file.read_text(encoding="utf-8")
     data = yaml.safe_load(content) or {}
@@ -182,19 +261,36 @@ def _toggle_plugin(
             changed = True
         if changed:
             config_file.write_text(yaml.dump(data, default_flow_style=False, allow_unicode=True), encoding="utf-8")
-            print(f"Plugin '{name}' enabled.")
+            message = f"Plugin '{name}' enabled."
         else:
-            print(f"Plugin '{name}' is already enabled.")
+            message = f"Plugin '{name}' is already enabled."
     else:
-        if name not in deny_list:
+        changed = name not in deny_list
+        if changed:
             deny_list.append(name)
             config_file.write_text(yaml.dump(data, default_flow_style=False, allow_unicode=True), encoding="utf-8")
-            print(f"Plugin '{name}' disabled (added to deny list).")
+            message = f"Plugin '{name}' disabled (added to deny list)."
         else:
-            print(f"Plugin '{name}' is already disabled.")
+            message = f"Plugin '{name}' is already disabled."
+
+    if as_json:
+        print(json.dumps({
+            "ok": True,
+            "plugin": name,
+            "enabled": enable,
+            "changed": changed,
+            "config_file": str(config_file),
+            "message": message,
+        }, ensure_ascii=False, indent=2))
+    else:
+        print(message)
+    return 0
+# __APPEND_MARKER2__
 
 
-def _check_plugins(config_path: str | None, workspace: str | None) -> int:
+def _check_plugins(
+    config_path: str | None, workspace: str | None, as_json: bool = False
+) -> int:
     """Dry-run: verify all plugins can be loaded.
 
     返回退出码:全部 OK 返回 0,存在加载失败/缺依赖返回 1,便于 CI 门禁。"""
@@ -206,7 +302,9 @@ def _check_plugins(config_path: str | None, workspace: str | None) -> int:
     records = discover_all(workspace=ws, extra_dirs=config.plugins.extra_dirs)
     records = topological_sort(records)
 
-    print(f"Checking {len(records)} plugin(s)...\n")
+    if not as_json:
+        print(f"Checking {len(records)} plugin(s)...\n")
+    results: list[dict[str, Any]] = []
     ok_count = 0
     fail_count = 0
 
@@ -214,16 +312,32 @@ def _check_plugins(config_path: str | None, workspace: str | None) -> int:
         name = record.manifest.name
         missing = check_required_env(record.manifest)
         if missing:
-            print(f"  SKIP  {name} — missing env: {', '.join(missing)}")
+            results.append({"name": name, "result": "skip",
+                            "detail": f"missing env: {', '.join(missing)}"})
+            if not as_json:
+                print(f"  SKIP  {name} — missing env: {', '.join(missing)}")
             fail_count += 1
             continue
         try:
             load_plugin_module(record)
-            print(f"  OK    {name}")
+            results.append({"name": name, "result": "ok", "detail": None})
+            if not as_json:
+                print(f"  OK    {name}")
             ok_count += 1
         except Exception as e:
-            print(f"  FAIL  {name} — {e}")
+            results.append({"name": name, "result": "fail", "detail": str(e)})
+            if not as_json:
+                print(f"  FAIL  {name} — {e}")
             fail_count += 1
 
-    print(f"\nResult: {ok_count} OK, {fail_count} failed/skipped")
+    if as_json:
+        print(json.dumps({
+            "ok": fail_count == 0,
+            "checked": len(records),
+            "ok_count": ok_count,
+            "fail_count": fail_count,
+            "plugins": results,
+        }, ensure_ascii=False, indent=2))
+    else:
+        print(f"\nResult: {ok_count} OK, {fail_count} failed/skipped")
     return 1 if fail_count else 0

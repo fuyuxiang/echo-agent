@@ -42,42 +42,23 @@ def _provider_credential_status(provider: ProviderConfig) -> tuple[str, str]:
     return "API key missing", Colors.YELLOW
 
 
-def _effective_workspace(raw_workspace: str, config_file: Path | None, workspace_override: str | None = None) -> Path:
-    """Fallback workspace resolver used when the shared helper is unavailable.
-
-    Prefers ``echo_agent.cli.workspace.resolve_effective_workspace`` (owned by a
-    teammate); this local copy keeps the behaviour identical if that import
-    fails so status never hard-depends on the in-progress module.
-    """
-    workspace = Path(workspace_override or raw_workspace).expanduser()
-    if workspace.is_absolute():
-        return workspace.resolve()
-    base = Path.cwd() if workspace_override or not config_file else config_file.parent
-    return (base / workspace).resolve()
-
-
 def _resolve_workspace(config: Any, config_file: Path | None, override: str | None) -> Path:
-    """Resolve the effective workspace, preferring the shared helper."""
-    try:
-        from echo_agent.cli.workspace import resolve_effective_workspace
-    except ImportError:
-        return _effective_workspace(config.workspace, config_file, override)
-    try:
-        return Path(resolve_effective_workspace(config, config_file, override))
-    except Exception:  # noqa: BLE001 - never let a helper glitch break status
-        return _effective_workspace(config.workspace, config_file, override)
+    """Resolve the effective workspace via the one authoritative rule."""
+    from echo_agent.cli.workspace import resolve_effective_workspace
+
+    return resolve_effective_workspace(
+        config, str(config_file) if config_file else None, override
+    )
 
 
 def _read_runtime_endpoint(workspace: Path) -> dict | None:
     """Read the recorded gateway endpoint (pid/port/host) for *workspace*.
 
-    Degrades to ``None`` when the shared helper is missing or unreadable — a
+    Degrades to ``None`` when nothing is recorded or the file is unreadable — a
     fresh/stopped workspace simply has no endpoint recorded.
     """
-    try:
-        from echo_agent.cli.workspace import read_runtime_endpoint
-    except ImportError:
-        return None
+    from echo_agent.cli.workspace import read_runtime_endpoint
+
     try:
         result = read_runtime_endpoint(workspace)
     except Exception:  # noqa: BLE001 - endpoint file may be absent/corrupt
@@ -100,16 +81,16 @@ def _tcp_listening(host: str, port: int, timeout: float = 0.5) -> bool:
         return False
 
 
-def _service_state(workspace: str | None, config: str | None) -> dict | None:
+def _service_state() -> dict | None:
     """Best-effort background-service state via the service module.
 
     Returns {"installed": bool, "running": bool} or None when the platform has
     no supported service manager or the module can't be queried. Never raises.
+    Scope is always user-level: that is what ``gateway install`` writes by
+    default, and the unit itself carries its own workspace/config.
     """
-    try:
-        from echo_agent.cli.service import detect_backend
-    except ImportError:
-        return None
+    from echo_agent.cli.service import detect_backend
+
     try:
         backend = detect_backend(system=False)
         if backend is None:
@@ -122,33 +103,19 @@ def _service_state(workspace: str | None, config: str | None) -> dict | None:
         return None
 
 
-def _health_probes(config: Any, workspace: Path) -> list[dict] | None:
-    """Run shared health probes if the (teammate-owned) module is available.
+def _health_probes(config: Any) -> list[dict] | None:
+    """Run the shared health probes (the same ones ``setup doctor`` renders).
 
-    Each probe is a dict with name/status/detail. Returns None when the module
-    isn't importable yet, so status falls back to its own simpler checks.
+    Each probe is a dict with name/status/detail. Returns None when probing
+    fails outright, so status still renders its own simpler checks — health is
+    advisory and must never break the status report.
     """
+    from echo_agent.cli.health import run_health_checks
+
     try:
-        from echo_agent.cli import health as health_mod
-    except ImportError:
+        return run_health_checks(config)
+    except Exception:  # noqa: BLE001 - health is advisory
         return None
-    # Probe entry point name isn't fixed by the contract; try the common ones.
-    for fn_name in ("run_health_checks", "probe", "check_all", "run_probes"):
-        fn = getattr(health_mod, fn_name, None)
-        if not callable(fn):
-            continue
-        # Try the config-first shapes before workspace-only, so the probe gets
-        # the real config rather than a Path masquerading as one.
-        for args in ((config,), (config, workspace), (), (workspace,)):
-            try:
-                result = fn(*args)
-            except TypeError:
-                continue
-            except Exception:  # noqa: BLE001 - health is advisory
-                return None
-            if isinstance(result, list):
-                return result
-    return None
 
 
 def _enabled_channels(config: Any) -> list[str]:
@@ -212,11 +179,8 @@ def _gather_status(config_path: str | Path | None, workspace: str | Path | None)
     probe_port = running_port or gw_port
     listening = _tcp_listening(gw_host, probe_port) if probe_port else False
 
-    service = _service_state(
-        str(workspace) if workspace else None,
-        str(config_file) if config_file_exists else None,
-    )
-    health = _health_probes(config, effective_workspace)
+    service = _service_state()
+    health = _health_probes(config)
 
     return {
         "config_file": str(config_file) if config_file else None,

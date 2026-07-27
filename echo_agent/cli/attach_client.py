@@ -185,66 +185,6 @@ async def fetch_last_assistant_reply(
     return ""
 
 
-class OutboundRenderer:
-    """Renders gateway outbound payloads to the terminal, mirroring the local
-    CLIChannel stream/final de-dup logic (see channels/cli.py:_send_stream).
-
-    Reads the real keys emitted by gateway/server.py:_build_outbound_payload:
-    streaming flag lives in metadata._token_stream, the stream group id in
-    metadata._inbound_event_id, and is_final is a top-level bool (or
-    message_kind == "final")."""
-
-    def __init__(self) -> None:
-        self._stream_printed: dict[str, str] = {}
-        self._max_entries = 32
-
-    def render(self, payload: dict) -> None:
-        text = payload.get("text") or ""
-        meta = payload.get("metadata") or {}
-        streaming = bool(meta.get("_token_stream"))
-        if not streaming:
-            if text:
-                print(f"\n{text}\n")
-            return
-
-        eid = str(meta.get("_inbound_event_id", ""))
-        is_final = payload.get("is_final", True) or payload.get("message_kind") == "final"
-        if not is_final:
-            if meta.get("_stream_reset"):
-                # The server retracted the draft it had streamed. stdout cannot
-                # unprint, so the text stays on screen — but the bookkeeping must
-                # forget it, or the final frame would be diffed against a draft
-                # that is no longer a prefix of the answer and we'd reprint the
-                # whole reply under "完整回复". Mark the retraction inline so the
-                # already-printed draft is not mistaken for part of the answer.
-                if eid in self._stream_printed:
-                    print("\n[草稿已撤回]\n", flush=True)
-                    self._stream_printed[eid] = ""
-                return
-            if eid not in self._stream_printed:
-                print()  # open the reply block
-                self._stream_printed[eid] = ""
-                while len(self._stream_printed) > self._max_entries:
-                    self._stream_printed.pop(next(iter(self._stream_printed)))
-            print(text, end="", flush=True)
-            self._stream_printed[eid] += text
-            return
-
-        printed = self._stream_printed.pop(eid, "")
-        if not printed:
-            if text:
-                print(f"\n{text}\n")
-            return
-        if text.startswith(printed):
-            remainder = text[len(printed):]
-            if remainder:
-                print(remainder, end="", flush=True)
-            print("\n")
-        else:
-            # Final text diverged from the streamed chunks — reprint cleanly.
-            print(f"\n--- 完整回复 ---\n{text}\n")
-
-
 async def run_client(
     *, host: str, port: int, ws_path: str, user_id: str, token: str,
     save_dir=None, api_prefix: str = "/api/v1"

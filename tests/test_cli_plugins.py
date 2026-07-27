@@ -10,7 +10,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import pytest
 import yaml
 
 from echo_agent.cli import plugins_cmd
@@ -45,18 +44,17 @@ def test_dispatch_list_calls_list():
 
 
 def test_dispatch_check_calls_check():
-    # check 现在把 _check_plugins 的退出码经 sys.exit 透出,0 表示全部通过。
+    # check 现在把 _check_plugins 的退出码原样返回,0 表示全部通过;
+    # sys.exit 由 __main__ 统一负责。
     with patch(f"{_T}._check_plugins", return_value=0) as fn:
-        with pytest.raises(SystemExit) as exc:
-            plugins_cmd.run_plugin_command("check")
+        rc = plugins_cmd.run_plugin_command("check")
     fn.assert_called_once()
-    assert exc.value.code == 0
+    assert rc == 0
 
 
 def test_dispatch_info_requires_name(capsys):
-    with pytest.raises(SystemExit) as exc:
-        plugins_cmd.run_plugin_command("info", name="")
-    assert exc.value.code == 1
+    rc = plugins_cmd.run_plugin_command("info", name="")
+    assert rc == 1
     assert "Usage" in capsys.readouterr().out
 
 
@@ -67,8 +65,7 @@ def test_dispatch_info_with_name():
 
 
 def test_dispatch_enable_requires_name(capsys):
-    with pytest.raises(SystemExit):
-        plugins_cmd.run_plugin_command("enable", name="")
+    assert plugins_cmd.run_plugin_command("enable", name="") == 1
     assert "Usage" in capsys.readouterr().out
 
 
@@ -86,9 +83,8 @@ def test_dispatch_disable_with_name():
 
 
 def test_dispatch_unknown_action_exits(capsys):
-    with pytest.raises(SystemExit) as exc:
-        plugins_cmd.run_plugin_command("frobnicate")
-    assert exc.value.code == 1
+    rc = plugins_cmd.run_plugin_command("frobnicate")
+    assert rc == 1
     out = capsys.readouterr().out
     assert "Unknown plugin action" in out
 
@@ -140,9 +136,8 @@ def test_show_plugin_info_not_found(capsys):
     cfg = _fake_config()
     with patch(f"{_T}._get_config_and_workspace", return_value=(cfg, Path("/ws"))), \
          patch("echo_agent.plugins.loader.discover_all", return_value=[]):
-        with pytest.raises(SystemExit) as exc:
-            plugins_cmd._show_plugin_info("ghost", None, None)
-    assert exc.value.code == 1
+        rc = plugins_cmd._show_plugin_info("ghost", None, None)
+    assert rc == 1
     assert "not found" in capsys.readouterr().out
 
 
@@ -170,9 +165,8 @@ def test_show_plugin_info_renders_all_fields(capsys):
 
 def test_toggle_no_config_file_exits(capsys):
     with patch("echo_agent.config.loader.resolve_config_file", return_value=None):
-        with pytest.raises(SystemExit) as exc:
-            plugins_cmd._toggle_plugin("demo", enable=False, config_path=None)
-    assert exc.value.code == 1
+        rc = plugins_cmd._toggle_plugin("demo", enable=False, config_path=None)
+    assert rc == 1
     assert "No config file found" in capsys.readouterr().out
 
 

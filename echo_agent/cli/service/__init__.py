@@ -142,17 +142,18 @@ def run_service_action(
     force: bool = False,
     follow: bool = False,
     config: str | None = None,
-) -> None:
+) -> int:
+    """Run one service lifecycle action and return a process exit code."""
     if action in ("stop", "restart", "uninstall") and _refuse_inside_gateway(action):
-        sys.exit(1)
+        return 1
 
     backend = detect_backend(system=system)
     if backend is None:
         if action == "status":
             _status_without_service()
-            return
+            return 0
         print(_FALLBACK_HINTS)
-        sys.exit(1)
+        return 1
 
     if action == "install":
         # 固化绝对 workspace/config,使后台服务不依赖 cwd 或 ~/.echo-agent 兜底,
@@ -177,10 +178,11 @@ def run_service_action(
     else:
         print(f"Unknown action: {action}")
         print(f"Available: {', '.join(ACTIONS)}")
-        sys.exit(1)
+        return 1
+    return 0
 
 
-def run_action(action: str, workspace: str | None = None) -> None:
+def run_action(action: str, workspace: str | None = None) -> int:
     """Deprecated shim for ``echo-agent service <action>`` (and install.sh).
 
     Old behaviour was Linux system-scope systemd; keep that mapping so
@@ -191,4 +193,6 @@ def run_action(action: str, workspace: str | None = None) -> None:
         f"{action}` instead (system-scope on Linux: add --system).",
         file=sys.stderr,
     )
-    run_service_action(action, workspace=workspace, system=sys.platform == "linux")
+    return run_service_action(
+        action, workspace=workspace, system=sys.platform == "linux"
+    )

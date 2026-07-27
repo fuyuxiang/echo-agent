@@ -1,6 +1,8 @@
 """Slash-command catalog and pure completion filters. Server commands mirror
-the ONLY three the gateway recognizes (loop.py:1194); everything else is a
-client-local command executed inside the TUI and never sent upstream."""
+the ones the gateway intercepts before the session lock — the approval trio
+(loop.py ``_is_approval_command``) plus ``/clarify`` (``_is_clarify_command``);
+everything else is a client-local command executed inside the TUI and never
+sent upstream."""
 
 from __future__ import annotations
 
@@ -20,6 +22,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/approve", "<id> [session|always]", "批准待确认操作", "server", True),
     SlashCommand("/deny", "<id> [原因]", "拒绝待确认操作", "server", True),
     SlashCommand("/approvals", "", "列出待批操作", "server", False),
+    SlashCommand("/clarify", "<id> <答案>", "回复智能体的澄清提问", "server", True),
     SlashCommand("/help", "", "列出所有命令", "local", False),
     SlashCommand("/clear", "", "清空当前转录流", "local", False),
     SlashCommand("/copy", "[all]", "复制最近回复（all=整段对话）", "local", True),

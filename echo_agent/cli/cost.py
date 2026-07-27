@@ -11,7 +11,7 @@ from typing import Any
 from loguru import logger
 
 from echo_agent.cli.colors import Colors, color, print_header, print_warning, set_color_override
-from echo_agent.cli.status import _effective_workspace
+from echo_agent.cli.workspace import resolve_effective_workspace
 from echo_agent.config.loader import load_config, resolve_config_file
 
 
@@ -118,9 +118,9 @@ def show_cost(config_path: str | Path | None = None,
     config_file = resolve_config_file(config_path=config_path, search_dir=workspace)
     overrides = {"workspace": str(workspace)} if workspace else None
     config = load_config(config_path=config_file, overrides=overrides)
-    effective_workspace = _effective_workspace(
-        config.workspace,
-        config_file if config_file and config_file.exists() else None,
+    effective_workspace = resolve_effective_workspace(
+        config,
+        str(config_file) if config_file and config_file.exists() else None,
         str(workspace) if workspace else None,
     )
     db_path = effective_workspace / config.storage.database_path

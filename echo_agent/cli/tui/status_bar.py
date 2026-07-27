@@ -178,10 +178,14 @@ class StatusBar(Static):
 
     @property
     def is_turn_active(self) -> bool:
-        """True from turn start until the final reply lands. Tracked separately
-        from the elapsed-time display so the Ctrl+C guard keeps sending
-        interrupts through tool execution, clarify waits and multi-round
-        inference regardless of what the timer shows."""
+        """True from turn start until stop_turn_timer runs.
+
+        Tracked separately from the elapsed-time display, which pauses on its
+        own schedule. This is the status bar's own view of the turn; the Ctrl+C
+        interrupt guard does NOT read it — app.py consults the turn tracker
+        (``_turns.has_active_primary``), which also covers uncorrelated
+        in-flight work this widget cannot see.
+        """
         return self._turn_active
 
     def start_turn_timer(self) -> None:

@@ -7,7 +7,6 @@ from echo_agent.cli.attach_client import (
     AuthError,
     MissingTUIDependencyError,
     NoGatewayError,
-    OutboundRenderer,
     authenticate,
     build_ws_url,
     connect_ws,
@@ -48,32 +47,6 @@ def test_diagnose_gateway_enabled_unreachable(tmp_path):
     cfg.write_text("gateway:\n  enabled: true\n  host: 127.0.0.1\n  port: 58123\n")
     msg = diagnose_no_gateway("ws://127.0.0.1:58123/ws", str(cfg), None)
     assert "gateway.enabled=true" in msg
-
-
-def test_renderer_streams_then_finalizes_without_dup(capsys):
-    r = OutboundRenderer()
-    r.render({
-        "type": "message", "text": "你好", "is_final": False,
-        "metadata": {"_token_stream": True, "_inbound_event_id": "e1"},
-    })
-    r.render({
-        "type": "message", "text": "，世界", "is_final": False,
-        "metadata": {"_token_stream": True, "_inbound_event_id": "e1"},
-    })
-    r.render({
-        "type": "message", "text": "你好，世界", "is_final": True,
-        "message_kind": "final",
-        "metadata": {"_token_stream": True, "_inbound_event_id": "e1"},
-    })
-    out = capsys.readouterr().out
-    # 流式两段 + 最终只补余下，全文 "你好，世界" 只出现一次
-    assert out.count("你好，世界") == 1
-
-
-def test_renderer_non_stream_prints_text(capsys):
-    r = OutboundRenderer()
-    r.render({"type": "message", "text": "完整回复", "is_final": True, "metadata": {}})
-    assert "完整回复" in capsys.readouterr().out
 
 
 class _FakeWS:

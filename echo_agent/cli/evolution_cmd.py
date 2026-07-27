@@ -18,35 +18,40 @@ def run_evolution_command(
     candidate_id: str = "",
     config_path: str | None = None,
     workspace: str | None = None,
-) -> None:
-    """Dispatcher for ``echo-agent evolution <action>``."""
+) -> int:
+    """Dispatcher for ``echo-agent evolution <action>``; returns an exit code.
+
+    Argument guards still ``sys.exit(1)`` immediately (nothing has run yet, and
+    there is no result to report), while result conditions — a missing candidate,
+    a failed rollback — propagate as a return code so ``__main__`` owns the
+    single exit point.
+    """
     if action == "status":
-        asyncio.run(_status(config_path, workspace))
-    elif action == "run":
-        asyncio.run(_run_once(config_path, workspace))
-    elif action == "list-candidates":
-        asyncio.run(_list_candidates(config_path, workspace, status_filter))
-    elif action == "show-candidate":
+        return asyncio.run(_status(config_path, workspace))
+    if action == "run":
+        return asyncio.run(_run_once(config_path, workspace))
+    if action == "list-candidates":
+        return asyncio.run(_list_candidates(config_path, workspace, status_filter))
+    if action == "show-candidate":
         if not candidate_id:
             print("Usage: echo-agent evolution show-candidate <id>")
             sys.exit(1)
-        asyncio.run(_show_candidate(candidate_id, config_path, workspace))
-    elif action == "promote":
+        return asyncio.run(_show_candidate(candidate_id, config_path, workspace))
+    if action == "promote":
         if not candidate_id:
             print("Usage: echo-agent evolution promote <id>")
             sys.exit(1)
-        asyncio.run(_promote_candidate(candidate_id, config_path, workspace))
-    elif action == "rollback":
+        return asyncio.run(_promote_candidate(candidate_id, config_path, workspace))
+    if action == "rollback":
         if not skill:
             print("Usage: echo-agent evolution rollback <skill-name>")
             sys.exit(1)
-        asyncio.run(_rollback(skill, config_path, workspace))
-    elif action == "init-dataset":
-        _init_dataset(config_path, workspace)
-    else:
-        print(f"Unknown evolution action: {action}")
-        print("Available: status, run, list-candidates, show-candidate, promote, rollback, init-dataset")
-        sys.exit(1)
+        return asyncio.run(_rollback(skill, config_path, workspace))
+    if action == "init-dataset":
+        return _init_dataset(config_path, workspace)
+    print(f"Unknown evolution action: {action}")
+    print("Available: status, run, list-candidates, show-candidate, promote, rollback, init-dataset")
+    sys.exit(1)
 
 
 def _format_run(run: Any) -> str:
@@ -67,7 +72,7 @@ def _format_run(run: Any) -> str:
         """).rstrip()
 
 
-async def _status(config_path: str | None, workspace: str | None) -> None:
+async def _status(config_path: str | None, workspace: str | None) -> int:
     from echo_agent.app import bootstrap as _bootstrap
 
     overrides = {"workspace": workspace} if workspace else None
@@ -75,7 +80,7 @@ async def _status(config_path: str | None, workspace: str | None) -> None:
     try:
         if ctx.agent.evolution is None:
             print("Evolution is disabled. Set evolution.enabled = true in your config.")
-            return
+            return 1
         engine = ctx.agent.evolution
         await engine.start()
         try:
@@ -96,13 +101,14 @@ async def _status(config_path: str | None, workspace: str | None) -> None:
                     print(f"    - {cd['skill']} until {cd['until']}")
             print("\nLatest run:")
             print(_format_run(latest[0] if latest else None))
+            return 0
         finally:
             await engine.stop()
     finally:
         await ctx.storage.close()
 
 
-async def _run_once(config_path: str | None, workspace: str | None) -> None:
+async def _run_once(config_path: str | None, workspace: str | None) -> int:
     from echo_agent.app import bootstrap as _bootstrap
 
     overrides = {"workspace": workspace} if workspace else None
@@ -110,7 +116,7 @@ async def _run_once(config_path: str | None, workspace: str | None) -> None:
     try:
         if ctx.agent.evolution is None:
             print("Evolution is disabled. Set evolution.enabled = true in your config.")
-            return
+            return 1
         engine = ctx.agent.evolution
         await ctx.bus.start()
         await ctx.agent.start()
@@ -119,6 +125,7 @@ async def _run_once(config_path: str | None, workspace: str | None) -> None:
             run = await engine.run_evolution(trigger="manual")
             print("\nResult:")
             print(_format_run(run))
+            return 0
         finally:
             await ctx.agent.stop()
             await ctx.bus.stop()
@@ -130,7 +137,7 @@ async def _list_candidates(
     config_path: str | None,
     workspace: str | None,
     status_filter: str,
-) -> None:
+) -> int:
     from echo_agent.app import bootstrap as _bootstrap
 
     overrides = {"workspace": workspace} if workspace else None
@@ -138,7 +145,7 @@ async def _list_candidates(
     try:
         if ctx.agent.evolution is None:
             print("Evolution is disabled.")
-            return
+            return 1
         engine = ctx.agent.evolution
         await engine.start()
         try:
@@ -146,20 +153,21 @@ async def _list_candidates(
             candidates = await engine.list_candidates(status=status, limit=200)
             if not candidates:
                 print("(no candidates)")
-                return
+                return 0
             print(f"{'ID':<22} {'STATUS':<14} {'OP':<8} {'SKILL':<32} {'CREATED':<26}")
             for c in candidates:
                 print(
                     f"{c.id:<22} {c.status:<14} {c.operation:<8} "
                     f"{c.skill_name:<32} {c.created_at:<26}"
                 )
+            return 0
         finally:
             await engine.stop()
     finally:
         await ctx.storage.close()
 
 
-async def _show_candidate(candidate_id: str, config_path: str | None, workspace: str | None) -> None:
+async def _show_candidate(candidate_id: str, config_path: str | None, workspace: str | None) -> int:
     from echo_agent.app import bootstrap as _bootstrap
 
     overrides = {"workspace": workspace} if workspace else None
@@ -167,22 +175,23 @@ async def _show_candidate(candidate_id: str, config_path: str | None, workspace:
     try:
         if ctx.agent.evolution is None:
             print("Evolution is disabled.")
-            return
+            return 1
         engine = ctx.agent.evolution
         await engine.start()
         try:
             cand = await engine.store.get_candidate(candidate_id)
             if cand is None:
                 print(f"Candidate '{candidate_id}' not found.")
-                sys.exit(1)
+                return 1
             print(json.dumps(cand.to_dict(), ensure_ascii=False, indent=2))
+            return 0
         finally:
             await engine.stop()
     finally:
         await ctx.storage.close()
 
 
-async def _promote_candidate(candidate_id: str, config_path: str | None, workspace: str | None) -> None:
+async def _promote_candidate(candidate_id: str, config_path: str | None, workspace: str | None) -> int:
     """Manually promote a candidate held in `needs_review` after re-running its eval."""
     from echo_agent.app import bootstrap as _bootstrap
 
@@ -191,7 +200,7 @@ async def _promote_candidate(candidate_id: str, config_path: str | None, workspa
     try:
         if ctx.agent.evolution is None:
             print("Evolution is disabled.")
-            return
+            return 1
         engine = ctx.agent.evolution
         await ctx.bus.start()
         await ctx.agent.start()
@@ -199,10 +208,10 @@ async def _promote_candidate(candidate_id: str, config_path: str | None, workspa
             cand = await engine.store.get_candidate(candidate_id)
             if cand is None:
                 print(f"Candidate '{candidate_id}' not found.")
-                sys.exit(1)
+                return 1
             if cand.status not in ("pending", "needs_review", "rejected"):
                 print(f"Candidate is in status '{cand.status}'; only pending/needs_review/rejected may be promoted.")
-                sys.exit(1)
+                return 1
             cand.status = "pending"
             cand.rejected_reason = ""
             await engine.store.update_candidate(cand)
@@ -213,6 +222,7 @@ async def _promote_candidate(candidate_id: str, config_path: str | None, workspa
                 "baseline": decision.baseline,
                 "with_candidate": decision.with_candidate,
             }, ensure_ascii=False, indent=2))
+            return 0 if decision.promoted else 1
         finally:
             await ctx.agent.stop()
             await ctx.bus.stop()
@@ -220,7 +230,7 @@ async def _promote_candidate(candidate_id: str, config_path: str | None, workspa
         await ctx.storage.close()
 
 
-async def _rollback(skill: str, config_path: str | None, workspace: str | None) -> None:
+async def _rollback(skill: str, config_path: str | None, workspace: str | None) -> int:
     from echo_agent.app import bootstrap as _bootstrap
 
     overrides = {"workspace": workspace} if workspace else None
@@ -228,14 +238,13 @@ async def _rollback(skill: str, config_path: str | None, workspace: str | None) 
     try:
         if ctx.agent.evolution is None:
             print("Evolution is disabled.")
-            return
+            return 1
         engine = ctx.agent.evolution
         await engine.start()
         try:
             ok, message = await engine.rollback_skill(skill)
             print(message)
-            if not ok:
-                sys.exit(1)
+            return 0 if ok else 1
         finally:
             await engine.stop()
     finally:
@@ -280,7 +289,7 @@ cases:
 """
 
 
-def _init_dataset(config_path: str | None, workspace: str | None) -> None:
+def _init_dataset(config_path: str | None, workspace: str | None) -> int:
     from echo_agent.config.loader import load_config, resolve_config_file
 
     config_file = resolve_config_file(config_path, search_dir=workspace)
@@ -294,6 +303,7 @@ def _init_dataset(config_path: str | None, workspace: str | None) -> None:
     dataset_path.parent.mkdir(parents=True, exist_ok=True)
     if dataset_path.exists():
         print(f"Dataset already exists at {dataset_path} (skipping; delete to regenerate).")
-        return
+        return 0
     dataset_path.write_text(_DEFAULT_DATASET, encoding="utf-8")
     print(f"Wrote baseline dataset to {dataset_path}")
+    return 0

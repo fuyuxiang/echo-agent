@@ -117,6 +117,20 @@ def main() -> None:
         raise
 
 
+def _setup_section_names() -> str:
+    """Comma-joined setup sections for ``setup --help``.
+
+    Read from the wizard's own registry so the advertised sections can never
+    drift from the implemented ones. Falls back to a plain hint if importing the
+    wizard fails, since ``--help`` must never crash.
+    """
+    try:
+        from echo_agent.cli.setup import section_names
+    except Exception:  # noqa: BLE001 - help text is not worth a traceback
+        return "run 'echo-agent setup' and pick from the menu"
+    return ", ".join(section_names())
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="echo-agent", description="Echo Agent — modular AI agent framework")
     from echo_agent import __version__
@@ -135,7 +149,7 @@ def _build_parser() -> argparse.ArgumentParser:
     setup_parser = subparsers.add_parser("setup", help="Run the setup wizard")
     setup_parser.add_argument(
         "section", nargs="?", default=None,
-        help="Setup section: language, model, permissions, terminal, agent, tools, channel, gateway, observability, evolution, doctor",
+        help=f"Setup section: {_setup_section_names()}",
     )
     setup_parser.add_argument("-c", "--config", help="Path to config file")
     setup_parser.add_argument("-w", "--workspace", help="Workspace directory")
@@ -143,10 +157,8 @@ def _build_parser() -> argparse.ArgumentParser:
                               help="Override interface language (default: auto-detect from OS)")
     setup_parser.add_argument("--flow", choices=["quickstart", "full"], default=None,
                               help="Skip the menu and run a specific flow")
-    # doctor/check sections can emit machine-readable output; the setup impl
-    # (owned elsewhere) reads getattr(args, "json", False).
     setup_parser.add_argument("--json", action="store_true", dest="json",
-                              help="Emit machine-readable JSON for the doctor/check section (no ANSI)")
+                              help="Emit machine-readable JSON for the 'doctor' section (no ANSI)")
 
     # status
     status_parser = subparsers.add_parser("status", help="Show current configuration status")
@@ -303,17 +315,19 @@ def _dispatch() -> None:
 
     if args.command == "setup":
         from echo_agent.cli.setup import run_setup_wizard
+        import sys as _sys
         lang_arg = getattr(args, "lang", None)
         if lang_arg == "auto":
             lang_arg = None
-        run_setup_wizard(
+        rc = run_setup_wizard(
             section=args.section,
             config_path=args.config or args.top_config,
             workspace=args.workspace or args.top_workspace,
             lang=lang_arg,
             flow=getattr(args, "flow", None),
+            as_json=getattr(args, "json", False),
         )
-        return
+        _sys.exit(rc)
 
     if args.command == "status":
         from echo_agent.cli.status import show_status
@@ -339,7 +353,8 @@ def _dispatch() -> None:
     if args.command == "gateway":
         if args.action:
             from echo_agent.cli.service import run_service_action
-            run_service_action(
+            import sys as _sys
+            rc = run_service_action(
                 args.action,
                 workspace=args.workspace or args.top_workspace,
                 system=args.system,
@@ -347,7 +362,7 @@ def _dispatch() -> None:
                 follow=args.follow,
                 config=args.config or args.top_config,
             )
-            return
+            _sys.exit(rc)
         from echo_agent.app import run_gateway
         try:
             asyncio.run(run_gateway(config_path=args.config or args.top_config, host=args.host, port=args.port, workspace=args.workspace or args.top_workspace, force=args.force))
@@ -370,21 +385,24 @@ def _dispatch() -> None:
 
     if args.command == "service":
         from echo_agent.cli.service import run_action
-        run_action(args.action, workspace=args.workspace or args.top_workspace)
-        return
+        import sys as _sys
+        _sys.exit(run_action(args.action, workspace=args.workspace or args.top_workspace))
 
     if args.command == "plugin":
         from echo_agent.cli.plugins_cmd import run_plugin_command
-        run_plugin_command(
+        import sys as _sys
+        rc = run_plugin_command(
             action=args.action,
             name=args.name,
             config_path=args.config or args.top_config,
             workspace=args.workspace or args.top_workspace,
+            as_json=getattr(args, "json", False),
         )
-        return
+        _sys.exit(rc)
 
     if args.command == "evolution":
         from echo_agent.cli.evolution_cmd import run_evolution_command
+        import sys as _sys
         target = getattr(args, "target", "") or ""
         skill = ""
         candidate_id = ""
@@ -393,7 +411,7 @@ def _dispatch() -> None:
         elif args.action in ("show-candidate", "promote"):
             candidate_id = target
         try:
-            run_evolution_command(
+            rc = run_evolution_command(
                 action=args.action,
                 skill=skill,
                 status_filter=getattr(args, "status_filter", "") or "",
@@ -402,13 +420,14 @@ def _dispatch() -> None:
                 workspace=args.workspace or args.top_workspace,
             )
         except KeyboardInterrupt:
-            pass
-        return
+            rc = 130
+        _sys.exit(rc)
 
     if args.command == "skill":
         from echo_agent.cli.skill_admission_cmd import run_skill_command
+        import sys as _sys
         try:
-            run_skill_command(
+            rc = run_skill_command(
                 args.skill_action,
                 candidate_id=args.candidate_id,
                 reason=args.reason,
@@ -416,8 +435,8 @@ def _dispatch() -> None:
                 workspace=args.workspace or args.top_workspace,
             )
         except KeyboardInterrupt:
-            pass
-        return
+            rc = 130
+        _sys.exit(rc)
 
     if args.command == "config":
         from echo_agent.cli.config_cmd import run_config_command
@@ -433,14 +452,16 @@ def _dispatch() -> None:
 
     if args.command == "checkpoint":
         from echo_agent.cli.checkpoint_cmd import run_checkpoint_command
-        run_checkpoint_command(
+        import sys as _sys
+        rc = run_checkpoint_command(
             args.action,
             sha=args.sha,
             config_path=args.config or args.top_config,
             workspace=args.workspace or args.top_workspace,
             yes=args.yes,
+            as_json=getattr(args, "json", False),
         )
-        return
+        _sys.exit(rc)
 
     if args.command == "migrate":
         from echo_agent.cli.migrate_cmd import run_migrate_command

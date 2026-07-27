@@ -6,14 +6,16 @@ from echo_agent.cli.tui.completion import (
 def test_catalog_has_all_commands():
     names = {c.name for c in COMMANDS}
     assert names == {
-        "/approve", "/deny", "/approvals",
+        "/approve", "/deny", "/approvals", "/clarify",
         "/help", "/clear", "/copy", "/save", "/theme", "/reconnect", "/quit",
     }
 
 
-def test_server_scope_only_the_three_real_ones():
+def test_server_scope_matches_gateway_intercepted_commands():
+    # loop.py intercepts exactly these before the session lock: the approval
+    # trio (_is_approval_command) plus /clarify (_is_clarify_command).
     server = {c.name for c in COMMANDS if c.scope == "server"}
-    assert server == {"/approve", "/deny", "/approvals"}
+    assert server == {"/approve", "/deny", "/approvals", "/clarify"}
 
 
 def test_local_scope_commands():

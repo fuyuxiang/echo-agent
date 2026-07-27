@@ -53,8 +53,16 @@ def decide_key(ctx: KeyContext) -> str:
 
 
 def history_prev(idx: int, length: int) -> int:
+    """Step one entry back in history, clamped at the oldest entry.
+
+    ``length`` is unused — the lower bound is always 0 — but kept so the pair
+    with :func:`history_next` is call-compatible: prompt_input dispatches to
+    either one with the same ``(idx, len(history))`` arguments.
+    """
+    del length  # symmetry with history_next; see docstring
     return max(0, idx - 1)
 
 
 def history_next(idx: int, length: int) -> int:
+    """Step one entry forward, clamped at ``length`` (the "new, empty" slot)."""
     return min(length, idx + 1)

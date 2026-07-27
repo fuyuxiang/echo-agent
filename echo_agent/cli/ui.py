@@ -162,10 +162,57 @@ def outro(message: str) -> None:
     print()
 
 
+_SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+_SPINNER_INTERVAL = 0.08
+
+
 @contextmanager
 def spinner(message: str) -> Iterator[None]:
-    print(color(f"  ⋯ {message}", ansi("text-muted")))
+    """Show a live spinner for the duration of the block.
+
+    On a TTY a daemon thread repaints a braille frame in place, so a long
+    ``list_models`` / ``verify_model`` call visibly progresses instead of
+    leaving one dead line on screen. Without a TTY (CI, piped output, no PTY)
+    the animation would emit control-character noise, so we print the single
+    static line and skip the thread entirely. Never raises: a failed repaint
+    must not take down the wizard.
+    """
+    label = color(f"  ⋯ {message}", ansi("text-muted"))
+    if not sys.stdout.isatty():
+        print(label)
+        yield
+        return
+
+    import threading
+
+    stop = threading.Event()
+
+    def _spin() -> None:
+        idx = 0
+        try:
+            while not stop.wait(_SPINNER_INTERVAL):
+                frame = _SPINNER_FRAMES[idx % len(_SPINNER_FRAMES)]
+                idx += 1
+                sys.stdout.write(
+                    "\r" + color(f"  {frame} {message}", ansi("text-muted"))
+                )
+                sys.stdout.flush()
+        except Exception:  # pragma: no cover - a broken tty must not propagate
+            pass
+
+    sys.stdout.write(label)
+    sys.stdout.flush()
+    thread = threading.Thread(target=_spin, daemon=True)
+    thread.start()
     try:
         yield
     finally:
-        pass
+        stop.set()
+        thread.join(timeout=1.0)
+        # Clear the animated line so the caller's own output starts clean, then
+        # leave the completed step on screen as a static line.
+        try:
+            sys.stdout.write("\r\033[2K" + label + "\n")
+            sys.stdout.flush()
+        except Exception:  # pragma: no cover - see above
+            pass

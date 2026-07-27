@@ -34,26 +34,30 @@ def test_credential_status_aws_alias():
     assert clr == Colors.CYAN
 
 
-# ── _effective_workspace ──────────────────────────────────────────────────────
+# ── _resolve_workspace ───────────────────────────────────────────────────────
+# Thin wrapper over the authoritative cli.workspace rule; these lock the four
+# branches status actually depends on (absolute / override / config-anchored).
 
-def test_effective_workspace_absolute():
-    ws = status_mod._effective_workspace("/srv/agent", None)
+def test_resolve_workspace_absolute():
+    ws = status_mod._resolve_workspace(SimpleNamespace(workspace="/srv/agent"), None, None)
     assert ws == Path("/srv/agent").resolve()
 
 
-def test_effective_workspace_override_anchored_at_cwd():
-    ws = status_mod._effective_workspace("ignored", Path("/etc/x/echo.yaml"), "rel")
+def test_resolve_workspace_override_anchored_at_cwd():
+    ws = status_mod._resolve_workspace(
+        SimpleNamespace(workspace="ignored"), Path("/etc/x/echo.yaml"), "rel"
+    )
     assert ws == (Path.cwd() / "rel").resolve()
 
 
-def test_effective_workspace_relative_anchored_at_config_dir(tmp_path):
+def test_resolve_workspace_relative_anchored_at_config_dir(tmp_path):
     cfg = tmp_path / "echo-agent.yaml"
-    ws = status_mod._effective_workspace("sub", cfg)
+    ws = status_mod._resolve_workspace(SimpleNamespace(workspace="sub"), cfg, None)
     assert ws == (tmp_path / "sub").resolve()
 
 
-def test_effective_workspace_relative_no_config_anchored_at_cwd():
-    ws = status_mod._effective_workspace("rel2", None)
+def test_resolve_workspace_relative_no_config_anchored_at_cwd():
+    ws = status_mod._resolve_workspace(SimpleNamespace(workspace="rel2"), None, None)
     assert ws == (Path.cwd() / "rel2").resolve()
 
 

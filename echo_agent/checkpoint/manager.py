@@ -114,6 +114,15 @@ class CheckpointManager:
             logger.debug("checkpoint cleanup failed (fail-open): {}", e)
             return False
 
+    async def ensure_store_ready(self) -> None:
+        """Initialise the shadow store if it does not exist yet.
+
+        Public entrypoint for callers (the ``checkpoint`` CLI) that need the
+        store on disk before a read-only operation, so they don't have to reach
+        into the private ``_store``.
+        """
+        await self._store.ensure_initialized()
+
     async def list_snapshots(self) -> list[dict]:
         if not self._enabled:
             return []

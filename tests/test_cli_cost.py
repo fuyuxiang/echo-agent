@@ -196,6 +196,6 @@ def test_show_cost_exit_code_zero_when_table_present(tmp_path, capsys):
     )
     with patch("echo_agent.cli.cost.resolve_config_file", return_value=None), \
          patch("echo_agent.cli.cost.load_config", return_value=cfg), \
-         patch("echo_agent.cli.cost._effective_workspace", return_value=ws):
+         patch("echo_agent.cli.cost.resolve_effective_workspace", return_value=ws):
         rc = show_cost(workspace=str(ws), days=7)
     assert rc == 0

@@ -25,6 +25,7 @@ consistent.
 
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 from typing import Any, Callable
@@ -32,9 +33,10 @@ from typing import Any, Callable
 from echo_agent.cli.colors import (
     Colors,
     color,
+    set_color_override,
 )
 from echo_agent.cli import ui
-from echo_agent.cli.health import OK, WARN, run_health_checks
+from echo_agent.cli.health import FAIL, OK, WARN, run_health_checks
 from echo_agent.cli.i18n import detect_locale, get_locale, set_locale, t
 from echo_agent.cli.palette import ansi
 from echo_agent.cli.prompt import (
@@ -1081,6 +1083,17 @@ SECTION_ALIASES: dict[str, str] = {
     "check": "doctor",
 }
 
+def section_names() -> list[str]:
+    """Every section name ``setup <section>`` accepts, in wizard order.
+
+    ``doctor`` is appended because it is dispatched separately (read-only) and
+    is therefore not part of ``SETUP_SECTIONS``. ``__main__`` renders its
+    ``--help`` from this so the advertised list can never drift from the
+    implemented one again.
+    """
+    return [key for key, _ in SETUP_SECTIONS] + ["doctor"]
+
+
 def _capability_check(config: dict) -> list[tuple[str, bool, str]]:
     """Return a list of (label, ok, hint) tuples summarising what's available."""
     checks: list[tuple[str, bool, str]] = []
@@ -1149,6 +1162,32 @@ def _doctor_mark(status: str) -> str:
     if status == WARN:
         return color("!", ansi("warning"))
     return color("✗", ansi("error"))
+
+
+def doctor_report(config: dict) -> dict:
+    """Structured doctor result: live probes plus the config echo.
+
+    Shared by the interactive rendering and ``setup doctor --json`` so both
+    report the exact same findings.
+    """
+    probes = run_health_checks(config)
+    return {
+        "ok": all(p["status"] != FAIL for p in probes),
+        "probes": [
+            {
+                "name": p["name"],
+                "status": p["status"],
+                "detail": p.get("detail") or None,
+            }
+            for p in probes
+        ],
+        "ok_count": sum(1 for p in probes if p["status"] == OK),
+        "total": len(probes),
+        "config_echo": [
+            {"label": label, "ok": bool(ok), "detail": extra or None}
+            for label, ok, extra in _capability_check(config)
+        ],
+    }
 
 
 def setup_doctor(config: dict) -> None:
@@ -1298,20 +1337,44 @@ def run_setup_wizard(
     workspace: str | Path | None = None,
     lang: str | None = None,
     flow: str | None = None,
-) -> None:
-    """Run the interactive setup wizard.
+    as_json: bool = False,
+) -> int:
+    """Run the interactive setup wizard and return a process exit code.
 
     ``section``:  name (or alias) of a single section to configure.
     ``flow``:     ``"quickstart"`` or ``"full"``; bypasses the menu.
     ``lang``:     ``"zh"`` or ``"en"``; overrides auto-detection.
+    ``as_json``:  only meaningful for the read-only ``doctor`` section — emits
+                  the structured report with ANSI off and skips the TTY
+                  requirement (nothing is prompted or written). Any other
+                  section rejects it rather than pretending to be scriptable.
     """
+    if as_json:
+        config, _ = _load_existing_config(config_path, workspace)
+        _resolve_initial_locale(config, lang)
+        canonical = SECTION_ALIASES.get((section or "").lower(), (section or "").lower())
+        if canonical != "doctor":
+            print(json.dumps({
+                "ok": False,
+                "error": "--json is only supported for the read-only 'doctor' section",
+                "hint": "echo-agent setup doctor --json",
+            }, ensure_ascii=False, indent=2))
+            return 2
+        set_color_override(False)
+        try:
+            report = doctor_report(config)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+        finally:
+            set_color_override(None)
+        return 0 if report["ok"] else 1
+
     if not is_interactive():
         # Pick a locale even in headless mode so the guidance prints in the
         # user's language.
         config, _ = _load_existing_config(config_path, workspace)
         _resolve_initial_locale(config, lang)
         _print_headless_guidance()
-        return
+        return 1
 
     config_target = _setup_config_target(config_path=config_path, workspace=workspace)
     config, existing_file = _load_existing_config(config_path, workspace)
@@ -1330,18 +1393,18 @@ def run_setup_wizard(
         if canonical == "doctor":
             _print_banner()
             setup_doctor(config)
-            return
+            return 0
         func = section_map.get(canonical)
         if func is None:
             print_error(f"Unknown section: {section}")
             print_info("Available: " + ", ".join(k for k, _ in SETUP_SECTIONS) + ", doctor")
-            return
+            return 1
         _print_banner()
         func(config)
         path = save_config(config, config_target)
         label = t(f"section.{canonical}")
         print_success(t("summary.section_saved", label=label, path=path))
-        return
+        return 0
 
     _print_banner()
 
@@ -1361,21 +1424,21 @@ def run_setup_wizard(
         choice = ui.select(t("menu.existing_what"), menu_choices, default="quickstart")
         if choice == "exit":
             print_info(t("menu.exit_hint"))
-            return
+            return 0
         if choice == "quickstart":
             flow = "quickstart"
         elif choice == "full":
             flow = "full"
         elif choice == "doctor":
             setup_doctor(config)
-            return
+            return 0
         else:
             key = choice.split(":", 1)[1]
             func = section_map[key]
             func(config)
             path = save_config(config, config_target)
             print_success(t("summary.section_saved", label=t(f"section.{key}"), path=path))
-            return
+            return 0
 
     language_done = False
     if flow is None and not is_existing:
@@ -1399,7 +1462,7 @@ def run_setup_wizard(
         setup_doctor(config)
         _print_summary(config, path)
         ui.outro(t("summary.complete"))
-        return
+        return 0
 
     for _key, func in SETUP_SECTIONS:
         if _key == "language" and language_done:
@@ -1411,6 +1474,7 @@ def run_setup_wizard(
     setup_doctor(config)
     _print_summary(config, path)
     print_success(t("summary.complete"))
+    return 0
 
 
 def has_any_provider_configured(config_path: str | Path | None = None, workspace: str | Path | None = None) -> bool:

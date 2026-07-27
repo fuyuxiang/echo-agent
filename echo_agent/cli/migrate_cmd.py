@@ -220,9 +220,10 @@ async def _import_memory_md(store, memory_dir: Path, dry_run: bool, owner_key: s
 def run_migrate_command(
     action, *, config_path=None, workspace=None, dry_run=False, yes=False, adopt_empty=False,
 ) -> int:
-    from echo_agent.cli.plugins_cmd import _get_config_and_workspace
+    from echo_agent.cli.prompt import prompt_yes_no
+    from echo_agent.cli.workspace import load_config_and_workspace
 
-    config, ws = _get_config_and_workspace(config_path, workspace)
+    config, ws = load_config_and_workspace(config_path, workspace)
     memory_dir = ws / config.storage.memory_dir
     bindings = set(config.memory.principal_bindings)
     owner_key = config.memory.owner_key
@@ -238,8 +239,9 @@ def run_migrate_command(
 
     if action == "rollback":
         if not yes:
-            reply = input("回滚将用最近备份覆盖 user_memory.json,继续? [y/N] ")
-            if reply.strip().lower() != "y":
+            if not prompt_yes_no(
+                "回滚将用最近备份覆盖 user_memory.json,继续?", default=False
+            ):
                 print("已取消")
                 return 1
         try:
@@ -262,11 +264,11 @@ def run_migrate_command(
             return 0
         if not yes:
             extra = "(含空 scope 收编)" if adopt_empty else ""
-            reply = input(
+            if not prompt_yes_no(
                 f"将改写命中 bindings 的 USER 记忆 source_session→{owner_key}{extra}"
-                "(先自动备份),继续? [y/N] "
-            )
-            if reply.strip().lower() != "y":
+                "(先自动备份),继续?",
+                default=False,
+            ):
                 print("已取消")
                 return 1
         backup_user_memory(memory_dir)
@@ -278,8 +280,10 @@ def run_migrate_command(
 
     if action == "memory-md":
         if not dry_run and not yes:
-            reply = input("将把存量 MEMORY.*.md 分片抽取入 store(先自动备份 user_memory.json),继续? [y/N] ")
-            if reply.strip().lower() != "y":
+            if not prompt_yes_no(
+                "将把存量 MEMORY.*.md 分片抽取入 store(先自动备份 user_memory.json),继续?",
+                default=False,
+            ):
                 print("已取消")
                 return 1
         if not dry_run:
