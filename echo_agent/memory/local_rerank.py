@@ -187,7 +187,12 @@ class LocalReranker:
         A source is either one tarball or ordered split volumes joined back into
         it; either way the pinned sha256 is checked on the assembled file, so a
         truncated or out-of-order join is rejected exactly like a corrupt
-        download."""
+        download.
+
+        The wall-clock budget is computed once here and shared by every source, so
+        the fallback mirror inherits whatever is left instead of getting a fresh
+        hour of its own (which would make one load() take up to
+        len(sources) * _DOWNLOAD_BUDGET_SECONDS)."""
         pkg = _RELEASE_PACKAGES.get(self._model_name)
         if pkg is None or not self._cache_dir:
             return False
@@ -200,17 +205,24 @@ class LocalReranker:
         if _hf_cache_has_ready_model(target):
             return True
         os.makedirs(self._cache_dir, exist_ok=True)
+        deadline = time.monotonic() + _DOWNLOAD_BUDGET_SECONDS
         for source in pkg["sources"]:
-            if self._closed:
-                # close() during the previous source: don't start another ~941MB
-                # transfer just because the first mirror failed.
+            if self._closed or time.monotonic() >= deadline:
+                # close() or budget exhausted during the previous source: don't
+                # start another ~941MB transfer just because a mirror failed.
                 return False
             tmp = None
             staging = None
             try:
-                tmp, digest = self._download_source(source)
+                tmp, digest = self._download_source(source, deadline)
                 if tmp is None:
                     continue
+                # The stages below (hash compare, ~941MB gzip extract, tree
+                # rename) run for minutes on slow disks, so they honour close()
+                # too — otherwise shutdown would block on the extract.
+                if self._closed:
+                    logger.debug("Reranker release install aborted: reranker closed")
+                    return False
                 if digest != pkg["sha256"]:
                     logger.warning(
                         "Reranker release sha256 mismatch from {}", _source_label(source)
@@ -221,11 +233,18 @@ class LocalReranker:
                 with tarfile.open(tmp, "r:gz") as tar:
                     # Path-traversal guard without the 3.12+ filter= arg (floor is
                     # 3.11): every member must resolve inside the staging root.
-                    for member in tar.getmembers():
+                    members = tar.getmembers()
+                    for member in members:
                         dest = (staging_root / member.name).resolve()
                         if dest != staging_root and staging_root not in dest.parents:
                             raise ValueError(f"unsafe tar member: {member.name}")
-                    tar.extractall(staging)
+                    # Extract member-by-member instead of extractall() so close()
+                    # interrupts a multi-minute unpack; the staging dir is removed
+                    # in `finally`, so a partial tree is never left behind.
+                    for member in members:
+                        if self._closed:
+                            raise _DownloadAborted("reranker closed")
+                        tar.extract(member, staging)
                 extracted = staging_root / pkg["cache_subdir"]
                 if not _hf_cache_has_ready_model(extracted):
                     logger.warning(
@@ -233,6 +252,11 @@ class LocalReranker:
                         _source_label(source),
                     )
                     continue
+                if self._closed:
+                    # Never touch the real cache dir mid-shutdown: the rmtree +
+                    # os.replace pair below is not atomic as a whole.
+                    logger.debug("Reranker release install aborted: reranker closed")
+                    return False
                 if target.exists():
                     shutil.rmtree(target, ignore_errors=True)
                 os.replace(extracted, target)
@@ -240,6 +264,10 @@ class LocalReranker:
                     "Reranker model fetched from release mirror: {}", _source_label(source)
                 )
                 return True
+            except _DownloadAborted as e:
+                # Normal shutdown, not a broken mirror: no warning, no next source.
+                logger.debug("Reranker release install aborted: {}", e)
+                return False
             except Exception as e:
                 logger.warning(
                     "Reranker release fetch failed from {}: {}", _source_label(source), e
@@ -251,7 +279,9 @@ class LocalReranker:
                     shutil.rmtree(staging, ignore_errors=True)
         return False
 
-    def _download_source(self, source: dict[str, Any]) -> tuple[str | None, str]:
+    def _download_source(
+        self, source: dict[str, Any], deadline: float | None = None
+    ) -> tuple[str | None, str]:
         """Download one source to a temp file; returns (path, sha256) or (None, "").
 
         Volumes are streamed straight into a single file in order and hashed as
@@ -260,10 +290,11 @@ class LocalReranker:
         join would only fail the digest check later, so failing here keeps the
         warning pointed at the URL that actually broke.
 
-        The chunk loop is the only place this fetch can be interrupted: it checks
-        ``self._closed`` and a total wall-clock budget between chunks, so `close()`
-        (shutdown, or the operator turning reranking off) stops a ~941MB transfer
-        within one chunk instead of running it to completion.
+        The chunk loop checks ``self._closed`` and the wall-clock budget between
+        chunks, so `close()` (shutdown, or the operator turning reranking off)
+        stops a ~941MB transfer within one chunk instead of running it to
+        completion. `deadline` is the *shared* budget across all sources of one
+        fetch; it defaults to a fresh budget only for direct callers/tests.
         """
         import hashlib
         import tempfile
@@ -272,7 +303,8 @@ class LocalReranker:
         urls = source.get("parts") or [source["url"]]
         hasher = hashlib.sha256()
         tmp = None
-        deadline = time.monotonic() + _DOWNLOAD_BUDGET_SECONDS
+        if deadline is None:
+            deadline = time.monotonic() + _DOWNLOAD_BUDGET_SECONDS
         try:
             with tempfile.NamedTemporaryFile(dir=self._cache_dir, delete=False) as f:
                 tmp = f.name
@@ -416,8 +448,10 @@ class LocalReranker:
         """Stop any in-flight download and release the inference pool.
 
         Idempotent and non-blocking. Setting ``_closed`` first is what actually
-        cancels a running mirror fetch: the download loop checks it between
-        chunks (see ``_check_download_allowed``). The load thread is a daemon, so
+        cancels a running mirror fetch: it is checked between download chunks
+        (see ``_check_download_allowed``), between tar members while unpacking,
+        and before the cache dir is replaced — so no stage of a ~941MB install
+        runs to completion after shutdown starts. The load thread is a daemon, so
         even a fetch parked inside a socket read cannot delay interpreter exit.
         """
         self._closed = True

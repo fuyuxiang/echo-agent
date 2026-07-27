@@ -26,6 +26,15 @@ export interface CronJob {
   payload?: Record<string, unknown>;
 }
 
+// 表单管的三个投递字段,以及后端 delivery 认的键名(主键在前,别名在后)。
+type DeliverySlot = "channel" | "chatId" | "sessionKey";
+
+const DELIVERY_KEYS: Record<DeliverySlot, readonly string[]> = {
+  channel: ["deliver_channel", "channel"],
+  chatId: ["deliver_chat_id", "chat_id"],
+  sessionKey: ["source_session_key", "session_key"],
+};
+
 export function Cron() {
   const { t } = useTranslation(["cron", "common"]);
   const { data, loading, error, refetch } = useApi<{ jobs: CronJob[] }>("/cron");
@@ -44,11 +53,18 @@ export function Cron() {
   // 该任务用 command 还是 message 作为指令键。后端两者都接受,编辑时必须沿用原键,
   // 否则一次改名就把 message 改写成 command。
   const [commandKey, setCommandKey] = useState<"command" | "message">("command");
+  // 投递字段在已存 payload 里实际用的键名(null = 该任务没有这个字段)。scheduler 的
+  // delivery 同时接受别名 channel / chat_id / session_key,所以既要能读出别名写的
+  // 投递目标,也不能在保存时把别名键旁边再塞一份 deliver_* 空串。
+  const [payloadKeys, setPayloadKeys] = useState<Record<DeliverySlot, string | null>>({
+    channel: null, chatId: null, sessionKey: null,
+  });
 
   const resetForm = () => {
     setName(""); setExpr(""); setCommand("");
     setDeliverChannel(""); setDeliverChatId(""); setSourceSessionKey("");
     setCommandKey("command");
+    setPayloadKeys({ channel: null, chatId: null, sessionKey: null });
     setEditingId(null);
     setShowForm(false);
   };
@@ -63,15 +79,26 @@ export function Cron() {
 
   const startEdit = (job: CronJob) => {
     const p = job.payload ?? {};
+    // 找出该 slot 在这份 payload 里实际用的键(可能是别名),连同它的值。
+    const slotOf = (slot: DeliverySlot): [string | null, string] => {
+      for (const key of DELIVERY_KEYS[slot]) {
+        if (key in p) return [key, str(p[key])];
+      }
+      return [null, ""];
+    };
+    const [channelKey, channelValue] = slotOf("channel");
+    const [chatIdKey, chatIdValue] = slotOf("chatId");
+    const [sessionKeyKey, sessionKeyValue] = slotOf("sessionKey");
     setName(job.name);
     setExpr(job.cron_expr);
     // The backend accepts either key as the instruction; remember which one this
     // job actually uses so a save does not rewrite `message` into `command`.
     setCommandKey("message" in p && !("command" in p) ? "message" : "command");
     setCommand(str(p.command) || str(p.message));
-    setDeliverChannel(str(p.deliver_channel));
-    setDeliverChatId(str(p.deliver_chat_id));
-    setSourceSessionKey(str(p.source_session_key));
+    setDeliverChannel(channelValue);
+    setDeliverChatId(chatIdValue);
+    setSourceSessionKey(sessionKeyValue);
+    setPayloadKeys({ channel: channelKey, chatId: chatIdKey, sessionKey: sessionKeyKey });
     setEditingId(job.id);
     setShowForm(true);
   };
@@ -127,15 +154,22 @@ export function Cron() {
     // 缺失会被 delivery 当成 true,于是一个显式禁止无人值守授权的任务,改一次名字就
     // 变成允许执行。这里只声明真正改了什么,未知字段与授权标记留在服务端。
     const payload: Record<string, string> = { [commandKey]: command.trim() };
-    const optional = {
-      deliver_channel: deliverChannel.trim(),
-      deliver_chat_id: deliverChatId.trim(),
-      source_session_key: sourceSessionKey.trim(),
-    };
-    for (const [key, value] of Object.entries(optional)) {
-      // 编辑时空值也要发:合并语义下省略等于沿用旧值,不发就无法清除一个投递目标。
-      // 新建时省略,免得存下三个空串键。
-      if (value || editingId) payload[key] = value;
+    const optional: [DeliverySlot, string][] = [
+      ["channel", deliverChannel.trim()],
+      ["chatId", deliverChatId.trim()],
+      ["sessionKey", sourceSessionKey.trim()],
+    ];
+    for (const [slot, value] of optional) {
+      const existing = payloadKeys[slot];
+      // 有值就写回它原来的键(别名任务不会被平白多出一个 deliver_* 主键)。
+      if (value) {
+        payload[existing ?? DELIVERY_KEYS[slot][0]] = value;
+        continue;
+      }
+      // 清空只对"这份 payload 里确实有这个键"才需要发:合并语义下省略等于沿用旧值,
+      // 不发就无法清除一个投递目标;而对本来没有的字段发空串,只会给每个任务凭空
+      // 存下三个空串键。
+      if (editingId && existing) payload[existing] = "";
     }
     const body = JSON.stringify({ name, cron_expr: expr, payload });
     const ok = editingId

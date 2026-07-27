@@ -238,6 +238,99 @@ class TestDownloadIsCancellable:
         assert seen["daemon"] is True
 
 
+class TestBudgetIsSharedAcrossSources:
+    """时长预算是"一次拉取"的总预算,不是"每个源"各给一份。
+
+    deadline 原来在 _download_source 内部算,而 _fetch_release_package 会依次试多个源,
+    于是 N 个源就是 N 小时,单次 load 最长能挂 2 小时——预算本来就是为了兜住"极慢但不
+    断续"的传输,按源重置等于把上限乘以源的个数。
+    """
+
+    def test_second_source_inherits_the_remaining_budget(self, pkg_env, monkeypatch):
+        """第一个源把预算耗尽后,第二个源不该再开一份新预算。"""
+        reranker = pkg_env.install([
+            {"parts": ["file:///nonexistent/a.part-00"]},
+            {"url": pkg_env.tar_path.as_uri()},
+        ])
+        monkeypatch.setattr(local_rerank, "_DOWNLOAD_BUDGET_SECONDS", 0.0)
+        opened: list[str] = []
+        real_urlopen = local_rerank_urlopen()
+
+        def tracking_urlopen(url, *args, **kwargs):
+            opened.append(url)
+            return real_urlopen(url, *args, **kwargs)
+
+        monkeypatch.setattr("urllib.request.urlopen", tracking_urlopen)
+
+        assert reranker._fetch_release_package() is False
+        assert opened == []  # 预算已过期,连第一个源都不该开
+        assert not (pkg_env.cache / SUBDIR).exists()
+
+    def test_download_source_uses_the_deadline_it_is_given(self, pkg_env):
+        """显式传入的 deadline 优先于默认预算。"""
+        reranker = pkg_env.install([{"url": pkg_env.tar_path.as_uri()}])
+        source = {"url": pkg_env.tar_path.as_uri()}
+
+        path, digest = reranker._download_source(source, deadline=0.0)
+        assert path is None and digest == ""
+
+        path, digest = reranker._download_source(source)
+        assert path is not None and digest == pkg_env.digest
+        Path(path).unlink(missing_ok=True)
+
+
+class TestInstallStagesHonourClose:
+    """下载完成后的校验/解包/落盘同样要能被 close() 中止。
+
+    这些阶段在慢盘上要跑好几分钟(约 941MB 的 gzip 解包),原来只有分块循环检查
+    _closed,于是关停时仍会把整包解完、甚至替换掉真实缓存目录(rmtree + os.replace
+    这一对整体上不是原子的)。
+    """
+
+    def test_close_after_download_skips_extract_and_cache(self, pkg_env, monkeypatch):
+        """下载刚结束就 close():不解包、不碰缓存目录、不留残留。"""
+        reranker = pkg_env.install([{"url": pkg_env.tar_path.as_uri()}])
+        real_download = reranker._download_source
+
+        def download_then_close(source, deadline=None):
+            result = real_download(source, deadline)
+            reranker.close()
+            return result
+
+        monkeypatch.setattr(reranker, "_download_source", download_then_close)
+
+        assert reranker._fetch_release_package() is False
+        assert not (pkg_env.cache / SUBDIR).exists()
+        assert list(pkg_env.cache.iterdir()) == []  # 临时文件与 staging 都清掉了
+
+    def test_close_during_extract_stops_between_members(self, pkg_env, monkeypatch):
+        """解包途中 close():停在成员之间,不留半棵树,也不动已有缓存。"""
+        tar_path = pkg_env.src / "multi.tar.gz"
+        with tarfile.open(tar_path, "w:gz") as tar:
+            for i in range(5):
+                blob = b"w" * 512
+                info = tarfile.TarInfo(f"{SUBDIR}/snapshots/abc123/onnx/f{i}.onnx")
+                info.size = len(blob)
+                tar.addfile(info, io.BytesIO(blob))
+        digest = hashlib.sha256(tar_path.read_bytes()).hexdigest()
+        reranker = pkg_env.install([{"url": tar_path.as_uri()}], sha256=digest)
+
+        real_extract = tarfile.TarFile.extract
+        calls: list[str] = []
+
+        def extract_then_close(self, member, path="", **kwargs):
+            calls.append(getattr(member, "name", str(member)))
+            reranker.close()  # 第一个成员解完就关停
+            return real_extract(self, member, path, **kwargs)
+
+        monkeypatch.setattr(tarfile.TarFile, "extract", extract_then_close)
+
+        assert reranker._fetch_release_package() is False
+        assert len(calls) == 1  # 剩下 4 个成员没再解
+        assert not (pkg_env.cache / SUBDIR).exists()
+        assert list(pkg_env.cache.iterdir()) == []
+
+
 class TestShippedPackageDefinition:
     """固化线上包定义,避免改 URL/卷数时和 install.sh 失去同步。"""
 

@@ -196,13 +196,17 @@ class GatewayServer:
     def _check_bind_safety(self) -> None:
         """Refuse to expose an unauthenticated gateway beyond localhost.
 
-        With no api_tokens configured, ``authenticate_token`` accepts every
+        With no token of any kind configured, ``authenticate_token`` accepts every
         request — fine on loopback, an open door on 0.0.0.0. Configure
         gateway.auth.apiTokens, or bind to 127.0.0.1.
+
+        adminTokens alone counts as authenticated: an admin token is accepted
+        everywhere an API token is (admin implies read), so such a deployment is
+        not open — refusing to start would be a false alarm.
         """
         host = (self._config.host or "").strip()
         loopback = host in ("127.0.0.1", "localhost", "::1", "")
-        if loopback or self._config.auth.api_tokens:
+        if loopback or self._tokens_configured():
             return
         raise RuntimeError(
             f"Gateway is configured to bind {host}:{self._config.port} without any "
@@ -386,14 +390,21 @@ class GatewayServer:
         self.auth.audit(action, ok=False, reason=f"cross-site origin rejected: {origin or '?'}")
         return web.json_response({"error": "cross-site request forbidden"}, status=403)
 
+    def _tokens_configured(self) -> bool:
+        """Whether this deployment authenticates at all.
+
+        Must consider BOTH lists, and every "is there a token?" test goes through
+        here. Keying such a test on ``api_tokens`` alone is what made a
+        deployment with only ``admin_tokens`` serve read endpoints (and the WS
+        handshake) unauthenticated, while making the bind-safety check refuse to
+        start on 0.0.0.0 — an admin token passes the read guard, so the two lists
+        are one hierarchy, not two independent switches."""
+        return bool(self._config.auth.api_tokens or self._config.auth.admin_tokens)
+
     def _require_api_token(self, request: web.Request, *, action: str) -> web.Response | None:
         """Guard for read/chat-level endpoints. Admin tokens also pass (admin
-        scope implies read scope — see auth.authenticate_token).
-
-        The "no tokens at all" bypass must consider BOTH lists: keying it on
-        ``api_tokens`` alone meant a deployment that configured only
-        ``admin_tokens`` served every read endpoint unauthenticated."""
-        if not self._config.auth.api_tokens and not self._config.auth.admin_tokens:
+        scope implies read scope — see auth.authenticate_token)."""
+        if not self._tokens_configured():
             return None
         token = self._request_token(request)
         if self.auth.authenticate_token(token):
@@ -794,7 +805,10 @@ class GatewayServer:
                             chat_id = data.get("chat_id", user_id)
                             token = str(data.get("token") or self._request_token(request))
 
-                            if self._config.auth.api_tokens and not self.auth.authenticate_token(token):
+                            # Any configured token makes the check mandatory —
+                            # admin_tokens alone must not leave the socket open,
+                            # and authenticate_token already accepts both kinds.
+                            if self._tokens_configured() and not self.auth.authenticate_token(token):
                                 self.auth.audit("ws_auth", platform=platform, user_id=user_id, ok=False, reason="invalid api token")
                                 await websocket.send_json({"type": "error", "error": "unauthorized"})
                                 await websocket.close()

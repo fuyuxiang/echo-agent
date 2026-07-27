@@ -333,6 +333,87 @@ class TestRotationDoesNotCloseAnInUseClient:
         assert pooled._retired_clients == [old_client]
 
 
+class TestRetiredClientsDoNotAccumulate:
+    """退役客户端不能只靠 aclose() 回收。
+
+    app 持有的 provider 活到进程结束、从不 aclose(),所以"留到 aclose() 再关"等于
+    每轮换一次泄漏一个连接池和一批 fd。修法是给每个退役客户端记一个宽限期(覆盖最长
+    单请求),之后由轮换/请求路径顺手清扫;另有条数上限兜住高频轮换。
+    """
+
+    def _make(self, inner, timeout=120.0):
+        from echo_agent.models.credential_pool import CredentialPool
+        from echo_agent.models.providers import _PooledProvider
+
+        keys = ["k1", "k2"]
+        pool = CredentialPool(keys)
+        cfg = ProviderConfig(name="openai", credential_pool=keys, models=["m"])
+        inner.request_timeout = timeout
+        return _PooledProvider(inner, pool, type(inner), cfg)
+
+    @staticmethod
+    def _closed(client) -> bool:
+        return bool(client.close.called or client.aclose.called)
+
+    @pytest.mark.asyncio
+    async def test_grace_period_expiry_closes_the_old_client(self):
+        inner = _FakeInner()
+        inner.responses = [
+            LLMResponse(content="Error: rate limit", finish_reason="error"),
+            LLMResponse(content="recovered", finish_reason="stop"),
+        ]
+        old_client = inner._client
+        pooled = self._make(inner, timeout=0.01)  # 会被夹到 1s 下限
+
+        await pooled.chat(messages=[{"role": "user", "content": "hi"}])
+        assert pooled._retired_clients == [old_client]  # 宽限期内还留着
+        assert not self._closed(old_client)
+
+        # 把 deadline 拨到过去,模拟宽限期已过,再走一次请求路径。
+        pooled._retired_deadlines[0] = 0.0
+        inner.responses = [LLMResponse(content="ok", finish_reason="stop")]
+        await pooled.chat(messages=[{"role": "user", "content": "hi"}])
+
+        assert pooled._retired_clients == []
+        assert self._closed(old_client)
+
+    @pytest.mark.asyncio
+    async def test_grace_period_covers_the_longest_request(self):
+        inner = _FakeInner()
+        pooled = self._make(inner, timeout=300.0)
+        assert pooled._retirement_grace() == 300.0
+        # 没有配置超时时间也不能退化成 0(=立刻关掉在途请求的客户端)。
+        inner.request_timeout = 0.0
+        assert pooled._retirement_grace() >= 1.0
+
+    @pytest.mark.asyncio
+    async def test_cap_closes_oldest_when_rotations_outrun_the_grace_period(self):
+        inner = _FakeInner()
+        inner.responses = [LLMResponse(content="Error: rate limit", finish_reason="error")]
+        pooled = self._make(inner)
+        limit = pooled._RETIRED_CLIENT_LIMIT
+
+        clients = [inner._client]
+        for _ in range(limit + 3):
+            await pooled._rotate_credential()
+            clients.append(inner._client)
+
+        # 宽限期一个都没到,但列表被上限压住,最老的已经关掉。
+        assert len(pooled._retired_clients) <= limit
+        assert self._closed(clients[0])
+        assert not self._closed(inner._client)  # 当前在用的那个绝不能关
+
+    @pytest.mark.asyncio
+    async def test_deadlines_stay_aligned_with_clients(self):
+        inner = _FakeInner()
+        pooled = self._make(inner)
+        for _ in range(3):
+            await pooled._rotate_credential()
+        assert len(pooled._retired_deadlines) == len(pooled._retired_clients)
+        await pooled.aclose()
+        assert pooled._retired_deadlines == []
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # format_utils — openai_to_anthropic_messages
 # ══════════════════════════════════════════════════════════════════════════════

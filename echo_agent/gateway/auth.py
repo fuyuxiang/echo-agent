@@ -144,7 +144,21 @@ class GatewayAuth:
         return ""
 
     def is_admin(self, platform: str, user_id: str, token: str = "") -> bool:
-        if token and self._api_tokens and self.authenticate_token(token):
+        """Whether this caller has admin scope, by token or by admin_users.
+
+        The token branch delegates to ``authenticate_admin_token`` so it follows
+        the same hierarchy as the HTTP admin guard: with ``admin_tokens``
+        configured only those tokens grant admin, otherwise ``api_tokens`` do.
+        It previously gated on ``self._api_tokens`` and used the *read*-level
+        check, so a deployment with only ``admin_tokens`` got no admin from its
+        admin token, while a read-only api token got admin whenever both lists
+        were set.
+
+        The explicit "some list is configured" test matters: with no tokens at
+        all ``authenticate_admin_token`` accepts anything (unauthenticated
+        deployment), which must not turn an arbitrary string into admin here."""
+        configured = self._admin_tokens or self._api_tokens
+        if token and configured and self.authenticate_admin_token(token):
             return True
         return user_id in self._admins or f"{platform}:{user_id}" in self._admins
 
