@@ -1,6 +1,8 @@
 import sys
 from unittest import mock
 
+import pytest
+
 import echo_agent.__main__ as m
 
 
@@ -113,3 +115,27 @@ def test_plugin_and_checkpoint_parsers_have_json_flag():
     assert parser.parse_args(["plugin", "list", "--json"]).json is True
     assert parser.parse_args(["checkpoint", "list", "--json"]).json is True
     assert parser.parse_args(["setup", "doctor", "--json"]).json is True
+
+
+class TestPromptAbortExitCode:
+    """A cancelled prompt reaching main() exits 130, never 0.
+
+    PromptAborted replaced the old sys.exit(0) inside the prompt helpers, so
+    main() is the last line of defence: any command that lets the abort escape
+    reports the shell's "interrupted" status instead of success, and prints a
+    one-line notice rather than a traceback.
+    """
+
+    def test_abort_becomes_130(self, capsys):
+        from echo_agent.cli.prompt import PromptAborted
+
+        with mock.patch.object(m, "_dispatch", side_effect=PromptAborted("EOFError")):
+            with pytest.raises(SystemExit) as exc:
+                m.main()
+        assert exc.value.code == 130
+        assert "Cancelled" in capsys.readouterr().err
+
+    def test_other_errors_still_propagate(self):
+        with mock.patch.object(m, "_dispatch", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError):
+                m.main()

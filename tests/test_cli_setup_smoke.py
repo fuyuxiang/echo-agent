@@ -203,6 +203,46 @@ def test_wizard_doctor_section(tmp_path):
     doctor.assert_called_once()
 
 
+class TestWizardCancellation:
+    """Cancelling the wizard stays a clean exit 0.
+
+    The prompt helpers now raise PromptAborted instead of exiting 0 themselves,
+    so that commands whose work never happened can report a failure. The wizard
+    is the opposite case — walking away from setup is a normal outcome — so it
+    absorbs the abort at its own boundary. This test pins that split so a future
+    change to the prompt layer cannot silently turn `Ctrl-C during setup` into a
+    traceback or a non-zero code.
+    """
+
+    def test_abort_mid_wizard_returns_zero(self, tmp_path):
+        from echo_agent.cli.prompt import PromptAborted
+
+        # Patched on ui rather than on the section function: SETUP_SECTIONS holds
+        # direct function references, so replacing setup_cost on the module would
+        # not affect the entry the wizard actually calls.
+        with patch(f"{_T}.is_interactive", return_value=True), \
+             patch(f"{_T}._setup_config_target", return_value=tmp_path / "c.yaml"), \
+             patch(f"{_T}._load_existing_config", return_value=({}, None)), \
+             patch(f"{_T}._print_banner"), \
+             patch(f"{_T}.save_config") as save, \
+             patch("echo_agent.cli.ui.confirm", side_effect=PromptAborted("EOFError")):
+            rc = setup_mod.run_setup_wizard(section="cost")
+        assert rc == 0
+        save.assert_not_called()  # 中止即不落盘
+
+    def test_first_run_abort_exits_zero(self, tmp_path):
+        from echo_agent.cli.prompt import PromptAborted
+
+        with patch(f"{_T}.is_interactive", return_value=True), \
+             patch(f"{_T}.has_any_provider_configured", return_value=False), \
+             patch(f"{_T}._setup_config_target", return_value=tmp_path / "missing.yaml"), \
+             patch(f"{_T}._load_existing_config", return_value=({}, None)), \
+             patch(f"{_T}.prompt_yes_no", side_effect=PromptAborted("EOFError")):
+            with pytest.raises(SystemExit) as exc:
+                setup_mod.prompt_first_run_setup()
+        assert exc.value.code == 0
+
+
 # ── has_any_provider_configured ─────────────────────────────────────────────────
 
 def test_has_provider_false_when_no_file():

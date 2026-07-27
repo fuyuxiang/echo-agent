@@ -220,7 +220,6 @@ def _show_plugin_info(
     if missing:
         print(f"\n  WARNING: Missing env vars: {', '.join(missing)}")
     return 0
-# __APPEND_MARKER__
 
 
 def _toggle_plugin(
@@ -285,7 +284,6 @@ def _toggle_plugin(
     else:
         print(message)
     return 0
-# __APPEND_MARKER2__
 
 
 def _check_plugins(

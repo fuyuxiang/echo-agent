@@ -5,6 +5,7 @@
   "searchResultCount": "正在查看搜索结果（{{count}} 条，跨全部分层）",
   "clearSearch": "清除搜索",
   "tierDisabledHint": "搜索为全局检索，清除搜索后可按分层浏览",
+  "adminRequired": "本页跨全部主体读取记忆，需要管理员令牌。请用 admin_tokens 中的令牌登录后再浏览或搜索。",
   "tier": {
     "working": "工作记忆",
     "episodic": "情景记忆",

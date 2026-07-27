@@ -174,3 +174,46 @@ def test_migrate_memory_md_dry_run_no_write(tmp_path):
     store = MemoryStore(memory_dir=mem, scope_policy="session")
     keys = {e.key for e in store.list_all(mem_type=MemoryType.USER)}
     assert "user:hobby" not in keys
+
+
+class TestAbortedConfirmationIsNotSuccess:
+    """EOF / Ctrl-C at a migration confirmation must not report success.
+
+    The prompt helper used to sys.exit(0) on EOF, so `echo-agent migrate run`
+    with a piped stdin exited 0 having migrated nothing. An abort is now treated
+    exactly like a decline: nothing is written and the exit code is non-zero.
+    """
+
+    @staticmethod
+    def _eof(monkeypatch):
+        def _boom(_prompt):
+            raise EOFError
+
+        monkeypatch.setattr("builtins.input", _boom)
+
+    def test_run_without_yes_aborts_nonzero(self, tmp_path, monkeypatch):
+        cfg, mem = _seed(tmp_path)
+        self._eof(monkeypatch)
+        rc = run_migrate_command("run", config_path=str(cfg))
+        assert rc == 1
+        data = json.loads((mem / "user_memory.json").read_text())
+        assert data[0]["source_session"] == "telegram:alice"  # 未迁移
+        assert not list(mem.glob("user_memory.json.migbak-*"))  # 未备份
+
+    def test_rollback_without_yes_aborts_nonzero(self, tmp_path, monkeypatch):
+        cfg, mem = _seed(tmp_path)
+        run_migrate_command("run", config_path=str(cfg), yes=True)
+        self._eof(monkeypatch)
+        rc = run_migrate_command("rollback", config_path=str(cfg))
+        assert rc == 1
+        data = json.loads((mem / "user_memory.json").read_text())
+        assert data[0]["source_session"] == "owner"  # 回滚未发生
+
+    def test_memory_md_without_yes_aborts_nonzero(self, tmp_path, monkeypatch):
+        cfg, mem = _seed(tmp_path)
+        shard = _write_shard(mem, "owner", "## user\n- **user:hobby**: 爬山")
+        self._eof(monkeypatch)
+        rc = run_migrate_command("memory-md", config_path=str(cfg))
+        assert rc == 1
+        assert shard.exists()
+        assert not shard.with_name(shard.name + ".imported").exists()

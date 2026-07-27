@@ -27,7 +27,9 @@ function task(id: string, overrides: Partial<TaskCard> = {}): TaskCard {
 }
 
 beforeEach(() => {
-  useKanbanStore.setState({ tasks: [], loading: false, loaded: false });
+  useKanbanStore.setState({
+    tasks: [], loading: false, loaded: false, dirtyIds: new Set<string>(),
+  });
 });
 
 afterEach(() => {
@@ -60,6 +62,40 @@ describe("fetchTasks 合并服务端快照", () => {
 
     expect(useKanbanStore.getState().tasks).toHaveLength(1);
     expect(useKanbanStore.getState().tasks[0].status).toBe("running");
+  });
+
+  it("飞行期间 WS 更新过的同一个 id 不被较旧的快照盖回", async () => {
+    // 只按 id 判断新增/删除挡不住这种情况:快照里有这条记录,但它是请求发出时的
+    // 旧状态。WS 期间已推来 running,快照后到仍带 pending,直接以服务端为准就会
+    // 让卡片“跳回”上一个状态。
+    useKanbanStore.setState({ tasks: [task("a", { status: "pending" })] });
+    let release: (value: { tasks: TaskCard[] }) => void = () => {};
+    vi.spyOn(api, "apiFetch").mockImplementation(
+      () => new Promise((resolve) => { release = resolve as typeof release; }),
+    );
+
+    const pending = useKanbanStore.getState().fetchTasks();
+    useKanbanStore.getState().updateLocal("a", { status: "running" });
+    release({ tasks: [task("a", { status: "pending" }), task("b")] });
+    await pending;
+
+    const byId = new Map(useKanbanStore.getState().tasks.map((t) => [t.id, t]));
+    expect(byId.get("a")!.status).toBe("running");
+    // 同一份快照里其他任务的更新照常生效,不因一个脏 id 而整份丢弃。
+    expect(byId.has("b")).toBe(true);
+  });
+
+  it("脏标记只在本次请求内有效,下一次快照仍以服务端为准", async () => {
+    useKanbanStore.setState({ tasks: [task("a", { status: "pending" })] });
+    useKanbanStore.getState().updateLocal("a", { status: "running" });
+
+    vi.spyOn(api, "apiFetch").mockResolvedValue({
+      tasks: [task("a", { status: "success" })],
+    });
+    await useKanbanStore.getState().fetchTasks();
+
+    // fetch 开始时清空脏标记,所以这份新快照对 a 是权威的。
+    expect(useKanbanStore.getState().tasks[0].status).toBe("success");
   });
 
   it("快照里已删除的任务被移除", async () => {

@@ -109,7 +109,18 @@ def main() -> None:
     try:
         _dispatch()
     except Exception as e:
+        from echo_agent.cli.prompt import PromptAborted
         from echo_agent.config.loader import ConfigError
+        if isinstance(e, PromptAborted):
+            # A prompt was cancelled (Ctrl-C / Ctrl-D / empty piped stdin) and the
+            # command did not run to completion. 130 is the shell convention for
+            # "interrupted", and crucially it is not 0: a wrapper script must not
+            # read a cancelled command as a successful one. Commands that treat a
+            # cancellation as a normal outcome (the setup wizard) handle it
+            # themselves and never reach here.
+            import sys
+            print("已取消 / Cancelled.", file=sys.stderr)
+            sys.exit(130)
         if isinstance(e, ConfigError):
             import sys
             print(f"配置错误 / Configuration error:\n{e}", file=sys.stderr)

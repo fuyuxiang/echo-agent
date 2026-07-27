@@ -57,11 +57,22 @@ class GatewayAuth:
         return False
 
     def authenticate_token(self, token: str) -> bool:
-        if not self._api_tokens:
+        """Authorize a read/chat-level endpoint.
+
+        Admin scope *implies* read scope: a token in ``admin_tokens`` passes here
+        too. Without that implication the two lists were disjoint sets rather
+        than a hierarchy, and a deployment that configured a separate
+        ``admin_tokens`` had no token that could use the dashboard at all — the
+        api token logged in but every admin control 403'd, while the admin token
+        was rejected by the read guard the login probe itself goes through
+        (401). Nothing is widened for chat-level callers: this only lets the
+        strictly higher scope reach the lower one."""
+        if not self._api_tokens and not self._admin_tokens:
             return True
         if not token:
             return False
-        return any(hmac.compare_digest(token, configured) for configured in self._api_tokens)
+        allowed = [*self._api_tokens, *self._admin_tokens]
+        return any(hmac.compare_digest(token, configured) for configured in allowed)
 
     def authenticate_admin_token(self, token: str) -> bool:
         """Authorize a high-risk admin endpoint.

@@ -69,10 +69,67 @@ describe("Cron 页", () => {
     expect(screen.getByLabelText("任务名称")).toHaveValue("每日汇报");
     expect(screen.getByLabelText("cron 表达式")).toHaveValue("0 9 * * *");
     expect(screen.getByLabelText(/任务内容/)).toHaveValue("汇总今天的任务");
-    // PUT 会整体替换 payload,投递字段必须一起回填,否则保存即静默丢失。
+    // 投递字段必须一起回填,否则保存时它们会被当成"用户清空了"而置空。
     expect(screen.getByLabelText(/投递渠道/)).toHaveValue("feishu");
     expect(screen.getByLabelText(/会话\/群 ID/)).toHaveValue("oc_1");
     expect(screen.getByLabelText(/source_session_key/)).toHaveValue("feishu:oc_1");
+  });
+
+  it("编辑不重发授权字段,交由后端合并保留", async () => {
+    // 关键回归:PUT 曾整体替换 payload,而 delivery 把缺失的 unattended_authorized
+    // 读作 true——显式禁止无人值守授权的任务,改一次名字就变成允许执行。现在前端
+    // 只声明自己管的字段,授权标记留在服务端。
+    const guarded = {
+      ...JOB,
+      payload: {
+        ...JOB.payload,
+        unattended_authorized: false,
+        is_group: true,
+        _inspection_tick: 3,
+      },
+    };
+    const spy = vi.spyOn(api, "apiFetch").mockImplementation(async (path: string) => {
+      if (path === "/cron") return { jobs: [guarded] } as never;
+      return {} as never;
+    });
+    renderCron();
+
+    fireEvent.click(await screen.findByRole("button", { name: "编辑定时任务 每日汇报" }));
+    fireEvent.change(screen.getByLabelText("任务名称"), { target: { value: "改个名" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("/cron/j1", expect.anything()));
+    const [, init] = spy.mock.calls.find(([p]) => p === "/cron/j1")!;
+    const sent = JSON.parse((init as { body: string }).body);
+    // 不重发 = 不会被前端的省略清掉(后端合并语义),也不会被前端改写。
+    expect(sent.payload).not.toHaveProperty("unattended_authorized");
+    expect(sent.payload).not.toHaveProperty("is_group");
+    expect(sent.payload).not.toHaveProperty("_inspection_tick");
+    expect(sent.name).toBe("改个名");
+  });
+
+  it("任务用 message 作指令键时保存仍用 message", async () => {
+    // 后端两个键都接受,改写键名会让 fire-time 读到另一个槽位。
+    const withMessage = {
+      ...JOB,
+      payload: { message: "旧指令", deliver_channel: "feishu" },
+    };
+    const spy = vi.spyOn(api, "apiFetch").mockImplementation(async (path: string) => {
+      if (path === "/cron") return { jobs: [withMessage] } as never;
+      return {} as never;
+    });
+    renderCron();
+
+    fireEvent.click(await screen.findByRole("button", { name: "编辑定时任务 每日汇报" }));
+    expect(screen.getByLabelText(/任务内容/)).toHaveValue("旧指令");
+    fireEvent.change(screen.getByLabelText(/任务内容/), { target: { value: "新指令" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("/cron/j1", expect.anything()));
+    const [, init] = spy.mock.calls.find(([p]) => p === "/cron/j1")!;
+    const sent = JSON.parse((init as { body: string }).body);
+    expect(sent.payload.message).toBe("新指令");
+    expect(sent.payload).not.toHaveProperty("command");
   });
 
   it("编辑保存走 PUT 而不是新建", async () => {

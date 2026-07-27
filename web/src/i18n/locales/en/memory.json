@@ -5,6 +5,7 @@
   "searchResultCount": "Showing search results ({{count}} across all tiers)",
   "clearSearch": "Clear search",
   "tierDisabledHint": "Search spans all tiers — clear it to browse by tier",
+  "adminRequired": "This page reads memories across every subject, which requires an admin token. Sign in with a token from admin_tokens to browse or search.",
   "tier": {
     "working": "Working",
     "episodic": "Episodic",

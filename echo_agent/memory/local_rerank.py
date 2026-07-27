@@ -22,14 +22,50 @@ import importlib
 import importlib.util
 import os
 import sys
+import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from loguru import logger
 
 _DEFAULT_MODEL = "BAAI/bge-reranker-base"
+
+# Wall-clock ceiling for one mirror fetch attempt (~941 MiB across 10 volumes).
+# A transfer that trickles below ~0.3 MB/s would otherwise never trip the
+# per-read socket timeout and would keep a load thread — and the user's
+# bandwidth — occupied indefinitely.
+_DOWNLOAD_BUDGET_SECONDS = 3600.0
+
+
+class _DownloadAborted(Exception):
+    """Raised inside the load thread to stop a mirror fetch mid-stream."""
+
+
+def _run_on_daemon_thread(fn: Callable[[], Any], name: str) -> Future[Any]:
+    """Run *fn* on a daemon thread, exposing a Future the caller can await.
+
+    Deliberately NOT a ThreadPoolExecutor submit: pool workers are non-daemon
+    and ``concurrent.futures`` joins them in an atexit hook, so a model download
+    still running at shutdown holds the interpreter open until it finishes —
+    ``shutdown(wait=False, cancel_futures=True)`` only drops *queued* work, it
+    cannot interrupt a thread already inside ``urlopen().read()``. A daemon
+    thread lets the process exit; ``LocalReranker._closed`` is what stops the
+    download promptly and cleanly.
+    """
+    fut: Future[Any] = Future()
+
+    def runner() -> None:
+        if not fut.set_running_or_notify_cancel():
+            return
+        try:
+            fut.set_result(fn())
+        except BaseException as e:  # noqa: BLE001 - propagated to the awaiter
+            fut.set_exception(e)
+
+    threading.Thread(target=runner, name=name, daemon=True).start()
+    return fut
 
 # Self-hosted release packages, tried before fastembed's HF download (CN-friendly,
 # sha256-pinned). Unlike the embedding packages (flat GCS layout), the reranker
@@ -115,8 +151,11 @@ class LocalReranker:
         self._next_retry_at = 0.0
         self._load_future: Future[Any] | None = None
         self._load_lock = asyncio.Lock()
-        # Dedicated pool so a hung reranker download never starves the shared
-        # executor (sessions, provider streaming, embedding load).
+        # Dedicated pool so reranker inference never starves the shared executor
+        # (sessions, provider streaming, embedding load). Inference only — the
+        # load/download runs on its own daemon thread (see _run_on_daemon_thread)
+        # so it neither occupies this single worker for the length of a ~941MB
+        # download nor keeps the interpreter alive at exit.
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="local-rerank")
 
     @property
@@ -162,6 +201,10 @@ class LocalReranker:
             return True
         os.makedirs(self._cache_dir, exist_ok=True)
         for source in pkg["sources"]:
+            if self._closed:
+                # close() during the previous source: don't start another ~941MB
+                # transfer just because the first mirror failed.
+                return False
             tmp = None
             staging = None
             try:
@@ -215,7 +258,13 @@ class LocalReranker:
         they land, so a ~1GB package never needs to be held in memory or stored
         twice on disk. Any missing volume aborts the whole source — a partial
         join would only fail the digest check later, so failing here keeps the
-        warning pointed at the URL that actually broke."""
+        warning pointed at the URL that actually broke.
+
+        The chunk loop is the only place this fetch can be interrupted: it checks
+        ``self._closed`` and a total wall-clock budget between chunks, so `close()`
+        (shutdown, or the operator turning reranking off) stops a ~941MB transfer
+        within one chunk instead of running it to completion.
+        """
         import hashlib
         import tempfile
         import urllib.request
@@ -223,10 +272,12 @@ class LocalReranker:
         urls = source.get("parts") or [source["url"]]
         hasher = hashlib.sha256()
         tmp = None
+        deadline = time.monotonic() + _DOWNLOAD_BUDGET_SECONDS
         try:
             with tempfile.NamedTemporaryFile(dir=self._cache_dir, delete=False) as f:
                 tmp = f.name
                 for url in urls:
+                    self._check_download_allowed(deadline)
                     with urllib.request.urlopen(url, timeout=30) as resp:
                         while True:
                             chunk = resp.read(1024 * 1024)
@@ -234,12 +285,29 @@ class LocalReranker:
                                 break
                             hasher.update(chunk)
                             f.write(chunk)
+                            self._check_download_allowed(deadline)
             return tmp, hasher.hexdigest()
+        except _DownloadAborted as e:
+            # Not a failure of the mirror: log at debug and let the caller move on
+            # without a scary warning during a normal shutdown.
+            logger.debug("Reranker release download aborted: {}", e)
+            if tmp:
+                Path(tmp).unlink(missing_ok=True)
+            return None, ""
         except Exception as e:
             logger.warning("Reranker release download failed: {}", e)
             if tmp:
                 Path(tmp).unlink(missing_ok=True)
             return None, ""
+
+    def _check_download_allowed(self, deadline: float) -> None:
+        """Raise _DownloadAborted when the fetch should stop mid-stream."""
+        if self._closed:
+            raise _DownloadAborted("reranker closed")
+        if time.monotonic() >= deadline:
+            raise _DownloadAborted(
+                f"exceeded the {_DOWNLOAD_BUDGET_SECONDS:.0f}s download budget"
+            )
 
     def _load_model_sync(self) -> Any | None:
         try:
@@ -248,6 +316,10 @@ class LocalReranker:
             # first (which on CN networks can 401 via Xet and strand the ready
             # local cache). Failure falls through to fastembed's own HF download.
             ready = self._fetch_release_package()
+            if self._closed:
+                # Closed while the mirror fetch was streaming: don't go on to
+                # instantiate a ~1GB ONNX session nobody will use.
+                return None
             os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "15")
             os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "15")
             if self._hf_endpoint:
@@ -291,7 +363,9 @@ class LocalReranker:
                 if time.monotonic() < self._next_retry_at:
                     return None
                 self._load_attempts += 1
-                fut = self._pool.submit(self._load_model_sync)
+                fut = _run_on_daemon_thread(
+                    self._load_model_sync, "local-rerank-load"
+                )
                 self._load_future = fut
 
         try:
@@ -339,7 +413,13 @@ class LocalReranker:
             return None
 
     def close(self) -> None:
-        """Release the dedicated pool (idempotent, non-blocking on hung loads)."""
+        """Stop any in-flight download and release the inference pool.
+
+        Idempotent and non-blocking. Setting ``_closed`` first is what actually
+        cancels a running mirror fetch: the download loop checks it between
+        chunks (see ``_check_download_allowed``). The load thread is a daemon, so
+        even a fetch parked inside a socket read cannot delay interpreter exit.
+        """
         self._closed = True
         self._load_future = None
         pool, self._pool = self._pool, None

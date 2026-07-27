@@ -387,7 +387,13 @@ class GatewayServer:
         return web.json_response({"error": "cross-site request forbidden"}, status=403)
 
     def _require_api_token(self, request: web.Request, *, action: str) -> web.Response | None:
-        if not self._config.auth.api_tokens:
+        """Guard for read/chat-level endpoints. Admin tokens also pass (admin
+        scope implies read scope — see auth.authenticate_token).
+
+        The "no tokens at all" bypass must consider BOTH lists: keying it on
+        ``api_tokens`` alone meant a deployment that configured only
+        ``admin_tokens`` served every read endpoint unauthenticated."""
+        if not self._config.auth.api_tokens and not self._config.auth.admin_tokens:
             return None
         token = self._request_token(request)
         if self.auth.authenticate_token(token):

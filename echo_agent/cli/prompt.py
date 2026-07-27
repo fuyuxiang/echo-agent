@@ -8,6 +8,19 @@ import sys
 from echo_agent.cli.colors import Colors, color, print_error
 
 
+class PromptAborted(Exception):
+    """The user (or a non-interactive stdin) ended the prompt session.
+
+    Raised instead of calling ``sys.exit(0)`` inside the helper. Exiting with 0
+    from here reported SUCCESS for work that never happened: pipe an empty stdin
+    into `checkpoint restore` (or any confirm-gated command) and every prompt
+    hit EOF immediately, the process exited 0, and a caller script read that as
+    "restored". Callers now decide: the setup wizard still treats an abort as a
+    clean user cancellation (exit 0), while a command whose action did not run
+    reports a non-zero code.
+    """
+
+
 def is_interactive() -> bool:
     return sys.stdin.isatty()
 
@@ -23,9 +36,9 @@ def prompt(question: str, default: str = "", password: bool = False) -> str:
         else:
             value = input(color(display, Colors.YELLOW))
         return value.strip() or default
-    except (KeyboardInterrupt, EOFError):
+    except (KeyboardInterrupt, EOFError) as e:
         print()
-        sys.exit(0)
+        raise PromptAborted(str(e) or type(e).__name__) from e
 
 
 def prompt_yes_no(question: str, default: bool = True) -> bool:
@@ -33,9 +46,9 @@ def prompt_yes_no(question: str, default: bool = True) -> bool:
     while True:
         try:
             value = input(color(f"  {question} [{hint}]: ", Colors.YELLOW)).strip().lower()
-        except (KeyboardInterrupt, EOFError):
+        except (KeyboardInterrupt, EOFError) as e:
             print()
-            sys.exit(0)
+            raise PromptAborted(str(e) or type(e).__name__) from e
         if not value:
             return default
         if value in ("y", "yes"):
@@ -56,9 +69,9 @@ def prompt_choice(question: str, choices: list[str], default: int = 0) -> int:
     while True:
         try:
             value = input(color(f"  Select [1-{len(choices)}] (default {default + 1}): ", Colors.DIM)).strip()
-        except (KeyboardInterrupt, EOFError):
+        except (KeyboardInterrupt, EOFError) as e:
             print()
-            sys.exit(0)
+            raise PromptAborted(str(e) or type(e).__name__) from e
         if not value:
             return default
         try:
@@ -84,9 +97,9 @@ def prompt_checklist(question: str, items: list[str], pre_selected: list[int] | 
                 print(f"    [{mark}] {i + 1}. {item}")
         try:
             value = input(color("  Toggle/done: ", Colors.DIM)).strip().lower()
-        except (KeyboardInterrupt, EOFError):
+        except (KeyboardInterrupt, EOFError) as e:
             print()
-            sys.exit(0)
+            raise PromptAborted(str(e) or type(e).__name__) from e
         if value in ("done", "d", ""):
             return sorted(selected)
         if value == "none":

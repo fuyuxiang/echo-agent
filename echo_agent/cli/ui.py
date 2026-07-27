@@ -15,10 +15,21 @@ from typing import Iterator
 from echo_agent.cli.colors import Colors, color
 from echo_agent.cli.palette import active_palette, ansi
 from echo_agent.cli.prompt import (
-    is_interactive, prompt, prompt_checklist, prompt_choice, prompt_yes_no,
+    PromptAborted, is_interactive, prompt, prompt_checklist, prompt_choice,
+    prompt_yes_no,
 )
 
 Choice = tuple[str, str, str]  # (value, label, hint)
+
+
+def _aborted(what: str) -> PromptAborted:
+    """questionary returns None when the user hits Ctrl-C / Ctrl-D.
+
+    Mirrors the fallback backend: both raise PromptAborted so the caller decides
+    the exit code. Previously the rich path called sys.exit(0) here, which made
+    a cancelled prompt indistinguishable from completed work.
+    """
+    return PromptAborted(f"cancelled at {what}")
 
 try:
     import questionary as _q  # type: ignore
@@ -73,7 +84,7 @@ def select(message: str, choices: list[Choice], default: str = "") -> str:
         ans = _q.select(message, choices=opts, default=default_val,
                         style=_STYLE, pointer=_POINTER, qmark=_QMARK).ask()
         if ans is None:
-            sys.exit(0)
+            raise _aborted("select")
         return ans
     idx = prompt_choice(message, _labels(choices), default=_default_index(choices, default))
     return choices[idx][0]
@@ -90,7 +101,7 @@ def select_grouped(message: str, groups: list[tuple[str, list[Choice]]], default
         ans = _q.select(message, choices=opts, default=default_val,
                         style=_STYLE, pointer=_POINTER, qmark=_QMARK).ask()
         if ans is None:
-            sys.exit(0)
+            raise _aborted("select_grouped")
         return ans
     flat: list[Choice] = []
     labels: list[str] = []
@@ -110,7 +121,7 @@ def multiselect(message: str, choices: list[Choice], preselected: list[str] | No
         ans = _q.checkbox(message, choices=opts, style=_STYLE,
                           pointer=_POINTER, qmark=_QMARK).ask()
         if ans is None:
-            sys.exit(0)
+            raise _aborted("multiselect")
         return list(ans)
     pre_idx = [i for i, (v, _l, _h) in enumerate(choices) if v in pre]
     idxs = prompt_checklist(message, _labels(choices), pre_selected=pre_idx)
@@ -121,7 +132,7 @@ def text(message: str, default: str = "") -> str:
     if use_rich():
         ans = _q.text(message, default=default, style=_STYLE, qmark=_QMARK).ask()
         if ans is None:
-            sys.exit(0)
+            raise _aborted("text")
         return ans.strip() or default
     return prompt(message, default=default)
 
@@ -130,7 +141,7 @@ def password(message: str) -> str:
     if use_rich():
         ans = _q.password(message, style=_STYLE, qmark=_QMARK).ask()
         if ans is None:
-            sys.exit(0)
+            raise _aborted("password")
         return ans.strip()
     return prompt(message, password=True)
 
@@ -139,7 +150,7 @@ def confirm(message: str, default: bool = True) -> bool:
     if use_rich():
         ans = _q.confirm(message, default=default, style=_STYLE, qmark=_QMARK).ask()
         if ans is None:
-            sys.exit(0)
+            raise _aborted("confirm")
         return bool(ans)
     return prompt_yes_no(message, default=default)
 

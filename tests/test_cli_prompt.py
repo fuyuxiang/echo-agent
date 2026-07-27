@@ -3,7 +3,7 @@
 input()/getpass are mocked; we never read real stdin. Complements the
 prompt_yes_no/is_interactive cases already in tests/test_cli_modules.py by
 covering prompt(), prompt_choice(), prompt_checklist() and their
-KeyboardInterrupt/EOF exit paths.
+KeyboardInterrupt/EOF abort paths.
 """
 
 from __future__ import annotations
@@ -35,18 +35,28 @@ def test_prompt_password_uses_getpass():
     gp.assert_called_once()
 
 
-def test_prompt_keyboard_interrupt_exits():
+def test_prompt_keyboard_interrupt_aborts():
     with patch("builtins.input", side_effect=KeyboardInterrupt):
-        with pytest.raises(SystemExit) as exc:
+        with pytest.raises(prompt_mod.PromptAborted):
             prompt_mod.prompt("Name")
-    assert exc.value.code == 0
 
 
-def test_prompt_eof_exits():
+def test_prompt_eof_aborts():
     with patch("builtins.input", side_effect=EOFError):
-        with pytest.raises(SystemExit) as exc:
+        with pytest.raises(prompt_mod.PromptAborted):
             prompt_mod.prompt("Name")
-    assert exc.value.code == 0
+
+
+def test_abort_is_not_a_silent_success():
+    """An abort must never look like "the work finished".
+
+    prompt() used to sys.exit(0) here, so piping an empty stdin into any
+    confirm-gated command produced exit status 0 without doing anything.
+    """
+    with patch("builtins.input", side_effect=EOFError):
+        with pytest.raises(prompt_mod.PromptAborted):
+            prompt_mod.prompt("Name")
+        assert not issubclass(prompt_mod.PromptAborted, SystemExit)
 
 
 # ── prompt_yes_no — invalid then valid ─────────────────────────────────────────
@@ -57,9 +67,9 @@ def test_prompt_yes_no_reprompts_on_invalid(capsys):
     assert "Please enter y or n" in capsys.readouterr().out
 
 
-def test_prompt_yes_no_interrupt_exits():
+def test_prompt_yes_no_interrupt_aborts():
     with patch("builtins.input", side_effect=KeyboardInterrupt):
-        with pytest.raises(SystemExit):
+        with pytest.raises(prompt_mod.PromptAborted):
             prompt_mod.prompt_yes_no("Continue?")
 
 
@@ -91,9 +101,9 @@ def test_prompt_choice_reprompts_non_numeric(capsys):
     assert "Please enter a number" in capsys.readouterr().out
 
 
-def test_prompt_choice_interrupt_exits():
+def test_prompt_choice_interrupt_aborts():
     with patch("builtins.input", side_effect=EOFError):
-        with pytest.raises(SystemExit):
+        with pytest.raises(prompt_mod.PromptAborted):
             prompt_mod.prompt_choice("Pick", ["a"])
 
 
@@ -131,7 +141,7 @@ def test_prompt_checklist_non_numeric_reprompts(capsys):
     assert "Enter a number" in capsys.readouterr().out
 
 
-def test_prompt_checklist_interrupt_exits():
+def test_prompt_checklist_interrupt_aborts():
     with patch("builtins.input", side_effect=KeyboardInterrupt):
-        with pytest.raises(SystemExit):
+        with pytest.raises(prompt_mod.PromptAborted):
             prompt_mod.prompt_checklist("Pick", ["a"])

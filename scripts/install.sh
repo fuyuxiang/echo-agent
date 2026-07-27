@@ -34,7 +34,11 @@ REPO_HOSTS=(
     "github|git@github.com:fuyuxiang/echo-agent.git|https://github.com/fuyuxiang/echo-agent.git"
     "gitee|git@gitee.com:fuyuxiang/echo-agent.git|https://gitee.com/fuyuxiang/echo-agent.git"
 )
-# Force one host and skip probing: --repo github|gitee, or ECHO_REPO_HOST.
+# Force one host and skip the code-host probe: --repo github|gitee, or
+# ECHO_REPO_HOST. Scope is the git clone/fetch only — the embedding and rerank
+# model packages keep their own fixed source order (Gitee release first, then
+# GitHub), because that order is about the 100MiB-per-asset volume split rather
+# than about which host is reachable for git.
 REPO_HOST="${ECHO_REPO_HOST:-}"
 # Filled in by select_repo_host(). REPO_LABEL names the chosen host and drives
 # the clone order in clone_repo (which reads the URLs out of REPO_HOSTS itself);
@@ -58,8 +62,11 @@ PYTHON_VERSION="3.11"
 NODE_VERSION="22"
 BRANCH="master"
 RUN_SETUP=true
-# Mirror probing: measure real latency to candidate PyPI indexes and use the
-# fastest one, instead of guessing by GeoIP/locale. Disable with --no-mirror-probe.
+# Probing: measure real latency to each candidate download source and use the
+# fastest one, instead of guessing by GeoIP/locale. --no-mirror-probe turns off
+# ALL THREE probes (PyPI index, code host, Node.js dist mirror) — the name predates
+# the code-host and Node probes; it is kept for compatibility with existing docs
+# and scripts, and the --help text spells out the full scope.
 MIRROR_PROBE=true
 DEPS_TIMEOUT="${ECHO_DEPS_TIMEOUT:-600}"
 # Candidate mirrors raced by probe_pypi_index (label|url). The official PyPI is
@@ -147,9 +154,14 @@ while [[ $# -gt 0 ]]; do
             echo "  --skip-setup       Skip interactive setup wizard"
             echo "  --branch NAME      Git branch to install (default: master)"
             echo "  --dir PATH         Installation directory (default: ~/.echo-agent/echo-agent)"
-            echo "  --no-mirror-probe  Skip PyPI mirror speed test; use uv defaults"
+            echo "  --no-mirror-probe  Disable ALL download-source speed probes:"
+            echo "                     PyPI index, code host (github/gitee) and the"
+            echo "                     Node.js dist mirror. Each then uses its first"
+            echo "                     configured default instead of the fastest one"
             echo "  --repo HOST        Clone from 'github' or 'gitee' instead of"
-            echo "                     picking whichever responds faster"
+            echo "                     picking whichever responds faster. Affects the"
+            echo "                     git clone/fetch only — the model prefetch always"
+            echo "                     tries the Gitee release first, then GitHub"
             echo "  --skip-dashboard   Don't build the web Dashboard (skips Node.js/pnpm);"
             echo "                     the gateway serves its built-in playground UI instead"
             echo "  -h, --help         Show this help"
@@ -159,6 +171,25 @@ while [[ $# -gt 0 ]]; do
             echo "  ECHO_DEPS_TIMEOUT  Dependency install timeout in seconds (default: 600)"
             echo "  ECHO_INSTALL_DIR   Same as --dir"
             echo "  ECHO_REPO_HOST     Same as --repo (github|gitee)"
+            echo "  ECHO_COMMAND_LINK_DIR"
+            echo "                     Directory to symlink the echo-agent command into"
+            echo "                     (default: the first writable dir already on PATH)"
+            echo "  UV_DEFAULT_INDEX / UV_INDEX_URL"
+            echo "                     Respected as-is; also skips the PyPI mirror probe"
+            echo ""
+            echo "Model prefetch (best-effort; a failure never aborts the install):"
+            echo "  ECHO_EMBED_MODEL   Embedding model to prefetch (default:"
+            echo "                     BAAI/bge-small-zh-v1.5). Empty disables it."
+            echo "                     Only the default model has a release package;"
+            echo "                     any other value downloads from HuggingFace/GCS"
+            echo "  ECHO_RERANK_MODEL  Rerank model to prefetch (default:"
+            echo "                     BAAI/bge-reranker-base), same rules as above"
+            echo "  ECHO_SKIP_RERANK_PREFETCH=1"
+            echo "                     Skip the ~941MB rerank model prefetch; the"
+            echo "                     runtime downloads it on first use instead"
+            echo "  ECHO_EMBED_PREFETCH_TIMEOUT / ECHO_RERANK_PREFETCH_TIMEOUT"
+            echo "                     Per-model prefetch timeout in seconds"
+            echo "                     (default: 900 / 1800)"
             echo ""
             echo "Notes:"
             echo "  Config and data always live in ~/.echo-agent — the runtime hardcodes"

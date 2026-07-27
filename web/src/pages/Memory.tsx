@@ -6,7 +6,8 @@ import { relativeTime } from "../lib/datetime";
 import { runMutation } from "../stores/toast";
 import { Loadable } from "../components/Loadable";
 import { useConfirm } from "../components/ConfirmDialog";
-import { Trash2, Search, X } from "lucide-react";
+import { useIsAdmin } from "../stores/capabilities";
+import { Trash2, Search, X, ShieldAlert } from "lucide-react";
 
 const TIERS = ["working", "episodic", "semantic", "archival"] as const;
 
@@ -34,8 +35,15 @@ export function Memory() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<MemoryEntry[] | null>(null);
 
+  // 这个页面整体是跨主体视图:列表不带 session_key、搜索用 all_scopes,两者服务端
+  // 都要求 admin token(普通 api token 只能读自己 scope 内的记忆)。探测到明确不是
+  // admin 时不发请求,直接给出可操作的说明——否则整页只剩两条 403 toast。
+  // null = 仍在探测,按允许处理,避免首屏闪一下禁用态。
+  const isAdmin = useIsAdmin();
+  const canReadAll = isAdmin !== false;
+
   const { data, loading, error, refetch } = useApi<{ entries: MemoryEntry[]; total: number }>(
-    `/memory?tier=${tier}&limit=100`
+    canReadAll ? `/memory?tier=${tier}&limit=100` : null
   );
 
   // 搜索是全局的(all_scopes: true),与 tier 分层正交。此前切 tier 会静默清掉搜索
@@ -44,6 +52,7 @@ export function Memory() {
   const searching = searchResults !== null;
 
   const handleSearch = async () => {
+    if (!canReadAll) return;
     if (!searchQuery.trim()) { setSearchResults(null); return; }
     await runMutation(async () => {
       // 管理端全局检索:后端要求带 session_key 或 all_scopes=true(布尔),否则 400。
@@ -106,6 +115,15 @@ export function Memory() {
 
   return (
     <div className="space-y-4">
+      {!canReadAll && (
+        <div
+          role="status"
+          className="flex items-start gap-2 text-sm bg-amber-50 border border-amber-200 rounded px-3 py-2"
+        >
+          <ShieldAlert size={16} className="mt-0.5 shrink-0 text-amber-700" />
+          <span className="text-amber-900">{t("adminRequired")}</span>
+        </div>
+      )}
       <div className="flex gap-2 items-center">
         <input
           value={searchQuery}
@@ -113,12 +131,15 @@ export function Memory() {
           onKeyDown={(e) => e.key === "Enter" && handleSearch()}
           placeholder={t("searchPlaceholder")}
           aria-label={t("searchPlaceholder")}
-          className="border rounded px-3 py-1.5 flex-1"
+          disabled={!canReadAll}
+          className="border rounded px-3 py-1.5 flex-1 disabled:bg-gray-50 disabled:cursor-not-allowed"
         />
         <button
           onClick={handleSearch}
           aria-label={t("searchAria")}
-          className="p-2 bg-gray-100 rounded hover:bg-gray-200"
+          disabled={!canReadAll}
+          title={canReadAll ? undefined : t("adminRequired")}
+          className="p-2 bg-gray-100 rounded hover:bg-gray-200 disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <Search size={18} />
         </button>

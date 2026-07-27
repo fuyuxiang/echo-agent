@@ -85,7 +85,13 @@ def test_themed_markdown_maps_headings_to_theme_palette():
         "primary": "#4fd1c5", "secondary": "#7f9cf5",
         "accent": "#4fd1c5", "muted": "#8b949e",
     })
-    console = Console(width=40, color_system="truecolor", force_terminal=True)
+    # no_color must be pinned: Rich honours a NO_COLOR env var globally and drops
+    # every colour code even under force_terminal, so without this the assertion
+    # below fails on any machine (or CI job) that exports NO_COLOR — a property of
+    # the environment, not of the palette wiring under test.
+    console = Console(
+        width=40, color_system="truecolor", force_terminal=True, no_color=False,
+    )
     with console.capture() as cap:
         console.print(md)
     out = cap.get()

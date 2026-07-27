@@ -96,6 +96,17 @@ interface KanbanState {
   loading: boolean;
   /** true 表示已成功拉取过一次;用于区分“首屏加载”与“刷新中”。 */
   loaded: boolean;
+  /**
+   * 请求飞行期间被本地写过的任务 id。WS 推送、乐观更新、服务端回写都会登记进来,
+   * 快照回来时这些 id 保留本地版本,其余仍以服务端为准。
+   *
+   * mergeSnapshot 只按 id 判断“新增/删除”,对**同一个 id** 无能为力:WS 已把新
+   * 状态写进来,而更早发出的快照后到,快照里的旧状态仍会盖回去(表现为“状态跳回”)。
+   * 只标记受影响的 id、而不是整体丢弃快照,是因为同一份快照里通常还带着其他任务的
+   * 有效更新(以及新任务),丢掉它们就要等下一次刷新。也不用逐项比较 updated_at:
+   * 那要额外处理时钟偏移与字段缺失,而“谁刚被本地改过”这件事本地是确知的。
+   */
+  dirtyIds: Set<string>;
   fetchTasks: () => Promise<void>;
   transitionTask: (id: string, to: string) => Promise<void>;
   retryTask: (id: string) => Promise<void>;
@@ -127,32 +138,44 @@ export type EditableTaskFields = Partial<
  *
  * 少了最后这条分界,已删除的任务会永远留在看板上;少了它的反面,则会丢掉飞行期间
  * 的新任务。两者都要靠这个时间点区分。
+ *
+ * 额外一条:`dirtyIds` 里的 id(飞行期间被本地写过)保留本地版本。上面第一条“服务端
+ * 一律为准”只在快照不比本地旧时才成立,而一份先发后到的快照对这些 id 恰恰是旧的。
  */
 function mergeSnapshot(
   local: TaskCard[],
   snapshot: TaskCard[],
   idsAtRequestStart: Set<string>,
+  dirtyIds: Set<string>,
 ): TaskCard[] {
   const inSnapshot = new Set(snapshot.map((t) => t.id));
+  const localById = new Map(local.map((t) => [t.id, t]));
+  // 飞行期间本地写过的 id:快照可能已过期,保留本地版本。
+  const authoritative = snapshot.map((t) => {
+    const mine = dirtyIds.has(t.id) ? localById.get(t.id) : undefined;
+    return mine ?? t;
+  });
   const arrivedDuringRequest = local.filter(
     (t) => !inSnapshot.has(t.id) && !idsAtRequestStart.has(t.id),
   );
-  return [...snapshot, ...arrivedDuringRequest];
+  return [...authoritative, ...arrivedDuringRequest];
 }
 
 export const useKanbanStore = create<KanbanState>((set, get) => ({
   tasks: [],
   loading: false,
   loaded: false,
+  dirtyIds: new Set<string>(),
 
   fetchTasks: async () => {
-    // 快照发出前先记下当前 id 集合,作为“删除”与“新到”的分界(见 mergeSnapshot)。
+    // 快照发出前先记下当前 id 集合,作为“删除”与“新到”的分界(见 mergeSnapshot),
+    // 并清空脏标记:此刻之后的本地写入才可能比这份快照新。
     const idsAtRequestStart = new Set(get().tasks.map((t) => t.id));
-    set({ loading: true });
+    set({ loading: true, dirtyIds: new Set<string>() });
     try {
       const data = await apiFetch<{ tasks: TaskCard[] }>("/tasks?board_id=default");
       set((s) => ({
-        tasks: mergeSnapshot(s.tasks, data.tasks ?? [], idsAtRequestStart),
+        tasks: mergeSnapshot(s.tasks, data.tasks ?? [], idsAtRequestStart, s.dirtyIds),
         loaded: true,
       }));
     } catch (e) {
@@ -173,6 +196,7 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
       // 用后端回传的权威记录覆盖本地,拿到 completed_at/started_at 等派生字段。
       set((s) => ({
         tasks: s.tasks.map((t) => (t.id === id ? { ...t, ...data.task } : t)),
+        dirtyIds: new Set(s.dirtyIds).add(id),
       }));
     } catch (e) {
       toast.error(i18n.t("kanban:toast.transitionFailed", { error: e instanceof Error ? e.message : String(e) }));
@@ -191,6 +215,7 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
       });
       set((s) => ({
         tasks: s.tasks.map((t) => (t.id === id ? { ...t, ...data.task } : t)),
+        dirtyIds: new Set(s.dirtyIds).add(id),
       }));
     } catch (e) {
       toast.error(i18n.t("kanban:toast.retryFailed", { error: e instanceof Error ? e.message : String(e) }));
@@ -205,7 +230,10 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
         method: "POST",
         body: JSON.stringify({ title, description, source: "human" }),
       });
-      set((s) => ({ tasks: [...s.tasks, data.task] }));
+      set((s) => ({
+        tasks: [...s.tasks, data.task],
+        dirtyIds: new Set(s.dirtyIds).add(data.task.id),
+      }));
       return true;
     } catch (e) {
       toast.error(i18n.t("kanban:toast.createFailed", { error: e instanceof Error ? e.message : String(e) }));
@@ -224,6 +252,7 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
       });
       set((s) => ({
         tasks: s.tasks.map((t) => (t.id === id ? { ...t, ...data.task } : t)),
+        dirtyIds: new Set(s.dirtyIds).add(id),
       }));
       return true;
     } catch (e) {
@@ -232,16 +261,19 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
     }
   },
 
+  // WS 推送写入本地状态:登记脏标记,使在飞的 HTTP 快照不覆盖这一条。这条路径带来的
+  // 状态比先发后到的快照更新(见 KanbanState.dirtyIds)。
   updateLocal: (id, changes) => {
     set((s) => ({
       tasks: s.tasks.map((t) => (t.id === id ? { ...t, ...changes } : t)),
+      dirtyIds: new Set(s.dirtyIds).add(id),
     }));
   },
 
   addLocal: (task) => {
     set((s) => {
       if (s.tasks.find((t) => t.id === task.id)) return s;
-      return { tasks: [...s.tasks, task] };
+      return { tasks: [...s.tasks, task], dirtyIds: new Set(s.dirtyIds).add(task.id) };
     });
   },
 }));

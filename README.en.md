@@ -74,6 +74,15 @@ less install.sh && bash install.sh
 
 # The script probes GitHub and the Gitee mirror and clones from whichever
 # answers faster. Override it with --repo github or --repo gitee.
+#
+# --repo covers the git clone/fetch only: the embedding and rerank model packages
+# always try the Gitee release first and fall back to GitHub, because of how they
+# are split across release assets.
+# --no-mirror-probe disables all three speed probes (PyPI index, code host and
+# Node.js dist mirror); each falls back to its first configured default.
+# For every flag and environment variable, including the model prefetch switches
+# (ECHO_SKIP_RERANK_PREFETCH and friends):
+bash install.sh --help
 ```
 
 </details>

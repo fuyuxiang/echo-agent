@@ -40,6 +40,7 @@ from echo_agent.cli.health import FAIL, OK, WARN, run_health_checks
 from echo_agent.cli.i18n import detect_locale, get_locale, set_locale, t
 from echo_agent.cli.palette import ansi
 from echo_agent.cli.prompt import (
+    PromptAborted,
     is_interactive,
     prompt_yes_no,
 )
@@ -1339,6 +1340,30 @@ def run_setup_wizard(
     flow: str | None = None,
     as_json: bool = False,
 ) -> int:
+    """Run the setup wizard, treating Ctrl-C / EOF as a clean cancellation.
+
+    The prompt helpers raise PromptAborted rather than calling sys.exit(0)
+    themselves, so that a command whose work did NOT happen can report a
+    non-zero code. The wizard is the case where aborting genuinely is a normal
+    user action, so it keeps the old exit-0 behaviour — just decided here rather
+    than deep inside the input helper."""
+    try:
+        return _run_setup_wizard(
+            section=section, config_path=config_path, workspace=workspace,
+            lang=lang, flow=flow, as_json=as_json,
+        )
+    except PromptAborted:
+        return 0
+
+
+def _run_setup_wizard(
+    section: str | None = None,
+    config_path: str | Path | None = None,
+    workspace: str | Path | None = None,
+    lang: str | None = None,
+    flow: str | None = None,
+    as_json: bool = False,
+) -> int:
     """Run the interactive setup wizard and return a process exit code.
 
     ``section``:  name (or alias) of a single section to configure.
@@ -1506,7 +1531,14 @@ def prompt_first_run_setup(
 
     print()
     print_warning(t("summary.first_run_no_config"))
-    if prompt_yes_no(t("summary.first_run_prompt"), default=True):
+    try:
+        accepted = prompt_yes_no(t("summary.first_run_prompt"), default=True)
+    except PromptAborted:
+        # Ctrl-C / EOF at the very first prompt of a fresh install means "let me
+        # out", not "run me without a config" - keep the historical clean exit,
+        # decided here at the flow boundary instead of inside the input helper.
+        raise SystemExit(0) from None
+    if accepted:
         run_setup_wizard(config_path=config_path, workspace=workspace, lang=lang)
         return True
     print_info(t("summary.first_run_skip_msg"))

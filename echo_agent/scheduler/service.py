@@ -31,6 +31,15 @@ except ImportError:
 # updates. Mirrors tasks.manager.EventSink: (event_type, payload) -> None.
 EventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
 
+# Depth of the event fan-out queue. Events are UI notifications, so dropping the
+# oldest under sustained pressure is strictly better than slowing job execution;
+# 256 covers any realistic burst of concurrent job completions.
+_EVENT_QUEUE_MAX = 256
+# Per-event ceiling on the sink call. A dashboard WS peer on a stalled TCP
+# connection can block a send until the OS buffer drains, which without a bound
+# would park the drain task indefinitely and stall every later event behind it.
+_EVENT_SEND_TIMEOUT = 5.0
+
 
 class TriggerKind(str, Enum):
     CRON = "cron"
@@ -161,6 +170,13 @@ class Scheduler:
         # Wired at startup (app.py) to the dashboard WS broadcast; None until then
         # (tests, headless runs). See set_event_sink.
         self._event_sink: EventSink | None = None
+        # Job runs hand events to this queue and return; a single drain task does
+        # the awaiting. Created lazily in _emit so a Scheduler built outside a
+        # running loop (tests, CLI inspection) stays constructible.
+        self._event_queue: asyncio.Queue[tuple[str, dict[str, Any]] | None] | None = None
+        self._event_task: asyncio.Task | None = None
+        self._events_dropped = 0
+        self._events_stopping = False
         self._load()
 
     def set_event_sink(self, sink: EventSink | None) -> None:
@@ -175,16 +191,82 @@ class Scheduler:
         self._event_sink = sink
 
     async def _emit(self, event_type: str, job: ScheduledJob) -> None:
-        """Fire a job event to the sink if one is wired. Swallows everything — a
-        broken or slow subscriber must never affect the run that already
-        happened."""
+        """Hand a job event to the drain queue. Never awaits the sink.
+
+        Previously this awaited the sink inline, which put the dashboard's WS
+        broadcast on the job-execution critical path: a slow or stalled browser
+        peer delayed `_execute_job` returning, which keeps the job in
+        `_inflight_jobs` and makes the next tick skip it — i.e. a UI subscriber
+        could throttle actual scheduling. Enqueue-and-return decouples the two;
+        the queue is bounded and drops the OLDEST event when full, because a
+        newer run outcome is what the dashboard actually needs to show."""
         sink = self._event_sink
-        if sink is None:
+        if sink is None or self._events_stopping:
             return
-        try:
-            await sink(event_type, job.to_dict())
-        except Exception as e:
-            logger.debug("Cron event emit ({}) failed: {}", event_type, e)
+        queue = self._event_queue
+        if queue is None:
+            queue = asyncio.Queue(maxsize=_EVENT_QUEUE_MAX)
+            self._event_queue = queue
+        if self._event_task is None or self._event_task.done():
+            self._event_task = asyncio.create_task(self._drain_events(queue))
+        payload = job.to_dict()
+        while True:
+            try:
+                queue.put_nowait((event_type, payload))
+                return
+            except asyncio.QueueFull:
+                try:
+                    queue.get_nowait()
+                    queue.task_done()
+                except asyncio.QueueEmpty:  # pragma: no cover - drained meanwhile
+                    continue
+                self._events_dropped += 1
+                if self._events_dropped % _EVENT_QUEUE_MAX == 1:
+                    logger.warning(
+                        "Cron event queue full; dropped {} event(s) so far — the "
+                        "dashboard subscriber is not keeping up",
+                        self._events_dropped,
+                    )
+
+    async def _drain_events(
+        self, queue: asyncio.Queue[tuple[str, dict[str, Any]] | None]
+    ) -> None:
+        """Deliver queued events one at a time, off the job execution path.
+
+        Each send is bounded by _EVENT_SEND_TIMEOUT so one stuck subscriber costs
+        that event, not the stream. Every failure is swallowed: these are
+        best-effort UI notifications for runs that already happened. A None item
+        is the shutdown sentinel (see _stop_event_drain) — the loop exits on it
+        rather than relying on cancellation, because a cancel that lands while
+        this task is inside `wait_for` is consumed by wait_for's own handling and
+        the loop would just carry on to the next `get()`.
+        """
+        while True:
+            item = await queue.get()
+            if item is None:
+                queue.task_done()
+                return
+            event_type, payload = item
+            try:
+                sink = self._event_sink
+                if sink is not None:
+                    await asyncio.wait_for(
+                        sink(event_type, payload), timeout=_EVENT_SEND_TIMEOUT
+                    )
+            except asyncio.CancelledError:
+                queue.task_done()
+                raise
+            except (asyncio.TimeoutError, TimeoutError):
+                logger.debug(
+                    "Cron event emit ({}) timed out after {}s", event_type,
+                    _EVENT_SEND_TIMEOUT,
+                )
+                queue.task_done()
+            except Exception as e:
+                logger.debug("Cron event emit ({}) failed: {}", event_type, e)
+                queue.task_done()
+            else:
+                queue.task_done()
 
     def _load(self) -> None:
         if not self._store_path.exists():
@@ -285,7 +367,46 @@ class Scheduler:
         self._inflight_jobs.clear()
         for task in self._background_tasks.values():
             task.cancel()
+        await self._stop_event_drain()
         self._save()
+
+    async def _stop_event_drain(self) -> None:
+        """Flush pending events briefly, then stop the drain task.
+
+        A short flush window means the last run outcome usually still reaches an
+        open dashboard on a graceful shutdown; the bound keeps a dead subscriber
+        from holding shutdown open. Shutdown is signalled by putting a sentinel
+        at the tail of the queue so everything already queued is delivered first;
+        cancellation is only the fallback when the window expires."""
+        self._events_stopping = True
+        queue = self._event_queue
+        task, self._event_task = self._event_task, None
+        if task is not None and queue is not None and not task.done():
+            try:
+                queue.put_nowait(None)
+            except asyncio.QueueFull:  # pragma: no cover - drop one to make room
+                try:
+                    queue.get_nowait()
+                    queue.task_done()
+                    queue.put_nowait(None)
+                except (asyncio.QueueEmpty, asyncio.QueueFull):
+                    pass
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(task), timeout=_EVENT_SEND_TIMEOUT
+                )
+            except (asyncio.TimeoutError, TimeoutError):
+                logger.debug("Cron event queue did not drain before shutdown")
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:  # pragma: no cover - drain swallows its own
+                logger.debug("Cron event drain ended with {}", e)
+        self._event_queue = None
+        self._events_stopping = False
 
     def add_job(self, job: ScheduledJob) -> ScheduledJob:
         job.next_run_ms = _compute_next_run(job, _now_ms())
@@ -301,6 +422,64 @@ class Scheduler:
             self._save()
             return True
         return False
+
+    def update_job(
+        self,
+        job_id: str,
+        *,
+        name: str | None = None,
+        cron_expr: str | None = None,
+        enabled: bool | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> ScheduledJob | None:
+        """Apply an edit and recompute the firing schedule if it changed.
+
+        Editing used to be done by mutating the job from the API layer and calling
+        save_state(), which left ``next_run_ms`` pointing at an occurrence of the
+        *old* expression: a new expression did not take effect until the old
+        pending time had elapsed. Owning this here keeps "what changes the
+        schedule" next to the code that computes it.
+
+        Re-enabling deliberately does NOT fire the occurrences missed while the
+        job was paused. Recomputing from *now* is what start() already does for
+        downtime, and the alternative — keeping a stale past ``next_run_ms`` —
+        makes "pause for a week, then resume" fire immediately on the next tick.
+        """
+        job = self._jobs.get(job_id)
+        if job is None:
+            return None
+
+        reschedule = False
+        if name is not None:
+            job.name = name
+        if cron_expr is not None and cron_expr != job.cron_expr:
+            job.cron_expr = cron_expr
+            reschedule = True
+        if enabled is not None and enabled != job.enabled:
+            job.enabled = enabled
+            # Only a pause→resume needs a new time; pausing leaves the stored one
+            # alone (the tick loop skips disabled jobs anyway).
+            reschedule = reschedule or enabled
+        if payload is not None:
+            job.payload = payload
+
+        if reschedule:
+            previous = job.next_run_ms
+            job.next_run_ms = _compute_next_run(job, _now_ms())
+            if job.next_run_ms is None and job.enabled:
+                logger.warning(
+                    "Job {} ('{}') has no computable next run after update; it will not fire",
+                    job.id, job.name,
+                )
+            elif previous and job.next_run_ms and previous < _now_ms():
+                logger.info(
+                    "Job {} ('{}'): rescheduled from a past due time to {}",
+                    job.id, job.name,
+                    datetime.fromtimestamp(job.next_run_ms / 1000).isoformat(),
+                )
+
+        self._save()
+        return job
 
     def list_jobs(self) -> list[ScheduledJob]:
         return list(self._jobs.values())

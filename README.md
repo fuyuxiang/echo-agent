@@ -76,6 +76,13 @@ less install.sh && bash install.sh
 # 脚本会实测 Gitee 与 GitHub 的响应速度后自动选择克隆源；也可以手动指定：
 bash install.sh --repo gitee     # 强制走 Gitee
 bash install.sh --repo github    # 强制走 GitHub
+
+# --repo 只影响 git clone/fetch；嵌入与精排模型包始终按 Gitee 优先、GitHub 兜底
+# 的固定顺序下载（分卷托管所致，与 --repo 无关）。
+# --no-mirror-probe 会同时关掉 PyPI 源、代码托管、Node.js 镜像三处测速，
+# 各自退回到第一个默认源。
+# 完整选项与环境变量（含 ECHO_SKIP_RERANK_PREFETCH 等模型预取开关）：
+bash install.sh --help
 ```
 
 </details>

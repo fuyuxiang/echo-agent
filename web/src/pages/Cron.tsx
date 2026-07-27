@@ -19,9 +19,10 @@ export interface CronJob {
   last_status: string;
   next_run_ms: number | null;
   config_valid?: boolean;
-  // Needed by the edit form: PUT /cron/{id} replaces payload wholesale, so the
-  // form has to be seeded with the current one rather than sending a fresh
-  // object that silently drops deliver_channel / source_session_key.
+  // Needed by the edit form to seed the visible fields and to detect which key
+  // (`command` or `message`) this job stores its instruction under. PUT merges
+  // server-side, so unknown keys and authorization flags no longer have to make
+  // the round trip through the browser.
   payload?: Record<string, unknown>;
 }
 
@@ -40,10 +41,14 @@ export function Cron() {
   const [deliverChannel, setDeliverChannel] = useState("");
   const [deliverChatId, setDeliverChatId] = useState("");
   const [sourceSessionKey, setSourceSessionKey] = useState("");
+  // 该任务用 command 还是 message 作为指令键。后端两者都接受,编辑时必须沿用原键,
+  // 否则一次改名就把 message 改写成 command。
+  const [commandKey, setCommandKey] = useState<"command" | "message">("command");
 
   const resetForm = () => {
     setName(""); setExpr(""); setCommand("");
     setDeliverChannel(""); setDeliverChatId(""); setSourceSessionKey("");
+    setCommandKey("command");
     setEditingId(null);
     setShowForm(false);
   };
@@ -60,8 +65,9 @@ export function Cron() {
     const p = job.payload ?? {};
     setName(job.name);
     setExpr(job.cron_expr);
-    // The backend accepts either key as the instruction; show whichever this
+    // The backend accepts either key as the instruction; remember which one this
     // job actually uses so a save does not rewrite `message` into `command`.
+    setCommandKey("message" in p && !("command" in p) ? "message" : "command");
     setCommand(str(p.command) || str(p.message));
     setDeliverChannel(str(p.deliver_channel));
     setDeliverChatId(str(p.deliver_chat_id));
@@ -116,10 +122,21 @@ export function Cron() {
     if (!command.trim()) {
       return; // 任务内容必填:与后端 400 校验双保险
     }
-    const payload: Record<string, string> = { command: command.trim() };
-    if (deliverChannel.trim()) payload.deliver_channel = deliverChannel.trim();
-    if (deliverChatId.trim()) payload.deliver_chat_id = deliverChatId.trim();
-    if (sourceSessionKey.trim()) payload.source_session_key = sourceSessionKey.trim();
+    // payload 只带本表单管的字段,由后端与已存 payload 合并(PUT 是合并语义)。
+    // 此前这里重建整个 payload,把表单没有的字段全部丢掉——其中 unattended_authorized
+    // 缺失会被 delivery 当成 true,于是一个显式禁止无人值守授权的任务,改一次名字就
+    // 变成允许执行。这里只声明真正改了什么,未知字段与授权标记留在服务端。
+    const payload: Record<string, string> = { [commandKey]: command.trim() };
+    const optional = {
+      deliver_channel: deliverChannel.trim(),
+      deliver_chat_id: deliverChatId.trim(),
+      source_session_key: sourceSessionKey.trim(),
+    };
+    for (const [key, value] of Object.entries(optional)) {
+      // 编辑时空值也要发:合并语义下省略等于沿用旧值,不发就无法清除一个投递目标。
+      // 新建时省略,免得存下三个空串键。
+      if (value || editingId) payload[key] = value;
+    }
     const body = JSON.stringify({ name, cron_expr: expr, payload });
     const ok = editingId
       ? await runMutation(

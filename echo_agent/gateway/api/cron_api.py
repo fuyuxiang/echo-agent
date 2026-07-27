@@ -21,6 +21,32 @@ def _payload_has_content(payload: object) -> bool:
     return bool(command)
 
 
+def _merge_payload(current: object, incoming: dict) -> dict:
+    """Merge an update into the stored payload instead of replacing it.
+
+    A PUT used to swap ``job.payload`` wholesale, so any key the client did not
+    resend was silently dropped. That is not merely lossy — it is a privilege
+    change: ``scheduler/delivery.py`` reads a *missing* ``unattended_authorized``
+    as ``True``, so a job explicitly created with ``unattended_authorized=False``
+    became authorized to run EXEC/DANGEROUS tool calls unattended after any
+    unrelated rename. Extension metadata, ``is_group`` and the inspection-tick
+    marker were lost the same way.
+
+    ``command`` and ``message`` are treated as one logical slot: they are
+    alternative spellings of the instruction, so accepting a new value for one
+    must clear the other. Merging them independently would leave the previous
+    instruction behind, and the fire-time path (which prefers ``command``) could
+    then run text the user believed they had replaced.
+    """
+    merged = dict(current) if isinstance(current, dict) else {}
+    merged.update(incoming)
+    if "command" in incoming and "message" not in incoming:
+        merged.pop("message", None)
+    elif "message" in incoming and "command" not in incoming:
+        merged.pop("command", None)
+    return merged
+
+
 class CronAPI:
     def __init__(self, server: GatewayServer):
         self._server = server
@@ -103,23 +129,35 @@ class CronAPI:
 
         # Same content guard as create_job: a PUT must not restore the empty-payload
         # state create_job now rejects (would re-open the fire-time ValueError hole).
-        if "payload" in body and not _payload_has_content(body["payload"]):
-            return web.json_response(
-                {"error": "payload must contain a non-empty 'command' or 'message'"},
-                status=400,
-            )
-
-        if "name" in body:
-            job.name = body["name"]
-        if "cron_expr" in body:
-            job.cron_expr = body["cron_expr"]
-        if "enabled" in body:
-            job.enabled = body["enabled"]
+        # Checked against the MERGED payload, not the request body: an update that
+        # only touches, say, deliver_channel legitimately omits the instruction and
+        # inherits the stored one, so validating the body alone would reject it.
+        merged = None
         if "payload" in body:
-            job.payload = body["payload"]
+            if not isinstance(body["payload"], dict):
+                return web.json_response(
+                    {"error": "payload must be an object"}, status=400
+                )
+            merged = _merge_payload(job.payload, body["payload"])
+            if not _payload_has_content(merged):
+                return web.json_response(
+                    {"error": "payload must contain a non-empty 'command' or 'message'"},
+                    status=400,
+                )
 
-        self._scheduler().save_state()
-        return web.json_response({"job": self._job_to_dict(job)})
+        # Scheduler owns the mutation so cron_expr / re-enable also recompute
+        # next_run_ms; assigning here and calling save_state() left the job
+        # pointing at an occurrence of the previous expression.
+        updated = self._scheduler().update_job(
+            job_id,
+            name=body.get("name") if "name" in body else None,
+            cron_expr=body.get("cron_expr") if "cron_expr" in body else None,
+            enabled=body.get("enabled") if "enabled" in body else None,
+            payload=merged,
+        )
+        if updated is None:
+            return web.json_response({"error": "not found"}, status=404)
+        return web.json_response({"job": self._job_to_dict(updated)})
 
     async def delete_job(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "cron_delete")

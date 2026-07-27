@@ -13,12 +13,21 @@ from __future__ import annotations
 import hashlib
 import io
 import tarfile
+import threading
+import urllib.request
 from pathlib import Path
 
 import pytest
 
 from echo_agent.memory import local_rerank
 from echo_agent.memory.local_rerank import LocalReranker, _source_label
+
+_REAL_URLOPEN = urllib.request.urlopen
+
+
+def local_rerank_urlopen():
+    """真实的 urlopen,供 monkeypatch 包装时回落使用(避免包到自己身上)。"""
+    return _REAL_URLOPEN
 
 
 def _make_model_tar(tmp_path: Path, subdir: str, onnx_bytes: bytes = b"onnx-weights") -> Path:
@@ -143,6 +152,90 @@ class TestSourceFallback:
         reranker = pkg_env.install([{"url": pkg_env.tar_path.as_uri()}])
         reranker._cache_dir = ""
         assert reranker._fetch_release_package() is False
+
+
+class TestDownloadIsCancellable:
+    """close() 必须能中止正在进行的约 941MB 拉取,并且不留残留文件。
+
+    原实现只有 close() 里的 pool.shutdown(cancel_futures=True),它只能丢掉排队中的
+    任务,对已经进入 urlopen().read() 的线程无效:用户即使关掉精排或直接退出进程,
+    这一 GB 也会照抄完。这里固化"分块循环里检查 _closed"这条唯一可中断点。
+    """
+
+    def test_close_aborts_an_in_flight_download(self, pkg_env):
+        urls = _split(pkg_env.tar_path, pkg_env.src, 6)
+        reranker = pkg_env.install([{"parts": urls}])
+        reranker.close()
+
+        assert reranker._fetch_release_package() is False
+        assert not (pkg_env.cache / SUBDIR).exists()
+        assert list(pkg_env.cache.iterdir()) == []
+
+    def test_close_midway_stops_and_cleans_up(self, pkg_env, monkeypatch):
+        """在第 2 卷时置 _closed:后续卷不再拉,临时文件被清掉。"""
+        urls = _split(pkg_env.tar_path, pkg_env.src, 6)
+        reranker = pkg_env.install([{"parts": urls}])
+        opened: list[str] = []
+        real_urlopen = local_rerank_urlopen()
+
+        def counting_urlopen(url, *args, **kwargs):
+            opened.append(url)
+            if len(opened) == 2:
+                reranker.close()
+            return real_urlopen(url, *args, **kwargs)
+
+        monkeypatch.setattr("urllib.request.urlopen", counting_urlopen)
+
+        assert reranker._fetch_release_package() is False
+        assert len(opened) == 2  # 第 3 卷已经不再请求
+        assert list(pkg_env.cache.iterdir()) == []
+
+    def test_time_budget_aborts_a_stalled_download(self, pkg_env, monkeypatch):
+        """总时长预算到点即放弃:极慢但不断续的传输不能永久占着线程和带宽。"""
+        urls = _split(pkg_env.tar_path, pkg_env.src, 4)
+        reranker = pkg_env.install([{"parts": urls}])
+        monkeypatch.setattr(local_rerank, "_DOWNLOAD_BUDGET_SECONDS", 0.0)
+
+        assert reranker._fetch_release_package() is False
+        assert list(pkg_env.cache.iterdir()) == []
+
+    def test_closed_reranker_does_not_try_the_next_source(self, pkg_env, monkeypatch):
+        """关闭后不该因为第一个源失败就再开一个整包源。"""
+        reranker = pkg_env.install([
+            {"parts": ["file:///nonexistent/a.part-00"]},
+            {"url": pkg_env.tar_path.as_uri()},
+        ])
+        opened: list[str] = []
+        real_urlopen = local_rerank_urlopen()
+
+        def tracking_urlopen(url, *args, **kwargs):
+            opened.append(url)
+            reranker.close()
+            return real_urlopen(url, *args, **kwargs)
+
+        monkeypatch.setattr("urllib.request.urlopen", tracking_urlopen)
+
+        assert reranker._fetch_release_package() is False
+        assert len(opened) == 1
+        assert not (pkg_env.cache / SUBDIR).exists()
+
+    def test_load_runs_on_a_daemon_thread(self, pkg_env, monkeypatch):
+        """加载线程必须是 daemon:否则 concurrent.futures 的 atexit 会等下载跑完
+        才让进程退出,Ctrl-C 也救不回来。"""
+        import asyncio
+
+        reranker = pkg_env.install([{"url": pkg_env.tar_path.as_uri()}])
+        seen: dict[str, bool] = {}
+
+        def fake_load():
+            seen["daemon"] = threading.current_thread().daemon
+            return object()
+
+        monkeypatch.setattr(reranker, "_load_model_sync", fake_load)
+        monkeypatch.setattr(type(reranker), "available", property(lambda self: True))
+
+        assert asyncio.run(reranker._ensure_model()) is not None
+        assert seen["daemon"] is True
 
 
 class TestShippedPackageDefinition:

@@ -22,6 +22,12 @@ interface CapabilitiesState {
   /** Shared across concurrent callers so two pages mounting together issue one
    *  request instead of two. Cleared once settled. */
   inflight: Promise<void> | null;
+  /** Bumped by reset(). A probe stamps the generation it started under and
+   *  discards its own result if that no longer matches — otherwise a probe
+   *  issued for the previous token could resolve after a logout/re-login and
+   *  write the *old* token's scope over the new one, and its `finally` could
+   *  clear the new probe's inflight promise. */
+  generation: number;
   probe: () => Promise<void>;
   reset: () => void;
 }
@@ -29,24 +35,31 @@ interface CapabilitiesState {
 export const useCapabilitiesStore = create<CapabilitiesState>((set, get) => ({
   admin: null,
   inflight: null,
+  generation: 0,
 
   probe: async () => {
     const state = get();
     if (state.admin !== null) return;
     if (state.inflight) return state.inflight;
 
+    const startedAt = state.generation;
+    const isStale = () => get().generation !== startedAt;
+
     const inflight = (async () => {
       try {
         const data = await apiFetch<{ admin: boolean }>("/capabilities");
+        if (isStale()) return;
         set({ admin: data.admin });
       } catch {
         // A failed probe must not disable the UI: fall back to optimistic
         // (assume allowed) and let the endpoint's own 403 stay authoritative.
         // That is the pre-existing behaviour, so a gateway too old to serve
         // /capabilities degrades to it rather than locking the user out.
+        if (isStale()) return;
         set({ admin: true });
       } finally {
-        set({ inflight: null });
+        // Only clear our own inflight — a newer probe owns the slot otherwise.
+        if (!isStale()) set({ inflight: null });
       }
     })();
 
@@ -54,7 +67,7 @@ export const useCapabilitiesStore = create<CapabilitiesState>((set, get) => ({
     return inflight;
   },
 
-  reset: () => set({ admin: null, inflight: null }),
+  reset: () => set((s) => ({ admin: null, inflight: null, generation: s.generation + 1 })),
 }));
 
 /**

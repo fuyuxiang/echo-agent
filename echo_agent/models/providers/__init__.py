@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
-from typing import Any
+from typing import Any, Awaitable
 
 from loguru import logger
 
@@ -154,19 +155,56 @@ class _PooledProvider(LLMProvider):
         self._cls = cls
         self._config = config
         self.generation = inner.generation
+        # Old clients waiting to be closed once nobody is using them. Rotation
+        # can't close a client synchronously: a provider instance is shared by
+        # every concurrent session, so the one being replaced may still be
+        # serving other in-flight requests (see _rotate_credential).
+        self._retired_clients: list[Any] = []
+
+    async def _rotate_credential(self) -> str:
+        """Point _inner at the next key on a FRESH client; retire the old one.
+
+        The previous implementation did ``await self._inner.aclose()`` before
+        rebuilding. `_inner` is one object shared across all concurrent sessions,
+        so that closed the httpx client that other in-flight requests were still
+        reading from — turning one key's rate-limit error into spurious
+        "client has been closed" failures on unrelated requests.
+
+        The aclose() call itself can't just be dropped: it exists because an SDK
+        client that outlives its loop makes the SDK's ``__del__`` schedule a
+        close on whatever loop runs next, surfacing "Event loop is closed" out of
+        a task nobody awaits. So the old client is *retired* instead — swapped
+        out immediately (new requests get the new key) and closed later, when
+        this provider is closed and no request can be using it.
+        """
+        next_key = self._pool.get_next()
+        old_client = getattr(self._inner, "_client", None)
+        self._inner.api_key = next_key
+        self._inner._client = self._inner._build_client()
+        if old_client is not None and old_client is not self._inner._client:
+            self._retired_clients.append(old_client)
+        logger.info("Rotated to next credential in pool")
+        return next_key
+
+    async def _close_retired_clients(self) -> None:
+        """Close every retired client. Best-effort, mirrors LLMProvider.aclose."""
+        retired, self._retired_clients = self._retired_clients, []
+        for client in retired:
+            closer = getattr(client, "close", None) or getattr(client, "aclose", None)
+            if closer is None:
+                continue
+            try:
+                result = closer()
+                if asyncio.iscoroutine(result) or isinstance(result, Awaitable):
+                    await result
+            except Exception as e:  # pragma: no cover - teardown never surfaces
+                logger.debug("Retired pooled client close failed (ignored): {}", e)
 
     async def chat(self, messages, tools=None, model=None, tool_choice=None, **kwargs):
         resp = await self._inner.chat(messages, tools, model, tool_choice, **kwargs)
         if resp.finish_reason == "error" and self._pool.size > 1:
             self._pool.report_error(self._inner.api_key)
-            next_key = self._pool.get_next()
-            self._inner.api_key = next_key
-            # Close the client we are about to drop, while its own loop is
-            # still running — otherwise its pooled connections outlive the loop
-            # and the SDK's __del__ raises "Event loop is closed" later.
-            await self._inner.aclose()
-            self._inner._client = self._inner._build_client()
-            logger.info("Rotated to next credential in pool")
+            next_key = await self._rotate_credential()
             resp = await self._inner.chat(messages, tools, model, tool_choice, **kwargs)
             if resp.finish_reason != "error":
                 self._pool.report_success(next_key)
@@ -201,11 +239,7 @@ class _PooledProvider(LLMProvider):
         )
         if resp.finish_reason == "error" and self._pool.size > 1 and not emitted:
             self._pool.report_error(self._inner.api_key)
-            next_key = self._pool.get_next()
-            self._inner.api_key = next_key
-            await self._inner.aclose()
-            self._inner._client = self._inner._build_client()
-            logger.info("Rotated to next credential in pool")
+            next_key = await self._rotate_credential()
             resp = await self._inner.chat_stream(
                 messages,
                 tools,
@@ -236,4 +270,8 @@ class _PooledProvider(LLMProvider):
 
     async def aclose(self) -> None:
         # The wrapper holds no client of its own; the socket owner is _inner.
+        # Retired clients from earlier rotations are closed here too — this is the
+        # point where no request can still be holding one, and it keeps the
+        # original guarantee that no SDK client outlives its event loop.
+        await self._close_retired_clients()
         await self._inner.aclose()

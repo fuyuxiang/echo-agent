@@ -115,13 +115,23 @@ def _run(
                     "restore in --json mode requires -y/--yes (cannot prompt).", as_json
                 )
             # Goes through prompt_yes_no rather than a bare input() so a piped /
-            # non-TTY invocation exits cleanly instead of raising EOFError while
-            # about to overwrite the user's files.
-            from echo_agent.cli.prompt import prompt_yes_no
-            if not prompt_yes_no(
-                f"Restore checkpoint {sha[:10]}? This overwrites the changed files.",
-                default=False,
-            ):
+            # non-TTY invocation fails loudly instead of raising EOFError while
+            # about to overwrite the user's files. An EOF is NOT consent and it
+            # is not a decline either - nothing restored, so report non-zero so
+            # a wrapper script cannot read "exit 0" as "restored".
+            from echo_agent.cli.prompt import PromptAborted, prompt_yes_no
+            try:
+                confirmed = prompt_yes_no(
+                    f"Restore checkpoint {sha[:10]}? This overwrites the changed files.",
+                    default=False,
+                )
+            except PromptAborted:
+                return _emit_error(
+                    "restore needs a confirmation; pass -y/--yes for "
+                    "non-interactive use.",
+                    as_json,
+                )
+            if not confirmed:
                 print("Aborted.")
                 return 0
         try:

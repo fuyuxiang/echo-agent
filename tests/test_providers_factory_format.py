@@ -239,6 +239,100 @@ class TestPooledProvider:
         assert inner.calls == 1
 
 
+class TestRotationDoesNotCloseAnInUseClient:
+    """轮换不能关掉别的在途请求正在用的那个客户端。
+
+    provider 实例是所有并发会话共享的一个对象。原实现在轮换时先 await aclose() 再
+    重建,于是"某个 key 触发限流"会顺手把其他请求正在读的 httpx 客户端关掉,把一个
+    key 的错误放大成一批无关请求的 "client has been closed"。修法是退役而非立即关闭:
+    立刻换上新客户端,旧的留到 aclose() 时统一关(那时不可能还有人在用)。
+
+    注意 aclose() 本身不能简单删掉:它是为了避免 SDK 客户端活过自己的事件循环、
+    进而让 __del__ 在别的循环上抛 "Event loop is closed"。
+    """
+
+    def _make(self, inner):
+        from echo_agent.models.credential_pool import CredentialPool
+        from echo_agent.models.providers import _PooledProvider
+
+        pool = CredentialPool(["k1", "k2"])
+        cfg = ProviderConfig(name="openai", credential_pool=["k1", "k2"], models=["m"])
+        return _PooledProvider(inner, pool, type(inner), cfg)
+
+    @pytest.mark.asyncio
+    async def test_rotation_does_not_close_the_old_client(self):
+        inner = _FakeInner()
+        inner.responses = [
+            LLMResponse(content="Error: rate limit", finish_reason="error"),
+            LLMResponse(content="recovered", finish_reason="stop"),
+        ]
+        old_client = inner._client
+        pooled = self._make(inner)
+
+        await pooled.chat(messages=[{"role": "user", "content": "hi"}])
+
+        assert inner._client is not old_client  # 已换新
+        old_client.close.assert_not_called()    # 但没被关掉
+        old_client.aclose.assert_not_called()
+        assert pooled._retired_clients == [old_client]
+
+    @pytest.mark.asyncio
+    async def test_aclose_closes_every_retired_client(self):
+        inner = _FakeInner()
+        inner.responses = [
+            LLMResponse(content="Error: rate limit", finish_reason="error"),
+            LLMResponse(content="Error: rate limit", finish_reason="error"),
+        ]
+        first = inner._client
+        pooled = self._make(inner)
+
+        await pooled.chat(messages=[{"role": "user", "content": "hi"}])
+        second = inner._client
+        inner.calls = 0
+        await pooled.chat(messages=[{"role": "user", "content": "hi"}])
+
+        assert len(pooled._retired_clients) == 2
+        await pooled.aclose()
+
+        # 两个退役客户端都关了,且 aclose 后列表清空(幂等,不重复关)。
+        assert first.close.called or first.aclose.called
+        assert second.close.called or second.aclose.called
+        assert pooled._retired_clients == []
+        await pooled.aclose()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_request_still_uses_a_live_client(self):
+        """轮换期间另一个在途请求拿到的客户端必须仍然可用。"""
+        inner = _FakeInner()
+        inner.responses = [
+            LLMResponse(content="Error: rate limit", finish_reason="error"),
+            LLMResponse(content="recovered", finish_reason="stop"),
+        ]
+        borrowed = inner._client  # 模拟另一个请求已经持有的句柄
+        pooled = self._make(inner)
+
+        await pooled.chat(messages=[{"role": "user", "content": "hi"}])
+
+        # is_closed 语义由 SDK 提供,这里断言我们没对它调用过任何关闭方法。
+        borrowed.close.assert_not_called()
+        borrowed.aclose.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stream_rotation_also_retires_instead_of_closing(self):
+        inner = _FakeInner()
+        inner.responses = [
+            LLMResponse(content="Error: rate limit", finish_reason="error"),
+            LLMResponse(content="recovered", finish_reason="stop"),
+        ]
+        old_client = inner._client
+        pooled = self._make(inner)
+
+        await pooled.chat_stream(messages=[{"role": "user", "content": "hi"}])
+
+        old_client.close.assert_not_called()
+        assert pooled._retired_clients == [old_client]
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # format_utils — openai_to_anthropic_messages
 # ══════════════════════════════════════════════════════════════════════════════

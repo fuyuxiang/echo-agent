@@ -45,21 +45,35 @@ class MemoryAPI:
         return web.json_response({"error": "memory disabled"}, status=409)
 
     def _guard(self, request: web.Request, action: str) -> web.Response | None:
-        """Read guard — chat-level api token.
+        """Read guard — chat-level api token (admin tokens also pass, since admin
+        scope implies read scope; see auth.authenticate_token).
 
         Reads used to require an *admin* token, which broke the dashboard in any
-        deployment that configures a separate ``admin_tokens``: a valid api token
-        logs in (login probes /stats, an api-token endpoint) and then the whole
-        Memory page, plus the overview's memory counter, answered 403. Sensitivity
-        inside a read is already modelled one level down by ``Audience``
-        (RETRIEVAL by default, ADMIN only when ``include_all`` is asked for), so
-        the guard does not need to gate the endpoint wholesale. Writes stay on
-        ``_admin_guard`` — those can override provenance and delete entries."""
+        deployment that configures a separate ``admin_tokens``. Lowering this
+        guard is safe only for reads that are already scoped to one subject —
+        ``Audience`` models lifecycle eligibility, NOT caller identity, so it
+        cannot substitute for object-level authorization. Cross-subject reads
+        (a list with no ``session_key``, ``all_scopes`` search, fetch-by-id) are
+        therefore gated separately by ``_require_admin_for_cross_scope``. Writes
+        stay on ``_admin_guard`` — those can override provenance and delete."""
         return self._server._require_api_token(request, action=action)
 
     def _admin_guard(self, request: web.Request, action: str) -> web.Response | None:
         """Write guard — admin-scoped token, plus CSRF (see _require_admin_token)."""
         return self._server._require_admin_token(request, action=action)
+
+    def _require_admin_for_cross_scope(
+        self, request: web.Request, action: str, session_key: str | None
+    ) -> web.Response | None:
+        """A read without a ``session_key`` spans every subject in the store.
+
+        ``Audience.RETRIEVAL`` does not filter by subject — ``store._filtered_entries``
+        only applies visibility when a ``session_key`` is passed — so an
+        api-token caller asking for "everything" would read other principals'
+        memories. Scope the plain read to a subject, or present an admin token."""
+        if session_key:
+            return None
+        return self._admin_guard(request, f"{action}:cross_scope")
 
     def _require_admin_for_include_all(
         self, request: web.Request, action: str, include_all: bool
@@ -71,6 +85,17 @@ class MemoryAPI:
         if not include_all:
             return None
         return self._admin_guard(request, f"{action}:include_all")
+
+    @staticmethod
+    def _truthy_flag(value: object) -> bool:
+        """Accept both a JSON boolean and the string form of a query flag.
+
+        ``search`` reads its flags from a JSON body, where a client sends a real
+        ``true``; ``list`` reads them from the query string, where the value can
+        only ever be text. Comparing against ``"true"`` alone silently dropped
+        the JSON boolean, which made the admin escalation on ``/memory/search``
+        unreachable."""
+        return value is True or (isinstance(value, str) and value.lower() == "true")
 
     async def list_entries(self, request: web.Request) -> web.Response:
         if not self._memory_enabled():
@@ -92,7 +117,10 @@ class MemoryAPI:
         from echo_agent.memory.types import MemoryType
         from echo_agent.memory.eligibility import Audience
         mt = MemoryType(mem_type) if mem_type else None
-        include_all = request.query.get("include_all") == "true"
+        cross = self._require_admin_for_cross_scope(request, "memory_list", session_key)
+        if cross is not None:
+            return cross
+        include_all = self._truthy_flag(request.query.get("include_all"))
         escalation = self._require_admin_for_include_all(request, "memory_list", include_all)
         if escalation is not None:
             return escalation
@@ -124,6 +152,11 @@ class MemoryAPI:
 
         store = self._store()
         session_key = request.query.get("session_key")
+        # Deliberately NOT gated by _require_admin_for_cross_scope: this returns
+        # only counts bucketed by tier/type, never entry content or ids, and the
+        # overview's memory counter (an api-token page) depends on it. The
+        # cross-subject gate exists to stop one principal reading another's
+        # memories — an aggregate total does not do that.
         entries = store.list_all(session_key=session_key or None)
 
         by_tier: dict[str, int] = {}
@@ -141,7 +174,12 @@ class MemoryAPI:
     async def get_entry(self, request: web.Request) -> web.Response:
         if not self._memory_enabled():
             return self._disabled_response()
-        guard = self._guard(request, "memory_get")
+        # Admin-guarded, unlike list/search: a fetch-by-id carries no scope to
+        # authorize against — the caller already knows the id, and the store
+        # returns the entry whatever subject it belongs to and whatever its
+        # lifecycle state (no Audience filter applies on this path). There is no
+        # api-token-safe reading of this endpoint, so it stays at admin scope.
+        guard = self._admin_guard(request, "memory_get")
         if guard is not None:
             return guard
 
@@ -272,12 +310,19 @@ class MemoryAPI:
         mt = MemoryType(mem_type) if mem_type else None
         session_key = body.get("session_key")
         # 无 session_key 即全量跨主体检索,是跨 scope 暴露口子;须显式 all_scopes=true 才放行。
-        all_scopes = body.get("all_scopes") is True
+        all_scopes = self._truthy_flag(body.get("all_scopes"))
         if not session_key and not all_scopes:
             return web.json_response(
                 {"error": "session_key or all_scopes=true required"}, status=400
             )
-        include_all = body.get("include_all") == "true"
+        # all_scopes was only ever an *intent* flag — it made the cross-subject
+        # read explicit but authorized nothing. Requiring an admin token here is
+        # what actually stops an api token from searching other principals'
+        # memories; a scoped search (session_key present) stays api-token level.
+        cross = self._require_admin_for_cross_scope(request, "memory_search", session_key)
+        if cross is not None:
+            return cross
+        include_all = self._truthy_flag(body.get("include_all"))
         escalation = self._require_admin_for_include_all(request, "memory_search", include_all)
         if escalation is not None:
             return escalation

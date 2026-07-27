@@ -760,9 +760,13 @@ class TestMemoryAPI:
 
     @pytest.mark.asyncio
     async def test_memory_reads_use_api_token(self):
-        """只读端点走 chat 级 api token。此前读也要 admin token,导致配置了独立
-        admin_tokens 的部署下:用 api token 登录成功(登录探的是 /stats),整个
-        Memory 页与概览的记忆计数却全部 403。"""
+        """按 scope 限定的只读端点走 chat 级 api token。此前读也要 admin token,
+        导致配置了独立 admin_tokens 的部署下:用 api token 登录成功(登录探的是
+        /stats),整个 Memory 页与概览的记忆计数却全部 403。
+
+        注意必须带 session_key:不带即跨主体读,那条路径由 cross_scope 守卫收回
+        admin(见 test_cross_scope_reads_require_admin_token)。stats 例外——它只
+        返回按 tier/type 分桶的计数,不含条目内容或 id。"""
         from echo_agent.gateway.api.memory import MemoryAPI
         server = _make_server()
         called: dict[str, list[str]] = {}
@@ -773,7 +777,7 @@ class TestMemoryAPI:
 
         server._require_api_token = _api
         server._require_admin_token = MagicMock(
-            side_effect=AssertionError("只读端点不得要求 admin token")
+            side_effect=AssertionError("scope 内只读端点不得要求 admin token")
         )
         store = MagicMock()
         store.list_all.return_value = []
@@ -782,10 +786,42 @@ class TestMemoryAPI:
         server._agent_loop.memory = store
         api = MemoryAPI(server)
 
-        await api.list_entries(_Request(query={}))
+        await api.list_entries(_Request(query={"session_key": "u1"}))
         await api.stats(_Request(query={}))
-        await api.search(_Request(body={"query": "x", "all_scopes": True}))
+        await api.search(_Request(body={"query": "x", "session_key": "u1"}))
         assert called["api"] == ["memory_list", "memory_stats", "memory_search"]
+
+    @pytest.mark.asyncio
+    async def test_cross_scope_reads_require_admin_token(self):
+        """不带 session_key 的读跨越全部主体,必须要 admin token。
+
+        Audience 只过滤生命周期状态,不代表调用者身份:store._filtered_entries 仅在
+        传了 session_key 时才施加可见性过滤。所以把读守卫降到 api token 后,一个
+        普通 token 请求"全部"就能读到其他主体的记忆。all_scopes 原先只是意图声明,
+        并不授权任何东西。"""
+        from echo_agent.gateway.api.memory import MemoryAPI
+        server = _make_server()
+        server._require_api_token = MagicMock(return_value=None)
+        actions: list[str] = []
+
+        def _admin(request, action):
+            actions.append(action)
+            return web.json_response({"error": "forbidden"}, status=403)
+
+        server._require_admin_token = _admin
+        store = MagicMock()
+        store.list_all.return_value = []
+        store.search_scored.return_value = []
+        server._agent_loop.memory = store
+        api = MemoryAPI(server)
+
+        assert (await api.list_entries(_Request(query={}))).status == 403
+        assert (await api.search(_Request(body={"query": "x", "all_scopes": True}))).status == 403
+        # 按 id 取单条同样是 admin:id 本身推不出应见的 scope,且该路径不过 Audience。
+        assert (await api.get_entry(_Request(match_info={"id": "m1"}))).status == 403
+        assert actions == [
+            "memory_list:cross_scope", "memory_search:cross_scope", "memory_get",
+        ]
 
     @pytest.mark.asyncio
     async def test_memory_writes_require_admin_token(self):
@@ -828,10 +864,42 @@ class TestMemoryAPI:
         server._agent_loop.memory = store
         api = MemoryAPI(server)
 
-        resp = await api.list_entries(_Request(query={"include_all": "true"}))
+        # 带 session_key 以隔离出 include_all 这一道守卫:不带的话先被 cross_scope
+        # 守卫挡下,测到的就不是这里要验的升级路径了。
+        resp = await api.list_entries(
+            _Request(query={"session_key": "u1", "include_all": "true"})
+        )
         assert resp.status == 403
         _, kwargs = server._require_admin_token.call_args
         assert kwargs.get("action") == "memory_list:include_all"
+
+    @pytest.mark.asyncio
+    async def test_search_include_all_accepts_json_boolean(self):
+        """search 的 include_all 来自 JSON body,客户端发的是真布尔 true。
+
+        原先写成 `body.get("include_all") == "true"`,对布尔恒为 False——
+        /memory/search 的 admin 全量视图静默失效,既没报错也没生效。list 走 query
+        string,`== "true"` 在那边才是对的,两处形态不同必须都能识别。"""
+        from echo_agent.gateway.api.memory import MemoryAPI
+        server = _make_server()
+        server._require_api_token = MagicMock(return_value=None)
+        actions: list[str] = []
+
+        def _admin(request, action):
+            actions.append(action)
+            return web.json_response({"error": "forbidden"}, status=403)
+
+        server._require_admin_token = _admin
+        store = MagicMock()
+        store.search_scored.return_value = []
+        server._agent_loop.memory = store
+        api = MemoryAPI(server)
+
+        resp = await api.search(
+            _Request(body={"query": "x", "session_key": "u1", "include_all": True})
+        )
+        assert resp.status == 403
+        assert actions == ["memory_search:include_all"]
 
     @pytest.mark.asyncio
     async def test_search_without_scope_requires_all_scopes(self):

@@ -220,8 +220,20 @@ async def _import_memory_md(store, memory_dir: Path, dry_run: bool, owner_key: s
 def run_migrate_command(
     action, *, config_path=None, workspace=None, dry_run=False, yes=False, adopt_empty=False,
 ) -> int:
-    from echo_agent.cli.prompt import prompt_yes_no
+    from echo_agent.cli.prompt import PromptAborted, prompt_yes_no
     from echo_agent.cli.workspace import load_config_and_workspace
+
+    def confirm(question: str) -> bool:
+        """Ask for confirmation, treating an abort exactly like a decline.
+
+        Ctrl-C / EOF used to exit(0) from inside the prompt helper, which told a
+        wrapping script the migration had succeeded when nothing had run. Every
+        decline here already returns 1, so mapping an abort to False keeps the
+        exit code honest without a separate branch per call site."""
+        try:
+            return prompt_yes_no(question, default=False)
+        except PromptAborted:
+            return False
 
     config, ws = load_config_and_workspace(config_path, workspace)
     memory_dir = ws / config.storage.memory_dir
@@ -239,8 +251,8 @@ def run_migrate_command(
 
     if action == "rollback":
         if not yes:
-            if not prompt_yes_no(
-                "回滚将用最近备份覆盖 user_memory.json,继续?", default=False
+            if not confirm(
+                "回滚将用最近备份覆盖 user_memory.json,继续?"
             ):
                 print("已取消")
                 return 1
@@ -264,10 +276,9 @@ def run_migrate_command(
             return 0
         if not yes:
             extra = "(含空 scope 收编)" if adopt_empty else ""
-            if not prompt_yes_no(
+            if not confirm(
                 f"将改写命中 bindings 的 USER 记忆 source_session→{owner_key}{extra}"
-                "(先自动备份),继续?",
-                default=False,
+                "(先自动备份),继续?"
             ):
                 print("已取消")
                 return 1
@@ -280,9 +291,8 @@ def run_migrate_command(
 
     if action == "memory-md":
         if not dry_run and not yes:
-            if not prompt_yes_no(
-                "将把存量 MEMORY.*.md 分片抽取入 store(先自动备份 user_memory.json),继续?",
-                default=False,
+            if not confirm(
+                "将把存量 MEMORY.*.md 分片抽取入 store(先自动备份 user_memory.json),继续?"
             ):
                 print("已取消")
                 return 1

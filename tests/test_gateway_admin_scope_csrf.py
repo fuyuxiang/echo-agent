@@ -26,6 +26,31 @@ def test_admin_token_separates_scope(tmp_path):
     assert auth.authenticate_token("chat-tok") is True
 
 
+def test_admin_scope_implies_read_scope(tmp_path):
+    """An admin token must also satisfy the read guard.
+
+    The two lists used to be disjoint sets rather than a hierarchy, so a
+    deployment with a separate admin_tokens had NO usable dashboard token: the
+    api token logged in but every admin control 403'd, while the admin token was
+    rejected by the read guard the login probe itself goes through (401)."""
+    auth = _auth(tmp_path, api_tokens=["chat-tok"], admin_tokens=["admin-tok"])
+    assert auth.authenticate_token("admin-tok") is True
+    # The implication is one-way and nothing else is widened.
+    assert auth.authenticate_admin_token("chat-tok") is False
+    assert auth.authenticate_token("wrong") is False
+
+
+def test_read_gate_closed_when_only_admin_tokens_configured(tmp_path):
+    """admin_tokens alone must still authenticate reads.
+
+    authenticate_token short-circuited on an empty api_tokens list, so a deploy
+    that configured only admin_tokens served every read endpoint to anyone."""
+    auth = _auth(tmp_path, admin_tokens=["admin-tok"])
+    assert auth.authenticate_token("admin-tok") is True
+    assert auth.authenticate_token("") is False
+    assert auth.authenticate_token("wrong") is False
+
+
 def test_admin_token_open_when_no_tokens(tmp_path):
     auth = _auth(tmp_path)
     assert auth.authenticate_admin_token("") is True

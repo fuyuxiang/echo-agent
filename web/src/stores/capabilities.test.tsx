@@ -44,6 +44,45 @@ describe("capabilities 探测", () => {
 
     expect(useCapabilitiesStore.getState().admin).toBe(true);
   });
+
+  it("reset 之后旧探测的结果不得写回", async () => {
+    // 快速登出→换令牌→重新登录时,上一个令牌的探测可能仍在飞。它若写回结果,
+    // 界面就会沿用旧令牌的权限(最坏情况:非 admin 令牌显示出 admin 控件)。
+    let release: (value: { admin: boolean }) => void = () => {};
+    vi.spyOn(api, "apiFetch").mockImplementation(
+      () => new Promise((resolve) => { release = resolve as typeof release; }),
+    );
+
+    const stale = useCapabilitiesStore.getState().probe();
+    useCapabilitiesStore.getState().reset();
+    release({ admin: true });
+    await stale;
+
+    expect(useCapabilitiesStore.getState().admin).toBeNull();
+  });
+
+  it("旧探测结束时不清掉新探测的 inflight", async () => {
+    // 旧请求的 finally 若无条件 set({inflight:null}),会把新探测的共享 promise
+    // 抹掉,于是后续并发调用各自再发一次请求。
+    const resolvers: ((value: { admin: boolean }) => void)[] = [];
+    vi.spyOn(api, "apiFetch").mockImplementation(
+      () => new Promise((resolve) => { resolvers.push(resolve as (v: { admin: boolean }) => void); }),
+    );
+
+    const stale = useCapabilitiesStore.getState().probe();
+    useCapabilitiesStore.getState().reset();
+    const fresh = useCapabilitiesStore.getState().probe();
+    expect(useCapabilitiesStore.getState().inflight).not.toBeNull();
+
+    resolvers[0]({ admin: true });
+    await stale;
+    // 新探测仍持有 inflight,没有被旧请求的 finally 清掉。
+    expect(useCapabilitiesStore.getState().inflight).not.toBeNull();
+
+    resolvers[1]({ admin: false });
+    await fresh;
+    expect(useCapabilitiesStore.getState().admin).toBe(false);
+  });
 });
 
 describe("auth 与 capabilities 联动", () => {
