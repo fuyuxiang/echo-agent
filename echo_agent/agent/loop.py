@@ -550,9 +550,12 @@ class AgentLoop:
         # already initialized at this point.
         from echo_agent.memory.prefetch import RetrievalPrefetcher
 
-        def _knowledge_fetch(query: str, user_id: str) -> str:
-            # SYNC CPU-bound scan; the prefetcher runs this in an executor.
-            results = self.knowledge.search(
+        async def _knowledge_fetch(query: str, user_id: str) -> str:
+            # search_async, NOT the sync search(): the sync path is keyword-only,
+            # so prefetching with it wrote a keyword-grade context into the cache
+            # that the reply path then served on every cache hit — silently
+            # dropping knowledge vector recall for those turns.
+            results = await self.knowledge.search_async(
                 query, limit=config.knowledge.max_results, user_id=user_id
             )
             return self.knowledge.format_results(results)
@@ -941,17 +944,20 @@ class AgentLoop:
                 query, session_key=session_key or None, limit=limit
             )
 
-        # Optional cross-encoder reranker (off by default — downloads a model and
-        # adds per-turn latency). Built once here; the rerank_fn closure bounds
-        # each call with rerank_timeout so a slow/loading model degrades THIS turn
-        # to the un-reranked RRF order instead of stalling the reply.
+        # Optional cross-encoder reranker. Built once here; the rerank_fn closure
+        # bounds each call with the INFERENCE budget so a slow/still-loading model
+        # degrades THIS turn to the un-reranked RRF order instead of stalling the
+        # reply. The model load gets its own, far larger budget: a ~1GB ONNX load
+        # can never finish inside a per-turn budget, and sharing one value meant
+        # every wait timed out (silent permanent degrade). start() warms the model
+        # in the background so the first real turn likely finds it hot.
         rerank_fn = None
         rerank_min_score = None
         if config.memory.rerank_enabled:
             from echo_agent.memory.local_rerank import LocalReranker
             self._reranker = LocalReranker(
                 model_name=config.memory.rerank_model,
-                load_timeout_seconds=config.memory.rerank_timeout_seconds,
+                load_timeout_seconds=config.memory.rerank_load_timeout_seconds,
                 hf_endpoint=config.memory.hf_embedding_endpoint,
                 cache_dir=config.memory.local_embedding_cache_dir,
                 max_load_attempts=config.memory.local_embedding_max_load_attempts,
@@ -993,8 +999,10 @@ class AgentLoop:
         # 这里补建并重指 response_stage，使回复后预取重新生效。
         from echo_agent.memory.prefetch import RetrievalPrefetcher
 
-        def _knowledge_fetch(query: str, user_id: str) -> str:
-            results = self.knowledge.search(
+        async def _knowledge_fetch(query: str, user_id: str) -> str:
+            # search_async (keyword + vector), not the keyword-only sync search —
+            # see the identical closure in __init__.
+            results = await self.knowledge.search_async(
                 query, limit=config.knowledge.max_results, user_id=user_id
             )
             return self.knowledge.format_results(results)
@@ -1031,12 +1039,67 @@ class AgentLoop:
         except Exception as e:
             logger.debug("Embedding warmup skipped ({}); first query will lazy-load", e)
 
+    async def _warmup_reranker(self) -> None:
+        """Prime the cross-encoder reranker once at startup.
+
+        Same reasoning as _warmup_embedding, only more so: the reranker model is
+        an order of magnitude larger (~1GB ONNX), so its first-use lazy load can
+        never fit inside a per-turn budget. Without a warmup the reranker is
+        effectively dead weight — every turn waits out the inference budget, gets
+        None, and silently keeps the RRF order, while the model file sits unused
+        on disk. Warming it here moves that one-time cost off the user-facing path.
+
+        The wait uses the LOAD budget (not the per-turn inference budget) because
+        that is what is actually happening here. Outcome is logged at INFO/WARNING
+        rather than DEBUG: "is the reranker actually serving?" is otherwise
+        unanswerable from the logs, which is exactly how a permanently degraded
+        reranker went unnoticed.
+        """
+        if self._reranker is None:
+            return
+        budget = self.config.memory.rerank_load_timeout_seconds
+        # LocalReranker.rerank already bounds its own load wait by the load
+        # budget, and only THEN runs inference. So this outer guard gets the load
+        # budget plus one inference budget — sized at exactly the load budget it
+        # could abort a load that had just succeeded and report a misleading
+        # failure. This is only a backstop against a wedged call; the inner waits
+        # are what normally decide the outcome.
+        guard = budget + max(0.1, float(self.config.memory.rerank_timeout_seconds))
+        try:
+            scores = await asyncio.wait_for(
+                self._reranker.rerank("warmup", ["warmup document"]),
+                timeout=guard,
+            )
+        except Exception as e:
+            logger.warning(
+                "Reranker warmup failed ({}); retrieval keeps the RRF order until "
+                "the model loads on a later turn", e,
+            )
+            return
+        if scores:
+            logger.info("Reranker warmed up: {}", self.config.memory.rerank_model)
+        else:
+            # rerank() swallows its own failures and returns None, so an empty
+            # result here means "not ready" — the load is still running, hit its
+            # own budget, or failed. Either way retrieval degrades to RRF order,
+            # and that must be visible.
+            logger.warning(
+                "Reranker '{}' not ready after {}s; retrieval keeps the un-reranked "
+                "RRF order until the background load completes",
+                self.config.memory.rerank_model, budget,
+            )
+
     async def start(self) -> None:
         await self._resolve_embed_and_index(self._storage)
         if self._embed_fn is not None:
             # Off the critical path: warm the model in the background so startup
             # isn't blocked, but the first retrieval likely finds it hot.
             self._spawn_background(self._warmup_embedding())
+        if self._reranker is not None:
+            # Same deal for the reranker, and it matters more here: its model is
+            # ~20x larger, so without this the first turns are guaranteed to
+            # degrade to the RRF order.
+            self._spawn_background(self._warmup_reranker())
         if self._vector_index is not None:
             # Order matters: purge orphan rows BEFORE the index loads (so they
             # never enter the matrix), then queue re-embeds for entries whose

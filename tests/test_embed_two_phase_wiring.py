@@ -68,6 +68,16 @@ def agent_loop_factory(tmp_path, monkeypatch):
     return _make
 
 
+@pytest.fixture(autouse=True)
+def _no_real_rerank_download(monkeypatch):
+    """start() 现在会后台预热 reranker。真跑会拉 ~941MB 模型,故全文件桩掉
+    rerank():返回 None 即"未就绪",预热走告警分支后立即结束,不碰网络。
+    需要断言预热行为的用例自行覆盖这个桩。"""
+    from echo_agent.memory.local_rerank import LocalReranker
+
+    monkeypatch.setattr(LocalReranker, "rerank", AsyncMock(return_value=None))
+
+
 @pytest.mark.asyncio
 async def test_vector_index_none_before_start(monkeypatch, agent_loop_factory):
     loop = agent_loop_factory(embedding_backend="auto")
@@ -224,3 +234,113 @@ async def test_rerank_enabled_builds_reranker_and_wires_fn(tmp_path):
     assert r._rerank_min_score == 0.4
     # 清理专用线程池
     loop._reranker.close()
+
+
+@pytest.mark.asyncio
+async def test_reranker_load_budget_is_separate_from_inference_budget(agent_loop_factory):
+    """加载预算走 rerank_load_timeout_seconds,不再复用推理预算。
+
+    两者曾共用 rerank_timeout_seconds(默认 2s):既等不到 ~1GB 模型加载完,
+    也不够 base 模型在 CPU 上给 top-K 打完分,结果是每轮静默降级为 RRF 原序。
+    """
+    loop = agent_loop_factory(embedding_backend="local", provider_embeds=[0.1])
+    loop.config.memory.rerank_timeout_seconds = 3.0
+    loop.config.memory.rerank_load_timeout_seconds = 90.0
+    await loop.start()
+    assert loop._reranker._load_timeout == 90.0
+    # stop() 而非只 close() reranker:同时排空 storage 的在途 aiosqlite 任务,
+    # 否则连接工作线程会在用例事件循环关闭后回调,刷 ResourceWarning。
+    await loop.stop()
+
+
+@pytest.mark.asyncio
+async def test_warmup_guard_exceeds_load_budget(agent_loop_factory):
+    """预热的外层 wait_for 必须宽于加载预算。
+
+    rerank() 内部已按加载预算等一次模型就绪,之后才跑推理;外层若按同一预算收口,
+    会掐掉刚加载成功的那次调用并误报失败。故外层 = 加载预算 + 一次推理预算。
+    超时被 _warmup_reranker 自己吞掉只打告警,所以这里断言日志结果而非异常。
+    """
+    import asyncio
+
+    from loguru import logger as _logger
+
+    loop = agent_loop_factory(embedding_backend="local", provider_embeds=[0.1])
+    loop.config.memory.rerank_load_timeout_seconds = 0.30
+    loop.config.memory.rerank_timeout_seconds = 0.40
+    await loop.start()
+
+    from echo_agent.memory.local_rerank import LocalReranker
+
+    async def _slow(self, query, documents):
+        # 耗时落在"加载预算之后、加载+推理预算之前":外层按加载预算收口会超时,
+        # 按加载+推理预算收口则正常返回。
+        await asyncio.sleep(0.45)
+        return [0.9]
+
+    records: list[tuple[str, str]] = []
+    sink = _logger.add(
+        lambda m: records.append(
+            (m.record["level"].name, m.record["message"])
+        ),
+        level="INFO",
+    )
+    try:
+        with patch.object(LocalReranker, "rerank", _slow):
+            await loop._warmup_reranker()
+    finally:
+        _logger.remove(sink)
+
+    assert any(lvl == "INFO" and "warmed up" in msg for lvl, msg in records), records
+    assert not any(lvl == "WARNING" for lvl, _ in records), records
+
+    await loop.stop()
+
+
+@pytest.mark.asyncio
+async def test_start_warms_up_reranker(agent_loop_factory):
+    """start() 后台预热 reranker:没有它,首轮必然等满推理预算后降级,
+    而 ~1GB 模型的首次加载永远不可能落在单轮预算内。"""
+    loop = agent_loop_factory(embedding_backend="local", provider_embeds=[0.1])
+    warmed = AsyncMock(return_value=[0.9])
+    from echo_agent.memory.local_rerank import LocalReranker
+
+    with patch.object(LocalReranker, "rerank", warmed):
+        await loop.start()
+        # 预热是后台任务,给事件循环一次让出机会
+        import asyncio
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+    assert warmed.await_count >= 1
+    await loop.stop()
+
+
+@pytest.mark.asyncio
+async def test_warmup_skipped_when_rerank_disabled(tmp_path):
+    """关闭精排时不构造 reranker,也就没有预热可做(不应误触发下载)。"""
+    config = load_config(overrides={"workspace": str(tmp_path)})
+    config.memory.enabled = True
+    config.memory.vector_enabled = False
+    config.memory.rerank_enabled = False
+    config.knowledge.enabled = False
+    config.planning.enabled = False
+    config.multi_agent.enabled = False
+    config.observability.otel_enabled = False
+    config.observability.trace_enabled = False
+
+    provider = MagicMock(spec=LLMProvider)
+    provider.supports_embed = MagicMock(return_value=True)
+    provider.embed = AsyncMock(return_value=[0.1])
+    provider.get_default_model = MagicMock(return_value="stub")
+    provider.chat_with_retry = AsyncMock()
+
+    loop = AgentLoop(
+        bus=MessageBus(), config=config, provider=provider,
+        workspace=tmp_path, storage=SQLiteBackend(tmp_path / "mem_nowarm.db"),
+    )
+    await loop.start()
+    assert loop._reranker is None
+    # 直接调用也必须是安全的空操作
+    await loop._warmup_reranker()
+    await loop.stop()
+

@@ -70,7 +70,14 @@ class OpenAIProvider(LLMProvider):
             )
             return resp.data[0].embedding
         except Exception as e:
-            logger.warning("Embedding API error: {}", e)
+            # DEBUG, not WARNING: many OpenAI-compatible endpoints serve chat only
+            # and have no /embeddings at all, so the startup probe failing here is
+            # an EXPECTED step of `memory.embedding_backend=auto` before it falls
+            # back to the local model. The caller owns the visible reporting — an
+            # INFO line naming the chosen backend, and a WARNING once the failure
+            # circuit trips. Warning here just meant a scary line on every boot of
+            # a perfectly healthy deployment.
+            logger.debug("Embedding API error: {}", e)
             return None
 
     async def chat_stream(

@@ -13,6 +13,14 @@ from echo_agent.cli.service.base import STOP_TIMEOUT_SECONDS
 
 LAUNCHD_LABEL = "com.echo-agent.gateway"
 
+# systemd start-rate limit. 10 attempts at RestartSec=5 spans ~50s of real
+# restarts, so a 300s window trips only on a failure that keeps recurring —
+# i.e. a permanent one — while leaving plenty of headroom for transient
+# start failures to recover. launchd has no equivalent burst cap; its
+# ThrottleInterval only paces retries.
+START_LIMIT_INTERVAL_SECONDS = 300
+START_LIMIT_BURST = 10
+
 
 def render_launchd_plist(argv: list[str], workdir: str, log_path: str) -> str:
     args_xml = "\n".join(f"        <string>{escape(a)}</string>" for a in argv)
@@ -70,6 +78,15 @@ def render_systemd_unit(
 Description=Echo Agent gateway — resident agent service
 After=network-online.target
 Wants=network-online.target
+# Give up after {START_LIMIT_BURST} failed starts in {START_LIMIT_INTERVAL_SECONDS}s and enter `failed`.
+# Restart=always alone turns a PERMANENT failure (bad config — e.g. binding
+# 0.0.0.0 with no API token, which the gateway refuses by design) into an
+# endless 5s respawn loop that buries the one real error under thousands of
+# identical tracebacks. Failing loudly instead makes `systemctl status` answer
+# "why is it down?" immediately. Transient failures (network not up, port still
+# draining) recover well inside this budget.
+StartLimitIntervalSec={START_LIMIT_INTERVAL_SECONDS}
+StartLimitBurst={START_LIMIT_BURST}
 
 [Service]
 Type=simple

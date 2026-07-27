@@ -87,6 +87,18 @@ def test_systemd_unit_user_scope():
     assert "User=" not in unit
 
 
+def test_systemd_unit_caps_restart_attempts():
+    """配置类永久失败(如 0.0.0.0 无 token 被网关拒绝)必须进 failed,
+    而不是以 RestartSec=5 无限重启、把唯一的真实错误埋在几千条同样的日志下。"""
+    unit = templates.render_systemd_unit(argv=base.gateway_argv(), workdir="/w")
+    assert f"StartLimitIntervalSec={templates.START_LIMIT_INTERVAL_SECONDS}" in unit
+    assert f"StartLimitBurst={templates.START_LIMIT_BURST}" in unit
+    # 两个指令属于 [Unit],放进 [Service] 会被 systemd 忽略
+    unit_section = unit.split("[Service]")[0]
+    assert "StartLimitIntervalSec=" in unit_section
+    assert "StartLimitBurst=" in unit_section
+
+
 def test_systemd_unit_system_scope_sets_user_and_target():
     unit = templates.render_systemd_unit(
         argv=["/usr/bin/echo-agent", "gateway"], workdir="/srv", user="alice",

@@ -581,6 +581,57 @@ async def test_prefetcher_knowledge_runs_off_event_loop():
     assert seen["thread"] != loop_thread
 
 
+@pytest.mark.asyncio
+async def test_prefetcher_awaits_async_knowledge_fetch():
+    """异步 knowledge_fetch 直接 await,不塞进 executor。
+
+    agent loop 接的是 search_async(关键词+向量融合)。此前预取用的是同步
+    search()(纯关键词),而回复路径命中缓存就直接用这份上下文,等于知识库的
+    向量召回在相当比例的轮次里静默失效。
+    """
+    class _R:
+        async def retrieve(self, query, limit=5, memory_scope="", episode_session_key=""):
+            return []
+
+    seen = {}
+
+    async def _know(query, user_id):
+        seen["args"] = (query, user_id)
+        return "KB: vector-grade doc"
+
+    written = {}
+
+    async def cache_put(sk, e):
+        written[sk] = e
+
+    pf = RetrievalPrefetcher(_R(), cache_put, limit=5, knowledge_fetch=_know)
+    await pf.prefetch("s4", "deploy gateway", user_id="user-9")
+    assert seen["args"] == ("deploy gateway", "user-9")
+    assert written["s4"].knowledge_context == "KB: vector-grade doc"
+    assert written["s4"].knowledge_user_id == "user-9"
+
+
+@pytest.mark.asyncio
+async def test_prefetcher_async_knowledge_failure_isolated():
+    """异步 fetch 抛错同样只丢知识库那一段,不连坐主记忆预取。"""
+    class _R:
+        async def retrieve(self, query, limit=5, memory_scope="", episode_session_key=""):
+            return [("m", 0.7)]
+
+    async def _know(query, user_id):
+        raise RuntimeError("embed endpoint down")
+
+    written = {}
+
+    async def cache_put(sk, e):
+        written[sk] = e
+
+    pf = RetrievalPrefetcher(_R(), cache_put, limit=5, knowledge_fetch=_know)
+    await pf.prefetch("s5", "deploy gateway")
+    assert written["s5"].scored == [("m", 0.7)]
+    assert written["s5"].knowledge_context is None
+
+
 # --- ContextStage episodic/knowledge segments: cache-read + on_miss policy ---
 
 

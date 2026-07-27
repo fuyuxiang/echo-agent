@@ -2312,11 +2312,11 @@ class MemoryConfig(_Base):
         },
     )
     rerank_top_k: int = Field(
-        default=20,
+        default=10,
         json_schema_extra={
             "status": "effective", "ref": "memory/retrieval.py:_rerank",
-            "desc_zh": "精排作用的融合 top-K 数量。只对 RRF 融合后的前 K 条重排,其余保持原序,控制精排开销",
-            "desc_en": "Number of fused top-K candidates the reranker rescores; the rest keep RRF order. Bounds rerank cost.",
+            "desc_zh": "精排作用的融合 top-K 数量。只对 RRF 融合后的前 K 条重排,其余保持原序,控制精排开销。默认 10:精排是纯 CPU 的 cross-encoder,base 规模模型每对 (query,doc) 打分在数十毫秒量级,K=20 常态就会撞满推理预算而整轮白跑降级;而召回配额本身只有 5 条记忆+3 条 episode,K=10 已覆盖两倍配额,再往上是花延迟买不到名次变化",
+            "desc_en": "Number of fused top-K candidates the reranker rescores; the rest keep RRF order. Bounds rerank cost. Default 10: the cross-encoder is CPU-only and a base-size model spends tens of ms per (query,doc) pair, so K=20 routinely blows the inference budget and wastes the whole pass; the recall quota is only 5 memories + 3 episodes, so K=10 already covers twice the quota and going higher buys latency, not ranking changes.",
         },
     )
     rerank_min_score: float = Field(
@@ -2328,11 +2328,19 @@ class MemoryConfig(_Base):
         },
     )
     rerank_timeout_seconds: float = Field(
-        default=2.0,
+        default=5.0,
         json_schema_extra={
             "status": "effective", "ref": "memory/local_rerank.py",
-            "desc_zh": "精排模型单次加载/推理的等待预算(秒),超时本轮回退 RRF 原序,后台继续加载",
-            "desc_en": "Per-call wait budget (seconds) for reranker load/inference; on timeout this turn keeps the RRF order while the load continues in the background.",
+            "desc_zh": "精排单次推理的等待预算(秒),超时本轮回退 RRF 原序。仅管推理:模型加载/下载走 rerank_load_timeout_seconds(两者共用一个值时,2s 既等不到 1GB 模型加载完,也不够 base 模型在纯 CPU 上给 top-K 打完分,结果是常态降级)",
+            "desc_en": "Per-call wait budget (seconds) for reranker INFERENCE; on timeout this turn keeps the RRF order. Inference only — model load/download uses rerank_load_timeout_seconds. (When both shared one value, 2s was neither enough to load a ~1GB model nor enough for a base-size model to score the top-K on CPU, so every turn degraded.)",
+        },
+    )
+    rerank_load_timeout_seconds: float = Field(
+        default=60.0,
+        json_schema_extra={
+            "status": "effective", "ref": "memory/local_rerank.py",
+            "desc_zh": "精排模型加载/下载的单次等待预算(秒),与 embed_load_timeout_seconds 对称。超时不算失败:后台加载继续,本轮回退 RRF 原序,模型就绪后自动接管。设得太小(如按推理预算的 2s)会让每次等待都超时,启动预热也白跑",
+            "desc_en": "Per-wait budget (seconds) for reranker model load/download, symmetric with embed_load_timeout_seconds. A timeout is not a failure: the background load continues, this turn keeps the RRF order, and the model is picked up transparently once ready. Setting it as low as the inference budget (2s) makes every wait time out and wastes the startup warmup.",
         },
     )
     embed_load_timeout_seconds: float = Field(
