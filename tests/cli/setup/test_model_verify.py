@@ -104,6 +104,62 @@ def test_verify_model_stop_response_is_ok():
     assert res.status == "ok"
 
 
+class _ClosingProvider:
+    """Provider double that records whether its client was closed in-loop.
+
+    The real failure mode: verify_model runs the probe under asyncio.run, so an
+    SDK client left open outlives the loop that owns its sockets, and the SDK's
+    __del__ later schedules aclose() on the wizard's prompt_toolkit loop —
+    "Event loop is closed". Closing must therefore happen before asyncio.run
+    returns, which is what ``closed_in_loop`` pins down.
+    """
+
+    def __init__(self, *, fail: Exception | None = None):
+        self._fail = fail
+        self.closed = False
+        self.closed_in_loop = False
+
+    async def chat_with_retry(self, *a, **k):
+        if self._fail:
+            raise self._fail
+        resp = MagicMock()
+        resp.finish_reason = "stop"
+        return resp
+
+    async def aclose(self) -> None:
+        import asyncio
+        self.closed = True
+        self.closed_in_loop = asyncio.get_running_loop().is_running()
+
+
+def test_verify_model_closes_provider_on_success():
+    prov = _ClosingProvider()
+    with patch(f"{_T}.create_provider", return_value=prov):
+        res = mv.verify_model("openai", "sk-x", "", "gpt-4o")
+    assert res.status == "ok"
+    assert prov.closed and prov.closed_in_loop
+
+
+def test_verify_model_closes_provider_on_failure():
+    prov = _ClosingProvider(fail=httpx.ConnectError("boom"))
+    with patch(f"{_T}.create_provider", return_value=prov):
+        res = mv.verify_model("openai", "sk-x", "", "gpt-4o")
+    assert res.status == "unreachable"
+    assert prov.closed and prov.closed_in_loop
+
+
+def test_verify_model_close_failure_does_not_change_verdict():
+    prov = _ClosingProvider()
+
+    async def _boom() -> None:
+        raise RuntimeError("Event loop is closed")
+
+    prov.aclose = _boom
+    with patch(f"{_T}.create_provider", return_value=prov):
+        res = mv.verify_model("openai", "sk-x", "", "gpt-4o")
+    assert res.status == "ok"
+
+
 def test_classify_error_detail():
     assert mv._classify_error_detail("Error: 401 Unauthorized") == "error"
     assert mv._classify_error_detail("Error: request timed out after 8s") == "unreachable"

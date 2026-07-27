@@ -161,6 +161,10 @@ class _PooledProvider(LLMProvider):
             self._pool.report_error(self._inner.api_key)
             next_key = self._pool.get_next()
             self._inner.api_key = next_key
+            # Close the client we are about to drop, while its own loop is
+            # still running — otherwise its pooled connections outlive the loop
+            # and the SDK's __del__ raises "Event loop is closed" later.
+            await self._inner.aclose()
             self._inner._client = self._inner._build_client()
             logger.info("Rotated to next credential in pool")
             resp = await self._inner.chat(messages, tools, model, tool_choice, **kwargs)
@@ -199,6 +203,7 @@ class _PooledProvider(LLMProvider):
             self._pool.report_error(self._inner.api_key)
             next_key = self._pool.get_next()
             self._inner.api_key = next_key
+            await self._inner.aclose()
             self._inner._client = self._inner._build_client()
             logger.info("Rotated to next credential in pool")
             resp = await self._inner.chat_stream(
@@ -228,3 +233,7 @@ class _PooledProvider(LLMProvider):
 
     def supports_embed(self) -> bool:
         return self._inner.supports_embed()
+
+    async def aclose(self) -> None:
+        # The wrapper holds no client of its own; the socket owner is _inner.
+        await self._inner.aclose()

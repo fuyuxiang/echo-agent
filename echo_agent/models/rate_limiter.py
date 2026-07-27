@@ -71,6 +71,10 @@ class RateLimitedProvider(LLMProvider):
         await self._limiter.acquire()
         return await self._inner.chat_stream(messages, tools, model, tool_choice, on_delta=on_delta, **kwargs)
 
+    async def aclose(self) -> None:
+        # The limiter holds no client of its own; the socket owner is _inner.
+        await self._inner.aclose()
+
     def get_default_model(self) -> str:
         return self._inner.get_default_model()
 

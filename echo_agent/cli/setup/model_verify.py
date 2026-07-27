@@ -198,6 +198,20 @@ def verify_model(dialect: str, api_key: str, api_base: str, model: str) -> Verif
             return VerifyResult("unreachable", str(e))
         except Exception as e:
             return VerifyResult("error", str(e))
+        finally:
+            # Must happen inside this loop: the SDK's httpx.AsyncClient pooled
+            # its sockets here, and asyncio.run() closes the loop on return. A
+            # client left open is finalized later by the SDK's __del__, which
+            # schedules aclose() on whichever loop is then running — the setup
+            # wizard's prompt_toolkit loop — and tearing down a dead loop's
+            # transports raises "Event loop is closed" from an unawaited task,
+            # printed as "Unhandled exception in event loop" mid-wizard.
+            # Teardown must never change the verdict, so it swallows everything
+            # (a duck-typed provider may not even have aclose).
+            try:
+                await provider.aclose()
+            except Exception:
+                pass
 
     try:
         return asyncio.run(_probe())

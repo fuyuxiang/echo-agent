@@ -129,6 +129,36 @@ class LLMProvider(ABC):
         wrapper (its class always overrides embed to proxy)."""
         return type(self).embed is not LLMProvider.embed
 
+    async def aclose(self) -> None:
+        """Release the underlying SDK client, in the loop that owns its sockets.
+
+        Short-lived providers (setup's model verification, one-off probes) are
+        built outside a loop and used inside a single ``asyncio.run``. Without
+        this, the httpx.AsyncClient survives the run with pooled connections
+        still bound to the now-closed loop, and the SDK's ``__del__`` later
+        schedules ``aclose()`` on whatever loop happens to be running (the
+        setup wizard's prompt_toolkit loop) — which tears down transports of a
+        dead loop and raises "Event loop is closed" out of a task nobody
+        awaits. Closing here sets the client's ``is_closed`` flag, so that
+        ``__del__`` becomes a no-op.
+
+        Best-effort and idempotent: providers whose client has no async close
+        (Gemini's module handle, boto3) fall through silently. Long-lived
+        providers owned by the app don't need to call this.
+        """
+        client = getattr(self, "_client", None)
+        if client is None:
+            return
+        closer = getattr(client, "close", None) or getattr(client, "aclose", None)
+        if closer is None:
+            return
+        try:
+            result = closer()
+            if asyncio.iscoroutine(result) or isinstance(result, Awaitable):
+                await result
+        except Exception as e:  # pragma: no cover - teardown must never surface
+            logger.debug("Provider client close failed (ignored): {}", e)
+
     async def chat_stream(
         self,
         messages: list[dict[str, Any]],

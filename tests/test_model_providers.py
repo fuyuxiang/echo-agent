@@ -395,3 +395,67 @@ class TestOpenAIStreamReasoning:
         provider._client.chat.completions.create = AsyncMock(return_value=_FakeStream(chunks))
         resp = await provider.chat_stream(messages=[{"role": "user", "content": "hi"}])
         assert resp.content == "hi"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LLMProvider.aclose — release SDK clients in the loop that owns their sockets
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestProviderAclose:
+    """aclose() exists so short-lived providers (setup's model verification)
+    release their httpx.AsyncClient before asyncio.run tears the loop down.
+    Leaving it open lets the SDK's __del__ schedule aclose() on a later,
+    unrelated loop, which raises "Event loop is closed" from an unawaited task.
+    """
+
+    def _provider(self, client):
+        prov = StubProvider(message="x")
+        prov._client = client
+        return prov
+
+    @pytest.mark.asyncio
+    async def test_awaits_async_close(self):
+        client = MagicMock()
+        client.close = AsyncMock()
+        await self._provider(client).aclose()
+        client.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_aclose_name(self):
+        client = MagicMock(spec=["aclose"])
+        client.aclose = AsyncMock()
+        await self._provider(client).aclose()
+        client.aclose.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_sync_close_is_called_without_await(self):
+        client = MagicMock(spec=["close"])
+        client.close = MagicMock(return_value=None)
+        await self._provider(client).aclose()
+        client.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_no_client_is_noop(self):
+        # Gemini holds a module handle, Bedrock builds clients per call: neither
+        # has a closeable _client, and aclose must stay quiet rather than raise.
+        await StubProvider(message="x").aclose()
+
+    @pytest.mark.asyncio
+    async def test_client_without_close_is_noop(self):
+        await self._provider(MagicMock(spec=[])).aclose()
+
+    @pytest.mark.asyncio
+    async def test_close_error_is_swallowed(self):
+        client = MagicMock(spec=["close"])
+        client.close = AsyncMock(side_effect=RuntimeError("Event loop is closed"))
+        await self._provider(client).aclose()  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_second_close_is_safe(self):
+        client = MagicMock()
+        client.close = AsyncMock()
+        prov = self._provider(client)
+        await prov.aclose()
+        await prov.aclose()
+        assert client.close.await_count == 2
