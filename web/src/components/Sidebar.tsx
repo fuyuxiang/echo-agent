@@ -1,8 +1,9 @@
 import { NavLink } from "react-router";
 import { useTranslation } from "react-i18next";
+import { useAuthStore } from "../stores/auth";
 import {
   LayoutDashboard, MessageSquare, Brain, Zap, BookOpen,
-  Radio, Clock, Kanban, ScrollText, Settings, BarChart3
+  Radio, Clock, Kanban, ScrollText, Settings, BarChart3, LogOut
 } from "lucide-react";
 
 const NAV = [
@@ -21,6 +22,7 @@ const NAV = [
 
 export function Sidebar() {
   const { t, i18n } = useTranslation("nav");
+  const logout = useAuthStore((s) => s.logout);
   return (
     // 窄屏收成图标条(w-14),lg 以上展开为带文字的 w-56。此前固定 w-56 无折叠,
     // 在笔记本分屏/平板上会把主内容区压到不可读。
@@ -47,18 +49,31 @@ export function Sidebar() {
           </NavLink>
         ))}
       </nav>
-      <div className="p-2 border-t flex flex-col lg:flex-row gap-1">
-        {(["zh", "en"] as const).map((lng) => (
-          <button
-            key={lng}
-            onClick={() => i18n.changeLanguage(lng)}
-            className={`flex-1 text-xs py-1 rounded ${
-              i18n.resolvedLanguage === lng ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600"
-            }`}
-          >
-            {lng === "zh" ? t("langZh") : t("langEn")}
-          </button>
-        ))}
+      <div className="p-2 border-t space-y-1">
+        <div className="flex flex-col lg:flex-row gap-1">
+          {(["zh", "en"] as const).map((lng) => (
+            <button
+              key={lng}
+              onClick={() => i18n.changeLanguage(lng)}
+              className={`flex-1 text-xs py-1 rounded ${
+                i18n.resolvedLanguage === lng ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600"
+              }`}
+            >
+              {lng === "zh" ? t("langZh") : t("langEn")}
+            </button>
+          ))}
+        </div>
+        {/* 退出登录此前只有一条隐式路径:等 token 失效收到 401 才会被动跳回登录页。
+            共用设备上想主动换个 token 只能手工清 localStorage。 */}
+        <button
+          onClick={logout}
+          title={t("logout")}
+          aria-label={t("logout")}
+          className="w-full flex items-center justify-center lg:justify-start gap-2 px-3 py-2 rounded-md text-sm text-gray-600 hover:bg-gray-100"
+        >
+          <LogOut size={16} className="shrink-0" />
+          <span className="hidden lg:inline">{t("logout")}</span>
+        </button>
       </div>
     </aside>
   );

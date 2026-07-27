@@ -40,8 +40,10 @@ class SessionSearchTool(Tool):
         results: list[str] = []
 
         if session_key:
-            session = await self._sessions.get_or_create(session_key)
-            self._search_session(session, pattern, role_filter, results, max_results)
+            # 只读检索:用 get 而非 get_or_create,搜一个不存在的 key 不应把它建出来。
+            session = await self._sessions.get(session_key)
+            if session is not None:
+                self._search_session(session, pattern, role_filter, results, max_results)
         else:
             list_sessions = getattr(self._sessions, "list_sessions_async", None)
             session_items = await list_sessions() if list_sessions else self._sessions.list_sessions()
@@ -51,7 +53,9 @@ class SessionSearchTool(Tool):
                 key = item.get("key", "") if isinstance(item, dict) else str(item)
                 if not key:
                     continue
-                session = await self._sessions.get_or_create(key)
+                session = await self._sessions.get(key)
+                if session is None:
+                    continue
                 self._search_session(session, pattern, role_filter, results, max_results)
 
         if not results:

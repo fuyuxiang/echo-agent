@@ -759,20 +759,79 @@ class TestMemoryAPI:
         assert data["results"][0]["entry"]["id"] == "x"
 
     @pytest.mark.asyncio
-    async def test_memory_endpoints_require_admin_token(self):
+    async def test_memory_reads_use_api_token(self):
+        """只读端点走 chat 级 api token。此前读也要 admin token,导致配置了独立
+        admin_tokens 的部署下:用 api token 登录成功(登录探的是 /stats),整个
+        Memory 页与概览的记忆计数却全部 403。"""
         from echo_agent.gateway.api.memory import MemoryAPI
         server = _make_server()
-        called = {}
-        def _admin(request, action):
-            called.setdefault("actions", []).append(action)
+        called: dict[str, list[str]] = {}
+
+        def _api(request, action):
+            called.setdefault("api", []).append(action)
             return None
-        server._require_admin_token = _admin
-        server._require_api_token = MagicMock(side_effect=AssertionError("must not use api token"))
-        server._agent_loop.memory = MagicMock()
-        server._agent_loop.memory.list_all.return_value = []
+
+        server._require_api_token = _api
+        server._require_admin_token = MagicMock(
+            side_effect=AssertionError("只读端点不得要求 admin token")
+        )
+        store = MagicMock()
+        store.list_all.return_value = []
+        store.search_scored.return_value = []
+        store.get_stats.return_value = {}
+        server._agent_loop.memory = store
         api = MemoryAPI(server)
+
         await api.list_entries(_Request(query={}))
-        assert "memory_list" in called["actions"]
+        await api.stats(_Request(query={}))
+        await api.search(_Request(body={"query": "x", "all_scopes": True}))
+        assert called["api"] == ["memory_list", "memory_stats", "memory_search"]
+
+    @pytest.mark.asyncio
+    async def test_memory_writes_require_admin_token(self):
+        """写端点仍需 admin token:改写会覆盖 provenance、删除不可逆。"""
+        from echo_agent.gateway.api.memory import MemoryAPI
+        server = _make_server()
+        called: dict[str, list[str]] = {}
+
+        def _admin(request, action):
+            called.setdefault("admin", []).append(action)
+            return None
+
+        server._require_admin_token = _admin
+        server._require_api_token = MagicMock(
+            side_effect=AssertionError("写端点不得只要 api token")
+        )
+        store = MagicMock()
+        store.get.return_value = None
+        store.delete.return_value = False
+        server._agent_loop.memory = store
+        api = MemoryAPI(server)
+
+        await api.update_entry(_Request(match_info={"id": "m1"}, body={"content": "c"}))
+        await api.delete_entry(_Request(match_info={"id": "m1"}))
+        assert called["admin"] == ["memory_update", "memory_delete"]
+
+    @pytest.mark.asyncio
+    async def test_include_all_escalates_to_admin_token(self):
+        """include_all 会把读扩到 Audience.ADMIN,把刻意不参与检索的条目也吐出来,
+        因此这一步单独要 admin token——放宽端点守卫不等于把 admin 视图交给所有
+        api token。"""
+        from echo_agent.gateway.api.memory import MemoryAPI
+        server = _make_server()
+        server._require_api_token = MagicMock(return_value=None)
+        server._require_admin_token = MagicMock(
+            return_value=web.json_response({"error": "forbidden"}, status=403)
+        )
+        store = MagicMock()
+        store.list_all.return_value = []
+        server._agent_loop.memory = store
+        api = MemoryAPI(server)
+
+        resp = await api.list_entries(_Request(query={"include_all": "true"}))
+        assert resp.status == 403
+        _, kwargs = server._require_admin_token.call_args
+        assert kwargs.get("action") == "memory_list:include_all"
 
     @pytest.mark.asyncio
     async def test_search_without_scope_requires_all_scopes(self):

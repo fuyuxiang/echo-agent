@@ -205,6 +205,27 @@ class SessionManager:
                     logger.warning("Failed to save evicted session {}: {}", evicted.key, e)
             return session
 
+    async def get(self, key: str) -> Session | None:
+        """Read a session without creating one. Returns None if it does not exist.
+
+        ``get_or_create`` is the write path: it fabricates an empty Session for an
+        unknown key, inserts it into the LRU, and can evict-and-persist another
+        session to make room. Read-only callers (the dashboard's session-history
+        endpoint) went through it and so *created* a session for any key they were
+        asked about — a GET with a persistent side effect. This is the read path:
+        cache hit, else load from storage, and no mutation either way."""
+        async with self._lock:
+            cached = self._cache.get(key)
+            if cached is not None:
+                # Deliberately no move_to_end: a read must not reorder eviction
+                # priority for the write path.
+                return cached
+        # Load outside the manager lock. Unlike get_or_create (which loads while
+        # holding it, because it then has to publish into the cache atomically),
+        # this returns a detached copy and touches no shared state, so holding the
+        # lock across the I/O would only block concurrent turns.
+        return await self._load(key)
+
     async def _load(self, key: str) -> Session | None:
         if not self._storage:
             return await self._load_from_file(key)

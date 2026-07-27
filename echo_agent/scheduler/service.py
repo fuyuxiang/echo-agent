@@ -27,6 +27,11 @@ except ImportError:
     _HAS_FCNTL = False
 
 
+# Async sink for job run events, so the dashboard can push real-time cron
+# updates. Mirrors tasks.manager.EventSink: (event_type, payload) -> None.
+EventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
+
+
 class TriggerKind(str, Enum):
     CRON = "cron"
     INTERVAL = "interval"
@@ -153,7 +158,33 @@ class Scheduler:
         self._concurrency_sem: asyncio.Semaphore | None = None
         self._tick_tasks: set[asyncio.Task] = set()
         self._inflight_jobs: set[str] = set()
+        # Wired at startup (app.py) to the dashboard WS broadcast; None until then
+        # (tests, headless runs). See set_event_sink.
+        self._event_sink: EventSink | None = None
         self._load()
+
+    def set_event_sink(self, sink: EventSink | None) -> None:
+        """Wire an async sink that receives every job run outcome.
+
+        Cron runs happen with no user action at all, so the dashboard's cron page
+        could only ever show the state as of its last manual load — a job that
+        fired and failed overnight looked identical to one that had never run.
+        The `cron` channel was already declared in the dashboard WS channel map
+        with nothing emitting into it. Best-effort: emission never blocks or
+        fails a job run."""
+        self._event_sink = sink
+
+    async def _emit(self, event_type: str, job: ScheduledJob) -> None:
+        """Fire a job event to the sink if one is wired. Swallows everything — a
+        broken or slow subscriber must never affect the run that already
+        happened."""
+        sink = self._event_sink
+        if sink is None:
+            return
+        try:
+            await sink(event_type, job.to_dict())
+        except Exception as e:
+            logger.debug("Cron event emit ({}) failed: {}", event_type, e)
 
     def _load(self) -> None:
         if not self._store_path.exists():
@@ -309,6 +340,9 @@ class Scheduler:
         job.last_status = status
         job.last_error = error
         await self._save_async()
+        # The terminal outcome, not just the dispatch: this is the one the cron
+        # page's "last result" column actually cares about.
+        await self._emit("cron_run", job)
 
     async def trigger_job(self, job_id: str) -> bool:
         job = self._jobs.get(job_id)
@@ -395,6 +429,7 @@ class Scheduler:
                 logger.warning("Job {} ('{}') has no computable next run; marking completed", job.id, job.name)
 
         await self._save_async()
+        await self._emit("cron_run", job)
 
     def _try_acquire_lock(self, job_id: str) -> Any:
         if not _HAS_FCNTL:

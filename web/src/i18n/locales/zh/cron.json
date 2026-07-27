@@ -28,5 +28,19 @@
   "resumeSuccess": "已启用",
   "toggleFailed": "切换状态失败",
   "deleteConfirmTitle": "删除定时任务？",
-  "deleteConfirmMessage": "将删除「{{name}}」及其运行历史。此操作不可撤销；若只是想临时停止，点击状态列可直接停用。"
+  "deleteConfirmMessage": "将删除「{{name}}」及其运行历史。此操作不可撤销；若只是想临时停止，点击状态列可直接停用。",
+  "edit": "编辑",
+  "editAria": "编辑定时任务 {{name}}",
+  "editTitle": "编辑定时任务",
+  "save": "保存",
+  "updateSuccess": "已保存",
+  "updateFailed": "保存失败",
+  "runs": "运行历史",
+  "runsAria": "查看 {{name}} 的运行历史",
+  "runsEmpty": "暂无运行记录",
+  "runsLimited": "调度器目前只保留最近一次执行的汇总",
+  "runCount": "累计执行 {{count}} 次",
+  "runTime": "时间",
+  "runStatus": "状态",
+  "runError": "错误"
 }

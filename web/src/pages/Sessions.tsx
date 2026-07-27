@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { useApi } from "../hooks/use-api";
 import { apiFetch } from "../lib/api";
 import { relativeTime } from "../lib/datetime";
+import { RefreshCw } from "lucide-react";
 
 interface SessionItem {
   key: string;
@@ -19,7 +20,7 @@ interface Message {
 
 export function Sessions() {
   const { t } = useTranslation(["sessions", "common"]);
-  const { data, loading, error } = useApi<{ sessions: SessionItem[] }>("/sessions");
+  const { data, loading, error, refetch } = useApi<{ sessions: SessionItem[] }>("/sessions");
   const [selected, setSelected] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [search, setSearch] = useState("");
@@ -39,6 +40,13 @@ export function Sessions() {
     }
   };
 
+  // 会话列表与当前会话历史都没有实时推送(sessions 频道后端未接线),而聊天在
+  // 其他渠道持续发生 —— 没有刷新入口的话,这一页只能靠切走再切回来更新。
+  const refreshAll = () => {
+    refetch();
+    if (selected) loadHistory(selected);
+  };
+
   const filtered = data?.sessions.filter(
     (s) => !search || s.key.toLowerCase().includes(search.toLowerCase())
   ) ?? [];
@@ -46,13 +54,23 @@ export function Sessions() {
   return (
     <div className="flex flex-col md:flex-row h-full gap-4">
       <div className="w-full md:w-72 md:shrink-0 flex flex-col md:border-r md:pr-4 max-h-64 md:max-h-none">
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder={t("searchPlaceholder")}
-          aria-label={t("searchPlaceholder")}
-          className="border rounded px-3 py-1.5 mb-3"
-        />
+        <div className="flex gap-2 mb-3">
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={t("searchPlaceholder")}
+            aria-label={t("searchPlaceholder")}
+            className="border rounded px-3 py-1.5 flex-1 min-w-0"
+          />
+          <button
+            onClick={refreshAll}
+            aria-label={t("common:refresh")}
+            title={t("common:refresh")}
+            className="border rounded px-2 hover:bg-gray-100 shrink-0"
+          >
+            <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+          </button>
+        </div>
         <div className="flex-1 overflow-y-auto space-y-1">
           {loading && <div className="text-gray-400 text-sm px-3 py-2">{t("common:loading")}</div>}
           {error && !loading && (

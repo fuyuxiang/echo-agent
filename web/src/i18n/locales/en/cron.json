@@ -28,5 +28,19 @@
   "resumeSuccess": "Enabled",
   "toggleFailed": "Could not change state",
   "deleteConfirmTitle": "Delete cron job?",
-  "deleteConfirmMessage": "This deletes \"{{name}}\" and its run history, and cannot be undone. To stop it temporarily, click the status cell to pause instead."
+  "deleteConfirmMessage": "This deletes \"{{name}}\" and its run history, and cannot be undone. To stop it temporarily, click the status cell to pause instead.",
+  "edit": "Edit",
+  "editAria": "Edit cron job {{name}}",
+  "editTitle": "Edit cron job",
+  "save": "Save",
+  "updateSuccess": "Saved",
+  "updateFailed": "Save failed",
+  "runs": "Run history",
+  "runsAria": "View run history for {{name}}",
+  "runsEmpty": "No runs recorded",
+  "runsLimited": "The scheduler currently keeps only a summary of the most recent run",
+  "runCount": "{{count}} runs total",
+  "runTime": "Time",
+  "runStatus": "Status",
+  "runError": "Error"
 }

@@ -69,10 +69,17 @@ class DashboardWebSocket:
 
         return ws
 
+    # Event prefix → subscription channel. `tasks` (tasks.manager) and `cron`
+    # (scheduler.service) are the two with a live sink wired in app.py; the rest
+    # are reserved names that nothing emits into yet, so subscribing to them
+    # from the UI silently yields no events. Keep them declared so a future
+    # emitter routes correctly without a protocol change, but do not treat their
+    # presence as a signal that the channel is live.
     _EVENT_CHANNEL_MAP: dict[str, str] = {
         "task": "tasks",
-        "session": "sessions",
         "cron": "cron",
+        # --- reserved, no emitter yet ---
+        "session": "sessions",
         "memory": "memory",
         "skill": "skills",
         "channel": "channels",

@@ -1,5 +1,9 @@
 {
   "allLevels": "全部级别",
   "searchPlaceholder": "搜索...",
-  "empty": "暂无日志"
+  "empty": "暂无日志",
+  "range": "第 {{from}}-{{to}} 条 / 共 {{total}} 条",
+  "prev": "较新",
+  "next": "较旧",
+  "pageSize": "每页条数"
 }

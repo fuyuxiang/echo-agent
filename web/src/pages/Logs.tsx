@@ -2,9 +2,10 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useApi } from "../hooks/use-api";
 import { fullTimestamp, timeOfDay } from "../lib/datetime";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, ChevronLeft, ChevronRight } from "lucide-react";
 
 const LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR"] as const;
+const PAGE_SIZES = [50, 100, 200, 500] as const;
 
 interface LogEntry {
   ts: string;
@@ -16,15 +17,24 @@ export function Logs() {
   const { t } = useTranslation(["logs", "common"]);
   const [level, setLevel] = useState<string>("");
   const [search, setSearch] = useState("");
+  const [pageSize, setPageSize] = useState<number>(200);
+  const [offset, setOffset] = useState(0);
 
   // 实时推送(WS log_entry 事件)后端从未接线,此前的“实时”开关是死功能,已移除;
   // 改为拉取 + 手动刷新。待 dashboard WS broadcast 接线后再恢复实时。
   // 后端已改为倒序分页,offset=0 即最新一页,这里直接按返回顺序渲染。
-  const { data, loading, error, refetch } = useApi<{ logs: LogEntry[] }>(
-    `/logs?limit=200${level ? `&level=${level}` : ""}${search ? `&q=${encodeURIComponent(search)}` : ""}`
+  // offset 分页此前完全没接:limit 固定 200,缓冲区里更早的日志在界面上无法到达,
+  // 而 total 一直在响应里返回着。
+  const { data, loading, error, refetch } = useApi<{ logs: LogEntry[]; total: number }>(
+    `/logs?limit=${pageSize}&offset=${offset}${level ? `&level=${level}` : ""}${search ? `&q=${encodeURIComponent(search)}` : ""}`
   );
 
   const entries = data?.logs ?? [];
+  const total = data?.total ?? 0;
+
+  // 改筛选条件/页大小后必须回到第一页:否则 offset 可能已经越过新的结果集,
+  // 界面会莫名空白。
+  const changeFilter = (fn: () => void) => { fn(); setOffset(0); };
 
   const levelColor: Record<string, string> = {
     DEBUG: "text-gray-400", INFO: "text-blue-600", WARNING: "text-yellow-600", ERROR: "text-red-600",
@@ -35,7 +45,7 @@ export function Logs() {
       <div className="flex flex-wrap gap-2 items-center mb-3">
         <select
           value={level}
-          onChange={(e) => setLevel(e.target.value)}
+          onChange={(e) => changeFilter(() => setLevel(e.target.value))}
           aria-label={t("allLevels")}
           className="border rounded px-2 py-1 text-sm"
         >
@@ -44,11 +54,19 @@ export function Logs() {
         </select>
         <input
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={(e) => changeFilter(() => setSearch(e.target.value))}
           placeholder={t("searchPlaceholder")}
           aria-label={t("searchPlaceholder")}
           className="border rounded px-3 py-1 text-sm flex-1 min-w-40"
         />
+        <select
+          value={pageSize}
+          onChange={(e) => changeFilter(() => setPageSize(Number(e.target.value)))}
+          aria-label={t("pageSize")}
+          className="border rounded px-2 py-1 text-sm"
+        >
+          {PAGE_SIZES.map((n) => <option key={n} value={n}>{n}</option>)}
+        </select>
         <button onClick={() => refetch()} className="flex items-center gap-1 border rounded px-2 py-1 text-sm hover:bg-gray-100" title={t("common:refresh")}>
           <RefreshCw size={14} /> {t("common:refresh")}
         </button>
@@ -74,6 +92,32 @@ export function Logs() {
           </div>
         ))}
       </div>
+
+      {!error && total > 0 && (
+        <div className="flex items-center justify-end gap-2 mt-2 text-xs text-gray-500">
+          <span>
+            {t("range", {
+              from: offset + 1,
+              to: Math.min(offset + entries.length, total),
+              total,
+            })}
+          </span>
+          <button
+            onClick={() => setOffset(Math.max(0, offset - pageSize))}
+            disabled={offset === 0}
+            className="flex items-center gap-0.5 border rounded px-2 py-1 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <ChevronLeft size={14} /> {t("prev")}
+          </button>
+          <button
+            onClick={() => setOffset(offset + pageSize)}
+            disabled={offset + entries.length >= total}
+            className="flex items-center gap-0.5 border rounded px-2 py-1 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {t("next")} <ChevronRight size={14} />
+          </button>
+        </div>
+      )}
     </div>
   );
 }

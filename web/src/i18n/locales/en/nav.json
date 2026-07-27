@@ -12,5 +12,6 @@
   "config": "Config",
   "analytics": "Analytics",
   "langZh": "中",
-  "langEn": "EN"
+  "langEn": "EN",
+  "logout": "Sign out"
 }

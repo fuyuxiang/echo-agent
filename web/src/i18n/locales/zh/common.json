@@ -12,6 +12,8 @@
   "cancel": "取消",
   "confirm": "确定",
   "close": "关闭",
+  "adminOnly": "此操作需要管理员令牌（admin token），当前登录令牌权限不足",
+  "adminOnlyShort": "需要管理员令牌",
   "renderErrorTitle": "页面渲染出错",
   "renderErrorHint": "该页面遇到未预期的数据或异常，其余功能仍可正常使用。可以重试，或切换到其他页面。"
 }

@@ -41,7 +41,12 @@ class SessionsAPI:
         except (ValueError, TypeError):
             return web.json_response({"error": "invalid limit parameter"}, status=400)
 
-        session = await self._server.session_manager.get_or_create(key)
+        # 只读取,不创建:此前用 get_or_create,查询一个不存在的 key 会真的建出一个
+        # 空会话并写进 LRU 缓存(还可能连带驱逐、落盘另一个会话)——一个 GET 产生了
+        # 持久化副作用,列表页因此会多出用户从未开启过的会话。
+        session = await self._server.session_manager.get(key)
+        if session is None:
+            return web.json_response({"error": "not found"}, status=404)
         messages = session.get_history(max_messages=limit)
 
         return web.json_response({"messages": messages, "total": len(messages)})

@@ -118,7 +118,7 @@ class TestProgressiveEditor:
 
 class TestGatewayHealthProvider:
     def _make_gateway(self, is_running=True, channels=None, has_rate_limiter=True,
-                      media_size=10.5, sessions=3):
+                      media_size=10.5, sessions=3, stale_sessions=0):
         gw = MagicMock()
         gw.is_running = is_running
 
@@ -138,7 +138,19 @@ class TestGatewayHealthProvider:
         gw.media_cache.get_size_mb.return_value = media_size
 
         gw.session_manager = MagicMock()
-        gw.session_manager.list_sessions.return_value = [{}] * sessions
+        # ``active_sessions`` is now a recency window, not an all-time total, so
+        # rows need an ``updated_at`` to count. Fresh rows sit inside the window;
+        # stale ones are old enough to fall out of it but still raise the total.
+        now = datetime.now()
+        rows = [
+            {"updated_at": (now - timedelta(minutes=1)).isoformat()}
+            for _ in range(sessions)
+        ]
+        rows += [
+            {"updated_at": (now - timedelta(hours=2)).isoformat()}
+            for _ in range(stale_sessions)
+        ]
+        gw.session_manager.list_sessions.return_value = rows
         # No async method
         gw.session_manager.list_sessions_async = None
 
@@ -165,11 +177,41 @@ class TestGatewayHealthProvider:
         assert result["rate_limiter"] == {"rpm": 10, "limit": 30}
         assert result["media_cache_mb"] == 10.5
         assert result["active_sessions"] == 3
+        assert result["total_sessions"] == 3
         assert result["hooks_loaded"] == 5
         assert result["delivery_rules"] == 2
         # Attached interactive clients (TUI/web) surface for the ops "is the CLI
         # connected?" view — one client was wired in _make_gateway.
         assert result["ws_clients"] == 1
+
+    @pytest.mark.asyncio
+    async def test_check_active_sessions_excludes_stale(self):
+        """Rows outside ACTIVE_SESSION_WINDOW raise the total but not the active
+        count — the whole point of the window, since the old all-time total only
+        ever grew and could never report an idle deployment."""
+        from echo_agent.gateway.health import GatewayHealthProvider
+
+        gw = self._make_gateway(channels=["telegram"], sessions=2, stale_sessions=5)
+        result = await GatewayHealthProvider(gw).check()
+
+        assert result["active_sessions"] == 2
+        assert result["total_sessions"] == 7
+
+    @pytest.mark.asyncio
+    async def test_check_unparseable_timestamp_is_not_active(self):
+        """A malformed ``updated_at`` must not raise: health checks have to keep
+        answering even when one stored row is garbage."""
+        from echo_agent.gateway.health import GatewayHealthProvider
+
+        gw = self._make_gateway(channels=["telegram"], sessions=1)
+        gw.session_manager.list_sessions.return_value += [
+            {"updated_at": "not-a-timestamp"},
+            {},
+        ]
+        result = await GatewayHealthProvider(gw).check()
+
+        assert result["active_sessions"] == 1
+        assert result["total_sessions"] == 3
 
     @pytest.mark.asyncio
     async def test_check_unhealthy(self):

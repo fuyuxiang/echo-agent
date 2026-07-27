@@ -1,5 +1,9 @@
 {
   "allLevels": "All levels",
   "searchPlaceholder": "Search...",
-  "empty": "No logs"
+  "empty": "No logs",
+  "range": "{{from}}-{{to}} of {{total}}",
+  "prev": "Newer",
+  "next": "Older",
+  "pageSize": "Per page"
 }

@@ -45,7 +45,32 @@ class MemoryAPI:
         return web.json_response({"error": "memory disabled"}, status=409)
 
     def _guard(self, request: web.Request, action: str) -> web.Response | None:
+        """Read guard — chat-level api token.
+
+        Reads used to require an *admin* token, which broke the dashboard in any
+        deployment that configures a separate ``admin_tokens``: a valid api token
+        logs in (login probes /stats, an api-token endpoint) and then the whole
+        Memory page, plus the overview's memory counter, answered 403. Sensitivity
+        inside a read is already modelled one level down by ``Audience``
+        (RETRIEVAL by default, ADMIN only when ``include_all`` is asked for), so
+        the guard does not need to gate the endpoint wholesale. Writes stay on
+        ``_admin_guard`` — those can override provenance and delete entries."""
+        return self._server._require_api_token(request, action=action)
+
+    def _admin_guard(self, request: web.Request, action: str) -> web.Response | None:
+        """Write guard — admin-scoped token, plus CSRF (see _require_admin_token)."""
         return self._server._require_admin_token(request, action=action)
+
+    def _require_admin_for_include_all(
+        self, request: web.Request, action: str, include_all: bool
+    ) -> web.Response | None:
+        """``include_all`` widens a read to ``Audience.ADMIN``, surfacing entries
+        that are deliberately withheld from retrieval. The plain read is api-token
+        level, but this escalation is not — gate it on an admin token so lowering
+        the endpoint guard did not also hand every api token the admin view."""
+        if not include_all:
+            return None
+        return self._admin_guard(request, f"{action}:include_all")
 
     async def list_entries(self, request: web.Request) -> web.Response:
         if not self._memory_enabled():
@@ -68,6 +93,9 @@ class MemoryAPI:
         from echo_agent.memory.eligibility import Audience
         mt = MemoryType(mem_type) if mem_type else None
         include_all = request.query.get("include_all") == "true"
+        escalation = self._require_admin_for_include_all(request, "memory_list", include_all)
+        if escalation is not None:
+            return escalation
         entries = store.list_all(
             mem_type=mt,
             session_key=session_key or None,
@@ -126,7 +154,7 @@ class MemoryAPI:
     async def update_entry(self, request: web.Request) -> web.Response:
         if not self._memory_enabled():
             return self._disabled_response()
-        guard = self._guard(request, "memory_update")
+        guard = self._admin_guard(request, "memory_update")
         if guard is not None:
             return guard
 
@@ -186,7 +214,7 @@ class MemoryAPI:
     async def delete_entry(self, request: web.Request) -> web.Response:
         if not self._memory_enabled():
             return self._disabled_response()
-        guard = self._guard(request, "memory_delete")
+        guard = self._admin_guard(request, "memory_delete")
         if guard is not None:
             return guard
 
@@ -250,6 +278,9 @@ class MemoryAPI:
                 {"error": "session_key or all_scopes=true required"}, status=400
             )
         include_all = body.get("include_all") == "true"
+        escalation = self._require_admin_for_include_all(request, "memory_search", include_all)
+        if escalation is not None:
+            return escalation
         results = self._store().search_scored(
             query, mem_type=mt, limit=limit, session_key=session_key or None,
             audience=Audience.ADMIN if include_all else Audience.RETRIEVAL,

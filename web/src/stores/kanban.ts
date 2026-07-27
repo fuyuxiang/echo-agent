@@ -100,9 +100,18 @@ interface KanbanState {
   transitionTask: (id: string, to: string) => Promise<void>;
   retryTask: (id: string) => Promise<void>;
   createTask: (title: string, description?: string) => Promise<boolean>;
+  editTask: (id: string, fields: EditableTaskFields) => Promise<boolean>;
   updateLocal: (id: string, changes: Partial<TaskCard>) => void;
   addLocal: (task: TaskCard) => void;
 }
+
+/**
+ * 可编辑字段,与 PUT /tasks/{id} 的 allowed 白名单对齐(tasks.py update_task)。
+ * 状态不在其中:状态只能走 transition/retry,那里有状态机校验。
+ */
+export type EditableTaskFields = Partial<
+  Pick<TaskCard, "title" | "description" | "priority" | "labels" | "assignee">
+>;
 
 /**
  * 用服务端快照合并本地列表,而不是整体替换。
@@ -200,6 +209,25 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
       return true;
     } catch (e) {
       toast.error(i18n.t("kanban:toast.createFailed", { error: e instanceof Error ? e.message : String(e) }));
+      return false;
+    }
+  },
+
+  editTask: async (id, fields) => {
+    // PUT /tasks/{id}:改标题/描述/优先级/负责人/标签。此前看板完全没有编辑入口——
+    // 一个标题打错字的任务只能取消重建,而重建会丢掉 result/重试计数与工作流关联。
+    // 与 createTask 同样返回布尔值,失败时调用方保留表单内容而不是清空。
+    try {
+      const data = await apiFetch<{ task: TaskCard }>(`/tasks/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(fields),
+      });
+      set((s) => ({
+        tasks: s.tasks.map((t) => (t.id === id ? { ...t, ...data.task } : t)),
+      }));
+      return true;
+    } catch (e) {
+      toast.error(i18n.t("kanban:toast.updateFailed", { error: e instanceof Error ? e.message : String(e) }));
       return false;
     }
   },

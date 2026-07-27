@@ -49,7 +49,8 @@ async def test_get_session_history(mock_server, api):
         {"role": "user", "content": "hello"},
         {"role": "assistant", "content": "hi"},
     ]
-    mock_server.session_manager.get_or_create = AsyncMock(return_value=session)
+    # 端点用只读的 get 而非 get_or_create——一个 GET 不该把不存在的会话建出来。
+    mock_server.session_manager.get = AsyncMock(return_value=session)
 
     app = web.Application()
     app.router.add_get("/api/v1/sessions/{key}/history", api.get_history)
@@ -58,3 +59,19 @@ async def test_get_session_history(mock_server, api):
         assert resp.status == 200
         data = await resp.json()
         assert len(data["messages"]) == 2
+    mock_server.session_manager.get.assert_awaited_once_with("tg_user1")
+
+
+@pytest.mark.asyncio
+async def test_get_session_history_missing_returns_404(mock_server, api):
+    """不存在的会话返回 404 而不是凭空建一个空会话:GET 必须无持久化副作用。"""
+    mock_server.session_manager.get = AsyncMock(return_value=None)
+    mock_server.session_manager.get_or_create = AsyncMock(
+        side_effect=AssertionError("history 不得调用 get_or_create")
+    )
+
+    app = web.Application()
+    app.router.add_get("/api/v1/sessions/{key}/history", api.get_history)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/api/v1/sessions/nobody/history")
+        assert resp.status == 404

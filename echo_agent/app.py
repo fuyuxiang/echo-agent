@@ -464,6 +464,12 @@ class AppRuntime:
             task_manager = getattr(ctx.agent, "task_manager", None)
             if task_manager is not None:
                 task_manager.set_event_sink(self._gateway.dashboard_ws.broadcast)
+            # Same for scheduled jobs. Cron runs fire with no user action, so
+            # without this the cron page could only ever show state as of its
+            # last manual load — the `cron` WS channel was declared but nothing
+            # ever emitted into it.
+            if ctx.scheduler is not None:
+                ctx.scheduler.set_event_sink(self._gateway.dashboard_ws.broadcast)
             logger.info("Gateway started on {}:{}", ctx.config.gateway.host, ctx.config.gateway.port)
         return True
 

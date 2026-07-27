@@ -12,5 +12,6 @@
   "config": "配置",
   "analytics": "统计",
   "langZh": "中",
-  "langEn": "EN"
+  "langEn": "EN",
+  "logout": "退出登录"
 }

@@ -2,6 +2,7 @@ import { useApi } from "../hooks/use-api";
 import { apiFetch, getToken } from "../lib/api";
 import { relativeTime } from "../lib/datetime";
 import { runMutation } from "../stores/toast";
+import { useIsAdmin } from "../stores/capabilities";
 import { Loadable } from "../components/Loadable";
 import { useConfirm } from "../components/ConfirmDialog";
 import { Upload, Trash2, RefreshCw } from "lucide-react";
@@ -31,6 +32,12 @@ export function Knowledge() {
   const fileRef = useRef<HTMLInputElement>(null);
   const { t } = useTranslation(["knowledge", "common"]);
   const confirm = useConfirm();
+  // Upload and delete are guarded by _admin_guard server-side; rebuild and the
+  // reads are not. Probe the token's scope so those two are visibly disabled
+  // instead of rendering as normal buttons that answer 403. null = still
+  // probing, treated as allowed to avoid a disabled flash on first paint.
+  const isAdmin = useIsAdmin();
+  const canWrite = isAdmin !== false;
 
   // last_rebuild 是索引文件的 mtime,从未构建时为 null。
   const lastRebuild = () => relativeTime(status?.last_rebuild, t("never"));
@@ -88,7 +95,12 @@ export function Knowledge() {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-4">
-        <button onClick={() => fileRef.current?.click()} className="flex items-center gap-1 bg-blue-600 text-white px-3 py-1.5 rounded text-sm">
+        <button
+          onClick={() => fileRef.current?.click()}
+          disabled={!canWrite}
+          title={canWrite ? undefined : t("common:adminOnly")}
+          className="flex items-center gap-1 bg-blue-600 text-white px-3 py-1.5 rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+        >
           <Upload size={16} /> {t("upload")}
         </button>
         <button onClick={rebuild} className="flex items-center gap-1 bg-gray-100 px-3 py-1.5 rounded text-sm hover:bg-gray-200">
@@ -104,6 +116,12 @@ export function Knowledge() {
         </span>
         <input ref={fileRef} type="file" className="hidden" onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])} />
       </div>
+
+      {!canWrite && (
+        <div className="bg-amber-50 text-amber-700 rounded-lg px-4 py-2 text-sm">
+          {t("common:adminOnly")}
+        </div>
+      )}
 
       <Loadable
         loading={loading}
@@ -122,8 +140,10 @@ export function Knowledge() {
                 </div>
                 <button
                   onClick={() => deleteDoc(doc.path)}
+                  disabled={!canWrite}
                   aria-label={t("deleteDocAria", { path: doc.path })}
-                  className="text-red-400 hover:text-red-600"
+                  title={canWrite ? undefined : t("common:adminOnly")}
+                  className="text-red-400 hover:text-red-600 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-red-400"
                 >
                   <Trash2 size={16} />
                 </button>

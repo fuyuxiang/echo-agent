@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { TOKEN_STORAGE_KEY, setUnauthorizedHandler } from "../lib/api";
+import { useCapabilitiesStore } from "./capabilities";
 
 interface AuthState {
   token: string | null;
@@ -12,10 +13,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   token: localStorage.getItem(TOKEN_STORAGE_KEY),
   setToken: (token) => {
     localStorage.setItem(TOKEN_STORAGE_KEY, token);
+    // The probed scope belongs to the *previous* token. Dropping it forces a
+    // re-probe, otherwise signing in with an admin token after an api-token
+    // session would keep the admin-only controls disabled.
+    useCapabilitiesStore.getState().reset();
     set({ token });
   },
   logout: () => {
     localStorage.removeItem(TOKEN_STORAGE_KEY);
+    useCapabilitiesStore.getState().reset();
     set({ token: null });
     // The socket is not closed here on purpose: clearing the token unmounts
     // Layout (and with it every subscriber), whose cleanup releases the last

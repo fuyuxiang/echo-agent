@@ -633,10 +633,12 @@ class TestSessionSearchTool:
                 {"role": "assistant", "content": "hi there"},
             ],
         )
-        manager.get_or_create = AsyncMock(return_value=mock_session)
+        # 工具走只读的 get,搜一个不存在的 key 不该把它建出来。
+        manager.get = AsyncMock(return_value=mock_session)
         result = await tool.execute({"query": "hello", "session_key": "s1"}, _ctx())
         assert result.success is True
         assert "hello" in result.output
+        manager.get.assert_awaited_once_with("s1")
 
     @pytest.mark.asyncio
     async def test_search_no_match(self):
@@ -645,7 +647,7 @@ class TestSessionSearchTool:
             key="s1",
             messages=[{"role": "user", "content": "goodbye"}],
         )
-        manager.get_or_create = AsyncMock(return_value=mock_session)
+        manager.get = AsyncMock(return_value=mock_session)
         result = await tool.execute({"query": "zzzzz", "session_key": "s1"}, _ctx())
         assert result.success is True
         assert "No matches" in result.output
@@ -660,13 +662,25 @@ class TestSessionSearchTool:
                 {"role": "assistant", "content": "keyword too"},
             ],
         )
-        manager.get_or_create = AsyncMock(return_value=mock_session)
+        manager.get = AsyncMock(return_value=mock_session)
         result = await tool.execute(
             {"query": "keyword", "session_key": "s1", "role_filter": "user"}, _ctx()
         )
         assert result.success is True
         assert "user:" in result.output
         assert "assistant:" not in result.output
+
+    @pytest.mark.asyncio
+    async def test_missing_session_is_not_created(self):
+        """检索不存在的 key 只报无结果,不得通过 get_or_create 造出空会话。"""
+        tool, manager = self._make()
+        manager.get = AsyncMock(return_value=None)
+        manager.get_or_create = AsyncMock(
+            side_effect=AssertionError("检索不得调用 get_or_create")
+        )
+        result = await tool.execute({"query": "x", "session_key": "nobody"}, _ctx())
+        assert result.success is True
+        assert "No matches" in result.output
 
 
 # ===========================================================================

@@ -52,8 +52,9 @@ export function Overview() {
   }, [refetchHealth, refetchChannels, refetchTasks, refetchMemory]);
 
   // 任务计数额外订阅 WS,让状态变化即时反映而不必等下一轮轮询。只订阅 tasks:
-  // _EVENT_CHANNEL_MAP 里虽然列了 sessions/channels/memory,但服务端目前只有
-  // TaskManager 接了 broadcast sink(app.py),订阅其余频道会做成死功能。
+  // _EVENT_CHANNEL_MAP 里还列了 sessions/channels/memory 等,但服务端只有
+  // TaskManager 与 Scheduler 接了 broadcast sink(app.py),cron 事件与本页的
+  // 计数无关,订阅其余频道仍会做成死功能。
   useWsSubscribe(
     ["tasks"],
     () => { refetchTasks(); },

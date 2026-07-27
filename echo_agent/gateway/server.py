@@ -254,6 +254,9 @@ class GatewayServer:
         app.router.add_post(f"{prefix}/pair", self._handle_pair_generate)
         app.router.add_post(f"{prefix}/pair/verify", self._handle_pair_verify)
         app.router.add_get(f"{prefix}/stats", self._handle_stats)
+        # Scope probe for the dashboard: lets the UI disable admin-only controls
+        # instead of rendering buttons that are guaranteed to 403.
+        app.router.add_get(f"{prefix}/capabilities", self._handle_capabilities)
         app.router.add_get(self._config.ws_path, self._handle_websocket)
         app.router.add_get("/ws/dashboard", self._dashboard_ws.handle)
 
@@ -695,6 +698,37 @@ class GatewayServer:
         else:
             await self.hooks.emit("auth_failed", platform=platform, user_id=user_id)
             return web.json_response({"error": "invalid or expired code"}, status=403)
+
+    async def _handle_capabilities(self, request: web.Request) -> web.Response:
+        """What the *calling token* is allowed to do.
+
+        The dashboard mixes api-token and admin-token endpoints on the same page
+        (knowledge upload/delete, config, memory writes). Without this the UI can
+        only discover the boundary by firing a request and reading a 403, so it
+        rendered enabled buttons that were guaranteed to fail. Reporting the
+        caller's own scope lets those affordances be disabled up front with an
+        explanation.
+
+        Deliberately reports only booleans about the presented token — never the
+        configured tokens or whether any exist beyond what the caller's own scope
+        already tells them."""
+        guard = self._require_api_token(request, action="capabilities")
+        if guard is not None:
+            return guard
+        # Mirrors _require_admin_token's own resolution order, including the
+        # unauthenticated-deployment case (no tokens configured at all → every
+        # caller is effectively admin), so the UI never disables a control the
+        # server would in fact allow.
+        admin_configured = bool(
+            self._config.auth.admin_tokens or self._config.auth.api_tokens
+        )
+        if not admin_configured:
+            is_admin = True
+        else:
+            is_admin = self.auth.authenticate_admin_token(
+                self.auth.token_from_headers(request.headers)
+            )
+        return web.json_response({"admin": is_admin})
 
     async def _handle_stats(self, request: web.Request) -> web.Response:
         guard = self._require_api_token(request, action="stats")

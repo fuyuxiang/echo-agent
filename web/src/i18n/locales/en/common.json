@@ -12,6 +12,8 @@
   "cancel": "Cancel",
   "confirm": "Confirm",
   "close": "Close",
+  "adminOnly": "This action needs an admin token; the token you signed in with is not allowed",
+  "adminOnlyShort": "Admin token required",
   "renderErrorTitle": "This page failed to render",
   "renderErrorHint": "The page hit unexpected data or an error. The rest of the dashboard still works — retry, or switch to another page."
 }
