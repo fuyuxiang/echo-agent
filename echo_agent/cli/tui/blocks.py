@@ -652,6 +652,14 @@ class ChoiceBlock(Static):
         self._answers = [a for _, a in pairs]
         self.highlighted = 0
         self.answer: str | None = None
+        # True once this prompt can no longer be answered (the turn it belonged
+        # to ended server-side). The selection hints must stop advertising keys
+        # that no longer do anything — a dead block that still reads "按数字选择"
+        # is what made the TUI look frozen rather than finished.
+        self.cancelled = False
+        # Mirrors the app's _clarify_free_input for THIS block, purely so
+        # render_body can surface the "Esc returns to the options" way back.
+        self.free_input = False
         super().__init__(self.render_body())
 
     # A virtual "其他(自行输入)" entry is appended after the real options
@@ -679,6 +687,14 @@ class ChoiceBlock(Static):
         q = escape(str(self.question))
         if self.answer is not None:
             return f"[$secondary]❓[/] {q} [$text-muted]—[/] [$success]已选:{escape(str(self.answer))}[/]"
+        # A cancelled prompt keeps the question on screen (it is part of the
+        # conversation) but drops every selection hint: the keys are gone, so
+        # repeating them would send the user hunting for a working keystroke.
+        if self.cancelled:
+            return (
+                f"[$secondary]❓[/] {q} [$text-muted]—[/] "
+                f"[$text-muted]该提问已失效（当前轮已结束，未作选择）[/]"
+            )
         if not self.options:
             return f"[$secondary]❓[/] {q}\n    [$text-muted](请输入回答)[/]"
         lines = [f"[$secondary]❓[/] [b]{q}[/b]"]
@@ -705,6 +721,13 @@ class ChoiceBlock(Static):
             "(前 9 项可按数字选择 · 其余用 ↑↓ 移动后回车 · 选\"其他\"可自行输入)"
         )
         lines.append(f"    [$text-muted]{hint}[/]")
+        # Only shown once the user has stepped into free-text entry. Stepping in
+        # is easy (any printable character) but used to be irreversible, so the
+        # way back needs advertising at the moment it applies.
+        if self.free_input:
+            lines.append(
+                "    [$text-muted](输入框为空时按 Esc 可返回选项)[/]"
+            )
         return "\n".join(lines)
 
     def move(self, delta: int) -> None:
@@ -728,4 +751,21 @@ class ChoiceBlock(Static):
 
     def mark(self, answer: str) -> None:
         self.answer = answer
+        self.update(self.render_body())
+
+    def set_free_input(self, value: bool) -> None:
+        """Track whether the app is in free-text mode for this prompt, so the
+        block can show/hide the way back to option picking."""
+        if self.free_input == value:
+            return
+        self.free_input = value
+        self.update(self.render_body())
+
+    def mark_cancelled(self) -> None:
+        """This prompt can no longer be answered. Answered blocks are left alone
+        (their "已选" state is the accurate record); only an unanswered one is
+        downgraded."""
+        if self.answer is not None or self.cancelled:
+            return
+        self.cancelled = True
         self.update(self.render_body())

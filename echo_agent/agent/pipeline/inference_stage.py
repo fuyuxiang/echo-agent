@@ -213,6 +213,30 @@ class InferenceStage:
                 question,
             )
 
+    async def _finish_clarify(self, tool_call: Any, event: Any) -> None:
+        """Tell the TUI a clarify prompt is closed, once its tool call returns.
+
+        The CLI clarify has no timeout — the only unblock is resolve() — so the
+        client cannot infer "this prompt is dead" from anything else on the wire.
+        It used to guess from the intermediate is_final frames the gateway emits
+        mid-turn, which fired while the prompt was still live: the picker went
+        inert, the next thing the user typed became a NEW turn, and that turn
+        queued forever behind the very turn still parked on this clarify.
+
+        Emitted for CLI only (matching _prepare_clarify) and best-effort: a
+        failure here must not fault an otherwise successful tool call."""
+        if tool_call.name != "clarify" or self._cog is None:
+            return
+        clarify_id = str(tool_call.arguments.get("_clarify_id", ""))
+        if not clarify_id or not should_emit_cognitive(event.channel):
+            return
+        try:
+            await self._cog.emit(
+                event, "clarify_closed", {"clarify_id": clarify_id}, "",
+            )
+        except Exception:  # noqa: BLE001 — never fault the tool call on this
+            logger.debug("clarify_closed emit failed", exc_info=True)
+
     async def _emit_progress(self, ctx: PipelineContext, text: str, *, tool_hint: bool = False) -> None:
         if not ctx.publish_response:
             return
@@ -1123,6 +1147,11 @@ class InferenceStage:
                 )
                 results[d.index] = exc
                 break
+            finally:
+                # The clarify prompt (if this was one) is no longer answerable
+                # once execute() has returned, by answer OR by crash. Tell the
+                # client explicitly on both paths so it never has to infer it.
+                await self._finish_clarify(tool_call, ctx.event)
 
         # ---- Phase C: serial writeback in ORIGINAL tool_call order ----
         for d in decisions:

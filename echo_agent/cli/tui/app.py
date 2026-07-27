@@ -68,6 +68,14 @@ class EchoTUI(App):
         Binding("up", "clarify_move(-1)", show=False),
         Binding("down", "clarify_move(1)", show=False),
         Binding("enter", "clarify_accept", show=False),
+        # The way BACK from free-text entry to option picking. Stepping into
+        # free text is a single printable keystroke, so it happened by accident
+        # (a stray letter, or clicking the box and typing) — and it used to be
+        # irreversible: _clarify_free_input gated every selection key off for
+        # good, leaving the options rendered but unreachable. check_action limits
+        # this to "free-text mode with an empty box", so Escape keeps its normal
+        # meaning everywhere else (closing the completion panel in particular).
+        Binding("escape", "clarify_leave_free_input", show=False),
     ]
 
     def __init__(self, send_coro=None, session_key: str = "", interrupt_coro=None,
@@ -216,6 +224,21 @@ class EchoTUI(App):
                 and not self._clarify_free_input
             )
             return True if active else None
+        if action == "clarify_leave_free_input":
+            # Escape only reclaims the keyboard for option picking when there is
+            # something to go back to AND the box is empty. A non-empty box means
+            # the user is mid-answer, so Escape must not discard their text; an
+            # open completion panel is handled by PromptInput itself (it stops
+            # the key before it reaches an App binding).
+            if self._pending_clarify is None or not self._clarify_free_input:
+                return None
+            if not self._pending_clarify.options:
+                # A free-text-only clarify has no options to return to.
+                return None
+            try:
+                return True if self.query_one(PromptInput).is_empty else None
+            except Exception:
+                return None
         return True
 
     @property
@@ -276,15 +299,26 @@ class EchoTUI(App):
             # deliberately left alone here: the gateway splits one answer across
             # several final frames, so tools may still be running.
             self._tv.clear_heartbeats()
-            # Defensive: a primary turn ending with a clarify/approval still
-            # marked pending means the server resolved/ended it without the
-            # normal answer path firing (e.g. timeout, error). Clear the stale
-            # pending state and re-enable the prompt so it can't stay locked.
-            if self._pending_clarify is not None or self._pending_approval is not None:
-                self._pending_clarify = None
-                self._pending_approval = None
-                self._clarify_free_input = False
-                self._unlock_prompt(focus=False)
+            # A pending clarify/approval is deliberately LEFT ALONE here.
+            #
+            # This used to clear it and re-enable the prompt, on the theory that a
+            # turn ending with one still pending meant the server had resolved it
+            # some other way. That inference is wrong on the CLI: the gateway
+            # splits one answer across several is_final frames (text → tool →
+            # more text), and a CLI clarify has no timeout — the turn parks in
+            # wait_for_answer holding the session lock until the user answers. So
+            # an intermediate final would retire a prompt that was still live:
+            # the picker went inert while still on screen, the next thing the user
+            # typed became a NEW turn, and that turn queued forever behind the
+            # very turn waiting on this clarify. That is the "正在思考 then nothing
+            # happens" freeze.
+            #
+            # Retiring a clarify is now driven by explicit signals only: the
+            # clarify_closed frame, a gateway error frame, a disconnect, an
+            # interrupt, or the user answering. An approval keeps its own
+            # server-side timeout and decision frames, so it needs no guess here
+            # either.
+            #
             # Return keyboard focus to the prompt now the turn is done. During
             # the turn, focus can drift off PromptInput onto a transcript block
             # (tool/cognitive blocks are focusable so a mouse click or Tab lands
@@ -294,6 +328,31 @@ class EchoTUI(App):
             # clarify/approval intentionally holds the keyboard (prompt disabled).
             if self._pending_clarify is None and self._pending_approval is None:
                 self._refocus_prompt()
+
+    def _retire_clarify(self, clarify_id: str = "", *, cancelled: bool = True) -> None:
+        """Drop the pending clarify because it can no longer be answered.
+
+        ``clarify_id`` scopes this to a specific prompt when the caller knows it
+        (the clarify_closed frame): a stale frame for an already-retired prompt
+        must not clear a NEWER one that has since been mounted. An empty id means
+        "whatever is pending" — used by the paths that kill every prompt anyway
+        (interrupt, reconnect, terminal error).
+
+        ``cancelled`` greys the block out with an explanation. It is False only
+        when the block already shows an accurate terminal state of its own.
+        """
+        blk = self._pending_clarify
+        if blk is None:
+            return
+        if clarify_id and blk.clarify_id != clarify_id:
+            return
+        if cancelled:
+            blk.mark_cancelled()
+        else:
+            blk.set_free_input(False)
+        self._pending_clarify = None
+        self._clarify_free_input = False
+        self._unlock_prompt(focus=True)
 
     def on_cognitive(self, ev: CogEvent) -> None:
         if ev.cog_type == "heartbeat":
@@ -322,6 +381,13 @@ class EchoTUI(App):
             # focused TextArea (textual 8.2.8 check_consume_key), and so a mouse
             # click cannot re-focus it and break option selection.
             self._lock_prompt()
+            return
+        if ev.cog_type == "clarify_closed":
+            # The server closed this prompt (its tool call returned). This is the
+            # ONLY signal that retires a pending clarify short of the user
+            # answering it — see the comment in on_user_reply_final for why the
+            # mid-turn final frames must not be used for that.
+            self._retire_clarify(ev.data.get("clarify_id", ""))
             return
         if ev.cog_type == "cost_update":
             bar = self.query_one(StatusBar)
@@ -377,6 +443,15 @@ class EchoTUI(App):
         # behind forever — one leaked widget reference per affected turn for the
         # life of the process.
         self._replies.clear()
+        # A gateway error frame is one of the explicit signals that a pending
+        # clarify is dead: the turn that would have consumed the answer died
+        # server-side, so nothing will ever read it. Retire it here (this used to
+        # ride on the now-removed guess in on_user_reply_final) or the prompt
+        # would stay disabled with no way back.
+        self._retire_clarify()
+        if self._pending_approval is not None:
+            self._pending_approval = None
+            self._unlock_prompt(focus=False)
         # Same focus recovery as the normal reply path: an error ends the turn,
         # so pull keyboard focus back to the prompt in case it drifted onto a
         # transcript block. Skip while a pending clarify/approval owns the
@@ -420,6 +495,11 @@ class EchoTUI(App):
             self._tv.end_turn_cleanup()
         except Exception:
             pass
+        # The gateway synthesizes /__clarify_cancel__ on ws teardown, so a prompt
+        # pending at the drop is already dead server-side. Retire it to match —
+        # and, more importantly, to hand the keyboard back: the prompt has to stay
+        # usable for /reconnect, which a locked clarify would block.
+        self._retire_clarify()
 
     def notify_reconnected(self) -> None:
         """Restore the connected state after a successful reconnect. Called by
@@ -435,10 +515,11 @@ class EchoTUI(App):
         self._turns.reset_on_reconnect()
         # Also clear the pending clarify/approval slots and re-enable the prompt:
         # their in-flight acks are unrecoverable across the drop too, and a stale
-        # pending slot would keep the keyboard captured / prompt disabled.
-        self._pending_clarify = None
+        # pending slot would keep the keyboard captured / prompt disabled. The
+        # clarify goes through _retire_clarify so its block is greyed out with a
+        # reason instead of being left on screen still advertising live keys.
+        self._retire_clarify()
         self._pending_approval = None
-        self._clarify_free_input = False
         # Stream correlation is per-connection too: a partially-streamed reply
         # from before the drop can never receive its final, so its _replies entry
         # would linger and a same-id frame after the reconnect would append into
@@ -542,9 +623,25 @@ class EchoTUI(App):
         # if one was given. Shared by on_key (printable non-digit), the
         # out-of-range digit fallback, and the "其他(自行输入)" sentinel option.
         self._clarify_free_input = True
+        if self._pending_clarify is not None:
+            # Surfaces the "Esc returns to the options" hint on the block itself.
+            self._pending_clarify.set_free_input(True)
         self._unlock_prompt()
         if char:
             self.query_one(PromptInput).insert(char)
+
+    def action_clarify_leave_free_input(self) -> None:
+        """Return from free-text entry to option picking (Escape, empty box).
+
+        check_action already established that a clarify with options is pending,
+        that we are in free-text mode, and that the box is empty — so this only
+        has to undo the mode switch: drop the flag and re-lock the prompt, which
+        is what hands the number/arrow/enter keys back to the App bindings."""
+        if self._pending_clarify is None or not self._clarify_free_input:
+            return
+        self._clarify_free_input = False
+        self._pending_clarify.set_free_input(False)
+        self._lock_prompt()
 
     # --- input ---
     async def on_prompt_input_submitted(
@@ -782,6 +879,22 @@ class EchoTUI(App):
         self, message: PromptInput.ContentChanged
     ) -> None:
         self.query_one("#placeholder").display = message.is_empty
+        # Emptying the box during a clarify returns the keyboard to the options.
+        # Entering free text costs one keystroke, so it happens by accident
+        # (a stray letter, a click-then-type-then-reconsider); erasing back to
+        # nothing is the natural undo, and without this the only exits were
+        # answering or Ctrl+C. Guarded on options existing — a free-text-only
+        # clarify has nothing to return to and must keep the prompt live.
+        if (
+            message.is_empty
+            and self._clarify_free_input
+            and self._pending_clarify is not None
+            and self._pending_clarify.options
+        ):
+            self._clarify_free_input = False
+            self._pending_clarify.set_free_input(False)
+            self._lock_prompt()
+            return
         panel = self.query_one("#slash_panel", OptionList)
         matches = filter_commands(message.text)
         # Keep the ordered match list so PanelNav/PanelAccept can map the
@@ -898,10 +1011,7 @@ class EchoTUI(App):
             # (loop._handle_interrupt calls clarify.cancel_session). Drop the
             # TUI's pending clarify too, or the next thing the user types would
             # be sent as an answer to a clarify that no longer exists.
-            if self._pending_clarify is not None:
-                self._pending_clarify = None
-                self._clarify_free_input = False
-                self._unlock_prompt()
+            self._retire_clarify()
             self.notify("已请求停止当前任务…", severity="warning", timeout=3)
             return
 

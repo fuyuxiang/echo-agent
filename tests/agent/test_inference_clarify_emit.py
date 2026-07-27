@@ -110,3 +110,66 @@ async def test_prepare_clarify_im_pending_not_registered_without_session_key():
 
     await stage._prepare_clarify(tc, _IMEvent())
     assert mgr.take_im_pending("", ttl_seconds=300) is None
+
+
+@pytest.mark.asyncio
+async def test_finish_clarify_emits_closed_frame_for_prepared_prompt():
+    """工具调用返回后必须发一帧 clarify_closed —— 客户端唯一可信的"该提问已死"信号。
+
+    CLI clarify 没有超时,唯一解除是 resolve(),所以客户端无法从别处推断;过去它
+    靠中途的 is_final 帧猜,结果在提问还活着时就把选项弄哑了。"""
+    mgr = ClarifyManager()
+    cog = _FakeCog()
+    stage = _make_stage(mgr, cog)
+    tc = _FakeToolCall("clarify", {"question": "选哪个?", "options": ["A", "B"]})
+
+    await stage._prepare_clarify(tc, _FakeEvent())
+    cid = tc.arguments["_clarify_id"]
+    await stage._finish_clarify(tc, _FakeEvent())
+
+    assert [c for c, _d, _s in cog.emitted] == ["clarify_request", "clarify_closed"]
+    _cog_type, data, _summary = cog.emitted[-1]
+    assert data == {"clarify_id": cid}
+
+
+@pytest.mark.asyncio
+async def test_finish_clarify_noop_for_non_clarify_and_unprepared():
+    """非 clarify 工具、以及没走过 _prepare_clarify(无 _clarify_id)的调用都不发帧。"""
+    mgr = ClarifyManager()
+    cog = _FakeCog()
+    stage = _make_stage(mgr, cog)
+
+    await stage._finish_clarify(_FakeToolCall("read_file", {"path": "x"}), _FakeEvent())
+    # clarify 但没有注入过 id(例如 IM 通道走过 _prepare_clarify 的分支)
+    await stage._finish_clarify(_FakeToolCall("clarify", {"question": "q"}), _FakeEvent())
+    assert cog.emitted == []
+
+
+@pytest.mark.asyncio
+async def test_finish_clarify_noop_on_non_cli_channel():
+    """只对 CLI 发,与 _prepare_clarify 的通道条件保持一致。"""
+    mgr = ClarifyManager()
+    cog = _FakeCog()
+    stage = _make_stage(mgr, cog)
+    tc = _FakeToolCall("clarify", {"question": "q", "_clarify_id": "c1"})
+
+    class _IMEvent(_FakeEvent):
+        channel = "wecom"
+        session_key = "wecom:u1"
+
+    await stage._finish_clarify(tc, _IMEvent())
+    assert cog.emitted == []
+
+
+@pytest.mark.asyncio
+async def test_finish_clarify_swallows_emit_failure():
+    """这一帧是尽力而为:发送失败不能把一次本来成功的工具调用带崩。"""
+    mgr = ClarifyManager()
+
+    class _BoomCog(_FakeCog):
+        async def emit(self, event, cog_type, data, summary):
+            raise RuntimeError("transport gone")
+
+    stage = _make_stage(mgr, _BoomCog())
+    tc = _FakeToolCall("clarify", {"question": "q", "_clarify_id": "c1"})
+    await stage._finish_clarify(tc, _FakeEvent())  # 不抛异常即通过

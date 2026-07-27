@@ -44,7 +44,7 @@ def test_cog_types_exact_membership():
     assert COG_TYPES == frozenset({
         "memory_recalled", "memory_written", "thinking", "tool_call",
         "approval_request", "cost_update", "heartbeat", "evolution",
-        "clarify_request",
+        "clarify_request", "clarify_closed",
     })
 
 
