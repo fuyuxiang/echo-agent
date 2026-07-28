@@ -1,0 +1,14 @@
+# pnpm settings live here, not in a "pnpm" field in package.json: v11 stopped
+# reading that field entirely. This file is config-only — web/ is a single
+# package, not a real workspace, so there is deliberately no `packages:` key.
+#
+# esbuild (pulled in by vite) ships a postinstall that replaces its JS shim with
+# the platform binary from @esbuild/*. pnpm treats an unapproved build script as
+# unreviewed, and since v11 that is a hard ERR_PNPM_IGNORED_BUILDS failure
+# instead of v10's warning. That failure aborted `pnpm install
+# --frozen-lockfile` in scripts/install.sh *after* the packages were already on
+# disk, so the installer reported a lockfile problem it did not have and users
+# silently lost the Dashboard. Approving esbuild here keeps v10 and v11 both
+# quiet; the pinned packageManager keeps everyone on the version CI tests.
+allowBuilds:
+  esbuild: true

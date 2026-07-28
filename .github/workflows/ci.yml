@@ -94,18 +94,40 @@ jobs:
   # master with CI fully green.
   dashboard:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # scripts/install.sh bootstraps pnpm via corepack or `npm i -g pnpm`, so
+        # whatever major is current on the user's machine is what runs. Pinning
+        # CI to one major hid a real breakage: pnpm 11 flipped strictDepBuilds to
+        # true, turning an unapproved dependency build script into a hard
+        # ERR_PNPM_IGNORED_BUILDS failure, and users hit it while CI stayed
+        # green on 10. Test the pinned major and the next one.
+        pnpm-version: [10, 11]
+    env:
+      # Stop pnpm from honouring package.json's "packageManager" pin and
+      # re-downloading pnpm 10, which would collapse both matrix legs onto the
+      # same version and defeat this job. The setting was renamed in v11
+      # (managePackageManagerVersions -> pmOnFail), so set both names: pnpm
+      # ignores an unknown *config* variable, unlike an unknown CLI flag.
+      npm_config_manage_package_manager_versions: "false"
+      pnpm_config_pm_on_fail: "ignore"
     steps:
       - uses: actions/checkout@v4
 
       - uses: pnpm/action-setup@v4
         with:
-          version: 10
+          version: ${{ matrix.pnpm-version }}
 
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Show pnpm version actually in use
+        working-directory: web
+        run: pnpm --version
 
       # Mirrors what the installer does. No fallback to a loose `pnpm install`:
       # web/package.json pins nothing (all caret ranges), so the lockfile is the

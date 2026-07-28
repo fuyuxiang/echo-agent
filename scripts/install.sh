@@ -1620,7 +1620,13 @@ build_dashboard() {
     fi
 
     # pnpm is the package manager this project's lockfile belongs to; npm/yarn
-    # would resolve different versions.
+    # would resolve different versions. Which pnpm *major* runs matters too:
+    # web/package.json pins one via "packageManager", and both the bootstrap
+    # paths below honour it (corepack downloads it; a global pnpm >=10.26 does
+    # the same unless the user has opted out). Before that pin existed, corepack
+    # and `npm i -g pnpm` both grabbed the newest major, so users landed on
+    # pnpm 11 while CI stayed on 10 — see the ERR_PNPM_IGNORED_BUILDS note in
+    # web/pnpm-workspace.yaml.
     if ! command -v pnpm >/dev/null 2>&1; then
         log_info "Installing pnpm..."
         # corepack only writes a shim — the real download happens on first use,
@@ -1628,10 +1634,19 @@ build_dashboard() {
         if command -v corepack >/dev/null 2>&1 && corepack enable pnpm >/dev/null 2>&1 \
            && pnpm --version >/dev/null 2>&1; then
             log_success "pnpm $(pnpm --version) (via corepack)"
-        elif npm install -g pnpm >/dev/null 2>&1 && command -v pnpm >/dev/null 2>&1; then
+        # Same `pnpm --version` probe as the corepack branch, and for a second
+        # reason: `npm i -g pnpm` always fetches the newest major, and pnpm 11
+        # requires Node >=22.13 while node_version_ok() accepts 20. On Node 20
+        # the install succeeds but every pnpm invocation dies immediately
+        # (ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite), so checking only for the
+        # binary's existence declared success and failed later during install.
+        elif npm install -g pnpm >/dev/null 2>&1 && command -v pnpm >/dev/null 2>&1 \
+             && pnpm --version >/dev/null 2>&1; then
             log_success "pnpm $(pnpm --version)"
         else
-            log_warn "Could not install pnpm; skipping Dashboard build."
+            log_warn "Could not install a working pnpm; skipping Dashboard build."
+            log_info "pnpm 11 needs Node.js >=22.13; this host has $(node -v 2>/dev/null || echo 'no node')."
+            log_info "Install pnpm 10 manually (npm i -g pnpm@10), then: cd $INSTALL_DIR/web && pnpm install --frozen-lockfile && pnpm build"
             dashboard_skip_note
             return 0
         fi
@@ -1646,14 +1661,51 @@ build_dashboard() {
     # would let each machine resolve different versions and produce a different
     # Dashboard — a stale lockfile is a repo bug to fix, not something to paper
     # over on the user's machine.
-    if ! run_with_timeout 300 pnpm install --frozen-lockfile; then
-        log_warn "pnpm install --frozen-lockfile failed; skipping Dashboard build."
-        log_info "This usually means web/pnpm-lock.yaml is out of sync with web/package.json."
-        log_info "To build anyway (may resolve different dependency versions):"
-        log_info "  cd $INSTALL_DIR/web && pnpm install && pnpm build"
+    #
+    # Keep pnpm's output: this used to fail with no diagnosis printed and a
+    # hardcoded "lockfile is out of sync" guess, which sent users chasing a
+    # non-existent lockfile bug (and, worse, told them to run a loose
+    # `pnpm install` that really would drift their dependency versions).
+    local install_log install_rc=0
+    install_log="$(mktemp)"
+    run_with_timeout 300 pnpm install --frozen-lockfile \
+        > >(tee -a "$install_log") 2> >(tee -a "$install_log" >&2) || install_rc=$?
+
+    if [ "$install_rc" -ne 0 ]; then
+        log_warn "pnpm install --frozen-lockfile failed (exit $install_rc); skipping Dashboard build."
+        if [ "$install_rc" -eq 124 ]; then
+            log_info "It timed out after 300s — usually a slow or blocked npm registry."
+            log_info "Retry with: cd $INSTALL_DIR/web && pnpm install --frozen-lockfile && pnpm build"
+        else
+            # The shell does not wait for a process substitution to drain, so
+            # the log can still be empty the instant pnpm exits — grepping it
+            # right away would race and fall through to the generic message.
+            # Wait for tee to produce something, then let the tail flush.
+            local waited=0
+            while [ ! -s "$install_log" ] && [ "$waited" -lt 20 ]; do
+                sleep 0.1
+                waited=$((waited + 1))
+            done
+            sleep 0.2
+
+            if grep -q "ERR_PNPM_IGNORED_BUILDS" "$install_log" 2>/dev/null; then
+                # A dependency added a build script that web/pnpm-workspace.yaml
+                # does not approve. Nothing is broken on the user's machine, so
+                # point at the real fix instead of blaming their install.
+                log_info "A dependency wants to run an unapproved build script (pnpm $(pnpm --version 2>/dev/null || echo '?'))."
+                log_info "This is a repo bug: the package needs an entry in web/pnpm-workspace.yaml."
+                log_info "To build now: cd $INSTALL_DIR/web && pnpm install --frozen-lockfile --allow-build=<pkg> && pnpm build"
+            elif grep -qi "ERR_PNPM_OUTDATED_LOCKFILE\|lockfile is not up to date\|frozen-lockfile" "$install_log" 2>/dev/null; then
+                log_info "web/pnpm-lock.yaml is out of sync with web/package.json — a repo bug, please report it."
+            else
+                log_info "See the pnpm output above for the cause."
+            fi
+        fi
+        rm -f "$install_log"
         dashboard_skip_note
         return 0
     fi
+    rm -f "$install_log"
 
     # `tsc -b && vite build` on a cold cache regularly exceeds two minutes.
     if run_with_timeout 600 pnpm build; then
@@ -1986,7 +2038,7 @@ print_success() {
     if [ "$DASHBOARD_BUILT" != true ]; then
         echo -e "${YELLOW}${BOLD}Note:${NC} The full Dashboard was not built, so the gateway"
         echo "  serves its built-in playground UI instead."
-        echo "  To build it: cd $INSTALL_DIR/web && pnpm install && pnpm build"
+        echo "  To build it: cd $INSTALL_DIR/web && pnpm install --frozen-lockfile && pnpm build"
         echo ""
     fi
 
