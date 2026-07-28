@@ -40,6 +40,23 @@ def _max_output_for_model(model: str) -> int:
     return 64_000
 
 
+def _thinking_block_to_dict(block: Any) -> dict[str, Any]:
+    """Copy a thinking / redacted_thinking block into a replayable dict.
+
+    ``redacted_thinking`` carries an opaque ``data`` payload instead of text; both
+    forms must go back to the API exactly as received, so each field is copied
+    only when present rather than defaulted.
+    """
+    if getattr(block, "type", "") == "redacted_thinking":
+        return {"type": "redacted_thinking", "data": getattr(block, "data", "")}
+    out: dict[str, Any] = {"type": "thinking",
+                           "thinking": str(getattr(block, "thinking", "") or "")}
+    signature = getattr(block, "signature", "") or ""
+    if signature:
+        out["signature"] = signature
+    return out
+
+
 def parse_anthropic_message(resp: Any) -> LLMResponse:
     """Convert a final Anthropic Messages response into an LLMResponse.
 
@@ -50,6 +67,7 @@ def parse_anthropic_message(resp: Any) -> LLMResponse:
     """
     blocks = []
     thinking_parts: list[str] = []
+    thinking_blocks: list[dict[str, Any]] = []
     for block in resp.content:
         if block.type == "text":
             blocks.append({"type": "text", "text": block.text})
@@ -62,6 +80,13 @@ def parse_anthropic_message(resp: Any) -> LLMResponse:
             # to show, and (with streaming) no way to tell "no reasoning" apart
             # from "the reasoning became the answer".
             thinking_parts.append(str(getattr(block, "thinking", "") or ""))
+            # The block must also survive VERBATIM, signature included: Anthropic
+            # requires thinking blocks to be replayed unmodified in any follow-up
+            # turn that continues a tool call, and validates the signature. Keeping
+            # only the text made those turns unreplayable — and with
+            # display="omitted" the text is empty while the signature is still
+            # mandatory, so a text-only copy carried nothing at all.
+            thinking_blocks.append(_thinking_block_to_dict(block))
 
     usage_dict: dict[str, Any] = {}
     if resp.usage:
@@ -81,6 +106,8 @@ def parse_anthropic_message(resp: Any) -> LLMResponse:
     thinking = "\n".join(p for p in thinking_parts if p)
     if thinking:
         fields["reasoning_content"] = thinking
+    if thinking_blocks:
+        fields["thinking_blocks"] = thinking_blocks
     return LLMResponse(**fields)
 
 

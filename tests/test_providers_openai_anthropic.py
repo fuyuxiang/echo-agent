@@ -82,6 +82,17 @@ class TestOpenAIChat:
         provider._client.embeddings.create = AsyncMock(side_effect=RuntimeError("x"))
         assert await provider.embed("text") is None
 
+    def test_clean_messages_drops_anthropic_thinking_blocks(self):
+        """Assistant messages carry thinking_blocks for the Anthropic converter;
+        forwarding that key to an OpenAI-shaped API would be rejected."""
+        provider = _openai_provider()
+        cleaned = provider._clean_messages([
+            {"role": "assistant", "content": "hi", "tool_calls": [],
+             "thinking_blocks": [{"type": "thinking", "thinking": "p",
+                                  "signature": "SIG"}]},
+        ])
+        assert cleaned == [{"role": "assistant", "content": "hi", "tool_calls": []}]
+
     def test_parse_response_no_choices(self):
         provider = _openai_provider()
         resp = MagicMock()
@@ -340,6 +351,74 @@ class TestAnthropicChat:
         assert out.finish_reason == "tool_calls"
         assert out.tool_calls[0].name == "exec"
 
+    def test_parse_response_keeps_thinking_blocks_verbatim(self):
+        """Anthropic validates the signature when a thinking block is replayed,
+        so keeping only the text made tool-call continuations unreplayable."""
+        provider = _anthropic_provider()
+        think = MagicMock()
+        think.type = "thinking"
+        think.thinking = "let me check"
+        think.signature = "SIGabc"
+        tool_block = MagicMock()
+        tool_block.type = "tool_use"
+        tool_block.id = "tu1"
+        tool_block.name = "exec"
+        tool_block.input = {"cmd": "ls"}
+        resp = MagicMock()
+        resp.content = [think, tool_block]
+        resp.stop_reason = "tool_use"
+        resp.model = "claude"
+        resp.usage = None
+        out = provider._parse_response(resp)
+        assert out.reasoning_content == "let me check"
+        assert out.thinking_blocks == [
+            {"type": "thinking", "thinking": "let me check", "signature": "SIGabc"}]
+
+    def test_parse_response_keeps_redacted_thinking_payload(self):
+        """A redacted block carries no readable text — only the opaque data is
+        replayable, and dropping it breaks the turn just the same."""
+        provider = _anthropic_provider()
+        block = MagicMock()
+        block.type = "redacted_thinking"
+        block.data = "OPAQUE"
+        resp = MagicMock()
+        resp.content = [block]
+        resp.stop_reason = "end_turn"
+        resp.model = "claude"
+        resp.usage = None
+        out = provider._parse_response(resp)
+        assert out.thinking_blocks == [{"type": "redacted_thinking", "data": "OPAQUE"}]
+
+    def test_parse_response_keeps_signature_when_text_is_omitted(self):
+        """display="omitted" yields an empty thinking string while the signature
+        stays mandatory, so an empty-text block must still be carried."""
+        provider = _anthropic_provider()
+        block = MagicMock()
+        block.type = "thinking"
+        block.thinking = ""
+        block.signature = "SIGxyz"
+        resp = MagicMock()
+        resp.content = [block]
+        resp.stop_reason = "end_turn"
+        resp.model = "claude"
+        resp.usage = None
+        out = provider._parse_response(resp)
+        assert out.thinking_blocks == [
+            {"type": "thinking", "thinking": "", "signature": "SIGxyz"}]
+        assert not out.reasoning_content
+
+    def test_parse_response_without_thinking_leaves_the_field_empty(self):
+        provider = _anthropic_provider()
+        block = MagicMock()
+        block.type = "text"
+        block.text = "hi"
+        resp = MagicMock()
+        resp.content = [block]
+        resp.stop_reason = "end_turn"
+        resp.model = "claude"
+        resp.usage = None
+        assert not provider._parse_response(resp).thinking_blocks
+
     def test_convert_tool_choice_variants(self):
         provider = _anthropic_provider()
         assert provider._convert_tool_choice("auto") == {"type": "auto"}
@@ -397,3 +476,60 @@ class TestAnthropicModelHelpers:
 
         assert _supports_adaptive_thinking("claude-opus-4") is True
         assert _supports_adaptive_thinking("claude-3-opus") is False
+
+
+class TestAnthropicThinkingReplay:
+    """The round trip: a parsed thinking block must go back out unchanged."""
+
+    @staticmethod
+    def _convert(messages):
+        from echo_agent.models.providers.format_utils import openai_to_anthropic_messages
+
+        _, converted = openai_to_anthropic_messages(messages)
+        return converted
+
+    def test_thinking_blocks_lead_the_assistant_content(self):
+        tb = {"type": "thinking", "thinking": "plan", "signature": "SIG"}
+        converted = self._convert([
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "thinking_blocks": [tb],
+             "tool_calls": [{"id": "tu1", "function": {"name": "exec",
+                                                       "arguments": '{"cmd":"ls"}'}}]},
+            {"role": "tool", "tool_call_id": "tu1", "content": "ok"},
+        ])
+        blocks = converted[1]["content"]
+        assert blocks[0] == tb
+        assert blocks[1]["type"] == "tool_use"
+
+    def test_redacted_thinking_is_replayed_too(self):
+        tb = {"type": "redacted_thinking", "data": "OPAQUE"}
+        converted = self._convert([
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "answer", "thinking_blocks": [tb]},
+        ])
+        assert converted[1]["content"][0] == tb
+
+    def test_unknown_block_types_are_not_replayed(self):
+        """Anything the API would reject as an assistant block must be dropped
+        rather than forwarded blindly."""
+        converted = self._convert([
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "answer",
+             "thinking_blocks": [{"type": "text", "text": "nope"}, "junk", None]},
+        ])
+        assert converted[1]["content"] == [{"type": "text", "text": "answer"}]
+
+    def test_a_thinking_only_turn_is_not_padded_as_empty(self):
+        tb = {"type": "thinking", "thinking": "plan", "signature": "SIG"}
+        converted = self._convert([
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "thinking_blocks": [tb]},
+        ])
+        assert converted[1]["content"] == [tb]
+
+    def test_messages_without_thinking_blocks_are_unchanged(self):
+        converted = self._convert([
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "answer"},
+        ])
+        assert converted[1]["content"] == [{"type": "text", "text": "answer"}]

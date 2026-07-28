@@ -48,6 +48,12 @@ def openai_to_anthropic_messages(
 
 def _convert_assistant_msg(msg: dict[str, Any]) -> dict[str, Any]:
     blocks: list[dict[str, Any]] = []
+    # Thinking blocks must come FIRST and be byte-identical to what the model
+    # produced — the API validates their signatures and rejects a turn that
+    # continues a tool call without them.
+    for tb in msg.get("thinking_blocks") or []:
+        if isinstance(tb, dict) and tb.get("type") in ("thinking", "redacted_thinking"):
+            blocks.append(tb)
     content = msg.get("content")
     if content:
         if isinstance(content, list):

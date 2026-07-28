@@ -895,6 +895,14 @@ class InferenceStage:
 
             assistant_msg: dict[str, Any] = {"role": "assistant", "content": response.content}
             assistant_msg["tool_calls"] = [tc.to_openai_format() for tc in response.tool_calls]
+            # Anthropic validates the signature on every thinking block and
+            # requires them replayed unmodified in the turn that continues a tool
+            # call. They ride alongside the text rather than replacing it so the
+            # OpenAI-shaped `content` stays intact for every other provider; the
+            # Anthropic converter picks them up and others drop them. Kept off the
+            # persisted session history, which stays provider-neutral.
+            if getattr(response, "thinking_blocks", None):
+                assistant_msg["thinking_blocks"] = response.thinking_blocks
             messages.append(assistant_msg)
 
             tool_call_fmts = [tc.to_openai_format() for tc in response.tool_calls]
