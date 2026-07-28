@@ -125,6 +125,41 @@ async def test_iframe_elements_get_refs_scoped_to_their_frame():
 
 
 @pytest.mark.asyncio
+async def test_non_interactive_role_never_becomes_a_ref():
+    """A structural role must not be handed a @eN.
+
+    Any explicit role used to be accepted as an interactive element, which made
+    a role="dialog" wrapper clickable AND (in the traversal) terminated the walk,
+    so the buttons inside it never reached the snapshot at all.
+    """
+    page = FakePage([make_payload([
+        {"kind": "container", "role": "dialog", "name": "确认删除"},
+        element("button", "取消", "/html/body/div[1]/button[1]"),
+        element("button", "删除", "/html/body/div[1]/button[2]"),
+    ])])
+    text, ref_map = await build_page_snapshot(page)
+    # the dialog is described for orientation, but only the buttons are refs
+    assert "<dialog: 确认删除>" in text
+    assert set(ref_map) == {"@e1", "@e2"}
+    assert "取消" in text and "删除" in text
+
+
+@pytest.mark.asyncio
+async def test_unexpected_element_role_is_dropped_without_gaps_in_numbering():
+    """The Python side re-checks the role, and refs stay consecutively numbered
+    so the model never sees a @eN it cannot use."""
+    page = FakePage([make_payload([
+        element("button", "前", "/html/body/button[1]"),
+        element("region", "不该出现", "/html/body/div[1]"),
+        element("button", "后", "/html/body/button[2]"),
+    ])])
+    text, ref_map = await build_page_snapshot(page)
+    assert set(ref_map) == {"@e1", "@e2"}
+    assert ref_map["@e2"].selector.endswith("button[2]")
+    assert "不该出现" not in text
+
+
+@pytest.mark.asyncio
 async def test_frame_budget_is_capped():
     payloads = [make_payload([element("button", f"b{i}", "/html/body/button[1]")])
                 for i in range(20)]

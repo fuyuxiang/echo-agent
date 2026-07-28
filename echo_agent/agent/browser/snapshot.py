@@ -21,11 +21,25 @@ from typing import Any
 
 from loguru import logger
 
-# Roles we hand a @eN ref to. Kept aligned with _SNAPSHOT_JS's roleOf() output.
+# Roles we hand a @eN ref to. Kept aligned with _SNAPSHOT_JS's roleOf() output,
+# and enforced a second time on the Python side (see build_page_snapshot) so a
+# role the traversal should never have offered cannot become a clickable ref.
 INTERACTIVE_ROLES = frozenset({
     "button", "link", "textbox", "checkbox", "radio", "combobox", "listbox",
-    "menuitem", "tab", "switch", "searchbox", "slider", "option", "spinbutton",
-    "file", "clickable",
+    "menuitem", "menuitemcheckbox", "menuitemradio", "treeitem", "tab", "switch",
+    "searchbox", "slider", "option", "spinbutton", "file", "clickable",
+})
+
+# Structural/landmark roles: rendered as a container line for orientation, but
+# never given a ref, and never allowed to terminate the traversal. A page that
+# wraps its controls in role="dialog" must still expose the controls — treating
+# any explicit role as one interactive unit made whole dialogs, navs and lists
+# unusable because the walk stopped at the wrapper.
+STRUCTURAL_ROLES = frozenset({
+    "dialog", "alertdialog", "alert", "status", "navigation", "main", "form",
+    "search", "banner", "contentinfo", "region", "menu", "menubar", "toolbar",
+    "tablist", "tabpanel", "tree", "grid", "table", "radiogroup", "group",
+    "list", "article", "complementary",
 })
 
 # Max frames traversed per snapshot. Ad-heavy pages carry dozens of iframes;
@@ -38,6 +52,14 @@ _SNAPSHOT_JS = r"""
     'button','link','checkbox','radio','tab','switch','menuitem','menuitemcheckbox',
     'menuitemradio','option','slider','spinbutton','textbox','searchbox','combobox',
     'listbox','treeitem'
+  ]);
+  // Containers that group other controls. They get a descriptive line but never
+  // a ref, and crucially never stop the walk: the controls inside them are the
+  // whole point of the snapshot.
+  const STRUCTURAL_ROLE_ATTRS = new Set([
+    'dialog','alertdialog','alert','status','navigation','main','form','search',
+    'banner','contentinfo','region','menu','menubar','toolbar','tablist','tabpanel',
+    'tree','grid','table','radiogroup','group','list','article','complementary'
   ]);
   const SKIP_TAGS = new Set([
     'script','style','noscript','template','svg','canvas','head','meta','link','br','hr'
@@ -86,13 +108,29 @@ _SNAPSHOT_JS = r"""
       if (t === 'hidden') return '';
       return 'textbox';
     }
-    if (explicit) return explicit;
+    // An explicit role that is NOT in the interactive set deliberately falls
+    // through here instead of being returned as-is. Returning it made every
+    // role="dialog"/"navigation"/"group" wrapper a ref AND terminated the walk,
+    // hiding every control inside it.
     if (el.isContentEditable) return 'textbox';
     const tabindex = el.getAttribute('tabindex');
     const clickish = el.hasAttribute('onclick') ||
                      (tabindex !== null && tabindex !== '-1') ||
                      el.ownerDocument.defaultView.getComputedStyle(el).cursor === 'pointer';
     if (clickish && trim(el.innerText || '').length <= MAX_CLICKABLE_TEXT) return 'clickable';
+    return '';
+  }
+
+  // A structural wrapper is only announced when it carries no interactive role of
+  // its own, so a role="tab" inside a role="tablist" is still a ref.
+  function structuralRoleOf(el) {
+    const explicit = (el.getAttribute('role') || '').toLowerCase();
+    if (explicit && STRUCTURAL_ROLE_ATTRS.has(explicit)) return explicit;
+    const tag = el.tagName.toLowerCase();
+    if (explicit) return '';
+    if (tag === 'dialog') return 'dialog';
+    if (tag === 'nav') return 'navigation';
+    if (tag === 'form') return 'form';
     return '';
   }
 
@@ -223,6 +261,22 @@ _SNAPSHOT_JS = r"""
       // not repeated as a bare text line underneath it.
       return;
     }
+    const structural = structuralRoleOf(el);
+    if (structural) {
+      // Announced for orientation, then the walk CONTINUES into the children —
+      // the controls inside a dialog/nav/list are exactly what the model needs.
+      budget--;
+      entries.push({
+        kind: 'container',
+        role: structural,
+        name: cut(trim(el.getAttribute('aria-label') || el.getAttribute('title')), MAX_NAME),
+      });
+      for (const child of el.children) {
+        if (budget <= 0) return;
+        walk(child, depth + 1);
+      }
+      return;
+    }
     if (tag === 'img') {
       const alt = trim(el.getAttribute('alt'));
       if (alt) { budget--; entries.push({ kind: 'text', text: 'image: ' + cut(alt, MAX_NAME) }); }
@@ -263,6 +317,12 @@ def _render_entry(entry: dict[str, Any], ref: str | None) -> str:
         states = entry.get("states") or []
         suffix = f" [{' '.join(states)}]" if states else ""
         return f"[{ref}] {role} '{name}'{suffix}"
+    if kind == "container":
+        # No ref: a structural wrapper is orientation only. Its children carry
+        # the refs.
+        role = entry.get("role", "")
+        name = entry.get("name", "")
+        return f"<{role}{': ' + name if name else ''}>"
     if kind == "heading":
         level = entry.get("level", 1)
         return f"{'#' * int(level)} {entry.get('text', '')}"
@@ -321,14 +381,24 @@ async def build_page_snapshot(
                 continue
             ref = None
             if entry.get("kind") == "element":
-                counter += 1
-                ref = f"@e{counter}"
+                role = str(entry.get("role") or "")
+                # Second gate, on the Python side: the traversal should only ever
+                # offer interactive roles, but a ref is a click target and an
+                # unexpected role must not become one just because the JS changed.
+                if role not in INTERACTIVE_ROLES:
+                    logger.debug("dropping non-interactive ref candidate role={}", role)
+                    continue
                 xpath = entry.get("xpath") or ""
                 try:
-                    ref_map[ref] = frame.locator(f"xpath={xpath}")
+                    locator = frame.locator(f"xpath={xpath}")
                 except Exception as e:
-                    logger.debug("locator build failed for {} ({}): {}", ref, xpath, e)
+                    logger.debug("locator build failed for role {} ({}): {}", role, xpath, e)
                     continue
+                # Numbered only after the locator exists, so refs stay
+                # consecutive and the model never sees a @eN it cannot use.
+                counter += 1
+                ref = f"@e{counter}"
+                ref_map[ref] = locator
             rendered = _render_entry(entry, ref)
             if rendered:
                 lines.append(rendered)
