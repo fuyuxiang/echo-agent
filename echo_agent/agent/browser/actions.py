@@ -1,11 +1,41 @@
+"""Browser actions: navigation, interaction, capture, evaluation.
+
+Each action returns an error string ("" on success) rather than raising, so the
+tool layer can hand the model an actionable message and keep the session alive.
+"""
+
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from loguru import logger
 
-from echo_agent.agent.browser.snapshot import build_snapshot_with_locators
+from echo_agent.agent.browser.snapshot import build_page_snapshot
 from echo_agent.agent.tools.web import check_url_ssrf
+
+# Keys accepted by press. Playwright takes any key name plus modifier combos
+# ("Control+a"); we validate loosely to reject obvious garbage while still
+# allowing single printable characters and modifier chords.
+_KEY_RE = re.compile(r"^(?:[A-Za-z][A-Za-z0-9]*|\S)(?:\+(?:[A-Za-z][A-Za-z0-9]*|\S))*$")
+
+# Expressions that read credentials or drive navigation are refused: evaluate is
+# an arbitrary-code escape hatch inside a page that may itself be attacker
+# controlled, so prompt injection must not be able to use it to exfiltrate
+# tokens or hop to an internal address behind the SSRF gate.
+_EVAL_DENY = (
+    ("document.cookie", "读取 cookie"),
+    ("localstorage", "读取 localStorage"),
+    ("sessionstorage", "读取 sessionStorage"),
+    ("indexeddb", "读取 IndexedDB"),
+    ("location.href=", "脚本跳转"),
+    ("location.replace", "脚本跳转"),
+    ("location.assign", "脚本跳转"),
+    ("window.open", "脚本开窗"),
+    ("navigator.credentials", "读取凭据"),
+    ("navigator.sendbeacon", "外发数据"),
+)
+_MAX_EVAL_RESULT_CHARS = 4000
 
 
 async def navigate(session: Any, url: str, *, timeout_sec: int = 30,
@@ -27,46 +57,269 @@ async def navigate(session: Any, url: str, *, timeout_sec: int = 30,
     return ""
 
 
-async def click(session: Any, ref: str) -> str:
+def _resolve_ref(session: Any, ref: str) -> tuple[Any, str]:
     loc = session.ref_map.get(ref)
     if loc is None:
-        return f"ref {ref} 不存在，请重新 snapshot"
+        known = len(session.ref_map)
+        return None, (f"ref {ref} 不存在（当前快照共 {known} 个可交互元素），"
+                      "请重新 snapshot 后使用最新的 @eN")
+    return loc, ""
+
+
+async def click(session: Any, ref: str, *, button: str = "left",
+                click_count: int = 1, timeout_ms: int = 10000) -> str:
+    loc, err = _resolve_ref(session, ref)
+    if err:
+        return err
     try:
-        await loc.click(timeout=10000)
+        await loc.click(button=button, click_count=click_count, timeout=timeout_ms)
     except Exception as e:
         return f"click failed: {e}"
     return ""
 
 
-async def type_text(session: Any, ref: str, text: str) -> str:
-    loc = session.ref_map.get(ref)
-    if loc is None:
-        return f"ref {ref} 不存在，请重新 snapshot"
+async def type_text(session: Any, ref: str, text: str, *,
+                    press_enter: bool = False, timeout_ms: int = 10000) -> str:
+    """Fill a field, then optionally type-and-Enter.
+
+    ``fill`` is used for the value (fast, clears first) but it does not emit key
+    events, so frameworks that only react to keystrokes never see the input. When
+    *press_enter* is set we additionally dispatch a real Enter on the element,
+    which is how most search boxes submit.
+    """
+    loc, err = _resolve_ref(session, ref)
+    if err:
+        return err
     try:
-        await loc.fill(text, timeout=10000)
+        await loc.fill(text, timeout=timeout_ms)
     except Exception as e:
         return f"type failed: {e}"
+    if press_enter:
+        try:
+            await loc.press("Enter", timeout=timeout_ms)
+        except Exception as e:
+            return f"type ok but Enter failed: {e}"
     return ""
 
 
-async def screenshot(session: Any) -> bytes:
+async def press_key(session: Any, key: str, *, ref: str = "",
+                    timeout_ms: int = 10000) -> str:
+    """Press a key on a specific element, or on the page when no ref is given."""
+    if not key or not _KEY_RE.match(key):
+        return f"无效按键: {key!r}（示例: Enter / Tab / Escape / ArrowDown / Control+a）"
+    if ref:
+        loc, err = _resolve_ref(session, ref)
+        if err:
+            return err
+        try:
+            await loc.press(key, timeout=timeout_ms)
+        except Exception as e:
+            return f"press failed: {e}"
+        return ""
     try:
-        return await session.page.screenshot()
+        await session.page.keyboard.press(key)
+    except Exception as e:
+        return f"press failed: {e}"
+    return ""
+
+
+async def scroll(session: Any, direction: str, *, amount: int = 0) -> str:
+    """Scroll the page. ``amount`` is in pixels; 0 means one viewport step."""
+    deltas = {
+        "down": (0, 1), "up": (0, -1),
+        "right": (1, 0), "left": (-1, 0),
+    }
+    if direction in ("top", "bottom"):
+        try:
+            target = "0" if direction == "top" else "document.body.scrollHeight"
+            await session.page.evaluate(f"window.scrollTo(0, {target})")
+        except Exception as e:
+            return f"scroll failed: {e}"
+        return ""
+    if direction not in deltas:
+        return f"无效滚动方向: {direction}（可选 up/down/left/right/top/bottom）"
+    step = amount if amount > 0 else 600
+    dx, dy = deltas[direction]
+    try:
+        await session.page.mouse.wheel(dx * step, dy * step)
+    except Exception as e:
+        return f"scroll failed: {e}"
+    return ""
+
+
+async def go_back(session: Any, *, timeout_sec: int = 30) -> str:
+    try:
+        await session.page.go_back(timeout=timeout_sec * 1000)
+    except Exception as e:
+        if "ERR_BLOCKED_BY_CLIENT" in str(e):
+            return "back blocked: 目标地址被拦截（SSRF 防护）"
+        return f"back failed: {e}"
+    return ""
+
+
+async def go_forward(session: Any, *, timeout_sec: int = 30) -> str:
+    try:
+        await session.page.go_forward(timeout=timeout_sec * 1000)
+    except Exception as e:
+        if "ERR_BLOCKED_BY_CLIENT" in str(e):
+            return "forward blocked: 目标地址被拦截（SSRF 防护）"
+        return f"forward failed: {e}"
+    return ""
+
+
+async def reload(session: Any, *, timeout_sec: int = 30) -> str:
+    try:
+        await session.page.reload(timeout=timeout_sec * 1000)
+    except Exception as e:
+        return f"reload failed: {e}"
+    return ""
+
+
+async def hover(session: Any, ref: str, *, timeout_ms: int = 10000) -> str:
+    loc, err = _resolve_ref(session, ref)
+    if err:
+        return err
+    try:
+        await loc.hover(timeout=timeout_ms)
+    except Exception as e:
+        return f"hover failed: {e}"
+    return ""
+
+
+async def select_option(session: Any, ref: str, values: list[str], *,
+                        timeout_ms: int = 10000) -> str:
+    loc, err = _resolve_ref(session, ref)
+    if err:
+        return err
+    if not values:
+        return "select 需要至少一个 value（选项文本或 value 属性）"
+    try:
+        # Try by value first, then by visible label — the model usually copies
+        # the label it saw in the snapshot, which is not the value attribute.
+        try:
+            await loc.select_option(value=values, timeout=timeout_ms)
+        except Exception:
+            await loc.select_option(label=values, timeout=timeout_ms)
+    except Exception as e:
+        return f"select failed: {e}"
+    return ""
+
+
+async def upload_files(session: Any, ref: str, paths: list[str], *,
+                       timeout_ms: int = 10000) -> str:
+    loc, err = _resolve_ref(session, ref)
+    if err:
+        return err
+    if not paths:
+        return "upload 需要至少一个文件路径"
+    try:
+        await loc.set_input_files(paths, timeout=timeout_ms)
+    except Exception as e:
+        return f"upload failed: {e}"
+    return ""
+
+
+async def wait_for(session: Any, *, text: str = "", state: str = "",
+                   timeout_sec: int = 15) -> str:
+    """Wait for page text to appear, or for a load state to settle."""
+    timeout_ms = timeout_sec * 1000
+    if text:
+        try:
+            await session.page.get_by_text(text, exact=False).first.wait_for(
+                state="visible", timeout=timeout_ms)
+        except Exception as e:
+            return f"wait failed: 未在 {timeout_sec}s 内出现文本 {text!r} ({e})"
+        return ""
+    target = state or "networkidle"
+    if target not in ("load", "domcontentloaded", "networkidle"):
+        return f"无效等待状态: {target}（可选 load/domcontentloaded/networkidle）"
+    try:
+        await session.page.wait_for_load_state(target, timeout=timeout_ms)
+    except Exception as e:
+        return f"wait failed: {e}"
+    return ""
+
+
+def check_eval_expression(expression: str, *, allow_unsafe: bool = False) -> str:
+    """Return a refusal reason for a disallowed expression, "" when allowed."""
+    if not expression.strip():
+        return "expression 不能为空"
+    if allow_unsafe:
+        return ""
+    lowered = expression.lower().replace(" ", "")
+    for needle, reason in _EVAL_DENY:
+        if needle in lowered:
+            return (f"evaluate 被拒绝：表达式涉及{reason}。"
+                    "如确需此操作，请在配置中开启 browser.allow_unsafe_evaluate")
+    return ""
+
+
+async def evaluate(session: Any, expression: str, *,
+                   allow_unsafe: bool = False) -> tuple[str, str]:
+    """Evaluate JS in the page. Returns ``(result_text, error)``."""
+    refusal = check_eval_expression(expression, allow_unsafe=allow_unsafe)
+    if refusal:
+        return "", refusal
+    try:
+        result = await session.page.evaluate(expression)
+    except Exception as e:
+        return "", f"evaluate failed: {e}"
+    if result is None:
+        # repr(None) would show the model "None" for a JS undefined/void result.
+        text = "undefined"
+    elif isinstance(result, str):
+        # An empty string is a real result; quote it so it is not mistaken for
+        # "no result at all".
+        text = result or '""'
+    else:
+        text = repr(result)
+    if len(text) > _MAX_EVAL_RESULT_CHARS:
+        text = text[:_MAX_EVAL_RESULT_CHARS] + "…(结果过长已截断)"
+    return text, ""
+
+
+async def screenshot(session: Any, *, full_page: bool = False) -> bytes:
+    try:
+        return await session.page.screenshot(full_page=full_page)
     except Exception as e:
         logger.debug("screenshot failed: {}", e)
         return b""
 
 
+async def get_images(session: Any, *, limit: int = 50) -> list[dict[str, str]]:
+    """List images on the page so the model can pick one for vision analysis."""
+    try:
+        rows = await session.page.evaluate(
+            """(limit) => Array.from(document.images)
+                 .filter(i => i.currentSrc && i.naturalWidth > 32 && i.naturalHeight > 32)
+                 .slice(0, limit)
+                 .map(i => ({url: i.currentSrc, alt: (i.alt || '').trim(),
+                             w: i.naturalWidth, h: i.naturalHeight}))""",
+            limit,
+        )
+    except Exception as e:
+        logger.debug("get_images failed: {}", e)
+        return []
+    return rows if isinstance(rows, list) else []
+
+
 async def refresh_snapshot(session: Any, *, max_chars: int = 8000) -> str:
     """Rebuild the snapshot text AND populate session.ref_map with locators.
 
-    build_snapshot_with_locators yields (text, {ref: locator}) from a single
-    AX-tree traversal, so the @eN in the text and the locator that click/type
-    will drive are guaranteed to come from the same node. No separate DOM query
-    is used, which is what previously let radio/menuitem-style roles shift refs.
+    ``build_page_snapshot`` returns (text, {ref: locator}) from a single in-page
+    DOM traversal, so the @eN in the text and the locator that click/type will
+    drive always describe the same element. Any dialog the page raised since the
+    last snapshot is surfaced here — it was auto-answered to keep the page from
+    blocking, and the model needs to know it happened.
     """
-    text, ref_map = await build_snapshot_with_locators(
-        session.page, max_chars=max_chars
-    )
+    text, ref_map = await build_page_snapshot(session.page, max_chars=max_chars)
     session.ref_map = ref_map
+    prefix_parts: list[str] = []
+    for entry in session.take_dialogs():
+        prefix_parts.append(
+            f"(已自动{'确认' if session.dialog_policy == 'accept' else '取消'}"
+            f"弹窗 {entry.get('type', '')}: {entry.get('message', '')})"
+        )
+    if prefix_parts:
+        return "\n".join(prefix_parts) + "\n" + text
     return text

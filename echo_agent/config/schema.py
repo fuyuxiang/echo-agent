@@ -1296,6 +1296,54 @@ class BrowserToolConfig(_Base):
             "desc_en": "Allow navigating to private addresses (default blocked, reuses SSRF policy)",
         },
     )
+    dialog_policy: str = Field(
+        default="dismiss",
+        json_schema_extra={
+            "status": "effective", "ref": "agent/browser/session.py",
+            "desc_zh": "原生弹窗(alert/confirm/prompt)自动处理策略：dismiss 取消 / accept 确认。不处理会导致页面阻塞",
+            "desc_en": "Native dialog auto-handling policy: dismiss or accept (unhandled dialogs block the page)",
+        },
+    )
+    allow_unsafe_evaluate: bool = Field(
+        default=False,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/browser/actions.py",
+            "desc_zh": "是否允许 evaluate 执行读取 cookie/localStorage、脚本跳转等敏感表达式（默认拒绝，防注入外泄）",
+            "desc_en": "Allow evaluate to run sensitive expressions (cookie/storage reads, script navigation). Default denied",
+        },
+    )
+    persist_login_state: bool = Field(
+        default=False,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/tools/browser.py",
+            "desc_zh": "是否持久化浏览器登录态(cookie/localStorage)到工作区，供后续会话复用",
+            "desc_en": "Persist browser login state (cookies/localStorage) into the workspace for reuse",
+        },
+    )
+    viewport_width: int = Field(
+        default=1280,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/browser/session.py",
+            "desc_zh": "浏览器视口宽度(像素)",
+            "desc_en": "Browser viewport width (px)",
+        },
+    )
+    viewport_height: int = Field(
+        default=800,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/browser/session.py",
+            "desc_zh": "浏览器视口高度(像素)",
+            "desc_en": "Browser viewport height (px)",
+        },
+    )
+    user_agent: str = Field(
+        default="",
+        json_schema_extra={
+            "status": "effective", "ref": "agent/browser/session.py",
+            "desc_zh": "自定义 User-Agent，留空用 Chromium 默认值",
+            "desc_en": "Custom User-Agent; empty uses the Chromium default",
+        },
+    )
 
 
 class ImageGenConfig(_Base):

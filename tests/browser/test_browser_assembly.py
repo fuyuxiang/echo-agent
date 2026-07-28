@@ -1,129 +1,85 @@
+"""End-to-end assembly: tool discovery gating plus a full open→act→close run."""
+
+from pathlib import Path
+
 import pytest
 
+from echo_agent.agent.browser import actions as act_mod
 from echo_agent.agent.browser.session import BrowserSessionManager
 from echo_agent.agent.tools.browser import BrowserTool
+from echo_agent.tools.base import ToolExecutionContext
+
+from ._fakes import Cfg, FakePage, FakePlaywright, element, make_payload, patch_playwright
 
 
-class _Cfg:
-    enabled = True
-    max_sessions = 3
-    session_idle_timeout_sec = 300
-    max_snapshot_chars = 8000
-    headless = True
-    nav_timeout_sec = 30
-    allow_private_addresses = False
-
-
-class _FakeLocator:
-    def __init__(self, label):
-        self.label = label
-        self.clicked = False
-        self.filled = None
-
-    async def click(self, **k):
-        self.clicked = True
-
-    async def fill(self, t, **k):
-        self.filled = t
-
-
-class _FakePage:
-    def __init__(self):
-        # Two interactive elements. With the single-traversal snapshot builder,
-        # @e1 → get_by_role('button', name='ok') and @e2 → name='cancel'. The
-        # fake get_by_role hands back the matching locator instance so the test
-        # can observe which one was actually clicked.
-        self._ok = _FakeLocator("ok")
-        self._cancel = _FakeLocator("cancel")
-        self.url = ""
-
-    async def goto(self, url, **k):
-        self.url = url
-
-    class _AX:
-        async def snapshot(self):
-            return {"role": "WebArea", "name": "p",
-                    "children": [{"role": "button", "name": "ok"},
-                                 {"role": "button", "name": "cancel"}]}
-
-    @property
-    def accessibility(self):
-        return self._AX()
-
-    def get_by_role(self, role, name=None):
-        loc = self._ok if name == "ok" else self._cancel
-        return _NthWrapper(loc)
-
-
-class _NthWrapper:
-    """get_by_role(...).nth(k) returns the underlying locator."""
-
-    def __init__(self, loc):
-        self._loc = loc
-
-    def nth(self, k):
-        return self._loc
+def _two_buttons():
+    """Two buttons sharing a role; only the xpath tells them apart."""
+    return make_payload([
+        element("button", "ok", "/html/body/button[1]"),
+        element("button", "ok", "/html/body/button[2]"),
+    ])
 
 
 @pytest.mark.asyncio
-async def test_full_open_navigate_click_close(monkeypatch):
-    mgr = BrowserSessionManager()
+async def test_full_open_navigate_click_close(monkeypatch, tmp_path):
+    async def _no_ssrf(url):
+        return None
 
-    fake_page = _FakePage()
+    page = FakePage([_two_buttons() for _ in range(8)])
+    patch_playwright(monkeypatch, FakePlaywright(page))
+    monkeypatch.setattr(act_mod, "check_url_ssrf", _no_ssrf)
 
-    # fake the browser bootstrap
-    class _Ctx:
-        async def new_page(self): return fake_page
-        async def route(self, *a, **k): pass
-        async def close(self): pass
-    class _Br:
-        async def new_context(self): return _Ctx()
-    class _PW:
-        class chromium:
-            @staticmethod
-            async def launch(**k): return _Br()
-        async def stop(self): pass
-    import echo_agent.agent.browser.session as sess_mod
-    monkeypatch.setattr(sess_mod, "_start_playwright", lambda: _async_val(_PW()))
-    # navigate SSRF allow
-    import echo_agent.agent.browser.actions as act_mod
-    monkeypatch.setattr(act_mod, "check_url_ssrf", lambda url: _async_val(None))
+    tool = BrowserTool(config=Cfg(), manager=BrowserSessionManager(),
+                       workspace=str(tmp_path))
+    ctx = ToolExecutionContext(session_key="conv-a")
 
-    tool = BrowserTool(config=_Cfg(), manager=mgr)
-    r_open = await tool.execute({"action": "open"})
+    r_open = await tool.execute({"action": "open"}, ctx)
     assert r_open.success
-    sid = r_open.output.split(": ")[1]
+    sid = r_open.metadata["session_id"]
 
-    r_nav = await tool.execute({"action": "navigate", "session_id": sid, "url": "https://example.com"})
+    r_nav = await tool.execute(
+        {"action": "navigate", "session_id": sid, "url": "https://example.com"}, ctx)
     assert r_nav.success
-    assert "@e1" in r_nav.output  # snapshot has the button
-    assert "@e2" in r_nav.output  # ...and the second interactive element
+    assert "@e1" in r_nav.output and "@e2" in r_nav.output
 
-    # ref-order contract: @e1 must resolve to the FIRST query_selector_all handle
-    # (ok), @e2 to the SECOND (cancel). Assert the *specific* locator is driven,
-    # not merely that click did not raise — this catches a snapshot/DOM order
-    # mismatch that would silently click the wrong element.
-    r_click1 = await tool.execute({"action": "click", "session_id": sid, "ref": "@e1"})
-    assert r_click1.success
-    assert fake_page._ok.clicked is True
-    assert fake_page._cancel.clicked is False
+    # Ref→element contract: both buttons have role=button name='ok', so a
+    # role+name lookup would target the same node for @e1 and @e2. Assert the
+    # distinct locators are driven, which is what catches that mis-targeting.
+    assert (await tool.execute(
+        {"action": "click", "session_id": sid, "ref": "@e1"}, ctx)).success
+    assert page.locators["xpath=/html/body/button[1]"].clicked == 1
+    assert page.locators["xpath=/html/body/button[2]"].clicked == 0
 
-    r_click2 = await tool.execute({"action": "click", "session_id": sid, "ref": "@e2"})
-    assert r_click2.success
-    assert fake_page._cancel.clicked is True
+    assert (await tool.execute(
+        {"action": "click", "session_id": sid, "ref": "@e2"}, ctx)).success
+    assert page.locators["xpath=/html/body/button[2]"].clicked == 1
 
-    r_close = await tool.execute({"action": "close", "session_id": sid})
-    assert r_close.success
+    assert (await tool.execute({"action": "close", "session_id": sid}, ctx)).success
+    assert tool._mgr.get(sid) is None
 
 
-def _async_val(v):
-    async def _c(): return v
-    return _c()
+@pytest.mark.asyncio
+async def test_refs_are_renumbered_after_the_page_changes(monkeypatch, tmp_path):
+    """Stale refs must not silently resolve to a different element."""
+    first = make_payload([element("button", "a", "/html/body/button[1]"),
+                          element("button", "b", "/html/body/button[2]")])
+    second = make_payload([element("button", "b", "/html/body/button[2]")])
+    page = FakePage([first, second, second])
+    patch_playwright(monkeypatch, FakePlaywright(page))
+
+    tool = BrowserTool(config=Cfg(), manager=BrowserSessionManager(),
+                       workspace=str(tmp_path))
+    ctx = ToolExecutionContext(session_key="conv-a")
+    sid = (await tool.execute({"action": "open"}, ctx)).metadata["session_id"]
+
+    await tool.execute({"action": "snapshot", "session_id": sid}, ctx)
+    await tool.execute({"action": "snapshot", "session_id": sid}, ctx)
+    res = await tool.execute({"action": "click", "session_id": sid, "ref": "@e2"}, ctx)
+    assert res.success is False
+    assert "@e2" in res.error and "snapshot" in res.error
 
 
-def _browser_tool_names(config):
-    from pathlib import Path
-
+def _browser_tools(config):
     from echo_agent.agent.tools import discover_tools
     from echo_agent.bus.queue import MessageBus
     tools = discover_tools(config=config, workspace=Path("/tmp/ws_browser_gate"),
@@ -133,22 +89,24 @@ def _browser_tool_names(config):
 
 def test_assembly_includes_browser_when_enabled():
     from echo_agent.config.schema import Config
-    # network must be allowed AND browser enabled for the tool to mount
     config = Config(tools={"browser": {"enabled": True}},
                     execution={"network_policy": "allow"})
-    assert _browser_tool_names(config), "browser tool should mount when enabled + network allowed"
+    mounted = _browser_tools(config)
+    assert mounted, "browser tool should mount when enabled + network allowed"
+    # The workspace must be wired through, or screenshots and login state have
+    # nowhere to go.
+    assert mounted[0]._workspace
 
 
 def test_assembly_skips_when_disabled():
     from echo_agent.config.schema import Config
     config = Config(tools={"browser": {"enabled": False}},
                     execution={"network_policy": "allow"})
-    assert _browser_tool_names(config) == [], "browser tool must not mount when disabled"
+    assert _browser_tools(config) == [], "browser tool must not mount when disabled"
 
 
 def test_assembly_skips_when_network_deny():
     from echo_agent.config.schema import Config
-    # enabled but network denied → gated off
     config = Config(tools={"browser": {"enabled": True}},
                     execution={"network_policy": "deny"})
-    assert _browser_tool_names(config) == [], "browser tool must not mount under network deny"
+    assert _browser_tools(config) == [], "browser tool must not mount under network deny"

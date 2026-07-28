@@ -1,132 +1,133 @@
+"""Snapshot builder tests.
+
+The builder must go through ``frame.evaluate`` — Playwright removed
+``page.accessibility`` in 1.57, so any test that fakes that attribute would
+validate a code path which cannot run against a real browser.
+"""
+
 import pytest
 
-from echo_agent.agent.browser.snapshot import (
-    build_snapshot,
-    build_snapshot_with_locators,
-)
+from echo_agent.agent.browser.snapshot import build_page_snapshot
 
-
-class _FakePage:
-    def __init__(self, tree):
-        self._tree = tree
-
-    class _AX:
-        def __init__(self, tree):
-            self._tree = tree
-
-        async def snapshot(self):
-            return self._tree
-
-    @property
-    def accessibility(self):
-        return self._AX(self._tree)
+from ._fakes import FakePage, element, make_payload
 
 
 @pytest.mark.asyncio
-async def test_snapshot_numbers_interactive_elements():
-    tree = {
-        "role": "WebArea", "name": "page",
-        "children": [
-            {"role": "textbox", "name": "搜索"},
-            {"role": "button", "name": "提交"},
-            {"role": "text", "name": "普通文本"},
-        ],
-    }
-    text, ref_map = await build_snapshot(_FakePage(tree))
+async def test_refs_are_numbered_and_mapped_to_locators():
+    page = FakePage([make_payload([
+        {"kind": "heading", "level": 1, "text": "标题"},
+        element("textbox", "搜索", "/html/body/input[1]"),
+        {"kind": "text", "text": "普通文本"},
+        element("button", "提交", "/html/body/button[1]"),
+    ])])
+    text, ref_map = await build_page_snapshot(page)
+
     assert "[@e1] textbox '搜索'" in text
     assert "[@e2] button '提交'" in text
-    assert "普通文本" in text  # non-interactive text still shown
-    assert set(ref_map.keys()) == {"@e1", "@e2"}
+    assert "# 标题" in text
+    assert "普通文本" in text
+    assert set(ref_map) == {"@e1", "@e2"}
+    # each ref resolves to a locator built from that node's own xpath
+    assert ref_map["@e1"].selector == "xpath=/html/body/input[1]"
+    assert ref_map["@e2"].selector == "xpath=/html/body/button[1]"
 
 
 @pytest.mark.asyncio
-async def test_snapshot_truncates_long_content():
-    children = [{"role": "button", "name": f"btn{i}"} for i in range(500)]
-    tree = {"role": "WebArea", "name": "p", "children": children}
-    text, ref_map = await build_snapshot(_FakePage(tree), max_chars=200)
-    assert len(text) <= 260  # max_chars + truncation notice slack
+async def test_page_header_includes_title_and_url():
+    page = FakePage([make_payload([], url="https://x.test/a", title="标题页")])
+    text, _ = await build_page_snapshot(page)
+    assert "Page: 标题页" in text
+    assert "URL: https://x.test/a" in text
+
+
+@pytest.mark.asyncio
+async def test_identical_role_name_get_distinct_locators():
+    # Two buttons with the same accessible name must NOT collapse onto one
+    # locator. This is the failure the previous get_by_role(...).nth() scheme
+    # produced whenever accessible names collided.
+    page = FakePage([make_payload([
+        element("button", "ok", "/html/body/button[1]"),
+        element("button", "ok", "/html/body/button[2]"),
+    ])])
+    _, ref_map = await build_page_snapshot(page)
+    assert ref_map["@e1"].selector != ref_map["@e2"].selector
+    assert ref_map["@e2"].selector.endswith("button[2]")
+
+
+@pytest.mark.asyncio
+async def test_states_are_rendered():
+    page = FakePage([make_payload([
+        element("checkbox", "同意", "/html/body/input[1]", ["checked", "required"]),
+        element("textbox", "pw", "/html/body/input[2]", ["value=***"]),
+    ])])
+    text, _ = await build_page_snapshot(page)
+    assert "[@e1] checkbox '同意' [checked required]" in text
+    assert "value=***" in text
+
+
+@pytest.mark.asyncio
+async def test_truncates_long_content():
+    entries = [element("button", f"btn{i}", f"/html/body/button[{i}]") for i in range(500)]
+    text, ref_map = await build_page_snapshot(FakePage([make_payload(entries)]),
+                                              max_chars=200)
     assert "截断" in text
+    assert len(text) <= 300
+    # refs are still fully mapped; only the *text* is truncated
+    assert len(ref_map) == 500
 
 
 @pytest.mark.asyncio
-async def test_snapshot_empty_tree():
-    text, ref_map = await build_snapshot(_FakePage(None))
+async def test_evaluate_failure_yields_placeholder_not_silence():
+    """A failed traversal must not masquerade as an empty page."""
+    page = FakePage([RuntimeError("frame detached")])
+    text, ref_map = await build_page_snapshot(page)
+    assert ref_map == {}
+    assert text == "(页面无可提取内容)"
+
+
+@pytest.mark.asyncio
+async def test_non_dict_payload_is_ignored():
+    page = FakePage(["not-a-dict"])
+    text, ref_map = await build_page_snapshot(page)
     assert ref_map == {}
     assert isinstance(text, str)
 
 
-class _FakeLocatorRoleQuery:
-    """Records the (role, name, nth) it was built from so a test can assert the
-    ref map lines up with AX-tree order."""
+class _MultiFramePage(FakePage):
+    """Page whose frames each return their own payload."""
 
-    def __init__(self, role, name):
-        self.role = role
-        self.name = name
-        self.index = None
-
-    def nth(self, k):
-        self.index = k
-        return self
-
-
-class _RolePage:
-    """Fake page whose get_by_role hands back a locator that remembers how it
-    was constructed, so we can verify @eN → locator ordering."""
-
-    def __init__(self, tree):
-        self._tree = tree
-
-    class _AX:
-        def __init__(self, tree):
-            self._tree = tree
-
-        async def snapshot(self):
-            return self._tree
+    def __init__(self, payloads):
+        super().__init__()
+        self._frames = []
+        for payload in payloads:
+            frame = FakePage([payload])
+            self._frames.append(frame)
 
     @property
-    def accessibility(self):
-        return self._AX(self._tree)
-
-    def get_by_role(self, role, name=None):
-        return _FakeLocatorRoleQuery(role, name)
+    def frames(self):
+        return self._frames
 
 
 @pytest.mark.asyncio
-async def test_locators_follow_ax_order_with_css_missed_role():
-    # A 'radio' sits between two buttons. The old positional query_selector_all
-    # scheme did not select radios, so every later ref shifted by one. The
-    # single-traversal builder must map each @eN to a locator for the SAME node.
-    tree = {
-        "role": "WebArea", "name": "p",
-        "children": [
-            {"role": "button", "name": "ok"},
-            {"role": "radio", "name": "opt-a"},
-            {"role": "button", "name": "cancel"},
-        ],
-    }
-    text, ref_map = await build_snapshot_with_locators(_RolePage(tree))
-
-    assert "[@e1] button 'ok'" in text
-    assert "[@e2] radio 'opt-a'" in text
-    assert "[@e3] button 'cancel'" in text
-    assert set(ref_map.keys()) == {"@e1", "@e2", "@e3"}
-
-    # each ref resolves to the exact (role, name) of the AX node at that position
-    assert (ref_map["@e1"].role, ref_map["@e1"].name) == ("button", "ok")
-    assert (ref_map["@e2"].role, ref_map["@e2"].name) == ("radio", "opt-a")
-    assert (ref_map["@e3"].role, ref_map["@e3"].name) == ("button", "cancel")
+async def test_iframe_elements_get_refs_scoped_to_their_frame():
+    page = _MultiFramePage([
+        make_payload([element("button", "outer", "/html/body/button[1]")],
+                     url="https://x.test/"),
+        make_payload([element("button", "inner", "/html/body/button[1]")],
+                     url="https://x.test/frame"),
+    ])
+    text, ref_map = await build_page_snapshot(page)
+    assert "[@e1] button 'outer'" in text
+    assert "[@e2] button 'inner'" in text
+    assert "iframe: https://x.test/frame" in text
+    # same xpath, different frames — the locators must come from different frames
+    assert ref_map["@e1"] is not ref_map["@e2"]
 
 
 @pytest.mark.asyncio
-async def test_locators_disambiguate_repeated_role_name_with_nth():
-    # Two identical (role, name) pairs must get distinct nth() indices.
-    tree = {
-        "role": "WebArea", "name": "p",
-        "children": [
-            {"role": "button", "name": "go"},
-            {"role": "button", "name": "go"},
-        ],
-    }
-    _, ref_map = await build_snapshot_with_locators(_RolePage(tree))
-    assert ref_map["@e1"].index == 0
-    assert ref_map["@e2"].index == 1
+async def test_frame_budget_is_capped():
+    payloads = [make_payload([element("button", f"b{i}", "/html/body/button[1]")])
+                for i in range(20)]
+    page = _MultiFramePage(payloads)
+    _, ref_map = await build_page_snapshot(page, max_frames=3)
+    assert len(ref_map) == 3
