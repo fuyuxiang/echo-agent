@@ -124,6 +124,38 @@ async def test_open_respects_max_sessions_per_owner(tool):
 
 
 @pytest.mark.asyncio
+async def test_open_respects_the_global_session_cap(monkeypatch, page, tmp_path):
+    """Per-owner quotas alone let N conversations launch N×max_sessions
+    chromiums; the total cap is what protects the host's memory."""
+    class C(Cfg):
+        max_sessions = 2
+        max_total_sessions = 3
+
+    patch_playwright(monkeypatch, FakePlaywright(page))
+    tool = BrowserTool(config=C(), manager=BrowserSessionManager(),
+                       workspace=str(tmp_path))
+    assert (await tool.execute({"action": "open"}, _ctx("conv-a"))).success is True
+    assert (await tool.execute({"action": "open"}, _ctx("conv-a"))).success is True
+    assert (await tool.execute({"action": "open"}, _ctx("conv-b"))).success is True
+    res = await tool.execute({"action": "open"}, _ctx("conv-b"))
+    assert res.success is False and res.error_kind == "business"
+    assert "总数" in res.error
+
+
+@pytest.mark.asyncio
+async def test_global_cap_can_be_disabled(monkeypatch, page, tmp_path):
+    class C(Cfg):
+        max_sessions = 1
+        max_total_sessions = 0
+
+    patch_playwright(monkeypatch, FakePlaywright(page))
+    tool = BrowserTool(config=C(), manager=BrowserSessionManager(),
+                       workspace=str(tmp_path))
+    for owner in ("a", "b", "c", "d"):
+        assert (await tool.execute({"action": "open"}, _ctx(owner))).success is True
+
+
+@pytest.mark.asyncio
 async def test_launch_error_is_dependency_kind(monkeypatch, tmp_path):
     patch_playwright(monkeypatch, FakePlaywright(
         launch_exc=Exception("Executable doesn't exist")))

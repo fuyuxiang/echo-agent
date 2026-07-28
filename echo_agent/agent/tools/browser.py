@@ -159,7 +159,19 @@ class BrowserTool(Tool):
 
     async def _do_open(self, owner: str) -> ToolResult:
         max_sessions = self._cfg_get("max_sessions", 3)
-        if not self._mgr._enforce_limit(max_sessions, owner):
+        max_total = self._cfg_get("max_total_sessions", 0)
+        allowed, scope = self._mgr.check_limits(
+            max_per_owner=max_sessions, max_total=max_total, owner=owner)
+        if not allowed:
+            # Name which ceiling was hit: "your quota is free but the pool is
+            # full" is otherwise indistinguishable from a per-owner rejection,
+            # and the model would keep retrying close/open on its own sessions.
+            if scope == "total":
+                return ToolResult(
+                    success=False,
+                    error=(f"浏览器会话总数已达全局上限({max_total})，"
+                           "请稍后重试或先 close 一个会话"),
+                    error_kind="business")
             return ToolResult(success=False,
                               error=f"会话已达上限({max_sessions})，请先 close 一个会话",
                               error_kind="business")

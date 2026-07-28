@@ -316,13 +316,30 @@ class BrowserSessionManager:
             logger.debug("reaping idle browser session {}", sid)
             await self.close(sid)
 
-    def _enforce_limit(self, max_sessions: int, owner: str = "") -> bool:
-        """True if there is room for another session.
+    def check_limits(self, *, max_per_owner: int, max_total: int = 0,
+                     owner: str = "") -> tuple[bool, str]:
+        """Whether another session may be opened, and which ceiling refused it.
 
-        Counted per owner when one is given: a single busy conversation must not
-        be able to exhaust the global pool and lock everyone else out.
+        Two independent ceilings, both of which must pass:
+
+        * per owner — a single busy conversation must not exhaust the pool and
+          lock everyone else out.
+        * global — every owner being under its own limit said nothing about the
+          total, so N conversations could each launch ``max_per_owner`` Chromium
+          contexts with no bound on the sum. Each context costs real memory, so
+          the machine, not just the conversation, needs a cap.
+
+        ``max_total <= 0`` disables the global ceiling.
         """
-        return self.get_count(owner) < max_sessions
+        if self.get_count(owner) >= max_per_owner:
+            return False, "owner"
+        if max_total > 0 and len(self._sessions) >= max_total:
+            return False, "total"
+        return True, ""
+
+    def _enforce_limit(self, max_sessions: int, owner: str = "") -> bool:
+        """Per-owner room check. Retained for callers that predate check_limits."""
+        return self.check_limits(max_per_owner=max_sessions, owner=owner)[0]
 
 
 manager = BrowserSessionManager()

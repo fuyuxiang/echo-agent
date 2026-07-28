@@ -289,6 +289,7 @@ class Cfg:
 
     enabled = True
     max_sessions = 3
+    max_total_sessions = 10
     session_idle_timeout_sec = 300
     max_snapshot_chars = 8000
     headless = True

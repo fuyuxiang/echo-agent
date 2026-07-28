@@ -20,6 +20,13 @@ def test_new_capability_defaults_are_conservative():
     assert c.persist_login_state is False
 
 
+def test_session_caps_cover_both_scopes():
+    """max_sessions is per-owner, so a global ceiling is needed as well."""
+    c = BrowserToolConfig()
+    assert c.max_total_sessions == 10
+    assert BrowserToolConfig(max_total_sessions=0).max_total_sessions == 0
+
+
 def test_viewport_defaults_are_desktop_sized():
     c = BrowserToolConfig()
     assert (c.viewport_width, c.viewport_height) == (1280, 800)

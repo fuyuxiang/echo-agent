@@ -179,6 +179,37 @@ async def test_get_count_and_limit_are_per_owner(pw):
     assert m._enforce_limit(2, owner="b") is True
 
 
+@pytest.mark.asyncio
+async def test_check_limits_reports_which_cap_was_hit(pw):
+    """The caller needs the scope to tell the model whether waiting will help:
+    an owner cap clears when it closes its own session, a total cap does not."""
+    m = BrowserSessionManager()
+    await m.open(owner="a")
+    await m.open(owner="a")
+    await m.open(owner="b")
+    assert m.check_limits(max_per_owner=2, max_total=10, owner="a") == (False, "owner")
+    assert m.check_limits(max_per_owner=5, max_total=3, owner="b") == (False, "total")
+    assert m.check_limits(max_per_owner=5, max_total=10, owner="b") == (True, "")
+
+
+@pytest.mark.asyncio
+async def test_check_limits_treats_non_positive_total_as_unlimited(pw):
+    m = BrowserSessionManager()
+    await m.open(owner="a")
+    assert m.check_limits(max_per_owner=5, max_total=0, owner="b") == (True, "")
+    assert m.check_limits(max_per_owner=5, max_total=-1, owner="b") == (True, "")
+
+
+@pytest.mark.asyncio
+async def test_check_limits_counts_the_whole_pool_not_just_the_owner(pw):
+    """Per-owner quotas alone let N conversations launch N×max chromiums."""
+    m = BrowserSessionManager()
+    for owner in ("a", "b", "c"):
+        await m.open(owner=owner)
+    ok, scope = m.check_limits(max_per_owner=3, max_total=3, owner="d")
+    assert (ok, scope) == (False, "total")
+
+
 # --- dialogs / console ------------------------------------------------------
 
 class _FakeDialog:

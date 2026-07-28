@@ -1252,8 +1252,16 @@ class BrowserToolConfig(_Base):
         default=3,
         json_schema_extra={
             "status": "effective", "ref": "agent/browser/session.py",
-            "desc_zh": "并发浏览器会话上限",
-            "desc_en": "Max concurrent browser sessions",
+            "desc_zh": "单个会话方(owner)的并发浏览器会话上限",
+            "desc_en": "Max concurrent browser sessions per owner",
+        },
+    )
+    max_total_sessions: int = Field(
+        default=10,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/browser/session.py",
+            "desc_zh": "全实例并发浏览器会话总上限（每个会话都是独立 Chromium context，占用真实内存）；<=0 表示不限制",
+            "desc_en": "Global cap on concurrent browser sessions across all owners (each is a Chromium context); <=0 disables",
         },
     )
     session_idle_timeout_sec: int = Field(
