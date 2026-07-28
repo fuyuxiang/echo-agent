@@ -85,7 +85,8 @@ class BrowserTool(Tool):
             "full_page": {"type": "boolean",
                           "description": "With screenshot: capture the whole scrollable page."},
             "timeout_sec": {"type": "integer",
-                            "description": "Override timeout for wait/navigate."},
+                            "description": ("Override timeout in seconds for wait and "
+                                            "navigate/back/forward/reload (capped at 120).")},
         },
         "required": ["action"],
     }
@@ -185,9 +186,33 @@ class BrowserTool(Tool):
         return await _actions.refresh_snapshot(
             session, max_chars=self._cfg_get("max_snapshot_chars", 8000))
 
+    # Ceiling for a caller-supplied timeout. timeout_seconds (90) bounds the whole
+    # tool call, so letting the model pass 3600 would just hang the call until the
+    # outer timeout killed it, with no snapshot and no usable error.
+    _MAX_ACTION_TIMEOUT_SEC = 120
+
+    def _action_timeout(self, params: dict[str, Any], default: int) -> int:
+        """Resolve the effective timeout for one action.
+
+        ``timeout_sec`` is advertised in the schema as overriding wait/navigate,
+        but navigation used to ignore it and always take the global
+        nav_timeout_sec — so a caller could neither extend a slow page nor cut a
+        doomed wait short.
+        """
+        raw = params.get("timeout_sec")
+        if raw in (None, ""):
+            return default
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return default
+        if value <= 0:
+            return default
+        return min(value, self._MAX_ACTION_TIMEOUT_SEC)
+
     async def _dispatch(self, action: str, params: dict[str, Any],
                         session: Any) -> ToolResult:
-        nav_timeout = self._cfg_get("nav_timeout_sec", 30)
+        nav_timeout = self._action_timeout(params, self._cfg_get("nav_timeout_sec", 30))
         err = ""
 
         if action == "navigate":
@@ -233,7 +258,7 @@ class BrowserTool(Tool):
         elif action == "wait":
             err = await _actions.wait_for(
                 session, text=params.get("text", ""), state=params.get("state", ""),
-                timeout_sec=int(params.get("timeout_sec") or 15))
+                timeout_sec=self._action_timeout(params, 15))
         elif action == "evaluate":
             return await self._do_evaluate(params, session)
         elif action == "console":

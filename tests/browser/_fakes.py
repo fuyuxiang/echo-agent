@@ -120,6 +120,8 @@ class FakePage:
         self.eval_exc: Exception | None = None
         self._snapshot_payloads = list(snapshot_payloads or [])
         self._text_locator = FakeLocator("text")
+        self.nav_kwargs: dict[str, Any] = {}
+        self.wait_kwargs: dict[str, Any] = {}
 
     # -- snapshot / evaluate -------------------------------------------------
     @property
@@ -154,21 +156,26 @@ class FakePage:
 
     # -- navigation ---------------------------------------------------------
     async def goto(self, url, **kwargs):
+        self.nav_kwargs = kwargs
         if self.goto_exc is not None:
             raise self.goto_exc
         self.goto_url = url
         self.url = url
 
     async def go_back(self, **kwargs):
+        self.nav_kwargs = kwargs
         self.back += 1
 
     async def go_forward(self, **kwargs):
+        self.nav_kwargs = kwargs
         self.forward += 1
 
     async def reload(self, **kwargs):
+        self.nav_kwargs = kwargs
         self.reloaded += 1
 
     async def wait_for_load_state(self, state, **kwargs):
+        self.wait_kwargs = kwargs
         self.wait_states.append(state)
 
     async def screenshot(self, **kwargs):

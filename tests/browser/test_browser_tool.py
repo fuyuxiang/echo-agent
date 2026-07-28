@@ -387,6 +387,53 @@ async def test_get_images_empty_page(tool):
     assert res.success is True and "无可用图片" in res.output
 
 
+# --- timeout_sec ------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_navigate_honours_timeout_sec(tool, page):
+    """The parameter was advertised in the schema but navigation ignored it, so a
+    slow page could not be given more time nor a doomed load cut short."""
+    sid = await _open(tool)
+    await tool.execute({"action": "navigate", "session_id": sid,
+                        "url": "https://example.com/", "timeout_sec": 5}, _ctx())
+    assert page.nav_kwargs.get("timeout") == 5000
+
+
+@pytest.mark.asyncio
+async def test_navigate_falls_back_to_configured_timeout(tool, page):
+    sid = await _open(tool)
+    await tool.execute({"action": "navigate", "session_id": sid,
+                        "url": "https://example.com/"}, _ctx())
+    assert page.nav_kwargs.get("timeout") == Cfg.nav_timeout_sec * 1000
+
+
+@pytest.mark.parametrize("action", ["back", "forward", "reload"])
+@pytest.mark.asyncio
+async def test_history_actions_honour_timeout_sec(tool, page, action):
+    sid = await _open(tool)
+    await tool.execute({"action": action, "session_id": sid, "timeout_sec": 7}, _ctx())
+    assert page.nav_kwargs.get("timeout") == 7000
+
+
+@pytest.mark.asyncio
+async def test_timeout_sec_is_capped(tool, page):
+    """An unbounded value would just hang until the outer tool timeout killed the
+    call, losing both the snapshot and any usable error."""
+    sid = await _open(tool)
+    await tool.execute({"action": "navigate", "session_id": sid,
+                        "url": "https://example.com/", "timeout_sec": 3600}, _ctx())
+    assert page.nav_kwargs.get("timeout") == BrowserTool._MAX_ACTION_TIMEOUT_SEC * 1000
+
+
+@pytest.mark.parametrize("bad", [0, -5, "", "abc", None])
+@pytest.mark.asyncio
+async def test_unusable_timeout_sec_falls_back_to_default(tool, page, bad):
+    sid = await _open(tool)
+    await tool.execute({"action": "navigate", "session_id": sid,
+                        "url": "https://example.com/", "timeout_sec": bad}, _ctx())
+    assert page.nav_kwargs.get("timeout") == Cfg.nav_timeout_sec * 1000
+
+
 # --- login persistence ------------------------------------------------------
 
 @pytest.mark.asyncio
