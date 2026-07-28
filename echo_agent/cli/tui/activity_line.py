@@ -58,8 +58,10 @@ class ActivityLine(Static):
     def __init__(self) -> None:
         self._active = False
         self._stage = ""
-        self._tool = ""
-        self._running_tools = 0
+        # Running tools by call id. A bare count plus "last started name" showed a
+        # tool that had already finished whenever parallel calls completed out of
+        # order: start A, start B, finish B → count 1, but the line still said B.
+        self._tools: dict[str, str] = {}
         self._started: float | None = None
         self._frame = 0
         self._timer = None
@@ -96,8 +98,7 @@ class ActivityLine(Static):
         previous one's label, and restarts the clock."""
         self._active = True
         self._stage = ""
-        self._tool = ""
-        self._running_tools = 0
+        self._tools.clear()
         self._started = time.time()
         if self._timer is not None:
             self._timer.resume()
@@ -109,8 +110,7 @@ class ActivityLine(Static):
         lives in the transcript, not here."""
         self._active = False
         self._stage = ""
-        self._tool = ""
-        self._running_tools = 0
+        self._tools.clear()
         self._started = None
         if self._timer is not None:
             self._timer.pause()
@@ -126,21 +126,24 @@ class ActivityLine(Static):
             self._stage = stage or ""
         self._apply()
 
-    def tool_started(self, name: str) -> None:
-        self._tool = name or ""
-        self._running_tools += 1
-        if not self._active:
+    def tool_started(self, name: str, call_id: str = "") -> None:
+        """Record a tool as running. ``call_id`` pairs it with its finish frame;
+        frames without one fall back to a synthetic key so the count still
+        tracks, at the cost of not being individually removable."""
+        was_active = self._active
+        if not was_active:
             self.start()
-            self._tool = name or ""
-            self._running_tools = 1
+        key = call_id or f"_anon{len(self._tools)}"
+        self._tools[key] = name or ""
         self._apply()
 
-    def tool_finished(self) -> None:
-        self._running_tools = max(0, self._running_tools - 1)
-        if self._running_tools == 0:
-            # The named tool is gone; fall back to the phase label rather than
-            # keeping a finished tool's name on a line that means "now".
-            self._tool = ""
+    def tool_finished(self, call_id: str = "") -> None:
+        if call_id and call_id in self._tools:
+            del self._tools[call_id]
+        elif self._tools:
+            # No id (or an unknown one): drop an arbitrary entry so the count
+            # still drains. Insertion order makes this the oldest running call.
+            self._tools.pop(next(iter(self._tools)))
         self._apply()
 
     # --- pure render ---
@@ -154,15 +157,20 @@ class ActivityLine(Static):
             return ""
         frames = _ASCII_FRAMES if GLYPHS.name == "ascii" else _FRAMES
         spin = frames[self._frame % len(frames)]
-        if self._tool:
-            label = f"{_STAGE_LABEL.get('calling_tool', '')} {humanize_tool(self._tool)}".strip()
+        # Named from what is actually still running, never from a remembered
+        # "last started" that may already have finished.
+        running = [n for n in self._tools.values() if n]
+        if running:
+            label = f"{_STAGE_LABEL.get('calling_tool', '')} {humanize_tool(running[0])}".strip()
+        elif self._tools:
+            label = _STAGE_LABEL.get("calling_tool", _FALLBACK_STAGE)
         else:
             label = _STAGE_LABEL.get(self._stage, _FALLBACK_STAGE)
         parts = [f"[$accent]{spin}[/] [b]{escape(label)}[/b]"]
         if self._started is not None:
             elapsed = (now if now is not None else time.time()) - self._started
             parts.append(f"[$text-muted]{_fmt_elapsed(elapsed)}[/]")
-        if self._running_tools > 1:
-            parts.append(f"[$text-muted]{self._running_tools} 个工具进行中[/]")
+        if len(self._tools) > 1:
+            parts.append(f"[$text-muted]{len(self._tools)} 个工具进行中[/]")
         body = f" [$text-muted]{GLYPHS.sep}[/] ".join(parts)
         return f"{body}  [$text-muted]Ctrl+C 中断[/]"

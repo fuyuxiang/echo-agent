@@ -446,13 +446,16 @@ class EchoTUI(App):
             # frame's own status, not the block: with `/details 工具 隐藏` there is
             # no block, and the live line is then the ONLY place the user can see
             # that a tool is running at all.
+            # Correlated by tool_call_id so parallel tools finishing out of
+            # order remove the right entry from the live line.
+            tcid = str(ev.data.get("tool_call_id", "") or ev.cog_event_id or "")
             if str(ev.data.get("status", "running")) == "running":
                 name = block.tool_name if block is not None else str(
                     ev.data.get("name", "")
                 )
-                self._activity_call("tool_started", name)
+                self._activity_call("tool_started", name, tcid)
             else:
-                self._activity_call("tool_finished")
+                self._activity_call("tool_finished", tcid)
             return
         if ev.cog_type == "thinking" and ev.data.get("streaming"):
             # A partial thinking snapshot is proof the model is reasoning right

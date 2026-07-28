@@ -22,8 +22,9 @@ def _line() -> ActivityLine:
     al = ActivityLine.__new__(ActivityLine)
     al._active = False
     al._stage = ""
-    al._tool = ""
-    al._running_tools = 0
+    # Running tools are tracked by call id so out-of-order completions remove the
+    # right one; see test_activity_line_names_the_tool_still_running.
+    al._tools = {}
     al._started = None
     al._frame = 0
     al._timer = None
@@ -63,15 +64,39 @@ def test_activity_line_prefers_running_tool_over_stage():
 def test_activity_line_counts_concurrent_tools_and_drops_name_when_done():
     al = _line()
     al.start()
-    al.tool_started("read_file")
-    al.tool_started("shell")
+    al.tool_started("read_file", "c1")
+    al.tool_started("shell", "c2")
     assert "2 个工具进行中" in al.render_text()
-    al.tool_finished()
-    al.tool_finished()
+    al.tool_finished("c1")
+    al.tool_finished("c2")
     out = al.render_text()
     # No tool left → back to the phase label, never a finished tool's name.
     assert "个工具进行中" not in out
-    assert al._tool == ""
+    assert al._tools == {}
+
+
+def test_activity_line_names_the_tool_still_running():
+    """Parallel calls rarely finish in start order. The line must name whatever
+    is still running, not the last one that happened to start: with a bare count
+    plus "last name", finishing B first left the row advertising B."""
+    al = _line()
+    al.start()
+    al.tool_started("read_file", "c1")
+    al.tool_started("shell", "c2")
+    al.tool_finished("c2")
+    out = al.render_text()
+    assert "读取" in out
+    assert "命令" not in out and "shell" not in out
+
+
+def test_activity_line_tolerates_finish_without_id():
+    """A finish frame that carries no id must still drain the count rather than
+    leaving the row stuck on a tool that already ended."""
+    al = _line()
+    al.start()
+    al.tool_started("read_file", "c1")
+    al.tool_finished()
+    assert al._tools == {}
 
 
 def test_activity_line_stop_clears_state():
