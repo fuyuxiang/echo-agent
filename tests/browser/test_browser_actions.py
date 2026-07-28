@@ -451,3 +451,94 @@ async def test_refresh_snapshot_reports_accept_policy_wording():
     s = _session(page, dialog_policy="accept")
     s.record_dialog({"type": "confirm", "message": "ok?"})
     assert "已自动确认弹窗" in await act_mod.refresh_snapshot(s)
+
+
+# --- ref drift --------------------------------------------------------------
+
+async def _snapshot_with_button(page=None):
+    page = page or FakePage([make_payload([
+        element("button", "取消", "/html/body/button[1]")])])
+    s = _session(page)
+    await act_mod.refresh_snapshot(s)
+    return s, page
+
+
+@pytest.mark.asyncio
+async def test_click_verifies_the_ref_still_points_at_the_same_element():
+    s, page = await _snapshot_with_button()
+    assert await act_mod.click(s, "@e1") == ""
+    assert page.verified_xpaths == ["/html/body/button[1]"]
+
+
+@pytest.mark.asyncio
+async def test_click_refuses_when_the_path_now_holds_a_different_control():
+    """A node inserted earlier shifts the absolute XPath onto another button —
+    clicking it would hit 删除 instead of 取消."""
+    s, page = await _snapshot_with_button()
+    page.element_identity["/html/body/button[1]"] = {"role": "button", "name": "删除"}
+    err = await act_mod.click(s, "@e1")
+    assert "页面结构已变化" in err and "snapshot" in err
+    assert page.locators["xpath=/html/body/button[1]"].clicked == 0
+
+
+@pytest.mark.asyncio
+async def test_click_refuses_when_the_element_is_gone():
+    s, page = await _snapshot_with_button()
+    page.element_identity.clear()
+    assert "元素已不存在" in await act_mod.click(s, "@e1")
+
+
+@pytest.mark.asyncio
+async def test_click_refuses_when_the_role_changed():
+    s, page = await _snapshot_with_button()
+    page.element_identity["/html/body/button[1]"] = {"role": "link", "name": "取消"}
+    assert "link" in await act_mod.click(s, "@e1")
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_label_still_matches_its_full_name():
+    """Snapshot names are cut at a length limit; the live name is the longer
+    original, and that must not read as drift."""
+    page = FakePage([make_payload([
+        element("button", "确认删除这条很长的记录…", "/html/body/button[1]")])])
+    s, page = await _snapshot_with_button(page)
+    page.element_identity["/html/body/button[1]"] = {
+        "role": "button", "name": "确认删除这条很长的记录并同步到服务端"}
+    assert await act_mod.click(s, "@e1") == ""
+
+
+@pytest.mark.asyncio
+async def test_a_relabelled_button_is_refused_even_if_it_looks_similar():
+    """Sibling rows differ only in a trailing number, so name comparison stays
+    strict: a changed label costs one snapshot, a wrong click can be final."""
+    page = FakePage([make_payload([
+        element("button", "删除第1行", "/html/body/button[1]")])])
+    s, page = await _snapshot_with_button(page)
+    page.element_identity["/html/body/button[1]"] = {
+        "role": "button", "name": "删除第2行"}
+    assert "名称已从" in await act_mod.click(s, "@e1")
+
+
+@pytest.mark.asyncio
+async def test_a_failing_verify_probe_does_not_block_the_action():
+    """A detached frame must let the action report its own error rather than
+    turning every ref into a false 'page changed'."""
+    s, page = await _snapshot_with_button()
+
+    async def _boom(expression, *args):
+        raise RuntimeError("frame detached")
+
+    page.evaluate = _boom
+    assert await act_mod.click(s, "@e1") == ""
+
+
+@pytest.mark.asyncio
+async def test_other_actions_verify_the_ref_too():
+    for action in (
+        lambda s: act_mod.type_text(s, "@e1", "x"),
+        lambda s: act_mod.hover(s, "@e1"),
+        lambda s: act_mod.press_key(s, "Enter", ref="@e1"),
+    ):
+        s, page = await _snapshot_with_button()
+        page.element_identity.clear()
+        assert "页面结构已变化" in await action(s)

@@ -11,7 +11,11 @@ from typing import Any
 
 from loguru import logger
 
-from echo_agent.agent.browser.snapshot import build_page_snapshot
+from echo_agent.agent.browser.snapshot import (
+    VERIFY_REF_JS,
+    RefHandle,
+    build_page_snapshot,
+)
 from echo_agent.agent.tools.web import check_url_ssrf
 
 # Keys accepted by press. Playwright takes any key name plus modifier combos
@@ -57,18 +61,84 @@ async def navigate(session: Any, url: str, *, timeout_sec: int = 30,
     return ""
 
 
-def _resolve_ref(session: Any, ref: str) -> tuple[Any, str]:
-    loc = session.ref_map.get(ref)
-    if loc is None:
+_STALE_REF_HINT = ("页面结构已变化，{ref} 现在指向的不是快照里的 {want}。"
+                   "请重新 snapshot 再操作（避免误触其它元素）")
+
+
+async def _resolve_ref(session: Any, ref: str) -> tuple[Any, str]:
+    """Resolve a ``@eN`` to a locator, refusing it if the DOM has drifted.
+
+    The handle's locator is a lazy absolute XPath: it re-resolves at action time,
+    so inserting a node earlier in the document silently shifts it onto a
+    *different* element than the one the snapshot described. On a dynamic page
+    that turns a "click 取消" into a click on 删除. Re-reading the identity at the
+    recorded path and comparing it against capture time closes that window down
+    to the few ms between this probe and the action itself.
+    """
+    handle = session.ref_map.get(ref)
+    if handle is None:
         known = len(session.ref_map)
         return None, (f"ref {ref} 不存在（当前快照共 {known} 个可交互元素），"
                       "请重新 snapshot 后使用最新的 @eN")
-    return loc, ""
+    if not isinstance(handle, RefHandle):
+        # Tolerate a bare locator (older snapshots / test doubles): no identity
+        # was captured, so there is nothing to verify against.
+        return handle, ""
+    stale = await _ref_is_stale(handle)
+    if stale:
+        want = f"{handle.role} {handle.name!r}"
+        return None, _STALE_REF_HINT.format(ref=ref, want=want) + f"（{stale}）"
+    return handle.locator, ""
+
+
+async def _ref_is_stale(handle: RefHandle) -> str:
+    """Return a short reason when *handle* no longer matches what was captured.
+
+    Empty string means "verified, or could not be checked" — a probe that itself
+    fails must not block the action, or a detached frame would make the whole
+    page unusable instead of just letting the action report its own error.
+    """
+    try:
+        probe = await handle.frame.evaluate(VERIFY_REF_JS, handle.xpath)
+    except Exception as e:
+        logger.debug("ref verify probe failed for {}: {}", handle.xpath, e)
+        return ""
+    if not isinstance(probe, dict):
+        return ""
+    if not probe.get("found"):
+        return "元素已不存在"
+    role = str(probe.get("role") or "")
+    name = str(probe.get("name") or "")
+    if role != handle.role:
+        return f"该位置现在是 {role or '非交互元素'}"
+    # Names are compared strictly on purpose. Loosening it enough to tolerate a
+    # live counter ("重新发送 (30s)" → "(29s)") would also make sibling rows
+    # ("删除第1行" / "删除第2行") look like the same element, which is the exact
+    # misclick this guard exists to prevent. A changed label costs one extra
+    # snapshot; a wrong click can be irreversible.
+    if name != handle.name and not _names_compatible(handle.name, name):
+        return f"名称已从 {handle.name!r} 变为 {name!r}"
+    return ""
+
+
+def _names_compatible(captured: str, current: str) -> bool:
+    """True when two accessible names are close enough to be the same element."""
+    if not captured or not current:
+        # An element that never had a name (icon button) cannot be distinguished
+        # by name; the role match above is all the evidence available.
+        return True
+    a, b = captured.strip(), current.strip()
+    if a == b:
+        return True
+    # Truncated capture (…) or one being a prefix of the other: same label with
+    # a changing tail (counts, elapsed time).
+    a_core = a.rstrip("…")
+    return bool(a_core) and (b.startswith(a_core) or a.startswith(b.rstrip("…")))
 
 
 async def click(session: Any, ref: str, *, button: str = "left",
                 click_count: int = 1, timeout_ms: int = 10000) -> str:
-    loc, err = _resolve_ref(session, ref)
+    loc, err = await _resolve_ref(session, ref)
     if err:
         return err
     try:
@@ -87,7 +157,7 @@ async def type_text(session: Any, ref: str, text: str, *,
     *press_enter* is set we additionally dispatch a real Enter on the element,
     which is how most search boxes submit.
     """
-    loc, err = _resolve_ref(session, ref)
+    loc, err = await _resolve_ref(session, ref)
     if err:
         return err
     try:
@@ -108,7 +178,7 @@ async def press_key(session: Any, key: str, *, ref: str = "",
     if not key or not _KEY_RE.match(key):
         return f"无效按键: {key!r}（示例: Enter / Tab / Escape / ArrowDown / Control+a）"
     if ref:
-        loc, err = _resolve_ref(session, ref)
+        loc, err = await _resolve_ref(session, ref)
         if err:
             return err
         try:
@@ -176,7 +246,7 @@ async def reload(session: Any, *, timeout_sec: int = 30) -> str:
 
 
 async def hover(session: Any, ref: str, *, timeout_ms: int = 10000) -> str:
-    loc, err = _resolve_ref(session, ref)
+    loc, err = await _resolve_ref(session, ref)
     if err:
         return err
     try:
@@ -188,7 +258,7 @@ async def hover(session: Any, ref: str, *, timeout_ms: int = 10000) -> str:
 
 async def select_option(session: Any, ref: str, values: list[str], *,
                         timeout_ms: int = 10000) -> str:
-    loc, err = _resolve_ref(session, ref)
+    loc, err = await _resolve_ref(session, ref)
     if err:
         return err
     if not values:
@@ -207,7 +277,7 @@ async def select_option(session: Any, ref: str, values: list[str], *,
 
 async def upload_files(session: Any, ref: str, paths: list[str], *,
                        timeout_ms: int = 10000) -> str:
-    loc, err = _resolve_ref(session, ref)
+    loc, err = await _resolve_ref(session, ref)
     if err:
         return err
     if not paths:

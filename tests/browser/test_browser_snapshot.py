@@ -28,8 +28,10 @@ async def test_refs_are_numbered_and_mapped_to_locators():
     assert "普通文本" in text
     assert set(ref_map) == {"@e1", "@e2"}
     # each ref resolves to a locator built from that node's own xpath
-    assert ref_map["@e1"].selector == "xpath=/html/body/input[1]"
-    assert ref_map["@e2"].selector == "xpath=/html/body/button[1]"
+    assert ref_map["@e1"].locator.selector == "xpath=/html/body/input[1]"
+    assert ref_map["@e2"].locator.selector == "xpath=/html/body/button[1]"
+    # …and remembers the identity it had at capture time, for drift detection
+    assert (ref_map["@e1"].role, ref_map["@e1"].name) == ("textbox", "搜索")
 
 
 @pytest.mark.asyncio
@@ -50,8 +52,8 @@ async def test_identical_role_name_get_distinct_locators():
         element("button", "ok", "/html/body/button[2]"),
     ])])
     _, ref_map = await build_page_snapshot(page)
-    assert ref_map["@e1"].selector != ref_map["@e2"].selector
-    assert ref_map["@e2"].selector.endswith("button[2]")
+    assert ref_map["@e1"].locator.selector != ref_map["@e2"].locator.selector
+    assert ref_map["@e2"].locator.selector.endswith("button[2]")
 
 
 @pytest.mark.asyncio
@@ -141,7 +143,8 @@ async def test_non_interactive_role_never_becomes_a_ref():
     # the dialog is described for orientation, but only the buttons are refs
     assert "<dialog: 确认删除>" in text
     assert set(ref_map) == {"@e1", "@e2"}
-    assert "取消" in text and "删除" in text
+    assert ref_map["@e1"].name == "取消"
+    assert ref_map["@e2"].name == "删除"
 
 
 @pytest.mark.asyncio
@@ -155,7 +158,7 @@ async def test_unexpected_element_role_is_dropped_without_gaps_in_numbering():
     ])])
     text, ref_map = await build_page_snapshot(page)
     assert set(ref_map) == {"@e1", "@e2"}
-    assert ref_map["@e2"].selector.endswith("button[2]")
+    assert ref_map["@e2"].name == "后"
     assert "不该出现" not in text
 
 

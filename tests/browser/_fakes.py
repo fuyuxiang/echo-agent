@@ -120,6 +120,11 @@ class FakePage:
         self.eval_exc: Exception | None = None
         self._snapshot_payloads = list(snapshot_payloads or [])
         self._text_locator = FakeLocator("text")
+        # Identity of each element the last snapshot reported, keyed by xpath, so
+        # the ref-verify probe can answer the way a real page would. Overwrite an
+        # entry (or clear it) to simulate the DOM shifting under a stale ref.
+        self.element_identity: dict[str, dict[str, str]] = {}
+        self.verified_xpaths: list[str] = []
         self.nav_kwargs: dict[str, Any] = {}
         self.wait_kwargs: dict[str, Any] = {}
 
@@ -128,7 +133,30 @@ class FakePage:
     def frames(self):
         return [self]
 
+    def _remember_identities(self, payload: Any) -> None:
+        """Record role/name per xpath so later verify probes agree with the snapshot."""
+        entries = (payload or {}).get("entries") or [] if isinstance(payload, dict) else []
+        for entry in entries:
+            if not isinstance(entry, dict) or entry.get("kind") != "element":
+                continue
+            xpath = str(entry.get("xpath") or "")
+            if not xpath:
+                continue
+            self.element_identity[xpath] = {"role": str(entry.get("role") or ""),
+                                            "name": str(entry.get("name") or "")}
+
     async def evaluate(self, expression, *args):
+        # Both the snapshot traversal and the ref-verify probe embed the same
+        # DOM-helper fragment, so the verify probe must be matched first — by a
+        # marker only it contains.
+        if "FIRST_ORDERED_NODE_TYPE" in expression:
+            xpath = str(args[0]) if args else ""
+            self.verified_xpaths.append(xpath)
+            ident = self.element_identity.get(xpath)
+            if ident is None:
+                return {"found": False, "reason": "missing"}
+            return {"found": True, "role": ident.get("role", ""),
+                    "name": ident.get("name", "")}
         # The snapshot traversal is a big JS arrow function; identify it by a
         # marker only that script contains.
         if "INTERACTIVE_ROLE_ATTRS" in expression:
@@ -136,6 +164,7 @@ class FakePage:
                 payload = self._snapshot_payloads.pop(0)
                 if isinstance(payload, Exception):
                     raise payload
+                self._remember_identities(payload)
                 return payload
             return make_payload([])
         self.evaluated.append(expression)

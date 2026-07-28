@@ -17,6 +17,7 @@ DOM, so a snapshot can never perturb the page under test.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from loguru import logger
@@ -46,8 +47,26 @@ STRUCTURAL_ROLES = frozenset({
 # walking all of them costs a round trip each and floods the snapshot budget.
 MAX_FRAMES = 8
 
-_SNAPSHOT_JS = r"""
-() => {
+
+@dataclass
+class RefHandle:
+    """What a ``@eN`` resolves to, plus the identity it had when captured.
+
+    The locator is a *lazy* absolute-XPath locator: it re-resolves against
+    whatever the DOM looks like at click time, which is a different element than
+    the one the snapshot described if the page mutated in between. ``role``/
+    ``name`` are that element's identity at capture time so an action can verify
+    it is still acting on what the model saw (see actions._resolve_ref).
+    """
+
+    locator: Any
+    frame: Any
+    role: str
+    name: str
+    xpath: str
+
+
+_DOM_HELPERS_JS = r"""
   const INTERACTIVE_ROLE_ATTRS = new Set([
     'button','link','checkbox','radio','tab','switch','menuitem','menuitemcheckbox',
     'menuitemradio','option','slider','spinbutton','textbox','searchbox','combobox',
@@ -232,7 +251,11 @@ _SNAPSHOT_JS = r"""
     }
     return flags;
   }
+"""
 
+# Traversal script. Wraps the shared helpers so roleOf/nameOf/xpathOf are defined
+# exactly once and cannot drift between the snapshot and the ref verifier.
+_SNAPSHOT_JS = "() => {\n" + _DOM_HELPERS_JS + r"""
   const entries = [];
   let budget = 4000;  // hard node cap; a runaway DOM must not hang the traversal
 
@@ -308,6 +331,21 @@ _SNAPSHOT_JS = r"""
 }
 """
 
+# Identity probe for one captured ref. Resolves the SAME absolute XPath the
+# snapshot recorded and reports what lives there *now*, so an action can tell
+# "still the element the model saw" from "the DOM shifted under us".
+VERIFY_REF_JS = "(xpath) => {\n" + _DOM_HELPERS_JS + r"""
+  let el = null;
+  try {
+    el = document.evaluate(xpath, document, null,
+                           XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+  } catch (e) { return { found: false, reason: 'bad-xpath' }; }
+  if (!el || el.nodeType !== 1) return { found: false, reason: 'missing' };
+  const role = roleOf(el);
+  return { found: true, role: role, name: cut(nameOf(el, role), MAX_NAME) };
+}
+"""
+
 
 def _render_entry(entry: dict[str, Any], ref: str | None) -> str:
     kind = entry.get("kind")
@@ -334,13 +372,14 @@ def _render_entry(entry: dict[str, Any], ref: str | None) -> str:
 
 async def build_page_snapshot(
     page: Any, *, max_chars: int = 8000, max_frames: int = MAX_FRAMES
-) -> tuple[str, dict[str, Any]]:
-    """Return ``(ref-annotated text, {ref: locator})`` for *page*.
+) -> tuple[str, dict[str, RefHandle]]:
+    """Return ``(ref-annotated text, {ref: RefHandle})`` for *page*.
 
     Every interactive node gets a ``@eN`` ref backed by an absolute XPath
     locator scoped to the frame it was found in, so a ref resolves to exactly
     one element. Refs are renumbered on each snapshot — the model must always
-    act on the most recent one.
+    act on the most recent one. Each handle also carries the role/name the
+    element had at capture time so actions can detect DOM drift before acting.
     """
     frames = []
     try:
@@ -351,7 +390,7 @@ async def build_page_snapshot(
         frames = [page]
 
     lines: list[str] = []
-    ref_map: dict[str, Any] = {}
+    ref_map: dict[str, RefHandle] = {}
     counter = 0
     header_done = False
 
@@ -398,7 +437,10 @@ async def build_page_snapshot(
                 # consecutive and the model never sees a @eN it cannot use.
                 counter += 1
                 ref = f"@e{counter}"
-                ref_map[ref] = locator
+                ref_map[ref] = RefHandle(
+                    locator=locator, frame=frame, role=role,
+                    name=str(entry.get("name") or ""), xpath=xpath,
+                )
             rendered = _render_entry(entry, ref)
             if rendered:
                 lines.append(rendered)
