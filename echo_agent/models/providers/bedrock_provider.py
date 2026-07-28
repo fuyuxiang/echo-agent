@@ -12,6 +12,7 @@ from echo_agent.models.provider import (
     LLMProvider,
     LLMResponse,
     StreamDeltaCallback,
+    StreamReasoningCallback,
     ToolCallRequest,
 )
 from echo_agent.models.providers.anthropic_provider import (
@@ -75,6 +76,7 @@ class BedrockProvider(LLMProvider):
         model: str | None = None,
         tool_choice: str | dict | None = None,
         on_delta: "StreamDeltaCallback | None" = None,
+        on_reasoning: "StreamReasoningCallback | None" = None,
         **kwargs: Any,
     ) -> LLMResponse:
         target = model or self._default_model
@@ -111,7 +113,9 @@ class BedrockProvider(LLMProvider):
             params["temperature"] = temp
 
         try:
-            final = await stream_anthropic_messages(client, params, on_delta)
+            final = await stream_anthropic_messages(
+                client, params, on_delta, on_reasoning
+            )
         except Exception as e:
             logger.error("Bedrock Claude stream error: {}", e)
             return LLMResponse(content=f"Error: {e}", finish_reason="error")

@@ -112,21 +112,28 @@ async def test_clarify_free_text_still_works_after_tab_moves_focus():
 # ── turn 结束后的进度残留 ──────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_heartbeat_line_removed_once_reply_lands():
-    # 心跳行按 inbound_event_id 挂载后从不移除，导致每一轮都在答案旁留下
-    # 一句"还在处理"，且 _heartbeats 随会话无界增长。
+async def test_progress_line_hidden_once_reply_lands():
+    # 心跳曾按 inbound_event_id 挂进 transcript：位置在第一次心跳时就定死，
+    # 之后的工具行追加在它下面，"还在处理"于是显示在已完成内容的上方，而且
+    # 每一轮都在答案旁留一句残留。现在进度是输入框上方那一行停靠状态，
+    # 心跳只更新它的阶段标签，答案落地即隐藏。
     app = EchoTUI()
     async with app.run_test() as pilot:
-        app.on_cognitive(CogEvent("heartbeat", "h1", "in1", {"note": "x"}, "x"))
-        app.on_cognitive(CogEvent("heartbeat", "h2", "in1", {"note": "x"}, "x"))
+        before = len(app._tv.children)
+        app.on_cognitive(CogEvent(
+            "heartbeat", "h1", "in1", {"stage": "thinking"}, "x"))
+        app.on_cognitive(CogEvent(
+            "heartbeat", "h2", "in1", {"stage": "generating"}, "x"))
         await pilot.pause()
-        assert app._tv.heartbeat_count == 1
+        al = app._activity
+        assert al.is_active is True
+        assert "正在组织答案" in al.render_text()
+        # 心跳不再往 transcript 里挂任何东西
+        assert len(app._tv.children) == before
         app.on_user_reply_final("in1", "答案")
         await pilot.pause()
-        assert app._tv.heartbeat_count == 0
-        assert not any(
-            type(w).__name__ == "_Heartbeat" for w in app._tv.children
-        )
+        assert al.is_active is False
+        assert al.display is False
 
 
 @pytest.mark.asyncio
@@ -530,3 +537,53 @@ async def test_line_being_typed_stays_visible_as_the_box_grows(rows):
                 await pilot.press("shift+enter")
         await pilot.pause()
         assert f"MARK{rows - 1}" in _screen_text(app)
+
+
+# ── /details 过程信息显示 ──────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_details_command_reports_all_three_sections():
+    # 无参也回报当前设置：这条回复同时充当"能改什么"的可发现清单，
+    # 语法猜错的人照样能学到用法。
+    app = EchoTUI()
+    async with app.run_test() as pilot:
+        app.post_message(PromptInput.Submitted("/details"))
+        await pilot.pause()
+        text = _screen_text(app)
+        for label in ("思考与记忆", "工具调用", "运行状态"):
+            assert label in text
+
+
+@pytest.mark.asyncio
+async def test_details_command_changes_what_later_frames_render():
+    app = EchoTUI()
+    async with app.run_test() as pilot:
+        app.post_message(PromptInput.Submitted("/details 工具 隐藏"))
+        await pilot.pause()
+        before = len([w for w in app._tv.children if isinstance(w, ToolCallBlock)])
+        app.on_cognitive(_tool_ev("running"))
+        await pilot.pause()
+        after = len([w for w in app._tv.children if isinstance(w, ToolCallBlock)])
+        assert after == before
+
+
+@pytest.mark.asyncio
+async def test_hidden_tools_still_announce_themselves_on_the_live_line():
+    # 工具行隐藏时，页脚常驻行是用户唯一能看到"正在跑工具"的地方，
+    # 所以它必须按帧的 status 驱动，而不是按有没有块。
+    app = EchoTUI()
+    async with app.run_test() as pilot:
+        app._tv.set_details(app._tv.details.with_section("tools", "hidden"))
+        app.on_cognitive(_tool_ev("running"))
+        await pilot.pause()
+        assert app._activity.is_active is True
+        assert "执行" in app._activity.render_text()
+
+
+@pytest.mark.asyncio
+async def test_bad_details_argument_explains_the_syntax():
+    app = EchoTUI()
+    async with app.run_test() as pilot:
+        app.post_message(PromptInput.Submitted("/details 工具 稍微展开"))
+        await pilot.pause()
+        assert "用法" in _screen_text(app)

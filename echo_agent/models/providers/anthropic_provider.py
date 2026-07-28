@@ -6,7 +6,12 @@ from typing import Any
 
 from loguru import logger
 
-from echo_agent.models.provider import LLMProvider, LLMResponse, StreamDeltaCallback
+from echo_agent.models.provider import (
+    LLMProvider,
+    LLMResponse,
+    StreamDeltaCallback,
+    StreamReasoningCallback,
+)
 from echo_agent.models.providers.format_utils import (
     anthropic_response_to_llm_fields,
     openai_to_anthropic_messages,
@@ -44,11 +49,19 @@ def parse_anthropic_message(resp: Any) -> LLMResponse:
     cache_read/cache_creation tokens.
     """
     blocks = []
+    thinking_parts: list[str] = []
     for block in resp.content:
         if block.type == "text":
             blocks.append({"type": "text", "text": block.text})
         elif block.type == "tool_use":
             blocks.append({"type": "tool_use", "id": block.id, "name": block.name, "input": block.input})
+        elif block.type in ("thinking", "redacted_thinking"):
+            # Extended thinking is a content block, not a separate field. It was
+            # dropped here, so reasoning_content came back empty from Claude even
+            # when the model had thought at length — the caller then had no trace
+            # to show, and (with streaming) no way to tell "no reasoning" apart
+            # from "the reasoning became the answer".
+            thinking_parts.append(str(getattr(block, "thinking", "") or ""))
 
     usage_dict: dict[str, Any] = {}
     if resp.usage:
@@ -65,11 +78,15 @@ def parse_anthropic_message(resp: Any) -> LLMResponse:
         usage=usage_dict,
         model=resp.model or "",
     )
+    thinking = "\n".join(p for p in thinking_parts if p)
+    if thinking:
+        fields["reasoning_content"] = thinking
     return LLMResponse(**fields)
 
 
 async def stream_anthropic_messages(
     client: Any, params: dict[str, Any], on_delta: StreamDeltaCallback | None,
+    on_reasoning: "StreamReasoningCallback | None" = None,
 ) -> Any:
     """Drive an Anthropic ``messages.stream``, emitting text deltas as they
     arrive, and return the final accumulated message.
@@ -84,9 +101,19 @@ async def stream_anthropic_messages(
         async for event in stream:
             if getattr(event, "type", "") == "content_block_delta":
                 delta = getattr(event, "delta", None)
-                text = getattr(delta, "text", "") if delta is not None else ""
+                if delta is None:
+                    continue
+                text = getattr(delta, "text", "")
                 if text:
                     await _invoke_stream_callback(on_delta, text)
+                    continue
+                # Extended thinking arrives as its own delta type on the same
+                # event, so it must be read from `thinking`/`partial_json`
+                # rather than `text` — which is why a text-only reader saw
+                # nothing at all from a thinking model until the final message.
+                thinking = getattr(delta, "thinking", "")
+                if thinking:
+                    await _invoke_stream_callback(on_reasoning, thinking)
         return await stream.get_final_message()
 
 
@@ -140,12 +167,15 @@ class AnthropicProvider(LLMProvider):
         model: str | None = None,
         tool_choice: str | dict | None = None,
         on_delta: "StreamDeltaCallback | None" = None,
+        on_reasoning: "StreamReasoningCallback | None" = None,
         **kwargs: Any,
     ) -> LLMResponse:
         target_model = model or self._default_model
         params = self._build_params(target_model, messages, tools, tool_choice, **kwargs)
         try:
-            final = await stream_anthropic_messages(self._client, params, on_delta)
+            final = await stream_anthropic_messages(
+                self._client, params, on_delta, on_reasoning,
+            )
         except Exception as e:
             logger.error("Anthropic stream error: {}", e)
             return LLMResponse(content=f"Error: {e}", finish_reason="error")

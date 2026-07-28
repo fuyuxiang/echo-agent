@@ -6,7 +6,12 @@ import asyncio
 import time
 from typing import Any
 
-from echo_agent.models.provider import LLMProvider, LLMResponse, StreamDeltaCallback
+from echo_agent.models.provider import (
+    LLMProvider,
+    LLMResponse,
+    StreamDeltaCallback,
+    StreamReasoningCallback,
+)
 
 
 class TokenBucketLimiter:
@@ -66,10 +71,14 @@ class RateLimitedProvider(LLMProvider):
         model: str | None = None,
         tool_choice: str | dict | None = None,
         on_delta: StreamDeltaCallback | None = None,
+        on_reasoning: StreamReasoningCallback | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
         await self._limiter.acquire()
-        return await self._inner.chat_stream(messages, tools, model, tool_choice, on_delta=on_delta, **kwargs)
+        return await self._inner.chat_stream(
+            messages, tools, model, tool_choice,
+            on_delta=on_delta, on_reasoning=on_reasoning, **kwargs,
+        )
 
     async def aclose(self) -> None:
         # The limiter holds no client of its own; the socket owner is _inner.

@@ -11,7 +11,11 @@ from loguru import logger
 
 from echo_agent.config.schema import ProviderConfig
 from echo_agent.models.credential_pool import CredentialPool
-from echo_agent.models.provider import LLMProvider, StreamDeltaCallback
+from echo_agent.models.provider import (
+    LLMProvider,
+    StreamDeltaCallback,
+    StreamReasoningCallback,
+)
 from echo_agent.models.rate_limiter import RateLimitedProvider, TokenBucketLimiter
 
 _PROVIDER_MAP: dict[str, str] = {
@@ -256,6 +260,7 @@ class _PooledProvider(LLMProvider):
         model=None,
         tool_choice=None,
         on_delta: StreamDeltaCallback | None = None,
+        on_reasoning: StreamReasoningCallback | None = None,
         **kwargs,
     ):
         emitted = False
@@ -268,23 +273,35 @@ class _PooledProvider(LLMProvider):
             if on_delta:
                 await on_delta(delta)
 
+        # A rotation retry re-runs the request on a different key, so the model
+        # thinks from the top again. Same rule as the retry wrapper: forward only
+        # the first run's reasoning, or the client appends a duplicate trace.
+        reasoning_open = True
+
+        async def wrapped_reasoning(delta: str) -> None:
+            if on_reasoning and reasoning_open:
+                await on_reasoning(delta)
+
         resp = await self._inner.chat_stream(
             messages,
             tools,
             model,
             tool_choice,
             on_delta=wrapped,
+            on_reasoning=wrapped_reasoning if on_reasoning else None,
             **kwargs,
         )
         if resp.finish_reason == "error" and self._pool.size > 1 and not emitted:
             self._pool.report_error(self._inner.api_key)
             next_key = await self._rotate_credential()
+            reasoning_open = False
             resp = await self._inner.chat_stream(
                 messages,
                 tools,
                 model,
                 tool_choice,
                 on_delta=wrapped,
+                on_reasoning=wrapped_reasoning if on_reasoning else None,
                 **kwargs,
             )
             if resp.finish_reason != "error":

@@ -11,6 +11,7 @@ from echo_agent.models.provider import (
     LLMProvider,
     LLMResponse,
     StreamDeltaCallback,
+    StreamReasoningCallback,
     ToolCallRequest,
     _invoke_stream_callback,
 )
@@ -116,9 +117,15 @@ class GeminiProvider(LLMProvider):
         model: str | None = None,
         tool_choice: str | dict | None = None,
         on_delta: StreamDeltaCallback | None = None,
+        on_reasoning: StreamReasoningCallback | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
         import asyncio
+
+        # Gemini's streaming API exposes no separate reasoning channel, so the
+        # callback is accepted and dropped. Declaring it explicitly keeps it out
+        # of **kwargs, which flows into the generation config below.
+        _ = on_reasoning
 
         target = model or self._default_model
         genai = self._client

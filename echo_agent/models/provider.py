@@ -19,6 +19,14 @@ from loguru import logger
 
 StreamDeltaCallback = Callable[[str], Awaitable[None] | None]
 
+# Reasoning deltas travel on their own callback rather than being multiplexed
+# onto on_delta with a tag. The two streams have different destinations (answer
+# body vs. collapsible thinking trace) and, critically, different retraction
+# rules: a buffered answer draft is discarded when the turn turns out to be a
+# tool call, while the reasoning that led to that tool call is still true and
+# stays on screen. One channel would force every consumer to re-split them.
+StreamReasoningCallback = Callable[[str], Awaitable[None] | None]
+
 
 class StreamingUnsupported(Exception):
     """Raised by providers that do not implement native streaming.
@@ -166,10 +174,16 @@ class LLMProvider(ABC):
         model: str | None = None,
         tool_choice: str | dict | None = None,
         on_delta: StreamDeltaCallback | None = None,
+        on_reasoning: StreamReasoningCallback | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
         """Providers must override this with native streaming. The base
-        class refuses rather than faking a stream by buffering chat()."""
+        class refuses rather than faking a stream by buffering chat().
+
+        ``on_reasoning`` is optional for implementers: a provider that exposes no
+        reasoning deltas simply never calls it, and the caller still gets the
+        whole trace from ``LLMResponse.reasoning_content`` at the end.
+        """
         raise StreamingUnsupported(f"{type(self).__name__} does not support streaming")
 
     def _classify_error_text(self, error_text: str) -> str:
@@ -286,6 +300,7 @@ class LLMProvider(ABC):
         model: str | None = None,
         tool_choice: str | dict | None = None,
         on_delta: StreamDeltaCallback | None = None,
+        on_reasoning: StreamReasoningCallback | None = None,
         draft_policy: str | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -310,6 +325,18 @@ class LLMProvider(ABC):
             draft_policy = "buffer" if tools is not None else "stream"
         buffering = draft_policy == "buffer" and tools is not None
         buffered: list[str] = []
+        # Reasoning is never buffered, but a retry must not replay it: after a
+        # transient failure the next attempt thinks from the top, and forwarding
+        # that would append a second, near-identical trace onto the one already on
+        # screen. Reasoning is a side channel, so keeping the first attempt's is
+        # the honest option — the returned response's reasoning_content still
+        # carries the winning attempt's full text for anything that needs it.
+        reasoning_open = True
+
+        async def wrapped_reasoning(delta: str) -> None:
+            if not delta or not reasoning_open:
+                return
+            await _invoke_stream_callback(on_reasoning, delta)
 
         async def wrapped(delta: str) -> None:
             nonlocal emitted
@@ -350,12 +377,15 @@ class LLMProvider(ABC):
                 model=model,
                 tool_choice=tool_choice,
                 on_delta=wrapped,
+                on_reasoning=wrapped_reasoning if on_reasoning is not None else None,
                 **kwargs,
             )
 
         for attempt, base_delay in enumerate(self._retry_delays()):
             emitted = False
             buffered.clear()
+            # Closed for every attempt after the first — see reasoning_open.
+            reasoning_open = attempt == 0
             try:
                 response = await asyncio.wait_for(_stream_call(), timeout=timeout)
             except StreamingUnsupported:
@@ -376,6 +406,10 @@ class LLMProvider(ABC):
                 if response.finish_reason != "error":
                     if not emitted and not buffered and self._is_empty_success(response):
                         logger.warning("LLM stream returned empty content on finish=stop, retrying once")
+                        # Same rule as the outer retry: this second call thinks
+                        # from the top, and the first call's reasoning is already
+                        # on screen even though its (empty) answer was not.
+                        reasoning_open = False
                         try:
                             retry = await asyncio.wait_for(_stream_call(), timeout=timeout)
                         except asyncio.CancelledError:

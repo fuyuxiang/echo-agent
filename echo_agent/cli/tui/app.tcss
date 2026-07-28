@@ -12,25 +12,27 @@ Banner {
     color: $text;
 }
 
-/* User task title: a left accent bar + a full-row tinted background + blank
-   lines above/below, so each submitted task stands out and reads as a clear
-   divider between turns. $primary-muted (not the near-invisible $boost) fills
-   the whole row in the brand hue, matching the accent bar and the ● reply
-   sigil; it is a theme variable so it adapts to light/dark automatically. */
+/* User task title: a left accent bar in the brand hue marks where a turn
+   begins. The full-row tinted background it used to also carry made the title
+   the loudest thing on screen — heavier than the answer it introduces — so the
+   fill is gone and bar + bold do the work. It keeps its own margin on BOTH
+   sides (layout.py classifies "user" as self-spaced and as painting its own
+   trailing gap), so the transcript adds no further blank line around it. */
 UserTurn {
     margin: 1 0;
     padding: 0 1;
     border-left: thick $accent;
-    background: $primary-muted;
     color: $text;
+    text-style: bold;
 }
 
-/* Reply and trace blocks: gentle left indent + a little vertical rhythm, so
-   each turn's reply/tool/thinking lines group cleanly under the task title
-   without heavy borders competing with UserTurn. */
+/* Reply and trace blocks: gentle left indent only. Blank lines between blocks
+   are inserted by the transcript at group boundaries (see layout.lead_gap) — a
+   uniform CSS margin spaced a run of ten trace lines as airily as the boundary
+   between the trace run and the answer, and blocks rendering nothing still
+   painted their gap. */
 AgentReply {
     padding: 0 1;
-    margin: 0 0 1 0;
 }
 
 /* Tool/cognitive trace lines are interactive: click or focus + Enter/Space
@@ -48,6 +50,19 @@ ToolCallBlock:focus, CognitiveBlock:focus {
     background: $boost;
     border-left: thick $accent;
     padding-left: 0;
+}
+
+/* Live progress row, between transcript and input. It is NOT docked: the
+   transcript above takes 1fr, so in normal flow this lands exactly above the
+   input row while StatusBar keeps the bottom edge for itself (two dock:bottom
+   widgets would compete for it, pushing the status bar up a row). Height 1 only
+   while visible — the widget toggles `display` when a turn starts/ends, and a
+   display:none row contributes no height, so an idle screen ends at the last
+   real content. */
+ActivityLine {
+    height: 1;
+    padding: 0 1;
+    color: $text;
 }
 
 ApprovalBlock {

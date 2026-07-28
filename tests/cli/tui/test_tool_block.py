@@ -53,7 +53,7 @@ def test_tool_block_running_then_done_flip():
 
     b = ToolCallBlock("tc_1", "read_file", {"path": "x/inference_stage.py"})
     running = _plain(b.render_summary())
-    assert "🔧" in running and "读取" in running and "inference_stage.py" in running
+    assert "●" in running and "读取" in running and "inference_stage.py" in running
     assert running.endswith("…")           # 进行中：尾部省略号
     assert "✓" not in running
 
@@ -62,6 +62,20 @@ def test_tool_block_running_then_done_flip():
     assert done.endswith("✓")
     assert "300 行" in done
     assert "…" not in done                  # 完成后去掉省略号
+
+
+def test_tool_block_shows_duration_only_when_it_matters():
+    """耗时此前只存不显，30 秒的命令和瞬时读取长得一模一样。现在超过 1 秒才
+    显示，否则每一行都挂个 "0.1s" 反而盖住真正慢的那次调用。"""
+    from echo_agent.cli.tui.blocks import ToolCallBlock
+
+    quick = ToolCallBlock("tc_q", "read_file", {"path": "a.py"})
+    quick.mark_done("ok", {}, "preview", 120)
+    assert "s" not in _plain(quick.render_summary()).split("·")[-1]
+
+    slow = ToolCallBlock("tc_s", "exec", {"command": "pytest"})
+    slow.mark_done("ok", {}, "done", 92_000)
+    assert "1m 32s" in _plain(slow.render_summary())
 
 
 def test_tool_block_error_shows_cross():

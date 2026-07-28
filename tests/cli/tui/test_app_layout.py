@@ -66,7 +66,9 @@ async def test_query_one_prompt_input_still_resolves():
 
 @pytest.mark.asyncio
 async def test_user_turn_has_visual_separation():
-    # 用户任务标题需有上下空行(margin)与左侧强调条(border-left)以隔离每一轮
+    # 用户任务标题需有上下空行(margin)与左侧强调条(border-left)以隔离每一轮。
+    # margin 保留在 CSS 里而不交给 transcript 的分组间距规则：layout.py 把
+    # "user" 归为自带间距，两侧都由这里负责，transcript 不再叠加空行。
     app = EchoTUI()
     async with app.run_test() as pilot:
         await pilot.pause()

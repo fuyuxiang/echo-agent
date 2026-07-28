@@ -11,6 +11,7 @@ from echo_agent.models.provider import (
     LLMProvider,
     LLMResponse,
     StreamDeltaCallback,
+    StreamReasoningCallback,
     ToolCallRequest,
     _invoke_stream_callback,
 )
@@ -87,6 +88,7 @@ class OpenAIProvider(LLMProvider):
         model: str | None = None,
         tool_choice: str | dict | None = None,
         on_delta: StreamDeltaCallback | None = None,
+        on_reasoning: StreamReasoningCallback | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
         params = self._build_params(messages, tools, model, tool_choice, **kwargs)
@@ -153,6 +155,11 @@ class OpenAIProvider(LLMProvider):
                 reasoning_delta = self._delta_reasoning(delta)
                 if reasoning_delta:
                     reasoning_parts.append(reasoning_delta)
+                    # Forwarded as it arrives so the client can show thinking
+                    # while it happens. Deltas are still accumulated: the whole
+                    # trace is needed on the response for _promote_reasoning and
+                    # for consumers that never subscribed to the callback.
+                    await _invoke_stream_callback(on_reasoning, reasoning_delta)
 
                 for tc in getattr(delta, "tool_calls", None) or []:
                     self._merge_tool_delta(tool_parts, tc)

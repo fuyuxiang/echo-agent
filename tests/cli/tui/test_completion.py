@@ -7,7 +7,8 @@ def test_catalog_has_all_commands():
     names = {c.name for c in COMMANDS}
     assert names == {
         "/approve", "/deny", "/approvals", "/clarify",
-        "/help", "/clear", "/copy", "/save", "/theme", "/reconnect", "/quit",
+        "/help", "/clear", "/copy", "/save", "/theme", "/details",
+        "/reconnect", "/quit",
     }
 
 
@@ -20,7 +21,10 @@ def test_server_scope_matches_gateway_intercepted_commands():
 
 def test_local_scope_commands():
     local = {c.name for c in COMMANDS if c.scope == "local"}
-    assert local == {"/help", "/clear", "/copy", "/save", "/theme", "/reconnect", "/quit"}
+    assert local == {
+        "/help", "/clear", "/copy", "/save", "/theme", "/details",
+        "/reconnect", "/quit",
+    }
 
 
 def test_filter_by_prefix():

@@ -11,10 +11,12 @@ from textual.containers import Horizontal
 from textual.widgets import OptionList, Static
 
 from echo_agent.cli.tui.transcript import TranscriptView
+from echo_agent.cli.tui.activity_line import ActivityLine
 from echo_agent.cli.tui.prompt_input import PromptInput
 from echo_agent.cli.tui.status_bar import StatusBar
 from echo_agent.cli.tui.blocks import ApprovalBlock, ChoiceBlock
 from echo_agent.cli.tui.completion import completion_insert, filter_commands, help_text
+from echo_agent.cli.tui.details import parse_command as parse_details_arg
 from echo_agent.cli.tui.theme import ECHO_THEME, ECHO_THEME_LIGHT, resolve_theme_name
 from echo_agent.cli.tui.brand import load_brand
 from echo_agent.cli.tui.turns import TurnRegistry
@@ -157,6 +159,12 @@ class EchoTUI(App):
 
     def compose(self) -> ComposeResult:
         yield TranscriptView()
+        # Progress lives here, docked between transcript and input, NOT as a
+        # transcript block: a block's position froze at the first heartbeat while
+        # tool lines kept appending below it, so "还在处理" ended up above work
+        # that had already finished. One fixed line also means progress never
+        # scrolls away and never lengthens the transcript.
+        yield ActivityLine()
         panel = OptionList(id="slash_panel")
         panel.display = False
         yield panel
@@ -191,7 +199,7 @@ class EchoTUI(App):
         from echo_agent.cli.tui.blocks import Banner
 
         try:
-            self._tv.mount(Banner(
+            self._tv.mount_block(Banner(
                 self._session_key,
                 name=self._brand.name,
                 tagline=self._brand.tagline,
@@ -245,6 +253,23 @@ class EchoTUI(App):
     def _tv(self) -> TranscriptView:
         return self.query_one(TranscriptView)
 
+    @property
+    def _activity(self) -> ActivityLine:
+        return self.query_one(ActivityLine)
+
+    def _activity_call(self, method: str, *args) -> None:
+        """Drive the docked progress line, tolerating its absence.
+
+        Every caller sits on a frame-handling path that must never raise: the
+        widget may not be mounted yet (frames can arrive during startup) and
+        progress is pure decoration, so a failure here must not take down the
+        turn that owns the actual answer.
+        """
+        try:
+            getattr(self._activity, method)(*args)
+        except Exception:
+            pass
+
     # --- WSBridge sink ---
     def on_turn_accepted(self, event_id: str) -> None:
         """Classify an `accepted` frame against the oldest un-acked send. A
@@ -293,12 +318,12 @@ class EchoTUI(App):
             self._turns.note_turn_settled()
         if not self._turns.has_active_primary:
             self.query_one(StatusBar).stop_turn_timer()
-            # Retire this turn's heartbeat line — the answer is on screen, so a
-            # "还在处理" line below it is stale. Only once NO primary turn remains,
+            # Hide the docked progress line — the answer is on screen, so a
+            # "还在处理" row under it is stale. Only once NO primary turn remains,
             # so a queued second turn's live progress is not wiped. Tool lines are
             # deliberately left alone here: the gateway splits one answer across
             # several final frames, so tools may still be running.
-            self._tv.clear_heartbeats()
+            self._activity_call("stop")
             # A pending clarify/approval is deliberately LEFT ALONE here.
             #
             # This used to clear it and re-enable the prompt, on the theory that a
@@ -356,9 +381,11 @@ class EchoTUI(App):
 
     def on_cognitive(self, ev: CogEvent) -> None:
         if ev.cog_type == "heartbeat":
-            self._tv.heartbeat_line(
-                ev.inbound_event_id, ev.data.get("note", ev.summary)
-            )
+            # The beat now only refines the docked line's stage label; it mounts
+            # nothing. The server note itself is dropped — it is monotonous and
+            # can echo model scratch text, while the concrete progress already
+            # reads off the tool/thinking lines in the transcript.
+            self._activity_call("set_stage", str(ev.data.get("stage", "")))
             return
         if ev.cog_type == "approval_request":
             d = ev.data
@@ -412,8 +439,27 @@ class EchoTUI(App):
         if ev.cog_type == "tool_call":
             # Tool lines flip in place (running -> done) via a dedicated block,
             # keyed by tool_call_id. The generic cognitive block can't pair frames.
-            self._tv.add_tool_call(ev)
+            block = self._tv.add_tool_call(ev)
+            # Mirror the pairing onto the docked line so it can name what is
+            # running without waiting for the next heartbeat (which may be up to
+            # min_interval_sec away, or never on a short turn). Driven off the
+            # frame's own status, not the block: with `/details 工具 隐藏` there is
+            # no block, and the live line is then the ONLY place the user can see
+            # that a tool is running at all.
+            if str(ev.data.get("status", "running")) == "running":
+                name = block.tool_name if block is not None else str(
+                    ev.data.get("name", "")
+                )
+                self._activity_call("tool_started", name)
+            else:
+                self._activity_call("tool_finished")
             return
+        if ev.cog_type == "thinking" and ev.data.get("streaming"):
+            # A partial thinking snapshot is proof the model is reasoning right
+            # now, which is more timely than the heartbeat that would otherwise
+            # be the only thing to set this stage. Also covers `/details 思考
+            # 隐藏`, where the docked line is the only remaining signal.
+            self._activity_call("set_stage", "thinking")
         self._tv.add_cognitive(ev)
 
     def on_error(self, msg: str) -> None:
@@ -431,9 +477,10 @@ class EchoTUI(App):
             self.query_one(StatusBar).stop_turn_timer()
         except Exception:
             pass
-        # The turn died server-side, so its heartbeat line and any tool line
-        # still rendered as running are now lying about what is happening. Retire
+        # The turn died server-side, so the progress line and any tool line still
+        # rendered as running are now lying about what is happening. Retire
         # them the same way the normal reply path does.
+        self._activity_call("stop")
         try:
             self._tv.end_turn_cleanup()
         except Exception:
@@ -487,10 +534,11 @@ class EchoTUI(App):
             self._tv.add_error("连接已断开。输入 /reconnect 重连（Ctrl+D 退出）。")
         except Exception:
             pass
-        # No further frames can arrive on this socket, so a heartbeat line or a
-        # running tool line would sit there implying live progress. Retire them;
+        # No further frames can arrive on this socket, so a live progress line or
+        # a running tool line would sit there implying live progress. Retire them;
         # the turn may well still be running server-side, but this client can no
         # longer show it, and replay_missed_reply covers the recovered answer.
+        self._activity_call("stop")
         try:
             self._tv.end_turn_cleanup()
         except Exception:
@@ -533,6 +581,9 @@ class EchoTUI(App):
             bar.stop_turn_timer()
         except Exception:
             pass
+        # Same reasoning as the timer: turn tracking was just reset, so a live
+        # progress row would spin against a turn this client no longer follows.
+        self._activity_call("stop")
         self._unlock_prompt(focus=True)
 
     def replay_missed_reply(self, text: str) -> None:
@@ -704,6 +755,10 @@ class EchoTUI(App):
         self._last_queue_confirm = 0.0
         self._tv.add_user(text)
         self.query_one(StatusBar).start_turn_timer()
+        # Show progress from the submit, not from the first heartbeat: the
+        # gateway waits out a silence threshold before its first beat, so the
+        # opening seconds of every turn had no feedback at all.
+        self._activity_call("start")
         # Tag this as a primary (conversation) turn so its accepted frame becomes
         # the Ctrl+C interrupt target — not a later control reply's frame.
         self._turns.note_send("primary")
@@ -750,6 +805,9 @@ class EchoTUI(App):
             return True
         if name == "/theme":
             self._do_theme(arg)
+            return True
+        if name == "/details":
+            self._do_details(arg)
             return True
         if name == "/reconnect":
             await self._do_reconnect()
@@ -874,6 +932,29 @@ class EchoTUI(App):
             return
         current = "浅色" if self.theme == "echo-light" else "深色"
         self._tv.add_notice(f"当前主题: [b]{current}[/b]")
+
+    def _do_details(self, arg: str) -> None:
+        """/details — how much of the agent's working trace the transcript shows.
+
+        Bare ``/details`` reports the three sections and their state; an argument
+        sets one of them. Reporting on both paths (not just the query) is
+        deliberate: the reply doubles as the discoverable list of what can be
+        changed, so a user who guessed the syntax wrong still learns it.
+        """
+        if arg:
+            parsed = parse_details_arg(arg)
+            if parsed is None:
+                self._tv.add_notice(
+                    "[$warning]用法: /details <思考|工具|状态> <展开|折叠|隐藏>[/]"
+                )
+                return
+            section, state = parsed
+            self._tv.set_details(self._tv.details.with_section(section, state))
+        rows = "\n".join(
+            f"  [$primary]{label}[/]  {state}"
+            for label, state in self._tv.details.describe()
+        )
+        self._tv.add_notice(f"[b]过程信息显示[/b]\n{rows}")
 
     def on_prompt_input_content_changed(
         self, message: PromptInput.ContentChanged

@@ -22,6 +22,33 @@ def test_cognitive_block_summary_and_toggle():
     assert "user_stated" in detail
 
 
+def test_cognitive_summary_does_not_double_up_the_glyph():
+    """网关侧的 summary 曾自带 emoji，客户端又在行首加自己的符号，同一个图标
+    渲染两遍。现在网关只发文本，客户端负责行首符号；但两端各自发版，所以对
+    旧网关的历史前缀仍要剥掉。"""
+    from echo_agent.cli.tui.blocks import strip_legacy_glyph
+
+    assert strip_legacy_glyph("💭 Thought for 3.2s") == "Thought for 3.2s"
+    assert strip_legacy_glyph("✍ 写入 2 条记忆") == "写入 2 条记忆"
+    assert strip_legacy_glyph("💰 $0.42") == "$0.42"
+    assert strip_legacy_glyph("🧬 skill: 演化") == "skill: 演化"
+    # 无前缀的新格式原样保留
+    assert strip_legacy_glyph("思考 3.2s") == "思考 3.2s"
+
+    b = CognitiveBlock(_ev("thinking", {}, "💭 Thought for 3.2s"))
+    assert "💭" not in b.render_summary()
+
+
+def test_expandable_cognitive_types_advertise_their_shortcut():
+    """记忆/思考两类可展开，行尾给出对应快捷键，否则用户无从知道还有细节。"""
+    mem = CognitiveBlock(_ev("memory_recalled", {"items": ["x"]}, "召回 1 条记忆"))
+    think = CognitiveBlock(_ev("thinking", {"text": "x"}, "思考 1s"))
+    other = CognitiveBlock(_ev("evolution", {}, "skill: 演化"))
+    assert "ctrl+r" in mem.render_summary()
+    assert "ctrl+o" in think.render_summary()
+    assert "ctrl+" not in other.render_summary()
+
+
 def test_user_turn_prefix():
     assert UserTurn("你好").text_content == "❯ 你好"
 
@@ -54,7 +81,7 @@ def test_agent_reply_streaming_plain_final_markdown():
 
 
 def test_agent_reply_set_final_stays_plain():
-    """set_final is the status-line path (heartbeat/error): plain text, never
+    """set_final is the status-line path (notices/errors): plain text, never
     markdown, so hand-built Rich markup keeps working."""
     from echo_agent.cli.tui.blocks import AgentReply
 
@@ -62,9 +89,9 @@ def test_agent_reply_set_final_stays_plain():
     r._buf = ""
     captured = {}
     r.update = lambda content, **kw: captured.setdefault("c", content)
-    r.set_final("⏳ 生成中")
+    r.set_final("服务端错误")
     assert isinstance(captured["c"], str)
-    assert "⏳ 生成中" in captured["c"]
+    assert "服务端错误" in captured["c"]
 
 
 def test_approval_block_marks_decision():
@@ -133,7 +160,10 @@ def test_banner_collapses_to_wordmark_when_narrow():
 
 
 @pytest.mark.asyncio
-async def test_transcript_heartbeat_updates_in_place():
+async def test_transcript_mounts_no_block_for_progress():
+    """进度不再是 transcript 里的块：心跳块的位置在第一次心跳时就固定了，
+    之后的工具行追加在它下面，"还在处理" 反而显示在已完成内容的上方。
+    现在进度由停靠的 ActivityLine 承担，transcript 只放真实内容。"""
     from textual.app import App
     from echo_agent.cli.tui.transcript import TranscriptView
 
@@ -144,13 +174,12 @@ async def test_transcript_heartbeat_updates_in_place():
     app = T()
     async with app.run_test():
         tv = app.query_one(TranscriptView)
-        tv.heartbeat_line("in_1", "检索中")
-        first = tv.heartbeat_line("in_1", "生成中")  # 同一 id 复用
-        # 心跳行现在显示轮换的友好短语，不再回显服务端原始 note；
-        # 展示的短语必来自措辞库。
-        from echo_agent.cli.tui.status_phrases import _PHRASES
-        assert first.renderable_note in _PHRASES
-        assert tv.heartbeat_count == 1  # 未新增第二条
+        assert not hasattr(tv, "heartbeat_line")
+        assert not hasattr(tv, "clear_heartbeats")
+        tv.add_user("你好")
+        await app.workers.wait_for_complete()
+        # 只有用户这一条内容块，没有任何进度块
+        assert len(tv.children) == 1
 
 
 @pytest.mark.asyncio
@@ -190,13 +219,69 @@ async def test_transcript_tracks_last_memory_and_thinking():
         tv = app.query_one(TranscriptView)
         assert tv.last_memory_block() is None
         assert tv.last_thinking_block() is None
+        tv.add_user("你好")
         mem = tv.add_cognitive(CogEvent("memory_recalled", "e1", "in_1", {}, "召回"))
         think = tv.add_cognitive(CogEvent("thinking", "e2", "in_1", {}, "思考"))
-        tv.add_user("你好")
         tv.start_reply()
         tv.add_approval("req1", "shell", {"cmd": "ls"}, "低风险")
+        # 本轮内的其他块不影响 ctrl+r / ctrl+o 的目标
         assert tv.last_memory_block() is mem
         assert tv.last_thinking_block() is think
+
+
+@pytest.mark.asyncio
+async def test_expand_shortcuts_are_scoped_to_the_current_turn():
+    """ctrl+r / ctrl+o 原来指向任意历史轮次的最后一个记忆/思考块，于是新一轮
+    刚开始就按，会静默展开滚动区上方（屏幕外）的一条旧 trace —— 看起来像按键
+    没反应。新一轮开始即清空目标。"""
+    from textual.app import App
+    from echo_agent.cli.tui.transcript import TranscriptView
+
+    class T(App):
+        def compose(self):
+            yield TranscriptView()
+
+    app = T()
+    async with app.run_test():
+        tv = app.query_one(TranscriptView)
+        tv.add_user("第一轮")
+        old = tv.add_cognitive(CogEvent("thinking", "e1", "in_1", {}, "思考"))
+        assert tv.last_thinking_block() is old
+        tv.add_user("第二轮")
+        assert tv.last_thinking_block() is None
+        assert tv.last_memory_block() is None
+        fresh = tv.add_cognitive(CogEvent("thinking", "e2", "in_2", {}, "思考"))
+        assert tv.last_thinking_block() is fresh
+
+
+@pytest.mark.asyncio
+async def test_blocks_carry_their_turn_and_indent():
+    """轮次是打在扁平块上的标签，而不是嵌套容器：pending clarify/approval 必须
+    无条件常显且可聚焦（容器一旦折叠或被 /clear 移除就会连带隐藏它们），
+    children 也要保持扁平供 /copy、/save、焦点环直接遍历。"""
+    from textual.app import App
+    from echo_agent.cli.tui.transcript import TranscriptView
+    from echo_agent.cli.tui.turn_layout import TRACE_DEPTH
+
+    class T(App):
+        def compose(self):
+            yield TranscriptView()
+
+    app = T()
+    async with app.run_test():
+        tv = app.query_one(TranscriptView)
+        first = tv.add_user("第一轮")
+        trace = tv.add_cognitive(CogEvent("thinking", "e1", "in_1", {}, "思考"))
+        reply = tv.start_reply()
+        second = tv.add_user("第二轮")
+        assert first.turn_seq == trace.turn_seq == reply.turn_seq
+        assert second.turn_seq == first.turn_seq + 1
+        # trace 比标题/答案缩进一级，答案与对话本身齐平
+        assert trace.depth == TRACE_DEPTH
+        assert trace.rail != ""
+        # 扁平：所有块都是 transcript 的直接子节点
+        for w in (first, trace, reply, second):
+            assert w in tv.children
 
 
 @pytest.mark.asyncio

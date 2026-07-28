@@ -28,6 +28,7 @@ from echo_agent.agent.tools.base import ToolExecutionContext, build_idempotency_
 from echo_agent.agent.tools.circuit_breaker import ToolCircuitBreaker
 from echo_agent.agent.progress_heartbeat import ActivitySnapshot, friendly_activity
 from echo_agent.agent.streaming import channel_matches
+from echo_agent.agent.thinking_stream import ThinkingStream
 from echo_agent.bus.events import OutboundEvent
 from echo_agent.cost.budget import BudgetExceeded
 from echo_agent.models.provider import LLMResponse
@@ -344,6 +345,9 @@ class InferenceStage:
                 memory_count = len(memory_store.list_all())
             except Exception:
                 pass
+        # Summaries carry TEXT ONLY, no leading glyph: the client owns the line
+        # marker (cli/tui/glyphs.py) and prefixes its own, so an emoji here
+        # rendered twice — and the emoji set is user-selectable client-side.
         await self._cog.emit(
             event, "cost_update",
             {"turn_tokens": int(turn_tokens), "turn_cost": round(turn_cost, 4),
@@ -352,7 +356,7 @@ class InferenceStage:
              "context_used": context_used,
              "context_max": context_max,
              "memory_count": memory_count},
-            f"💰 ${round(total_cost, 4)}",
+            f"${round(total_cost, 4)}",
         )
 
     async def _emit_memory_written(self, event, items) -> None:
@@ -365,17 +369,84 @@ class InferenceStage:
         n = len(norm)
         await self._cog.emit(
             event, "memory_written", {"items": norm},
-            f"✍ 写入/强化 {n} 条记忆",
+            f"写入/强化 {n} 条记忆",
         )
 
-    async def _emit_thinking(self, event, duration_ms, text) -> None:
-        """Surface a reasoning/thinking span to the cognition stream."""
+    def _thinking_sink(self, event, stream, started_at: float):
+        """Build the ``on_reasoning`` callback for one LLM round, or None.
+
+        None when nobody renders cognitive frames on this channel: the provider
+        then skips its forwarding branch entirely instead of building deltas that
+        would be dropped at the emitter's gate.
+        """
+        if self._cog is None or not should_emit_cognitive(event.channel):
+            return None
+
+        async def on_reasoning(delta: str) -> None:
+            snapshot = stream.add(delta)
+            if snapshot is None:
+                return
+            await self._emit_thinking(
+                event, int((time.monotonic() - started_at) * 1000), snapshot,
+                thinking_id=stream.thinking_id, streaming=True,
+            )
+
+        return on_reasoning
+
+    async def _settle_thinking(self, event, stream, response, duration_ms) -> None:
+        """Close out a round's thinking line once the response is in hand.
+
+        Three cases, and the reason each needs handling:
+
+        * The provider streamed and the trace survived on the response — emit a
+          final non-streaming frame so the line stops saying "思考中" and gains
+          its real duration.
+        * The provider streamed but ``reasoning_content`` came back empty. That
+          is _promote_reasoning: the reasoning WAS the answer, and it is about to
+          be rendered as the reply body. Retract the trace, or the user reads the
+          same text twice.
+        * The provider never streamed — emit the whole trace once, exactly as
+          before streaming existed.
+        """
+        reasoning = getattr(response, "reasoning_content", None)
+        if stream.streamed:
+            if reasoning:
+                await self._emit_thinking(
+                    event, duration_ms, reasoning,
+                    thinking_id=stream.thinking_id,
+                )
+            else:
+                await self._emit_thinking(
+                    event, duration_ms, "",
+                    thinking_id=stream.thinking_id, retracted=True,
+                )
+            return
+        if reasoning:
+            await self._emit_thinking(
+                event, duration_ms, reasoning, thinking_id=stream.thinking_id,
+            )
+
+    async def _emit_thinking(
+        self, event, duration_ms, text, *,
+        thinking_id: str = "", streaming: bool = False, retracted: bool = False,
+    ) -> None:
+        """Surface a reasoning/thinking span to the cognition stream.
+
+        ``thinking_id`` ties the frames of one LLM round together so a client can
+        update a single line in place instead of stacking a new one per frame.
+        ``streaming`` marks a partial snapshot (more text is still coming);
+        ``retracted`` asks the client to drop the line entirely, used when the
+        reasoning turned out to BE the answer (see _promote_reasoning) and would
+        otherwise appear twice.
+        """
         if self._cog is None:
             return
         await self._cog.emit(
             event, "thinking",
-            {"duration_ms": duration_ms, "text": str(text)[:2000]},
-            f"💭 Thought for {round(duration_ms / 1000, 1)}s",
+            {"duration_ms": duration_ms, "text": str(text)[:2000],
+             "thinking_id": thinking_id, "streaming": streaming,
+             "retracted": retracted},
+            ("思考中" if streaming else f"思考 {round(duration_ms / 1000, 1)}s"),
         )
 
     async def _emit_evolution(self, event, phase, skill, detail) -> None:
@@ -385,7 +456,7 @@ class InferenceStage:
         await self._cog.emit(
             event, "evolution",
             {"phase": phase, "skill": skill, "detail": str(detail)[:300]},
-            f"🧬 {skill}: {phase}",
+            f"{skill}: {phase}",
         )
 
     async def run(self, ctx: PipelineContext) -> InferenceResult:
@@ -643,10 +714,16 @@ class InferenceStage:
                     break
 
             _llm_started = time.monotonic()
+            # One thinking stream per LLM round. Built even when nothing will
+            # subscribe (non-cli channel) — it is a few attribute assignments,
+            # and `_thinking_sink` returning None is what actually keeps the
+            # provider from paying for the callback.
+            _thinking = ThinkingStream()
             response, route_decision = await self._chat_stream_with_routing(
                 messages=messages,
                 tools=active_tool_defs if active_tool_defs else None,
                 on_delta=on_delta,
+                on_reasoning=self._thinking_sink(event, _thinking, _llm_started),
                 task_type=ctx.task_type,
                 content=event.text,
                 draft_policy=_draft_policy,
@@ -663,13 +740,15 @@ class InferenceStage:
             ):
                 await stream_publisher.discard()
 
-            # Surface model reasoning as a thinking event when the provider
-            # returns reasoning content (real signal on LLMResponse).
-            _reasoning = getattr(response, "reasoning_content", None)
-            if _reasoning:
-                await self._emit_thinking(
-                    event, int((time.monotonic() - _llm_started) * 1000), _reasoning,
-                )
+            # Surface model reasoning as a thinking event. Two shapes, one line
+            # on screen: providers that stream reasoning have already published
+            # partial snapshots under _thinking.thinking_id and this closes it
+            # out; providers that don't emit their whole trace here for the
+            # first time.
+            await self._settle_thinking(
+                event, _thinking, response,
+                int((time.monotonic() - _llm_started) * 1000),
+            )
 
             # post_llm_call hook
             if self._hook_registry and self._hook_registry.has_hooks("post_llm_call"):
@@ -1271,6 +1350,7 @@ class InferenceStage:
         task_type: str,
         content: str,
         draft_policy: str | None = None,
+        on_reasoning: Any | None = None,
     ) -> tuple[LLMResponse, RouteDecision]:
         """Route to appropriate model with fallback chain and streaming."""
         if not self._router:
@@ -1279,11 +1359,18 @@ class InferenceStage:
                 tools=tools,
                 model=self._default_model or None,
                 on_delta=on_delta,
+                on_reasoning=on_reasoning,
                 draft_policy=draft_policy,
             )
             return response, RouteDecision(provider_name="default", model=self._default_model, reason="no router")
 
         emitted = False
+        # Reasoning from a FAILED candidate is not replayed by the next one:
+        # snapshots accumulate into one trace, so a second provider's thinking
+        # would be appended to the dead first attempt's and read as one garbled
+        # thought. Same rule as chat_stream_with_retry's reasoning_open, applied
+        # one level up across the fallback chain.
+        reasoning_open = True
 
         async def routed_delta(delta: str) -> None:
             nonlocal emitted
@@ -1293,6 +1380,17 @@ class InferenceStage:
                 if asyncio.iscoroutine(maybe):
                     await maybe
 
+        reasoning_seen = False
+
+        async def routed_reasoning(delta: str) -> None:
+            nonlocal reasoning_seen
+            if not reasoning_open or not on_reasoning:
+                return
+            reasoning_seen = True
+            maybe = on_reasoning(delta)
+            if asyncio.iscoroutine(maybe):
+                await maybe
+
         last_response: LLMResponse | None = None
         last_decision: RouteDecision | None = None
         for provider_name, provider, decision in self._router.route_candidates(task_type, content):
@@ -1301,6 +1399,7 @@ class InferenceStage:
                 tools=tools,
                 model=decision.model,
                 on_delta=routed_delta if on_delta else None,
+                on_reasoning=routed_reasoning if on_reasoning else None,
                 max_tokens=decision.max_tokens,
                 temperature=decision.temperature,
                 draft_policy=draft_policy,
@@ -1314,6 +1413,8 @@ class InferenceStage:
             logger.warning("LLM provider '{}' failed for model '{}': {}", provider_name, decision.model, response.content)
             if emitted:
                 return response, decision
+            if reasoning_seen:
+                reasoning_open = False
 
         if last_response and last_decision:
             return last_response, last_decision
@@ -1322,6 +1423,7 @@ class InferenceStage:
             tools=tools,
             model=self._default_model or None,
             on_delta=on_delta,
+            on_reasoning=routed_reasoning if on_reasoning else None,
             draft_policy=draft_policy,
         )
         return response, RouteDecision(provider_name="default", model=self._default_model, reason="router empty")

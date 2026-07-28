@@ -12,13 +12,9 @@ from rich.text import Text
 from rich.theme import Theme as RichTheme
 from textual.widgets import Static
 
+from echo_agent.cli.tui.glyphs import GLYPHS, cog_glyph
 from echo_agent.cli.tui.protocol import CogEvent
-
-_ICON = {
-    "memory_recalled": "🧠", "memory_written": "✍", "thinking": "💭",
-    "tool_call": "🔧", "approval_request": "⚠️", "cost_update": "💰",
-    "heartbeat": "⏳", "evolution": "🧬",
-}
+from echo_agent.cli.tui.turn_layout import TRACE_DEPTH, rail_prefix
 
 _TOOL_VERB = {
     "read_file": "读取", "write_file": "写入", "edit_file": "编辑",
@@ -41,6 +37,21 @@ def humanize_tool(name: str) -> str:
     return _TOOL_VERB.get(name, name)
 
 
+# Glyphs older gateways prefixed onto their cognitive summary text. The client
+# now owns the line marker (glyphs.py), so a summary arriving with one of these
+# would render two markers side by side. Stripped on read rather than trusted,
+# because the gateway and the cli are versioned independently.
+_LEGACY_SUMMARY_GLYPHS = ("🧠", "✍", "💭", "🔧", "⚠️", "⚠", "💰", "⏳", "🧬", "•")
+
+
+def strip_legacy_glyph(summary: str) -> str:
+    text = str(summary).lstrip()
+    for glyph in _LEGACY_SUMMARY_GLYPHS:
+        if text.startswith(glyph):
+            return text[len(glyph):].lstrip()
+    return text
+
+
 class ExpandableBlock(Static):
     """A Static whose summary/detail flips via ``toggle()``, wired to real user
     input: it is focusable (Tab/arrow reach it), clickable (mouse), and toggles
@@ -50,9 +61,71 @@ class ExpandableBlock(Static):
     last-block ctrl+r/ctrl+o shortcuts — this makes every such block openable."""
 
     can_focus = True
+    # Tool/cognitive traces are the agent's working area; see layout.lead_gap.
+    block_group = "trail"
+    # Which turn this block belongs to, and how far inside it the line sits.
+    # Set by the transcript at mount time (see turn_layout for why a turn is a
+    # label on flat blocks rather than a nested container widget). The default
+    # keeps standalone construction — unit tests, /copy walks — working.
+    turn_seq = 0
+    depth = TRACE_DEPTH
+    # Whether the /details setting asks for this block's detail view. Distinct
+    # from `expanded`, which is what is actually on screen: a block with no
+    # payload stays summarized however the setting reads. Class-level default so
+    # subclasses that never take the argument still answer set_detail_default.
+    _want_expanded = False
+
+    @property
+    def rail(self) -> str:
+        """Muted indent rail placed before this block's own line marker, so a
+        turn's trace lines read as one indented run under their title instead of
+        sitting flush with the conversation."""
+        prefix = rail_prefix(self.depth)
+        return f"[$text-muted]{prefix}[/]" if prefix else ""
+
+    def child_rail(self, *, last: bool) -> tuple[str, str]:
+        """Rails for a detail line one level inside this block: the elbow segment
+        for the line that carries the label, and the continuation segment for its
+        wrapped/subsequent lines.
+
+        Unlike sibling blocks, a block's own detail rows ARE all known at render
+        time (render_detail builds them in one pass), so here the ``└─`` elbow is
+        both correct and stable — it is only across independently-mounted blocks
+        that "which one is last" cannot be answered.
+        """
+        stem = rail_prefix(self.depth)
+        elbow = GLYPHS.branch_last if last else GLYPHS.branch
+        # Pad the continuation out to the elbow's own width, not the rail's: the
+        # elbow is "├─ " while the rail is "│ ", so reusing the rail width alone
+        # would shift every wrapped line one column left of the text it continues.
+        cont = "" if last else GLYPHS.rail
+        cont = cont.ljust(len(elbow))
+        return (
+            f"[$text-muted]{stem}{elbow}[/]",
+            f"[$text-muted]{stem}{cont}[/]",
+        )
 
     def render_summary(self) -> str:  # pragma: no cover - overridden
         raise NotImplementedError
+
+    def _has_detail(self) -> bool:  # pragma: no cover - overridden
+        """Whether this block has anything to open."""
+        return True
+
+    def set_detail_default(self, *, expanded: bool) -> None:
+        """Re-apply a changed /details setting to an already-mounted block.
+
+        Existing lines are re-rendered rather than left alone, so /details reads
+        as a view setting over the whole transcript instead of only affecting
+        whatever the agent happens to do next. Blocks with nothing to open keep
+        their bare summary, so the marker never contradicts the content.
+        """
+        self._want_expanded = expanded
+        want = expanded and self._has_detail()
+        if want == self.expanded:
+            return
+        self.expanded = want
+        self.update(self.render_detail() if self.expanded else self.render_summary())
 
     def render_detail(self) -> str:  # pragma: no cover - overridden
         raise NotImplementedError
@@ -111,6 +184,28 @@ def colorize_diff(text: str, max_lines: int = 40) -> str:
 def _clip(s: str, n: int) -> str:
     s = " ".join(str(s).split())
     return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def _fmt_duration_ms(ms: int | None) -> str:
+    """Human duration for a tool line, or "" when it isn't worth a column.
+
+    Anything under a second is dropped: on a transcript where most calls are
+    instant reads, "0.1s" on every line is noise that hides the one call that
+    actually took half a minute.
+    """
+    if ms is None:
+        return ""
+    try:
+        value = float(ms)
+    except (TypeError, ValueError):
+        return ""
+    if value < 1000:
+        return ""
+    seconds = value / 1000
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes, rest = divmod(int(seconds), 60)
+    return f"{minutes}m {rest}s"
 
 
 # Parameter names whose value must never be shown verbatim. The approval panel
@@ -215,6 +310,8 @@ class Banner(Static):
     Kept as a pure render (build_text) so it is unit-testable without a live
     screen, mirroring the other blocks."""
 
+    block_group = "ui"
+
     def __init__(
         self,
         session_key: str = "",
@@ -263,14 +360,20 @@ class Banner(Static):
 
 
 class UserTurn(Static):
+    block_group = "user"
+    # Stamped by the transcript at mount time; see turn_layout.
+    turn_seq = 0
+
     def __init__(self, text: str) -> None:
         # Keep the sigil-free original so /copy can export a clean transcript
         # without the "❯ " decoration.
         self.raw_text = text
-        self.text_content = f"❯ {text}"
+        self.text_content = f"{GLYPHS.user} {text}"
         # Markup keeps the sigil in the accent colour and the task text bright,
         # so the title reads as the strongest element in each turn.
-        super().__init__(f"[bold $primary]❯[/] [b]{escape(text)}[/b]")
+        super().__init__(
+            f"[bold $primary]{GLYPHS.user}[/] [b]{escape(text)}[/b]"
+        )
 
 
 class ThemedMarkdown(Markdown):
@@ -313,8 +416,13 @@ class AgentReply(Static):
     """Agent reply body. Streaming tokens render as plain (escaped) text —
     partial markdown is inevitably broken, and re-parsing every token would
     flicker. The finished reply is rendered as markdown via ``set_markdown``;
-    ``set_final`` stays a plain-text path for status lines (heartbeat/error)
-    that reuse this widget but carry hand-built Rich markup, not markdown."""
+    ``set_final`` stays a plain-text path for status lines (notices, server
+    errors) that reuse this widget but carry hand-built Rich markup, not
+    markdown."""
+
+    # Stamped by the transcript at mount time; see turn_layout. /copy uses it to
+    # collect every reply block belonging to the newest turn.
+    turn_seq = 0
 
     def __init__(self) -> None:
         self._buf = ""
@@ -326,7 +434,14 @@ class AgentReply(Static):
         # agent replies. Flagged so /copy skips them and stays pointed at the
         # last genuine answer.
         self.is_status = False
-        super().__init__("[$primary]●[/] ")
+        super().__init__(f"[$primary]{GLYPHS.reply}[/] ")
+
+    @property
+    def block_group(self) -> str:
+        """A real reply is the model's voice; a status line (notice, server
+        error) belongs to the quieter note band — so a notice following a reply
+        still gets its separating blank line. See layout.lead_gap."""
+        return "note" if self.is_status else "model"
 
     @property
     def text(self) -> str:
@@ -337,7 +452,7 @@ class AgentReply(Static):
     def append_token(self, t: str) -> None:
         self._buf += t
         self._is_markdown = False
-        self.update(f"[$primary]●[/] {escape(self._buf)}")
+        self.update(f"[$primary]{GLYPHS.reply}[/] {escape(self._buf)}")
 
     def clear_stream(self) -> None:
         """Drop the streamed text, keeping the widget in place.
@@ -348,12 +463,12 @@ class AgentReply(Static):
         """
         self._buf = ""
         self._is_markdown = False
-        self.update("[$primary]●[/] ")
+        self.update(f"[$primary]{GLYPHS.reply}[/] ")
 
     def set_final(self, text: str) -> None:
         self._buf = text
         self._is_markdown = False
-        self.update(f"[$primary]●[/] {escape(self._buf)}")
+        self.update(f"[$primary]{GLYPHS.reply}[/] {escape(self._buf)}")
 
     def set_markup(self, markup: str) -> None:
         """Render pre-built Rich markup verbatim (NOT escaped), keeping the ●
@@ -363,7 +478,7 @@ class AgentReply(Static):
         (notices set is_status and are skipped anyway)."""
         self._buf = markup
         self._is_markdown = False
-        self.update(f"[$primary]●[/] {markup}")
+        self.update(f"[$primary]{GLYPHS.reply}[/] {markup}")
 
     def _bullet_color(self) -> str:
         """Resolve the theme's ``primary`` colour so the ``●`` matches the
@@ -394,7 +509,7 @@ class AgentReply(Static):
         grid.add_column()
         grid.add_column()
         grid.add_row(
-            Text("●", style=self._bullet_color()),
+            Text(GLYPHS.reply, style=self._bullet_color()),
             ThemedMarkdown(text, palette=self._md_palette()),
         )
         self.update(grid)
@@ -434,35 +549,127 @@ class AgentReply(Static):
 
 
 class CognitiveBlock(ExpandableBlock):
-    def __init__(self, ev: CogEvent) -> None:
+    def __init__(self, ev: CogEvent, *, expanded: bool = False) -> None:
         self.ev = ev
-        self.expanded = False
-        super().__init__(self.render_summary())
+        # `expanded` is a constructor argument rather than something the caller
+        # flips afterwards: the initial content is chosen here, so assigning the
+        # attribute post-construction would leave the widget showing a summary
+        # that disagrees with its own state until the next repaint.
+        self._want_expanded = expanded
+        self.expanded = expanded and self._has_detail()
+        super().__init__(
+            self.render_detail() if self.expanded else self.render_summary()
+        )
+
+    def _has_detail(self) -> bool:
+        """Whether there is anything to open. A frame can arrive with an empty
+        payload (the gateway trims long ones), and marking such a line ``▾`` —
+        open — while it shows exactly one row is a cue that contradicts itself."""
+        d = self.ev.data
+        return bool(d.get("items") or (self.ev.cog_type == "thinking" and d.get("text")))
+
+    @property
+    def is_streaming(self) -> bool:
+        """Whether more text is still coming for this line (a partial thinking
+        snapshot). Streaming lines carry a live tail in their summary so the
+        collapsed default still shows movement; see render_summary."""
+        return bool(self.ev.data.get("streaming"))
+
+    def update_event(self, ev: CogEvent) -> None:
+        """Replace the payload with a newer snapshot of the SAME logical event.
+
+        Used for streamed thinking, where each frame supersedes the last: the
+        block is re-rendered in place rather than a second one mounted, so a
+        round of reasoning stays one line in the transcript however many frames
+        it took to arrive. The user's own expand state is preserved unless the
+        arriving payload makes it impossible.
+        """
+        self.ev = ev
+        self.expanded = (self.expanded or self._want_expanded) and self._has_detail()
+        self.update(
+            self.render_detail() if self.expanded else self.render_summary()
+        )
+
+    def mark_stream_ended(self) -> None:
+        """Settle a partial thinking line whose closing frame will never arrive
+        (the turn was interrupted or died). The trace collected so far is kept —
+        it is genuine, and on an interrupt it is often the most informative thing
+        left on screen — but the line stops claiming to be in progress."""
+        if not self.is_streaming:
+            return
+        self.ev.data["streaming"] = False
+        self.ev.summary = f"思考 {GLYPHS.unfinished} 未完成"
+        self.update(
+            self.render_detail() if self.expanded else self.render_summary()
+        )
+
+    def _stream_tail(self) -> str:
+        """The most recent non-empty line of a streaming trace, clipped to one
+        row's worth. Shown beside "思考中" so a collapsed thinking line still
+        conveys that the model is producing something, and roughly what."""
+        text = str(self.ev.data.get("text", ""))
+        for raw in reversed(text.splitlines()):
+            line = raw.strip()
+            if line:
+                return _clip(line, 48)
+        return ""
 
     def render_summary(self) -> str:
-        icon = _ICON.get(self.ev.cog_type, "•")
-        hint = " (ctrl+r)" if self.ev.cog_type == "memory_recalled" else (
-            " (ctrl+o)" if self.ev.cog_type == "thinking" else "")
+        icon = cog_glyph(self.ev.cog_type)
+        # A closed disclosure marker on the blocks that actually have a detail
+        # view, so "there is more here" is visible rather than something the
+        # user has to already know. The keyboard shortcut is named too, since
+        # ctrl+r/ctrl+o reach these without moving focus.
+        marker = GLYPHS.expanded if self.expanded else GLYPHS.collapsed
+        if not self._has_detail():
+            # No payload to open: no marker and no shortcut hint, so the cue never
+            # promises content that isn't there.
+            chev, hint = " ", ""
+        elif self.ev.cog_type == "memory_recalled":
+            chev, hint = marker, " ctrl+r"
+        elif self.ev.cog_type == "thinking":
+            chev, hint = marker, " ctrl+o"
+        else:
+            chev, hint = " ", ""
+        text = strip_legacy_glyph(self.ev.summary)
+        if self.is_streaming and not self.expanded:
+            # Mid-stream the shortcut hint is dropped: the tail is already the
+            # interesting part of the row, and the two together overflow a
+            # narrow terminal into a wrap that jitters on every frame.
+            tail = self._stream_tail()
+            if tail:
+                text = f"{text} {GLYPHS.sep} {tail}"
+                hint = ""
         # Cognitive traces are secondary information — render the whole line in
         # the muted indigo tone so it recedes behind replies and tool actions.
-        return f"[$secondary]{icon}[/] [$text-muted]{escape(self.ev.summary)}{escape(hint)}[/]"
+        return (
+            f"{self.rail}[$secondary]{chev}{icon}[/] "
+            f"[$text-muted]{escape(text)}{escape(hint)}[/]"
+        )
 
     def render_detail(self) -> str:
         d = self.ev.data
         lines = [self.render_summary()]
-        for it in d.get("items", []):
+        items = list(d.get("items", []))
+        for idx, it in enumerate(items):
             src = it.get("source", "")
             badge = f"\\[{escape(src)}]" if src else ""
             content = escape(str(it.get("content", "")))
-            lines.append(f"    [$text-muted]·[/] {content} [$text-muted]{badge}[/]".rstrip())
+            elbow, _ = self.child_rail(last=idx == len(items) - 1)
+            lines.append(f"{elbow}{content} [$text-muted]{badge}[/]".rstrip())
         if self.ev.cog_type == "thinking" and d.get("text"):
-            lines.append(f"    [$text-muted]{escape(str(d['text']))}[/]")
+            # Reasoning text is a paragraph, not a list entry: indent every line
+            # under one elbow so a wrapped thought stays visually attached to it.
+            elbow, cont = self.child_rail(last=True)
+            for idx, raw in enumerate(str(d["text"]).strip().splitlines()):
+                prefix = elbow if idx == 0 else cont
+                lines.append(f"{prefix}[$text-muted]{escape(raw)}[/]")
         return "\n".join(lines)
 
 
 class ToolCallBlock(ExpandableBlock):
-    """One tool invocation. Flips in place from running (🔧 … ) to done
-    (🔧 … · summary ✓/✗). Paired across the two frames by tool_call_id."""
+    """One tool invocation, rendered as ``● 动词 对象 · 结果 · 耗时 ✓``. Flips in
+    place from running to done, paired across the two frames by tool_call_id."""
 
     def __init__(
         self,
@@ -473,6 +680,7 @@ class ToolCallBlock(ExpandableBlock):
         result_meta: dict | None = None,
         result_text: str = "",
         duration_ms: int | None = None,
+        expanded: bool = False,
     ) -> None:
         self.tool_call_id = tool_call_id
         # Stored as tool_name to avoid clashing with Textual Widget's read-only
@@ -483,41 +691,71 @@ class ToolCallBlock(ExpandableBlock):
         self.result_meta = result_meta
         self.result_text = result_text
         self.duration_ms = duration_ms
-        self.expanded = False
-        super().__init__(self.render_summary())
+        # Detail-open state is passed in (see details.py): deciding it here means
+        # the first paint is already correct, instead of rendering the summary and
+        # then toggling, which flashes and — with the transcript's bottom anchor
+        # engaged — jogs the scroll position.
+        #
+        # Kept as a separate wish because a running call may have no detail YET
+        # (no params) and gain one on its done frame; without this the "open tool
+        # details" setting would silently skip exactly those calls.
+        self._want_expanded = expanded
+        self.expanded = expanded and self._has_detail()
+        super().__init__(
+            self.render_detail() if self.expanded else self.render_summary()
+        )
+
+    def _has_detail(self) -> bool:
+        return bool(self.params or self.result_text)
 
     def render_summary(self) -> str:
         verb = escape(humanize_tool(self.tool_name))
         obj = escape(pick_object(self.tool_name, self.params))
+        sep = f"[$text-muted]{GLYPHS.sep}[/]"
+        # A disclosure marker only where there IS a detail view, so the cue never
+        # promises content that isn't there.
+        chev = (
+            (GLYPHS.expanded if self.expanded else GLYPHS.collapsed)
+            if self._has_detail() else " "
+        )
         # verb in accent, operand muted so the eye separates "what" from "on what".
-        head = f"🔧 [b]{verb}[/b]"
+        head = f"{self.rail}[$accent]{chev}{GLYPHS.tool}[/] [b]{verb}[/b]"
         if obj:
             head += f" [$text-muted]{obj}[/]"
         if self.status == "running":
-            return f"{head} [$text-muted]…[/]"
+            return f"{head} [$text-muted]{GLYPHS.pending}[/]"
         if self.status == "interrupted":
             # The turn ended (error / interrupt) before this tool's paired done
             # frame arrived. Say so instead of leaving the running "…", which
             # read as "still executing" for work that had already stopped.
-            return f"{head} [$text-muted]·[/] [$text-muted]未完成[/] [$warning]—[/]"
+            return (
+                f"{head} {sep} [$text-muted]未完成[/] "
+                f"[$warning]{GLYPHS.unfinished}[/]"
+            )
         ok = self.status == "ok"
-        mark = "[$success]✓[/]" if ok else "[$error]✗[/]"
+        mark = (
+            f"[$success]{GLYPHS.ok}[/]" if ok else f"[$error]{GLYPHS.fail}[/]"
+        )
         summary = escape(summarize_result(
             self.tool_name, self.result_meta, self.result_text, ok
         ))
         tone = "$text-muted" if ok else "$error"
-        return f"{head} [$text-muted]·[/] [{tone}]{summary}[/] {mark}"
+        line = f"{head} {sep} [{tone}]{summary}[/]"
+        # Duration was carried on the frame and stored but never shown, so a
+        # 30-second command looked identical to an instant one. Sub-second calls
+        # stay unlabelled — the number would be noise on every trivial read.
+        took = _fmt_duration_ms(self.duration_ms)
+        if took:
+            line += f" {sep} [$text-muted]{took}[/]"
+        return f"{line} {mark}"
 
     def render_detail(self) -> str:
         lines = [self.render_summary()]
+        rows: list[tuple[str, list[str]]] = []
         if self.params:
             # One line per parameter with secrets masked — a raw str(dict) both
-            # wrapped unreadably and leaked credentials into the transcript. The
-            # "参数" header keeps the group labelled now that the entries are
-            # split across lines.
-            lines.append("    [$text-muted]↳ 参数[/]")
-            for entry in format_params(self.params):
-                lines.append(f"      [$text-muted]{escape(entry)}[/]")
+            # wrapped unreadably and leaked credentials into the transcript.
+            rows.append(("参数", [escape(e) for e in format_params(self.params)]))
         if self.result_text:
             # Edit-family tools return a diff — color it so added/removed lines
             # read at a glance. Everything else keeps the compact text preview.
@@ -525,12 +763,16 @@ class ToolCallBlock(ExpandableBlock):
                 ln[:1] in "+-@" for ln in self.result_text.splitlines()
             )
             if self.tool_name in _DIFF_TOOLS and looks_like_diff:
-                lines.append("    [$text-muted]↳ 变更[/]")
-                lines.append(colorize_diff(self.result_text))
+                rows.append(("变更", colorize_diff(self.result_text).split("\n")))
             else:
-                lines.append(
-                    f"    [$text-muted]↳ 结果 {escape(_clip(self.result_text, 200))}[/]"
+                rows.append(
+                    ("结果", [escape(_clip(self.result_text, 200))])
                 )
+        for idx, (label, body) in enumerate(rows):
+            elbow, cont = self.child_rail(last=idx == len(rows) - 1)
+            lines.append(f"{elbow}[$text-muted]{label}[/]")
+            for entry in body:
+                lines.append(f"{cont}  {entry}")
         return "\n".join(lines)
 
     def mark_done(
@@ -540,6 +782,11 @@ class ToolCallBlock(ExpandableBlock):
         self.result_meta = result_meta
         self.result_text = result_text
         self.duration_ms = duration_ms
+        # The result is what a "tools expanded" reader wants to see, and it only
+        # exists now — a call whose running frame had no params could not honour
+        # the setting at mount time.
+        if self._want_expanded and self._has_detail():
+            self.expanded = True
         self.update(self.render_detail() if self.expanded else self.render_summary())
 
     def mark_interrupted(self) -> None:
@@ -553,6 +800,10 @@ class ToolCallBlock(ExpandableBlock):
 
 
 class ApprovalBlock(Static):
+    # "ui": keeps its own CSS margin (it is a framed panel the user must act on),
+    # so the transcript must not add a spacer line around it.
+    block_group = "ui"
+
     def __init__(self, request_id: str, action: str, params: dict, risk: str) -> None:
         self.request_id = request_id
         self.action = action
@@ -563,12 +814,20 @@ class ApprovalBlock(Static):
 
     def _body(self) -> str:
         action = escape(str(self.action))
+        alert = cog_glyph("approval_request")
+        sep = f"[$text-muted]{GLYPHS.sep}[/]"
         if self.decision == "approve":
-            return f"[$warning]⚠️[/] {action} — [$success]✅ 已批准[/]"
+            return (
+                f"[$warning]{alert}[/] {action} {sep} "
+                f"[$success]{GLYPHS.ok} 已批准[/]"
+            )
         if self.decision == "deny":
-            return f"[$warning]⚠️[/] {action} — [$error]❌ 已拒绝[/]"
+            return (
+                f"[$warning]{alert}[/] {action} {sep} "
+                f"[$error]{GLYPHS.fail} 已拒绝[/]"
+            )
         lines = [
-            f"[$warning]⚠️ 需要确认:[/] [b]{action}[/b]",
+            f"[$warning]{alert} 需要确认:[/] [b]{action}[/b]",
             f"    [$text-muted]{escape(str(self.risk))}[/]",
         ]
         # This is the screen the user authorizes a high-risk action from, so the
@@ -636,6 +895,9 @@ class ChoiceBlock(Static):
     """A clarify prompt: a question plus optional numbered choices. The user
     picks by number, arrows+enter, or free text. Rendering is a pure method so
     it is unit-testable without a live screen (like ApprovalBlock)."""
+
+    # See ApprovalBlock: framed panel with its own CSS margin, no extra spacer.
+    block_group = "ui"
 
     def __init__(self, clarify_id: str, question: str, options: list) -> None:
         self.clarify_id = clarify_id

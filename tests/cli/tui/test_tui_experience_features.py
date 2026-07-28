@@ -1,36 +1,104 @@
-"""Tests for the TUI experience features: status phrases, theme detection,
+"""Tests for the TUI experience features: live activity line, theme detection,
 brand config, /help catalog, gradient banner, and diff coloring."""
 
 from __future__ import annotations
 
-import random
-
+from echo_agent.cli.tui.activity_line import ActivityLine, _fmt_elapsed
 from echo_agent.cli.tui.brand import Brand, load_brand
 from echo_agent.cli.tui.blocks import Banner, colorize_diff
 from echo_agent.cli.tui.completion import COMMANDS, help_text
-from echo_agent.cli.tui.status_phrases import _PHRASES, choose_status_phrase
 from echo_agent.cli.tui.theme import detect_light_mode, resolve_theme_name
 
 
-# ── status phrases ───────────────────────────────────────────────────
+# ── live activity line ───────────────────────────────────────────────
+#
+# Replaces the old rotating status phrases ("马上就好" / "还在跑" / …): they said
+# nothing about what was happening and re-rendered on every beat. The line now
+# carries stage, tool, elapsed time and in-flight count instead.
 
-def test_status_phrase_from_catalog():
-    assert choose_status_phrase() in _PHRASES
+def _line() -> ActivityLine:
+    """An ActivityLine without a live screen: render_text is pure, and the state
+    transitions only touch `display`/`update`, which are stubbed here."""
+    al = ActivityLine.__new__(ActivityLine)
+    al._active = False
+    al._stage = ""
+    al._tool = ""
+    al._running_tools = 0
+    al._started = None
+    al._frame = 0
+    al._timer = None
+    al._mounted = False
+    return al
 
 
-def test_status_phrase_avoids_recent_repeats():
-    rng = random.Random(0)
-    recent: list[str] = []
-    picks = [choose_status_phrase(recent, rng=rng) for _ in range(4)]
-    # Within one recent-window (4) there must be no immediate repeats.
-    assert len(set(picks)) == len(picks)
+def test_activity_line_hidden_until_a_turn_starts():
+    al = _line()
+    assert al.is_active is False
+    assert al.render_text() == ""
 
 
-def test_status_phrase_recent_window_is_bounded():
-    recent: list[str] = []
-    for _ in range(50):
-        choose_status_phrase(recent)
-    assert len(recent) <= 4
+def test_activity_line_names_stage_and_elapsed():
+    al = _line()
+    al.start()
+    al._started = 100.0
+    al.set_stage("thinking")
+    out = al.render_text(now=112.0)
+    assert "思考中" in out
+    assert "12s" in out
+    assert "Ctrl+C" in out
+
+
+def test_activity_line_prefers_running_tool_over_stage():
+    """A named running tool beats the phase label: "调用工具 读取" tells the user
+    more than "调用工具"."""
+    al = _line()
+    al.start()
+    al.set_stage("thinking")
+    al.tool_started("read_file")
+    out = al.render_text()
+    assert "读取" in out
+    assert "思考中" not in out
+
+
+def test_activity_line_counts_concurrent_tools_and_drops_name_when_done():
+    al = _line()
+    al.start()
+    al.tool_started("read_file")
+    al.tool_started("shell")
+    assert "2 个工具进行中" in al.render_text()
+    al.tool_finished()
+    al.tool_finished()
+    out = al.render_text()
+    # No tool left → back to the phase label, never a finished tool's name.
+    assert "个工具进行中" not in out
+    assert al._tool == ""
+
+
+def test_activity_line_stop_clears_state():
+    """A settled turn's history belongs in the transcript, so the row hides
+    instead of freezing on a stale phase."""
+    al = _line()
+    al.start()
+    al.set_stage("generating")
+    al.stop()
+    assert al.is_active is False
+    assert al.render_text() == ""
+
+
+def test_activity_line_revives_on_a_heartbeat_it_never_saw_start():
+    """Heartbeats can arrive for work this client never saw begin (a turn
+    accepted before a reconnect), so a stage update must revive the row."""
+    al = _line()
+    al.set_stage("calling_tool")
+    assert al.is_active is True
+    assert "调用工具" in al.render_text()
+
+
+def test_elapsed_formatting_scales_with_duration():
+    assert _fmt_elapsed(1.24) == "1.2s"
+    assert _fmt_elapsed(42.6) == "42s"
+    assert _fmt_elapsed(185) == "3m 5s"
+    assert _fmt_elapsed(120) == "2m"
 
 
 # ── theme detection ──────────────────────────────────────────────────
