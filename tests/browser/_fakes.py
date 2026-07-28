@@ -325,6 +325,7 @@ class Cfg:
     nav_timeout_sec = 30
     allow_private_addresses = False
     dialog_policy = "dismiss"
+    allow_evaluate = True
     allow_unsafe_evaluate = False
     persist_login_state = False
     viewport_width = 1280

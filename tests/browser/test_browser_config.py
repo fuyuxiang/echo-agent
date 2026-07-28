@@ -27,6 +27,12 @@ def test_session_caps_cover_both_scopes():
     assert BrowserToolConfig(max_total_sessions=0).max_total_sessions == 0
 
 
+def test_evaluate_is_on_but_can_be_switched_off():
+    c = BrowserToolConfig()
+    assert c.allow_evaluate is True
+    assert BrowserToolConfig(allow_evaluate=False).allow_evaluate is False
+
+
 def test_viewport_defaults_are_desktop_sized():
     c = BrowserToolConfig()
     assert (c.viewport_width, c.viewport_height) == (1280, 800)

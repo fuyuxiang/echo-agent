@@ -27,19 +27,51 @@ _KEY_RE = re.compile(r"^(?:[A-Za-z][A-Za-z0-9]*|\S)(?:\+(?:[A-Za-z][A-Za-z0-9]*|
 # an arbitrary-code escape hatch inside a page that may itself be attacker
 # controlled, so prompt injection must not be able to use it to exfiltrate
 # tokens or hop to an internal address behind the SSRF gate.
+#
+# This is DEFENCE IN DEPTH against careless and lightly-obfuscated expressions,
+# NOT a sandbox: any string blacklist over a Turing-complete language can be
+# defeated (`document["c"+"ookie"]`, `atob(...)`, aliasing through a helper).
+# The real boundary is the approval gate plus browser.allow_evaluate — see
+# BrowserTool.execution_mode.
+# Needles are matched after stripping every non-alphanumeric character, so
+# quoting, bracket access and comments between the tokens no longer slip past.
 _EVAL_DENY = (
-    ("document.cookie", "读取 cookie"),
+    ("documentcookie", "读取 cookie"),
     ("localstorage", "读取 localStorage"),
     ("sessionstorage", "读取 sessionStorage"),
     ("indexeddb", "读取 IndexedDB"),
-    ("location.href=", "脚本跳转"),
-    ("location.replace", "脚本跳转"),
-    ("location.assign", "脚本跳转"),
-    ("window.open", "脚本开窗"),
-    ("navigator.credentials", "读取凭据"),
-    ("navigator.sendbeacon", "外发数据"),
+    ("locationhref", "读写 location"),
+    ("locationreplace", "脚本跳转"),
+    ("locationassign", "脚本跳转"),
+    ("windowopen", "脚本开窗"),
+    ("navigatorcredentials", "读取凭据"),
+    ("navigatorsendbeacon", "外发数据"),
+    ("xmlhttprequest", "外发数据"),
+    ("importscripts", "加载外部脚本"),
+    ("serviceworker", "注册 service worker"),
+    ("documentwrite", "注入内容"),
 )
+# Constructs whose only purpose here is to hide one of the above. Matched against
+# the raw expression because the stripped form loses the call syntax.
+_EVAL_SUSPICIOUS = (
+    (re.compile(r"\batob\s*\("), "base64 解码后执行"),
+    (re.compile(r"\bFunction\s*\("), "动态构造函数"),
+    (re.compile(r"\beval\s*\("), "嵌套 eval"),
+    (re.compile(r"\bfromCharCode\b"), "字符码拼接"),
+    (re.compile(r"\bunescape\s*\("), "转义还原后执行"),
+)
+_EVAL_STRIP_RE = re.compile(r"[^a-z0-9]+")
 _MAX_EVAL_RESULT_CHARS = 4000
+
+# Result scrubbing. Even an allowed expression can return a page value that
+# happens to contain a bearer token or session id; those must not land in the
+# model's context (and from there in a transcript or a log).
+_SECRET_PATTERNS = (
+    re.compile(r"\b(?:ey[A-Za-z0-9_-]{8,}\.){2}[A-Za-z0-9_-]{8,}\b"),  # JWT
+    re.compile(r"\b(?:sk|pk|ghp|gho|xox[abps])[-_][A-Za-z0-9_-]{16,}\b"),
+    re.compile(r"(?i)\b(?:bearer|token|api[-_]?key|secret|password|passwd|authorization)"
+               r"\b\s*[:=]\s*[\"']?([A-Za-z0-9_\-./+=]{12,})[\"']?"),
+)
 
 
 async def navigate(session: Any, url: str, *, timeout_sec: int = 30,
@@ -311,17 +343,41 @@ async def wait_for(session: Any, *, text: str = "", state: str = "",
 
 
 def check_eval_expression(expression: str, *, allow_unsafe: bool = False) -> str:
-    """Return a refusal reason for a disallowed expression, "" when allowed."""
+    """Return a refusal reason for a disallowed expression, "" when allowed.
+
+    See _EVAL_DENY: this filters mistakes and casual obfuscation, it does not
+    contain a determined attacker. Callers must not treat a "" return as proof
+    the expression is safe.
+    """
     if not expression.strip():
         return "expression 不能为空"
     if allow_unsafe:
         return ""
-    lowered = expression.lower().replace(" ", "")
+    stripped = _EVAL_STRIP_RE.sub("", expression.lower())
     for needle, reason in _EVAL_DENY:
-        if needle in lowered:
+        if needle in stripped:
             return (f"evaluate 被拒绝：表达式涉及{reason}。"
                     "如确需此操作，请在配置中开启 browser.allow_unsafe_evaluate")
+    for pattern, reason in _EVAL_SUSPICIOUS:
+        if pattern.search(expression):
+            return (f"evaluate 被拒绝：表达式涉及{reason}，无法静态判断其行为。"
+                    "请改写为直接表达式，或在配置中开启 browser.allow_unsafe_evaluate")
     return ""
+
+
+def scrub_eval_result(text: str) -> str:
+    """Redact credential-shaped substrings from an evaluate result."""
+    def _mask(m: re.Match[str]) -> str:
+        whole = m.group(0)
+        if m.groups():
+            # Keyed form (token: xxx): keep the key, drop the value.
+            secret = m.group(1)
+            return whole.replace(secret, "***")
+        return "***"
+
+    for pattern in _SECRET_PATTERNS:
+        text = pattern.sub(_mask, text)
+    return text
 
 
 async def evaluate(session: Any, expression: str, *,
@@ -345,7 +401,9 @@ async def evaluate(session: Any, expression: str, *,
         text = repr(result)
     if len(text) > _MAX_EVAL_RESULT_CHARS:
         text = text[:_MAX_EVAL_RESULT_CHARS] + "…(结果过长已截断)"
-    return text, ""
+    # Scrub AFTER truncation so a redaction can never be cut in half, leaving a
+    # partial secret behind.
+    return scrub_eval_result(text), ""
 
 
 async def screenshot(session: Any, *, full_page: bool = False) -> bytes:

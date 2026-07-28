@@ -359,6 +359,28 @@ async def test_evaluate_allowed_when_config_opts_in(monkeypatch, page, tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_evaluate_can_be_switched_off_entirely(monkeypatch, page, tmp_path):
+    """The approval gate is per-tool, so a deployment that does not want
+    arbitrary in-page JS at all needs a switch inside the tool."""
+    class _NoEval(Cfg):
+        allow_evaluate = False
+
+    patch_playwright(monkeypatch, FakePlaywright(page))
+    tool = BrowserTool(config=_NoEval(), manager=BrowserSessionManager(),
+                       workspace=str(tmp_path))
+    page.eval_results["document.title"] = "Example"
+    sid = await _open(tool)
+    res = await tool.execute({"action": "evaluate", "session_id": sid,
+                              "expression": "document.title"}, _ctx())
+    assert res.success is False and res.error_kind == "business"
+    assert "allow_evaluate" in res.error
+    assert page.evaluated == []
+    # Everything else on the tool still works.
+    assert (await tool.execute({"action": "snapshot", "session_id": sid},
+                               _ctx())).success is True
+
+
+@pytest.mark.asyncio
 async def test_evaluate_undefined_is_labelled(tool):
     sid = await _open(tool)
     res = await tool.execute({"action": "evaluate", "session_id": sid,

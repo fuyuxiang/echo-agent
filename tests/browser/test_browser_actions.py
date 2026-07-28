@@ -321,6 +321,31 @@ def test_eval_policy_defeats_whitespace_evasion():
     assert act_mod.check_eval_expression("document . cookie") != ""
 
 
+@pytest.mark.parametrize("expr", [
+    "document['cookie']",
+    'document["cookie"]',
+    "window['location']['href']='http://evil.test'",
+    "self.localStorage['t']",
+    "window[`sessionStorage`].clear()",
+    "new XMLHttpRequest()",
+])
+def test_eval_policy_defeats_bracket_and_quote_evasion(expr):
+    """The needles are matched after stripping non-alphanumerics, so bracket
+    notation collapses onto the same string as dotted access."""
+    assert act_mod.check_eval_expression(expr) != ""
+
+
+@pytest.mark.parametrize("expr", [
+    "eval(atob('ZG9jdW1lbnQuY29va2ll'))",
+    "Function('return document.cookie')()",
+    "String.fromCharCode(100,111,99)",
+    "unescape('%64oc')",
+])
+def test_eval_policy_refuses_obfuscation_primitives(expr):
+    """Decoders and dynamic-code builders can reconstruct any needle at runtime."""
+    assert act_mod.check_eval_expression(expr) != ""
+
+
 def test_eval_policy_allows_plain_dom_reads():
     assert act_mod.check_eval_expression("document.title") == ""
 
@@ -348,6 +373,38 @@ async def test_evaluate_refusal_does_not_touch_page():
     text, err = await act_mod.evaluate(_session(page), "document.cookie")
     assert text == "" and "拒绝" in err
     assert page.evaluated == []
+
+
+@pytest.mark.asyncio
+async def test_evaluate_redacts_credential_shaped_output():
+    """A permitted read can still scrape a token out of the page's own DOM."""
+    page = FakePage()
+    page.eval_default = ("Authorization: Bearer "
+                         "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijkl")
+    text, err = await act_mod.evaluate(_session(page), "document.body.innerText")
+    assert err == ""
+    assert "eyJhbGciOiJIUzI1NiJ9" not in text
+    assert "***" in text
+
+
+def test_scrub_masks_api_key_but_keeps_the_key_name():
+    out = act_mod.scrub_eval_result("api_key=AKIAIOSFODNN7EXAMPLE more text")
+    assert "api_key=" in out and "AKIAIOSFODNN7EXAMPLE" not in out
+    assert "more text" in out
+
+
+def test_scrub_leaves_ordinary_text_alone():
+    assert act_mod.scrub_eval_result("Hello world 123") == "Hello world 123"
+
+
+@pytest.mark.asyncio
+async def test_evaluate_truncation_cannot_split_a_redaction():
+    """Scrubbing after truncation keeps a half-secret from surviving the cut."""
+    page = FakePage()
+    secret = "sk-" + "A" * 40
+    page.eval_default = "x" * 4090 + " token=" + secret + " tail" * 500
+    text, _ = await act_mod.evaluate(_session(page), "dump()")
+    assert secret[:20] not in text
 
 
 @pytest.mark.asyncio

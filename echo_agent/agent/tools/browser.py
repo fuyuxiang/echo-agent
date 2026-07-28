@@ -327,6 +327,16 @@ class BrowserTool(Tool):
         return ToolResult(output=text)
 
     async def _do_evaluate(self, params: dict[str, Any], session: Any) -> ToolResult:
+        # Hard gate, checked before the expression filter: the filter is a
+        # best-effort blacklist over arbitrary JS, so a deployment that cannot
+        # accept in-page code execution at all needs a switch that does not
+        # depend on out-guessing an attacker's string.
+        if not self._cfg_get("allow_evaluate", True):
+            return ToolResult(
+                success=False,
+                error=("evaluate 已被禁用（browser.allow_evaluate=false）。"
+                       "请改用 snapshot / scroll / get_images 获取页面内容"),
+                error_kind="business")
         result, err = await _actions.evaluate(
             session, params.get("expression", ""),
             allow_unsafe=self._cfg_get("allow_unsafe_evaluate", False))

@@ -1312,12 +1312,20 @@ class BrowserToolConfig(_Base):
             "desc_en": "Native dialog auto-handling policy: dismiss or accept (unhandled dialogs block the page)",
         },
     )
+    allow_evaluate: bool = Field(
+        default=True,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/tools/browser.py",
+            "desc_zh": "是否允许 evaluate 动作在页面内执行 JS。表达式黑名单只能拦住粗糙用法，无法对抗刻意混淆；不能接受页内任意代码执行的部署应关掉此项",
+            "desc_en": "Allow the evaluate action to run JS in the page. The expression blacklist stops careless use, not deliberate obfuscation; turn this off where in-page code execution is unacceptable",
+        },
+    )
     allow_unsafe_evaluate: bool = Field(
         default=False,
         json_schema_extra={
             "status": "effective", "ref": "agent/browser/actions.py",
-            "desc_zh": "是否允许 evaluate 执行读取 cookie/localStorage、脚本跳转等敏感表达式（默认拒绝，防注入外泄）",
-            "desc_en": "Allow evaluate to run sensitive expressions (cookie/storage reads, script navigation). Default denied",
+            "desc_zh": "是否跳过 evaluate 的敏感表达式检查（读取 cookie/localStorage、脚本跳转等），默认拒绝以防注入外泄",
+            "desc_en": "Skip evaluate's sensitive-expression checks (cookie/storage reads, script navigation). Default denied",
         },
     )
     persist_login_state: bool = Field(
