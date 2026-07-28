@@ -489,6 +489,50 @@ async def test_state_path_is_per_owner_and_sanitized(monkeypatch, page, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_state_path_distinguishes_owners_that_sanitize_alike(monkeypatch, page,
+                                                                   tmp_path):
+    """Sanitizing to alphanumerics alone maps 'chat/1' and 'chat:1' onto the same
+    file, which would hand one conversation another's session cookies."""
+    class _Persist(Cfg):
+        persist_login_state = True
+
+    patch_playwright(monkeypatch, FakePlaywright(page))
+    tool = BrowserTool(config=_Persist(), manager=BrowserSessionManager(),
+                       workspace=str(tmp_path))
+    paths = {tool._state_path(o) for o in
+             ("chat/1", "chat:1", "chat_1", "chat-1", "c/hat1", "chat1")}
+    assert len(paths) == 6
+
+
+@pytest.mark.asyncio
+async def test_state_path_separates_long_owners_sharing_a_prefix(monkeypatch, page,
+                                                                tmp_path):
+    """The readable hint is truncated; the digest is what keeps them apart."""
+    class _Persist(Cfg):
+        persist_login_state = True
+
+    patch_playwright(monkeypatch, FakePlaywright(page))
+    tool = BrowserTool(config=_Persist(), manager=BrowserSessionManager(),
+                       workspace=str(tmp_path))
+    a = tool._state_path("conversation" + "a" * 40)
+    b = tool._state_path("conversation" + "b" * 40)
+    assert a != b
+
+
+@pytest.mark.asyncio
+async def test_state_path_separates_namespaces(monkeypatch, page, tmp_path):
+    """Two agents sharing one conversation key must not share a login state."""
+    class _Persist(Cfg):
+        persist_login_state = True
+
+    patch_playwright(monkeypatch, FakePlaywright(page))
+    tool = BrowserTool(config=_Persist(), manager=BrowserSessionManager(),
+                       workspace=str(tmp_path))
+    assert tool._state_path("conv-a", "agent-1") != tool._state_path("conv-a", "agent-2")
+    assert tool._state_path("conv-a", "") != tool._state_path("conv-a", "agent-1")
+
+
+@pytest.mark.asyncio
 async def test_close_persists_login_state_when_enabled(monkeypatch, page, tmp_path):
     from pathlib import Path
 

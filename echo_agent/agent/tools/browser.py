@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 import uuid
 from pathlib import Path
@@ -117,14 +118,39 @@ class BrowserTool(Tool):
             return ""
         return ctx.session_key or ctx.user_id or ctx.agent_id or ""
 
+    def _state_namespace(self, ctx: ToolExecutionContext | None) -> str:
+        """Agent scope folded into the persisted-login-state key.
+
+        The workspace already separates deployments, but a single workspace can
+        run several agents against the same session_key; without this, they would
+        share one cookie jar.
+        """
+        if ctx is None:
+            return ""
+        return ctx.agent_id or ""
+
     def _cfg_get(self, name: str, default: Any) -> Any:
         return getattr(self._cfg, name, default)
 
-    def _state_path(self, owner: str) -> str:
+    def _state_path(self, owner: str, namespace: str = "") -> str:
+        """Path holding *owner*'s persisted cookies/localStorage, or "".
+
+        The filename is a hash of the FULL owner key, not a sanitised copy of it.
+        Replacing each non-alphanumeric character collapsed distinct owners onto
+        one file — ``channel:a/b``, ``channel:a:b`` and ``channel:a?b`` all became
+        ``channel_a_b.json`` — so with persist_login_state on, one user's session
+        could load another's cookies. A short readable prefix is kept for
+        debugging, but identity comes from the digest alone.
+        """
         if not self._cfg_get("persist_login_state", False) or not self._workspace:
             return ""
-        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in owner) or "default"
-        return str(Path(self._workspace) / "data" / "browser_state" / f"{safe}.json")
+        # NUL cannot appear in either component, so it is an unambiguous
+        # separator: without one, ("a", "bc") and ("ab", "c") would hash alike.
+        key = f"{namespace}\0{owner or 'default'}"
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+        hint = "".join(c for c in (owner or "default") if c.isalnum())[:16] or "owner"
+        return str(Path(self._workspace) / "data" / "browser_state"
+                   / f"{hint}_{digest}.json")
 
     def _screenshot_dir(self) -> Path:
         base = Path(self._workspace) if self._workspace else Path.cwd()
@@ -139,7 +165,7 @@ class BrowserTool(Tool):
         await self._mgr._reap_idle(self._cfg_get("session_idle_timeout_sec", 300))
 
         if action == "open":
-            return await self._do_open(owner)
+            return await self._do_open(owner, self._state_namespace(ctx))
         session_id = params.get("session_id", "")
         if not session_id:
             return ToolResult(
@@ -157,7 +183,7 @@ class BrowserTool(Tool):
                               error_kind="business")
         return await self._dispatch(action, params, session)
 
-    async def _do_open(self, owner: str) -> ToolResult:
+    async def _do_open(self, owner: str, namespace: str = "") -> ToolResult:
         max_sessions = self._cfg_get("max_sessions", 3)
         max_total = self._cfg_get("max_total_sessions", 0)
         allowed, scope = self._mgr.check_limits(
@@ -181,7 +207,7 @@ class BrowserTool(Tool):
                 allow_private=self._cfg_get("allow_private_addresses", False),
                 owner=owner,
                 dialog_policy=self._cfg_get("dialog_policy", "dismiss"),
-                storage_state_path=self._state_path(owner),
+                storage_state_path=self._state_path(owner, namespace),
                 viewport_width=self._cfg_get("viewport_width", 1280),
                 viewport_height=self._cfg_get("viewport_height", 800),
                 user_agent=self._cfg_get("user_agent", ""),
