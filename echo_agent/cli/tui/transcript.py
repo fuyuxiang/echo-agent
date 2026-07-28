@@ -142,8 +142,15 @@ class TranscriptView(VerticalScroll):
         self._last_memory = None
         self._last_thinking = None
         # Thinking ids are unique per round, so this is about not holding every
-        # past turn's blocks alive in the index, not about collisions.
-        self._thinking_blocks.clear()
+        # past turn's blocks alive in the index, not about collisions. Blocks
+        # whose stream is still OPEN are kept: the user can queue a new turn while
+        # the previous one is running (see PromptInput's queue confirmation), and
+        # dropping the index made that round's remaining frames mount a SECOND
+        # widget for the same thinking_id, filed under the new turn. The still-open
+        # ones are retired by end_turn/mark_stream_ended when their round settles.
+        for tid, block in list(self._thinking_blocks.items()):
+            if not block.is_streaming:
+                del self._thinking_blocks[tid]
         w = UserTurn(text)
         self._place(w)
         return w

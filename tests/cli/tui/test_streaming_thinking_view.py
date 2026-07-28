@@ -194,15 +194,36 @@ async def test_cleanup_leaves_a_settled_thinking_line_alone():
 
 
 @pytest.mark.asyncio
-async def test_a_new_turn_forgets_the_previous_round_index():
+async def test_a_new_turn_forgets_settled_rounds():
+    """索引不长期持有已结束的块：上一轮 thinking 收尾后，新 turn 应把它清出去。"""
     app = _T()
     async with app.run_test():
         tv = app.query_one(TranscriptView)
         tv.add_user("问题一")
         tv.add_cognitive(_snap("旧的一轮", eid="e1"))
+        tv.add_cognitive(_snap("旧的一轮", eid="e2", streaming=False))
         tv.add_user("问题二")
-        # 同一个 id 不会真的复用，这里验证的是索引不会一直持有旧块
         assert tv._thinking_blocks == {}
+
+
+@pytest.mark.asyncio
+async def test_queued_turn_keeps_the_still_streaming_round_indexed():
+    """排队下一轮时，上一轮可能仍在流式输出。
+
+    add_user() 过去无条件清空索引，于是上一轮后续的 thinking 帧找不到原来的块，
+    会为同一个 thinking_id 再挂一个 widget，并且归到新 turn 名下。仍在流式中的
+    块必须留在索引里，等它自己收尾或 end_turn_cleanup 处理。
+    """
+    app = _T()
+    async with app.run_test():
+        tv = app.query_one(TranscriptView)
+        tv.add_user("问题一")
+        first = tv.add_cognitive(_snap("还在想", eid="e1"))
+        tv.add_user("排队的问题二")
+        later = tv.add_cognitive(_snap("还在想…接着想", eid="e2"))
+        # 同一轮的后续帧更新原块，而不是新建第二个
+        assert later is first
+        assert len(_thinking_blocks(tv)) == 1
 
 
 # ── 摘要行 ────────────────────────────────────────────────────────────
