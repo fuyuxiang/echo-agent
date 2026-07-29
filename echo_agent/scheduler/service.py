@@ -439,6 +439,8 @@ class Scheduler:
         cron_expr: str | None = None,
         enabled: bool | None = None,
         payload: dict[str, Any] | None = None,
+        authorization: Any | None = None,
+        set_authorization: bool = False,
     ) -> ScheduledJob | None:
         """Apply an edit and recompute the firing schedule if it changed.
 
@@ -470,6 +472,14 @@ class Scheduler:
             reschedule = reschedule or enabled
         if payload is not None:
             job.payload = payload
+        # Authorization is replaced wholesale, never merged: a grant describes one
+        # exact version of the job's content, so carrying one across an edit is
+        # precisely what must not happen. Gated on an explicit flag rather than on
+        # `authorization is not None`, because "clear it" is a real instruction —
+        # keying off None alone would make revoking indistinguishable from "this
+        # caller does not manage authorization" and silently keep a stale grant.
+        if set_authorization:
+            job.authorization = authorization
 
         if reschedule:
             previous = job.next_run_ms

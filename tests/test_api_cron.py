@@ -12,6 +12,11 @@ from echo_agent.gateway.api.cron_api import CronAPI
 def mock_server():
     server = MagicMock()
     server._require_api_token = MagicMock(return_value=None)
+    # Write endpoints moved to the admin guard; keep both mocked so these
+    # tests exercise handler logic rather than authorization.
+    server._require_admin_token = MagicMock(return_value=None)
+    server.auth = MagicMock()
+    server.auth.token_from_headers = MagicMock(return_value="")
     # spec_set=AgentLoop so assigning an attribute the loop does not expose
     # raises AttributeError here — catching contract drift the API would hit.
     server._agent_loop = MagicMock(spec_set=AgentLoop)
@@ -121,7 +126,8 @@ async def test_update_cron_job(mock_server, api):
     job = ScheduledJob(id="j1", name="old_name", trigger=TriggerKind.CRON, cron_expr="0 9 * * *")
     mock_server._agent_loop.scheduler.get_job = MagicMock(return_value=job)
 
-    def _update(job_id, *, name=None, cron_expr=None, enabled=None, payload=None):
+    def _update(job_id, *, name=None, cron_expr=None, enabled=None, payload=None,
+                authorization=None, set_authorization=False):
         if name is not None:
             job.name = name
         if cron_expr is not None:
@@ -174,7 +180,8 @@ async def test_update_merges_payload_keeping_authorization(mock_server, api):
     mock_server._agent_loop.scheduler.get_job = MagicMock(return_value=job)
     captured = {}
 
-    def _update(job_id, *, name=None, cron_expr=None, enabled=None, payload=None):
+    def _update(job_id, *, name=None, cron_expr=None, enabled=None, payload=None,
+                authorization=None, set_authorization=False):
         captured["payload"] = payload
         return job
 
@@ -212,7 +219,8 @@ async def test_update_switching_instruction_key_clears_the_other(mock_server, ap
     mock_server._agent_loop.scheduler.get_job = MagicMock(return_value=job)
     captured = {}
 
-    def _update(job_id, *, name=None, cron_expr=None, enabled=None, payload=None):
+    def _update(job_id, *, name=None, cron_expr=None, enabled=None, payload=None,
+                authorization=None, set_authorization=False):
         captured["payload"] = payload
         return job
 
@@ -246,7 +254,8 @@ async def test_update_allows_omitting_instruction_when_stored(mock_server, api):
     mock_server._agent_loop.scheduler.get_job = MagicMock(return_value=job)
     captured = {}
 
-    def _update(job_id, *, name=None, cron_expr=None, enabled=None, payload=None):
+    def _update(job_id, *, name=None, cron_expr=None, enabled=None, payload=None,
+                authorization=None, set_authorization=False):
         captured["payload"] = payload
         return job
 

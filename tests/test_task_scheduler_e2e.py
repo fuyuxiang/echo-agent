@@ -40,6 +40,9 @@ def _task_event(task_id):
 async def test_e2e_cron_create_rejects_empty_command():
     server = MagicMock()
     server._require_api_token = MagicMock(return_value=None)
+    # Cron writes sit behind the admin guard now; mock it so this test keeps
+    # exercising the payload validation contract instead of authorization.
+    server._require_admin_token = MagicMock(return_value=None)
     server._agent_loop = MagicMock(spec_set=AgentLoop)
     server._agent_loop.scheduler = MagicMock()
     api = CronAPI(server)
