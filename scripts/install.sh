@@ -60,6 +60,13 @@ ECHO_COMMAND_LINK_DIR="${ECHO_COMMAND_LINK_DIR:-}"
 INSTALL_DIR="${ECHO_INSTALL_DIR:-}"
 PYTHON_VERSION="3.11"
 NODE_VERSION="22"
+# pnpm major installed when corepack is unavailable. web/package.json's
+# "packageManager" pin is the primary mechanism and corepack honours it; this is
+# only the floor for the `npm i -g` fallback, which would otherwise grab the
+# newest major (pnpm 11 needs Node >=22.13 while node_version_ok() accepts 20,
+# so "newest" can mean "installs fine, crashes on every call"). Keep in sync
+# with the pin and the CI matrix in .github/workflows/ci.yml.
+PNPM_FALLBACK_VERSION="10"
 BRANCH="master"
 RUN_SETUP=true
 # Probing: measure real latency to each candidate download source and use the
@@ -1627,26 +1634,45 @@ build_dashboard() {
     # and `npm i -g pnpm` both grabbed the newest major, so users landed on
     # pnpm 11 while CI stayed on 10 — see the ERR_PNPM_IGNORED_BUILDS note in
     # web/pnpm-workspace.yaml.
-    if ! command -v pnpm >/dev/null 2>&1; then
-        log_info "Installing pnpm..."
+    # `pnpm --version`, not `command -v pnpm`: an *existing* pnpm can be present
+    # and still be unrunnable. An earlier version of this installer left pnpm 11
+    # behind on hosts with Node 20 (pnpm 11 needs >=22.13, node_version_ok()
+    # accepts 20), where every invocation dies with
+    # ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite. Probing only the pnpm we just
+    # installed would skip that host straight to a frozen install that cannot
+    # work, and the Dashboard would be lost with a misleading diagnosis.
+    if ! pnpm --version >/dev/null 2>&1; then
+        if command -v pnpm >/dev/null 2>&1; then
+            log_warn "pnpm is on PATH but does not run; re-bootstrapping it."
+        else
+            log_info "Installing pnpm..."
+        fi
         # corepack only writes a shim — the real download happens on first use,
-        # so verify pnpm actually runs before relying on it.
+        # so verify pnpm actually runs before relying on it. It also resolves the
+        # "packageManager" pin in web/package.json, which is how a host with an
+        # unrunnable pnpm 11 gets back to the version CI tests; run it from web/
+        # so that pin is what the probe downloads.
+        #
+        # When repairing an existing pnpm this branch often can't win: corepack
+        # writes its shim next to the running node, and refuses to clobber a real
+        # (non-symlink) binary, so a broken pnpm installed elsewhere on PATH
+        # keeps shadowing it and the probe still fails. That is why the fallback
+        # below is `npm i -g`, which overwrites the broken install in place
+        # (verified: pnpm 11 on Node 20 -> 10.x, same prefix).
         if command -v corepack >/dev/null 2>&1 && corepack enable pnpm >/dev/null 2>&1 \
-           && pnpm --version >/dev/null 2>&1; then
-            log_success "pnpm $(pnpm --version) (via corepack)"
-        # Same `pnpm --version` probe as the corepack branch, and for a second
-        # reason: `npm i -g pnpm` always fetches the newest major, and pnpm 11
-        # requires Node >=22.13 while node_version_ok() accepts 20. On Node 20
-        # the install succeeds but every pnpm invocation dies immediately
-        # (ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite), so checking only for the
-        # binary's existence declared success and failed later during install.
-        elif npm install -g pnpm >/dev/null 2>&1 && command -v pnpm >/dev/null 2>&1 \
+           && (cd "$INSTALL_DIR/web" && pnpm --version >/dev/null 2>&1); then
+            log_success "pnpm $(cd "$INSTALL_DIR/web" && pnpm --version) (via corepack)"
+        # Pin the major here too. Plain `npm i -g pnpm` always fetches the newest
+        # one, which is how the unrunnable-on-Node-20 pnpm 11 got installed in
+        # the first place; PNPM_FALLBACK_VERSION is the major CI covers.
+        elif npm install -g "pnpm@${PNPM_FALLBACK_VERSION}" >/dev/null 2>&1 \
              && pnpm --version >/dev/null 2>&1; then
             log_success "pnpm $(pnpm --version)"
         else
             log_warn "Could not install a working pnpm; skipping Dashboard build."
-            log_info "pnpm 11 needs Node.js >=22.13; this host has $(node -v 2>/dev/null || echo 'no node')."
-            log_info "Install pnpm 10 manually (npm i -g pnpm@10), then: cd $INSTALL_DIR/web && pnpm install --frozen-lockfile && pnpm build"
+            log_info "Node.js on this host: $(node -v 2>/dev/null || echo 'not found') (pnpm 11 needs >=22.13)."
+            log_info "Install pnpm manually: npm i -g pnpm@${PNPM_FALLBACK_VERSION}"
+            log_info "Then: cd $INSTALL_DIR/web && pnpm install --frozen-lockfile && pnpm build"
             dashboard_skip_note
             return 0
         fi
@@ -1694,7 +1720,25 @@ build_dashboard() {
                 # point at the real fix instead of blaming their install.
                 log_info "A dependency wants to run an unapproved build script (pnpm $(pnpm --version 2>/dev/null || echo '?'))."
                 log_info "This is a repo bug: the package needs an entry in web/pnpm-workspace.yaml."
-                log_info "To build now: cd $INSTALL_DIR/web && pnpm install --frozen-lockfile --allow-build=<pkg> && pnpm build"
+                # Name the packages so the report says which ones, but keep them
+                # out of the command: pnpm prints them as name@version ("Ignored
+                # build scripts: esbuild@0.25.0"), and while `approve-builds
+                # <pkg>` works on v11, v10.34.5 silently ignores the positional
+                # arg and opens the interactive picker instead — which would hang
+                # a user who pasted the line into a script. `--all` is
+                # non-interactive on both majors (verified), and here "all" is
+                # exactly the ignored set anyway.
+                #
+                # NOT `pnpm install --allow-build=<pkg>`: that flag exists only
+                # on `add`/`dlx`; on `install` both majors abort with "Unknown
+                # option: 'allow-build'", and the unquoted <pkg> placeholder
+                # would additionally be read by the shell as a redirection.
+                local ignored
+                ignored="$(sed -n 's/.*Ignored build scripts: *//p' "$install_log" 2>/dev/null \
+                    | tr ',' '\n' | sed 's/^ *//; s/ *$//; s/@[^@]*$//' \
+                    | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ *$//')"
+                [ -n "$ignored" ] && log_info "Unapproved: $ignored"
+                log_info "To build now: cd $INSTALL_DIR/web && pnpm approve-builds --all && pnpm install --frozen-lockfile && pnpm build"
             elif grep -qi "ERR_PNPM_OUTDATED_LOCKFILE\|lockfile is not up to date\|frozen-lockfile" "$install_log" 2>/dev/null; then
                 log_info "web/pnpm-lock.yaml is out of sync with web/package.json — a repo bug, please report it."
             else
