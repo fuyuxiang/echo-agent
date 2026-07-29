@@ -218,6 +218,16 @@ def _build_parser() -> argparse.ArgumentParser:
     cli_parser.add_argument("-c", "--config", help="Path to config file")
     cli_parser.add_argument("-w", "--workspace", help="Workspace directory")
 
+    # cron — inspect and (re-)authorize scheduled jobs for unattended execution
+    cron_parser = subparsers.add_parser(
+        "cron", help="Inspect and authorize scheduled jobs for unattended execution"
+    )
+    cron_parser.add_argument("action", choices=["list", "authorize", "revoke"])
+    cron_parser.add_argument("job_id", nargs="?", default="", help="Job id (authorize/revoke)")
+    cron_parser.add_argument("-y", "--yes", action="store_true", help="Skip the confirmation prompt")
+    cron_parser.add_argument("-c", "--config", help="Path to config file")
+    cron_parser.add_argument("-w", "--workspace", help="Workspace directory")
+
     # eval
     eval_parser = subparsers.add_parser("eval", help="Run evaluation test suite")
     eval_parser.add_argument("--dataset", "-d", default="", help="Path to eval dataset (YAML/JSON)")
@@ -486,6 +496,17 @@ def _dispatch() -> None:
             adopt_empty=args.adopt_empty,
         )
         _sys.exit(rc)
+
+    if args.command == "cron":
+        from echo_agent.cli.cron_cmd import run_cron_command
+        import sys as _sys
+        _sys.exit(run_cron_command(
+            args.action,
+            args.job_id,
+            config_path=args.config or args.top_config,
+            workspace=args.workspace or args.top_workspace,
+            assume_yes=args.yes,
+        ))
 
     if args.command == "cli":
         from echo_agent.cli import attach_client
