@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.scheduler.authorization import grant as grant_authorization
 from echo_agent.scheduler.delivery import target_from_session_key
 from echo_agent.scheduler.service import ScheduledJob, Scheduler, TriggerKind
 
@@ -57,6 +58,16 @@ class CronjobTool(Tool):
                 trigger=TriggerKind.CRON,
                 cron_expr=schedule,
                 payload=payload,
+            )
+            # This tool is risk_level="dangerous", so execute() is only reached
+            # after the human approved this specific call. That approval IS the
+            # unattended-execution consent — record it against the job's content
+            # now, because nothing downstream can reconstruct it later. Without
+            # this the job would fire but be denied its own WRITE/EXEC work.
+            job.authorization = grant_authorization(
+                job,
+                operator=(ctx.user_id if ctx and ctx.user_id else "agent-approval"),
+                source="tui-approval",
             )
             created = self._scheduler.add_job(job)
             out = f"Created job '{name}' (id={created.id}): {schedule}"

@@ -356,3 +356,62 @@ class TestMemoryToolCacheInvalidation:
             _ctx(session_key="s1"),
         )
         assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_cronjob_create_grants_authorization():
+    """The tool is risk_level=dangerous, so reaching execute() means a human
+    approved it. Record that as a grant instead of leaving delivery to guess."""
+    from unittest.mock import MagicMock
+
+    from echo_agent.agent.tools.cronjob import CronjobTool
+    from echo_agent.scheduler.authorization import verify
+    from echo_agent.tools.base import ToolExecutionContext
+
+    captured = {}
+    scheduler = MagicMock()
+    scheduler.add_job = MagicMock(side_effect=lambda job: captured.setdefault("job", job) or job)
+
+    tool = CronjobTool(scheduler)
+    ctx = ToolExecutionContext(session_key="telegram:123", user_id="alice")
+    result = await tool.execute(
+        {"action": "create", "name": "nightly", "schedule": "0 9 * * *", "command": "echo hi"},
+        ctx,
+    )
+
+    assert result.success is True
+    job = captured["job"]
+    assert job.authorization is not None
+    assert job.authorization.operator == "alice"
+    assert job.authorization.source == "tui-approval"
+    assert verify(job) is True
+    # The grant must live on the job itself, never smuggled into the payload —
+    # payload keys are exactly the inferred-permission channel this replaces.
+    assert "authorization" not in job.payload
+
+
+@pytest.mark.asyncio
+async def test_cronjob_create_without_ctx_still_grants():
+    """A missing ctx must not silently produce an unauthorized job the user
+    believes they just approved; operator falls back to a marker."""
+    from unittest.mock import MagicMock
+
+    from echo_agent.agent.tools.cronjob import CronjobTool
+    from echo_agent.scheduler.authorization import verify
+
+    captured = {}
+    scheduler = MagicMock()
+    scheduler.add_job = MagicMock(side_effect=lambda job: captured.setdefault("job", job) or job)
+
+    tool = CronjobTool(scheduler)
+    result = await tool.execute(
+        {"action": "create", "name": "n", "schedule": "0 9 * * *", "command": "echo hi",
+         "target_channel": "telegram", "target_chat_id": "1"},
+        None,
+    )
+
+    assert result.success is True
+    assert verify(captured["job"]) is True
+    # Pin the fallback marker: verify() alone still passes if operator lands on
+    # grant()'s generic "unknown", which would lose the audit breadcrumb.
+    assert captured["job"].authorization.operator == "agent-approval"
