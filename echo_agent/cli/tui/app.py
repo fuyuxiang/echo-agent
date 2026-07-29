@@ -318,12 +318,31 @@ class EchoTUI(App):
             self._turns.note_turn_settled()
         if not self._turns.has_active_primary:
             self.query_one(StatusBar).stop_turn_timer()
-            # Hide the docked progress line — the answer is on screen, so a
-            # "还在处理" row under it is stale. Only once NO primary turn remains,
-            # so a queued second turn's live progress is not wiped. Tool lines are
-            # deliberately left alone here: the gateway splits one answer across
-            # several final frames, so tools may still be running.
-            self._activity_call("stop")
+            # A cancelled turn also ends through here: the gateway's interrupt is
+            # cooperative, so it converges at a checkpoint and emits an ordinary
+            # final frame. Read the flag BEFORE settling, which clears it.
+            cancelled = False
+            try:
+                cancelled = self._activity.stop_requested
+            except Exception:
+                pass
+            # Settle the docked progress line into "完成 · <用时>". It used to be
+            # hidden here, which removed the only moving thing on screen and left
+            # no completion signal at all — a finished turn and a hung one looked
+            # the same. Only once NO primary turn remains, so a queued second
+            # turn's live progress is not wiped. Tool lines are deliberately left
+            # alone here: the gateway splits one answer across several final
+            # frames, so tools may still be running.
+            self._activity_call("settle", "done")
+            # Unless the user asked to stop — then this final IS the last one, and
+            # a tool line still rendered as a running "…" would keep claiming the
+            # command is executing while the row below already says 已中断. That is
+            # the same "stopped moving, done or stuck?" ambiguity, one line up.
+            if cancelled:
+                try:
+                    self._tv.end_turn_cleanup()
+                except Exception:
+                    pass
             # A pending clarify/approval is deliberately LEFT ALONE here.
             #
             # This used to clear it and re-enable the prompt, on the theory that a
@@ -482,8 +501,10 @@ class EchoTUI(App):
             pass
         # The turn died server-side, so the progress line and any tool line still
         # rendered as running are now lying about what is happening. Retire
-        # them the same way the normal reply path does.
-        self._activity_call("stop")
+        # them the same way the normal reply path does — but settled as "出错",
+        # not "完成": the row is the user's only at-a-glance answer to "did that
+        # work?", so a failure must not look like a success.
+        self._activity_call("settle", "error")
         try:
             self._tv.end_turn_cleanup()
         except Exception:
@@ -538,10 +559,11 @@ class EchoTUI(App):
         except Exception:
             pass
         # No further frames can arrive on this socket, so a live progress line or
-        # a running tool line would sit there implying live progress. Retire them;
-        # the turn may well still be running server-side, but this client can no
-        # longer show it, and replay_missed_reply covers the recovered answer.
-        self._activity_call("stop")
+        # a running tool line would sit there implying live progress. Settle them
+        # as "连接已断开" rather than "完成": the turn may well still be running
+        # server-side, but this client can no longer show it, and replay_missed_reply
+        # covers the recovered answer.
+        self._activity_call("settle", "disconnected")
         try:
             self._tv.end_turn_cleanup()
         except Exception:
@@ -586,7 +608,11 @@ class EchoTUI(App):
             pass
         # Same reasoning as the timer: turn tracking was just reset, so a live
         # progress row would spin against a turn this client no longer follows.
-        self._activity_call("stop")
+        # Settled as "已中断" rather than left on the disconnect's "连接已断开":
+        # the link is back (the status bar now says 已连接), so the row must stop
+        # asserting a dead connection — what actually happened to that turn, from
+        # this client's point of view, is that it stopped following it.
+        self._activity_call("settle", "interrupted")
         self._unlock_prompt(focus=True)
 
     def replay_missed_reply(self, text: str) -> None:
@@ -835,6 +861,15 @@ class EchoTUI(App):
         # The reply widgets those ids pointed at are gone, so a still-streaming
         # turn must start a fresh one instead of appending into a removed widget.
         self._replies.clear()
+        # Blank the settled progress row too, but only when no turn is running:
+        # its "完成 · 8.1s · 2 个工具" describes work that is no longer on screen.
+        # A live turn keeps its row — that one is about the present, and the turn
+        # survives /clear.
+        try:
+            if not self._activity.is_active:
+                self._activity_call("reset")
+        except Exception:
+            pass
 
     async def _do_reconnect(self) -> None:
         """/reconnect — rebuild the WS connection after a drop. No-op (with a
@@ -1096,6 +1131,12 @@ class EchoTUI(App):
             # TUI's pending clarify too, or the next thing the user types would
             # be sent as an answer to a clarify that no longer exists.
             self._retire_clarify()
+            # Acknowledge the stop on the progress row, not just in a toast that
+            # fades after 3s. The interrupt is cooperative, so the turn keeps
+            # running until it reaches a checkpoint — without this the row went on
+            # spinning "调用工具 …" as though Ctrl+C had done nothing, and then
+            # reported 完成 for a turn the user had cancelled.
+            self._activity_call("note_stopping")
             self.notify("已请求停止当前任务…", severity="warning", timeout=3)
             return
 
@@ -1140,6 +1181,12 @@ class EchoTUI(App):
     async def _answer_clarify(self, answer: str) -> None:
         blk = self._pending_clarify
         if blk is None or blk.answer is not None:
+            return
+        # An all-whitespace answer is not an answer: the model receives "" and,
+        # having learned nothing, asks the very same question again — while this
+        # block already reads "已选:" on screen. Keep the prompt live instead so
+        # the keystroke is not silently converted into a wasted round trip.
+        if not answer.strip():
             return
         blk.mark(answer)
         if self._send is not None:

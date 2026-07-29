@@ -112,11 +112,16 @@ async def test_clarify_free_text_still_works_after_tab_moves_focus():
 # ── turn 结束后的进度残留 ──────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_progress_line_hidden_once_reply_lands():
+async def test_progress_line_settles_once_reply_lands():
     # 心跳曾按 inbound_event_id 挂进 transcript：位置在第一次心跳时就定死，
     # 之后的工具行追加在它下面，"还在处理"于是显示在已完成内容的上方，而且
     # 每一轮都在答案旁留一句残留。现在进度是输入框上方那一行停靠状态，
-    # 心跳只更新它的阶段标签，答案落地即隐藏。
+    # 心跳只更新它的阶段标签。
+    #
+    # 答案落地后这一行不再隐藏，而是留下一句终态。此前 stop() 直接把整行
+    # display 置 False，屏幕上唯一在动的东西连同用时一起消失、行高塌成 0，
+    # "处理完了"和"卡住了"于是长得一模一样——用户实测反馈正是"刚才哗哗地动，
+    # 现在突然不动了，不知道是结束了还是卡住了"。
     app = EchoTUI()
     async with app.run_test() as pilot:
         before = len(app._tv.children)
@@ -133,7 +138,13 @@ async def test_progress_line_hidden_once_reply_lands():
         app.on_user_reply_final("in1", "答案")
         await pilot.pause()
         assert al.is_active is False
-        assert al.display is False
+        # 行仍在屏幕上，且明确说明这一轮已经结束
+        assert al.is_settled is True
+        assert al.display is True
+        assert "完成" in al.render_text()
+        # 不再显示过时的阶段标签，也不再提示可以中断
+        assert "正在组织答案" not in al.render_text()
+        assert "Ctrl+C" not in al.render_text()
 
 
 @pytest.mark.asyncio

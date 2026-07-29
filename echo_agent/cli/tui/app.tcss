@@ -26,39 +26,58 @@ UserTurn {
     text-style: bold;
 }
 
-/* Reply and trace blocks: gentle left indent only. Blank lines between blocks
-   are inserted by the transcript at group boundaries (see layout.lead_gap) — a
-   uniform CSS margin spaced a run of ten trace lines as airily as the boundary
-   between the trace run and the answer, and blocks rendering nothing still
-   painted their gap. */
+/* The answer is the point of the screen. It carries the ● sigil in the brand hue
+   (blocks.AgentReply) and a full-strength foreground; the trace lines below carry
+   neither, and that gap in weight is what lets a long run of them recede instead
+   of competing with the conclusion. Previously AgentReply and ToolCallBlock/
+   CognitiveBlock were styled identically (padding only), so after a dozen tool
+   lines the eye had nothing to land on — users reported being unable to tell what
+   the focal point of the screen was. Blank lines between blocks are inserted by
+   the transcript at group boundaries (see layout.lead_gap) — a uniform CSS margin
+   spaced a run of ten trace lines as airily as the boundary between the trace run
+   and the answer, and blocks rendering nothing still painted their gap. */
 AgentReply {
     padding: 0 1;
+    color: $text;
 }
 
 /* Tool/cognitive trace lines are interactive: click or focus + Enter/Space
    toggles their detail/diff view. A hover + focus cue makes that discoverable
-   (they were previously togglable in code but had no input path). */
+   (they were previously togglable in code but had no input path).
+
+   text-opacity rather than a fixed grey: it stays legible on both palettes and
+   keeps the semantic colours inside the line — the ✓/✗ marks and error text stay
+   themselves, just quieter. Hover and focus restore full strength, since a user
+   pointing at a line is deliberately reading it. */
 ToolCallBlock, CognitiveBlock {
     padding: 0 1;
+    text-opacity: 78%;
 }
 
 ToolCallBlock:hover, CognitiveBlock:hover {
     background: $boost;
+    text-opacity: 100%;
 }
 
 ToolCallBlock:focus, CognitiveBlock:focus {
     background: $boost;
     border-left: thick $accent;
     padding-left: 0;
+    text-opacity: 100%;
 }
 
 /* Live progress row, between transcript and input. It is NOT docked: the
    transcript above takes 1fr, so in normal flow this lands exactly above the
    input row while StatusBar keeps the bottom edge for itself (two dock:bottom
    widgets would compete for it, pushing the status bar up a row). Height 1 only
-   while visible — the widget toggles `display` when a turn starts/ends, and a
-   display:none row contributes no height, so an idle screen ends at the last
-   real content. */
+   while visible — the widget toggles `display`, and a display:none row
+   contributes no height, so a screen that has not run anything yet ends at the
+   last real content.
+
+   It stays visible after a turn ends, holding a settled one-liner ("done · 12.4s
+   · 3 tools"). That row IS the completion signal: hiding it took away the only
+   moving thing on screen along with the elapsed clock, leaving "finished" and
+   "hung" looking exactly alike. */
 ActivityLine {
     height: 1;
     padding: 0 1;

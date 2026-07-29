@@ -119,6 +119,109 @@ async def test_ctrl_c_keypress_routes_to_interrupt():
         assert app._last_ctrl_c > 0.0
 
 
+@pytest.mark.asyncio
+async def test_ctrl_c_acknowledges_the_stop_on_the_progress_row():
+    """Ctrl+C 必须在常驻进度行上留痕,而不只是弹一个 3 秒后消失的 toast。
+
+    中断是协作式的:网关要跑到下一个检查点才真正停,这中间进度行原样继续转,
+    看起来像 Ctrl+C 完全没生效;等回合真的收尾时,它还会给一个被用户主动取消
+    的回合报"完成"。
+    """
+    async def fake_interrupt(target_event_id: str = ""):
+        pass
+
+    app = EchoTUI(interrupt_coro=fake_interrupt)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._turns.note_send("primary")
+        app.on_turn_accepted("evt-1")
+        app.on_cognitive(CogEvent(
+            "tool_call", "t1", "evt-1",
+            {"tool_call_id": "tc1", "name": "exec",
+             "params": {"command": "sleep 5"}, "status": "running"},
+            "执行",
+        ))
+        await pilot.pause()
+        al = app._activity
+        assert "Ctrl+C" in al.render_text()      # 中断前:提示可以中断
+
+        await app.action_interrupt()
+        await pilot.pause()
+        # 行仍在转(还没真停),但已经承认收到了停止请求,且不再提示可以中断
+        assert al.is_active is True
+        assert "正在停止" in al.render_text()
+        assert "Ctrl+C" not in al.render_text()
+
+        # 回合收尾走的是正常回复路径,但被取消过的回合不能报"完成"。
+        app.on_user_reply_final("evt-1", "只做了一半")
+        await pilot.pause()
+        assert al.is_settled is True
+        assert "已中断" in al.render_text()
+        assert "完成" not in al.render_text()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_turn_also_settles_its_running_tool_line():
+    """回合被取消后,上方仍渲染成 "…" 的工具行必须一起收尾。
+
+    协作式中断走的是普通 final 帧,而 final 路径刻意不清扫工具行(一次回答会拆成
+    多个 final,工具可能真的还在跑)。于是取消后底部行已经写着"已中断",上方却还有
+    一条命令看起来在执行——和用户反馈的"不知道是结束了还是卡住了"是同一类歧义,
+    只是错位了一行。
+    """
+    from echo_agent.cli.tui.blocks import ToolCallBlock
+
+    async def fake_interrupt(target_event_id: str = ""):
+        pass
+
+    app = EchoTUI(interrupt_coro=fake_interrupt)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._turns.note_send("primary")
+        app.on_turn_accepted("evt-1")
+        app.on_cognitive(CogEvent(
+            "tool_call", "t1", "evt-1",
+            {"tool_call_id": "tc1", "name": "exec",
+             "params": {"command": "sleep 5"}, "status": "running"},
+            "执行",
+        ))
+        await pilot.pause()
+        await app.action_interrupt()
+        app.on_user_reply_final("evt-1", "只做了一半")
+        await pilot.pause()
+
+        block = next(w for w in app._tv.children if isinstance(w, ToolCallBlock))
+        assert block.status == "interrupted"
+        assert "未完成" in block.render_summary()
+
+
+@pytest.mark.asyncio
+async def test_uncancelled_turn_keeps_its_running_tool_line_alive():
+    """反向约束:没按 Ctrl+C 时,中间 final 帧不能把仍在跑的工具标成"未完成"。
+
+    与 test_running_tool_line_kept_alive_across_intermediate_final 同一条不变量,
+    这里锁的是取消清扫只在取消时发生,不会顺手破坏正常路径。
+    """
+    from echo_agent.cli.tui.blocks import ToolCallBlock
+
+    app = EchoTUI()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._turns.note_send("primary")
+        app.on_turn_accepted("evt-1")
+        app.on_cognitive(CogEvent(
+            "tool_call", "t1", "evt-1",
+            {"tool_call_id": "tc1", "name": "exec",
+             "params": {"command": "sleep 5"}, "status": "running"},
+            "执行",
+        ))
+        app.on_user_reply_final("evt-1", "先说一句")
+        await pilot.pause()
+
+        block = next(w for w in app._tv.children if isinstance(w, ToolCallBlock))
+        assert block.status == "running"
+
+
 # ── 重连后仍要保住对服务端在跑回合的控制权 ──────────────────────────────────
 
 
