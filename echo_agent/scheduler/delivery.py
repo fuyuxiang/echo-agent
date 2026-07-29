@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable
 
 from echo_agent.bus.events import ContentBlock, ContentType, EventType, InboundEvent
+from echo_agent.scheduler.authorization import verify as verify_authorization
 
 
 def target_from_session_key(session_key: str) -> tuple[str, str]:
@@ -47,13 +48,14 @@ def inbound_event_from_job(job: Any) -> InboundEvent:
     # A scheduled job runs with no human at the keyboard, so mark it unattended
     # (otherwise the approval gate would route EXEC/DANGEROUS calls to a manual
     # prompt that never gets answered — the job would hang or fail at fire time).
-    # The job exists in the scheduler store only because its creation went
-    # through the DANGEROUS-tier cronjob approval, so it carries a per-job
-    # authorization that lets the unattended resolver allow its work — scoped to
-    # this job, without loosening the global unattended policy for anything else.
-    # `unattended_authorized` defaults on but can be set False to force deny.
-    payload_dict = job.payload if isinstance(job.payload, dict) else {}
-    authorized = payload_dict.get("unattended_authorized", True)
+    #
+    # Whether it may actually DO unattended WRITE/EXEC work is a separate
+    # question, answered by the per-job authorization: a grant issued by a human
+    # and bound to this job's current content. This used to read a payload key
+    # that defaulted to True, so existing in the store was treated as proof of
+    # consent — which it is not for jobs created through the REST API. A job with
+    # no valid grant still fires; its privileged tool calls are what get denied.
+    authorized = verify_authorization(job)
 
     is_group = bool(payload.get("is_group", False))
 

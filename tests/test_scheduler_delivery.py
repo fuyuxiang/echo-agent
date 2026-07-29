@@ -75,10 +75,14 @@ async def test_cron_event_carries_typed_trust_fields() -> None:
     """cron 事件把信任信号放在 InboundEvent 的类型化字段上,而非 metadata。"""
     from echo_agent.scheduler.delivery import inbound_event_from_job
 
+    from echo_agent.scheduler.authorization import grant
+
     job = ScheduledJob(
         id="j", name="n",
         payload={"command": "x", "source_session_key": "weixin:w"},
     )
+    # 授权不再由 payload 默认值给出,须由人工签发,故此处显式 grant 后再断言。
+    job.authorization = grant(job, operator="alice", source="tui-approval")
     event = inbound_event_from_job(job)
     assert event.unattended is True
     assert event.cron_authorized is True
@@ -88,17 +92,27 @@ async def test_cron_event_carries_typed_trust_fields() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unattended_authorized_false_disables_cron_grant() -> None:
-    """payload 显式 unattended_authorized=False 时,cron_authorized 应为 False。"""
+async def test_legacy_unattended_authorized_key_cannot_flip_cron_grant() -> None:
+    """payload 里的 unattended_authorized 已彻底不被读取,两个方向都不生效。"""
+    from echo_agent.scheduler.authorization import grant
     from echo_agent.scheduler.delivery import inbound_event_from_job
 
-    job = ScheduledJob(
+    # 无授权 + 键为 True:仍然未授权(堵掉 payload 自我提权)。
+    forged = ScheduledJob(
         id="j", name="n",
-        payload={"command": "x", "source_session_key": "weixin:w", "unattended_authorized": False},
+        payload={"command": "x", "source_session_key": "weixin:w", "unattended_authorized": True},
     )
-    event = inbound_event_from_job(job)
-    assert event.unattended is True
-    assert event.cron_authorized is False
+    assert inbound_event_from_job(forged).unattended is True
+    assert inbound_event_from_job(forged).cron_authorized is False
+
+    # 有授权 + 键为 False:授权仍然有效(撤销要靠清空 authorization 字段)。
+    granted = ScheduledJob(
+        id="j", name="n",
+        payload={"command": "x", "source_session_key": "weixin:w"},
+    )
+    granted.authorization = grant(granted, operator="alice", source="tui-approval")
+    granted.payload["unattended_authorized"] = False
+    assert inbound_event_from_job(granted).cron_authorized is True
 
 
 @pytest.mark.asyncio
