@@ -70,17 +70,21 @@ function ConfirmDialog({
 }) {
   const { t } = useTranslation("common");
   const confirmRef = useRef<HTMLButtonElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
 
-  // Focus the confirming action and honour Escape: without a keyboard path the
-  // dialog would be a trap for anyone not using a mouse.
+  // Focus the SAFE action for destructive dialogs and honour Escape. Pre-focusing
+  // the confirm button meant a stray Enter or Space — or a keyboard user landing
+  // here mid-scroll — performed the irreversible action outright. Non-destructive
+  // dialogs keep confirm focused, where the fast path is the intended one.
   useEffect(() => {
-    confirmRef.current?.focus();
+    if (options.destructive) cancelRef.current?.focus();
+    else confirmRef.current?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onSettle(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onSettle]);
+  }, [onSettle, options.destructive]);
 
   return (
     <div
@@ -104,6 +108,7 @@ function ConfirmDialog({
         </p>
         <div className="flex justify-end gap-2 mt-5">
           <button
+            ref={cancelRef}
             onClick={() => onSettle(false)}
             className="px-3 py-1.5 rounded text-sm bg-gray-100 hover:bg-gray-200"
           >

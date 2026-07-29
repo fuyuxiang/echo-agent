@@ -68,9 +68,11 @@ describe("ConfirmDialog", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("打开时焦点落在确认按钮上", () => {
+  it("破坏性操作打开时焦点落在取消按钮上", () => {
+    // 这里的 harness 是 destructive: true,焦点必须停在安全的一侧,
+    // 否则一次误触 Enter 就直接执行删除。
     setup();
-    expect(screen.getByRole("button", { name: "删除" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: "取消" })).toHaveFocus();
   });
 
   it("对话框带 aria-modal 与标题关联", () => {
