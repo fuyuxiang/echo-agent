@@ -126,4 +126,12 @@ def verify(job: Any) -> bool:
         return False
     if not auth.fingerprint:
         return False
-    return auth.fingerprint == compute_fingerprint(job)
+    try:
+        expected = compute_fingerprint(job)
+    except (TypeError, ValueError):
+        # A hand-edited store can hold a non-numeric interval_ms/at_ms, which
+        # int() rejects. "Cannot be fingerprinted" is not evidence of consent, so
+        # it reads as unauthorized — the same direction from_dict takes, and it
+        # keeps callers on serialization paths from turning this into a 500.
+        return False
+    return auth.fingerprint == expected
