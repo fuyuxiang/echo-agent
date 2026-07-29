@@ -34,6 +34,7 @@ from echo_agent.gateway.rate_limiter import RateLimiter
 from echo_agent.gateway.router import DeliveryRouter
 from echo_agent.gateway.session_context import set_session_vars, clear_session_vars
 from echo_agent.gateway.session_policy import SessionResetPolicy
+from echo_agent.gateway import ws_common
 from echo_agent.gateway.ws_dashboard import DashboardWebSocket
 from echo_agent.gateway.ws_session import resolve_client_session_key
 from echo_agent.session.manager import SessionManager
@@ -761,11 +762,11 @@ class GatewayServer:
         """处理 WebSocket 连接：Origin 闸门 → 认证握手 → 消息循环 → 事件分发。"""
         # Gate A: reject cross-site browser upgrades BEFORE prepare(). Once the
         # socket is upgraded the browser's onopen fires, so this must run first.
-        origin = request.headers.get("Origin", "").strip()
-        sec_fetch_site = request.headers.get("Sec-Fetch-Site", "").strip()
-        if self.auth.is_cross_site_browser(origin, sec_fetch_site):
-            self.auth.audit("ws_auth", ok=False, reason=f"cross-site origin rejected: {origin or '?'}")
-            return web.json_response({"error": "cross-site request forbidden"}, status=403)
+        # Shared with the dashboard WS via ws_common so the two gates cannot
+        # drift apart again.
+        rejected = ws_common.reject_cross_site(request, self.auth, action="ws_auth")
+        if rejected is not None:
+            return rejected
 
         # Server-driven heartbeat: without it keepalive was entirely client-side
         # (the CLI pings, but nothing pinged the CLI), so a stalled/blocked client
@@ -783,7 +784,21 @@ class GatewayServer:
         session_key = ""
 
         try:
-            async for raw_msg in websocket:
+            while True:
+                try:
+                    # Bound the pre-auth wait only. Authentication is the first
+                    # frame of this loop, so without a timeout a peer that
+                    # connects and never sends `auth` holds its connection slot
+                    # for as long as it likes. Once authenticated the socket is
+                    # a legitimate long-lived client: a TUI turn can run for
+                    # many minutes with no client frames, so no timeout there.
+                    timeout = None if session_key else ws_common.DASHBOARD_AUTH_TIMEOUT_SECONDS
+                    raw_msg = await asyncio.wait_for(websocket.receive(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    self.auth.audit("ws_auth", ok=False, reason="authentication timeout")
+                    await websocket.close()
+                    break
+
                 if raw_msg.type == aiohttp.WSMsgType.TEXT:
                     try:
                         data = json.loads(raw_msg.data)
@@ -952,7 +967,15 @@ class GatewayServer:
                             pass
                         continue
 
-                elif raw_msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSE):
+                elif raw_msg.type in (
+                    aiohttp.WSMsgType.ERROR,
+                    aiohttp.WSMsgType.CLOSE,
+                    # CLOSED / CLOSING were implicit while this was `async for`
+                    # (the iterator stops on them). With an explicit receive()
+                    # they must be handled here, or teardown spins forever.
+                    aiohttp.WSMsgType.CLOSED,
+                    aiohttp.WSMsgType.CLOSING,
+                ):
                     break
 
         except Exception as e:
