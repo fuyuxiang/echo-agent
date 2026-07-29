@@ -439,7 +439,7 @@ class Scheduler:
         cron_expr: str | None = None,
         enabled: bool | None = None,
         payload: dict[str, Any] | None = None,
-        authorization: Any | None = None,
+        authorization: JobAuthorization | None = None,
         set_authorization: bool = False,
     ) -> ScheduledJob | None:
         """Apply an edit and recompute the firing schedule if it changed.

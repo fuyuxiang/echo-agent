@@ -174,22 +174,6 @@ class CronAPI:
                     status=400,
                 )
 
-        # Re-grant or revoke, never leave a stale grant in place. The fingerprint
-        # would already invalidate an edited job, but writing None here is what
-        # makes the UI able to say "需要重新授权" instead of displaying a grant
-        # that silently no longer applies.
-        if body.get("authorize_unattended") is True:
-            probe = self._scheduler().get_job(job_id)
-            if probe is not None and merged is not None:
-                probe.payload = merged
-            authorization = grant_authorization(
-                probe if probe is not None else job,
-                operator=self._server.auth.token_from_headers(request.headers)[:8] or "local-no-auth",
-                source="rest",
-            )
-        else:
-            authorization = None
-
         # Scheduler owns the mutation so cron_expr / re-enable also recompute
         # next_run_ms; assigning here and calling save_state() left the job
         # pointing at an occurrence of the previous expression.
@@ -199,11 +183,28 @@ class CronAPI:
             cron_expr=body.get("cron_expr") if "cron_expr" in body else None,
             enabled=body.get("enabled") if "enabled" in body else None,
             payload=merged,
-            authorization=authorization,
-            set_authorization=True,
         )
         if updated is None:
             return web.json_response({"error": "not found"}, status=404)
+
+        # Re-grant or revoke in a second pass, never leave a stale grant in place.
+        # The grant must be fingerprinted against the job as it now stands: signing
+        # before the edit lands would bind it to the old cron_expr / timezone, so an
+        # explicit "authorize" alongside a schedule change would store a grant that
+        # is already invalid. Writing None when the caller did not re-authorize is
+        # what makes the UI able to say "需要重新授权" instead of displaying a grant
+        # that silently no longer applies.
+        if body.get("authorize_unattended") is True:
+            authorization = grant_authorization(
+                updated,
+                operator=self._server.auth.token_from_headers(request.headers)[:8] or "local-no-auth",
+                source="rest",
+            )
+        else:
+            authorization = None
+        updated = self._scheduler().update_job(
+            job_id, authorization=authorization, set_authorization=True
+        ) or updated
         return web.json_response({"job": self._job_to_dict(updated)})
 
     async def delete_job(self, request: web.Request) -> web.Response:

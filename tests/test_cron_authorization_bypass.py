@@ -191,6 +191,43 @@ async def test_rest_update_without_flag_clears_authorization():
 
 
 @pytest.mark.asyncio
+async def test_rest_update_authorizes_against_the_edited_schedule():
+    """Changing the schedule and re-authorizing in one PUT must produce a grant
+    valid for the NEW expression. Signing before the edit lands would bind the
+    fingerprint to the old cron_expr, storing an already-dead grant while
+    answering 200."""
+    api, server = _api_with_guards(admin_ok=True)
+    server.auth.token_from_headers = MagicMock(return_value="tok12345678")
+    job = _job()
+    server._agent_loop.scheduler.get_job = MagicMock(return_value=job)
+
+    def _update(job_id, *, name=None, cron_expr=None, enabled=None, payload=None,
+                authorization=None, set_authorization=False):
+        if cron_expr is not None:
+            job.cron_expr = cron_expr
+        if payload is not None:
+            job.payload = payload
+        if set_authorization:
+            job.authorization = authorization
+        return job
+
+    server._agent_loop.scheduler.update_job = MagicMock(side_effect=_update)
+    async with TestClient(TestServer(_app(api))) as client:
+        resp = await client.put("/cron/j1", json={
+            "cron_expr": "0 10 * * *", "authorize_unattended": True,
+        })
+        assert resp.status == 200
+        body = await resp.json()
+
+    from echo_agent.scheduler.authorization import verify
+    assert job.cron_expr == "0 10 * * *"
+    assert verify(job) is True
+    assert body["job"]["authorization_valid"] is True
+    # Only the token's first 8 chars are kept as an audit breadcrumb.
+    assert body["job"]["authorization"]["operator"] == "tok12345"
+
+
+@pytest.mark.asyncio
 async def test_job_to_dict_reports_authorization_state():
     api, _ = _api_with_guards(admin_ok=True)
     from echo_agent.scheduler.authorization import grant

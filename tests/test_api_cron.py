@@ -182,7 +182,11 @@ async def test_update_merges_payload_keeping_authorization(mock_server, api):
 
     def _update(job_id, *, name=None, cron_expr=None, enabled=None, payload=None,
                 authorization=None, set_authorization=False):
-        captured["payload"] = payload
+        # update_job is called twice per PUT: once for the content edit, once for
+        # authorization (which carries no payload). Only the content pass is of
+        # interest here.
+        if payload is not None:
+            captured["payload"] = payload
         return job
 
     mock_server._agent_loop.scheduler.update_job = MagicMock(side_effect=_update)
@@ -221,7 +225,11 @@ async def test_update_switching_instruction_key_clears_the_other(mock_server, ap
 
     def _update(job_id, *, name=None, cron_expr=None, enabled=None, payload=None,
                 authorization=None, set_authorization=False):
-        captured["payload"] = payload
+        # update_job is called twice per PUT: once for the content edit, once for
+        # authorization (which carries no payload). Only the content pass is of
+        # interest here.
+        if payload is not None:
+            captured["payload"] = payload
         return job
 
     mock_server._agent_loop.scheduler.update_job = MagicMock(side_effect=_update)
@@ -256,7 +264,11 @@ async def test_update_allows_omitting_instruction_when_stored(mock_server, api):
 
     def _update(job_id, *, name=None, cron_expr=None, enabled=None, payload=None,
                 authorization=None, set_authorization=False):
-        captured["payload"] = payload
+        # update_job is called twice per PUT: once for the content edit, once for
+        # authorization (which carries no payload). Only the content pass is of
+        # interest here.
+        if payload is not None:
+            captured["payload"] = payload
         return job
 
     mock_server._agent_loop.scheduler.update_job = MagicMock(side_effect=_update)
