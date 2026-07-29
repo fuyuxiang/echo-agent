@@ -19,6 +19,8 @@ from typing import Any, Awaitable, Callable
 
 from loguru import logger
 
+from echo_agent.scheduler.authorization import JobAuthorization
+
 try:
     import fcntl
     _HAS_FCNTL = True
@@ -75,6 +77,10 @@ class ScheduledJob:
     last_error: str = ""
     run_count: int = 0
     created_at_ms: int = field(default_factory=lambda: int(time.time() * 1000))
+    # Per-job unattended-execution authorization. None means unauthorized —
+    # jobs stored before this field existed read back as None by design, so an
+    # upgrade downgrades them rather than grandfathering them in.
+    authorization: JobAuthorization | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -87,6 +93,7 @@ class ScheduledJob:
             "next_run_ms": self.next_run_ms, "last_run_ms": self.last_run_ms,
             "last_status": self.last_status, "last_error": self.last_error,
             "run_count": self.run_count, "created_at_ms": self.created_at_ms,
+            "authorization": self.authorization.to_dict() if self.authorization else None,
         }
 
     @classmethod
@@ -110,6 +117,7 @@ class ScheduledJob:
             last_error=data.get("last_error", ""),
             run_count=data.get("run_count", 0),
             created_at_ms=data.get("created_at_ms", 0),
+            authorization=JobAuthorization.from_dict(data.get("authorization")),
         )
 
 
