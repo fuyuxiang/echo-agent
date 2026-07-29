@@ -11,6 +11,22 @@ import uuid
 from dataclasses import dataclass, field
 
 
+def _as_option_list(options) -> list:
+    """Coerce an ``options`` payload into a real list.
+
+    ``list(options)`` on a str explodes it into one entry per character, which
+    is how a clarify whose options arrived as JSON *text* ended up offering
+    "[", "'", "全" … as its choices. validate_params rejects that shape now;
+    this keeps the manager correct for any other caller (IM adapters, tests,
+    a tool invoked directly) that bypasses schema validation.
+    """
+    if options is None:
+        return []
+    if isinstance(options, (list, tuple)):
+        return list(options)
+    return [options]
+
+
 @dataclass
 class ClarifyRequest:
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:10])
@@ -45,7 +61,7 @@ class ClarifyManager:
 
     def request(self, question: str, options: list[str] | None = None,
                 user_id: str = "", session_key: str = "") -> ClarifyRequest:
-        req = ClarifyRequest(question=question, options=list(options or []),
+        req = ClarifyRequest(question=question, options=_as_option_list(options),
                              user_id=user_id, session_key=session_key)
         self._pending[req.id] = req
         return req
@@ -100,7 +116,7 @@ class ClarifyManager:
         """Remember an IM channel's question so the next inbound message on this
         session can be routed as its answer. Overwrites any prior unanswered
         pending for the same session — the latest question is the live one."""
-        req = ClarifyRequest(question=question, options=list(options or []),
+        req = ClarifyRequest(question=question, options=_as_option_list(options),
                              user_id=user_id, session_key=session_key)
         self._im_pending[session_key] = req
         return req

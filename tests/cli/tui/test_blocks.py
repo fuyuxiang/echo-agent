@@ -422,6 +422,30 @@ def test_choice_block_coerces_dict_options_and_marks_without_crash():
     assert "已选" in b.render_body()
 
 
+def test_choice_block_recovers_options_sent_as_a_string_literal():
+    # Regression: a model that emitted `options` as its JSON/Python *text*
+    # instead of a real array used to have that str iterated character by
+    # character, so the picker offered "[", "'", "全" … as separate choices —
+    # the first entries render as invisible punctuation, which is why the
+    # options looked empty on screen. The real choices must be recovered.
+    b = ChoiceBlock("c1", "按哪个粒度执行?", "['全部清3项','只清1项','暂缓清理']")
+    assert b.options == ["全部清3项", "只清1项", "暂缓清理"]
+    assert b.option_for_number(1) == "全部清3项"
+    body = b.render_body()
+    assert "1. 全部清3项" in body
+    # The "[" that used to be option 1 is gone from the choice list.
+    assert "1. [" not in body
+
+
+def test_choice_block_unparsable_string_options_stay_one_choice():
+    # An unrecoverable str degrades to a single option — wrong-ish but
+    # harmless. What must never happen is one choice per character.
+    b = ChoiceBlock("c1", "q", "只有一个选项")
+    assert b.options == ["只有一个选项"]
+    b2 = ChoiceBlock("c2", "q", "[未闭合的字面量")
+    assert b2.options == ["[未闭合的字面量"]
+
+
 @pytest.mark.asyncio
 async def test_transcript_add_clarify_mounts_block():
     from textual.app import App

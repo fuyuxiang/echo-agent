@@ -1823,12 +1823,29 @@ class AgentLoop:
         self.approval.cancel_session(event.session_key, reason="interrupted by user")
 
     async def _handle_clarify_command(self, event: InboundEvent) -> str | None:
-        # Format: /clarify <clarify_id> <answer...>  (answer may contain spaces)
-        parts = event.text.strip().split(maxsplit=2)
+        # Format: /clarify <clarify_id> <answer...>
+        #
+        # Only the command word and the id are whitespace-delimited; everything
+        # after the id is the answer verbatim. split(maxsplit=2) was wrong for
+        # a whitespace-only answer: it collapsed "/clarify c1   " down to two
+        # tokens, so an answer the user really did send arrived as "" and was
+        # indistinguishable from "no answer argument at all" — the model then
+        # learned nothing and re-asked the same question. Splitting off exactly
+        # the two leading tokens keeps the answer's own leading/trailing
+        # whitespace intact, and lets a missing id (the only genuinely
+        # malformed case) still be reported as such.
+        head = event.text.lstrip()
+        parts = head.split(maxsplit=1)
         if len(parts) < 2:
             return "用法:`/clarify <id> <答案>`"
-        clarify_id = parts[1]
-        answer = parts[2] if len(parts) >= 3 else ""
+        rest = parts[1]
+        clarify_id = rest.split(maxsplit=1)[0]
+        # Slice the answer out by offset rather than re-splitting: split() would
+        # discard exactly the whitespace this parse exists to preserve. Only the
+        # single separator between the id and the answer is dropped.
+        answer = rest[len(clarify_id):]
+        if answer[:1].isspace():
+            answer = answer[1:]
         ok = self.clarify.resolve(clarify_id, answer)
         if ok:
             return f"已回复澄清请求 {clarify_id}。"

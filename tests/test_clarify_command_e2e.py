@@ -89,6 +89,40 @@ async def test_clarify_answer_delivered_to_waiter(tmp_path):
     assert interrupted is False
 
 
+@pytest.mark.asyncio
+async def test_handle_clarify_preserves_whitespace_only_answer(tmp_path):
+    """Regression: split(maxsplit=2) collapsed "/clarify c1   " down to two
+    tokens, so an answer made only of spaces arrived as "" — indistinguishable
+    from "no answer argument". The model then learned nothing and re-asked the
+    same question while the TUI already showed it as answered."""
+    import asyncio
+    loop = _make_loop(tmp_path)
+    req = loop.clarify.request("q", ["A"], user_id="u1")
+
+    waiter = asyncio.create_task(loop.clarify.wait_for_answer(req.id))
+    await asyncio.sleep(0.01)
+    event = InboundEvent.text_message(
+        channel="gateway:cli", chat_id="c", sender_id="u1",
+        text=f"/clarify {req.id}   ",
+    )
+    reply = await loop._handle_clarify_command(event)
+    assert reply is not None and "已回复" in reply
+    answer, interrupted = await asyncio.wait_for(waiter, timeout=1.0)
+    assert answer == "  "
+    assert interrupted is False
+
+
+@pytest.mark.asyncio
+async def test_handle_clarify_missing_id_reports_usage(tmp_path):
+    loop = _make_loop(tmp_path)
+    for text in ("/clarify", "/clarify   "):
+        event = InboundEvent.text_message(
+            channel="gateway:cli", chat_id="c", sender_id="u1", text=text,
+        )
+        reply = await loop._handle_clarify_command(event)
+        assert reply is not None and "用法" in reply
+
+
 def test_cancel_command_detection(tmp_path):
     loop = _make_loop(tmp_path)
     assert loop._is_clarify_cancel_command("/__clarify_cancel__") is True

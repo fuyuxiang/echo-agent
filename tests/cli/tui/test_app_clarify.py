@@ -488,3 +488,43 @@ async def test_disconnect_retires_pending_clarify():
         assert app._pending_clarify is None
         assert app._clarify_free_input is False
         assert app.query_one(PromptInput).disabled is False
+
+
+@pytest.mark.asyncio
+async def test_blank_free_text_answer_is_not_sent():
+    """空白答案不发送:服务端会把它当成真实的空回答交给模型,模型什么也没
+    学到,只会把同一个问题再问一遍——而屏幕上这条已经显示"已选"了。此时应
+    保留提问,让用户重新作答。"""
+    sent: list[str] = []
+
+    async def fake_send(text):
+        sent.append(text)
+
+    app = EchoTUI(send_coro=fake_send, session_key="s1")
+    async with app.run_test():
+        app.on_cognitive(_clarify_ev("c1", "选哪个?", ["A", "B"]))
+        blk = app._pending_clarify
+        await app._answer_clarify("   ")
+        assert sent == []
+        # 提问仍然存活且未被标记为已选。
+        assert app._pending_clarify is blk
+        assert blk.answer is None
+        # 正常答案照旧发送。
+        await app._answer_clarify("A")
+        assert sent == ["/clarify c1 A"]
+        assert app._pending_clarify is None
+
+
+@pytest.mark.asyncio
+async def test_clarify_options_sent_as_string_render_as_real_choices():
+    """网关若把 options 作为字符串字面量下发(旧服务端/重放帧),客户端必须
+    还原成真实选项,而不是逐字符拆成一堆不可见的标点选项。"""
+    async def fake_send(text):
+        pass
+
+    app = EchoTUI(send_coro=fake_send, session_key="s1")
+    async with app.run_test():
+        app.on_cognitive(_clarify_ev("c1", "粒度?", "['全部清3项','只清1项']"))
+        blk = app._pending_clarify
+        assert blk is not None
+        assert blk.options == ["全部清3项", "只清1项"]

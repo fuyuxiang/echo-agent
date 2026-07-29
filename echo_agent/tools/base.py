@@ -152,6 +152,16 @@ class Tool(ABC):
                     errors.append(f"{key} must be a number")
                 elif expected_type == "boolean" and not isinstance(value, bool):
                     errors.append(f"{key} must be a boolean")
+                elif expected_type == "array" and not isinstance(value, (list, tuple)):
+                    # A str is rejected here even though it is iterable. An LLM
+                    # that emits an array parameter as its JSON *text* (the
+                    # literal "['a','b']") used to pass validation and then get
+                    # iterated character by character downstream — that is how a
+                    # clarify ended up rendering "[", "'", "a" … as its choices.
+                    # Item types are deliberately NOT checked: clarify documents
+                    # (see cli/tui/blocks.py) that it tolerates dict-shaped
+                    # options and coerces them at the render boundary.
+                    errors.append(f"{key} must be an array")
                 if "enum" in prop and value not in prop["enum"]:
                     errors.append(f"{key} must be one of {prop['enum']}")
         return errors

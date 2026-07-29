@@ -86,6 +86,31 @@ class TestToolBase:
         errors_false = tool.validate_params({"msg": "hi", "count": False})
         assert any("integer" in e for e in errors_false)
 
+    def test_validate_params_rejects_string_for_array(self):
+        """A str is iterable, so an array-typed param that receives the JSON
+        *text* "['a','b']" used to pass validation and then get iterated
+        character by character downstream — a clarify rendered "[", "'", "a"
+        … as its choices. The type check must reject it at the boundary."""
+        class ArrTool(Tool):
+            name = "a"
+            description = "a"
+            parameters = {
+                "type": "object",
+                "properties": {"opts": {"type": "array", "items": {"type": "string"}}},
+            }
+
+            async def execute(self, params, ctx=None):
+                return ToolResult(output="ok")
+
+        tool = ArrTool()
+        assert any("array" in e for e in tool.validate_params({"opts": "['a','b']"}))
+        assert any("array" in e for e in tool.validate_params({"opts": 123}))
+        # Real sequences pass. Item types are deliberately not enforced: clarify
+        # documents that it tolerates dict-shaped options and coerces them.
+        assert tool.validate_params({"opts": ["a", "b"]}) == []
+        assert tool.validate_params({"opts": [{"value": "a"}]}) == []
+        assert tool.validate_params({}) == []
+
     def test_validate_params_bool_rejected_for_number(self):
         class NumTool(Tool):
             name = "n"

@@ -850,6 +850,45 @@ class ApprovalBlock(Static):
         self.update(self._body())
 
 
+def _coerce_options(options) -> list:
+    """Normalize the raw ``options`` payload into a list of option entries.
+
+    The schema says array-of-string, and validate_params now rejects anything
+    else before the tool runs. This stays as a client-side guard because the
+    TUI renders whatever the wire hands it (an older gateway, a replayed
+    frame): a bare str must NOT be iterated, or its characters each become a
+    separate choice — that is how a clarify rendered "[", "'", "全" … instead
+    of the three options the model actually offered.
+
+    A str holding a list literal is recovered so the real choices survive;
+    ``ast.literal_eval`` is used rather than ``json.loads`` because the shape
+    seen in practice is Python-style with single quotes ("['a','b']"), which is
+    not valid JSON. literal_eval parses data only — it never executes code.
+    Anything unrecoverable degrades to one single option, which is wrong-ish
+    but harmless, and never a wall of one-character choices.
+    """
+    if options is None:
+        return []
+    if isinstance(options, str):
+        text = options.strip()
+        if not text:
+            return []
+        if text[0] in "[({":
+            import ast
+            try:
+                parsed = ast.literal_eval(text)
+            except (ValueError, SyntaxError, MemoryError, RecursionError):
+                parsed = None
+            if isinstance(parsed, (list, tuple, set)):
+                return list(parsed)
+            if isinstance(parsed, dict):
+                return [parsed]
+        return [options]
+    if isinstance(options, (list, tuple)):
+        return list(options)
+    return [options]
+
+
 def _option_to_pair(opt) -> tuple[str, str]:
     """Normalize a single clarify option to a (display, answer) pair.
 
@@ -907,7 +946,9 @@ class ChoiceBlock(Static):
         # ...}. Coerce every option to a display string at this boundary so the
         # rest of the flow (rendering, selection, the answer sent back to the
         # server) only ever deals with strings and never chokes on a dict.
-        pairs = [_option_to_pair(o) for o in (options or [])]
+        # _coerce_options first guarantees we have a real list to iterate, so a
+        # str payload is never walked character by character.
+        pairs = [_option_to_pair(o) for o in _coerce_options(options)]
         # Display labels (may be "value — description"); shown in the list.
         self.options = [d for d, _ in pairs]
         # Answer values (bare value for dicts); sent back to the server on pick.
