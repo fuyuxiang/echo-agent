@@ -118,8 +118,18 @@ class ApprovalGate:
         if tool_name in approval_cfg.auto_approve:
             return _approved()
 
-        # Step 6: CLI auto-approve (all levels)
-        if self._should_auto_approve_cli(channel):
+        # Step 6: CLI auto-approve (all levels), except when nobody is watching.
+        # The premise of cli_auto_approve is a human at the keyboard who sees what
+        # the tool call does. A cron job created from a cli session inherits that
+        # session's channel, so a fired job arrives here as channel='cli' with no
+        # human present — and this step, sitting above the Step-11 unattended
+        # check, approved every risk level for it. That let an unattended job run
+        # EXEC work without any per-job grant, and skipped the rule that keeps
+        # DANGEROUS denied even for authorized jobs, so a job could schedule more
+        # unattended jobs (privilege-escalation / recursion vector). Excluding
+        # unattended events routes them to Step 11, where the per-job
+        # authorization decides. Interactive cli sessions are unaffected.
+        if self._should_auto_approve_cli(channel) and not self._is_unattended(event, channel):
             return _approved()
 
         # Step 7: Channel trust — EXEC level auto-approved on trusted channels

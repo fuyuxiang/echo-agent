@@ -257,6 +257,91 @@ async def test_cron_unauthorized_denies_exec_unattended():
 
 
 @pytest.mark.asyncio
+async def test_cli_auto_approve_does_not_cover_unattended_jobs():
+    """Step 6 (cli_auto_approve) must not fire for unattended events.
+
+    A cron job created from a cli session keeps that session's delivery channel,
+    so the fired event reaches the gate as channel='cli'. Step 6 sits above the
+    unattended check, so it used to approve every risk level for such a job: EXEC
+    ran with no per-job grant at all, and DANGEROUS — which stays denied even for
+    authorized jobs precisely to stop a job spawning more unattended jobs — was
+    approved too.
+    """
+    cfg = load_config()
+    cfg.permissions.approval.mode = "manual"
+    cfg.permissions.approval.unattended_policy = "deny"
+    # Pin the exact configuration Step 6 keys off, so the test states the
+    # preconditions rather than inheriting them from the host's config file.
+    cfg.security.profile = "personal_cli"
+    cfg.permissions.approval.cli_auto_approve = True
+    gate = _make_gate(cfg, MessageBus())
+
+    event = InboundEvent(
+        channel="cli", sender_id="cron", chat_id="c1",
+        content=[ContentBlock(type=ContentType.TEXT, text="x")],
+        unattended=True,  # no cron_authorized: nobody granted this job anything
+    )
+    exec_check = await gate.check(
+        "execute_code", {"language": "python", "code": "print(1)"},
+        "cron", channel="cli", event=event, running=True,
+    )
+    assert exec_check.denial is not None
+    assert "unattended" in (exec_check.denial.error or "").lower()
+
+    cron_check = await gate.check(
+        "cronjob", {"action": "create", "name": "n", "schedule": "* * * * *", "command": "c"},
+        "cron", channel="cli", event=event, running=True,
+    )
+    assert cron_check.denial is not None
+    assert "unattended" in (cron_check.denial.error or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_cli_auto_approve_still_covers_interactive_sessions():
+    """Positive control for the change above: a human-at-the-keyboard cli session
+    (no unattended flag) keeps its auto-approve, DANGEROUS tools included."""
+    cfg = load_config()
+    cfg.permissions.approval.mode = "manual"
+    cfg.security.profile = "personal_cli"
+    cfg.permissions.approval.cli_auto_approve = True
+    gate = _make_gate(cfg, MessageBus())
+
+    event = InboundEvent(
+        channel="cli", sender_id="u1", chat_id="c1",
+        content=[ContentBlock(type=ContentType.TEXT, text="x")],
+    )
+    for tool, args in (
+        ("execute_code", {"language": "python", "code": "print(1)"}),
+        ("cronjob", {"action": "create", "name": "n", "schedule": "* * * * *", "command": "c"}),
+    ):
+        check = await gate.check(tool, args, "u1", channel="cli", event=event, running=True)
+        assert check.denial is None, tool
+        assert check.approved_actions, tool
+
+
+@pytest.mark.asyncio
+async def test_cli_channel_unattended_authorized_job_still_runs_exec():
+    """Routing unattended cli events to Step 11 must not break authorized jobs:
+    a job a human did authorize keeps its WRITE/EXEC access."""
+    cfg = load_config()
+    cfg.permissions.approval.mode = "manual"
+    cfg.permissions.approval.unattended_policy = "deny"
+    gate = _make_gate(cfg, MessageBus())
+
+    event = InboundEvent(
+        channel="cli", sender_id="cron", chat_id="c1",
+        content=[ContentBlock(type=ContentType.TEXT, text="x")],
+        unattended=True, cron_authorized=True,
+    )
+    check = await gate.check(
+        "execute_code", {"language": "python", "code": "print(1)"},
+        "cron", channel="cli", event=event, running=True,
+    )
+    assert check.denial is None
+    assert check.approved_actions
+
+
+@pytest.mark.asyncio
 async def test_smart_unavailable_sets_notify_user():
     cfg = load_config()
     cfg.permissions.approval.mode = "smart"
