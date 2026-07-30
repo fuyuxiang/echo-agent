@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from echo_agent.scheduler.authorization import compute_fingerprint
 from echo_agent.scheduler.authorization import grant as grant_authorization
 from echo_agent.scheduler.authorization import verify as verify_authorization
 from echo_agent.scheduler.service import ScheduledJob, TriggerKind
@@ -21,18 +22,6 @@ def _payload_has_content(payload: object) -> bool:
         return False
     command = str(payload.get("command") or payload.get("message") or "").strip()
     return bool(command)
-
-
-# Request keys whose values feed authorization.compute_fingerprint: the
-# instruction and delivery target (inside `payload`) and the firing schedule.
-# `name` and `enabled` are absent on purpose — the fingerprint excludes them, so
-# a rename or a pause/resume cannot change what the human consented to and must
-# not revoke the grant. Schedule keys the PUT does not currently apply are listed
-# anyway: if update_job ever starts accepting them, the safe behaviour (revoke)
-# is already wired instead of quietly keeping a grant for edited content.
-_FINGERPRINT_BODY_KEYS = frozenset({
-    "payload", "cron_expr", "interval_ms", "at_ms", "timezone",
-})
 
 
 def _merge_payload(current: object, incoming: dict) -> dict:
@@ -84,6 +73,16 @@ class CronAPI:
         CSRF checks as the boundary.
         """
         return self._server._require_admin_token(request, action=action)
+
+    def _operator(self, request: web.Request) -> str:
+        """Who to record as having issued a grant.
+
+        A digest rather than the token's first 8 characters: these records are
+        served by GET /cron to any read-scope caller, while cron mutations are
+        admin-only — so the plain prefix leaked part of an admin credential to a
+        lower privilege level (and a short token leaked entirely)."""
+        token = self._server.auth.token_from_headers(request.headers)
+        return self._server.auth.token_identifier(token) or "local-no-auth"
 
     def _scheduler(self):
         return self._server._agent_loop.scheduler
@@ -140,7 +139,7 @@ class CronAPI:
         if body.get("authorize_unattended") is True:
             job.authorization = grant_authorization(
                 job,
-                operator=self._server.auth.token_from_headers(request.headers)[:8] or "local-no-auth",
+                operator=self._operator(request),
                 source="rest",
             )
         created = self._scheduler().add_job(job)
@@ -186,6 +185,10 @@ class CronAPI:
                     status=400,
                 )
 
+        # Snapshot what the grant is bound to BEFORE the edit lands, so the
+        # decision below can compare against what it becomes.
+        fingerprint_before = compute_fingerprint(job)
+
         # Scheduler owns the mutation so cron_expr / re-enable also recompute
         # next_run_ms; assigning here and calling save_state() left the job
         # pointing at an occurrence of the previous expression.
@@ -207,21 +210,27 @@ class CronAPI:
         # what makes the UI able to say "需要重新授权" instead of displaying a grant
         # that silently no longer applies.
         #
-        # Revoking is scoped to edits that actually touch the fingerprint. Doing it
-        # for ANY authorization-less PUT silently killed grants on requests that
-        # change nothing a human consented to: the dashboard's pause/resume toggle
-        # sends {"enabled": ...} alone, so pausing an authorized job and resuming
-        # it a week later left it firing with WRITE/EXEC denied, at night, with no
-        # warning anywhere in the UI. Leaving the grant alone here opens no window,
-        # because name/enabled are not fingerprint inputs — the grant still binds
-        # the same instruction, delivery target and schedule it was issued for.
+        # Revoking is scoped to edits that actually CHANGED the fingerprint,
+        # compared before/after the mutation. Doing it for ANY authorization-less
+        # PUT silently killed grants on requests that change nothing a human
+        # consented to: the dashboard's pause/resume toggle sends {"enabled": ...}
+        # alone, so pausing an authorized job and resuming it a week later left it
+        # firing with WRITE/EXEC denied, at night, with no warning in the UI.
+        #
+        # Keying off "which keys appear in the request" instead was still wrong,
+        # just less often: the dashboard form resends cron_expr and the full
+        # payload on every submit, so renaming a job revoked its grant even though
+        # nothing it binds had moved. Any client that PUTs a whole object — the
+        # normal REST shape — hit the same thing. Comparing the fingerprint itself
+        # makes "editing content revokes, renaming does not" a property of the
+        # data rather than a convention each caller has to observe.
         if body.get("authorize_unattended") is True:
             authorization = grant_authorization(
                 updated,
-                operator=self._server.auth.token_from_headers(request.headers)[:8] or "local-no-auth",
+                operator=self._operator(request),
                 source="rest",
             )
-        elif _FINGERPRINT_BODY_KEYS & body.keys():
+        elif compute_fingerprint(updated) != fingerprint_before:
             authorization = None
         else:
             # Nothing fingerprinted changed and no new consent was given: pass

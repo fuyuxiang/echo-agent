@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from echo_agent.agent.approval_gate import ApprovalGate
+from echo_agent.agent.approval_gate import APPROVAL_SOURCE_AUTO, ApprovalGate
 from echo_agent.agent.degraded_notice import notice_for, REASON_APPROVAL_UNAVAILABLE
 from echo_agent.agent.tools.base import ToolExecutionContext
 from echo_agent.agent.tools.code_exec import CodeExecTool
@@ -299,7 +299,9 @@ async def test_cli_auto_approve_does_not_cover_unattended_jobs():
 @pytest.mark.asyncio
 async def test_cli_auto_approve_still_covers_interactive_sessions():
     """Positive control for the change above: a human-at-the-keyboard cli session
-    (no unattended flag) keeps its auto-approve, DANGEROUS tools included."""
+    (no unattended flag) keeps its auto-approve for EXEC-tier work.
+
+    DANGEROUS is deliberately excluded — see the test below."""
     cfg = load_config()
     cfg.permissions.approval.mode = "manual"
     cfg.security.profile = "personal_cli"
@@ -310,13 +312,46 @@ async def test_cli_auto_approve_still_covers_interactive_sessions():
         channel="cli", sender_id="u1", chat_id="c1",
         content=[ContentBlock(type=ContentType.TEXT, text="x")],
     )
-    for tool, args in (
-        ("execute_code", {"language": "python", "code": "print(1)"}),
-        ("cronjob", {"action": "create", "name": "n", "schedule": "* * * * *", "command": "c"}),
-    ):
-        check = await gate.check(tool, args, "u1", channel="cli", event=event, running=True)
-        assert check.denial is None, tool
-        assert check.approved_actions, tool
+    check = await gate.check(
+        "execute_code", {"language": "python", "code": "print(1)"},
+        "u1", channel="cli", event=event, running=True,
+    )
+    assert check.denial is None
+    assert check.approved_actions
+    # Auto-approval is policy, not consent: nothing here may claim a human looked.
+    assert check.approval_source == APPROVAL_SOURCE_AUTO
+
+
+@pytest.mark.asyncio
+async def test_cli_auto_approve_does_not_cover_dangerous_tools():
+    """cli_auto_approve must not silently approve DANGEROUS tools.
+
+    cronjob mints a persistent unattended grant from a one-off approval, and its
+    execute() documented "only reached after the human approved this specific
+    call". With the shipped defaults (profile=personal_cli, cli_auto_approve=True)
+    that was false: the gate approved every risk level on cli channels, so a
+    model could create a job carrying a valid `tui-approval` grant that no human
+    had ever seen. A one-off convenience must not buy a persistent privilege, so
+    these route to the manual prompt instead.
+    """
+    cfg = load_config()
+    cfg.permissions.approval.mode = "manual"
+    cfg.security.profile = "personal_cli"
+    cfg.permissions.approval.cli_auto_approve = True
+    gate = _make_gate(cfg, MessageBus())
+
+    event = InboundEvent(
+        channel="cli", sender_id="u1", chat_id="c1",
+        content=[ContentBlock(type=ContentType.TEXT, text="x")],
+    )
+    # running=False makes the interactive path return the "approval required"
+    # handle immediately rather than parking on wait_timeout_seconds.
+    check = await gate.check(
+        "cronjob", {"action": "create", "name": "n", "schedule": "* * * * *", "command": "c"},
+        "u1", channel="cli", event=event, running=False,
+    )
+    assert check.denial is not None
+    assert "approval" in (check.denial.error or "").lower()
 
 
 @pytest.mark.asyncio

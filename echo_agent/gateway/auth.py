@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import hmac
 import secrets
@@ -142,6 +143,21 @@ class GatewayAuth:
         if auth.lower().startswith("bearer "):
             return auth[7:].strip()
         return ""
+
+    def token_identifier(self, token: str) -> str:
+        """A stable, non-reversible label for "which token did this".
+
+        For audit records that are readable by a wider audience than the token
+        holder. Callers used to store ``token[:8]``, which put a slice of an
+        *admin* credential into cron authorization records that any read-scope
+        caller can fetch via GET /cron — and a token of 8 characters or fewer was
+        recorded in full. A truncated digest identifies the token across records
+        (so "who authorized this" still works) without carrying material an
+        attacker can use or extend."""
+        token = (token or "").strip()
+        if not token:
+            return ""
+        return "tok_" + hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
 
     def is_admin(self, platform: str, user_id: str, token: str = "") -> bool:
         """Whether this caller has admin scope, by token or by admin_users.

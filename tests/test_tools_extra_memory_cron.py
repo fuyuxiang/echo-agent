@@ -359,11 +359,16 @@ class TestMemoryToolCacheInvalidation:
 
 
 @pytest.mark.asyncio
-async def test_cronjob_create_grants_authorization():
-    """The tool is risk_level=dangerous, so reaching execute() means a human
-    approved it. Record that as a grant instead of leaving delivery to guess."""
+async def test_cronjob_create_grants_authorization_on_human_approval():
+    """A grant is issued when — and only when — a human approved THIS call.
+
+    Reaching execute() was previously treated as proof of that, on the grounds
+    that the tool is risk_level=dangerous. It is not: with the shipped defaults
+    the gate auto-approved every risk level on cli channels. So the gate now
+    reports how the call was approved and the tool keys off that."""
     from unittest.mock import MagicMock
 
+    from echo_agent.agent.approval_gate import APPROVAL_SOURCE_HUMAN
     from echo_agent.agent.tools.cronjob import CronjobTool
     from echo_agent.scheduler.authorization import verify
     from echo_agent.tools.base import ToolExecutionContext
@@ -373,7 +378,10 @@ async def test_cronjob_create_grants_authorization():
     scheduler.add_job = MagicMock(side_effect=lambda job: captured.setdefault("job", job) or job)
 
     tool = CronjobTool(scheduler)
-    ctx = ToolExecutionContext(session_key="telegram:123", user_id="alice")
+    ctx = ToolExecutionContext(
+        session_key="telegram:123", user_id="alice",
+        approval_source=APPROVAL_SOURCE_HUMAN,
+    )
     result = await tool.execute(
         {"action": "create", "name": "nightly", "schedule": "0 9 * * *", "command": "echo hi"},
         ctx,
@@ -391,9 +399,69 @@ async def test_cronjob_create_grants_authorization():
 
 
 @pytest.mark.asyncio
-async def test_cronjob_create_without_ctx_still_grants():
-    """A missing ctx must not silently produce an unauthorized job the user
-    believes they just approved; operator falls back to a marker."""
+async def test_cronjob_create_without_human_approval_does_not_grant():
+    """An auto-approved call creates a working job but no unattended grant.
+
+    This is the hole that made the whole per-job authorization scheme
+    decorative: cli_auto_approve let the model reach execute() with nobody
+    watching, and the tool signed a grant labelled "tui-approval" for content no
+    human had seen. The job must still be created (it fires; only its privileged
+    tool calls are denied) and the user must be told how to authorize it."""
+    from unittest.mock import MagicMock
+
+    from echo_agent.agent.tools.cronjob import CronjobTool
+    from echo_agent.scheduler.authorization import verify
+    from echo_agent.tools.base import ToolExecutionContext
+
+    captured = {}
+    scheduler = MagicMock()
+    scheduler.add_job = MagicMock(side_effect=lambda job: captured.setdefault("job", job) or job)
+
+    tool = CronjobTool(scheduler)
+    result = await tool.execute(
+        {"action": "create", "name": "nightly", "schedule": "0 9 * * *", "command": "echo hi"},
+        ToolExecutionContext(session_key="telegram:123", user_id="alice", approval_source="auto"),
+    )
+
+    assert result.success is True
+    assert captured["job"].authorization is None
+    assert verify(captured["job"]) is False
+    assert "cron authorize" in result.output
+
+
+@pytest.mark.asyncio
+async def test_cronjob_create_rejects_invalid_cron_expression():
+    """An unparseable expression must not be stored.
+
+    It used to be accepted: the job was persisted and even granted an
+    authorization, but _compute_next_run returned None so it never fired — a
+    "created successfully" that silently does nothing."""
+    from unittest.mock import MagicMock
+
+    from echo_agent.agent.approval_gate import APPROVAL_SOURCE_HUMAN
+    from echo_agent.agent.tools.cronjob import CronjobTool
+    from echo_agent.tools.base import ToolExecutionContext
+
+    scheduler = MagicMock()
+    tool = CronjobTool(scheduler)
+    result = await tool.execute(
+        {"action": "create", "name": "n", "schedule": "every monday", "command": "echo hi"},
+        ToolExecutionContext(approval_source=APPROVAL_SOURCE_HUMAN),
+    )
+
+    assert result.success is False
+    assert result.error_kind == "validation"
+    scheduler.add_job.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cronjob_create_without_ctx_does_not_grant():
+    """A missing ctx says nothing about consent, so it must not grant.
+
+    This used to assert the opposite — that a ctx-less call still produced a
+    valid grant — on the theory that reaching execute() implied approval. Absence
+    of evidence is not consent, and this is the path a non-pipeline caller
+    (plugin, script, future entry point) takes, so it has to fail closed."""
     from unittest.mock import MagicMock
 
     from echo_agent.agent.tools.cronjob import CronjobTool
@@ -411,7 +479,5 @@ async def test_cronjob_create_without_ctx_still_grants():
     )
 
     assert result.success is True
-    assert verify(captured["job"]) is True
-    # Pin the fallback marker: verify() alone still passes if operator lands on
-    # grant()'s generic "unknown", which would lose the audit breadcrumb.
-    assert captured["job"].authorization.operator == "agent-approval"
+    assert captured["job"].authorization is None
+    assert verify(captured["job"]) is False

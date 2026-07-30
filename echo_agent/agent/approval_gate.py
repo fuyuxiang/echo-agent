@@ -22,12 +22,21 @@ from echo_agent.security.guards import GuardDecision, evaluate_tool_call
 from echo_agent.security.risk_classifier import RiskLevel, classify_risk
 
 
+APPROVAL_SOURCE_HUMAN = "human"
+APPROVAL_SOURCE_AUTO = "auto"
+
+
 @dataclass
 class ApprovalCheck:
     denial: ToolResult | None = None
     approved_actions: frozenset[str] = frozenset()
     notify_user: bool = False
     notice: str = ""
+    # Which kind of decision let this call through — see
+    # ToolExecutionContext.approval_source. Defaults to "auto" so any new
+    # policy-based pass added later is conservative by construction: only the
+    # manual-approval path may claim a human looked at the call.
+    approval_source: str = APPROVAL_SOURCE_AUTO
 
 
 class ApprovalGate:
@@ -110,41 +119,76 @@ class ApprovalGate:
         def _approved() -> ApprovalCheck:
             return ApprovalCheck(approved_actions=self._approved_actions(tool_name, guard))
 
-        # Step 4: READ_ONLY and WRITE always pass — they are protected by sandbox/path restrictions
+        session_key = event.session_key if event else ""
+        pattern_key = build_pattern_key(tool_name, arguments)
+
+        # Step 4: Unattended calls are decided in ONE place.
+        #
+        # "Nobody is watching" is a property of the caller, not a stage in this
+        # pipeline — but it used to sit at Step 11, below five independent passes
+        # that each let unattended work through on their own terms: WRITE fell
+        # through unconditionally (so a cron job with no grant still got
+        # write_file / edit_file / patch / memory / notify — and the
+        # cron_authorized WRITE branch in _resolve_unattended was dead code),
+        # and auto_approve / trusted_channels / mode="off" / a persisted
+        # allowlist entry each waved EXEC or DANGEROUS past the per-job check.
+        # Fixing them one at a time is a losing game: every future pass added
+        # above the check is the next hole.
+        #
+        # Routing unattended calls here first collapses those five implicit
+        # bypasses into one documented switch (unattended_policy), and gives
+        # `allow_safe` a real meaning: it is now the escape hatch for anyone who
+        # wants the old permissive behaviour, statable in one sentence.
+        #
+        # The interactive-only passes below are deliberately NOT consulted for
+        # these calls. A user adding "exec" to auto_approve, or trusting a
+        # channel, is smoothing out their own interactive work — they are not
+        # handing that authority to a job that fires at 3am with nobody there.
+        if self._is_unattended(event, channel):
+            if risk == RiskLevel.READ_ONLY:
+                return _approved()
+            return self._resolve_unattended(
+                tool_name, risk, session_key, pattern_key, guard, event,
+            )
+
+        # Step 5: READ_ONLY and WRITE always pass — they are protected by sandbox/path restrictions
         if risk in (RiskLevel.READ_ONLY, RiskLevel.WRITE):
             return _approved()
 
-        # Step 5: Explicit auto_approve list
+        # Step 6: Explicit auto_approve list
         if tool_name in approval_cfg.auto_approve:
             return _approved()
 
-        # Step 6: CLI auto-approve (all levels), except when nobody is watching.
-        # The premise of cli_auto_approve is a human at the keyboard who sees what
-        # the tool call does. A cron job created from a cli session inherits that
-        # session's channel, so a fired job arrives here as channel='cli' with no
-        # human present — and this step, sitting above the Step-11 unattended
-        # check, approved every risk level for it. That let an unattended job run
-        # EXEC work without any per-job grant, and skipped the rule that keeps
-        # DANGEROUS denied even for authorized jobs, so a job could schedule more
-        # unattended jobs (privilege-escalation / recursion vector). Excluding
-        # unattended events routes them to Step 11, where the per-job
-        # authorization decides. Interactive cli sessions are unaffected.
-        if self._should_auto_approve_cli(channel) and not self._is_unattended(event, channel):
+        # Step 7: CLI auto-approve. Unattended calls never reach here (Step 4),
+        # so this is always a human-at-the-keyboard session.
+        #
+        # DANGEROUS is excluded even with a human present. The
+        # premise of cli_auto_approve is smoothing out *repetitive, low-stakes*
+        # work; a DANGEROUS tool creates persistent state that outlives the turn
+        # (a cron job that will run unattended and carries its own grant, an
+        # installed skill). cronjob.execute() documented "only reached after the
+        # human approved this specific call" and signed a `tui-approval` grant on
+        # that basis — but this step made that untrue by default
+        # (profile=personal_cli + cli_auto_approve=True ship as defaults), so the
+        # model could mint a valid unattended grant nobody ever saw. A one-off
+        # convenience must not buy a persistent privilege: these land on the
+        # manual prompt, which is exactly where the user sees what they grant.
+        if self._should_auto_approve_cli(channel) and risk != RiskLevel.DANGEROUS:
             return _approved()
 
-        # Step 7: Channel trust — EXEC level auto-approved on trusted channels
+        # Step 8: Channel trust — EXEC level auto-approved on trusted channels
         if risk == RiskLevel.EXEC and self._is_trusted_channel(channel):
             return _approved()
 
-        # Step 8: Approval mode "off" — bypass everything except hard blocks
+        # Step 9: Approval mode "off" — bypass everything except hard blocks
         if approval_cfg.mode == "off":
             return _approved()
 
-        # Step 9: Check if this tool actually requires approval
+        # Step 10: Check if this tool actually requires approval
         if not self._approval_required(tool_name, guard, risk):
             return _approved()
 
-        # Step 10: Allowlist check (EXEC and DANGEROUS)
+        # Step 11: Allowlist check (EXEC and DANGEROUS)
         # The write path (ApprovalAllowlist.approve) records an "always" grant for
         # ANY risk level, but historically this read path only honoured it for
         # EXEC — so a permanent grant for a DANGEROUS tool (e.g. tool:cronjob) was
@@ -153,14 +197,8 @@ class ApprovalGate:
         # Step-1 static guard has already hard-blocked genuinely destructive
         # patterns above, so this respects the user's explicit persistent consent
         # without weakening those hard blocks.
-        session_key = event.session_key if event else ""
-        pattern_key = build_pattern_key(tool_name, arguments)
         if risk in (RiskLevel.EXEC, RiskLevel.DANGEROUS) and self._allowlist.is_approved(session_key, pattern_key):
             return _approved()
-
-        # Step 11: Unattended mode check
-        if self._is_unattended(event, channel):
-            return self._resolve_unattended(tool_name, risk, session_key, pattern_key, guard, event)
 
         # Step 12: Smart approval (EXEC level only)
         if risk == RiskLevel.EXEC and approval_cfg.mode == "smart" and self._provider:
@@ -229,6 +267,8 @@ class ApprovalGate:
                 error=f"Tool '{tool_name}' denied by approval policy: {approval_req.reason}",
             ))
         if approval_req.status == ApprovalStatus.APPROVED:
+            # Pre-approved by an ApprovalManager rule, not by a person answering
+            # this prompt — so it stays "auto" for provenance purposes.
             return ApprovalCheck(approved_actions=approved_actions)
 
         if event is not None:
@@ -253,7 +293,13 @@ class ApprovalGate:
         if decided and decided.status == ApprovalStatus.APPROVED:
             level = self._parse_approval_level(decided.reason)
             self._record_approval(session_key, pattern_key, level)
-            return ApprovalCheck(approved_actions=approved_actions)
+            # The one path where a person saw THIS call's details and said yes.
+            # Tools that mint persistent privileges (cronjob's unattended grant)
+            # key off this; every other pass above is policy, not consent.
+            return ApprovalCheck(
+                approved_actions=approved_actions,
+                approval_source=APPROVAL_SOURCE_HUMAN,
+            )
         if decided and decided.status == ApprovalStatus.DENIED:
             return ApprovalCheck(ToolResult(
                 success=False,
@@ -441,8 +487,40 @@ class ApprovalGate:
                 return ApprovalCheck(approved_actions=approved)
         return ApprovalCheck(ToolResult(
             success=False,
-            error=f"Tool '{tool_name}' requires approval but no user is available (unattended mode).",
+            error=(
+                f"Tool '{tool_name}' requires approval but no user is available "
+                f"(unattended mode).{self._unattended_hint(risk, event)}"
+            ),
         ))
+
+    def _unattended_hint(self, risk: RiskLevel, event: InboundEvent | None) -> str:
+        """Tell the operator how to fix the denial, in the denial itself.
+
+        Since WRITE is no longer waved through unattended, a job that used to
+        quietly work can now be refused — and the bare "requires approval but no
+        user is available" gives no clue that a per-job grant is the answer, or
+        which job it belongs to. The job id/name live only in the fired event's
+        metadata, so this is the last point where they are still in reach."""
+        meta = getattr(event, "metadata", None) or {}
+        job_id = str(meta.get("job_id", "") or "")
+        if not job_id:
+            return ""
+        job_name = str(meta.get("job_name", "") or "")
+        label = f"'{job_name}' ({job_id})" if job_name else job_id
+        # DANGEROUS is refused even for an authorized job, so pointing at the
+        # authorize command there would be misleading advice.
+        if risk == RiskLevel.DANGEROUS:
+            return (
+                f" 定时任务 {label} 不允许创建定时任务/安装技能等高危操作，"
+                "无论是否已授权——这类操作需要人工在场确认。"
+            )
+        if event is not None and event.cron_authorized:
+            return f" 定时任务 {label} 的授权已失效或不覆盖该操作，请重新授权。"
+        return (
+            f" 定时任务 {label} 未获得无人值守授权。"
+            f"运行 `echo-agent cron authorize {job_id}` 或在 Dashboard 定时任务页勾选授权后即可执行；"
+            "若希望所有任务都能做写入类操作，可将 permissions.approval.unattended_policy 设为 allow_safe。"
+        )
 
     @staticmethod
     def _approved_actions(tool_name: str, guard: GuardDecision) -> frozenset[str]:

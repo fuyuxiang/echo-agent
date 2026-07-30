@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -20,6 +21,7 @@ from typing import Any, Awaitable, Callable
 from loguru import logger
 
 from echo_agent.scheduler.authorization import JobAuthorization
+from echo_agent.scheduler.authorization import verify as verify_authorization
 
 try:
     import fcntl
@@ -172,6 +174,14 @@ class Scheduler:
         self._background_tasks: dict[str, asyncio.Task] = {}
         self._lock_dir = store_path.parent / "scheduler_locks"
         self._lock_dir.mkdir(parents=True, exist_ok=True)
+        # Monotonic snapshot counter. _build_payload stamps each serialization
+        # with the state it captured; _write_payload refuses to land one that a
+        # later write already superseded, so a revoked authorization cannot be
+        # resurrected on disk by an in-flight snapshot from before the revocation.
+        # A threading.Lock (not asyncio) because the writes run in to_thread.
+        self._revision = 0
+        self._written_revision = 0
+        self._write_lock = threading.Lock()
         self._concurrency_sem: asyncio.Semaphore | None = None
         self._tick_tasks: set[asyncio.Task] = set()
         self._inflight_jobs: set[str] = set()
@@ -294,20 +304,51 @@ class Scheduler:
         self._save()
 
     def _save(self) -> None:
-        self._write_payload(self._build_payload())
+        self._write_payload(*self._build_payload())
 
-    def _build_payload(self) -> str:
+    def _build_payload(self) -> tuple[str, int]:
+        """Serialize current state together with the revision it represents.
+
+        The revision is what lets a writer tell "my snapshot is current" from "my
+        snapshot has since been superseded" — see _write_payload."""
+        self._revision += 1
         data = {"jobs": [j.to_dict() for j in self._jobs.values()]}
-        return json.dumps(data, ensure_ascii=False, indent=2)
+        return json.dumps(data, ensure_ascii=False, indent=2), self._revision
 
     async def _save_async(self) -> None:
         # Build the payload on the event loop (where _jobs is mutated), then
         # do the fsync'd write in a thread so frequent job runs don't stall
         # the loop on disk I/O.
-        payload = self._build_payload()
-        await asyncio.to_thread(self._write_payload, payload)
+        payload, revision = self._build_payload()
+        await asyncio.to_thread(self._write_payload, payload, revision)
 
-    def _write_payload(self, payload: str) -> None:
+    def _write_payload(self, payload: str, revision: int | None = None) -> None:
+        # Drop a snapshot that a newer write has already superseded. The window
+        # is real: _save_async serializes on the loop and then fsyncs in a
+        # thread, so a synchronous _save (update_job / remove_job) can complete
+        # in between and be overwritten by the older in-flight payload. As a
+        # plain lost update that was tolerable — the next tick rewrites the file.
+        # It stopped being tolerable once authorization grants moved into this
+        # same snapshot: revoking a grant and having the pre-revocation snapshot
+        # land afterwards resurrects it on disk, and the job comes back
+        # authorized after a restart. That is a fail-open on a security
+        # credential, so the stale writer yields instead.
+        #
+        # The lock makes compare-and-claim atomic and serializes the writes
+        # themselves: two concurrent _save_async threads could otherwise both
+        # pass the check and race their os.replace calls, landing either payload.
+        with self._write_lock:
+            if revision is not None:
+                if revision < self._written_revision:
+                    logger.debug(
+                        "Skipping stale scheduler snapshot (revision {} < {})",
+                        revision, self._written_revision,
+                    )
+                    return
+                self._written_revision = revision
+            self._write_locked(payload)
+
+    def _write_locked(self, payload: str) -> None:
         self._store_path.parent.mkdir(parents=True, exist_ok=True)
         # Atomic write: tempfile in the same directory + os.replace.
         # A crash mid-write must never leave the JSON truncated, otherwise
@@ -356,6 +397,7 @@ class Scheduler:
                 )
             job.next_run_ms = _compute_next_run(job, now)
         await self._save_async()
+        self._warn_unauthorized_jobs()
         self._timer_task = asyncio.create_task(self._tick_loop())
         logger.info("Scheduler started with {} jobs", len(self._jobs))
 
@@ -627,6 +669,31 @@ class Scheduler:
 
         await self._save_async()
         await self._emit("cron_run", job)
+
+    def _warn_unauthorized_jobs(self) -> None:
+        """Name the jobs whose privileged work will be refused at fire time.
+
+        Unattended WRITE used to be waved through by the approval gate regardless
+        of any per-job grant, so stores written before that check existed hold
+        enabled jobs with no valid authorization. They still fire — only their
+        write/exec tool calls are denied — which without this notice shows up as a
+        job that mysteriously stopped doing its job. Logged once at startup, with
+        the ids needed to fix it, instead of per-fire noise."""
+        stale: list[str] = []
+        for job in self._jobs.values():
+            if not (job.enabled and job.status == JobStatus.ACTIVE):
+                continue
+            if verify_authorization(job):
+                continue
+            stale.append(f"{job.id} ('{job.name}')")
+        if not stale:
+            return
+        logger.warning(
+            "{} 个已启用的定时任务没有有效的无人值守授权，触发时写文件/执行命令等操作会被拒绝："
+            "{}。如需放开，对每个任务运行 `echo-agent cron authorize <id>`，"
+            "或将 permissions.approval.unattended_policy 设为 allow_safe。",
+            len(stale), "、".join(stale[:10]) + ("…" if len(stale) > 10 else ""),
+        )
 
     def _try_acquire_lock(self, job_id: str) -> Any:
         if not _HAS_FCNTL:

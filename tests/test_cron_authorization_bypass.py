@@ -86,6 +86,7 @@ from aiohttp.test_utils import TestClient, TestServer  # noqa: E402
 
 from echo_agent.agent.loop import AgentLoop  # noqa: E402
 from echo_agent.gateway.api.cron_api import CronAPI  # noqa: E402
+from echo_agent.gateway.auth import GatewayAuth  # noqa: E402
 
 
 def _api_with_guards(*, admin_ok: bool):
@@ -189,8 +190,19 @@ async def test_rest_update_without_flag_clears_authorization():
     server._agent_loop.scheduler.get_job = MagicMock(return_value=job)
     captured = {}
 
+    # The stub must actually apply the edit: revocation is decided by comparing
+    # the job's fingerprint before and after the mutation, so a stub that
+    # swallows the new payload would report "nothing changed" and keep the grant.
     def _update(job_id, **kwargs):
         captured["kwargs"] = kwargs
+        if kwargs.get("payload") is not None:
+            job.payload = kwargs["payload"]
+        if kwargs.get("cron_expr") is not None:
+            job.cron_expr = kwargs["cron_expr"]
+        if kwargs.get("name") is not None:
+            job.name = kwargs["name"]
+        if kwargs.get("set_authorization"):
+            job.authorization = kwargs.get("authorization")
         return job
 
     server._agent_loop.scheduler.update_job = MagicMock(side_effect=_update)
@@ -208,6 +220,10 @@ async def test_rest_update_authorizes_against_the_edited_schedule():
     answering 200."""
     api, server = _api_with_guards(admin_ok=True)
     server.auth.token_from_headers = MagicMock(return_value="tok12345678")
+    # Use the real digest rather than a MagicMock: the operator string lands in
+    # a JSON response, so an auto-specced mock would fail to serialize and hide
+    # what this test is actually about.
+    server.auth.token_identifier = GatewayAuth.token_identifier.__get__(server.auth)
     job = _job()
     server._agent_loop.scheduler.get_job = MagicMock(return_value=job)
 
@@ -233,8 +249,14 @@ async def test_rest_update_authorizes_against_the_edited_schedule():
     assert job.cron_expr == "0 10 * * *"
     assert verify(job) is True
     assert body["job"]["authorization_valid"] is True
-    # Only the token's first 8 chars are kept as an audit breadcrumb.
-    assert body["job"]["authorization"]["operator"] == "tok12345"
+    # The operator is a non-reversible digest, not a slice of the token. GET
+    # /cron is read-scope while these mutations are admin-only, so recording
+    # token[:8] handed part of an admin credential to a lower privilege level —
+    # and a token of 8 chars or fewer was stored in full.
+    operator = body["job"]["authorization"]["operator"]
+    assert operator.startswith("tok_")
+    assert "tok12345678" not in operator
+    assert "tok12345" not in operator[4:]
 
 
 @pytest.mark.asyncio

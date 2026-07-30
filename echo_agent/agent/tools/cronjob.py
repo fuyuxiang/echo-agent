@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from echo_agent.agent.approval_gate import APPROVAL_SOURCE_HUMAN
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
 from echo_agent.scheduler.authorization import grant as grant_authorization
 from echo_agent.scheduler.delivery import target_from_session_key
@@ -12,7 +13,10 @@ from echo_agent.scheduler.service import ScheduledJob, Scheduler, TriggerKind
 
 class CronjobTool(Tool):
     name = "cronjob"
-    description = "Manage scheduled tasks: create, list, update, or delete cron-based jobs."
+    # Lists exactly the actions the enum accepts. "update" used to be advertised
+    # here with no enum value and no implementation behind it, so the model kept
+    # attempting edits that came back as "Unknown action".
+    description = "Manage scheduled tasks: create, list, delete, or trigger cron-based jobs."
     risk_level = "dangerous"
     parameters = {
         "type": "object",
@@ -53,24 +57,52 @@ class CronjobTool(Tool):
                 "deliver_channel": target_channel,
                 "deliver_chat_id": target_chat_id,
             }
+            # Validate the expression before anything is persisted. An
+            # unparseable expression used to be accepted: the job was stored and
+            # even granted an authorization, but _compute_next_run returned None
+            # so it never fired — a "created successfully" that silently does
+            # nothing. Same croniter check the REST endpoint already applies.
+            try:
+                from croniter import croniter
+                croniter(schedule)
+            except (ValueError, KeyError, TypeError) as e:
+                return ToolResult(
+                    success=False,
+                    error=f"Invalid cron expression '{schedule}': {e}",
+                    error_kind="validation",
+                )
             job = ScheduledJob(
                 name=name,
                 trigger=TriggerKind.CRON,
                 cron_expr=schedule,
                 payload=payload,
             )
-            # This tool is risk_level="dangerous", so execute() is only reached
-            # after the human approved this specific call. That approval IS the
-            # unattended-execution consent — record it against the job's content
-            # now, because nothing downstream can reconstruct it later. Without
-            # this the job would fire but be denied its own WRITE/EXEC work.
-            job.authorization = grant_authorization(
-                job,
-                operator=(ctx.user_id if ctx and ctx.user_id else "agent-approval"),
-                source="tui-approval",
-            )
+            # Unattended WRITE/EXEC consent is only issued when a person actually
+            # approved THIS call. The tool is risk_level="dangerous", but that
+            # alone never guaranteed a prompt: with the shipped defaults
+            # (profile=personal_cli, cli_auto_approve=True) the gate auto-approved
+            # every risk level on cli channels, so this signed a grant labelled
+            # "tui-approval" that no human had seen. approved_actions cannot tell
+            # the two apart — both hold {"cronjob"} — hence approval_source.
+            #
+            # Without a grant the job still fires; only its privileged tool calls
+            # are denied. So the fallback is a working reminder-style job plus a
+            # pointer to the explicit authorization commands, not a failure.
+            human_approved = bool(ctx and ctx.approval_source == APPROVAL_SOURCE_HUMAN)
+            if human_approved:
+                job.authorization = grant_authorization(
+                    job,
+                    operator=(ctx.user_id if ctx and ctx.user_id else "agent-approval"),
+                    source="tui-approval",
+                )
             created = self._scheduler.add_job(job)
             out = f"Created job '{name}' (id={created.id}): {schedule}"
+            if not human_approved:
+                out += (
+                    "\n提示：该任务未获得无人值守授权，触发时无法执行写文件/命令等特权操作。"
+                    f"如需放开，请运行 `echo-agent cron authorize {created.id}` "
+                    "或在 Dashboard 的定时任务页勾选授权。"
+                )
             if not target_channel or not target_chat_id:
                 # No resolvable delivery target: the job will run but any user-
                 # facing output falls back to the cron pseudo-channel and is

@@ -102,6 +102,7 @@ def build_worker_tool_executor(
             parent_execution_id=f"worker:{tool_name}:{depth}",
             credentials=credentials.get_for_tool(tool_name) if credentials else {},
             approved_actions=approval_check.approved_actions,
+            approval_source=approval_check.approval_source,
             allowed_tools=frozenset(allowed_tools),
         )
         result = await tool_registry.execute(tool_name, tool_call.arguments, worker_ctx)

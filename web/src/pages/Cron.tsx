@@ -8,6 +8,7 @@ import { runMutation, toast } from "../stores/toast";
 import { Loadable } from "../components/Loadable";
 import { useConfirm } from "../components/ConfirmDialog";
 import { CronRunsDrawer } from "../components/CronRunsDrawer";
+import { useIsAdmin } from "../stores/capabilities";
 import { Play, Trash2, Plus, Pencil, History } from "lucide-react";
 
 export interface CronJob {
@@ -67,6 +68,14 @@ export function Cron() {
   const { t } = useTranslation(["cron", "common"]);
   const { data, loading, error, refetch } = useApi<{ jobs: CronJob[] }>("/cron");
   const confirm = useConfirm();
+  // Every cron mutation is admin-guarded server-side (creating a job schedules
+  // unattended work and can grant it WRITE/EXEC rights), while listing is
+  // read-scope. Without probing, a plain api token rendered the full set of
+  // controls and answered 403 on each click. null = still probing, treated as
+  // allowed so controls don't flash disabled on first paint — same convention as
+  // Knowledge / Memory / Skills / Config.
+  const isAdmin = useIsAdmin();
+  const canWrite = isAdmin !== false;
   const [showForm, setShowForm] = useState(false);
   // null = the form is creating; a job id = editing that job. Both share one set
   // of fields because PUT accepts exactly the same shape POST does.
@@ -292,7 +301,9 @@ export function Cron() {
         <h1 className="text-lg font-bold">{t("title")}</h1>
         <button
           onClick={() => (showForm ? resetForm() : setShowForm(true))}
-          className="flex items-center gap-1 bg-blue-600 text-white px-3 py-1.5 rounded text-sm"
+          disabled={!canWrite}
+          title={canWrite ? undefined : t("common:adminOnly")}
+          className="flex items-center gap-1 bg-blue-600 text-white px-3 py-1.5 rounded text-sm disabled:opacity-50"
         >
           <Plus size={16} /> {t("new")}
         </button>
@@ -395,7 +406,9 @@ export function Cron() {
                         aria-checked={job.enabled}
                         aria-label={t(job.enabled ? "pauseAria" : "resumeAria", { name: job.name || job.id })}
                         onClick={() => toggleEnabled(job)}
-                        className={`text-xs px-1.5 py-0.5 rounded hover:ring-1 hover:ring-blue-300 ${
+                        disabled={!canWrite}
+                        title={canWrite ? undefined : t("common:adminOnly")}
+                        className={`text-xs px-1.5 py-0.5 rounded hover:ring-1 hover:ring-blue-300 disabled:opacity-50 ${
                           job.enabled ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-600"
                         }`}
                       >
@@ -405,10 +418,12 @@ export function Cron() {
                     <td className="text-xs">{job.last_status || "-"}</td>
                     <td className="text-xs">{dateTime(job.next_run_ms)}</td>
                     <td className="flex gap-1 py-2">
-                      <button onClick={() => trigger(job.id)} aria-label={t("triggerNow")} className="p-1 hover:bg-gray-100 rounded" title={t("triggerNow")}><Play size={14} /></button>
-                      <button onClick={() => startEdit(job)} aria-label={t("editAria", { name: job.name || job.id })} className="p-1 hover:bg-gray-100 rounded" title={t("edit")}><Pencil size={14} /></button>
+                      {/* Trigger / edit / delete are mutations; the run history
+                          is read-scope and stays available to any token. */}
+                      <button onClick={() => trigger(job.id)} disabled={!canWrite} aria-label={t("triggerNow")} className="p-1 hover:bg-gray-100 rounded disabled:opacity-50" title={canWrite ? t("triggerNow") : t("common:adminOnly")}><Play size={14} /></button>
+                      <button onClick={() => startEdit(job)} disabled={!canWrite} aria-label={t("editAria", { name: job.name || job.id })} className="p-1 hover:bg-gray-100 rounded disabled:opacity-50" title={canWrite ? t("edit") : t("common:adminOnly")}><Pencil size={14} /></button>
                       <button onClick={() => setRunsFor(job)} aria-label={t("runsAria", { name: job.name || job.id })} className="p-1 hover:bg-gray-100 rounded" title={t("runs")}><History size={14} /></button>
-                      <button onClick={() => remove(job)} aria-label={t("common:delete")} className="p-1 hover:bg-red-50 rounded text-red-500" title={t("common:delete")}><Trash2 size={14} /></button>
+                      <button onClick={() => remove(job)} disabled={!canWrite} aria-label={t("common:delete")} className="p-1 hover:bg-red-50 rounded text-red-500 disabled:opacity-50" title={canWrite ? t("common:delete") : t("common:adminOnly")}><Trash2 size={14} /></button>
                     </td>
                   </tr>
                 ))}

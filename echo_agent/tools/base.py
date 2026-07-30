@@ -56,6 +56,17 @@ class ToolExecutionContext:
     parent_execution_id: str | None = None
     credentials: dict[str, str] = field(default_factory=dict)
     approved_actions: frozenset[str] = field(default_factory=frozenset)
+    # How this call got approved, for tools that issue *persistent* privileges
+    # from a one-off consent. "human" only when a person answered an approval
+    # prompt for this exact call; "auto" for every policy-based pass
+    # (cli_auto_approve, trusted channel, mode=off, allowlist, unattended grant).
+    #
+    # approved_actions cannot carry this: it holds the same {tool_name} whether a
+    # human confirmed or a config auto-approved, so the one fact a tool like
+    # cronjob needs — "did anybody actually look at this?" — was unrecoverable
+    # downstream. Tools MUST treat the empty default as not-human: a context
+    # built by an older caller says nothing about consent.
+    approval_source: str = ""
     allowed_tools: frozenset[str] = field(default_factory=frozenset)
     channel: str = ""
     chat_id: str = ""
