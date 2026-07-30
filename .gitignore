@@ -50,3 +50,6 @@ docs/*-backlog.md
 # Local runtime state and generated workspace data
 /runtime/cron/jobs.json
 /runtime/workspace/
+
+# pnpm content-addressable store (local package cache, never versioned)
+/.pnpm-store/
