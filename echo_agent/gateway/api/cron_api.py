@@ -23,6 +23,18 @@ def _payload_has_content(payload: object) -> bool:
     return bool(command)
 
 
+# Request keys whose values feed authorization.compute_fingerprint: the
+# instruction and delivery target (inside `payload`) and the firing schedule.
+# `name` and `enabled` are absent on purpose — the fingerprint excludes them, so
+# a rename or a pause/resume cannot change what the human consented to and must
+# not revoke the grant. Schedule keys the PUT does not currently apply are listed
+# anyway: if update_job ever starts accepting them, the safe behaviour (revoke)
+# is already wired instead of quietly keeping a grant for edited content.
+_FINGERPRINT_BODY_KEYS = frozenset({
+    "payload", "cron_expr", "interval_ms", "at_ms", "timezone",
+})
+
+
 def _merge_payload(current: object, incoming: dict) -> dict:
     """Merge an update into the stored payload instead of replacing it.
 
@@ -194,14 +206,28 @@ class CronAPI:
         # is already invalid. Writing None when the caller did not re-authorize is
         # what makes the UI able to say "需要重新授权" instead of displaying a grant
         # that silently no longer applies.
+        #
+        # Revoking is scoped to edits that actually touch the fingerprint. Doing it
+        # for ANY authorization-less PUT silently killed grants on requests that
+        # change nothing a human consented to: the dashboard's pause/resume toggle
+        # sends {"enabled": ...} alone, so pausing an authorized job and resuming
+        # it a week later left it firing with WRITE/EXEC denied, at night, with no
+        # warning anywhere in the UI. Leaving the grant alone here opens no window,
+        # because name/enabled are not fingerprint inputs — the grant still binds
+        # the same instruction, delivery target and schedule it was issued for.
         if body.get("authorize_unattended") is True:
             authorization = grant_authorization(
                 updated,
                 operator=self._server.auth.token_from_headers(request.headers)[:8] or "local-no-auth",
                 source="rest",
             )
-        else:
+        elif _FINGERPRINT_BODY_KEYS & body.keys():
             authorization = None
+        else:
+            # Nothing fingerprinted changed and no new consent was given: pass
+            # neither argument so update_job's set_authorization stays False and
+            # the stored grant is left untouched.
+            return web.json_response({"job": self._job_to_dict(updated)})
         updated = self._scheduler().update_job(
             job_id, authorization=authorization, set_authorization=True
         ) or updated

@@ -61,6 +61,16 @@ def test_authorization_lost_after_delivery_target_edit():
 
 
 def test_authorization_survives_rename_and_pause():
+    """Fingerprint semantics only: name/enabled are not hashed, so mutating them
+    directly keeps the grant valid.
+
+    This asserts nothing about the product. It mutates the job object instead of
+    going through PUT /cron/{id}, and the API used to revoke the grant on every
+    request that did not re-authorize — so this test passed while pause/resume in
+    the dashboard silently killed authorization. The behavioural guarantee lives
+    in test_rest_update_enabled_only_keeps_authorization and
+    test_rest_update_name_only_keeps_authorization below.
+    """
     job = _job()
     job.authorization = grant(job, operator="alice", source="tui-approval")
     job.name = "renamed"
@@ -245,3 +255,132 @@ async def test_job_to_dict_reports_authorization_state():
     stale = api._job_to_dict(job)
     assert stale["authorization"] is not None
     assert stale["authorization_valid"] is False
+
+
+# ── PUT /cron/{id} × authorization, against a REAL Scheduler ─────────────────
+# These go through the HTTP handler and a real Scheduler.update_job, because the
+# regression they cover lived exactly in the seam a MagicMock scheduler hides:
+# which keyword arguments the API decides to pass. The unit-level
+# test_authorization_survives_rename_and_pause above mutates the job object
+# directly, so it stayed green while the product revoked the grant.
+
+
+def _api_with_real_scheduler(tmp_path, *, authorized: bool):
+    from echo_agent.scheduler.service import Scheduler
+
+    api, server = _api_with_guards(admin_ok=True)
+    server.auth.token_from_headers = MagicMock(return_value="tok12345678")
+    scheduler = Scheduler(store_path=tmp_path / "scheduler.json")
+    job = _job()
+    if authorized:
+        job.authorization = grant(job, operator="alice", source="rest")
+    scheduler.add_job(job)
+    server._agent_loop.scheduler = scheduler
+    return api, scheduler, job.id
+
+
+@pytest.mark.asyncio
+async def test_rest_update_enabled_only_keeps_authorization(tmp_path):
+    """Pause then resume must not revoke consent.
+
+    The dashboard's toggle sends {"enabled": ...} and nothing else. Revoking here
+    meant an authorized job resumed a week later fired on schedule with WRITE/EXEC
+    denied, overnight, with no UI hint that pausing had cost it its grant.
+    """
+    from echo_agent.scheduler.authorization import verify
+
+    api, scheduler, job_id = _api_with_real_scheduler(tmp_path, authorized=True)
+    async with TestClient(TestServer(_app(api))) as client:
+        pause = await client.put(f"/cron/{job_id}", json={"enabled": False})
+        assert pause.status == 200
+        paused = (await pause.json())["job"]
+        assert paused["enabled"] is False
+        assert paused["authorization"] is not None
+        assert paused["authorization_valid"] is True
+        assert verify(scheduler.get_job(job_id)) is True
+
+        resume = await client.put(f"/cron/{job_id}", json={"enabled": True})
+        assert resume.status == 200
+        resumed = (await resume.json())["job"]
+        assert resumed["enabled"] is True
+        assert resumed["authorization"] is not None
+        assert resumed["authorization_valid"] is True
+
+    job = scheduler.get_job(job_id)
+    assert verify(job) is True
+    # The fired event is what the approval gate actually reads.
+    assert inbound_event_from_job(job).cron_authorized is True
+
+
+@pytest.mark.asyncio
+async def test_rest_update_name_only_keeps_authorization(tmp_path):
+    """A rename changes no fingerprint input, so the grant stands."""
+    from echo_agent.scheduler.authorization import verify
+
+    api, scheduler, job_id = _api_with_real_scheduler(tmp_path, authorized=True)
+    async with TestClient(TestServer(_app(api))) as client:
+        resp = await client.put(f"/cron/{job_id}", json={"name": "renamed"})
+        assert resp.status == 200
+        body = (await resp.json())["job"]
+        assert body["name"] == "renamed"
+        assert body["authorization_valid"] is True
+
+    job = scheduler.get_job(job_id)
+    assert job.name == "renamed"
+    assert verify(job) is True
+    assert inbound_event_from_job(job).cron_authorized is True
+
+
+@pytest.mark.asyncio
+async def test_rest_update_payload_still_clears_authorization(tmp_path):
+    """Editing the instruction without re-authorizing must revoke — the property
+    the narrower revoke rule must not weaken."""
+    from echo_agent.scheduler.authorization import verify
+
+    api, scheduler, job_id = _api_with_real_scheduler(tmp_path, authorized=True)
+    async with TestClient(TestServer(_app(api))) as client:
+        resp = await client.put(f"/cron/{job_id}", json={"payload": {"command": "changed"}})
+        assert resp.status == 200
+        body = (await resp.json())["job"]
+        assert body["authorization"] is None
+        assert body["authorization_valid"] is False
+
+    job = scheduler.get_job(job_id)
+    assert job.authorization is None
+    assert verify(job) is False
+    assert inbound_event_from_job(job).cron_authorized is False
+
+
+@pytest.mark.asyncio
+async def test_rest_update_cron_expr_still_clears_authorization(tmp_path):
+    """Rescheduling is a fingerprint input: consent was for the old schedule."""
+    from echo_agent.scheduler.authorization import verify
+
+    api, scheduler, job_id = _api_with_real_scheduler(tmp_path, authorized=True)
+    async with TestClient(TestServer(_app(api))) as client:
+        resp = await client.put(f"/cron/{job_id}", json={"cron_expr": "*/1 * * * *"})
+        assert resp.status == 200
+        body = (await resp.json())["job"]
+        assert body["cron_expr"] == "*/1 * * * *"
+        assert body["authorization"] is None
+        assert body["authorization_valid"] is False
+
+    job = scheduler.get_job(job_id)
+    assert job.authorization is None
+    assert verify(job) is False
+
+
+@pytest.mark.asyncio
+async def test_rest_update_enabled_cannot_conjure_authorization(tmp_path):
+    """Keeping a grant across enabled/name edits must not be able to CREATE one:
+    an unauthorized job stays unauthorized however often it is toggled."""
+    from echo_agent.scheduler.authorization import verify
+
+    api, scheduler, job_id = _api_with_real_scheduler(tmp_path, authorized=False)
+    async with TestClient(TestServer(_app(api))) as client:
+        for body in ({"enabled": False}, {"enabled": True}, {"name": "renamed"}):
+            resp = await client.put(f"/cron/{job_id}", json=body)
+            assert resp.status == 200
+            assert (await resp.json())["job"]["authorization"] is None
+
+    assert verify(scheduler.get_job(job_id)) is False
