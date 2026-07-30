@@ -96,7 +96,9 @@ class TTSTool(Tool):
         if caption:
             blocks.append(ContentBlock(type=ContentType.TEXT, text=caption))
         blocks.append(ContentBlock(type=ContentType.FILE, url=str(audio), metadata={"name": audio.name}))
-        event = OutboundEvent(channel=channel, chat_id=chat_id, content=blocks)
+        event = OutboundEvent(
+            channel=channel, chat_id=chat_id, content=blocks,
+        ).mark_tool_delivery(ctx)
         try:
             await self._publish(event)
             return f"delivered to {channel}:{chat_id}"

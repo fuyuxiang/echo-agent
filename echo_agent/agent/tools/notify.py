@@ -30,6 +30,8 @@ class NotifyTool(Tool):
         channel = params.get("channel", "cli")
         chat_id = params.get("chat_id", "default")
 
-        event = OutboundEvent.text_reply(channel=channel, chat_id=chat_id, text=message)
+        event = OutboundEvent.text_reply(
+            channel=channel, chat_id=chat_id, text=message,
+        ).mark_tool_delivery(ctx)
         await self._bus.publish_outbound(event)
         return ToolResult(output=f"Notification sent to {channel}:{chat_id}")

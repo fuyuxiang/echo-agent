@@ -31,7 +31,7 @@ class MessageTool(Tool):
             channel=params["channel"],
             chat_id=params["chat_id"],
             text=params["text"],
-        )
+        ).mark_tool_delivery(ctx)
         try:
             await self._publish(event)
             return ToolResult(output=f"Message sent to {params['channel']}:{params['chat_id']}")

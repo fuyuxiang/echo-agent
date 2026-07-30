@@ -71,6 +71,13 @@ class ToolExecutionContext:
     channel: str = ""
     chat_id: str = ""
     reply_to_id: str = ""
+    # The inbound event this turn is answering. Tools that publish an
+    # OutboundEvent themselves (message / notify / send_file / tts) must stamp it
+    # so the delivery layer can tell "this turn already sent something to this
+    # target" — otherwise their message and the turn's own final reply are two
+    # unrelated finals and both go out. Same key the progress/heartbeat events
+    # use (`_inbound_event_id`), so all of one turn's traffic shares one identity.
+    inbound_event_id: str = ""
 
 
 def build_idempotency_key(trace_id: str, tool_name: str, index: int, params: Mapping[str, Any]) -> str:

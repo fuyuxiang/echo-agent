@@ -188,6 +188,31 @@ class OutboundEvent:
     def text(self) -> str:
         return "\n".join(b.text for b in self.content if b.text)
 
+    def mark_tool_delivery(self, ctx: Any) -> OutboundEvent:
+        """Attribute this event to the turn whose tool call produced it.
+
+        Tools that publish their own OutboundEvent (message / notify / send_file
+        / tts) inherit ``is_final=True`` and ``message_kind="final"`` from the
+        field defaults, so the delivery layer treats them exactly like a turn's
+        final answer — but without ``_inbound_event_id`` they belonged to no turn,
+        so nothing could relate them to the final reply that follows. A cron job
+        whose instruction said "send the report" therefore delivered twice: once
+        from the tool, once from the turn's own reply.
+
+        ``_tool_delivery`` distinguishes the two for the guard below: a tool
+        delivery claims the target, but must not be *suppressed* by an earlier
+        claim — two message calls to different chats are both legitimate.
+
+        Returns self so call sites read as one expression. A None/partial ctx
+        leaves the event unstamped, which is the old behaviour: unattributed, and
+        therefore never suppressed.
+        """
+        inbound_event_id = str(getattr(ctx, "inbound_event_id", "") or "")
+        if inbound_event_id:
+            self.metadata["_inbound_event_id"] = inbound_event_id
+            self.metadata["_tool_delivery"] = True
+        return self
+
     @classmethod
     def text_reply(
         cls,

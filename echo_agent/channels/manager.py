@@ -96,6 +96,11 @@ class ChannelManager:
         self._heartbeat_msg_ids: dict[str, str] = {}  # inbound_event_id -> platform msg id
         self._delivered_milestone: dict[str, int] = {}  # inbound_event_id -> max delivered seq
         self._finalized_keys: dict[str, float] = {}  # inbound_event_id -> finalize time (bounded set)
+        # Which targets a turn has already delivered a final to, so the turn's own
+        # reply is not sent on top of a message the tools already delivered there.
+        # Keyed per turn, valued by "channel:chat_id" — NOT a bare per-turn flag:
+        # a turn that notifies another chat must still answer the one it is in.
+        self._finalized_targets: dict[str, set[str]] = {}
         self._inbound_msg_ids: dict[str, tuple[str, str, float]] = {}
         self._max_inbound_ids = 1000
         self._max_stream_states = 500
@@ -206,12 +211,38 @@ class ChannelManager:
         # timer that fires during downstream channel I/O is discarded rather
         # than overwriting or duplicating the final answer.
         key = str(event.metadata.get("_inbound_event_id", ""))
+        target = f"{event.channel}:{event.chat_id}"
+        is_tool_delivery = bool(event.metadata.get("_tool_delivery"))
         if key:
             async with self._state_lock:
                 self._finalized_keys[key] = time.monotonic()
                 while len(self._finalized_keys) > self._max_inbound_ids:
                     oldest = next(iter(self._finalized_keys))
                     del self._finalized_keys[oldest]
+                # Claim the target, and find out whether someone got there first.
+                # _finalized_keys was only ever WRITTEN here and read by
+                # _handle_heartbeat, so it guarded "a late beat must not overwrite
+                # the answer" and nothing else — two finals in one turn both went
+                # out. That is the weather-report duplicate: the `message` tool
+                # delivered the report, then the turn's own reply (an "已推送"
+                # wrap-up meant for the caller, not the user) was delivered too.
+                claimed = self._finalized_targets.setdefault(key, set())
+                already_delivered = target in claimed
+                claimed.add(target)
+                while len(self._finalized_targets) > self._max_inbound_ids:
+                    oldest = next(iter(self._finalized_targets))
+                    del self._finalized_targets[oldest]
+            # Only the turn's own reply is suppressed by an earlier claim. A tool
+            # delivery is an explicit instruction ("send this to that chat") and
+            # may legitimately repeat — two message calls to the same chat are two
+            # messages the model asked for, not an accident of the framework.
+            if already_delivered and not is_tool_delivery:
+                logger.debug(
+                    "Suppressing duplicate final for {} (already delivered by a tool this turn)",
+                    target,
+                )
+                event.metadata["_drop"] = True
+                return
         channel = self._channels.get(event.channel)
         has_content = any(b.text or b.url for b in event.content)
         if not has_content:
@@ -594,3 +625,6 @@ class ChannelManager:
                 ]
                 for k in stale_finalized:
                     del self._finalized_keys[k]
+                    # Same lifetime as the timestamp it is keyed alongside;
+                    # expiring one without the other would leak the target sets.
+                    self._finalized_targets.pop(k, None)

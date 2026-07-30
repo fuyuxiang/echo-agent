@@ -80,7 +80,9 @@ class SendFileTool(Tool):
             metadata={"name": resolved.name},
         ))
 
-        event = OutboundEvent(channel=params["channel"], chat_id=params["chat_id"], content=blocks)
+        event = OutboundEvent(
+            channel=params["channel"], chat_id=params["chat_id"], content=blocks,
+        ).mark_tool_delivery(ctx)
         try:
             await self._publish(event)
             return ToolResult(output=f"File sent to {params['channel']}:{params['chat_id']} ({resolved.name})")

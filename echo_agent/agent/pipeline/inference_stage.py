@@ -1076,6 +1076,7 @@ class InferenceStage:
                 channel=event.channel,
                 chat_id=event.chat_id,
                 reply_to_id=event.reply_to_id or "",
+                inbound_event_id=event.event_id,
             )
 
             # pre_tool_call hook (may cancel/modify); modifications applied in place
