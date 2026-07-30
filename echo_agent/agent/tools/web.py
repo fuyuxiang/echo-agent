@@ -13,11 +13,35 @@ import aiohttp
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
 
 
+def _error_kind_for(exc: BaseException) -> str:
+    """Map a transport exception to a ``ToolResult.error_kind``.
+
+    Without this the web tools returned every failure unclassified, so
+    ``ToolResult.is_infra_failure`` was always False and the circuit breaker
+    never opened on a genuinely unreachable network — repeated timeouts just
+    kept costing a tool call each. aiohttp's timeout errors subclass
+    ``asyncio.TimeoutError``, so that arm must be checked before ClientError
+    (``ConnectionTimeoutError`` is both).
+    """
+    if isinstance(exc, asyncio.TimeoutError):
+        return "timeout"
+    if isinstance(exc, (aiohttp.ClientError, OSError)):
+        return "dependency"
+    return "internal"
+
+
 def _ip_is_blocked(ip: ipaddress._BaseAddress) -> bool:
     return bool(
         ip.is_private or ip.is_loopback or ip.is_link_local
         or ip.is_reserved or ip.is_multicast or ip.is_unspecified
     )
+
+
+#: Marks a ``resolve_and_validate`` error as "DNS/resolver broke" rather than
+#: "the target is a policy-blocked address". Only the former is an infra fault:
+#: an SSRF rejection is a stable verdict that retrying cannot fix, so it must
+#: not open the circuit for every other caller of the tool.
+_RESOLVE_FAILED_PREFIX = "Blocked: cannot resolve host"
 
 
 async def resolve_and_validate(url: str) -> tuple[list[str], str | None]:
@@ -116,9 +140,20 @@ class WebFetchTool(Tool):
     timeout_seconds = 30
     _MAX_REDIRECTS = 5
 
+    # Per-request budget, kept strictly under the registry's ``timeout_seconds``
+    # wait_for. With both deadlines at 30s they raced, and the winner decided
+    # whether the failure got classified at all: the outer wait_for reports
+    # error_kind="timeout", while a bare inner aiohttp timeout used to report
+    # none. Landing inside our own handler keeps classification deterministic.
+    _REQUEST_TIMEOUT_MARGIN = 5
+
     def __init__(self, proxy: str | None = None, allow_private: bool = False):
         self._proxy = proxy
         self._allow_private = allow_private
+
+    def _request_timeout(self) -> float:
+        """Per-request deadline that stays inside the registry's wait_for."""
+        return max(1.0, self.timeout_seconds - self._REQUEST_TIMEOUT_MARGIN)
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         url = params["url"]
@@ -126,7 +161,7 @@ class WebFetchTool(Tool):
         try:
             return await self._fetch_with_redirect_guard(url, max_chars)
         except Exception as e:
-            return ToolResult(success=False, error=str(e))
+            return ToolResult(success=False, error=str(e), error_kind=_error_kind_for(e))
 
     async def _fetch_with_redirect_guard(self, url: str, max_chars: int) -> ToolResult:
         """Fetch with redirects followed manually so every hop is SSRF-checked
@@ -138,7 +173,9 @@ class WebFetchTool(Tool):
             if not self._allow_private:
                 ips, ssrf_error = await resolve_and_validate(current)
                 if ssrf_error:
-                    return ToolResult(success=False, error=ssrf_error)
+                    # A resolver failure is an infra fault; an SSRF verdict is not.
+                    kind = "dependency" if ssrf_error.startswith(_RESOLVE_FAILED_PREFIX) else ""
+                    return ToolResult(success=False, error=ssrf_error, error_kind=kind)
                 host = urlparse(current).hostname or ""
                 # Pin the validated IPs for the actual connection (anti-rebinding).
                 connector = aiohttp.TCPConnector(resolver=_PinnedResolver({host: ips}))
@@ -147,7 +184,7 @@ class WebFetchTool(Tool):
                     current,
                     proxy=self._proxy,
                     allow_redirects=False,
-                    timeout=aiohttp.ClientTimeout(total=self.timeout_seconds),
+                    timeout=aiohttp.ClientTimeout(total=self._request_timeout()),
                 ) as resp:
                     if resp.status in (301, 302, 303, 307, 308):
                         location = resp.headers.get("Location")
@@ -246,7 +283,10 @@ class WebSearchTool(Tool):
                 else:
                     return ToolResult(success=False, error=f"Unsupported search provider: {self._provider}")
         except Exception as e:
-            return ToolResult(success=False, error=str(e), metadata={"provider": self._provider})
+            return ToolResult(
+                success=False, error=str(e), error_kind=_error_kind_for(e),
+                metadata={"provider": self._provider},
+            )
 
         if not results:
             return ToolResult(output="No search results.", metadata={"provider": self._provider, "count": 0})
