@@ -50,6 +50,7 @@
   "authorizeConfirmLabel": "我已确认，授权",
   "authorizeUnset": "(未填写)",
   "authorizeNoTarget": "(无投递目标)",
+  "authorizeStaleForm": "任务内容在你确认授权后被修改，本次保存不会授权。请核对内容后重新勾选授权。",
   "authState": {
     "granted": "已授权",
     "stale": "需要重新授权",

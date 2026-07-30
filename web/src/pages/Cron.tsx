@@ -4,7 +4,7 @@ import { useApi } from "../hooks/use-api";
 import { useWsSubscribe } from "../hooks/use-ws";
 import { apiFetch } from "../lib/api";
 import { dateTime } from "../lib/datetime";
-import { runMutation } from "../stores/toast";
+import { runMutation, toast } from "../stores/toast";
 import { Loadable } from "../components/Loadable";
 import { useConfirm } from "../components/ConfirmDialog";
 import { CronRunsDrawer } from "../components/CronRunsDrawer";
@@ -91,6 +91,12 @@ export function Cron() {
   // the form for an edit starts unchecked, so a previously authorized job is
   // not silently re-authorized by an unrelated rename.
   const [authorizeUnattended, setAuthorizeUnattended] = useState(false);
+  // Exactly what the user was shown when they confirmed. The backend fingerprints
+  // whatever the request carries, so without this a user could confirm "echo hi"
+  // and then edit the instruction into anything before saving — walking away with
+  // a valid grant for content nobody ever read. Consent covers what was on screen,
+  // so a mismatch at submit time revokes it rather than travelling with the edit.
+  const [authorizedSnapshot, setAuthorizedSnapshot] = useState("");
 
   const resetForm = () => {
     setName(""); setExpr(""); setCommand("");
@@ -98,6 +104,7 @@ export function Cron() {
     setCommandKey("command");
     setPayloadKeys({ channel: null, chatId: null, sessionKey: null });
     setAuthorizeUnattended(false);
+    setAuthorizedSnapshot("");
     setEditingId(null);
     setShowForm(false);
   };
@@ -134,8 +141,10 @@ export function Cron() {
     setPayloadKeys({ channel: channelKey, chatId: chatIdKey, sessionKey: sessionKeyKey });
     // Deliberately not seeded from job.authorization: an existing grant is the
     // server's business, and pre-checking the box would turn every edit into a
-    // fresh authorization the user never asked for.
+    // fresh authorization the user never asked for. The snapshot goes with it,
+    // so consent given for one job cannot linger into the next.
     setAuthorizeUnattended(false);
+    setAuthorizedSnapshot("");
     setEditingId(job.id);
     setShowForm(true);
   };
@@ -181,25 +190,40 @@ export function Cron() {
     }
   };
 
+  // The delivery target as shown in the confirm dialog.
+  const deliveryTarget = () =>
+    [deliverChannel.trim(), deliverChatId.trim()].filter(Boolean).join(":") ||
+    sourceSessionKey.trim();
+
+  // Everything the confirm dialog puts in front of the user, as one comparable
+  // string. Built in one place so the dialog and the submit-time check can never
+  // disagree about which fields consent covers.
+  const consentDigest = () =>
+    JSON.stringify([command.trim(), expr.trim(), deliveryTarget()]);
+
   // 勾选授权前先让人看清自己在授权什么:指令全文、频率、投递目标。拒绝确认就保持
   // 关闭,不存在"点了一下就授权了"这条路径。
   const toggleAuthorize = async (checked: boolean) => {
     if (!checked) {
       setAuthorizeUnattended(false);
+      setAuthorizedSnapshot("");
       return;
     }
-    const target = [deliverChannel.trim(), deliverChatId.trim()].filter(Boolean).join(":");
+    const shown = consentDigest();
     const ok = await confirm({
       title: t("authorizeConfirmTitle"),
       message: t("authorizeConfirmMessage", {
         command: command.trim() || t("authorizeUnset"),
         expr: expr.trim() || t("authorizeUnset"),
-        target: target || sourceSessionKey.trim() || t("authorizeNoTarget"),
+        target: deliveryTarget() || t("authorizeNoTarget"),
       }),
       confirmLabel: t("authorizeConfirmLabel"),
       destructive: true,
     });
     setAuthorizeUnattended(ok);
+    // `shown` is captured before the await, from the same reads that built the
+    // dialog message — so it is exactly the text the user was asked to approve.
+    setAuthorizedSnapshot(ok ? shown : "");
   };
 
   const submit = async (e: React.FormEvent) => {
@@ -230,11 +254,20 @@ export function Cron() {
       // 存下三个空串键。
       if (editingId && existing) payload[existing] = "";
     }
+    // 授权只对用户确认时看到的那份内容有效。之后改了指令/频率/投递目标,就不能顺着
+    // 这次授权带出去——后端按请求里的新内容签指纹,那样签出来的是一份用户从没看过
+    // 的有效授权。不一致就照常保存但不授权,同时打回开关并说明,由用户重新核对再勾。
+    const consentStale = authorizeUnattended && consentDigest() !== authorizedSnapshot;
+    if (consentStale) {
+      setAuthorizeUnattended(false);
+      setAuthorizedSnapshot("");
+      toast.error(t("authorizeStaleForm"));
+    }
     // Only send the flag when it is on. Sending `false` explicitly would be
     // equivalent, but omitting it keeps "absence is not consent" visible in the
     // wire format itself.
     const body = JSON.stringify(
-      authorizeUnattended
+      authorizeUnattended && !consentStale
         ? { name, cron_expr: expr, payload, authorize_unattended: true }
         : { name, cron_expr: expr, payload },
     );

@@ -5,6 +5,7 @@ import { Cron } from "./Cron";
 import { ConfirmProvider } from "../components/ConfirmDialog";
 import * as api from "../lib/api";
 import { useAuthStore } from "../stores/auth";
+import { useToastStore } from "../stores/toast";
 
 const AUTHORIZE_LABEL = "允许无人值守执行写入/命令类工具";
 
@@ -57,6 +58,8 @@ function postBody(spy: ApiFetchSpy) {
 beforeEach(() => {
   // useWsSubscribe 只在有 token 时才连接;默认不设,避免测试里开真实 socket。
   useAuthStore.setState({ token: "" });
+  // toast 是全局 store,不清会串到后面的用例。
+  useToastStore.setState({ toasts: [] });
 });
 
 afterEach(() => {
@@ -148,6 +151,98 @@ describe("Cron 无人值守授权", () => {
     fireEvent.click(screen.getByRole("button", { name: "创建" }));
     await waitFor(() => expect(spy).toHaveBeenCalledWith("/cron", expect.anything()));
     expect(postBody(spy)).not.toHaveProperty("authorize_unattended");
+  });
+
+  it("确认授权后又改掉指令,则本次保存不授权且开关打回关闭", async () => {
+    // 授权只对用户确认时看到的那份内容有效。后端会按请求里的新内容签指纹,所以若
+    // 让勾选状态跟着改动一起发出去,用户就拿到了一份自己从没看过的有效授权。
+    const spy = vi.spyOn(api, "apiFetch").mockResolvedValue({ jobs: [] } as never);
+    renderCron();
+
+    fireEvent.click(await screen.findByRole("button", { name: /新建/ }));
+    fillForm();
+    fireEvent.click(screen.getByLabelText(AUTHORIZE_LABEL));
+    fireEvent.click(await screen.findByRole("button", { name: "我已确认，授权" }));
+    await waitFor(() => expect(screen.getByLabelText(AUTHORIZE_LABEL)).toBeChecked());
+
+    // 确认框里写的是 echo hi,这里换成完全不同的指令。
+    fireEvent.change(screen.getByLabelText(/任务内容/), { target: { value: "rm -rf /tmp/x" } });
+    fireEvent.click(screen.getByRole("button", { name: "创建" }));
+
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("/cron", expect.anything()));
+    const body = postBody(spy);
+    // 任务照常保存,只是这次不授权。
+    expect(body).not.toHaveProperty("authorize_unattended");
+    expect(body.payload.command).toBe("rm -rf /tmp/x");
+    // 并明确告诉用户为什么没授权(Toaster 挂在 App 上,这里直接查 store)。
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts.map((x) => x.message)).toContainEqual(
+        expect.stringContaining("在你确认授权后被修改"),
+      ),
+    );
+  });
+
+  it("授权作废后开关立即回到未勾选,重试保存不会把授权带出去", async () => {
+    // 保存成功会关掉表单,所以用一次失败的保存把表单留在原地:此时残留的勾选状态最
+    // 危险——用户只要再点一次保存,就会把刚刚被作废的授权发出去。
+    // GET 与 POST 都是 /cron,只能按 method 区分。
+    const spy = vi.spyOn(api, "apiFetch").mockImplementation(async (_path, init) => {
+      if ((init as RequestInit | undefined)?.method === "POST") throw new Error("boom");
+      return { jobs: [] } as never;
+    });
+    renderCron();
+
+    fireEvent.click(await screen.findByRole("button", { name: /新建/ }));
+    fillForm();
+    fireEvent.click(screen.getByLabelText(AUTHORIZE_LABEL));
+    fireEvent.click(await screen.findByRole("button", { name: "我已确认，授权" }));
+    await waitFor(() => expect(screen.getByLabelText(AUTHORIZE_LABEL)).toBeChecked());
+
+    fireEvent.change(screen.getByLabelText(/任务内容/), { target: { value: "rm -rf /tmp/x" } });
+    fireEvent.click(screen.getByRole("button", { name: "创建" }));
+
+    await waitFor(() => expect(screen.getByLabelText(AUTHORIZE_LABEL)).not.toBeChecked());
+
+    // 再点一次保存(内容没再变),依然不带授权:快照已清空,不会被"内容与快照一致"
+    // 这条捷径重新放行。
+    spy.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "创建" }));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("/cron", expect.anything()));
+    expect(postBody(spy)).not.toHaveProperty("authorize_unattended");
+  });
+
+  it("确认授权后改动频率同样作废本次授权", async () => {
+    const spy = vi.spyOn(api, "apiFetch").mockResolvedValue({ jobs: [] } as never);
+    renderCron();
+
+    fireEvent.click(await screen.findByRole("button", { name: /新建/ }));
+    fillForm();
+    fireEvent.click(screen.getByLabelText(AUTHORIZE_LABEL));
+    fireEvent.click(await screen.findByRole("button", { name: "我已确认，授权" }));
+    await waitFor(() => expect(screen.getByLabelText(AUTHORIZE_LABEL)).toBeChecked());
+
+    // 频率也在确认框里,把每天一次改成每分钟一次是实质性的行为变化。
+    fireEvent.change(screen.getByLabelText("cron 表达式"), { target: { value: "* * * * *" } });
+    fireEvent.click(screen.getByRole("button", { name: "创建" }));
+
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("/cron", expect.anything()));
+    expect(postBody(spy)).not.toHaveProperty("authorize_unattended");
+  });
+
+  it("确认授权后原样提交仍然带上授权", async () => {
+    // 比对逻辑不能过度敏感:没改任何东西时必须照常授权,否则开关等于永远失效。
+    const spy = vi.spyOn(api, "apiFetch").mockResolvedValue({ jobs: [] } as never);
+    renderCron();
+
+    fireEvent.click(await screen.findByRole("button", { name: /新建/ }));
+    fillForm();
+    fireEvent.click(screen.getByLabelText(AUTHORIZE_LABEL));
+    fireEvent.click(await screen.findByRole("button", { name: "我已确认，授权" }));
+    await waitFor(() => expect(screen.getByLabelText(AUTHORIZE_LABEL)).toBeChecked());
+    fireEvent.click(screen.getByRole("button", { name: "创建" }));
+
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("/cron", expect.anything()));
+    expect(postBody(spy).authorize_unattended).toBe(true);
   });
 
   it("编辑已授权任务时开关重新回到关闭,一次改名不会静默续授权", async () => {

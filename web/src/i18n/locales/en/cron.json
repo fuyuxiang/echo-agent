@@ -50,6 +50,7 @@
   "authorizeConfirmLabel": "I understand, authorize",
   "authorizeUnset": "(not set)",
   "authorizeNoTarget": "(no delivery target)",
+  "authorizeStaleForm": "The job changed after you confirmed the authorization, so this save will not authorize it. Review the content and tick the box again.",
   "authState": {
     "granted": "Authorized",
     "stale": "Re-authorization required",
