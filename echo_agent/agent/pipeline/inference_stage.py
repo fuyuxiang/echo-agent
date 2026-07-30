@@ -189,6 +189,21 @@ class InferenceStage:
         answer. No id injection, no frame — those are CLI/TUI-only."""
         if tool_call.name != "clarify" or self._clarify is None:
             return
+        # Registering a pending request is a side effect on session state, so it
+        # must not happen for a call that is about to be rejected. Validation
+        # lives in ToolRegistry.execute, which runs AFTER this — so malformed
+        # arguments (options as a JSON string, question as a dict) left a pending
+        # request behind that nothing would ever resolve. On IM that is worse than
+        # cosmetic: _on_inbound treats the user's next message as the answer to a
+        # question they were never asked, swallowing it.
+        #
+        # Deliberately delegating to the tool's own validate_params rather than
+        # re-checking the shape here: two copies of the rules would drift, and the
+        # only correct predicate is "would execute() reject this?".
+        registry = getattr(self, "_tools", None)
+        tool = registry.get(tool_call.name) if registry is not None else None
+        if tool is not None and tool.validate_params(tool_call.arguments):
+            return
         question = tool_call.arguments.get("question", "")
         options = tool_call.arguments.get("options", []) or []
         if not should_emit_cognitive(event.channel):

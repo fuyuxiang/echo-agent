@@ -226,6 +226,53 @@ async def test_reconnect_then_drop_notifies_again():
         assert len(notices) == 2
 
 
+@pytest.mark.asyncio
+async def test_idle_disconnect_keeps_the_previous_turn_settled_as_done():
+    # settle() 有意允许后来的终态覆盖先前的（网关报错后通常紧跟一次断线，
+    # 更具体的原因应当胜出），但断线处此前是无条件调用：用户空闲时掉线，
+    # 会把上一轮已经"完成"的那行改写成"连接已断开"，而它上方那条答案早已
+    # 送达并仍在屏幕上——这一行是在跟记录本身矛盾。
+    app = EchoTUI()
+    async with app.run_test() as pilot:
+        app._activity.start()
+        app._activity.settle("done")
+        await pilot.pause()
+        assert app._activity.is_settled
+        assert not app._activity.is_active
+
+        app.notify_disconnected()
+        await pilot.pause()
+        # 终态仍是"完成"，只有状态栏与提示反映连接已断开。
+        assert app._activity._outcome == "done"
+
+
+@pytest.mark.asyncio
+async def test_disconnect_while_a_turn_is_running_still_settles_as_disconnected():
+    # 正例：回合确实在进行时，断线必须收尾，否则进度行会一直"转"下去，
+    # 而这条 socket 上再也不会有帧到来。
+    app = EchoTUI()
+    async with app.run_test() as pilot:
+        app._activity.start()
+        await pilot.pause()
+        assert app._activity.is_active
+
+        app.notify_disconnected()
+        await pilot.pause()
+        assert not app._activity.is_active
+        assert app._activity._outcome == "disconnected"
+
+
+@pytest.mark.asyncio
+async def test_idle_disconnect_on_a_fresh_screen_invents_no_summary():
+    # 没有跑过任何回合时掉线，不应凭空出现一行终态摘要。
+    app = EchoTUI()
+    async with app.run_test() as pilot:
+        app.notify_disconnected()
+        await pilot.pause()
+        assert not app._activity.is_settled
+        assert app._activity._outcome == ""
+
+
 # ── 主题切换 ───────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

@@ -29,12 +29,16 @@ const ConfirmContext = createContext<((opts: ConfirmOptions) => Promise<boolean>
 export function ConfirmProvider({ children }: { children: ReactNode }) {
   const [pending, setPending] = useState<ConfirmOptions | null>(null);
   const resolverRef = useRef<Resolver | null>(null);
+  // Distinguishes one request from the next so each gets a fresh dialog
+  // instance — see the `key` on ConfirmDialog below.
+  const [requestId, setRequestId] = useState(0);
 
   const confirm = useCallback((opts: ConfirmOptions) => {
     // A second request while one is open resolves the first as cancelled, so no
     // caller is left awaiting a promise that never settles.
     resolverRef.current?.(false);
     setPending(opts);
+    setRequestId((n) => n + 1);
     return new Promise<boolean>((resolve) => {
       resolverRef.current = resolve;
     });
@@ -49,7 +53,17 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
   return (
     <ConfirmContext.Provider value={confirm}>
       {children}
-      {pending && <ConfirmDialog options={pending} onSettle={settle} />}
+      {/* Keyed by request, so replacing one dialog with another remounts rather
+          than re-rendering. Without it React reuses the instance and the focus
+          effect only re-runs when its dependencies change — two consecutive
+          destructive dialogs (delete a job, then delete another) share the same
+          deps, so the second one kept whatever focus the first left behind,
+          losing the "destructive dialogs focus the safe action" guarantee
+          exactly where it matters. A remount also drops any stale local state
+          instead of leaking it into the next question. */}
+      {pending && (
+        <ConfirmDialog key={requestId} options={pending} onSettle={settle} />
+      )}
     </ConfirmContext.Provider>
   );
 }

@@ -563,7 +563,24 @@ class EchoTUI(App):
         # as "连接已断开" rather than "完成": the turn may well still be running
         # server-side, but this client can no longer show it, and replay_missed_reply
         # covers the recovered answer.
-        self._activity_call("settle", "disconnected")
+        #
+        # Only while a turn is actually in flight. settle() deliberately lets a
+        # later outcome overwrite an earlier one (a gateway error is routinely
+        # followed by a disconnect, and the more specific reason should win), so an
+        # unconditional call here rewrote the *previous* turn's settled "完成" into
+        # "连接已断开" whenever the link dropped while the user sat idle — and
+        # /reconnect then relabelled it again. The answer above it had been
+        # delivered and was still on screen, so the row was contradicting the
+        # transcript. A drop with nothing running needs no activity update: the
+        # status bar and the transcript notice already say the connection is gone.
+        # Read the state directly rather than through _activity_call, which
+        # swallows its return value (it exists to make fire-and-forget calls safe).
+        try:
+            turn_in_flight = bool(self._activity.is_active)
+        except Exception:
+            turn_in_flight = False
+        if turn_in_flight:
+            self._activity_call("settle", "disconnected")
         try:
             self._tv.end_turn_cleanup()
         except Exception:
