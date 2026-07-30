@@ -228,6 +228,11 @@ class GatewayServer:
             await ws.close(code=aiohttp.WSCloseCode.GOING_AWAY, message=b"shutdown")
         self._ws_clients.clear()
 
+        # Dashboard sockets live in their own registry. Leaving them open meant
+        # runner.cleanup() below waited on live handlers — an open browser tab
+        # could stall shutdown for aiohttp's shutdown timeout.
+        await self._dashboard_ws.close_all()
+
         if self._site:
             await self._site.stop()
         if self._runner:
@@ -386,7 +391,8 @@ class GatewayServer:
         exposed to CSRF-to-localhost."""
         origin = request.headers.get("Origin", "").strip()
         sec_fetch_site = request.headers.get("Sec-Fetch-Site", "").strip()
-        if not self.auth.is_cross_site_browser(origin, sec_fetch_site):
+        host = request.headers.get("Host", "").strip()
+        if not self.auth.is_cross_site_browser(origin, sec_fetch_site, host):
             return None
         self.auth.audit(action, ok=False, reason=f"cross-site origin rejected: {origin or '?'}")
         return web.json_response({"error": "cross-site request forbidden"}, status=403)
@@ -520,7 +526,8 @@ class GatewayServer:
             return guard
         origin = request.headers.get("Origin", "").strip()
         sec_fetch_site = request.headers.get("Sec-Fetch-Site", "").strip()
-        if self.auth.is_cross_site_browser(origin, sec_fetch_site):
+        host = request.headers.get("Host", "").strip()
+        if self.auth.is_cross_site_browser(origin, sec_fetch_site, host):
             self.auth.audit("message", ok=False, reason=f"cross-site origin rejected: {origin or '?'}")
             return web.json_response({"error": "cross-site request forbidden"}, status=403)
         try:
@@ -782,18 +789,21 @@ class GatewayServer:
         user_id = ""
         chat_id = ""
         session_key = ""
+        # Absolute bound on the pre-auth window. Passing the per-frame timeout to
+        # each wait_for restarted the clock on every frame, so a peer that kept
+        # sending frames it had no right to send (junk, bad JSON, `message`
+        # before `auth`) renewed its own deadline forever. See ws_common.
+        auth_deadline = ws_common.AuthDeadline()
 
         try:
             while True:
                 try:
-                    # Bound the pre-auth wait only. Authentication is the first
-                    # frame of this loop, so without a timeout a peer that
-                    # connects and never sends `auth` holds its connection slot
-                    # for as long as it likes. Once authenticated the socket is
-                    # a legitimate long-lived client: a TUI turn can run for
-                    # many minutes with no client frames, so no timeout there.
-                    timeout = None if session_key else ws_common.DASHBOARD_AUTH_TIMEOUT_SECONDS
-                    raw_msg = await asyncio.wait_for(websocket.receive(), timeout=timeout)
+                    # Once authenticated the socket is a legitimate long-lived
+                    # client — a TUI turn can run for many minutes with no client
+                    # frames — so remaining() drops the bound entirely.
+                    raw_msg = await asyncio.wait_for(
+                        websocket.receive(), timeout=auth_deadline.remaining(),
+                    )
                 except asyncio.TimeoutError:
                     self.auth.audit("ws_auth", ok=False, reason="authentication timeout")
                     await websocket.close()
@@ -859,6 +869,10 @@ class GatewayServer:
                             # 让 _handle_outbound 无需任何 metadata 透传即可命中所有出站路径。
                             delivery_key = f"gateway:{platform}:{chat_id}"
                             self._ws_clients[delivery_key] = websocket
+                            # Lifts the pre-auth deadline. Set here, past every
+                            # rejection branch above, so a failed handshake never
+                            # buys an unbounded socket.
+                            auth_deadline.mark_authenticated()
 
                             session = await self.session_manager.get_or_create(session_key)
                             if self.session_policy.should_reset(session):

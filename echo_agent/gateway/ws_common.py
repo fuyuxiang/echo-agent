@@ -10,6 +10,7 @@ stops the two endpoints from drifting apart again.
 """
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from aiohttp import web
@@ -17,6 +18,50 @@ from aiohttp import web
 # How long a socket may stay unauthenticated before it is closed. Neither
 # endpoint had this: an idle pre-auth socket held a connection slot forever.
 DASHBOARD_AUTH_TIMEOUT_SECONDS = 10.0
+
+
+class AuthDeadline:
+    """An absolute bound on the pre-auth window, not a per-frame idle timeout.
+
+    Both endpoints authenticate inside their message loop and wrapped each
+    ``receive()`` in ``wait_for(..., timeout=AUTH_TIMEOUT)``. That timer restarts
+    on every frame, so the bound it enforces is "10s of silence" rather than "10s
+    to authenticate": a peer that keeps sending frames it is not entitled to send
+    — junk, unparseable JSON, `message` before `auth` — renews its own deadline
+    indefinitely and keeps holding one of the limited unauthenticated slots.
+
+    Computing the remaining budget from a fixed start instant makes the bound
+    absolute regardless of traffic. ``remaining()`` returns None once
+    authenticated, because an authenticated client is a legitimate long-lived
+    one: a TUI turn can run for many minutes with no client frames.
+    """
+
+    __slots__ = ("_expires_at", "authenticated")
+
+    def __init__(self, timeout_seconds: float | None = None):
+        # Read the module attribute at construction so tests that monkeypatch
+        # DASHBOARD_AUTH_TIMEOUT_SECONDS still take effect.
+        budget = (
+            DASHBOARD_AUTH_TIMEOUT_SECONDS
+            if timeout_seconds is None
+            else timeout_seconds
+        )
+        self._expires_at = time.monotonic() + budget
+        self.authenticated = False
+
+    def mark_authenticated(self) -> None:
+        self.authenticated = True
+
+    def remaining(self) -> float | None:
+        """Seconds left to authenticate, or None when no bound applies.
+
+        Never returns a value <= 0: wait_for treats those as "already expired"
+        but only after scheduling, so a tiny positive floor keeps the timeout
+        path deterministic rather than depending on loop scheduling order.
+        """
+        if self.authenticated:
+            return None
+        return max(0.001, self._expires_at - time.monotonic())
 
 # Ceiling on concurrent unauthenticated sockets. Authenticated clients are not
 # counted — this bounds only the pre-auth window, which is the part an anonymous
@@ -32,7 +77,9 @@ def reject_cross_site(request: web.Request, auth: Any, *, action: str) -> web.Re
     """
     origin = request.headers.get("Origin", "").strip()
     sec_fetch_site = request.headers.get("Sec-Fetch-Site", "").strip()
-    if not auth.is_cross_site_browser(origin, sec_fetch_site):
+    # Host lets the gate verify a `same-site` claim instead of trusting it.
+    host = request.headers.get("Host", "").strip()
+    if not auth.is_cross_site_browser(origin, sec_fetch_site, host):
         return None
     auth.audit(action, ok=False, reason=f"cross-site origin rejected: {origin or '?'}")
     return web.json_response({"error": "cross-site request forbidden"}, status=403)

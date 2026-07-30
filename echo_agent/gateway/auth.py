@@ -112,7 +112,9 @@ class GatewayAuth:
         # Cross-site (or unknown): only an explicitly allowlisted Origin may proceed.
         return bool(origin) and origin in self._allowed_origins
 
-    def is_cross_site_browser(self, origin: str, sec_fetch_site: str) -> bool:
+    def is_cross_site_browser(
+        self, origin: str, sec_fetch_site: str, host: str = "",
+    ) -> bool:
         """Whether the request is an *explicit cross-site browser* request.
 
         Default-on CSRF primitive for the main channels (WS handshake and
@@ -120,20 +122,76 @@ class GatewayAuth:
         ``allowed_origins`` is empty), this stays on even with an empty
         allowlist — that is what closes the loopback WebSocket hole where a
         malicious page drives the local agent. Native clients (cli/curl/SDK)
-        send neither header, so they are never flagged."""
+        send neither header, so they are never flagged.
+
+        ``host`` is the request's Host header. Pass it whenever it is available:
+        it is what lets ``same-site`` be checked rather than trusted.
+        """
         origin = (origin or "").strip()
         sec_fetch_site = (sec_fetch_site or "").strip()
         # No browser metadata at all → native client → not a browser request.
         if not origin and sec_fetch_site in ("", "none"):
             return False
-        # Same-origin / same-site are safe.
-        if sec_fetch_site in ("same-origin", "same-site"):
+        # Same-origin is safe by definition.
+        if sec_fetch_site == "same-origin":
+            return False
+        # same-site is NOT same-origin: the browser is telling us the initiator
+        # shares a registrable domain, which still leaves a different subdomain,
+        # a different port, and (for localhost) any other local service — none of
+        # which this gate wants to trust. It was previously accepted outright,
+        # keeping the door open for exactly the CSRF-to-localhost / DNS-rebinding
+        # cases the gate exists to stop. Verify it really is the same origin by
+        # comparing the Origin against the Host we were reached on; with no Host
+        # to compare, fall through to the allowlist rather than assume.
+        if sec_fetch_site == "same-site" and host and self._origin_matches_host(origin, host):
             return False
         # Explicitly allowlisted Origin is trusted (webview / desktop escape hatch).
         if origin and origin in self._allowed_origins:
             return False
         # Everything else that carries a cross-site Origin or Sec-Fetch-Site.
         return True
+
+    @staticmethod
+    def _origin_matches_host(origin: str, host: str) -> bool:
+        """Whether ``origin``'s authority is the same as ``host``.
+
+        Compared as host:port, so http://localhost:5173 does not pass for a
+        gateway serving on localhost:58123 — a different port is a different
+        origin, and on a dev box it is a different program.
+        """
+        from urllib.parse import urlsplit
+
+        if not origin or not host:
+            return False
+        try:
+            parsed = urlsplit(origin)
+        except ValueError:
+            return False
+        if not parsed.hostname:
+            return False
+        origin_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+
+        host = host.strip().lower()
+        # Host may or may not carry a port; IPv6 literals keep their brackets.
+        if host.startswith("["):
+            hostname, _, port_text = host.partition("]")
+            hostname = hostname[1:]
+            port_text = port_text.lstrip(":")
+        else:
+            hostname, _, port_text = host.partition(":")
+        if not hostname:
+            return False
+        if port_text:
+            try:
+                host_port = int(port_text)
+            except ValueError:
+                return False
+        else:
+            # No port in Host: it is the scheme default for how we were reached,
+            # which for an Origin-bearing browser request is the Origin's scheme.
+            host_port = 443 if parsed.scheme == "https" else 80
+
+        return parsed.hostname.lower() == hostname and origin_port == host_port
 
     def token_from_headers(self, headers: Any) -> str:
         token = headers.get(self.token_header, "")

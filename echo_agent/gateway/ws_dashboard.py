@@ -10,6 +10,7 @@ import asyncio
 import json
 from typing import Any, TYPE_CHECKING
 
+import aiohttp
 from aiohttp import web, WSMsgType
 
 from echo_agent.gateway import ws_common
@@ -54,15 +55,21 @@ class DashboardWebSocket:
         client = _DashboardClient(client_id, ws)
         authenticated = False
         self._unauthenticated += 1
+        # Absolute bound on the pre-auth window rather than a per-frame idle
+        # timeout: the old form restarted its clock on every frame, so an
+        # anonymous peer could hold one of the MAX_UNAUTHENTICATED_CLIENTS slots
+        # indefinitely just by chattering. With only 8 slots, 8 such peers deny
+        # the dashboard to everyone. See ws_common.AuthDeadline.
+        auth_deadline = ws_common.AuthDeadline()
 
         try:
             while True:
                 try:
-                    # Bound the pre-auth wait only. Once authenticated the client
-                    # is a legitimate long-lived subscriber and must be able to
-                    # sit idle between events.
-                    timeout = None if authenticated else ws_common.DASHBOARD_AUTH_TIMEOUT_SECONDS
-                    msg = await asyncio.wait_for(ws.receive(), timeout=timeout)
+                    # Once authenticated the client is a legitimate long-lived
+                    # subscriber and must be able to sit idle between events.
+                    msg = await asyncio.wait_for(
+                        ws.receive(), timeout=auth_deadline.remaining(),
+                    )
                 except asyncio.TimeoutError:
                     self._server.auth.audit(
                         "dashboard_ws_auth", ok=False, reason="authentication timeout"
@@ -89,6 +96,7 @@ class DashboardWebSocket:
                         if not authenticated:
                             authenticated = True
                             self._unauthenticated -= 1
+                            auth_deadline.mark_authenticated()
                         self._clients[client_id] = client
                         self._server.auth.audit("dashboard_ws_auth", ok=True)
                         await ws.send_json({"type": "auth_ok"})
@@ -176,6 +184,27 @@ class DashboardWebSocket:
                     dead.append(cid)
         for cid in dead:
             self._clients.pop(cid, None)
+
+    async def close_all(self) -> None:
+        """Close every dashboard socket, for gateway shutdown.
+
+        GatewayServer.stop() closed only its own _ws_clients, so an authenticated
+        dashboard socket kept the aiohttp handler alive and runner.cleanup() sat
+        waiting on it — shutdown could hang for aiohttp's shutdown timeout (~60s
+        by default) with an open browser tab. Closing here is the same courtesy
+        the main WS already got: the client sees a GOING_AWAY frame rather than a
+        connection that dies without explanation.
+        """
+        for client in list(self._clients.values()):
+            try:
+                await client.ws.close(
+                    code=aiohttp.WSCloseCode.GOING_AWAY, message=b"shutdown",
+                )
+            except Exception:
+                # A socket already gone is exactly what we wanted; never let one
+                # failure strand the rest or abort shutdown.
+                pass
+        self._clients.clear()
 
 
 class _DashboardClient:

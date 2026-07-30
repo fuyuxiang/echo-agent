@@ -262,6 +262,73 @@ def test_cross_site_browser_allowlisted_origin_passes(tmp_path) -> None:
     assert auth.is_cross_site_browser("https://evil.example", "cross-site") is True
 
 
+# ── same-site 不再被无条件信任 ────────────────────────────────────────────────
+# same-site 只说明发起方与本站共享可注册域，仍可能是不同子域、不同端口，或
+# localhost 上的另一个程序 —— 正是这个闸门要防的 CSRF-to-localhost / DNS
+# rebinding 场景。此前它与 same-origin 一样直接放行，且从不比较 Origin 与 Host。
+
+
+def test_same_site_passes_only_when_it_really_is_same_origin(tmp_path) -> None:
+    auth = _auth(tmp_path)
+    assert auth.is_cross_site_browser(
+        "http://127.0.0.1:58123", "same-site", "127.0.0.1:58123",
+    ) is False
+
+
+def test_same_site_from_a_different_port_is_rejected(tmp_path) -> None:
+    """不同端口就是不同来源；在开发机上更是另一个程序。"""
+    auth = _auth(tmp_path)
+    assert auth.is_cross_site_browser(
+        "http://localhost:5173", "same-site", "localhost:58123",
+    ) is True
+
+
+def test_same_site_from_a_sibling_subdomain_is_rejected(tmp_path) -> None:
+    auth = _auth(tmp_path)
+    assert auth.is_cross_site_browser(
+        "https://evil.app.example", "same-site", "app.example",
+    ) is True
+
+
+def test_same_site_without_a_host_to_compare_is_rejected(tmp_path) -> None:
+    """无法核对时按拒绝处理，而不是沿用旧的无条件信任。"""
+    auth = _auth(tmp_path)
+    assert auth.is_cross_site_browser("http://localhost:5173", "same-site", "") is True
+
+
+def test_same_site_honours_default_ports_and_ipv6(tmp_path) -> None:
+    auth = _auth(tmp_path)
+    # Host 不带端口时按 Origin 的 scheme 默认端口比较。
+    assert auth.is_cross_site_browser(
+        "https://app.example", "same-site", "app.example",
+    ) is False
+    assert auth.is_cross_site_browser(
+        "http://[::1]:58123", "same-site", "[::1]:58123",
+    ) is False
+    assert auth.is_cross_site_browser(
+        "http://[::1]:5173", "same-site", "[::1]:58123",
+    ) is True
+
+
+def test_allowlist_remains_the_escape_hatch_for_same_site(tmp_path) -> None:
+    """开发场景(vite 5173 → gateway 58123)通过 allowed_origins 显式放行。"""
+    from echo_agent.config.schema import GatewayAuthConfig
+    auth = GatewayAuth(
+        GatewayAuthConfig(mode="open", allowed_origins=["http://localhost:5173"]),
+        tmp_path,
+    )
+    assert auth.is_cross_site_browser(
+        "http://localhost:5173", "same-site", "localhost:58123",
+    ) is False
+
+
+def test_same_site_gate_does_not_affect_native_clients(tmp_path) -> None:
+    """无 Origin/Sec-Fetch-Site 的 cli/curl 仍然不受影响。"""
+    auth = _auth(tmp_path)
+    assert auth.is_cross_site_browser("", "", "127.0.0.1:58123") is False
+    assert auth.is_cross_site_browser("", "none", "127.0.0.1:58123") is False
+
+
 def _msg_request(body, *, headers=None, peer=("127.0.0.1", 5555)):
     from unittest.mock import MagicMock
     from aiohttp.test_utils import make_mocked_request
