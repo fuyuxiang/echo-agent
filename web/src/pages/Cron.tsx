@@ -21,9 +21,21 @@ export interface CronJob {
   config_valid?: boolean;
   // Needed by the edit form to seed the visible fields and to detect which key
   // (`command` or `message`) this job stores its instruction under. PUT merges
-  // server-side, so unknown keys and authorization flags no longer have to make
-  // the round trip through the browser.
+  // server-side, so unknown keys no longer have to make the round trip through
+  // the browser. Authorization is not in here at all: it is a first-class field
+  // on ScheduledJob, and a same-named key inside payload carries no weight.
   payload?: Record<string, unknown>;
+  /** Audit trail of who granted unattended execution, or null if never granted. */
+  authorization?: {
+    operator: string;
+    source: string;
+    granted_at_ms: number;
+    summary: string;
+  } | null;
+  /** Whether that grant still applies to the job's current content. Separate
+   *  from `authorization` on purpose: having one without the other is the
+   *  "edited after authorizing" state. */
+  authorization_valid?: boolean;
 }
 
 // 表单管的三个投递字段,以及后端 delivery 认的键名(主键在前,别名在后)。
@@ -33,6 +45,22 @@ const DELIVERY_KEYS: Record<DeliverySlot, readonly string[]> = {
   channel: ["deliver_channel", "channel"],
   chatId: ["deliver_chat_id", "chat_id"],
   sessionKey: ["source_session_key", "session_key"],
+};
+
+type AuthState = "granted" | "stale" | "none";
+
+// "Has a grant" and "the grant still applies" are two separate facts, so a job
+// carrying an authorization whose fingerprint no longer matches is neither
+// authorized nor untouched — it needs a human to look again.
+function authStateOf(job: CronJob): AuthState {
+  if (job.authorization_valid) return "granted";
+  return job.authorization ? "stale" : "none";
+}
+
+const AUTH_BADGE: Record<AuthState, string> = {
+  granted: "bg-green-100 text-green-800",
+  stale: "bg-amber-100 text-amber-900",
+  none: "bg-gray-100 text-gray-600",
 };
 
 export function Cron() {
@@ -59,12 +87,17 @@ export function Cron() {
   const [payloadKeys, setPayloadKeys] = useState<Record<DeliverySlot, string | null>>({
     channel: null, chatId: null, sessionKey: null,
   });
+  // Unattended authorization is opt-in per submit and never sticky: reopening
+  // the form for an edit starts unchecked, so a previously authorized job is
+  // not silently re-authorized by an unrelated rename.
+  const [authorizeUnattended, setAuthorizeUnattended] = useState(false);
 
   const resetForm = () => {
     setName(""); setExpr(""); setCommand("");
     setDeliverChannel(""); setDeliverChatId(""); setSourceSessionKey("");
     setCommandKey("command");
     setPayloadKeys({ channel: null, chatId: null, sessionKey: null });
+    setAuthorizeUnattended(false);
     setEditingId(null);
     setShowForm(false);
   };
@@ -99,6 +132,10 @@ export function Cron() {
     setDeliverChatId(chatIdValue);
     setSourceSessionKey(sessionKeyValue);
     setPayloadKeys({ channel: channelKey, chatId: chatIdKey, sessionKey: sessionKeyKey });
+    // Deliberately not seeded from job.authorization: an existing grant is the
+    // server's business, and pre-checking the box would turn every edit into a
+    // fresh authorization the user never asked for.
+    setAuthorizeUnattended(false);
     setEditingId(job.id);
     setShowForm(true);
   };
@@ -144,15 +181,37 @@ export function Cron() {
     }
   };
 
+  // 勾选授权前先让人看清自己在授权什么:指令全文、频率、投递目标。拒绝确认就保持
+  // 关闭,不存在"点了一下就授权了"这条路径。
+  const toggleAuthorize = async (checked: boolean) => {
+    if (!checked) {
+      setAuthorizeUnattended(false);
+      return;
+    }
+    const target = [deliverChannel.trim(), deliverChatId.trim()].filter(Boolean).join(":");
+    const ok = await confirm({
+      title: t("authorizeConfirmTitle"),
+      message: t("authorizeConfirmMessage", {
+        command: command.trim() || t("authorizeUnset"),
+        expr: expr.trim() || t("authorizeUnset"),
+        target: target || sourceSessionKey.trim() || t("authorizeNoTarget"),
+      }),
+      confirmLabel: t("authorizeConfirmLabel"),
+      destructive: true,
+    });
+    setAuthorizeUnattended(ok);
+  };
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!command.trim()) {
       return; // 任务内容必填:与后端 400 校验双保险
     }
     // payload 只带本表单管的字段,由后端与已存 payload 合并(PUT 是合并语义)。
-    // 此前这里重建整个 payload,把表单没有的字段全部丢掉——其中 unattended_authorized
-    // 缺失会被 delivery 当成 true,于是一个显式禁止无人值守授权的任务,改一次名字就
-    // 变成允许执行。这里只声明真正改了什么,未知字段与授权标记留在服务端。
+    // 此前这里重建整个 payload,把表单没有的字段全部丢掉,一次改名就会顺带改掉任务
+    // 的行为。这里只声明真正改了什么,未知字段留在服务端。
+    // 授权不再走 payload:它是 ScheduledJob 的一等字段,只能通过 authorize_unattended
+    // 这个显式标记签发,payload 里的同名键不再有任何作用。
     const payload: Record<string, string> = { [commandKey]: command.trim() };
     const optional: [DeliverySlot, string][] = [
       ["channel", deliverChannel.trim()],
@@ -171,7 +230,14 @@ export function Cron() {
       // 存下三个空串键。
       if (editingId && existing) payload[existing] = "";
     }
-    const body = JSON.stringify({ name, cron_expr: expr, payload });
+    // Only send the flag when it is on. Sending `false` explicitly would be
+    // equivalent, but omitting it keeps "absence is not consent" visible in the
+    // wire format itself.
+    const body = JSON.stringify(
+      authorizeUnattended
+        ? { name, cron_expr: expr, payload, authorize_unattended: true }
+        : { name, cron_expr: expr, payload },
+    );
     const ok = editingId
       ? await runMutation(
           () => apiFetch(`/cron/${editingId}`, { method: "PUT", body }),
@@ -214,6 +280,24 @@ export function Cron() {
             <input value={deliverChatId} onChange={(e) => setDeliverChatId(e.target.value)} placeholder={t("form.deliverChatId")} aria-label={t("form.deliverChatId")} className="border rounded px-3 py-1.5 flex-1 min-w-48" />
           </div>
           <input value={sourceSessionKey} onChange={(e) => setSourceSessionKey(e.target.value)} placeholder={t("form.sourceSessionKey")} aria-label={t("form.sourceSessionKey")} className="border rounded px-3 py-1.5" />
+          {/* htmlFor + aria-describedby rather than a wrapping label: the hint is
+              a description, not part of the control's name. */}
+          <div className="flex items-start gap-2 text-sm">
+            <input
+              id="cron-authorize-unattended"
+              type="checkbox"
+              checked={authorizeUnattended}
+              onChange={(e) => void toggleAuthorize(e.target.checked)}
+              aria-describedby="cron-authorize-hint"
+              className="mt-0.5"
+            />
+            <div>
+              <label htmlFor="cron-authorize-unattended">{t("authorizeUnattended")}</label>
+              <span id="cron-authorize-hint" className="block text-xs text-gray-500">
+                {t("authorizeHint")}
+              </span>
+            </div>
+          </div>
           <div className="flex gap-2 self-start">
             <button type="submit" disabled={!command.trim()} className="bg-green-600 text-white px-3 py-1.5 rounded text-sm disabled:opacity-50">
               {editingId ? t("save") : t("create")}
@@ -255,6 +339,21 @@ export function Cron() {
                       {job.config_valid === false && (
                         <span className="ml-2 text-xs px-1.5 rounded bg-red-100 text-red-700">{t("invalidConfig")}</span>
                       )}
+                      <span
+                        className={`ml-2 px-1.5 py-0.5 rounded text-xs ${AUTH_BADGE[authStateOf(job)]}`}
+                        title={
+                          authStateOf(job) === "stale"
+                            ? t("authStaleHint")
+                            : job.authorization
+                              ? t("authGrantedBy", {
+                                  operator: job.authorization.operator,
+                                  time: dateTime(job.authorization.granted_at_ms),
+                                })
+                              : t("authorizeHint")
+                        }
+                      >
+                        {t(`authState.${authStateOf(job)}`)}
+                      </span>
                     </td>
                     <td className="font-mono text-xs">{job.cron_expr}</td>
                     <td>

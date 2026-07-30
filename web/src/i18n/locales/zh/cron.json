@@ -42,5 +42,19 @@
   "runCount": "累计执行 {{count}} 次",
   "runTime": "时间",
   "runStatus": "状态",
-  "runError": "错误"
+  "runError": "错误",
+  "authorizeUnattended": "允许无人值守执行写入/命令类工具",
+  "authorizeHint": "不勾选时任务仍会按时运行，但写入与命令类工具会被拒绝。",
+  "authorizeConfirmTitle": "确认授权无人值守执行？",
+  "authorizeConfirmMessage": "该任务将在无人查看的情况下执行下列指令，并可调用写入与命令类工具。\n\n指令：{{command}}\n频率：{{expr}}\n投递：{{target}}",
+  "authorizeConfirmLabel": "我已确认，授权",
+  "authorizeUnset": "(未填写)",
+  "authorizeNoTarget": "(无投递目标)",
+  "authState": {
+    "granted": "已授权",
+    "stale": "需要重新授权",
+    "none": "未授权"
+  },
+  "authGrantedBy": "由 {{operator}} 于 {{time}} 授权",
+  "authStaleHint": "任务内容在授权后被修改，授权已失效。"
 }

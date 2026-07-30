@@ -75,10 +75,12 @@ describe("Cron 页", () => {
     expect(screen.getByLabelText(/source_session_key/)).toHaveValue("feishu:oc_1");
   });
 
-  it("编辑不重发授权字段,交由后端合并保留", async () => {
-    // 关键回归:PUT 曾整体替换 payload,而 delivery 把缺失的 unattended_authorized
-    // 读作 true——显式禁止无人值守授权的任务,改一次名字就变成允许执行。现在前端
-    // 只声明自己管的字段,授权标记留在服务端。
+  it("编辑不重发表单外的 payload 字段,交由后端合并保留", async () => {
+    // 关键回归:PUT 曾整体替换 payload,把表单没有的字段全部丢掉,一次改名就顺带
+    // 改掉任务的行为。现在前端只声明自己管的字段,其余留在服务端。
+    // 注:payload 里的 unattended_authorized 早已不再有任何作用——授权是
+    // ScheduledJob 的一等字段,只能由 authorize_unattended 这个显式标记签发;
+    // 这里留着它只是当作一个"前端不该碰的既有键"来验证合并行为。
     const guarded = {
       ...JOB,
       payload: {

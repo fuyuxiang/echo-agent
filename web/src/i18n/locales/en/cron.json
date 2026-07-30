@@ -42,5 +42,19 @@
   "runCount": "{{count}} runs total",
   "runTime": "Time",
   "runStatus": "Status",
-  "runError": "Error"
+  "runError": "Error",
+  "authorizeUnattended": "Allow unattended write/exec tools",
+  "authorizeHint": "When off, the job still runs on schedule but write and exec tools are denied.",
+  "authorizeConfirmTitle": "Authorize unattended execution?",
+  "authorizeConfirmMessage": "This job will run the following instruction with nobody watching, and may call write and exec tools.\n\nInstruction: {{command}}\nSchedule: {{expr}}\nDelivery: {{target}}",
+  "authorizeConfirmLabel": "I understand, authorize",
+  "authorizeUnset": "(not set)",
+  "authorizeNoTarget": "(no delivery target)",
+  "authState": {
+    "granted": "Authorized",
+    "stale": "Re-authorization required",
+    "none": "Not authorized"
+  },
+  "authGrantedBy": "Granted by {{operator}} at {{time}}",
+  "authStaleHint": "The job changed after it was authorized, so the grant no longer applies."
 }
