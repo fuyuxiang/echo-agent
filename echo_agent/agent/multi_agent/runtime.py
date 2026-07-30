@@ -3,17 +3,32 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from loguru import logger
 
-from echo_agent.agent.multi_agent.models import WorkerProfile, WorkerResult
+from echo_agent.agent.multi_agent.models import WorkerProfile, WorkerResult, WorkerToolOutcome
 from echo_agent.models.provider import LLMProvider, ToolCallRequest
 
 
-ToolExecutorFn = Callable[[str, ToolCallRequest, int], Awaitable[str]]
+ToolExecutorFn = Callable[[str, ToolCallRequest, int], Awaitable[WorkerToolOutcome | str]]
+
+
+def _as_outcome(raw: WorkerToolOutcome | str) -> WorkerToolOutcome:
+    """Normalize an executor return value into a ``WorkerToolOutcome``.
+
+    Executors that predate the outcome contract (and test stubs) return a bare
+    string. ``ToolResult.text`` renders failures as ``"Error: ..."`` and the
+    worker containment/approval rejections in ``build_worker_tool_executor`` use
+    the same prefix, so that prefix is the honest legacy failure signal.
+    """
+    if isinstance(raw, WorkerToolOutcome):
+        return raw
+    text = raw if isinstance(raw, str) else str(raw)
+    return WorkerToolOutcome(text=text, success=not text.lstrip().startswith("Error:"))
 
 
 class WorkerExecutor:
@@ -65,7 +80,7 @@ class WorkerExecutor:
             {"role": "user", "content": goal},
         ]
 
-        state = {"iterations": 0, "tool_calls": 0, "last_content": ""}
+        state = {"iterations": 0, "tool_calls": 0, "last_content": "", "last_tool_error": ""}
 
         try:
             result = await asyncio.wait_for(
@@ -116,6 +131,23 @@ class WorkerExecutor:
 
     _MAX_MESSAGES = 200
 
+    # Mirrors the top-level agent loop (pipeline/inference_stage.py): the Nth
+    # identical call is short-circuited rather than executed again.
+    _REPEAT_BLOCK_THRESHOLD = 4
+
+    # A worker whose tools fail this many times in a row is not making progress.
+    # Without this the loop spends its whole iteration budget on a failing tool
+    # and only reports "Reached max iterations", hiding the real cause.
+    _MAX_CONSECUTIVE_TOOL_FAILURES = 3
+
+    @staticmethod
+    def _call_key(tc: ToolCallRequest) -> str:
+        try:
+            args = str(sorted(tc.arguments.items()))
+        except (AttributeError, TypeError):
+            args = str(tc.arguments)
+        return f"{tc.name}:{hashlib.md5(args.encode()).hexdigest()[:8]}"
+
     async def _run_loop(
         self,
         *,
@@ -128,6 +160,9 @@ class WorkerExecutor:
         temperature: float,
         state: dict[str, Any],
     ) -> dict[str, Any]:
+        repeat_tracker: dict[str, int] = {}
+        consecutive_failures = 0
+
         for iteration in range(max_iterations):
             state["iterations"] = iteration + 1
 
@@ -171,14 +206,68 @@ class WorkerExecutor:
 
             for idx, tc in enumerate(response.tool_calls):
                 state["tool_calls"] += 1
-                result_text = await tool_executor(tc.name, tc, idx)
+
+                # Repeat guard: count BEFORE executing so identical calls stop
+                # firing side effects. A blocked call counts as a failure so a
+                # worker looping on one call still trips the early exit below.
+                key = self._call_key(tc)
+                repeat_tracker[key] = repeat_tracker.get(key, 0) + 1
+                if repeat_tracker[key] >= self._REPEAT_BLOCK_THRESHOLD:
+                    outcome = WorkerToolOutcome(
+                        text=(
+                            f"Error: Tool '{tc.name}' called with identical arguments "
+                            f"{repeat_tracker[key]} times. Stopping repeated calls — "
+                            "vary the arguments or take a different action."
+                        ),
+                        success=False,
+                    )
+                    logger.warning(
+                        "Worker blocked repeated tool call: {} ({}x)",
+                        tc.name, repeat_tracker[key],
+                    )
+                else:
+                    outcome = _as_outcome(await tool_executor(tc.name, tc, idx))
+
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
                     "name": tc.name,
-                    "content": result_text[:16000],
+                    "content": outcome.text[:16000],
                 })
 
+                if outcome.success:
+                    consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
+                    state["last_tool_error"] = outcome.text
+
+            # Checked after the batch so every tool result is written back and
+            # the transcript stays consistent for the caller.
+            if consecutive_failures >= self._MAX_CONSECUTIVE_TOOL_FAILURES:
+                last_error = str(state.get("last_tool_error", "")).strip()
+                logger.warning(
+                    "Worker aborted after {} consecutive tool failures at iteration {}/{}: {}",
+                    consecutive_failures, state["iterations"], max_iterations,
+                    last_error[:200] or "(no error text)",
+                )
+                error = (
+                    f"Aborted after {consecutive_failures} consecutive tool failures "
+                    f"at iteration {state['iterations']}/{max_iterations}"
+                )
+                if last_error:
+                    error += f". Last error: {last_error[:500]}"
+                return {
+                    "success": False,
+                    "output": state["last_content"],
+                    "error": error,
+                    "iterations": state["iterations"],
+                    "tool_calls": state["tool_calls"],
+                }
+
+        logger.warning(
+            "Worker loop exhausted max iterations ({}) after {} tool calls",
+            max_iterations, state["tool_calls"],
+        )
         return {
             "success": False,
             "output": state["last_content"],

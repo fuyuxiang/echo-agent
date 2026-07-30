@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from echo_agent.agent.multi_agent.models import WorkerProfile
+from echo_agent.agent.multi_agent.models import WorkerProfile, WorkerToolOutcome
 from echo_agent.agent.multi_agent.registry import WorkerRegistry
 from echo_agent.agent.multi_agent.runtime import WorkerExecutor
 from echo_agent.agent.tools.delegate import DelegateTool, WORKER_BLOCKED_TOOLS
@@ -228,7 +228,9 @@ class TestWorkerExecutorMessageCap:
                 tc = MagicMock()
                 tc.id = f"tc_{call_count}"
                 tc.name = "read_file"
-                tc.arguments = {"path": "/tmp/test.txt"}
+                # Distinct path per call: this test is about message trimming,
+                # so it must not trip the repeat-call guard.
+                tc.arguments = {"path": f"/tmp/test_{call_count}.txt"}
                 tc.to_openai_format.return_value = {
                     "id": tc.id, "type": "function",
                     "function": {"name": "read_file", "arguments": "{}"},
@@ -298,3 +300,154 @@ class TestWorkerExecutorMessageCap:
         # state["iterations"] is set to 1 at the start of the first iteration
         # before the chat call blocks, so it will be >= 1
         assert result.iterations >= 0
+
+
+class TestWorkerToolFailureEarlyExit:
+    """A worker whose tools keep failing must abort instead of burning every
+    iteration and reporting only "Reached max iterations"."""
+
+    @staticmethod
+    def _tool_response(call_id: str, args: dict | None = None):
+        tc = MagicMock()
+        tc.id = call_id
+        tc.name = "search_files"
+        tc.arguments = args if args is not None else {"query": call_id}
+        tc.to_openai_format = MagicMock(return_value={
+            "id": call_id, "type": "function",
+            "function": {"name": "search_files", "arguments": "{}"},
+        })
+        r = MagicMock()
+        r.content = "trying again"
+        r.finish_reason = "tool_calls"
+        r.tool_calls = [tc]
+        r.has_tool_calls = True
+        return r
+
+    def _always_failing_provider(self):
+        provider = MagicMock()
+        self.calls = 0
+
+        async def chat(**kwargs):
+            self.calls += 1
+            # Vary arguments so the repeat guard is not what stops the loop.
+            return self._tool_response(f"tc_{self.calls}", {"query": f"q{self.calls}"})
+
+        provider.chat_with_retry = chat
+        return provider
+
+    @pytest.mark.asyncio
+    async def test_aborts_after_consecutive_failures(self):
+        executor = WorkerExecutor(provider=self._always_failing_provider(), default_model="test")
+        executed = 0
+
+        async def tool_executor(name, tc, idx):
+            nonlocal executed
+            executed += 1
+            return WorkerToolOutcome(text="Error: file not found", success=False)
+
+        result = await executor.run(
+            task_index=0,
+            goal="Find the thing",
+            tool_defs=[{"type": "function", "function": {"name": "search_files"}}],
+            tool_executor=tool_executor,
+            max_iterations=12,
+        )
+
+        assert result.status == "failed"
+        assert "consecutive tool failures" in result.error
+        assert "file not found" in result.error
+        # Stops at the threshold instead of running all 12 iterations.
+        assert executed == WorkerExecutor._MAX_CONSECUTIVE_TOOL_FAILURES
+        assert result.iterations < 12
+
+    @pytest.mark.asyncio
+    async def test_legacy_string_error_prefix_counts_as_failure(self):
+        """Executors returning a bare "Error: ..." string still trip the exit."""
+        executor = WorkerExecutor(provider=self._always_failing_provider(), default_model="test")
+
+        async def tool_executor(name, tc, idx):
+            return "Error: tool is not available for this worker."
+
+        result = await executor.run(
+            task_index=0,
+            goal="Find the thing",
+            tool_defs=[{"type": "function", "function": {"name": "search_files"}}],
+            tool_executor=tool_executor,
+            max_iterations=12,
+        )
+
+        assert result.status == "failed"
+        assert "consecutive tool failures" in result.error
+        assert result.iterations < 12
+
+    @pytest.mark.asyncio
+    async def test_success_resets_failure_streak(self):
+        """Intermittent failures must not abort a worker that makes progress."""
+        provider = MagicMock()
+        state = {"n": 0}
+
+        async def chat(**kwargs):
+            state["n"] += 1
+            if state["n"] >= 6:
+                r = MagicMock()
+                r.content = "all done"
+                r.finish_reason = "stop"
+                r.tool_calls = []
+                r.has_tool_calls = False
+                return r
+            return self._tool_response(f"tc_{state['n']}", {"query": f"q{state['n']}"})
+
+        provider.chat_with_retry = chat
+        executor = WorkerExecutor(provider=provider, default_model="test")
+        seq = 0
+
+        async def tool_executor(name, tc, idx):
+            nonlocal seq
+            seq += 1
+            # fail, fail, succeed, fail, fail — never 3 in a row
+            ok = seq % 3 == 0
+            return WorkerToolOutcome(
+                text="found it" if ok else "Error: transient failure", success=ok,
+            )
+
+        result = await executor.run(
+            task_index=0,
+            goal="Find the thing",
+            tool_defs=[{"type": "function", "function": {"name": "search_files"}}],
+            tool_executor=tool_executor,
+            max_iterations=12,
+        )
+
+        assert result.status == "completed"
+        assert result.output == "all done"
+
+    @pytest.mark.asyncio
+    async def test_identical_calls_are_repeat_blocked_without_executing(self):
+        """The Nth identical call is short-circuited, not re-executed."""
+        provider = MagicMock()
+
+        async def chat(**kwargs):
+            # Same name AND same arguments every time.
+            return self._tool_response("tc_same", {"query": "identical"})
+
+        provider.chat_with_retry = chat
+        executor = WorkerExecutor(provider=provider, default_model="test")
+        executed = 0
+
+        async def tool_executor(name, tc, idx):
+            nonlocal executed
+            executed += 1
+            return WorkerToolOutcome(text="(empty result)", success=True)
+
+        result = await executor.run(
+            task_index=0,
+            goal="Loop forever",
+            tool_defs=[{"type": "function", "function": {"name": "search_files"}}],
+            tool_executor=tool_executor,
+            max_iterations=12,
+        )
+
+        assert result.status == "failed"
+        # Executed only up to the threshold; later identical calls are blocked.
+        assert executed == WorkerExecutor._REPEAT_BLOCK_THRESHOLD - 1
+        assert result.iterations < 12

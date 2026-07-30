@@ -16,7 +16,7 @@ from typing import Any
 from loguru import logger
 
 from echo_agent.agent.multi_agent.audit import DispatchAuditLog
-from echo_agent.agent.multi_agent.models import WorkerProfile, WorkerResult
+from echo_agent.agent.multi_agent.models import WorkerProfile, WorkerResult, WorkerToolOutcome
 from echo_agent.agent.multi_agent.registry import WorkerRegistry
 from echo_agent.agent.multi_agent.runtime import WorkerExecutor
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
@@ -67,9 +67,12 @@ def build_worker_tool_executor(
     workers) so both honour the exact same approval/containment contract.
     """
 
-    async def _execute(tool_name: str, tool_call: ToolCallRequest, index: int) -> str:
+    async def _execute(tool_name: str, tool_call: ToolCallRequest, index: int) -> WorkerToolOutcome:
         if tool_name not in allowed_tools:
-            return f"Error: Tool '{tool_name}' is not available for this worker."
+            return WorkerToolOutcome(
+                text=f"Error: Tool '{tool_name}' is not available for this worker.",
+                success=False,
+            )
 
         approval_check = await approval_gate.check(
             tool_name,
@@ -80,7 +83,10 @@ def build_worker_tool_executor(
             running=True,
         )
         if approval_check.denial:
-            return f"Error: {approval_check.denial.error or approval_check.denial.text}"
+            return WorkerToolOutcome(
+                text=f"Error: {approval_check.denial.error or approval_check.denial.text}",
+                success=False,
+            )
 
         from echo_agent.agent.tools.base import build_idempotency_key
         trace_id = parent_ctx.trace_id if parent_ctx else uuid.uuid4().hex[:12]
@@ -102,7 +108,9 @@ def build_worker_tool_executor(
         text = result.text
         if len(text) > _MAX_TOOL_RESULT_CHARS:
             text = text[:_MAX_TOOL_RESULT_CHARS] + "\n...(truncated)"
-        return text
+        # Carry success through instead of collapsing to text: the worker loop
+        # uses it to stop burning iterations on a tool that keeps failing.
+        return WorkerToolOutcome(text=text, success=bool(getattr(result, "success", True)))
 
     return _execute
 
@@ -453,7 +461,13 @@ class SpawnTool(Tool):
     async def _run_background(self, task_id: str, task: str, context: str, ctx: ToolExecutionContext | None) -> None:
         try:
             result = await self._execute_worker(task_id, task, context, ctx)
-            logger.info("Background task {} completed: {}", task_id, result[:100])
+            # Collapse newlines: a multi-line result (a failed worker appends its
+            # error on its own line) otherwise spills past the timestamped first
+            # line and reads like stray un-logged stderr output.
+            logger.info(
+                "Background task {} completed: {}",
+                task_id, " ".join(result.split())[:300],
+            )
             await self._announce(task_id, result, ctx)
         except Exception as e:
             logger.error("Background task {} failed: {}", task_id, e)

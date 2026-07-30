@@ -22,6 +22,22 @@ class WorkerProfile:
     temperature: float = 0.4
 
 
+@dataclass(frozen=True)
+class WorkerToolOutcome:
+    """A worker tool call's result plus whether it actually succeeded.
+
+    ``ToolExecutorFn`` historically returned a bare ``str``, which threw away
+    ``ToolResult.success`` and left the worker loop unable to tell progress from
+    a wall of failures — so it burned every iteration retrying. Executors return
+    this instead; ``WorkerExecutor`` still accepts plain ``str`` (treated as
+    success unless it carries the ``Error: `` prefix that ``ToolResult.text``
+    and the containment/approval rejections already use).
+    """
+
+    text: str
+    success: bool = True
+
+
 @dataclass
 class WorkerResult:
     """Result from a single worker execution."""
