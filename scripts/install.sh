@@ -103,6 +103,10 @@ DASHBOARD_BUILT=false
 # Skip the Dashboard build entirely (--skip-dashboard). The gateway then serves
 # its built-in playground UI instead of the SPA.
 SKIP_DASHBOARD=false
+# Install a managed Node.js and exit — the entry point dashboard_build.py calls
+# when it needs a Node to build the SPA. Reuses this script's checksum-verified,
+# mirror-racing installer instead of reimplementing it in Python.
+INSTALL_NODE_ONLY=false
 # Platform facts filled in by detect_os / detect_linux_flavor.
 DISTRO="unknown"
 IS_MUSL=false
@@ -155,6 +159,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --skip-dashboard) SKIP_DASHBOARD=true; shift ;;
+        --install-node-only) INSTALL_NODE_ONLY=true; shift ;;
         -h|--help)
             echo "Echo Agent Installer"
             echo ""
@@ -174,6 +179,10 @@ while [[ $# -gt 0 ]]; do
             echo "                     tries the Gitee release first, then GitHub"
             echo "  --skip-dashboard   Don't build the web Dashboard (skips Node.js/pnpm);"
             echo "                     the gateway serves its built-in playground UI instead"
+            echo "  --install-node-only"
+            echo "                     Install a managed Node.js into ~/.echo-agent/node"
+            echo "                     and exit, installing nothing else. Used by the"
+            echo "                     on-demand Dashboard build when it needs a Node"
             echo "  -h, --help         Show this help"
             echo ""
             echo "Environment:"
@@ -2156,6 +2165,16 @@ print_success() {
 main() {
     print_banner
     detect_os
+    # --install-node-only stops here: dashboard_build.py calls this path purely
+    # to obtain a Node runtime, and everything below it (network checks, clone,
+    # venv, wizard, service) would be wrong to run against an existing install.
+    # detect_os has already set OS and IS_MUSL, resolve_paths ran at load time,
+    # so install_node has all it needs once $ECHO_HOME exists.
+    if [ "$INSTALL_NODE_ONLY" = true ]; then
+        prepare_home
+        install_node
+        return $?
+    fi
     check_prerequisites
     prepare_home
     check_network
