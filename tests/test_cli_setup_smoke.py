@@ -136,7 +136,19 @@ def test_capability_check_empty_config():
     assert oks[0] is False  # no providers
 
 
-def test_capability_check_full_config():
+def test_capability_check_full_config(monkeypatch):
+    # The gateway check now reads the live runtime state, so pin it: otherwise the
+    # verdict would depend on whether a gateway happens to be listening on this
+    # machine, and the probe would shell out to the real service manager.
+    from echo_agent.cli.runtime_probe import GatewayRuntime, GatewayState
+
+    monkeypatch.setattr(
+        setup_mod, "probe_gateway",
+        lambda **kw: GatewayRuntime(
+            state=GatewayState.RUNNING, enabled=True, host="0.0.0.0",
+            port=58123, listening=True,
+        ),
+    )
     config = {
         "models": {"providers": [{"name": "openai"}]},
         "channels": {"telegram": {"enabled": True}, "cli": {"enabled": True}},
@@ -150,6 +162,29 @@ def test_capability_check_full_config():
     # The channel check reports the enabled non-cli channel.
     channel_check = next(c for c in checks if "telegram" in c[2])
     assert channel_check[1] is True
+    # A listening gateway keeps its ✓, and reports the loopback host to connect to
+    # rather than the 0.0.0.0 wildcard it is bound on.
+    gateway_check = next(c for c in checks if "127.0.0.1:58123" in c[0])
+    assert gateway_check[1] is True
+
+
+def test_capability_check_enabled_but_not_running_is_not_ok(monkeypatch):
+    """The regression: doctor read only the YAML, so `gateway.enabled: true`
+    printed a ✓ for a gateway nobody was serving — on the very screen users rely
+    on to decide whether their setup worked."""
+    from echo_agent.cli.runtime_probe import GatewayRuntime, GatewayState
+
+    monkeypatch.setattr(
+        setup_mod, "probe_gateway",
+        lambda **kw: GatewayRuntime(
+            state=GatewayState.NOT_INSTALLED, enabled=True,
+            host="127.0.0.1", port=58123,
+        ),
+    )
+    checks = setup_mod._capability_check({"gateway": {"enabled": True, "port": 58123}})
+    gateway_check = next(c for c in checks if "ateway" in c[0])
+    assert gateway_check[1] is False
+    assert "echo-agent gateway start" in gateway_check[2]
 
 
 # ── run_setup_wizard ────────────────────────────────────────────────────────────

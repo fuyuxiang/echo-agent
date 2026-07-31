@@ -44,7 +44,7 @@ from echo_agent.cli.prompt import (
     is_interactive,
     prompt_yes_no,
 )
-from echo_agent.cli.runtime_probe import is_wsl, probe_gateway
+from echo_agent.cli.runtime_probe import GatewayState, is_wsl, probe_gateway
 from echo_agent.cli.service import run_service_action
 from echo_agent.cli.setup import providers as provider_catalog
 from echo_agent.cli.setup.model_verify import (
@@ -1127,7 +1127,15 @@ def _capability_check(config: dict) -> list[tuple[str, bool, str]]:
 
     gw = config.get("gateway", {}) or {}
     if gw.get("enabled"):
-        checks.append((t("doctor.gateway_on", host=gw.get("host", "0.0.0.0"), port=gw.get("port", 58123)), True, ""))
+        # Read the live state, not just the YAML: this used to print a ✓ for a
+        # gateway nobody was serving, on the very screen users rely on to decide
+        # whether their setup worked.
+        rt = probe_gateway(config=_probe_config(config))
+        if rt.state is GatewayState.RUNNING:
+            checks.append((t("doctor.gateway_on", host=rt.probe_host, port=rt.effective_port), True, ""))
+        else:
+            checks.append((t("doctor.gateway_enabled_not_running"), False,
+                           t("doctor.gateway_not_running_hint")))
     else:
         checks.append((t("doctor.gateway_off"), False, ""))
 
@@ -1276,9 +1284,11 @@ def _print_summary(config: dict, config_path: Path) -> None:
     else:
         print_info(f"{t('summary.channels')}: {t('summary.channels_cli_only')}  → echo-agent setup channel")
 
-    if not (config.get("gateway", {}) or {}).get("enabled"):
-        print_info(f"{t('summary.gateway_off')}  → echo-agent gateway install")
-
+    # No gateway next-step line here: it used to appear only when the gateway was
+    # *disabled*, which is exactly the case that needs no `gateway install`, and
+    # stayed silent for the enabled-but-not-running case that does. The startup
+    # handoff (_offer_gateway_start, called right after this) reads the live state
+    # and gives the one command that applies.
     print_info(f"{t('summary.config_file')}: {config_path}")
     print()
     print(color(f"  {t('summary.next_steps')}", Colors.BOLD, ansi("primary")))

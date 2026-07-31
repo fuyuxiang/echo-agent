@@ -14,14 +14,33 @@ from echo_agent.cli.service.base import GATEWAY_ENV_FLAG, ServiceBackend
 
 ACTIONS = ("install", "uninstall", "start", "stop", "restart", "status", "logs")
 
-_FALLBACK_HINTS = """\
-No supported service manager found on this platform.
-Run the gateway in the foreground instead:
+def _fallback_hints() -> str:
+    """Guidance for platforms with no supported service manager.
 
-  echo-agent gateway                                    # direct foreground
-  tmux new -s echo-agent 'echo-agent gateway'           # persistent via tmux
-  nohup echo-agent gateway > ~/.echo-agent/logs/gateway.log 2>&1 &  # background
-"""
+    WSL without `systemd=true` is the common case and has an extra option the
+    generic text hid: turning systemd on. A container cannot do that, so the
+    two must not share one message."""
+    from echo_agent.cli.runtime_probe import is_wsl
+
+    lines = ["No supported service manager found on this platform."]
+    if is_wsl():
+        lines += [
+            "",
+            "On WSL2 you can enable systemd and register a real service:",
+            "  1. Add to /etc/wsl.conf:   [boot]",
+            "                             systemd=true",
+            "  2. Run from Windows:       wsl --shutdown",
+            "  3. Then:                   echo-agent gateway install",
+        ]
+    lines += [
+        "",
+        "Or run the gateway in the foreground:",
+        "",
+        "  echo-agent gateway                                    # direct foreground",
+        "  tmux new -s echo-agent 'echo-agent gateway'           # persistent via tmux",
+        "  nohup echo-agent gateway > ~/.echo-agent/logs/gateway.log 2>&1 &  # background",
+    ]
+    return "\n".join(lines)
 
 
 def detect_backend(system: bool = False) -> ServiceBackend | None:
@@ -152,7 +171,7 @@ def run_service_action(
         if action == "status":
             _status_without_service()
             return 0
-        print(_FALLBACK_HINTS)
+        print(_fallback_hints())
         return 1
 
     if action == "install":

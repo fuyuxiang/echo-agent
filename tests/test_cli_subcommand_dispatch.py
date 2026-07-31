@@ -7,13 +7,17 @@ import echo_agent.__main__ as m
 
 
 def test_cli_subcommand_routes_to_run_cli_attach():
+    from echo_agent.cli.attach_client import ConnectionInfo
+
     argv = ["echo-agent", "cli", "--port", "9001", "--user", "alice", "--token", "t"]
     with mock.patch.object(sys, "argv", argv), \
          mock.patch("echo_agent.cli.attach_client.run_cli_attach", return_value=0) as run, \
-         mock.patch("echo_agent.cli.attach_client.resolve_defaults",
-                    return_value=("127.0.0.1", 9000, "/ws", "")) as rd, \
+         mock.patch("echo_agent.cli.attach_client.resolve_connection",
+                    return_value=ConnectionInfo(port=9000)) as rd, \
          mock.patch("sys.exit") as ex:
         m._dispatch()
+    # Exactly one config read per invocation: the dispatch resolves everything
+    # (port, token, api_prefix, save_dir) from this single call.
     rd.assert_called_once()
     run.assert_called_once()
     # --port 覆盖默认；host 恒为本机

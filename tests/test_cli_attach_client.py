@@ -39,14 +39,28 @@ def test_diagnose_gateway_disabled(tmp_path):
     cfg.write_text("gateway:\n  enabled: false\n")
     msg = diagnose_no_gateway("ws://127.0.0.1:58123/ws", str(cfg), None)
     assert "gateway.enabled=false" in msg
-    assert "true" in msg  # points the user at the fix
+    assert "echo-agent setup gateway" in msg  # points the user at the fix
 
 
-def test_diagnose_gateway_enabled_unreachable(tmp_path):
-    cfg = tmp_path / "on.yaml"
-    cfg.write_text("gateway:\n  enabled: true\n  host: 127.0.0.1\n  port: 58123\n")
-    msg = diagnose_no_gateway("ws://127.0.0.1:58123/ws", str(cfg), None)
-    assert "gateway.enabled=true" in msg
+def test_diagnose_gateway_enabled_unreachable(monkeypatch):
+    """Enabled but nothing to attach to → one runnable command, no live probing.
+
+    The diagnosis is now driven by the runtime probe, so this case is pinned with
+    a stubbed runtime: reading the real machine's TCP/service state would make
+    the expected branch depend on whether a gateway happens to be up locally.
+    Per-state coverage lives in tests/cli/test_attach_diagnose.py."""
+    from echo_agent.cli import attach_client
+    from echo_agent.cli.runtime_probe import GatewayRuntime, GatewayState
+
+    monkeypatch.setattr(
+        attach_client, "probe_gateway",
+        lambda **kw: GatewayRuntime(
+            state=GatewayState.NOT_INSTALLED, enabled=True,
+            host="127.0.0.1", port=58123,
+        ),
+    )
+    msg = diagnose_no_gateway("ws://127.0.0.1:58123/ws", None, None)
+    assert "echo-agent gateway install" in msg
 
 
 class _FakeWS:

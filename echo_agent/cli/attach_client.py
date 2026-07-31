@@ -4,8 +4,12 @@ gateway on loopback and opens its own (cli:) session. Builds no agent."""
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
+from typing import Any
 
 import aiohttp
+
+from echo_agent.cli.runtime_probe import GatewayState, is_wsl, probe_gateway
 
 
 class NoGatewayError(Exception):
@@ -78,45 +82,86 @@ async def connect_ws(
 def diagnose_no_gateway(
     url: str, config_path: str | None, workspace: str | None
 ) -> str:
-    """Turn a bare connection failure into an actionable message.
+    """Turn a bare connection failure into the one action that applies here.
 
-    The failure has three distinct causes and the fix differs for each, so we
-    read the EXISTING config to tell them apart instead of emitting one generic
-    "start the service" line (which misleads when the service is actually up
-    but the gateway component is simply disabled)."""
+    Driven by the runtime probe rather than a hardcoded guess: the old version
+    always suggested `systemctl is-active echo-agent`, which on WSL2 without
+    systemd only prints "System has not been booted with systemd" — a dead end,
+    and exactly the environment this failure was reported from.
+
+    Never raises: this runs on the failure path of `echo-agent cli`, where a
+    traceback would replace the guidance the user is stuck without."""
+    head = f"未发现本机常驻 echo-agent（{url} 无法连接）。"
     try:
-        from echo_agent.config.loader import load_config, resolve_config_file
-        cp = config_path
-        if cp is None and workspace:
-            cp = resolve_config_file(search_dir=workspace)
-        cfg = load_config(config_path=cp)
-        enabled = bool(cfg.gateway.enabled)
-    except Exception:
-        # (c) Config missing/unreadable — likely not set up yet.
+        return _diagnose(head, config_path, workspace)
+    except Exception:  # noqa: BLE001 - guidance must survive a broken sub-probe
         return (
-            f"未发现本机常驻 echo-agent（{url} 无法连接），且读取配置失败。\n"
-            "请先运行 echo-agent setup 完成配置，并确认 echo-agent 服务已启动。"
+            f"{head}\n"
+            "无法判定网关状态。请确认配置后重试：echo-agent gateway status\n"
+            "尚未配置过：echo-agent setup"
         )
 
-    if not enabled:
-        # (b) The exact trap: service can be running (channels work), but the
-        # gateway component is off, so the CLI has nothing to attach to.
+
+def _diagnose(head: str, config_path: str | None, workspace: str | None) -> str:
+    rt = probe_gateway(config_path=config_path, workspace=workspace)
+
+    if rt.state is GatewayState.DISABLED:
         return (
-            f"未发现本机常驻 echo-agent（{url} 无法连接）。\n"
-            "检测到配置中 gateway.enabled=false：网关组件未启用，"
-            "因此 echo-agent cli 无法连接（微信/QQ 等频道不依赖网关，仍可正常工作）。\n"
-            "修复：把配置里的 gateway.enabled 设为 true（host 保持 127.0.0.1），"
-            "重启 echo-agent 服务后重试；或临时前台运行 echo-agent gateway。"
+            f"{head}\n"
+            "检测到配置中 gateway.enabled=false：网关组件未启用，因此 echo-agent cli "
+            "无法连接（微信 / QQ 等渠道不依赖网关，仍可正常工作）。\n"
+            "修复：运行 echo-agent setup gateway 启用网关（host 保持 127.0.0.1），"
+            "或临时前台运行 echo-agent gateway。"
         )
 
-    # (a) Gateway is enabled but unreachable — not started, crashed, or the
-    # port is taken by another process.
+    if rt.state is GatewayState.NO_SERVICE_MANAGER:
+        lines = [
+            head,
+            "本机没有可用的服务管理器，网关未以后台服务方式运行。",
+        ]
+        if is_wsl():
+            lines.append(
+                "WSL2 可开启 systemd：编辑 /etc/wsl.conf 加入 [boot] 与 systemd=true，"
+                "执行 wsl --shutdown 重启后再运行 echo-agent gateway install。"
+            )
+        lines.append(
+            "或保持前台进程：tmux new -s echo-agent 'echo-agent gateway'"
+        )
+        return "\n".join(lines)
+
+    if rt.state is GatewayState.SERVICE_INSTALLED_STOPPED:
+        if rt.service_running:
+            # The unit is active but nothing is listening: the process forked and
+            # then died in bootstrap (bad API key, port already taken). Another
+            # `start` would not help — the log is the only useful next step.
+            return (
+                f"{head}\n"
+                "后台服务显示为运行中，但端口无响应 —— 进程很可能在启动过程中退出"
+                "（常见原因：API key 无效、端口被占用）。\n"
+                "查看原因：echo-agent gateway logs\n"
+                "确认状态：echo-agent gateway status"
+            )
+        return (
+            f"{head}\n"
+            "后台服务已注册但未启动。\n"
+            "启动：echo-agent gateway start\n"
+            "确认状态：echo-agent gateway status"
+        )
+
+    if rt.state is GatewayState.NOT_INSTALLED:
+        return (
+            f"{head}\n"
+            "网关尚未注册为后台服务。\n"
+            "注册并启动：echo-agent gateway install && echo-agent gateway start\n"
+            "或临时前台运行：echo-agent gateway"
+        )
+
+    # RUNNING: the probe says the port is up, yet this connection failed. Most
+    # likely a token/path mismatch rather than a missing process.
     return (
-        f"未发现本机常驻 echo-agent（{url} 无法连接）。\n"
-        "配置中 gateway.enabled=true，但该端口无响应。请确认：\n"
-        "  1. echo-agent 服务正在运行（systemctl is-active echo-agent）；\n"
-        "  2. 端口未被其他进程占用；\n"
-        "  3. 启动日志中出现 Gateway listening / ECHO_AGENT_READY。"
+        f"{head}\n"
+        f"探测显示 {rt.probe_host}:{rt.effective_port} 有进程在监听，但本次连接失败。\n"
+        "请确认 token 与 ws 路径是否与配置一致：echo-agent gateway status"
     )
 
 
@@ -315,22 +360,41 @@ async def run_client(
     return 0
 
 
-def resolve_defaults(
-    config_path: str | None, workspace: str | None
-) -> tuple[str, int, str, str]:
-    """Read connection defaults from the EXISTING gateway config. Host is pinned
-    to loopback — cli is local-only.
+@dataclass(frozen=True)
+class ConnectionInfo:
+    """Everything `echo-agent cli` needs to attach, from ONE config read.
 
-    When the config uses ``gateway.port = 0`` (OS-assigned dynamic port) the
-    static config can't tell us the real bound port, so fall back to the runtime
-    endpoint file the gateway writes on bind (``<workspace>/.echo-agent/
-    gateway.json``). Without this, attaching to a dynamic-port gateway would try
-    to connect to ``127.0.0.1:0`` and always fail."""
+    resolve_defaults / _resolve_save_dir / _resolve_api_prefix each loaded the
+    same file independently — four reads per invocation (the fourth being the
+    failure diagnosis), and four DEBUG lines on stderr because the cli path
+    never configures a log sink."""
+
+    host: str = "127.0.0.1"
+    port: int = 58123
+    ws_path: str = "/ws"
+    token: str = ""
+    api_prefix: str = "/api/v1"
+    save_dir: Any = None
+
+
+def resolve_connection(config_path: str | None, workspace: str | None) -> ConnectionInfo:
+    """Read the gateway config once and derive every connection default.
+
+    Host is pinned to loopback — cli is local-only. When gateway.port is 0 the
+    static config cannot tell us the real bound port, so fall back to the runtime
+    endpoint file the gateway writes on bind; without that, attaching to a
+    dynamic-port gateway would try 127.0.0.1:0 and always fail."""
     try:
         from echo_agent.config.loader import load_config, resolve_config_file
-        if config_path is None and workspace:
-            config_path = resolve_config_file(search_dir=workspace)
-        cfg = load_config(config_path=config_path)
+
+        cp = config_path
+        if cp is None and workspace:
+            cp = str(resolve_config_file(search_dir=workspace) or "") or None
+        cfg = load_config(config_path=cp)
+    except Exception:  # noqa: BLE001 - fall back to documented defaults
+        return ConnectionInfo()
+
+    try:
         gw = cfg.gateway
         token = gw.auth.api_tokens[0] if gw.auth.api_tokens else ""
         port = int(gw.port)
@@ -340,9 +404,33 @@ def resolve_defaults(
             if ep and ep.get("port"):
                 port = int(ep["port"])
                 ws_path = ep.get("ws_path") or ws_path
-        return "127.0.0.1", port, ws_path, token
-    except Exception:
-        return "127.0.0.1", 58123, "/ws", ""
+        # getattr, not attribute access: api_prefix is the one optional field
+        # here, and a config object without it must not cost us the host/port we
+        # already resolved — that would silently attach to the wrong port.
+        api_prefix = getattr(gw, "api_prefix", None) or "/api/v1"
+    except Exception:  # noqa: BLE001 - a config we cannot read the gateway out of
+        return ConnectionInfo()
+
+    save_dir = None
+    try:
+        from echo_agent.cli.workspace import resolve_effective_workspace
+
+        save_dir = resolve_effective_workspace(cfg, config_path, workspace) / "transcripts"
+    except Exception:  # noqa: BLE001 - TUI falls back to ./transcripts
+        save_dir = None
+
+    return ConnectionInfo(
+        host="127.0.0.1", port=port, ws_path=ws_path, token=token,
+        api_prefix=api_prefix, save_dir=save_dir,
+    )
+
+
+def resolve_defaults(
+    config_path: str | None, workspace: str | None
+) -> tuple[str, int, str, str]:
+    """Backwards-compatible view of resolve_connection()."""
+    info = resolve_connection(config_path, workspace)
+    return info.host, info.port, info.ws_path, info.token
 
 
 def _runtime_endpoint(cfg, config_path: str | None, workspace: str | None) -> dict | None:
@@ -359,46 +447,11 @@ def _runtime_endpoint(cfg, config_path: str | None, workspace: str | None) -> di
         return None
 
 
-def _resolve_save_dir(config_path: str | None, workspace: str | None):
-    """Directory /save writes to by default: <effective workspace>/transcripts.
-    Resolved the same way the gateway resolves its workspace so saved
-    conversations land next to the rest of the workspace data. Returns None on
-    any failure (missing config, load error) so the TUI falls back to its own
-    default (./transcripts) rather than crashing the attach."""
-    try:
-        from echo_agent.config.loader import load_config, resolve_config_file
-        from echo_agent.cli.workspace import resolve_effective_workspace
-        cp = config_path
-        if cp is None and workspace:
-            cp = resolve_config_file(search_dir=workspace)
-        cfg = load_config(config_path=cp)
-        ws = resolve_effective_workspace(cfg, cp, workspace)
-        return ws / "transcripts"
-    except Exception:
-        return None
-
-
-def _resolve_api_prefix(config_path: str | None, workspace: str | None) -> str:
-    """The gateway's HTTP api_prefix (default /api/v1), read from the same config
-    the gateway uses. Needed to build the history URL for reconnect replay.
-    Falls back to the default on any failure."""
-    try:
-        from echo_agent.config.loader import load_config, resolve_config_file
-        cp = config_path
-        if cp is None and workspace:
-            cp = resolve_config_file(search_dir=workspace)
-        cfg = load_config(config_path=cp)
-        return cfg.gateway.api_prefix or "/api/v1"
-    except Exception:
-        return "/api/v1"
-
-
 def run_cli_attach(
     *, host: str, port: int, ws_path: str, user_id: str, token: str,
-    config_path: str | None = None, workspace: str | None = None
+    api_prefix: str = "/api/v1", save_dir: Any = None,
+    config_path: str | None = None, workspace: str | None = None,
 ) -> int:
-    save_dir = _resolve_save_dir(config_path, workspace)
-    api_prefix = _resolve_api_prefix(config_path, workspace)
     try:
         return asyncio.run(run_client(
             host=host, port=port, ws_path=ws_path,

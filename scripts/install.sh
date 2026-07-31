@@ -2089,7 +2089,8 @@ print_success() {
     echo "  Code:      $INSTALL_DIR"
     echo ""
     echo -e "${CYAN}${BOLD}Commands:${NC}"
-    echo "  echo-agent          Start CLI"
+    echo "  echo-agent          Run the agent in the foreground (CLI chat + enabled channels)"
+    echo "  echo-agent cli      Attach to the running local gateway (terminal TUI)"
     echo "  echo-agent setup    Run setup wizard"
     echo "  echo-agent status   Show current config status"
     echo "  echo-agent gateway  Start gateway server (foreground)"
@@ -2097,7 +2098,16 @@ print_success() {
     echo "                      Manage the gateway as a background service"
     echo ""
     echo -e "${CYAN}${BOLD}Dashboard:${NC}"
-    echo "  http://localhost:58123/"
+    if grep -qE '^\s*mode:\s*open' "$ECHO_HOME/echo-agent.yaml" 2>/dev/null \
+       || grep -q 'allowed_origins' "$ECHO_HOME/echo-agent.yaml" 2>/dev/null; then
+        echo "  http://localhost:58123/"
+    else
+        echo "  http://localhost:58123/  (browsers are refused under the default"
+        echo "  allowlist auth: a cross-site Origin is blocked to stop a malicious"
+        echo "  page from driving your local agent. To allow a browser, set"
+        echo "  gateway.auth.mode=open, add your user to gateway.auth.allowed_users,"
+        echo "  or add the Origin to gateway.auth.allowed_origins.)"
+    fi
     echo ""
 
     if [ "$SERVICE_SKIPPED" = true ]; then

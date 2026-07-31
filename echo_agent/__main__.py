@@ -509,19 +509,27 @@ def _dispatch() -> None:
         ))
 
     if args.command == "cli":
-        from echo_agent.cli import attach_client
-        host, port, ws_path, token = attach_client.resolve_defaults(
-            config_path=args.config or args.top_config,
-            workspace=args.workspace or args.top_workspace,
-        )
-        if args.port is not None:
-            port = args.port
-        if args.token is not None:
-            token = args.token
         import sys as _sys
+
+        from echo_agent.cli import attach_client
+
+        # The cli path never reaches app.configure_logging (that runs inside
+        # bootstrap), so loguru's default stderr sink printed every
+        # "Loading config from ..." DEBUG line straight into the user's terminal.
+        # A thin client should not narrate runtime logs.
+        from echo_agent.app import configure_logging
+        configure_logging("WARNING")
+
+        info = attach_client.resolve_connection(
+            args.config or args.top_config,
+            args.workspace or args.top_workspace,
+        )
+        port = args.port if args.port is not None else info.port
+        token = args.token if args.token is not None else info.token
         rc = attach_client.run_cli_attach(
-            host=host, port=port, ws_path=ws_path,
+            host=info.host, port=port, ws_path=info.ws_path,
             user_id=args.user, token=token,
+            api_prefix=info.api_prefix, save_dir=info.save_dir,
             config_path=args.config or args.top_config,
             workspace=args.workspace or args.top_workspace,
         )
