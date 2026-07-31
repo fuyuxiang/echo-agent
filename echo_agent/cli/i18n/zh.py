@@ -337,6 +337,8 @@ MESSAGES = {
         "running": "网关已在 {host}:{port} 运行 — 现在可用 echo-agent cli 接入。",
         "restart_needed": "配置已更改，执行 echo-agent gateway restart 后生效。",
         "not_running": "网关未运行 — 执行 echo-agent gateway start 启动。",
+        "not_installed_hint": "网关未运行，且尚未注册为后台服务 — "
+                              "执行 echo-agent gateway install 注册并启动。",
         "ask_start": "现在启动后台服务？",
         "ask_install": "把网关注册为后台服务并启动？（开机自启、崩溃自动拉起）",
         "starting": "正在启动服务…",

@@ -339,6 +339,8 @@ MESSAGES = {
         "running": "The gateway is running on {host}:{port} — attach with: echo-agent cli",
         "restart_needed": "Configuration changed. Run `echo-agent gateway restart` to apply it.",
         "not_running": "The gateway is not running — start it with: echo-agent gateway start",
+        "not_installed_hint": "The gateway is not running and is not registered as a service yet — "
+                              "register and start it with: echo-agent gateway install",
         "ask_start": "Start the background service now?",
         "ask_install": "Register the gateway as a background service and start it? (auto-start on login, restart on crash)",
         "starting": "Starting the service...",

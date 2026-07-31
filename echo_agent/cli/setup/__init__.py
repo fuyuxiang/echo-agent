@@ -1483,7 +1483,13 @@ def _offer_gateway_start(
         return
 
     if section_only:
-        print_warning(t("startup.not_running"))
+        # The next command differs by state: with no unit registered, a bare
+        # `gateway start` exits 1 and tells the user to run `install` first, so
+        # pointing there would send them down a command that cannot work.
+        if rt.state is GatewayState.NOT_INSTALLED:
+            print_warning(t("startup.not_installed_hint"))
+        else:
+            print_warning(t("startup.not_running"))
         return
 
     if rt.state is GatewayState.SERVICE_INSTALLED_STOPPED:

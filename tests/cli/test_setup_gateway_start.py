@@ -3,6 +3,8 @@
 用户配完（尤其走「单独配置某个 section」路径）执行 echo-agent cli 只能得到连接
 失败 —— 向导从不涉及「让进程跑起来」这一步，也从不提示它存在。
 """
+import os as os_mod
+import time as time_mod
 from types import SimpleNamespace
 
 import pytest
@@ -28,26 +30,29 @@ def _restore_locale():
 
 @pytest.fixture
 def harness(monkeypatch, capsys):
-    """打桩探针、确认框与服务动作。记录所有服务调用以便断言。"""
+    """打桩探针、确认框与服务动作。记录所有服务调用与所有提问以便断言。"""
     calls: list[tuple] = []
+    asked: list[str] = []
     answers: list[bool] = []
     state = {"runtime": None}
 
+    def _confirm(msg, default=True):
+        asked.append(msg)
+        return answers.pop(0) if answers else False
+
     monkeypatch.setattr(wiz, "probe_gateway", lambda **kw: state["runtime"])
     monkeypatch.setattr(wiz, "is_interactive", lambda: True)
-    monkeypatch.setattr(
-        wiz.ui, "confirm",
-        lambda msg, default=True: answers.pop(0) if answers else False,
-    )
+    monkeypatch.setattr(wiz.ui, "confirm", _confirm)
     monkeypatch.setattr(
         wiz, "run_service_action",
         lambda action, **kw: calls.append((action, kw)) or 0,
     )
     # 启动后的确认轮询默认成功，避免每个用例都等 15 秒。
+    # 真实轮询本身由 TestWaitUntilListening 直接测，不经过这个桩。
     monkeypatch.setattr(wiz, "_wait_until_listening", lambda *a, **kw: True)
 
     return SimpleNamespace(
-        calls=calls, answers=answers, state=state,
+        calls=calls, asked=asked, answers=answers, state=state,
         out=lambda: capsys.readouterr().out,
     )
 
@@ -119,7 +124,7 @@ def test_root_under_installer_defers_registration(harness, monkeypatch):
     harness.answers.append(True)  # 即使用户会同意，也不该被问
     wiz._offer_gateway_start(_config(), None)
     assert harness.calls == []
-    assert harness.answers == [True]  # 确认框根本没被调用
+    assert harness.asked == []  # 确认框根本没被调用
 
 
 def test_installer_flag_alone_does_not_defer(monkeypatch):
@@ -164,14 +169,19 @@ def test_no_service_manager_never_calls_a_service_action(harness):
     harness.answers.extend([True, True, True])  # 即使用户什么都同意
     wiz._offer_gateway_start(_config(), None)
     assert harness.calls == []
+    # 「不代启」的另一半：也不问一个用户答了也没法执行的问题。少了这条断言，
+    # 在这个分支里插一次 ui.confirm 仍然全绿。
+    assert harness.asked == []
     out = harness.out()
     assert "tmux" in out
 
 
 def test_disabled_explains_channels_still_work(harness):
     harness.state["runtime"] = _runtime(GatewayState.DISABLED)
+    harness.answers.append(True)  # 网关本就没启用，不该拿启动来烦用户
     wiz._offer_gateway_start({"gateway": {"enabled": False}}, None)
     assert harness.calls == []
+    assert harness.asked == []
     assert "echo-agent setup gateway" in harness.out()
 
 
@@ -191,6 +201,33 @@ def test_start_that_never_listens_points_at_the_logs(harness, monkeypatch):
     harness.answers.append(True)
     wiz._offer_gateway_start(_config(), None)
     assert "gateway logs" in harness.out()
+
+
+def test_section_only_without_a_unit_points_at_install_not_start(harness):
+    """无 unit 时 `gateway start` 会以 1 退出并叫用户改用 install。
+
+    两种状态共用一条 not_running 文案会把用户引向一条注定失败的命令，
+    所以 NOT_INSTALLED 要单独指向 install。
+    """
+    harness.state["runtime"] = _runtime(GatewayState.NOT_INSTALLED)
+    harness.answers.append(True)
+    wiz._offer_gateway_start(_config(), None, section_only=True)
+    assert harness.calls == []
+    assert harness.asked == []
+    out = harness.out()
+    assert "gateway install" in out
+    assert "gateway start" not in out
+
+
+def test_section_only_with_a_stopped_unit_points_at_start(harness):
+    harness.state["runtime"] = _runtime(
+        GatewayState.SERVICE_INSTALLED_STOPPED, service_installed=True,
+    )
+    harness.answers.append(True)
+    wiz._offer_gateway_start(_config(), None, section_only=True)
+    assert harness.calls == []
+    assert harness.asked == []
+    assert "gateway start" in harness.out()
 
 
 def test_section_only_never_asks_but_still_warns(harness):
@@ -228,6 +265,142 @@ def test_unreadable_port_does_not_crash_the_handoff(harness):
     harness.state["runtime"] = _runtime(GatewayState.RUNNING, listening=True)
     wiz._offer_gateway_start({"gateway": {"enabled": True, "port": "abc"}}, None)
     assert harness.calls == []
+
+
+# ── 真实轮询 ──────────────────────────────────────────────────────────────────
+
+class TestWaitUntilListening:
+    """直接测 _wait_until_listening 本身，不经过 harness 的打桩。
+
+    「启动后必须轮询确认端口真的在监听」是本任务的核心约束：run_service_action
+    返回 0 只代表 fork 成功，agent 仍可能在 bootstrap 阶段因 API key 无效退出。
+    harness 无条件把这个函数换成 lambda: True，所以其余用例一个都碰不到真实函数体
+    —— 把实现改成 `return True` 也不会有测试变红。这里补上那条防线。
+
+    时钟与 sleep 都是假的：真跑满 15 秒窗口会让测试无法接受地慢。
+    """
+
+    @staticmethod
+    def _fake_clock(monkeypatch, states):
+        """让 probe_gateway 按 ``states`` 顺序返回，并用假时钟推进时间。
+
+        每次 time.sleep(n) 把假时钟推进 n 秒，所以超时是确定性的、与真实耗时无关。
+        """
+        now = {"t": 0.0}
+        probes: list[int] = []
+        seq = list(states)
+
+        def _probe(**kw):
+            probes.append(1)
+            state = seq.pop(0) if seq else GatewayState.NOT_INSTALLED
+            return _runtime(state, listening=state is GatewayState.RUNNING)
+
+        # _wait_until_listening imports time inside the function body, so the
+        # patch has to land on the time module itself, not on an attribute of
+        # echo_agent.cli.setup (there is none).
+        monkeypatch.setattr(wiz, "probe_gateway", _probe)
+        monkeypatch.setattr(time_mod, "monotonic", lambda: now["t"])
+        monkeypatch.setattr(time_mod, "sleep", lambda n: now.__setitem__("t", now["t"] + n))
+        return probes
+
+    def test_returns_true_once_the_port_comes_up(self, monkeypatch):
+        # 前两次还没起来，第三次开始监听。
+        probes = self._fake_clock(monkeypatch, [
+            GatewayState.SERVICE_INSTALLED_STOPPED,
+            GatewayState.SERVICE_INSTALLED_STOPPED,
+            GatewayState.RUNNING,
+        ])
+        assert wiz._wait_until_listening({}, None, None, timeout=15.0) is True
+        assert len(probes) == 3  # 一起来就立刻返回，不白等剩下的窗口
+
+    def test_returns_false_when_the_port_never_comes_up(self, monkeypatch):
+        probes = self._fake_clock(monkeypatch, [])  # 永远 NOT_INSTALLED
+        assert wiz._wait_until_listening({}, None, None, timeout=0.1) is False
+        # t=0 探一次，此时还没到 deadline(0.1)，于是 sleep 到 t=0.5 再探一次，
+        # 这次判定超时。窗口比轮询间隔短也至少探两次，不会一次都不探就放弃。
+        assert len(probes) == 2
+
+    def test_zero_timeout_still_probes_once(self, monkeypatch):
+        """偏离 7 修正的行为：简报的 while 条件在 timeout=0 时一次都不探。
+
+        启动刚返回时端口往往已经在听了，一次都不探就报失败是错的。
+        """
+        probes = self._fake_clock(monkeypatch, [GatewayState.RUNNING])
+        assert wiz._wait_until_listening({}, None, None, timeout=0) is True
+        assert len(probes) == 1
+
+    def test_full_window_is_polled_repeatedly(self, monkeypatch):
+        """15 秒窗口 / 0.5 秒间隔：冷启动要加载 embedding 模型，得多探几次。"""
+        probes = self._fake_clock(monkeypatch, [])
+        assert wiz._wait_until_listening({}, None, None, timeout=15.0) is False
+        assert len(probes) == 31  # 第 1 次在 t=0，之后每 0.5 秒一次直到 t=15
+
+    def test_a_raising_probe_propagates_rather_than_looping(self, monkeypatch):
+        """探针契约是绝不抛异常。万一有人破了它，这里不吞异常也不空转 ——
+        测试记录当前行为，好让契约破损立刻可见而不是变成一个静默的死循环。"""
+        monkeypatch.setattr(time_mod, "monotonic", lambda: 0.0)
+        monkeypatch.setattr(time_mod, "sleep", lambda n: None)
+
+        def _boom(**kw):
+            raise RuntimeError("probe contract broken")
+
+        monkeypatch.setattr(wiz, "probe_gateway", _boom)
+        with pytest.raises(RuntimeError):
+            wiz._wait_until_listening({}, None, None, timeout=0)
+
+
+# ── linger 提示 ───────────────────────────────────────────────────────────────
+
+class TestLingerHint:
+    """Linux 用户级服务退出登录就停，这对一个要 7x24 跑的东西是意外行为。"""
+
+    @staticmethod
+    def _linux(monkeypatch, loginctl_stdout):
+        import subprocess
+        import sys
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(os_mod, "geteuid", lambda: 1000, raising=False)
+        monkeypatch.setattr(os_mod, "getlogin", lambda: "bob", raising=False)
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda *a, **kw: SimpleNamespace(stdout=loginctl_stdout, returncode=0),
+        )
+
+    def test_warns_when_lingering_is_off(self, monkeypatch, capsys):
+        self._linux(monkeypatch, "Linger=no\n")
+        wiz._print_linger_hint_if_needed()
+        out = capsys.readouterr().out
+        assert "enable-linger" in out
+        assert "bob" in out
+
+    def test_silent_when_lingering_is_on(self, monkeypatch, capsys):
+        self._linux(monkeypatch, "Linger=yes\n")
+        wiz._print_linger_hint_if_needed()
+        assert capsys.readouterr().out == ""
+
+    def test_silent_on_non_linux(self, monkeypatch, capsys):
+        import sys
+
+        monkeypatch.setattr(sys, "platform", "darwin")
+        wiz._print_linger_hint_if_needed()
+        assert capsys.readouterr().out == ""
+
+    def test_silent_when_loginctl_is_missing(self, monkeypatch, capsys):
+        """容器里常没有 loginctl —— 探不到就闭嘴，不是报错。"""
+        import subprocess
+        import sys
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(os_mod, "geteuid", lambda: 1000, raising=False)
+        monkeypatch.setattr(os_mod, "getlogin", lambda: "bob", raising=False)
+
+        def _missing(*a, **kw):
+            raise FileNotFoundError("loginctl")
+
+        monkeypatch.setattr(subprocess, "run", _missing)
+        wiz._print_linger_hint_if_needed()
+        assert capsys.readouterr().out == ""
 
 
 # ── 接入点回归 ────────────────────────────────────────────────────────────────
