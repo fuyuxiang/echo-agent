@@ -35,6 +35,10 @@ class BaseChannel(ABC):
     supports_edit: bool = False
     supports_reactions: bool = False  # overridden by channels that implement send_reaction
     is_realtime: bool = True          # False for async channels (email/webhook/cron)
+    # Whether this channel can render a real, selectable choice control (as the
+    # CLI TUI does from a clarify_request frame). IM channels can only show text,
+    # so the clarify tool must not promise the model a clickable picker there.
+    supports_interactive_choices: bool = False
 
     def __init__(self, config: Any, bus: MessageBus):
         self.config = config

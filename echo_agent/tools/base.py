@@ -188,13 +188,21 @@ class Tool(ABC):
         """Classify as 'read_only' or 'side_effect' for replay guards."""
         return "side_effect"
 
-    def to_schema(self) -> dict[str, Any]:
+    def description_for_channel(self, channel: str | None) -> str:
+        """Description as the model should see it for *channel*.
+
+        Base implementation ignores the channel. Tools whose behaviour actually
+        differs per channel (clarify) override this so the schema never
+        describes a capability the channel lacks."""
+        return self.description
+
+    def to_schema(self, channel: str | None = None) -> dict[str, Any]:
         _validate_json_schema(self.parameters)
         return {
             "type": "function",
             "function": {
                 "name": self.name,
-                "description": self.description,
+                "description": self.description_for_channel(channel),
                 "parameters": self.parameters,
             },
         }

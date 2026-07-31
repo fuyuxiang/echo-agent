@@ -94,7 +94,7 @@ async def test_narrative_prefetch_uses_session_key_not_memory_scope(storage, tmp
         working_memories=OrderedDict(),
         memory_snapshots=OrderedDict(),
         snapshot_enabled=True,
-        tool_definitions_fn=lambda: [],
+        tool_definitions_fn=lambda channel=None: [],
         episodic=episodic,
         narrative_episode_count=3,
     )

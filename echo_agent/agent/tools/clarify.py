@@ -17,7 +17,7 @@ CLI_CHANNEL = "gateway:cli"
 
 class ClarifyTool(Tool):
     name = "clarify"
-    description = (
+    INTERACTIVE_DESCRIPTION = (
         "Ask the user a clarifying question, optionally with multiple-choice options. "
         "This is the ONLY way to present the user with selectable choices: options passed "
         "here render as an interactive picker (number keys / arrows+enter) that the user can "
@@ -25,6 +25,19 @@ class ClarifyTool(Tool):
         "writing a numbered/bulleted list of options into your reply text, because plain-text "
         "options are not selectable."
     )
+    # This channel cannot render a choice control. Say so plainly: the model
+    # then shortens the options and phrases them to be answered by letter,
+    # instead of offering a picker the user will never see.
+    TEXT_DESCRIPTION = (
+        "Ask the user a clarifying question, optionally with multiple-choice options. "
+        "On THIS channel options are shown as a plain text list only — the user cannot tap "
+        "or select them. The user answers by replying with the option letter (A, B, C...) or by "
+        "typing an answer in their own words, and their next message is routed back to you "
+        "as the answer. Keep options short and easy to say out loud, and offer only a few; "
+        "long or numerous options are hard to answer this way. Use this tool rather than "
+        "writing the options into your reply text, so the answer is bound to the question."
+    )
+    description = INTERACTIVE_DESCRIPTION
     parameters = {
         "type": "object",
         "properties": {
@@ -53,8 +66,21 @@ class ClarifyTool(Tool):
     def _render_text(question: str, options: list[str]) -> str:
         if not options:
             return question
-        choices = "\n".join(f"  {i + 1}. {opt}" for i, opt in enumerate(options))
-        return f"{question}\n{choices}"
+        # Letters, matching AgentLoop._maybe_bind_im_clarify_answer: the user
+        # sees the same labels the model is later told the options were. Letters
+        # also survive dictation better than digits, which collide with numbers
+        # appearing inside the option text.
+        choices = "\n".join(f"  {chr(65 + i)}. {opt}" for i, opt in enumerate(options))
+        return f"{question}\n{choices}\n（直接回复选项字母或你的答案即可）"
+
+    def description_for_channel(self, channel: str | None) -> str:
+        from echo_agent.agent.cognitive_emitter import should_emit_cognitive
+
+        # should_emit_cognitive is the existing answer to "can this channel
+        # receive structured frames" — a clarify_request frame is exactly what
+        # the picker is built from. Reusing it keeps one definition of the
+        # capability instead of two that can drift.
+        return self.INTERACTIVE_DESCRIPTION if should_emit_cognitive(channel or "") else self.TEXT_DESCRIPTION
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         question = params["question"]

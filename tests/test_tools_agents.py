@@ -47,8 +47,10 @@ class TestClarifyTool:
             {"question": "Pick one:", "options": ["A", "B", "C"]}, _ctx()
         )
         assert result.success is True
-        assert "1. A" in result.output
-        assert "2. B" in result.output
+        # Options are labelled by letter, matching how the answer is later
+        # quoted back to the model (AgentLoop._maybe_bind_im_clarify_answer).
+        assert "A. A" in result.output
+        assert "B. B" in result.output
         assert result.metadata["options"] == ["A", "B", "C"]
 
     @pytest.mark.asyncio

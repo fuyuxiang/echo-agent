@@ -70,7 +70,7 @@ class TestContextStage:
             working_memories=OrderedDict(),
             memory_snapshots=OrderedDict(),
             snapshot_enabled=False,
-            tool_definitions_fn=lambda: [],
+            tool_definitions_fn=lambda channel=None: [],
         )
 
         event = InboundEvent.text_message(channel="cli", sender_id="user", chat_id="c1", text="hello")
@@ -97,7 +97,7 @@ class TestContextStage:
             knowledge=None, hybrid_retriever=None, planner=None,
             inference=MagicMock(), working_memories=OrderedDict(),
             memory_snapshots=OrderedDict(), snapshot_enabled=False,
-            tool_definitions_fn=lambda: [],
+            tool_definitions_fn=lambda channel=None: [],
         )
         assert stage._infer_task_type("帮我写一个python函数") == "code"
         assert stage._infer_task_type("fix this bug please") == "code"
@@ -109,7 +109,7 @@ class TestContextStage:
             knowledge=None, hybrid_retriever=None, planner=None,
             inference=MagicMock(), working_memories=OrderedDict(),
             memory_snapshots=OrderedDict(), snapshot_enabled=False,
-            tool_definitions_fn=lambda: [],
+            tool_definitions_fn=lambda channel=None: [],
         )
         assert stage._infer_task_type("搜索最新的新闻") == "research"
 
@@ -120,7 +120,7 @@ class TestContextStage:
             knowledge=None, hybrid_retriever=None, planner=None,
             inference=MagicMock(), working_memories=OrderedDict(),
             memory_snapshots=OrderedDict(), snapshot_enabled=False,
-            tool_definitions_fn=lambda: [],
+            tool_definitions_fn=lambda channel=None: [],
         )
         assert stage._infer_task_type("你好") == "chat"
 
@@ -160,7 +160,7 @@ class TestContextStage:
             skill_store=None, knowledge=None, hybrid_retriever=None,
             planner=None, inference=inference, working_memories=OrderedDict(),
             memory_snapshots=OrderedDict(), snapshot_enabled=False,
-            tool_definitions_fn=lambda: [],
+            tool_definitions_fn=lambda channel=None: [],
         )
 
         event = InboundEvent.text_message(

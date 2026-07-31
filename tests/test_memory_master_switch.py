@@ -95,7 +95,7 @@ def _make_stage(*, memory_enabled: bool, capture: dict):
         working_memories=working_memories,
         memory_snapshots=OrderedDict(),
         snapshot_enabled=True,
-        tool_definitions_fn=lambda: [],
+        tool_definitions_fn=lambda channel=None: [],
         memory_enabled=memory_enabled,
     )
 

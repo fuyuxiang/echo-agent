@@ -343,7 +343,7 @@ class ContextStage:
 
         skills_ctx = build_skills_context(self._skill_store)
         # Derive capabilities from the live tool registry (config, not memory).
-        tool_defs = self._inference.filter_tools(self._tool_definitions_fn())
+        tool_defs = self._inference.filter_tools(self._tool_definitions_fn(channel=event.channel))
         capabilities_ctx = build_capabilities_context(tool_defs)
         system_prompt = self._context_builder.build_system_prompt(
             memory_context=memory_ctx,

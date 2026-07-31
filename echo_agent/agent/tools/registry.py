@@ -95,23 +95,23 @@ class ToolRegistry:
     def has(self, name: str) -> bool:
         return self._resolve(name) in self._tools
 
-    def get_definitions(self) -> list[dict[str, Any]]:
+    def get_definitions(self, channel: str | None = None) -> list[dict[str, Any]]:
         definitions: list[dict[str, Any]] = []
         for tool in self._tools.values():
             try:
-                definitions.append(tool.to_schema())
+                definitions.append(tool.to_schema(channel))
             except ValueError as e:
                 logger.error("Skipping tool '{}' due to invalid schema: {}", tool.name, e)
         return definitions
 
-    def get_ready_definitions(self) -> list[dict[str, Any]]:
+    def get_ready_definitions(self, channel: str | None = None) -> list[dict[str, Any]]:
         """Like get_definitions() but only includes tools where is_ready() is True."""
         definitions: list[dict[str, Any]] = []
         for tool in self._tools.values():
             if not tool.is_ready():
                 continue
             try:
-                definitions.append(tool.to_schema())
+                definitions.append(tool.to_schema(channel))
             except ValueError as e:
                 logger.error("Skipping tool '{}' due to invalid schema: {}", tool.name, e)
         return definitions

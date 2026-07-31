@@ -63,7 +63,7 @@ def _build_stage(*, cache, on_miss, knowledge=None, episodic=None,
         context_builder=context_builder, skill_store=None, knowledge=knowledge,
         hybrid_retriever=hybrid_retriever, planner=None, inference=inference,
         working_memories=OrderedDict(), memory_snapshots=OrderedDict(),
-        snapshot_enabled=False, tool_definitions_fn=lambda: [], episodic=episodic,
+        snapshot_enabled=False, tool_definitions_fn=lambda channel=None: [], episodic=episodic,
         retrieval_cache_get=lambda sk: cache.get(sk),
         retrieval_on_miss=on_miss, cache_ttl=60.0, cache_jaccard_min=0.3,
     )

@@ -36,7 +36,8 @@ async def test_non_cli_channel_returns_text_without_blocking():
     result = await asyncio.wait_for(tool.execute(params, ctx), timeout=1.0)
     assert result.success is True
     assert "选哪个?" in result.output
-    assert "1. A" in result.output
+    # Letter labels, consistent with the answer-binding quote in AgentLoop.
+    assert "A. A" in result.output
 
 
 @pytest.mark.asyncio

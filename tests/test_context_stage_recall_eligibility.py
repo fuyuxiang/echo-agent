@@ -55,7 +55,7 @@ def _make_stage(memory, *, hybrid_retriever=None, timeout=0.8, on_miss="degrade"
         working_memories=OrderedDict(),
         memory_snapshots=OrderedDict(),
         snapshot_enabled=False,
-        tool_definitions_fn=lambda: [],
+        tool_definitions_fn=lambda channel=None: [],
         retrieval_on_miss=on_miss,
         retrieval_miss_timeout=timeout,
     )
