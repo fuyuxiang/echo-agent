@@ -22,6 +22,10 @@ def test_quickstart_runs_language_model_permissions_only(tmp_path):
             cfg.setdefault("models", {"providers": [{"name": "openai"}], "defaultModel": "gpt-4o"})
         return _f
 
+    # _offer_gateway_start is stubbed because it probes the live service manager:
+    # unstubbed it shells out to launchctl/systemctl and, on a host whose gateway
+    # is enabled, would sit on a confirm prompt. Its own behaviour is covered by
+    # tests/cli/test_setup_gateway_start.py.
     with patch(f"{_S}.is_interactive", return_value=True), \
          patch(f"{_S}.ui.select", return_value="quickstart"), \
          patch(f"{_S}.setup_language", _rec("language")), \
@@ -30,6 +34,7 @@ def test_quickstart_runs_language_model_permissions_only(tmp_path):
          patch(f"{_S}.setup_channels", _rec("channels")), \
          patch(f"{_S}.save_config", return_value=tmp_path / "echo-agent.yaml"), \
          patch(f"{_S}._ensure_credential_key"), \
+         patch(f"{_S}._offer_gateway_start"), \
          patch(f"{_S}.setup_doctor"):
         setup_mod.run_setup_wizard(config_path=str(tmp_path / "echo-agent.yaml"))
 

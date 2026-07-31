@@ -110,6 +110,9 @@ IS_WSL=false
 # Set when the background service could not be registered, so the closing
 # summary can tell the user how to run the gateway instead.
 SERVICE_SKIPPED=false
+# Set when the setup wizard ran and already offered to register/start the
+# service, so setup_service() does not ask the same question a second time.
+SETUP_HANDLED_SERVICE=false
 
 # --- Interactive detection ---
 if [ -t 0 ]; then
@@ -1917,6 +1920,22 @@ prepare_home() {
     log_success "Home directory ready: $ECHO_HOME"
 }
 
+# True when a user-scope unit exists, i.e. the setup wizard's service offer was
+# accepted. Root installs manage a *system* unit that the wizard never touches,
+# so they always fall through to setup_service() below.
+service_installed_by_wizard() {
+    if [ "$OS" = "macos" ]; then
+        # Paths mirror echo_agent/cli/service/{launchd,systemd}.py, which build
+        # them from Path.home() and ignore XDG_CONFIG_HOME.
+        [ -f "$HOME/Library/LaunchAgents/com.echo-agent.gateway.plist" ]
+        return
+    fi
+    if [ "$OS" != "linux" ] || [ "$(id -u)" -eq 0 ]; then
+        return 1
+    fi
+    [ -f "$HOME/.config/systemd/user/echo-agent.service" ]
+}
+
 run_setup_wizard() {
     local echo_cmd
 
@@ -1939,8 +1958,15 @@ run_setup_wizard() {
         cd "$ECHO_HOME"
         # Never let a wizard that the user aborted (Ctrl+C, or a non-zero exit
         # in a CI shell) abort the whole installer via the ERR trap.
-        if ! "$echo_cmd" setup -w "$ECHO_HOME"; then
+        if ! ECHO_AGENT_SETUP_HANDLES_SERVICE=1 "$echo_cmd" setup -w "$ECHO_HOME"; then
             log_warn "Setup did not complete. Run it later with: echo-agent setup"
+        elif service_installed_by_wizard; then
+            # Only skip the question below when a unit actually exists now. The
+            # wizard offers the service only for an *enabled* gateway, and only
+            # in user scope — quickstart never visits the gateway section, and a
+            # declined prompt registers nothing. Trusting "the wizard exited 0"
+            # alone would leave those installs with no service and no prompt.
+            SETUP_HANDLED_SERVICE=true
         fi
     else
         log_info "You can run setup later with: echo-agent setup"
@@ -1976,6 +2002,11 @@ service_manager_available() {
 
 setup_service() {
     if [ "$OS" != "linux" ] && [ "$OS" != "macos" ]; then
+        return 0
+    fi
+
+    if [ "$SETUP_HANDLED_SERVICE" = true ]; then
+        log_info "Service setup was handled by the setup wizard."
         return 0
     fi
 

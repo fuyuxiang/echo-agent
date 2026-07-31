@@ -44,6 +44,8 @@ from echo_agent.cli.prompt import (
     is_interactive,
     prompt_yes_no,
 )
+from echo_agent.cli.runtime_probe import is_wsl, probe_gateway
+from echo_agent.cli.service import run_service_action
 from echo_agent.cli.setup import providers as provider_catalog
 from echo_agent.cli.setup.model_verify import (
     VerifyResult,
@@ -1286,6 +1288,240 @@ def _print_summary(config: dict, config_path: Path) -> None:
     print()
 
 
+# ── Startup handoff ───────────────────────────────────────────────────────────
+
+_START_TIMEOUT_SECONDS = 15.0
+"""How long to wait for the port after a successful `start`.
+
+Bootstrap loads the embedding model, so a cold start is not instant — hence a
+generous ceiling rather than a single check.
+"""
+
+
+def _as_str(path: Any) -> str | None:
+    return str(path) if path else None
+
+
+def _probe_config(config: dict) -> Any:
+    """Adapt the wizard's plain dict to the attribute access the probe expects.
+
+    The wizard works on raw YAML dicts (it must write keys the schema may not
+    know yet), while the probe reads config.gateway.*. Building a tiny view is
+    cheaper and safer than round-tripping the dict through the pydantic schema
+    mid-wizard, which would reject a half-configured file.
+
+    Every field is coerced defensively: the config may have been hand-edited
+    (``port: abc``), and the probe's own tolerance does not help here because
+    this view is built *before* the call, outside its never-raises guard.
+    """
+    from types import SimpleNamespace
+
+    gw = config.get("gateway", {})
+    if not isinstance(gw, dict):
+        gw = {}
+    try:
+        port = int(gw.get("port", 58123))
+    except (TypeError, ValueError):
+        port = 0
+    return SimpleNamespace(
+        gateway=SimpleNamespace(
+            enabled=bool(gw.get("enabled", False)),
+            host=str(gw.get("host", "0.0.0.0")),
+            port=port,
+        ),
+        workspace=str(config.get("workspace") or "."),
+    )
+
+
+def _wait_until_listening(
+    config: dict, config_path: Any, workspace: str | None,
+    timeout: float = _START_TIMEOUT_SECONDS,
+) -> bool:
+    """Poll until the gateway port actually accepts a connection.
+
+    A service manager's `start` returning 0 only means the fork succeeded. The
+    agent can still die during bootstrap (bad API key, port taken) and the
+    wizard would have reported success for a gateway nobody is serving.
+    """
+    import time
+
+    from echo_agent.cli.runtime_probe import GatewayState
+
+    deadline = time.monotonic() + timeout
+    while True:
+        rt = probe_gateway(config=_probe_config(config), config_path=_as_str(config_path),
+                           workspace=workspace)
+        if rt.state is GatewayState.RUNNING:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.5)
+
+
+def _service_action(action: str, workspace: str | None, config_path: Any) -> int:
+    """Run one service action, converting a hard exit into a return code.
+
+    The backends call ``sys.exit`` on a failing ``systemctl`` and raise
+    ``SystemExit`` when the unit is missing. That is right for
+    ``echo-agent gateway start``, whose only job is that action, but here the
+    config is already saved: a service that will not start is a result to report,
+    not a reason to kill the wizard before it prints anything.
+    """
+    try:
+        return int(run_service_action(action, workspace=workspace, config=_as_str(config_path)) or 0)
+    except SystemExit as exc:
+        return exc.code if isinstance(exc.code, int) else 1
+    except Exception:  # noqa: BLE001 - a broken service manager must not lose the summary
+        return 1
+
+
+def _installer_owns_service_registration() -> bool:
+    """True when install.sh will register the service itself after the wizard.
+
+    Only when running as root: install.sh then registers a *system* unit, while
+    this wizard can only register a user-scope one. Registering both would leave
+    two units competing for port 58123 and the workspace lock. As a normal user
+    the installer's scope matches the wizard's, so the wizard goes ahead and
+    install.sh detects the unit and skips its own prompt.
+    """
+    import os
+    import sys
+
+    if os.environ.get("ECHO_AGENT_SETUP_HANDLES_SERVICE") != "1":
+        return False
+    return sys.platform == "linux" and os.geteuid() == 0
+
+
+def _print_linger_hint_if_needed() -> None:
+    """A Linux user-scope service dies with the login session unless lingering
+    is enabled — surprising for something meant to run 24/7."""
+    import os
+    import subprocess
+    import sys
+
+    if sys.platform != "linux" or os.geteuid() == 0:
+        return
+    try:
+        user = os.getlogin()
+    except OSError:
+        user = os.environ.get("USER", "") or ""
+    if not user:
+        return
+    try:
+        out = subprocess.run(
+            ["loginctl", "show-user", user], capture_output=True, text=True, timeout=5,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return
+    if "Linger=yes" in out:
+        return
+    print_warning(t("startup.linger_warn"))
+    print_info(t("startup.linger_fix", user=user))
+
+
+def _report_started(config: dict, config_path: Any, workspace: str | None) -> None:
+    print_info(t("startup.starting"))
+    if _wait_until_listening(config, config_path, workspace):
+        rt = probe_gateway(config=_probe_config(config), config_path=_as_str(config_path),
+                           workspace=workspace)
+        print_success(t("startup.start_ok", host=rt.probe_host, port=rt.effective_port))
+    else:
+        print_warning(t("startup.start_timeout", seconds=int(_START_TIMEOUT_SECONDS)))
+        print_info(t("startup.start_timeout_hint"))
+
+
+def _report_start_failed() -> None:
+    print_warning(t("startup.start_failed"))
+    print_info(t("startup.start_timeout_hint"))
+
+
+def _offer_gateway_start(
+    config: dict, config_path: Any, workspace: Any = None, *, section_only: bool = False
+) -> None:
+    """Close the gap between "config saved" and "the product works".
+
+    The wizard only ever wrote YAML; nothing started the process that serves
+    58123, and nothing said so. This runs after the summary and, per the live
+    runtime state, either starts the gateway or hands the user the one command
+    that applies to their platform.
+
+    ``section_only``: the user reconfigured a single section rather than doing a
+    first-time install. Never offer to install a service in that case — just say
+    whether the change is live yet.
+    """
+    from echo_agent.cli.runtime_probe import GatewayState
+
+    if not is_interactive():
+        return
+
+    ws = _as_str(workspace)
+    rt = probe_gateway(config=_probe_config(config), config_path=_as_str(config_path),
+                       workspace=ws)
+
+    if rt.state is GatewayState.DISABLED:
+        print_info(t("startup.disabled"))
+        print_info(t("startup.disabled_fix"))
+        return
+
+    print()
+    ui.intro(t("startup.header"))
+
+    if rt.state is GatewayState.RUNNING:
+        print_success(t("startup.running", host=rt.probe_host, port=rt.effective_port))
+        if section_only:
+            print_info(t("startup.restart_needed"))
+        return
+
+    if rt.state is GatewayState.NO_SERVICE_MANAGER:
+        # Deliberately no prompt and no action: a nohup'd gateway the wizard
+        # spawned would be unsupervised, would not restart on crash or reboot,
+        # and would collide with the workspace single-instance lock later.
+        print_warning(t("startup.no_manager"))
+        if is_wsl():
+            print_info(t("startup.no_manager_wsl"))
+        print_info(t("startup.no_manager_tmux"))
+        return
+
+    if section_only:
+        print_warning(t("startup.not_running"))
+        return
+
+    if rt.state is GatewayState.SERVICE_INSTALLED_STOPPED:
+        if not ui.confirm(t("startup.ask_start"), default=True):
+            print_info(t("startup.declined_start"))
+            return
+        # This state also covers "the manager calls the unit active but the port
+        # is dead" — a unit that forked and then died in bootstrap. `start` on an
+        # already-active unit is a no-op that would burn the whole poll window
+        # and still fail, so restart it instead; only a genuinely stopped unit
+        # gets `start`.
+        action = "restart" if rt.service_running else "start"
+        if _service_action(action, ws, config_path) != 0:
+            _report_start_failed()
+            return
+        _report_started(config, config_path, ws)
+        return
+
+    # NOT_INSTALLED
+    if _installer_owns_service_registration():
+        # install.sh running as root registers a *system* unit; this wizard only
+        # ever registers a user-scope one. Offering here would leave the machine
+        # with two units for one gateway, so defer to the installer.
+        print_info(t("startup.declined"))
+        return
+    if not ui.confirm(t("startup.ask_install"), default=True):
+        print_info(t("startup.declined"))
+        return
+    if _service_action("install", ws, config_path) != 0:
+        print_warning(t("startup.install_failed"))
+        return
+    if _service_action("start", ws, config_path) != 0:
+        _report_start_failed()
+        return
+    _report_started(config, config_path, ws)
+    _print_linger_hint_if_needed()
+
+
 # ── Headless / non-interactive guidance ───────────────────────────────────────
 
 def _print_headless_guidance() -> None:
@@ -1429,6 +1665,7 @@ def _run_setup_wizard(
         path = save_config(config, config_target)
         label = t(f"section.{canonical}")
         print_success(t("summary.section_saved", label=label, path=path))
+        _offer_gateway_start(config, path, workspace, section_only=True)
         return 0
 
     _print_banner()
@@ -1463,6 +1700,7 @@ def _run_setup_wizard(
             func(config)
             path = save_config(config, config_target)
             print_success(t("summary.section_saved", label=t(f"section.{key}"), path=path))
+            _offer_gateway_start(config, path, workspace, section_only=True)
             return 0
 
     language_done = False
@@ -1486,6 +1724,7 @@ def _run_setup_wizard(
         _ensure_credential_key(_resolve_workspace(config))
         setup_doctor(config)
         _print_summary(config, path)
+        _offer_gateway_start(config, path, workspace)
         ui.outro(t("summary.complete"))
         return 0
 
@@ -1498,6 +1737,7 @@ def _run_setup_wizard(
     _ensure_credential_key(_resolve_workspace(config))
     setup_doctor(config)
     _print_summary(config, path)
+    _offer_gateway_start(config, path, workspace)
     print_success(t("summary.complete"))
     return 0
 

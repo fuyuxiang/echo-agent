@@ -182,10 +182,14 @@ def test_wizard_single_section_runs_and_saves(tmp_path):
         calls["ran"] = True
         config.setdefault("cost", {})["enabled"] = False
 
+    # The save path now ends in the startup handoff, which probes the real
+    # service manager (launchctl/systemctl) unless stubbed. See
+    # tests/cli/test_setup_gateway_start.py for its own coverage.
     with patch(f"{_T}.is_interactive", return_value=True), \
          patch(f"{_T}._setup_config_target", return_value=target), \
          patch(f"{_T}._load_existing_config", return_value=({}, None)), \
          patch(f"{_T}._print_banner"), \
+         patch(f"{_T}._offer_gateway_start"), \
          patch(f"{_T}.save_config", return_value=str(target)) as save, \
          patch.object(setup_mod, "SETUP_SECTIONS", [("cost", _fake_cost)]):
         setup_mod.run_setup_wizard(section="cost")
