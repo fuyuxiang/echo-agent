@@ -1445,6 +1445,38 @@ def _report_start_failed() -> None:
     print_info(t("startup.start_timeout_hint"))
 
 
+def _maybe_offer_dashboard_build() -> None:
+    """Offer to build the SPA before a background service takes over.
+
+    The service process itself never builds (it must not block on pnpm), so if we
+    do not ask here a fresh install would never build the Dashboard at all: the
+    installer no longer builds it either.
+    """
+    try:
+        from echo_agent.gateway.dashboard_build import (
+            build_dashboard,
+            dashboard_build_needed,
+            describe_outcome,
+            find_web_dir,
+        )
+    except Exception:  # noqa: BLE001 - the frontend is optional
+        return
+
+    web_dir = find_web_dir()
+    if web_dir is None or not dashboard_build_needed(web_dir):
+        return
+    if not ui.confirm(t("dashboard.ask_build"), default=False):
+        print_info(t("dashboard.declined"))
+        return
+    print_info(t("dashboard.building"))
+    outcome = build_dashboard(
+        web_dir,
+        on_output=lambda line: print(f"    {line}", flush=True),
+        confirm=lambda msg: ui.confirm(msg, default=True),
+    )
+    (print_success if outcome.ok else print_warning)(describe_outcome(outcome))
+
+
 def _offer_gateway_start(
     config: dict, config_path: Any, workspace: Any = None, *, section_only: bool = False
 ) -> None:
@@ -1501,6 +1533,8 @@ def _offer_gateway_start(
         else:
             print_warning(t("startup.not_running"))
         return
+
+    _maybe_offer_dashboard_build()
 
     if rt.state is GatewayState.SERVICE_INSTALLED_STOPPED:
         if not ui.confirm(t("startup.ask_start"), default=True):

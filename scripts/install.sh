@@ -98,10 +98,12 @@ NODE_DIST_MIRRORS=(
     "https://mirrors.aliyun.com/nodejs-release"
     "https://nodejs.org/dist"
 )
+# Set by install_node() on success. Nothing reads it since the install-time
+# Dashboard build was removed; kept so that function needs no edit.
 HAS_NODE=false
-DASHBOARD_BUILT=false
-# Skip the Dashboard build entirely (--skip-dashboard). The gateway then serves
-# its built-in playground UI instead of the SPA.
+# Accepted but inert (--skip-dashboard). The Dashboard is built on first use, so
+# there is no install-time build left to skip. Kept only so existing scripts and
+# docs that pass the flag still install successfully.
 SKIP_DASHBOARD=false
 # Install a managed Node.js and exit — the entry point dashboard_build.py calls
 # when it needs a Node to build the SPA. Reuses this script's checksum-verified,
@@ -158,7 +160,15 @@ while [[ $# -gt 0 ]]; do
             esac
             shift 2
             ;;
-        --skip-dashboard) SKIP_DASHBOARD=true; shift ;;
+        --skip-dashboard) SKIP_DASHBOARD=true
+            # Kept accepting the flag rather than erroring: existing scripts and
+            # docs pass it, and failing their install over a now-irrelevant flag
+            # would be a worse outcome than a notice.
+            # Plain echo, not log_warn: arg parsing runs at line ~160, well
+            # before the logging helpers are defined further down.
+            echo "Warning: --skip-dashboard is deprecated and now has no effect:" >&2
+            echo "  the Dashboard is built on first use, not during install." >&2
+            shift ;;
         --install-node-only) INSTALL_NODE_ONLY=true; shift ;;
         -h|--help)
             echo "Echo Agent Installer"
@@ -177,8 +187,8 @@ while [[ $# -gt 0 ]]; do
             echo "                     picking whichever responds faster. Affects the"
             echo "                     git clone/fetch only — the model prefetch always"
             echo "                     tries the Gitee release first, then GitHub"
-            echo "  --skip-dashboard   Don't build the web Dashboard (skips Node.js/pnpm);"
-            echo "                     the gateway serves its built-in playground UI instead"
+            echo "  --skip-dashboard   Deprecated, now has no effect: the Dashboard is built"
+            echo "                     on first use (echo-agent dashboard build), not here"
             echo "  --install-node-only"
             echo "                     Install a managed Node.js into ~/.echo-agent/node"
             echo "                     and exit, installing nothing else. Used by the"
@@ -786,46 +796,10 @@ install_node() {
     log_success "Node.js $("$node_dir/bin/node" -v) installed to $node_dir"
 }
 
-check_node() {
-    if [ "$SKIP_DASHBOARD" = true ]; then
-        # Node exists in this install only to build the Dashboard.
-        HAS_NODE=false
-        return 0
-    fi
-    log_info "Checking Node.js..."
-
-    # Check system node
-    if command -v node >/dev/null 2>&1; then
-        local sys_ver
-        sys_ver="$(node -v 2>/dev/null || echo "")"
-        if node_version_ok "$sys_ver"; then
-            HAS_NODE=true
-            log_success "System Node.js $sys_ver"
-            return 0
-        fi
-    fi
-
-    # Check managed node
-    local managed_node="$ECHO_HOME/node/bin/node"
-    if [ -x "$managed_node" ]; then
-        local managed_ver
-        managed_ver="$("$managed_node" -v 2>/dev/null || echo "")"
-        if node_version_ok "$managed_ver"; then
-            HAS_NODE=true
-            export PATH="$ECHO_HOME/node/bin:$PATH"
-            log_success "Managed Node.js $managed_ver at $ECHO_HOME/node/"
-            return 0
-        fi
-    fi
-
-    # Neither found — install
-    if install_node; then
-        return 0
-    fi
-
-    HAS_NODE=false
-    log_warn "Node.js >= 20 not available. Dashboard build will be skipped."
-}
+# check_node() used to live here. It only ever gated the install-time Dashboard
+# build, which now happens on first use instead, so nothing called it any more.
+# install_node() below is still reachable via --install-node-only and does not
+# depend on it.
 
 # =============================================================================
 # Repository & environment setup
@@ -1612,179 +1586,12 @@ PYEOF
     return 0
 }
 
-# The Dashboard SPA is built from web/ in this checkout. We deliberately do NOT
-# download a prebuilt bundle: the sources are already here, so building them is
-# locally verifiable, whereas fetching an artifact would mean trusting that some
-# external release matches this tree. The wheel on PyPI carries a prebuilt copy
-# for `pip install` users (hatch_build.py bundles web/dist into
-# echo_agent/_bundled/dashboard); a source install builds its own. Those are the
-# only two dashboard channels — there is intentionally no third one.
-#
-# web/dist is exactly where the gateway looks for a source checkout
-# (echo_agent/gateway/server.py:_resolve_dashboard_dir).
-
-build_dashboard() {
-    cd "$INSTALL_DIR"
-
-    if [ "$SKIP_DASHBOARD" = true ]; then
-        log_info "Skipping Dashboard build (--skip-dashboard)."
-        dashboard_skip_note
-        return 0
-    fi
-
-    if [ "$HAS_NODE" = false ]; then
-        log_warn "Skipping Dashboard build (no Node.js available)."
-        dashboard_skip_note
-        return 0
-    fi
-
-    # pnpm is the package manager this project's lockfile belongs to; npm/yarn
-    # would resolve different versions. Which pnpm *major* runs matters too:
-    # web/package.json pins one via "packageManager", and both the bootstrap
-    # paths below honour it (corepack downloads it; a global pnpm >=10.26 does
-    # the same unless the user has opted out). Before that pin existed, corepack
-    # and `npm i -g pnpm` both grabbed the newest major, so users landed on
-    # pnpm 11 while CI stayed on 10 — see the ERR_PNPM_IGNORED_BUILDS note in
-    # web/pnpm-workspace.yaml.
-    # `pnpm --version`, not `command -v pnpm`: an *existing* pnpm can be present
-    # and still be unrunnable. An earlier version of this installer left pnpm 11
-    # behind on hosts with Node 20 (pnpm 11 needs >=22.13, node_version_ok()
-    # accepts 20), where every invocation dies with
-    # ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite. Probing only the pnpm we just
-    # installed would skip that host straight to a frozen install that cannot
-    # work, and the Dashboard would be lost with a misleading diagnosis.
-    if ! pnpm --version >/dev/null 2>&1; then
-        if command -v pnpm >/dev/null 2>&1; then
-            log_warn "pnpm is on PATH but does not run; re-bootstrapping it."
-        else
-            log_info "Installing pnpm..."
-        fi
-        # corepack only writes a shim — the real download happens on first use,
-        # so verify pnpm actually runs before relying on it. It also resolves the
-        # "packageManager" pin in web/package.json, which is how a host with an
-        # unrunnable pnpm 11 gets back to the version CI tests; run it from web/
-        # so that pin is what the probe downloads.
-        #
-        # When repairing an existing pnpm this branch often can't win: corepack
-        # writes its shim next to the running node, and refuses to clobber a real
-        # (non-symlink) binary, so a broken pnpm installed elsewhere on PATH
-        # keeps shadowing it and the probe still fails. That is why the fallback
-        # below is `npm i -g`, which overwrites the broken install in place
-        # (verified: pnpm 11 on Node 20 -> 10.x, same prefix).
-        if command -v corepack >/dev/null 2>&1 && corepack enable pnpm >/dev/null 2>&1 \
-           && (cd "$INSTALL_DIR/web" && pnpm --version >/dev/null 2>&1); then
-            log_success "pnpm $(cd "$INSTALL_DIR/web" && pnpm --version) (via corepack)"
-        # Pin the major here too. Plain `npm i -g pnpm` always fetches the newest
-        # one, which is how the unrunnable-on-Node-20 pnpm 11 got installed in
-        # the first place; PNPM_FALLBACK_VERSION is the major CI covers.
-        elif npm install -g "pnpm@${PNPM_FALLBACK_VERSION}" >/dev/null 2>&1 \
-             && pnpm --version >/dev/null 2>&1; then
-            log_success "pnpm $(pnpm --version)"
-        else
-            log_warn "Could not install a working pnpm; skipping Dashboard build."
-            log_info "Node.js on this host: $(node -v 2>/dev/null || echo 'not found') (pnpm 11 needs >=22.13)."
-            log_info "Install pnpm manually: npm i -g pnpm@${PNPM_FALLBACK_VERSION}"
-            log_info "Then: cd $INSTALL_DIR/web && pnpm install --frozen-lockfile && pnpm build"
-            dashboard_skip_note
-            return 0
-        fi
-    fi
-
-    log_info "Building Dashboard frontend..."
-    cd "$INSTALL_DIR/web"
-
-    # --frozen-lockfile with NO fallback to a loose install. web/package.json
-    # pins nothing (every dependency is a caret range), so pnpm-lock.yaml is the
-    # only thing making this build reproducible. Silently retrying without it
-    # would let each machine resolve different versions and produce a different
-    # Dashboard — a stale lockfile is a repo bug to fix, not something to paper
-    # over on the user's machine.
-    #
-    # Keep pnpm's output: this used to fail with no diagnosis printed and a
-    # hardcoded "lockfile is out of sync" guess, which sent users chasing a
-    # non-existent lockfile bug (and, worse, told them to run a loose
-    # `pnpm install` that really would drift their dependency versions).
-    local install_log install_rc=0
-    install_log="$(mktemp)"
-    run_with_timeout 300 pnpm install --frozen-lockfile \
-        > >(tee -a "$install_log") 2> >(tee -a "$install_log" >&2) || install_rc=$?
-
-    if [ "$install_rc" -ne 0 ]; then
-        log_warn "pnpm install --frozen-lockfile failed (exit $install_rc); skipping Dashboard build."
-        if [ "$install_rc" -eq 124 ]; then
-            log_info "It timed out after 300s — usually a slow or blocked npm registry."
-            log_info "Retry with: cd $INSTALL_DIR/web && pnpm install --frozen-lockfile && pnpm build"
-        else
-            # The shell does not wait for a process substitution to drain, so
-            # the log can still be empty the instant pnpm exits — grepping it
-            # right away would race and fall through to the generic message.
-            # Wait for tee to produce something, then let the tail flush.
-            local waited=0
-            while [ ! -s "$install_log" ] && [ "$waited" -lt 20 ]; do
-                sleep 0.1
-                waited=$((waited + 1))
-            done
-            sleep 0.2
-
-            if grep -q "ERR_PNPM_IGNORED_BUILDS" "$install_log" 2>/dev/null; then
-                # A dependency added a build script that web/pnpm-workspace.yaml
-                # does not approve. Nothing is broken on the user's machine, so
-                # point at the real fix instead of blaming their install.
-                log_info "A dependency wants to run an unapproved build script (pnpm $(pnpm --version 2>/dev/null || echo '?'))."
-                log_info "This is a repo bug: the package needs an entry in web/pnpm-workspace.yaml."
-                # Name the packages so the report says which ones, but keep them
-                # out of the command: pnpm prints them as name@version ("Ignored
-                # build scripts: esbuild@0.25.0"), and while `approve-builds
-                # <pkg>` works on v11, v10.34.5 silently ignores the positional
-                # arg and opens the interactive picker instead — which would hang
-                # a user who pasted the line into a script. `--all` is
-                # non-interactive on both majors (verified), and here "all" is
-                # exactly the ignored set anyway.
-                #
-                # NOT `pnpm install --allow-build=<pkg>`: that flag exists only
-                # on `add`/`dlx`; on `install` both majors abort with "Unknown
-                # option: 'allow-build'", and the unquoted <pkg> placeholder
-                # would additionally be read by the shell as a redirection.
-                local ignored
-                ignored="$(sed -n 's/.*Ignored build scripts: *//p' "$install_log" 2>/dev/null \
-                    | tr ',' '\n' | sed 's/^ *//; s/ *$//; s/@[^@]*$//' \
-                    | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ *$//')"
-                [ -n "$ignored" ] && log_info "Unapproved: $ignored"
-                log_info "To build now: cd $INSTALL_DIR/web && pnpm approve-builds --all && pnpm install --frozen-lockfile && pnpm build"
-            elif grep -qi "ERR_PNPM_OUTDATED_LOCKFILE\|lockfile is not up to date\|frozen-lockfile" "$install_log" 2>/dev/null; then
-                log_info "web/pnpm-lock.yaml is out of sync with web/package.json — a repo bug, please report it."
-            else
-                log_info "See the pnpm output above for the cause."
-            fi
-        fi
-        rm -f "$install_log"
-        dashboard_skip_note
-        return 0
-    fi
-    rm -f "$install_log"
-
-    # `tsc -b && vite build` on a cold cache regularly exceeds two minutes.
-    if run_with_timeout 600 pnpm build; then
-        if [ -f "$INSTALL_DIR/web/dist/index.html" ]; then
-            DASHBOARD_BUILT=true
-            log_success "Dashboard built successfully"
-            return 0
-        fi
-        log_warn "Build reported success but web/dist/index.html is missing."
-    else
-        log_warn "Dashboard build failed."
-    fi
-    log_info "Fix the issue then run: cd $INSTALL_DIR/web && pnpm build"
-    dashboard_skip_note
-}
-
-# Explain what running without the SPA actually means. The gateway falls back to
-# its built-in playground page rather than serving nothing, so this is a reduced
-# UI — not a broken install.
-dashboard_skip_note() {
-    log_info "The agent and gateway still work; the web UI falls back to the"
-    log_info "built-in playground at http://localhost:58123/ instead of the full Dashboard."
-}
+# The Dashboard SPA is no longer built here. It is built on first use by
+# echo_agent/gateway/dashboard_build.py, so a missing or broken Node/pnpm
+# toolchain can no longer make *installing an agent* look like it failed —
+# and the failure now lands when the user actually asks for the Dashboard.
+# install_node / node_version_ok stay: --install-node-only reuses them as that
+# builder's Node installer, with its checksum verification and mirror racing.
 
 # =============================================================================
 # Path & symlinks
@@ -2107,6 +1914,8 @@ print_success() {
     echo "                      Manage the gateway as a background service"
     echo ""
     echo -e "${CYAN}${BOLD}Dashboard:${NC}"
+    echo "  The full Dashboard is built on first use, not during install."
+    echo "  To build it now:  echo-agent dashboard build"
     if grep -qE '^\s*mode:\s*open' "$ECHO_HOME/echo-agent.yaml" 2>/dev/null \
        || grep -q 'allowed_origins' "$ECHO_HOME/echo-agent.yaml" 2>/dev/null; then
         echo "  http://localhost:58123/"
@@ -2126,13 +1935,6 @@ print_success() {
             echo "  On WSL2, enable systemd (/etc/wsl.conf -> [boot] systemd=true) to"
             echo "  register it as a service, or keep it alive with tmux/nohup."
         fi
-        echo ""
-    fi
-
-    if [ "$DASHBOARD_BUILT" != true ]; then
-        echo -e "${YELLOW}${BOLD}Note:${NC} The full Dashboard was not built, so the gateway"
-        echo "  serves its built-in playground UI instead."
-        echo "  To build it: cd $INSTALL_DIR/web && pnpm install --frozen-lockfile && pnpm build"
         echo ""
     fi
 
@@ -2187,8 +1989,6 @@ main() {
     install_deps
     prefetch_embedding_model
     prefetch_reranker_model
-    check_node
-    build_dashboard
     setup_path
     run_setup_wizard
     setup_service

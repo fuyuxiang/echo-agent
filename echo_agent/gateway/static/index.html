@@ -238,6 +238,15 @@
       <div>
         <h1 class="title">Echo Gateway</h1>
         <p class="subtitle">A minimal frontend for the Gateway/WebSocket loop. Authenticate once, then send messages and watch live outbound events.</p>
+        <!-- Reaching this page at all means _resolve_dashboard_dir() found no
+             built SPA (gateway/server.py), so this needs no runtime condition. -->
+        <p class="subtitle" style="border-left: 3px solid #d0a215; padding-left: 10px; margin-top: 12px;">
+          <strong>这是内置的简化界面</strong>，完整 Dashboard 尚未构建。
+          在交互式终端运行 <code>echo-agent dashboard build</code> 即可启用完整界面。
+          <br />
+          <span lang="en">This is the built-in simplified page; the full Dashboard has not been built.
+          Run <code>echo-agent dashboard build</code> in an interactive terminal to enable it.</span>
+        </p>
       </div>
 
       <div class="row">

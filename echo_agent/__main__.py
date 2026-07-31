@@ -218,6 +218,18 @@ def _build_parser() -> argparse.ArgumentParser:
     cli_parser.add_argument("-c", "--config", help="Path to config file")
     cli_parser.add_argument("-w", "--workspace", help="Workspace directory")
 
+    # dashboard — build the web SPA on demand
+    dash_parser = subparsers.add_parser(
+        "dashboard", help="Manage the web Dashboard build"
+    )
+    dash_parser.add_argument(
+        "action", choices=["build"], help="Action (currently only: build)"
+    )
+    dash_parser.add_argument(
+        "--force", action="store_true",
+        help="Rebuild even when the existing artifact looks up to date",
+    )
+
     # cron — inspect and (re-)authorize scheduled jobs for unattended execution
     cron_parser = subparsers.add_parser(
         "cron", help="Inspect and authorize scheduled jobs for unattended execution"
@@ -507,6 +519,37 @@ def _dispatch() -> None:
             workspace=args.workspace or args.top_workspace,
             assume_yes=args.yes,
         ))
+
+    if args.command == "dashboard":
+        import sys as _sys
+
+        from echo_agent.gateway.dashboard_build import (
+            build_dashboard,
+            describe_outcome,
+            find_web_dir,
+            maybe_build_dashboard,
+        )
+
+        web_dir = find_web_dir()
+        if web_dir is None:
+            print(
+                "当前为 wheel 安装，Dashboard 已随包发布，无需构建。\n"
+                "（源码安装才需要本地构建前端。）"
+            )
+            _sys.exit(0)
+        if args.force:
+            outcome = build_dashboard(
+                web_dir,
+                on_output=lambda line: print(f"    {line}", flush=True),
+                confirm=lambda msg: input(f"{msg} [Y/n] ").strip().lower() in ("", "y", "yes"),
+            )
+        else:
+            outcome = maybe_build_dashboard(interactive=True)
+            if outcome is None:
+                print("Dashboard 产物已是最新，无需构建。（强制重建：--force）")
+                _sys.exit(0)
+        print(describe_outcome(outcome))
+        _sys.exit(0 if outcome.ok else 1)
 
     if args.command == "cli":
         import sys as _sys

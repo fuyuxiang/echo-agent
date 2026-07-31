@@ -21,12 +21,17 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Callable
+
+# base.py only imports stdlib (its echo_home is deferred), so this does not
+# create a gateway -> cli import cycle.
+from echo_agent.cli.service.base import GATEWAY_ENV_FLAG
 
 # nodejs floor. Matches install.sh:node_version_ok, which accepts >= 20.
 MIN_NODE_MAJOR = 20
@@ -367,3 +372,94 @@ def build_dashboard(
         return stale(BuildReason.BUILD_FAILED,
                      "build reported success but dist/index.html is missing")
     return BuildOutcome(ok=True, reason=BuildReason.OK)
+
+
+def _is_tty() -> bool:
+    try:
+        return bool(sys.stdout.isatty())
+    except (AttributeError, ValueError):
+        return False
+
+
+def _in_service_process() -> bool:
+    """True when this process was started by launchd/systemd.
+
+    A supervised gateway must never stop to build a frontend: the unit would sit
+    in "activating" for minutes, the port would stay closed, and a restart-on-
+    failure policy could loop on it.
+    """
+    return os.environ.get(GATEWAY_ENV_FLAG) == "1"
+
+
+def maybe_build_dashboard(*, interactive: bool | None = None) -> BuildOutcome | None:
+    """Build the SPA if this process is allowed to, else return None.
+
+    None means "not attempted, and that is correct" — a wheel install, a fresh
+    artifact, a background service, or a non-interactive shell. Callers treat it
+    as "carry on and serve whatever exists".
+
+    ``interactive`` forces the decision (used by `echo-agent dashboard build`,
+    where the user asked explicitly and the TTY check is beside the point).
+    """
+    if interactive is None:
+        if _in_service_process() or not _is_tty():
+            return None
+        interactive = True
+
+    web_dir = find_web_dir()
+    if web_dir is None:
+        return None
+    if not dashboard_build_needed(web_dir):
+        return None
+
+    def confirm(message: str) -> bool:
+        try:
+            answer = input(f"{message} [Y/n] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return False
+        return answer in ("", "y", "yes")
+
+    return build_dashboard(
+        web_dir,
+        on_output=lambda line: print(f"    {line}", flush=True),
+        confirm=confirm if interactive else None,
+    )
+
+
+def describe_outcome(outcome: BuildOutcome) -> str:
+    """A diagnosis the user can act on, per failure cause.
+
+    install.sh printed one message for every cause, and it was wrong for the
+    most common one: it told users on Node 20 to install pnpm@10, when the real
+    fix was upgrading Node.
+    """
+    if outcome.reason is BuildReason.OK:
+        return "完整 Dashboard 已构建。"
+    if outcome.used_stale:
+        return ("构建失败，继续使用上一次的 Dashboard 产物（可能已过期）。"
+                f"\n原因：{outcome.detail[:400]}")
+    hints = {
+        BuildReason.NODE_MISSING: (
+            f"未找到 Node.js {MIN_NODE_MAJOR}+，跳过 Dashboard 构建。"
+            "\n在交互式终端运行 echo-agent dashboard build 可下载并构建。"
+        ),
+        BuildReason.NODE_TOO_OLD: (
+            f"Node.js 版本低于 {MIN_NODE_MAJOR}，无法构建 Dashboard。"
+            f"\n请升级 Node.js 到 {MIN_NODE_MAJOR}+ 后重试：echo-agent dashboard build"
+        ),
+        BuildReason.NODE_DECLINED: (
+            "已跳过 Node.js 下载，当前使用内置简化页。"
+            "\n需要完整 Dashboard 时运行：echo-agent dashboard build"
+        ),
+        BuildReason.PNPM_UNAVAILABLE: (
+            "无法获得可用的 pnpm，跳过 Dashboard 构建。"
+            f"\n可手动安装：npm i -g pnpm@{PNPM_FALLBACK_MAJOR}，然后运行 echo-agent dashboard build"
+        ),
+        BuildReason.INSTALL_FAILED: (
+            "前端依赖安装失败（网络问题，或 pnpm-lock.yaml 与 package.json 不同步）。"
+            "\n重试：echo-agent dashboard build"
+        ),
+        BuildReason.BUILD_FAILED: "前端构建失败。\n重试：echo-agent dashboard build",
+    }
+    base = hints.get(outcome.reason, "Dashboard 构建未完成。")
+    return f"{base}\n{outcome.detail[:400]}" if outcome.detail else base

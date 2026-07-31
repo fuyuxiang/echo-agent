@@ -455,6 +455,14 @@ class AppRuntime:
             )
             if self._shutdown_event:
                 self._gateway.set_shutdown_event(self._shutdown_event)
+            # Say so when the SPA is absent. A supervised gateway skips the
+            # on-demand build by design, so without this line the only clue is
+            # the stripped-down page itself.
+            if self._gateway._resolve_dashboard_dir() is None:
+                logger.info(
+                    "Serving the built-in playground (full Dashboard not built). "
+                    "Run `echo-agent dashboard build` in an interactive terminal to build it."
+                )
             await self._gateway.start()
             # Push real-time task changes to subscribed dashboard clients. Every
             # task state change funnels through TaskManager, so wiring the sink
@@ -695,6 +703,19 @@ async def run_gateway(
     except InstanceLockError as e:
         logger.error(e.message)
         return
+    # Build the SPA if this process is the kind that may: an interactive
+    # foreground gateway. A supervised one returns None here and serves whatever
+    # artifact exists, because blocking a systemd unit on `pnpm build` would keep
+    # the port closed for minutes.
+    try:
+        from echo_agent.gateway.dashboard_build import describe_outcome, maybe_build_dashboard
+
+        outcome = maybe_build_dashboard()
+        if outcome is not None:
+            logger.info(describe_outcome(outcome))
+    except Exception as e:  # noqa: BLE001 - never block startup on the frontend
+        logger.warning("Dashboard build skipped: {}", e)
+
     ctx.config.gateway.enabled = True
     if host:
         ctx.config.gateway.host = host

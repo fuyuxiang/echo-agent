@@ -363,4 +363,9 @@ MESSAGES = {
                     "(WeChat / QQ and other channels do not depend on the gateway and keep working).",
         "disabled_fix": "To use echo-agent cli: echo-agent setup gateway",
     },
+    "dashboard": {
+        "ask_build": "Build the full Dashboard now? (a few minutes on first run; skipping uses the built-in simplified page)",
+        "declined": "Skipped. Run `echo-agent dashboard build` when you want it.",
+        "building": "Building the Dashboard (first run includes dependency install; this can take a few minutes)...",
+    },
 }

@@ -361,4 +361,9 @@ MESSAGES = {
                     "（微信 / QQ 等渠道不依赖网关，仍正常工作）。",
         "disabled_fix": "需要 echo-agent cli 时：echo-agent setup gateway",
     },
+    "dashboard": {
+        "ask_build": "现在构建完整 Dashboard？（首次约需几分钟；跳过则先用内置简化页）",
+        "declined": "已跳过。需要时运行：echo-agent dashboard build",
+        "building": "正在构建 Dashboard（首次含依赖安装，可能需要几分钟）…",
+    },
 }
