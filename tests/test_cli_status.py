@@ -11,10 +11,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from echo_agent.cli import runtime_probe
 from echo_agent.cli import status as status_mod
 from echo_agent.cli.colors import Colors
 
 _T = "echo_agent.cli.status"
+# Runtime probing moved into cli.runtime_probe, so the stubs that used to patch
+# status' own helpers now patch the probe's.
+_P = "echo_agent.cli.runtime_probe"
 
 
 # ── _provider_credential_status ──────────────────────────────────────────────
@@ -163,6 +167,9 @@ def test_status_does_not_lie_when_cli_disabled(capsys):
 
 
 # ── TCP probe ─────────────────────────────────────────────────────────────────
+# The probe itself now lives in cli.runtime_probe (shared with doctor and the
+# cli diagnostics); status calls it instead of carrying its own copy. These two
+# keep exercising it against a real loopback socket.
 
 def test_tcp_listening_detects_open_port():
     import socket as _socket
@@ -172,15 +179,15 @@ def test_tcp_listening_detects_open_port():
     srv.listen(1)
     port = srv.getsockname()[1]
     try:
-        assert status_mod._tcp_listening("127.0.0.1", port) is True
+        assert runtime_probe.tcp_listening("127.0.0.1", port) is True
     finally:
         srv.close()
     # After close the port should no longer accept connections.
-    assert status_mod._tcp_listening("127.0.0.1", port) is False
+    assert runtime_probe.tcp_listening("127.0.0.1", port) is False
 
 
 def test_tcp_listening_zero_port_is_false():
-    assert status_mod._tcp_listening("127.0.0.1", 0) is False
+    assert runtime_probe.tcp_listening("127.0.0.1", 0) is False
 
 
 # ── --json output + exit codes ────────────────────────────────────────────────
@@ -200,8 +207,8 @@ def test_status_json_structure_and_no_ansi(tmp_path, capsys):
     cfg = _healthy_cfg()
     with patch(f"{_T}.resolve_config_file", return_value=cfg_file), \
          patch(f"{_T}.load_config", return_value=cfg), \
-         patch(f"{_T}._read_runtime_endpoint", return_value=None), \
-         patch(f"{_T}._service_state", return_value=None), \
+         patch(f"{_P}._read_endpoint", return_value=None), \
+         patch(f"{_P}._detect_backend", return_value=None), \
          patch(f"{_T}._health_probes", return_value=None):
         rc = status_mod.show_status(workspace=str(tmp_path), as_json=True)
     out = capsys.readouterr().out
@@ -233,9 +240,9 @@ def test_status_exit_code_enabled_gateway_not_listening(tmp_path, capsys):
     )
     with patch(f"{_T}.resolve_config_file", return_value=cfg_file), \
          patch(f"{_T}.load_config", return_value=cfg), \
-         patch(f"{_T}._read_runtime_endpoint", return_value=None), \
-         patch(f"{_T}._tcp_listening", return_value=False), \
-         patch(f"{_T}._service_state", return_value=None), \
+         patch(f"{_P}._read_endpoint", return_value=None), \
+         patch(f"{_P}.tcp_listening", return_value=False), \
+         patch(f"{_P}._detect_backend", return_value=None), \
          patch(f"{_T}._health_probes", return_value=None):
         rc = status_mod.show_status(workspace=str(tmp_path))
     assert rc == 1
@@ -248,8 +255,8 @@ def test_status_exit_code_failing_health_probe(tmp_path):
     probes = [{"name": "storage", "status": "fail", "detail": "unwritable"}]
     with patch(f"{_T}.resolve_config_file", return_value=cfg_file), \
          patch(f"{_T}.load_config", return_value=cfg), \
-         patch(f"{_T}._read_runtime_endpoint", return_value=None), \
-         patch(f"{_T}._service_state", return_value=None), \
+         patch(f"{_P}._read_endpoint", return_value=None), \
+         patch(f"{_P}._detect_backend", return_value=None), \
          patch(f"{_T}._health_probes", return_value=probes):
         rc = status_mod.show_status(workspace=str(tmp_path))
     assert rc == 1
@@ -258,13 +265,20 @@ def test_status_exit_code_failing_health_probe(tmp_path):
 def test_status_runtime_endpoint_shown(tmp_path, capsys):
     cfg_file = tmp_path / "echo-agent.yaml"
     cfg_file.write_text("models: {}\n", encoding="utf-8")
-    cfg = _healthy_cfg()
+    # Gateway on: the recorded endpoint only describes a gateway that is meant
+    # to be serving, so the probe does not read it when the component is off.
+    cfg = _fake_config(
+        providers=[SimpleNamespace(name="openai", models=["gpt-4o"],
+                                   credential_pool=None, api_key="k")],
+        channel_overrides={"telegram": True},
+        gateway_enabled=True,
+    )
     endpoint = {"pid": 4242, "port": 59999, "host": "127.0.0.1"}
     with patch(f"{_T}.resolve_config_file", return_value=cfg_file), \
          patch(f"{_T}.load_config", return_value=cfg), \
-         patch(f"{_T}._read_runtime_endpoint", return_value=endpoint), \
-         patch(f"{_T}._tcp_listening", return_value=True), \
-         patch(f"{_T}._service_state", return_value=None), \
+         patch(f"{_P}._read_endpoint", return_value=endpoint), \
+         patch(f"{_P}.tcp_listening", return_value=True), \
+         patch(f"{_P}._detect_backend", return_value=None), \
          patch(f"{_T}._health_probes", return_value=None):
         status_mod.show_status(workspace=str(tmp_path))
     out = capsys.readouterr().out

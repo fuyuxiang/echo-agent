@@ -10,7 +10,6 @@ stable process exit code (0 healthy, non-zero when a problem is detected).
 from __future__ import annotations
 
 import json
-import socket
 from pathlib import Path
 from typing import Any
 
@@ -49,58 +48,6 @@ def _resolve_workspace(config: Any, config_file: Path | None, override: str | No
     return resolve_effective_workspace(
         config, str(config_file) if config_file else None, override
     )
-
-
-def _read_runtime_endpoint(workspace: Path) -> dict | None:
-    """Read the recorded gateway endpoint (pid/port/host) for *workspace*.
-
-    Degrades to ``None`` when nothing is recorded or the file is unreadable — a
-    fresh/stopped workspace simply has no endpoint recorded.
-    """
-    from echo_agent.cli.workspace import read_runtime_endpoint
-
-    try:
-        result = read_runtime_endpoint(workspace)
-    except Exception:  # noqa: BLE001 - endpoint file may be absent/corrupt
-        return None
-    return result if isinstance(result, dict) else None
-
-
-def _tcp_listening(host: str, port: int, timeout: float = 0.5) -> bool:
-    """Return True if a TCP connect to host:port succeeds within *timeout*."""
-    if not port:
-        return False
-    # 0.0.0.0 / :: are bind-only wildcards; probe the loopback instead.
-    target = host
-    if host in ("0.0.0.0", "::", ""):
-        target = "127.0.0.1"
-    try:
-        with socket.create_connection((target, int(port)), timeout=timeout):
-            return True
-    except OSError:
-        return False
-
-
-def _service_state() -> dict | None:
-    """Best-effort background-service state via the service module.
-
-    Returns {"installed": bool, "running": bool} or None when the platform has
-    no supported service manager or the module can't be queried. Never raises.
-    Scope is always user-level: that is what ``gateway install`` writes by
-    default, and the unit itself carries its own workspace/config.
-    """
-    from echo_agent.cli.service import detect_backend
-
-    try:
-        backend = detect_backend(system=False)
-        if backend is None:
-            return None
-        return {
-            "installed": bool(backend.is_installed()),
-            "running": bool(backend.is_running()),
-        }
-    except Exception:  # noqa: BLE001 - service probing is advisory only
-        return None
 
 
 def _health_probes(config: Any) -> list[dict] | None:
@@ -167,19 +114,13 @@ def _gather_status(config_path: str | Path | None, workspace: str | Path | None)
 
     enabled_channels = _enabled_channels(config)
 
-    endpoint = _read_runtime_endpoint(effective_workspace)
-    gw_host = config.gateway.host
-    gw_port = config.gateway.port
-    running_port = None
-    running_pid = None
-    if endpoint:
-        running_port = endpoint.get("port")
-        running_pid = endpoint.get("pid")
-        gw_host = endpoint.get("host", gw_host)
-    probe_port = running_port or gw_port
-    listening = _tcp_listening(gw_host, probe_port) if probe_port else False
+    from echo_agent.cli.runtime_probe import probe_gateway
 
-    service = _service_state()
+    runtime = probe_gateway(
+        config=config,
+        config_path=str(config_file) if config_file_exists else None,
+        workspace=str(workspace) if workspace else None,
+    )
     health = _health_probes(config)
 
     return {
@@ -190,14 +131,17 @@ def _gather_status(config_path: str | Path | None, workspace: str | Path | None)
         "default_model": config.models.default_model,
         "channels": {"enabled": enabled_channels, "summary": _channel_summary(enabled_channels)},
         "gateway": {
-            "enabled": bool(config.gateway.enabled),
-            "host": gw_host,
-            "configured_port": gw_port,
-            "running_pid": running_pid,
-            "running_port": running_port,
-            "listening": listening,
+            "enabled": runtime.enabled,
+            "host": runtime.host,
+            "configured_port": config.gateway.port,
+            "running_pid": runtime.pid,
+            "running_port": runtime.bound_port,
+            "listening": runtime.listening,
         },
-        "service": service,
+        "service": (
+            None if runtime.service_manager is None
+            else {"installed": runtime.service_installed, "running": runtime.service_running}
+        ),
         "health": health,
     }
 
