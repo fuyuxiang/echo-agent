@@ -349,6 +349,7 @@ class ContextStage:
             memory_context=memory_ctx,
             skills_context=skills_ctx,
             capabilities=capabilities_ctx,
+            channel=event.channel,
         )
 
         history = session.get_history(self._config.session.max_history_messages)

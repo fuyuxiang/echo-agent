@@ -355,6 +355,27 @@ class TestBuildSystemPrompt:
         prompt = cb.build_system_prompt(memory_context="mem")
         assert "\n\n---\n\n" in prompt
 
+    def test_cli_channel_keeps_the_picker_guideline(self, tmp_path: Path):
+        cb = ContextBuilder(workspace=tmp_path)
+        prompt = cb.build_system_prompt(channel="gateway:cli")
+        assert "interactive picker (number keys / arrows+enter)" in prompt
+
+    def test_im_channel_guideline_promises_no_picker(self, tmp_path: Path):
+        # The prompt carried its own copy of the picker promise, so an IM session
+        # was still told the choices were clickable — and told they were selected
+        # with number keys, contradicting the A/B/C labels the user actually sees.
+        prompt = ContextBuilder(workspace=tmp_path).build_system_prompt(channel="weixin:group")
+        assert "picker" not in prompt
+        assert "clickable" not in prompt
+        assert "number keys" not in prompt
+        # Still instructs the model to route choices through clarify.
+        assert "`clarify`" in prompt
+        assert "A, B, C" in prompt
+
+    def test_unknown_channel_defaults_to_the_conservative_guideline(self, tmp_path: Path):
+        prompt = ContextBuilder(workspace=tmp_path).build_system_prompt()
+        assert "picker" not in prompt
+
 
 # ---------------------------------------------------------------------------
 # ContextBuilder.build_messages

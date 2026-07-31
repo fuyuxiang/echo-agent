@@ -90,6 +90,69 @@ class TestContextStage:
         assert len(ctx.messages) == 2
         assert ctx.tool_defs == []
 
+    @pytest.mark.asyncio
+    async def test_passes_this_turns_channel_to_tool_defs_and_prompt(self):
+        """The channel must reach both schema generation and the system prompt.
+
+        This is the one line that wires per-channel tool schemas into production
+        (clarify must not promise an IM user a picker). Without this test, dropping
+        the argument leaves every other pipeline test green, because their stubs
+        accept the channel and discard it.
+        """
+        config = MagicMock()
+        config.session.max_history_messages = 100
+        config.memory.enabled = False
+        config.knowledge = MagicMock()
+        config.knowledge.enabled = False
+
+        memory = MagicMock()
+        memory.get_snapshot = MagicMock(return_value="")
+        memory.search_scored = MagicMock(return_value=[])
+
+        compressor = MagicMock()
+        compressor.should_compress = MagicMock(return_value=False)
+
+        context_builder = MagicMock()
+        context_builder.build_system_prompt = MagicMock(return_value="sys")
+        context_builder.build_messages = MagicMock(return_value=[])
+
+        inference = MagicMock()
+        inference.filter_tools = MagicMock(side_effect=lambda defs: defs)
+
+        seen: list[str | None] = []
+
+        def tool_definitions_fn(channel=None):
+            seen.append(channel)
+            return []
+
+        stage = ContextStage(
+            config=config,
+            sessions=AsyncMock(),
+            memory=memory,
+            compressor=compressor,
+            context_builder=context_builder,
+            skill_store=None,
+            knowledge=None,
+            hybrid_retriever=None,
+            planner=None,
+            inference=inference,
+            working_memories=OrderedDict(),
+            memory_snapshots=OrderedDict(),
+            snapshot_enabled=False,
+            tool_definitions_fn=tool_definitions_fn,
+        )
+
+        event = InboundEvent.text_message(
+            channel="weixin:group", sender_id="user", chat_id="c1", text="hello",
+        )
+        await stage.build(
+            event, Session(key="weixin:group:c1"),
+            publish_response=False, trace_id="t1", stream_publisher=None, intro_text="",
+        )
+
+        assert seen == ["weixin:group"]
+        assert context_builder.build_system_prompt.call_args.kwargs["channel"] == "weixin:group"
+
     def test_infer_task_type_code(self):
         stage = ContextStage(
             config=MagicMock(), sessions=MagicMock(), memory=MagicMock(),

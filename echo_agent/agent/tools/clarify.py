@@ -14,6 +14,40 @@ from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
 
 CLI_CHANNEL = "gateway:cli"
 
+_INTERACTIVE_OPTIONS_DESCRIPTION = (
+    "The choices to offer the user, one per entry. Provide these whenever the "
+    "user should pick from a fixed set — they become an interactive, clickable "
+    "picker. Omit only for a genuinely open-ended (free-text) question."
+)
+# Same parameter, told the truth for a text-only channel. The model reads the
+# whole function schema, so leaving the picker promise here would contradict
+# TEXT_DESCRIPTION and re-open the bug from the parameter side.
+_TEXT_OPTIONS_DESCRIPTION = (
+    "The choices to offer the user, one per entry. Provide these whenever the "
+    "user should pick from a fixed set. They are rendered as a plain text list "
+    "labelled A, B, C..., which the user answers by replying with a letter — so "
+    "keep each option short. Omit only for a genuinely open-ended (free-text) question."
+)
+
+
+def _build_parameters(options_description: str) -> dict[str, Any]:
+    """Build the clarify parameter schema with a channel-appropriate options text.
+
+    Returns a fresh dict each call so per-channel variants never alias — and so
+    no caller can mutate one channel's schema into another's."""
+    return {
+        "type": "object",
+        "properties": {
+            "question": {"type": "string", "description": "The question to ask the user."},
+            "options": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": options_description,
+            },
+        },
+        "required": ["question"],
+    }
+
 
 class ClarifyTool(Tool):
     name = "clarify"
@@ -38,22 +72,9 @@ class ClarifyTool(Tool):
         "writing the options into your reply text, so the answer is bound to the question."
     )
     description = INTERACTIVE_DESCRIPTION
-    parameters = {
-        "type": "object",
-        "properties": {
-            "question": {"type": "string", "description": "The question to ask the user."},
-            "options": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "The choices to offer the user, one per entry. Provide these whenever the "
-                    "user should pick from a fixed set — they become an interactive, clickable "
-                    "picker. Omit only for a genuinely open-ended (free-text) question."
-                ),
-            },
-        },
-        "required": ["question"],
-    }
+    INTERACTIVE_PARAMETERS = _build_parameters(_INTERACTIVE_OPTIONS_DESCRIPTION)
+    TEXT_PARAMETERS = _build_parameters(_TEXT_OPTIONS_DESCRIPTION)
+    parameters = INTERACTIVE_PARAMETERS
     # A CLI clarify blocks until the user answers, with no timeout. The registry
     # wraps execute() in asyncio.wait_for(timeout=timeout_seconds), so this
     # ceiling must be far above any realistic human response time.
@@ -73,14 +94,22 @@ class ClarifyTool(Tool):
         choices = "\n".join(f"  {chr(65 + i)}. {opt}" for i, opt in enumerate(options))
         return f"{question}\n{choices}\n（直接回复选项字母或你的答案即可）"
 
-    def description_for_channel(self, channel: str | None) -> str:
+    @staticmethod
+    def _channel_has_picker(channel: str | None) -> bool:
         from echo_agent.agent.cognitive_emitter import should_emit_cognitive
 
         # should_emit_cognitive is the existing answer to "can this channel
         # receive structured frames" — a clarify_request frame is exactly what
         # the picker is built from. Reusing it keeps one definition of the
-        # capability instead of two that can drift.
-        return self.INTERACTIVE_DESCRIPTION if should_emit_cognitive(channel or "") else self.TEXT_DESCRIPTION
+        # capability instead of two that can drift. Description and parameters
+        # both route through here so they can never disagree with each other.
+        return should_emit_cognitive(channel or "")
+
+    def description_for_channel(self, channel: str | None) -> str:
+        return self.INTERACTIVE_DESCRIPTION if self._channel_has_picker(channel) else self.TEXT_DESCRIPTION
+
+    def parameters_for_channel(self, channel: str | None) -> dict[str, Any]:
+        return self.INTERACTIVE_PARAMETERS if self._channel_has_picker(channel) else self.TEXT_PARAMETERS
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         question = params["question"]

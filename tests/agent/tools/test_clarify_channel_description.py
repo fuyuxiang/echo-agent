@@ -3,6 +3,8 @@
 回归背景：描述曾无条件宣称 options 会渲染成可点击 picker，模型据此在
 微信渠道推了 4 个选项，用户只看到一行文字、无法点选。
 """
+import json
+
 from echo_agent.agent.clarify_manager import ClarifyManager
 from echo_agent.agent.tools.clarify import CLI_CHANNEL, ClarifyTool
 from echo_agent.agent.tools.registry import ToolRegistry
@@ -21,9 +23,12 @@ def test_cli_channel_keeps_picker_wording():
 
 
 def test_im_channel_drops_picker_wording():
-    desc = _clarify_schema("weixin:group")["function"]["description"]
-    assert "picker" not in desc
-    assert "click" not in desc
+    # Asserted against the WHOLE serialized schema, not just function.description:
+    # the model reads every field, and the `options` parameter description used to
+    # keep promising a "clickable picker" long after the description stopped.
+    schema = json.dumps(_clarify_schema("weixin:group"), ensure_ascii=False)
+    assert "picker" not in schema
+    assert "click" not in schema
 
 
 def test_im_channel_description_states_the_real_contract():
@@ -54,3 +59,28 @@ def test_render_text_tells_the_user_how_to_answer():
 
 def test_render_text_without_options_is_just_the_question():
     assert ClarifyTool._render_text("你想先做什么？", []) == "你想先做什么？"
+
+
+def test_options_parameter_description_matches_the_channel():
+    # The parameter schema is per-channel too, and both halves must agree.
+    im_options = _clarify_schema("weixin:group")["function"]["parameters"]["properties"]["options"]
+    assert "A, B, C" in im_options["description"]
+    cli_options = _clarify_schema(CLI_CHANNEL)["function"]["parameters"]["properties"]["options"]
+    assert "picker" in cli_options["description"]
+
+
+def test_other_tools_schemas_are_unchanged_by_channel():
+    # The base hooks must be pure pass-throughs: a tool that does not override
+    # them produces the same bytes on every channel.
+    from echo_agent.tools.base import Tool
+
+    class _Plain(Tool):
+        name = "plain"
+        description = "A tool with an interactive picker mentioned nowhere."
+        parameters = {"type": "object", "properties": {}}
+
+        async def execute(self, params, ctx=None):  # pragma: no cover - not called
+            raise NotImplementedError
+
+    tool = _Plain()
+    assert tool.to_schema(CLI_CHANNEL) == tool.to_schema("weixin:group") == tool.to_schema()

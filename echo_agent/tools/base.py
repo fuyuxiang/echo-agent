@@ -196,13 +196,22 @@ class Tool(ABC):
         describes a capability the channel lacks."""
         return self.description
 
+    def parameters_for_channel(self, channel: str | None) -> dict[str, Any]:
+        """JSON schema for the parameters as the model should see it for *channel*.
+
+        The model reads the WHOLE function schema, not just its description, so a
+        per-parameter description that promises a capability the channel lacks
+        misleads it just as much. Base implementation ignores the channel."""
+        return self.parameters
+
     def to_schema(self, channel: str | None = None) -> dict[str, Any]:
-        _validate_json_schema(self.parameters)
+        parameters = self.parameters_for_channel(channel)
+        _validate_json_schema(parameters)
         return {
             "type": "function",
             "function": {
                 "name": self.name,
                 "description": self.description_for_channel(channel),
-                "parameters": self.parameters,
+                "parameters": parameters,
             },
         }
