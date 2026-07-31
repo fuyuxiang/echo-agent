@@ -57,7 +57,7 @@ async def test_narrative_prefetch_uses_session_key_not_memory_scope(storage, tmp
 
     capture: dict = {}
 
-    def _capture_prompt(*, memory_context, skills_context, capabilities):
+    def _capture_prompt(*, memory_context, skills_context, capabilities, channel=None):
         capture["memory_context"] = memory_context
         return "SYS"
 
