@@ -21,6 +21,12 @@ from pathlib import Path
 from typing import Any
 
 
+_WILDCARD_HOSTS = ("0.0.0.0", "::", "")
+"""Bind-only wildcards. A server bound here is reachable on the loopback, but
+connecting *to* the wildcard is not the same as connecting to the service, so
+every probe has to translate them first."""
+
+
 class GatewayState(str, Enum):
     """The five states exhaust every case, and each maps to exactly one next
     action — that is the property callers rely on to render guidance."""
@@ -49,7 +55,7 @@ class GatewayRuntime:
     def probe_host(self) -> str:
         """Host to actually connect to. 0.0.0.0 / :: are bind-only wildcards —
         connecting to them is not the same as connecting to the service."""
-        return "127.0.0.1" if self.host in ("0.0.0.0", "::", "") else self.host
+        return "127.0.0.1" if self.host in _WILDCARD_HOSTS else self.host
 
     @property
     def effective_port(self) -> int:
@@ -61,7 +67,7 @@ class GatewayRuntime:
 def tcp_listening(host: str, port: int, timeout: float = 0.5) -> bool:
     if not port:
         return False
-    target = "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
+    target = "127.0.0.1" if host in _WILDCARD_HOSTS else host
     try:
         with socket.create_connection((target, int(port)), timeout=timeout):
             return True
@@ -73,14 +79,21 @@ def tcp_listening(host: str, port: int, timeout: float = 0.5) -> bool:
 
 
 def _as_int(value: Any) -> int | None:
-    """Coerce an endpoint-file field to a positive int, or None.
+    """Coerce an untrusted port/pid field to a positive int, or None.
 
-    The endpoint file is written by another process and may be corrupt, so a
-    ``"port": "not-a-port"`` must degrade rather than blow up the probe.
+    Both sources are outside our control: the endpoint file is written by
+    another process, and the YAML is hand-edited. So ``"port": "not-a-port"``
+    and ``port: .inf`` alike must degrade to "unknown" here rather than raise.
+
+    ``OverflowError`` matters specifically: ``json.loads`` accepts the
+    non-standard ``Infinity`` literal, and ``int(float("inf"))`` raises it. That
+    used to escape to the outer guard and return the DISABLED fallback, which
+    reports ``enabled=False`` for a gateway the user has enabled — a wrong
+    answer is worse than a missing one, so it is contained at the source.
     """
     try:
         number = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return number if number > 0 else None
 
@@ -161,7 +174,12 @@ def _probe_gateway(
         gw = config.gateway
         enabled = bool(gw.enabled)
         host = str(gw.host)
-        port = int(gw.port)
+        # An unusable configured port must not cost us the rest of the answer:
+        # `enabled` is the field callers act on, and reporting it as False for a
+        # gateway the user enabled sends them to fix a setting that is already
+        # right. 0 is the established "no usable port" value (gateway.port=0
+        # already means "ask the endpoint file"), so keep that, not None.
+        port = _as_int(gw.port) or 0
     except Exception:  # noqa: BLE001 - a config we cannot read the gateway out of
         return GatewayRuntime(state=GatewayState.DISABLED)
 
