@@ -60,13 +60,6 @@ ECHO_COMMAND_LINK_DIR="${ECHO_COMMAND_LINK_DIR:-}"
 INSTALL_DIR="${ECHO_INSTALL_DIR:-}"
 PYTHON_VERSION="3.11"
 NODE_VERSION="22"
-# pnpm major installed when corepack is unavailable. web/package.json's
-# "packageManager" pin is the primary mechanism and corepack honours it; this is
-# only the floor for the `npm i -g` fallback, which would otherwise grab the
-# newest major (pnpm 11 needs Node >=22.13 while node_version_ok() accepts 20,
-# so "newest" can mean "installs fine, crashes on every call"). Keep in sync
-# with the pin and the CI matrix in .github/workflows/ci.yml.
-PNPM_FALLBACK_VERSION="10"
 BRANCH="master"
 RUN_SETUP=true
 # Probing: measure real latency to each candidate download source and use the
@@ -98,13 +91,6 @@ NODE_DIST_MIRRORS=(
     "https://mirrors.aliyun.com/nodejs-release"
     "https://nodejs.org/dist"
 )
-# Set by install_node() on success. Nothing reads it since the install-time
-# Dashboard build was removed; kept so that function needs no edit.
-HAS_NODE=false
-# Accepted but inert (--skip-dashboard). The Dashboard is built on first use, so
-# there is no install-time build left to skip. Kept only so existing scripts and
-# docs that pass the flag still install successfully.
-SKIP_DASHBOARD=false
 # Install a managed Node.js and exit — the entry point dashboard_build.py calls
 # when it needs a Node to build the SPA. Reuses this script's checksum-verified,
 # mirror-racing installer instead of reimplementing it in Python.
@@ -160,7 +146,7 @@ while [[ $# -gt 0 ]]; do
             esac
             shift 2
             ;;
-        --skip-dashboard) SKIP_DASHBOARD=true
+        --skip-dashboard)
             # Kept accepting the flag rather than erroring: existing scripts and
             # docs pass it, and failing their install over a now-irrelevant flag
             # would be a worse outcome than a notice.
@@ -791,7 +777,6 @@ install_node() {
     ln -sf "$node_dir/bin/npm" "$link_dir/npm"
     ln -sf "$node_dir/bin/npx" "$link_dir/npx"
 
-    HAS_NODE=true
     export PATH="$node_dir/bin:$PATH"
     log_success "Node.js $("$node_dir/bin/node" -v) installed to $node_dir"
 }
