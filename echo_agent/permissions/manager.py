@@ -82,8 +82,22 @@ class ApprovalManager:
 
     def request_approval(
         self, action: str, tool_name: str = "", params: dict[str, Any] | None = None,
-        user_id: str = "", session_key: str = "",
+        user_id: str = "", session_key: str = "", require: bool = False,
     ) -> ApprovalRequest:
+        """Open (or reuse) an approval request for ``action``.
+
+        ``require=True`` means the CALLER has already established that this call
+        needs human approval — e.g. ApprovalGate classified it EXEC/DANGEROUS —
+        so a genuine PENDING request is created even when ``action`` is absent
+        from ``require_approval``. Without it the manager fell through to
+        ``default_policy="approve"`` and returned an already-APPROVED request
+        that was never registered as pending, which made the ``require_approval``
+        name list the effective gate and silently overrode the caller's finding.
+
+        The explicit allow/deny rules above still win: an operator who put the
+        action in ``auto_approve``, or a human who previously chose "always",
+        has stated a policy, and ``require`` does not revoke it.
+        """
         params = params or {}
         signature = self._signature(action, tool_name, params, user_id)
         if signature in self._approved_signatures:
@@ -100,7 +114,7 @@ class ApprovalManager:
             req = ApprovalRequest(action=action, tool_name=tool_name, params=params, user_id=user_id, status=ApprovalStatus.DENIED, reason="auto-denied by policy")
             self._history.append(req)
             return req
-        if action in self._require:
+        if require or action in self._require:
             existing = self._existing_pending(signature)
             if existing:
                 return existing
@@ -113,7 +127,10 @@ class ApprovalManager:
             self._save_state()
             return req
         if self._default_policy == "approve":
-            req = ApprovalRequest(action=action, tool_name=tool_name, params=params, user_id=user_id, status=ApprovalStatus.APPROVED)
+            req = ApprovalRequest(
+                action=action, tool_name=tool_name, params=params, user_id=user_id,
+                status=ApprovalStatus.APPROVED,
+            )
             self._history.append(req)
             return req
         if self._default_policy == "deny":

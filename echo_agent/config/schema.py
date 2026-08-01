@@ -1795,17 +1795,25 @@ class ApprovalConfig(_Base):
     require_approval: list[str] = Field(
         default_factory=lambda: [
             "cronjob",
+            "delegate_task",
             "dep_install",
             "exec",
             "execute_code",
             "process",
             "skill_install",
             "skill_manage",
+            "spawn_task",
         ],
         json_schema_extra={
             "status": "effective", "ref": "agent/approval_gate.py:291",
-            "desc_zh": "执行前必须审批的工具/动作列表",
-            "desc_en": "Tools/actions that require approval before running",
+            "desc_zh": "执行前必须审批的工具/动作列表。风险等级(EXEC/DANGEROUS)本身即要求审批，本列表用于额外追加，不能反向豁免；delegate_task/spawn_task 在列是因为它们派发的 worker 可以调用 exec，派发处是调用方权限仍然已知的最后一环",
+            "desc_en": (
+                "Tools/actions that require approval before running. The risk tier "
+                "(EXEC/DANGEROUS) already requires approval on its own; this list only "
+                "adds tools and can never exempt one. delegate_task/spawn_task are listed "
+                "because a worker they dispatch can call exec, and the dispatch is the "
+                "last point where the caller's own authority is still known"
+            ),
         },
     )
     auto_approve: list[str] = Field(

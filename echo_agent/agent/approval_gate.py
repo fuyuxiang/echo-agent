@@ -260,6 +260,14 @@ class ApprovalGate:
             # release it instead of leaving this turn parked for the full
             # wait_timeout_seconds with the session lock held.
             session_key=session_key,
+            # Reaching this flow means step 10 already found the call needs
+            # approval, so instruct the manager rather than asking it again: its
+            # default_policy="approve" fallback would otherwise return an
+            # already-APPROVED request for any tool missing from
+            # ``require_approval``, making that name list the real gate instead
+            # of the risk tier. Explicit auto_approve / prior "always" grants are
+            # checked ahead of this inside request_approval and still win.
+            require=True,
         )
         if approval_req.status == ApprovalStatus.DENIED:
             return ApprovalCheck(ToolResult(
@@ -267,8 +275,19 @@ class ApprovalGate:
                 error=f"Tool '{tool_name}' denied by approval policy: {approval_req.reason}",
             ))
         if approval_req.status == ApprovalStatus.APPROVED:
-            # Pre-approved by an ApprovalManager rule, not by a person answering
-            # this prompt — so it stays "auto" for provenance purposes.
+            # Pre-approved by an explicit ApprovalManager rule — an operator's
+            # auto_approve entry, or a human's earlier "always" for this exact
+            # signature — not by a person answering this prompt, so it stays
+            # "auto" for provenance purposes.
+            #
+            # This can no longer be the manager's "no rule covers this action"
+            # fallback: request_approval is called with require=True above, which
+            # opens a real pending request instead of defaulting to approve. That
+            # matters because we only reach this flow once step 10 found the call
+            # DOES need approval — treating the manager's silence as consent made
+            # the ``require_approval`` name list the effective gate rather than
+            # the risk tier, so any EXEC-tier tool missing from that list skipped
+            # the prompt on remote channels (MCP tools can never be in it).
             return ApprovalCheck(approved_actions=approved_actions)
 
         if event is not None:

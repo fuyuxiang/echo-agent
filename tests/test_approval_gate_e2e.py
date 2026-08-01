@@ -11,11 +11,16 @@ CodeExecTool.execute, instead of hand-feeding approved_actions.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from echo_agent.agent.approval_gate import APPROVAL_SOURCE_AUTO, ApprovalGate
+from echo_agent.agent.approval_gate import (
+    APPROVAL_SOURCE_AUTO,
+    APPROVAL_SOURCE_HUMAN,
+    ApprovalGate,
+)
 from echo_agent.agent.degraded_notice import notice_for, REASON_APPROVAL_UNAVAILABLE
 from echo_agent.agent.tools.base import ToolExecutionContext
 from echo_agent.agent.tools.code_exec import CodeExecTool
@@ -23,6 +28,7 @@ from echo_agent.agent.tools.registry import ToolRegistry
 from echo_agent.bus.events import ContentBlock, ContentType, InboundEvent
 from echo_agent.bus.queue import MessageBus
 from echo_agent.config.loader import load_config
+from echo_agent.config.schema import Config
 from echo_agent.permissions.manager import ApprovalManager
 from echo_agent.tools.base import Tool, ToolResult as _TR
 
@@ -30,6 +36,18 @@ from echo_agent.tools.base import Tool, ToolResult as _TR
 class _FakeInference:
     def needs_confirmation(self, name: str) -> bool:
         return False
+
+
+def _exec_cfg() -> Config:
+    """A config built in-process, for tests whose verdict must not depend on
+    whether this machine happens to have a ~/.echo-agent/echo-agent.yaml.
+
+    ``network_policy="allow"`` matches what the code_exec tool needs to run a
+    trivial snippet; the packaged default is "deny".
+    """
+    cfg = Config()
+    cfg.execution.network_policy = "allow"
+    return cfg
 
 
 def _make_gate(cfg, bus: MessageBus) -> ApprovalGate:
@@ -106,12 +124,86 @@ async def test_cli_auto_approve_applies_to_gateway_cli_channel():
 
 @pytest.mark.asyncio
 async def test_weixin_manual_flow_still_runs():
-    """The previously-working manual-approval path must keep working."""
-    cfg = load_config()
-    cfg.permissions.approval.wait_timeout_seconds = 1
-    result = await _run_through_gate(cfg, "weixin")
+    """The manual-approval path: a human answers, and the tool then runs.
+
+    Rewritten twice over. It used to assert only that the call *succeeded* on
+    weixin while nothing ever answered the prompt — which passed for the wrong
+    reason. `execute_code` was absent from the machine-local config's
+    ``require_approval``, so ApprovalManager fell through to
+    ``default_policy="approve"`` and handed back an already-APPROVED request that
+    was never pending. The assertion "remote IM can run code with no human in the
+    loop" read as "the manual flow works".
+
+    Two things are pinned now. The config is built explicitly rather than read
+    from ``load_config()``: an approval-gate test whose verdict depends on
+    whether the developer's machine has a ~/.echo-agent/echo-agent.yaml is
+    testing the machine. And the approval is actually answered, so the path under
+    test is the one named in the title.
+    """
+    cfg = _exec_cfg()
+    bus = MessageBus()
+    gate = _make_gate(cfg, bus)
+    tool = _make_tool(cfg)
+    event = InboundEvent(
+        channel="weixin", sender_id="u1", chat_id="c1",
+        content=[ContentBlock(type=ContentType.TEXT, text="run code")],
+    )
+    args = {"code": "print(1+1)", "language": "python"}
+
+    async def approve_when_pending() -> None:
+        """Answer as a human would, once the gate has published the prompt."""
+        for _ in range(200):
+            pending = gate._approval.get_pending()
+            if pending:
+                gate._approval.approve(pending[0].id, decided_by="u1")
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("gate never opened a pending approval request")
+
+    approver = asyncio.create_task(approve_when_pending())
+    check = await gate.check(
+        "execute_code", args, "u1", channel="weixin", event=event, running=True,
+    )
+    await approver
+
+    assert check.denial is None, f"expected approval to let the call through: {check.denial}"
+    # The one path where a person saw this specific call and said yes.
+    assert check.approval_source == APPROVAL_SOURCE_HUMAN
+    ctx = ToolExecutionContext(approved_actions=check.approved_actions)
+    result = await tool.execute(args, ctx)
     assert result.success is True, f"expected success, got error: {result.error}"
     assert "2" in (result.output or "")
+
+
+@pytest.mark.asyncio
+async def test_weixin_manual_flow_denied_blocks_the_tool():
+    """The same path, answered "no": the call is refused, not run."""
+    cfg = _exec_cfg()
+    bus = MessageBus()
+    gate = _make_gate(cfg, bus)
+    event = InboundEvent(
+        channel="weixin", sender_id="u1", chat_id="c1",
+        content=[ContentBlock(type=ContentType.TEXT, text="run code")],
+    )
+    args = {"code": "print(1+1)", "language": "python"}
+
+    async def deny_when_pending() -> None:
+        for _ in range(200):
+            pending = gate._approval.get_pending()
+            if pending:
+                gate._approval.deny(pending[0].id, reason="不允许", decided_by="u1")
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("gate never opened a pending approval request")
+
+    denier = asyncio.create_task(deny_when_pending())
+    check = await gate.check(
+        "execute_code", args, "u1", channel="weixin", event=event, running=True,
+    )
+    await denier
+
+    assert check.denial is not None
+    assert "denied" in (check.denial.error or "").lower()
 
 
 @pytest.mark.asyncio
