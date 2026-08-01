@@ -583,7 +583,6 @@ def _dispatch() -> None:
             workspace=args.workspace or args.top_workspace,
         )
         _sys.exit(rc)
-        return
 
     # "run" command or no command (backward compat)
     config_path = getattr(args, "config", None) or args.top_config

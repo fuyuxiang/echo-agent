@@ -131,6 +131,10 @@ class CostTracker:
             for r in rows
         ]
 
+    # 技能维度尚无埋点(见 get_skill_usage)。HTTP 层据此如实告知客户端"未实现",
+    # 而不是让空数组假装成"这几天没调过技能"。补埋点时连同此标志一起翻转。
+    skill_usage_available: bool = False
+
     async def get_skill_usage(self, days: int = 7) -> list[dict[str, Any]]:
         """技能调用排行。
 

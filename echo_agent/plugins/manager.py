@@ -9,7 +9,6 @@ from typing import Any, TYPE_CHECKING
 from loguru import logger
 
 from echo_agent.plugins.context import PluginContext
-from echo_agent.plugins.errors import PluginLoadError
 from echo_agent.plugins.hooks import HookRegistry
 from echo_agent.plugins.loader import (
     discover_all,
@@ -129,7 +128,9 @@ class PluginManager:
 
         try:
             interface = load_plugin_module(record)
-        except (PluginLoadError, Exception) as e:
+        # 第三方插件的导入副作用可能抛任何异常,一律记为加载失败而非拖垮宿主。
+        # 原写法 (PluginLoadError, Exception) 里 PluginLoadError 已被 Exception 覆盖。
+        except Exception as e:
             record.status = "failed"
             record.error = str(e)
             logger.warning("Plugin '{}' failed to load: {}", name, e)

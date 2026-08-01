@@ -11,6 +11,10 @@ try:
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
     from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import (
+        ConsoleMetricExporter,
+        PeriodicExportingMetricReader,
+    )
     from opentelemetry.sdk.resources import Resource
     _HAS_OTEL = True
 except ImportError:
@@ -34,6 +38,7 @@ class TelemetryManager:
         self._export_interval = export_interval_ms
         self._tracer: Any = None
         self._meter: Any = None
+        self._meter_provider: Any = None
         self._initialized = False
 
     @property
@@ -63,8 +68,26 @@ class TelemetryManager:
         trace.set_tracer_provider(tracer_provider)
         self._tracer = trace.get_tracer("echo-agent", __version__)
 
-        # Meter
-        meter_provider = MeterProvider(resource=resource)
+        # Meter. A MeterProvider with no reader silently drops every metric, so
+        # export_interval_ms had nowhere to land: attach a periodic reader and
+        # let it own the interval. Mirrors the tracer's OTLP/console fallback.
+        metric_exporter: Any = None
+        if self._endpoint:
+            try:
+                from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
+                    OTLPMetricExporter,
+                )
+                metric_exporter = OTLPMetricExporter(endpoint=self._endpoint)
+            except ImportError:
+                metric_exporter = ConsoleMetricExporter()
+        else:
+            metric_exporter = ConsoleMetricExporter()
+        metric_reader = PeriodicExportingMetricReader(
+            metric_exporter,
+            export_interval_millis=self._export_interval,
+        )
+        meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
+        self._meter_provider = meter_provider
         metrics.set_meter_provider(meter_provider)
         self._meter = metrics.get_meter("echo-agent", __version__)
 
@@ -86,3 +109,10 @@ class TelemetryManager:
                 provider.shutdown()
         except Exception as e:
             logger.warning("OTel shutdown error: {}", e)
+        # The periodic metric reader owns a background export thread; without an
+        # explicit shutdown it outlives the agent and the final batch is lost.
+        try:
+            if self._meter_provider is not None and hasattr(self._meter_provider, "shutdown"):
+                self._meter_provider.shutdown()
+        except Exception as e:
+            logger.warning("OTel meter shutdown error: {}", e)

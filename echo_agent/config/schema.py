@@ -3001,7 +3001,7 @@ class ObservabilityConfig(_Base):
     otel_export_interval_ms: int = Field(
         default=5000,
         json_schema_extra={
-            "status": "effective", "ref": "agent/loop.py:207",
+            "status": "effective", "ref": "observability/telemetry.py:87",
             "desc_zh": "OpenTelemetry 指标导出间隔(毫秒)",
             "desc_en": "OpenTelemetry metrics export interval (ms)",
         },
@@ -3559,7 +3559,11 @@ class PlanningConfig(_Base):
     max_tree_depth: int = Field(
         default=5,
         json_schema_extra={
-            "status": "effective", "ref": "agent/loop.py:194",
+            "status": "dead", "disposition": "fix",
+            "reason": "AgentPlanner 只把它存进 _max_tree_depth 后从不读取。"
+                      "ToT 策略做的是广度(max_branches 个候选,无递归),LATS 直接委托 "
+                      "PlanExecuteStrategy 也无 MCTS 深度,即没有任何'树深度'可限制。"
+                      "接线前需先实现深度语义,故标 fix 而非 remove。",
             "desc_zh": "规划树最大深度",
             "desc_en": "Maximum planning tree depth",
         },

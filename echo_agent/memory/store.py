@@ -172,11 +172,10 @@ class MemoryStore:
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self._user_file = memory_dir / "user_memory.json"
         self._env_file = memory_dir / "env_memory.json"
-        self._history_file = memory_dir / "HISTORY.md"
+        # HISTORY.md 已随旧设计退役(见 consolidator 说明),不再持有其路径。
         self._long_term_file = memory_dir / "MEMORY.md"
         self._max_user = max_user
         self._max_env = max_env
-        self._decay_half_life = decay_half_life_days
         self._user_snapshot_char_limit = user_snapshot_char_limit
         self._env_snapshot_char_limit = env_snapshot_char_limit
         # Snapshot layering: cap the always-on core to top-K (by effective
@@ -202,8 +201,7 @@ class MemoryStore:
         self._dirty_ids: set[str] = set()
         self._failed_sync: set[str] = set()
         self._load()
-        self._lineage_max_versions = lineage_max_versions
-        self._lineage_retention_days = lineage_retention_days
+        # lineage 上限只在 ForgettingCurve 内生效(见下),store 侧不再留死副本。
         self._forgetting = ForgettingCurve(
             base_half_life_days=decay_half_life_days,
             archive_threshold=archival_threshold,

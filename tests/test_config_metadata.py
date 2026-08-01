@@ -50,11 +50,17 @@ def test_extra_defaults_to_empty_dict():
 
 
 def test_dead_fields_are_marked():
-    # Task 7 收敛后 schema 不应再有 status="dead" 字段;
-    # 若将来重新引入,必须带合法 disposition。这里用不依赖具体字段的不变式。
+    # 原先这里既断言"不应残留 dead 字段"又断言"dead 字段必须带合法 disposition",
+    # 前者把一次收敛后的快照冻成不变量,也让后者恒真空转。真正要守的是后者:如实标注
+    # 的死字段必须说明原因和处置方式,否则治理信息就丢了。断言 dead 为空只会反向激励
+    # 把死字段继续标成 effective —— 那恰恰是"配置假生效"的来源。
     dead_fields = [f for f in iter_fields(Config) if f.extra.get("status") == "dead"]
-    assert dead_fields == [], f"schema 不应残留 dead 字段: {[f.snake_path for f in dead_fields]}"
-    assert all(f.extra.get("disposition") in ("fix", "remove", "keep") for f in dead_fields)
+    bad = [
+        f.snake_path for f in dead_fields
+        if f.extra.get("disposition") not in ("fix", "remove", "keep")
+        or not f.extra.get("reason")
+    ]
+    assert not bad, f"dead 字段必须带 reason 与合法 disposition: {bad}"
 
 
 def test_effective_fields_have_desc():
