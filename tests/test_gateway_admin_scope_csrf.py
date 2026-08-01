@@ -160,7 +160,11 @@ def test_admin_csrf_allows_same_origin_and_native():
     gw, _ = _make_gateway()
     # Same-origin playground fetch and native clients (no browser headers) pass.
     assert gw._check_csrf(
-        _csrf_request({"Origin": "http://127.0.0.1:58123", "Sec-Fetch-Site": "same-origin"}),
+        _csrf_request({
+            "Origin": "http://127.0.0.1:58123",
+            "Sec-Fetch-Site": "same-origin",
+            "Host": "127.0.0.1:58123",
+        }),
         action="shutdown",
     ) is None
     assert gw._check_csrf(_csrf_request({}), action="shutdown") is None

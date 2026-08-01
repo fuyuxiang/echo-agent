@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 
 import pytest
+import pytest_asyncio
 
 from echo_agent.memory import consolidator as cons
 from echo_agent.memory.contradiction import ContradictionDetector
@@ -12,8 +13,18 @@ from echo_agent.memory.types import Contradiction, MemoryEntry, MemoryType
 from echo_agent.storage.sqlite import SQLiteBackend
 
 
+@pytest_asyncio.fixture
+async def sqlite_storage(tmp_path):
+    storage = SQLiteBackend(tmp_path / "db.sqlite")
+    await storage.initialize()
+    try:
+        yield storage
+    finally:
+        await storage.close()
+
+
 @pytest.mark.asyncio
-async def test_detector_resolve_via_service_invalidates(tmp_path):
+async def test_detector_resolve_via_service_invalidates(tmp_path, sqlite_storage):
     # detector.resolve 的 mark_superseded 改走 service maintenance 通道后,
     # 应触发 service 的失效钩子(此前直连 store 写不触发失效,冻结快照/预取
     # 会跨轮继续注入已被取代的败者条目)。
@@ -22,8 +33,7 @@ async def test_detector_resolve_via_service_invalidates(tmp_path):
     async def _inval(scope, g):
         calls.append((scope, g))
 
-    storage = SQLiteBackend(tmp_path / "db.sqlite")
-    await storage.initialize()
+    storage = sqlite_storage
     store = MemoryStore(memory_dir=tmp_path / "mem")
     service = MemoryService(store, invalidate_fn=_inval)
 
@@ -56,10 +66,9 @@ def test_auto_resolve_requires_same_scope():
 
 
 @pytest.mark.asyncio
-async def test_get_unresolved_filters_cross_scope(tmp_path):
+async def test_get_unresolved_filters_cross_scope(tmp_path, sqlite_storage):
     # A: s1 只应看到两端都对 s1 可见的矛盾对,含 s2 条目的对不泄露。
-    storage = SQLiteBackend(tmp_path / "db.sqlite")
-    await storage.initialize()
+    storage = sqlite_storage
     store = MemoryStore(memory_dir=tmp_path / "mem", scope_policy="session")
     a1 = store.add(MemoryEntry(type=MemoryType.USER, key="home", content="北京",
                                source="user_stated", source_session="s1"))
@@ -86,10 +95,9 @@ async def test_get_unresolved_filters_cross_scope(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_get_unresolved_scope_no_starvation(tmp_path):
+async def test_get_unresolved_scope_no_starvation(tmp_path, sqlite_storage):
     # A: s1 有 1 条、s2 有 100 条时,limit=10 仍必须返回 s1 那条(过滤后再截,不饥饿)。
-    storage = SQLiteBackend(tmp_path / "db.sqlite")
-    await storage.initialize()
+    storage = sqlite_storage
     store = MemoryStore(memory_dir=tmp_path / "mem", scope_policy="session")
     detector = ContradictionDetector(storage=storage, store=store)
 
@@ -128,11 +136,10 @@ def test_empty_scope_user_fail_closed(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_resolve_supersede_failure_keeps_row_open(tmp_path):
+async def test_resolve_supersede_failure_keeps_row_open(tmp_path, sqlite_storage):
     # G: supersede 败者失败 → 矛盾行仍 unresolved、镜像仍 unresolved、败者仍 active;
     # 二次 resolve 成功后三者一致。
-    storage = SQLiteBackend(tmp_path / "db.sqlite")
-    await storage.initialize()
+    storage = sqlite_storage
     store = MemoryStore(memory_dir=tmp_path / "mem")
 
     winner = store.add(MemoryEntry(type=MemoryType.USER, key="home", content="北京",
@@ -176,10 +183,9 @@ async def test_resolve_supersede_failure_keeps_row_open(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_resolve_missing_loser_still_closes_row(tmp_path):
+async def test_resolve_missing_loser_still_closes_row(tmp_path, sqlite_storage):
     # G: loser 已被并发删除 → resolve 仍能关行(幂等路径)。
-    storage = SQLiteBackend(tmp_path / "db.sqlite")
-    await storage.initialize()
+    storage = sqlite_storage
     store = MemoryStore(memory_dir=tmp_path / "mem")
 
     winner = store.add(MemoryEntry(type=MemoryType.USER, key="home", content="北京",

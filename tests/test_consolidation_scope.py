@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 
 import pytest
+import pytest_asyncio
 
 from echo_agent.memory import consolidator as cons_mod
 from echo_agent.memory.consolidator import MemoryConsolidator
@@ -14,6 +15,16 @@ from echo_agent.memory.forgetting import ForgettingCurve
 from echo_agent.memory.tiers import ArchivalManager, EpisodicManager, SemanticManager
 from echo_agent.memory.types import MemoryEntry, MemoryTier, MemoryType
 from echo_agent.storage.sqlite import SQLiteBackend
+
+
+@pytest_asyncio.fixture
+async def sqlite_storage(tmp_path):
+    storage = SQLiteBackend(tmp_path / "db.sqlite")
+    await storage.initialize()
+    try:
+        yield storage
+    finally:
+        await storage.close()
 
 
 class _FakeLLMResponse:
@@ -30,14 +41,13 @@ class _FakeToolCall:
 
 
 @pytest.mark.asyncio
-async def test_step3_excludes_superseded_sibling_from_contradiction(tmp_path):
+async def test_step3_excludes_superseded_sibling_from_contradiction(tmp_path, sqlite_storage):
     """Critical 复现:同 key 改口后旧版本 superseded、新版本 active。整合器 Step 3
     的比较集合若含 superseded 兄弟,detector 会把 active 新版本与 superseded 旧版本
     判矛盾并 mark_contradiction_unresolved,使新 active 条目被 eligibility 判 UNRESOLVED,
     从 TOOL/snapshot/retrieval 静默剔除。修复后 superseded 兄弟不进比较集合,
     新 active 不被误标,仍可召回。"""
-    storage = SQLiteBackend(tmp_path / "db.sqlite")
-    await storage.initialize()
+    storage = sqlite_storage
     store = MemoryStore(memory_dir=tmp_path / "mem", storage=storage)
 
     async def mock_llm(**kwargs):
@@ -105,11 +115,10 @@ def test_consolidate_chunk_has_no_save_memory_llm_chain_source():
 
 
 @pytest.mark.asyncio
-async def test_consolidate_no_save_memory_llm_chain(tmp_path):
+async def test_consolidate_no_save_memory_llm_chain(tmp_path, sqlite_storage):
     """砍链A后:consolidate_chunk 不再发起 save_memory 工具调用。
     计数桩 LLM 记录每次调用的工具名,断言全程无 save_memory 出现。"""
-    storage = SQLiteBackend(tmp_path / "db.sqlite")
-    await storage.initialize()
+    storage = sqlite_storage
     store = MemoryStore(memory_dir=tmp_path / "mem", storage=storage)
 
     called_tools: list[str] = []
@@ -132,11 +141,10 @@ async def test_consolidate_no_save_memory_llm_chain(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_promote_then_deterministic_render(tmp_path):
+async def test_promote_then_deterministic_render(tmp_path, sqlite_storage):
     """sleep_consolidate promote 上海后,MEMORY.<scope>.md 由 render 确定性生成
     (含"上海"、幂等),而非 LLM 自由文本。断言 read_long_term(scope) 含 active 事实。"""
-    storage = SQLiteBackend(tmp_path / "db.sqlite")
-    await storage.initialize()
+    storage = sqlite_storage
     store = MemoryStore(memory_dir=tmp_path / "mem", storage=storage)
 
     async def mock_llm(**kwargs):
@@ -171,14 +179,13 @@ async def test_promote_then_deterministic_render(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_render_reflects_lifecycle_changes_after_step2(tmp_path):
+async def test_render_reflects_lifecycle_changes_after_step2(tmp_path, sqlite_storage):
     """一次 sleep_consolidate 内既 promote 新事实(Step 2)又对旧 active 条目做
     生命周期变更(Step 4 归档)。重渲染若落在 Step 2 的 `if facts:` 块内,写出的
     MEMORY.md 早于 Step 4,归档条目仍留在快照里 → 与 store 的 ACTIVE 集脱节。
     重渲染移到 sleep_consolidate 末尾(Step 4 之后)无条件执行后,MEMORY.md 只反映
     最终 ACTIVE 集:含新 promote 的事实,不含刚归档的旧条目。"""
-    storage = SQLiteBackend(tmp_path / "db.sqlite")
-    await storage.initialize()
+    storage = sqlite_storage
     store = MemoryStore(memory_dir=tmp_path / "mem", storage=storage)
 
     async def mock_llm(**kwargs):

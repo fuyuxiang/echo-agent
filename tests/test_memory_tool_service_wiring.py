@@ -6,6 +6,7 @@ service 注入替代裸 store。
 """
 
 import pytest
+import pytest_asyncio
 
 from echo_agent.memory.contradiction import ContradictionDetector
 from echo_agent.memory.store import MemoryStore
@@ -14,6 +15,16 @@ from echo_agent.memory.types import Contradiction, MemoryEntry, MemoryType
 from echo_agent.storage.sqlite import SQLiteBackend
 from echo_agent.agent.tools.memory import MemoryTool
 from echo_agent.tools.base import ToolExecutionContext
+
+
+@pytest_asyncio.fixture
+async def sqlite_storage(tmp_path):
+    storage = SQLiteBackend(tmp_path / "db.sqlite")
+    await storage.initialize()
+    try:
+        yield storage
+    finally:
+        await storage.close()
 
 
 def _tool(tmp_path):
@@ -58,7 +69,7 @@ async def test_resolve_contradiction_triggers_global_invalidation(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_resolve_contradiction_via_wired_detector_invalidates_once(tmp_path):
+async def test_resolve_contradiction_via_wired_detector_invalidates_once(tmp_path, sqlite_storage):
     """detector 已装配 service 时:裁决经 detector→service.mark_superseded→_finalize
     已触发失效,工具不得再显式 invalidate 二次失效。
 
@@ -71,8 +82,7 @@ async def test_resolve_contradiction_via_wired_detector_invalidates_once(tmp_pat
     async def _inval(scope, g):
         calls.append((scope, g))
 
-    storage = SQLiteBackend(tmp_path / "db.sqlite")
-    await storage.initialize()
+    storage = sqlite_storage
     store = MemoryStore(memory_dir=tmp_path / "mem")
     service = MemoryService(store, invalidate_fn=_inval)
 

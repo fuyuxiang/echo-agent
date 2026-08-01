@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
+import pytest_asyncio
 
 from echo_agent.agent.consolidation import ConsolidationWorker
 from echo_agent.memory.consolidator import MemoryConsolidator
@@ -13,6 +14,16 @@ from echo_agent.memory.store import MemoryStore
 from echo_agent.memory.tiers import EpisodicManager, SemanticManager
 from echo_agent.session.manager import Session, SessionManager
 from echo_agent.storage.sqlite import SQLiteBackend
+
+
+@pytest_asyncio.fixture
+async def sqlite_storage(tmp_path):
+    storage = SQLiteBackend(tmp_path / "db.sqlite")
+    await storage.initialize()
+    try:
+        yield storage
+    finally:
+        await storage.close()
 
 
 @pytest.fixture
@@ -379,9 +390,7 @@ class TestEpisodeAbsoluteRange:
     修复后应传绝对区间 (start, start+len)，两轮各建一条。
     """
 
-    async def _make_worker(self, tmp_path: Path):
-        storage = SQLiteBackend(tmp_path / "db.sqlite")
-        await storage.initialize()
+    async def _make_worker(self, tmp_path: Path, storage: SQLiteBackend):
         store = MemoryStore(memory_dir=tmp_path / "mem", storage=storage)
 
         async def mock_llm(**kwargs):
@@ -411,9 +420,9 @@ class TestEpisodeAbsoluteRange:
         await asyncio.gather(*spawned)
 
     @pytest.mark.asyncio
-    async def test_two_equal_length_rounds_create_two_episodes(self, tmp_path):
+    async def test_two_equal_length_rounds_create_two_episodes(self, tmp_path, sqlite_storage):
         """两个内容不同、条数相同的巩固轮次（绝对区间不同）各建一条 episode，不误去重。"""
-        worker, sessions, storage, _ = await self._make_worker(tmp_path)
+        worker, sessions, storage, _ = await self._make_worker(tmp_path, sqlite_storage)
         session_key = "chan:1"
 
         # Round 1: 2 条消息，绝对区间 (0, 2)。
@@ -437,10 +446,10 @@ class TestEpisodeAbsoluteRange:
         assert rows[0]["n"] == 2, "两个等长巩固轮次被相对键误去重，episodic 记忆静默丢失"
 
     @pytest.mark.asyncio
-    async def test_sleep_retry_replays_same_chunk_until_success(self, tmp_path):
+    async def test_sleep_retry_replays_same_chunk_until_success(self, tmp_path, sqlite_storage):
         """E: sleep_consolidate 前两次抛异常、第三次成功 → 三次都拿到非空 chunk,
         最终 episode 恰 1 条、last_consolidated 恰好推进一次。"""
-        worker, sessions, storage, _ = await self._make_worker(tmp_path)
+        worker, sessions, storage, _ = await self._make_worker(tmp_path, sqlite_storage)
         session_key = "chan:retry"
 
         session = await sessions.get_or_create(session_key)

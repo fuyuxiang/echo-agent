@@ -77,7 +77,10 @@ async def test_all_writers_share_single_service(tmp_path):
         # ⑥ ContradictionDetector
         assert loop._contradiction_detector._service is svc, "ContradictionDetector 未注入单例"
     finally:
-        await loop.stop()
+        try:
+            await loop.stop()
+        finally:
+            await loop._storage.close()
 
 
 @pytest.mark.asyncio
@@ -105,7 +108,10 @@ async def test_reviewer_service_shared_via_response_stage(tmp_path):
             MemoryReviewer.__init__ = orig_init
         assert captured.get("service") is loop._memory_service
     finally:
-        await loop.stop()
+        try:
+            await loop.stop()
+        finally:
+            await loop._storage.close()
 
 
 def test_store_service_only_soft_warns_on_direct_write(tmp_path, caplog):

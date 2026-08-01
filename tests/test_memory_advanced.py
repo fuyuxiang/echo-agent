@@ -53,6 +53,16 @@ def memory_store(tmp_path: Path) -> MemoryStore:
     return MemoryStore(memory_dir=tmp_path / "mem")
 
 
+@pytest_asyncio.fixture
+async def memory_store_with_storage(
+    tmp_path: Path,
+    storage: SQLiteBackend,
+) -> MemoryStore:
+    store = MemoryStore(memory_dir=tmp_path / "mem", storage=storage)
+    yield store
+    await store.aclose()
+
+
 def _make_entry(**overrides: Any) -> MemoryEntry:
     defaults = dict(
         id=uuid.uuid4().hex[:12],
@@ -991,9 +1001,13 @@ class TestHybridRetrieverWithVectors:
 
 class TestConsolidatorContradictionDetection:
     @pytest.mark.asyncio
-    async def test_sleep_consolidate_runs_contradiction_step(self, tmp_path: Path, storage: SQLiteBackend):
+    async def test_sleep_consolidate_runs_contradiction_step(
+        self,
+        memory_store_with_storage: MemoryStore,
+        storage: SQLiteBackend,
+    ):
         """Verify the contradiction detection step executes during sleep consolidation."""
-        store = MemoryStore(memory_dir=tmp_path / "mem", storage=storage)
+        store = memory_store_with_storage
 
         async def mock_llm(**kwargs):
             tools = kwargs.get("tools", [])
@@ -1052,9 +1066,13 @@ class TestConsolidatorContradictionDetection:
         assert stats["contradictions"] >= 1
 
     @pytest.mark.asyncio
-    async def test_sleep_consolidate_no_contradiction_same_content(self, tmp_path: Path, storage: SQLiteBackend):
+    async def test_sleep_consolidate_no_contradiction_same_content(
+        self,
+        memory_store_with_storage: MemoryStore,
+        storage: SQLiteBackend,
+    ):
         """No contradiction when promoted entry has same content as existing."""
-        store = MemoryStore(memory_dir=tmp_path / "mem", storage=storage)
+        store = memory_store_with_storage
 
         async def mock_llm(**kwargs):
             tools = kwargs.get("tools", [])
@@ -1101,8 +1119,12 @@ class TestConsolidatorContradictionDetection:
         assert stats["contradictions"] == 0
 
     @pytest.mark.asyncio
-    async def test_sleep_consolidate_no_contradiction_without_detector(self, tmp_path: Path, storage: SQLiteBackend):
-        store = MemoryStore(memory_dir=tmp_path / "mem", storage=storage)
+    async def test_sleep_consolidate_no_contradiction_without_detector(
+        self,
+        memory_store_with_storage: MemoryStore,
+        storage: SQLiteBackend,
+    ):
+        store = memory_store_with_storage
 
         async def mock_llm(**kwargs):
             tools = kwargs.get("tools", [])

@@ -9,6 +9,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import pytest_asyncio
 
 import echo_agent.agent.loop as loop_mod
 from echo_agent.agent.loop import AgentLoop
@@ -16,6 +17,33 @@ from echo_agent.bus.queue import MessageBus
 from echo_agent.config.loader import load_config
 from echo_agent.models.provider import LLMProvider
 from echo_agent.storage.sqlite import SQLiteBackend
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _close_agent_loops_and_storage(monkeypatch):
+    """Tests construct runtime owners directly, so they must close both layers."""
+    loops: list[AgentLoop] = []
+    backends: list[SQLiteBackend] = []
+    original_loop_init = AgentLoop.__init__
+    original_backend_init = SQLiteBackend.__init__
+
+    def tracked_loop_init(self, *args, **kwargs):
+        original_loop_init(self, *args, **kwargs)
+        loops.append(self)
+
+    def tracked_backend_init(self, *args, **kwargs):
+        original_backend_init(self, *args, **kwargs)
+        backends.append(self)
+
+    monkeypatch.setattr(AgentLoop, "__init__", tracked_loop_init)
+    monkeypatch.setattr(SQLiteBackend, "__init__", tracked_backend_init)
+    try:
+        yield
+    finally:
+        for loop in reversed(loops):
+            await loop.stop()
+        for backend in reversed(backends):
+            await backend.close()
 
 
 @pytest.fixture
@@ -343,4 +371,3 @@ async def test_warmup_skipped_when_rerank_disabled(tmp_path):
     # 直接调用也必须是安全的空操作
     await loop._warmup_reranker()
     await loop.stop()
-

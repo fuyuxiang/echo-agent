@@ -13,7 +13,10 @@ async def wired(tmp_path):
     await storage.initialize()
     store = MemoryStore(memory_dir=tmp_path / "mem")
     detector = ContradictionDetector(storage=storage, store=store)
-    return storage, store, detector
+    try:
+        yield storage, store, detector
+    finally:
+        await storage.close()
 
 
 @pytest.mark.asyncio

@@ -35,7 +35,8 @@ async def store_with_index(tmp_path: Path, storage: SQLiteBackend):
     await index.initialize()
     store.set_vector_index(index)
     store.set_embed_fn(fake_embed)
-    return store, index
+    yield store, index
+    await store.aclose()
 
 
 @pytest.mark.asyncio
