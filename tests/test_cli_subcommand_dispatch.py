@@ -6,6 +6,22 @@ import pytest
 import echo_agent.__main__ as m
 
 
+def _exit_with_code(rc: int) -> SystemExit:
+    """Mock ``sys.exit`` so it actually exits.
+
+    ``sys.exit(rc)`` is just ``raise SystemExit(rc)``; mocking it without
+    raising swallows the call, and ``_dispatch`` falls through into the
+    post-branch tail — which calls ``asyncio.run(run(...))`` and starts the
+    real Agent with its gateway. The test then hangs on a port LISTEN.
+    Several branches in ``_dispatch`` were susceptible to this regression;
+    the fix is to mock exit with a side effect that throws, the same way the
+    real ``sys.exit`` does. ``lambda`` is needed (not the exception class)
+    because ``side_effect=SystemExit`` ignores the rc argument and raises
+    ``SystemExit()``.
+    """
+    raise SystemExit(rc)
+
+
 def test_cli_subcommand_routes_to_run_cli_attach():
     from echo_agent.cli.attach_client import ConnectionInfo
 
@@ -14,8 +30,10 @@ def test_cli_subcommand_routes_to_run_cli_attach():
          mock.patch("echo_agent.cli.attach_client.run_cli_attach", return_value=0) as run, \
          mock.patch("echo_agent.cli.attach_client.resolve_connection",
                     return_value=ConnectionInfo(port=9000)) as rd, \
-         mock.patch("sys.exit") as ex:
-        m._dispatch()
+         mock.patch("sys.exit", side_effect=_exit_with_code) as ex:
+        with pytest.raises(SystemExit) as exc:
+            m._dispatch()
+    assert exc.value.code == 0
     # Exactly one config read per invocation: the dispatch resolves everything
     # (port, token, api_prefix, save_dir) from this single call.
     rd.assert_called_once()
@@ -80,8 +98,10 @@ def test_status_dispatch_exits_with_show_status_rc():
     argv = ["echo-agent", "status", "--json"]
     with mock.patch.object(sys, "argv", argv), \
          mock.patch("echo_agent.cli.status.show_status", return_value=3) as fn, \
-         mock.patch("sys.exit") as ex:
-        m._dispatch()
+         mock.patch("sys.exit", side_effect=_exit_with_code) as ex:
+        with pytest.raises(SystemExit) as exc:
+            m._dispatch()
+    assert exc.value.code == 3
     assert fn.call_args.kwargs["as_json"] is True
     ex.assert_called_once_with(3)
 
@@ -90,8 +110,10 @@ def test_cost_dispatch_exits_with_show_cost_rc():
     argv = ["echo-agent", "cost", "--json", "--days", "5"]
     with mock.patch.object(sys, "argv", argv), \
          mock.patch("echo_agent.cli.cost.show_cost", return_value=1) as fn, \
-         mock.patch("sys.exit") as ex:
-        m._dispatch()
+         mock.patch("sys.exit", side_effect=_exit_with_code) as ex:
+        with pytest.raises(SystemExit) as exc:
+            m._dispatch()
+    assert exc.value.code == 1
     assert fn.call_args.kwargs["as_json"] is True
     assert fn.call_args.kwargs["days"] == 5
     ex.assert_called_once_with(1)
@@ -101,8 +123,10 @@ def test_deps_dispatch_exits_with_deps_main_rc():
     argv = ["echo-agent", "deps", "status", "--json"]
     with mock.patch.object(sys, "argv", argv), \
          mock.patch("echo_agent.dependencies.cli.main", return_value=1) as fn, \
-         mock.patch("sys.exit") as ex:
-        m._dispatch()
+         mock.patch("sys.exit", side_effect=_exit_with_code) as ex:
+        with pytest.raises(SystemExit) as exc:
+            m._dispatch()
+    assert exc.value.code == 1
     # --json passes through argparse.REMAINDER verbatim to the inner parser.
     assert fn.call_args.args[0] == ["status", "--json"]
     ex.assert_called_once_with(1)
