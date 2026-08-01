@@ -22,7 +22,14 @@ if TYPE_CHECKING:
 class DashboardWebSocket:
     def __init__(self, server: GatewayServer):
         self._server = server
+        # Authenticated subscribers — the only sockets `broadcast()` walks.
         self._clients: dict[str, _DashboardClient] = {}
+        # Pre-auth sockets the message loop still owns. They live outside
+        # `_clients` so an unauthenticated peer cannot receive a broadcast,
+        # but `close_all()` must reach them too — otherwise a peer that
+        # hangs mid-handshake keeps the aiohttp handler alive and stalls
+        # `runner.cleanup()` until aiohttp's shutdown timeout.
+        self._pending: dict[str, _DashboardClient] = {}
         self._counter = 0
         self._unauthenticated = 0
 
@@ -70,6 +77,10 @@ class DashboardWebSocket:
         self._counter += 1
         client = _DashboardClient(client_id, ws)
         authenticated = False
+        # Track every upgraded socket from the very first frame so
+        # ``close_all()`` can reach pre-auth peers too, not just
+        # subscribers that made it past the handshake.
+        self._pending[client_id] = client
         # Absolute bound on the pre-auth window rather than a per-frame idle
         # timeout: the old form restarted its clock on every frame, so an
         # anonymous peer could hold one of the MAX_UNAUTHENTICATED_CLIENTS slots
@@ -112,7 +123,13 @@ class DashboardWebSocket:
                             authenticated = True
                             self._unauthenticated -= 1
                             auth_deadline.mark_authenticated()
-                        self._clients[client_id] = client
+                        # Move out of pre-auth bookkeeping now that we are
+                        # a long-lived subscriber. ``close_all()`` reaches
+                        # the socket via either store; the move just keeps
+                        # the two stores' meanings disjoint.
+                        if client_id in self._pending:
+                            self._pending.pop(client_id, None)
+                            self._clients[client_id] = client
                         self._server.auth.audit("dashboard_ws_auth", ok=True)
                         await ws.send_json({"type": "auth_ok"})
                     else:
@@ -156,6 +173,7 @@ class DashboardWebSocket:
             if not authenticated:
                 self._unauthenticated -= 1
             self._clients.pop(client_id, None)
+            self._pending.pop(client_id, None)
 
         return ws
 
@@ -209,17 +227,22 @@ class DashboardWebSocket:
         by default) with an open browser tab. Closing here is the same courtesy
         the main WS already got: the client sees a GOING_AWAY frame rather than a
         connection that dies without explanation.
+
+        Pre-auth sockets live in ``_pending`` (not ``_clients``); walking
+        only ``_clients`` left a peer hanging mid-handshake to occupy the
+        handler for the same length of time, so we sweep both stores.
         """
-        for client in list(self._clients.values()):
-            try:
-                await client.ws.close(
-                    code=aiohttp.WSCloseCode.GOING_AWAY, message=b"shutdown",
-                )
-            except Exception:
-                # A socket already gone is exactly what we wanted; never let one
-                # failure strand the rest or abort shutdown.
-                pass
-        self._clients.clear()
+        for store in (self._clients, self._pending):
+            for client in list(store.values()):
+                try:
+                    await client.ws.close(
+                        code=aiohttp.WSCloseCode.GOING_AWAY, message=b"shutdown",
+                    )
+                except Exception:
+                    # A socket already gone is exactly what we wanted; never let one
+                    # failure strand the rest or abort shutdown.
+                    pass
+            store.clear()
 
 
 class _DashboardClient:

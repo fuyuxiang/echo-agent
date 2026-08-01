@@ -241,3 +241,20 @@ async def test_unauthenticated_cap_holds_under_concurrent_race(
             f"cap was bypassed: results={results!r}, refused={refused!r}"
         )
         assert refused[0].status == 503
+
+
+@pytest.mark.asyncio
+async def test_close_all_shuts_down_preauth_sockets(dashboard_ws_url):
+    """A pre-auth dashboard socket was outside the inventory
+    ``close_all()`` walked, so a still-negotiating client could keep the
+    aiohttp handler alive past ``runner.cleanup()`` and stall gateway
+    shutdown up to aiohttp's default timeout (~60s)."""
+    info = dashboard_ws_url
+    dws = info["dws"]
+
+    async with aiohttp.ClientSession() as s:
+        ws = await s.ws_connect(info["url"])
+        # Stay in the pre-auth window on purpose; never send "auth".
+        await dws.close_all()
+        msg = await asyncio.wait_for(ws.receive(), timeout=3)
+        assert msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED)
