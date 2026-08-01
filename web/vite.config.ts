@@ -15,7 +15,14 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: "dist",
+    // Gateway-driven builds set ECHO_DASHBOARD_OUT_DIR so vite writes to
+    // ``dist.staging``; the gateway then atomically swaps the staging result
+    // into ``dist`` after validating it. The fallback (``dist``) keeps a
+    // plain ``pnpm build`` outside the gateway writing where users expect.
+    // ``emptyOutDir`` still wipes whatever was at the configured outDir the
+    // moment the build starts — which is why the gateway uses staging as its
+    // target rather than dist directly. See echo_agent/gateway/dashboard_build.py.
+    outDir: process.env.ECHO_DASHBOARD_OUT_DIR ?? "dist",
     emptyOutDir: true,
   },
   test: {

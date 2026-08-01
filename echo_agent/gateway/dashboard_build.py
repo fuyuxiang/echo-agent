@@ -56,15 +56,28 @@ class BuildReason(str, Enum):
     PNPM_UNAVAILABLE = "pnpm_unavailable"
     INSTALL_FAILED = "install_failed"
     BUILD_FAILED = "build_failed"
-    STALE_KEPT = "stale_kept"
 
 
 @dataclass(frozen=True)
 class BuildOutcome:
-    ok: bool
+    # build_succeeded: the build command ran and reported success. Independent
+    # of whether any artifact is in place to serve — a missing or broken
+    # artifact must surface as its own failure, not be papered over with "the
+    # old bundle is still there". Callers wanting to know whether anything
+    # usable is in ``web/dist`` after the call should check artifact_usable,
+    # not ok.
+    build_succeeded: bool
+    # artifact_usable: a verified, atomically-installed bundle is in ``web/dist``
+    # — build succeeded AND the staging result passed validation AND the swap
+    # completed. False on any failure path; the caller can fall back to a
+    # placeholder or report an error.
+    artifact_usable: bool
     reason: BuildReason
     detail: str = ""
-    used_stale: bool = False
+    # Whether an older bundle was already on disk before this call. Useful for
+    # diagnostics; does NOT change artifact_usable — that field is about the
+    # post-call state, not the history.
+    had_previous_bundle: bool = False
 
 
 def _repo_root() -> Path:
@@ -298,64 +311,113 @@ def build_dashboard(
     ``confirm``: asked before downloading a Node runtime. None means "cannot
     ask" (background service, non-interactive) — then a missing Node is simply
     reported, never silently downloaded.
+
+    The build targets a STAGING directory under ``web_dir`` (named ``dist.staging``)
+    and only swaps it into ``web_dir/dist`` after the staging result passes
+    validation. Vite's ``emptyOutDir: true`` clears whatever was at the
+    configured outDir the moment the build starts, so writing to ``dist``
+    directly would destroy the previous bundle even on a failed build — the
+    staging indirection keeps the previous bundle available across any failure.
+
+    Two outcomes are reported independently: ``build_succeeded`` (the build
+    command reported success and produced a usable artifact) and
+    ``artifact_usable`` (a verified bundle is now installed under
+    ``web_dir/dist``). Callers must branch on ``artifact_usable`` to know
+    whether to serve the Dashboard; ``build_succeeded`` alone is for "did
+    the build command succeed" UX.
     """
-    had_dist = (web_dir / "dist" / "index.html").is_file()
+    staging = web_dir / "dist.staging"
+    dist = web_dir / "dist"
+    had_dist = (dist / "index.html").is_file()
 
-    def stale(reason: BuildReason, detail: str) -> BuildOutcome:
-        """Outcome for a build that ran and failed.
-
-        A stale full Dashboard beats falling back to the playground, so an
-        existing dist is reported as success. Only used once the toolchain is
-        in place: a missing prerequisite is reported as itself (see below), not
-        laundered into STALE_KEPT.
+    def fail(reason: BuildReason, detail: str) -> BuildOutcome:
+        """Build command failed OR staging result was invalid. The previous
+        ``web_dir/dist`` is untouched in both cases (vite wrote to staging,
+        not dist). artifact_usable stays whatever it was — there is no point
+        lying about the bundle state.
         """
-        if had_dist:
-            return BuildOutcome(ok=True, reason=BuildReason.STALE_KEPT,
-                                detail=detail, used_stale=True)
-        return BuildOutcome(ok=False, reason=reason, detail=detail)
-
-    def unmet(reason: BuildReason, detail: str) -> BuildOutcome:
-        """Outcome for a prerequisite that is missing before any build starts.
-
-        Kept distinct from stale(): telling a user who just declined a Node
-        download that the build succeeded would contradict the decision they
-        made one line earlier, and the caller needs the specific reason to give
-        the right next step (install Node vs. read the build log). used_stale
-        still reports whether the old bundle is there to serve meanwhile.
-        """
-        return BuildOutcome(ok=False, reason=reason, detail=detail, used_stale=had_dist)
+        return BuildOutcome(
+            build_succeeded=False,
+            artifact_usable=had_dist,
+            reason=reason, detail=detail,
+            had_previous_bundle=had_dist,
+        )
 
     node = _find_usable_node()
     if node is None:
         if confirm is None:
-            return unmet(BuildReason.NODE_MISSING,
-                         f"Node.js >= {MIN_NODE_MAJOR} not found")
+            return BuildOutcome(
+                build_succeeded=False, artifact_usable=had_dist,
+                reason=BuildReason.NODE_MISSING,
+                detail=f"Node.js >= {MIN_NODE_MAJOR} not found",
+                had_previous_bundle=had_dist,
+            )
         if not confirm(
             f"构建完整 Dashboard 需要 Node.js {MIN_NODE_MAJOR}+，本机未找到可用版本。"
             "是否下载并安装到 ~/.echo-agent/node（约 30MB）？"
         ):
-            return unmet(BuildReason.NODE_DECLINED, "user declined the Node download")
+            return BuildOutcome(
+                build_succeeded=False, artifact_usable=had_dist,
+                reason=BuildReason.NODE_DECLINED,
+                detail="user declined the Node download",
+                had_previous_bundle=had_dist,
+            )
         node = _download_node(on_output)
         if node is None:
-            return unmet(BuildReason.NODE_TOO_OLD, "Node installation did not succeed")
+            return BuildOutcome(
+                build_succeeded=False, artifact_usable=had_dist,
+                reason=BuildReason.NODE_TOO_OLD,
+                detail="Node installation did not succeed",
+                had_previous_bundle=had_dist,
+            )
 
     pnpm = _ensure_pnpm(node, on_output)
     if pnpm is None:
-        return unmet(BuildReason.PNPM_UNAVAILABLE, "could not obtain a working pnpm")
+        return BuildOutcome(
+            build_succeeded=False, artifact_usable=had_dist,
+            reason=BuildReason.PNPM_UNAVAILABLE,
+            detail="could not obtain a working pnpm",
+            had_previous_bundle=had_dist,
+        )
 
     env = {**os.environ,
            "PATH": f"{node.parent}{os.pathsep}{os.environ.get('PATH', '')}"}
 
+    # Fresh staging for every run. Vite's emptyOutDir clears the directory
+    # the moment it opens for write — keeping a stale staging around would
+    # risk build A seeing build B's leftovers if A's pnpm install wrote
+    # nothing.
+    if staging.exists():
+        try:
+            shutil.rmtree(staging)
+        except OSError as e:
+            return BuildOutcome(
+                build_succeeded=False, artifact_usable=had_dist,
+                reason=BuildReason.BUILD_FAILED,
+                detail=f"failed to clear staging: {e}",
+                had_previous_bundle=had_dist,
+            )
+
+    # Point Vite at the staging directory for THIS build only. The web/vite
+    # default (``dist``) is left alone in source — the gateway is the one
+    # swapping artifacts, and overwriting that default would make a local
+    # ``pnpm build`` outside the gateway go into staging too.
+    build_env = {**env, "ECHO_DASHBOARD_OUT_DIR": str(staging)}
+
     rc, output = _run_streamed(
         [str(pnpm), "install", "--frozen-lockfile"], cwd=web_dir,
-        on_output=on_output, idle_timeout=idle_timeout, env=env,
+        on_output=on_output, idle_timeout=idle_timeout, env=build_env,
     )
     if rc != 0:
-        return stale(BuildReason.INSTALL_FAILED, output[-2000:])
+        return BuildOutcome(
+            build_succeeded=False, artifact_usable=had_dist,
+            reason=BuildReason.INSTALL_FAILED,
+            detail=output[-2000:], had_previous_bundle=had_dist,
+        )
 
     rc, output = _run_streamed(
         [str(pnpm), "build"], cwd=web_dir,
-        on_output=on_output, idle_timeout=idle_timeout, env=env,
+        on_output=on_output, idle_timeout=idle_timeout, env=build_env,
     )
     if rc != 0:
         # One retry: transient causes (antivirus scanning the Node binary, npm
@@ -363,15 +425,103 @@ def build_dashboard(
         _sleep(3)
         rc, output = _run_streamed(
             [str(pnpm), "build"], cwd=web_dir,
-            on_output=on_output, idle_timeout=idle_timeout, env=env,
+            on_output=on_output, idle_timeout=idle_timeout, env=build_env,
         )
     if rc != 0:
-        return stale(BuildReason.BUILD_FAILED, output[-2000:])
+        return BuildOutcome(
+            build_succeeded=False, artifact_usable=had_dist,
+            reason=BuildReason.BUILD_FAILED,
+            detail=output[-2000:], had_previous_bundle=had_dist,
+        )
 
-    if not (web_dir / "dist" / "index.html").is_file():
-        return stale(BuildReason.BUILD_FAILED,
-                     "build reported success but dist/index.html is missing")
-    return BuildOutcome(ok=True, reason=BuildReason.OK)
+    # Validate the staging result before swapping. "pnpm build exited 0" is
+    # necessary but not sufficient — Vite can complete without producing an
+    # index.html on certain misconfigurations (the static-path tree is
+    # non-trivial), and serving an empty dist is worse than refusing to swap.
+    staging_index = staging / "index.html"
+    if not staging_index.is_file():
+        return BuildOutcome(
+            build_succeeded=False, artifact_usable=had_dist,
+            reason=BuildReason.BUILD_FAILED,
+            detail="build reported success but dist.staging/index.html is missing",
+            had_previous_bundle=had_dist,
+        )
+
+    # Atomic swap. ``os.replace`` cannot move one non-empty directory on top of
+    # another non-empty directory on macOS (EINVAL/[Errno 66] "Directory not
+    # empty"), so a single rename is not enough. The portable two-step is:
+    # rename the old dist aside (atomic), then rename staging into place
+    # (atomic). At every instant, exactly one directory sits at web_dir/dist:
+    # the old bundle until step 1, then the new bundle from step 2 onward. A
+    # reader mid-swap never sees a half-deleted dist. If step 1 succeeds but
+    # step 2 fails, the backup is rolled forward into dist so we never leave
+    # the gateway without a bundle.
+    backup = web_dir / "dist.swapbackup"
+    # If a previous swap failed mid-flight, the backup may still be around.
+    # Best-effort clear before starting; if it is the only copy we have left,
+    # step 1 below will move it elsewhere anyway.
+    if backup.exists():
+        try:
+            shutil.rmtree(backup)
+        except OSError:
+            # Inability to clear is not fatal — the rename below would
+            # overwrite or fail loudly. Surface as a build failure rather
+            # than silently corrupt the swap.
+            return BuildOutcome(
+                build_succeeded=False, artifact_usable=had_dist,
+                reason=BuildReason.BUILD_FAILED,
+                detail=f"could not clear leftover swap backup at {backup}",
+                had_previous_bundle=had_dist,
+            )
+
+    if dist.exists():
+        try:
+            os.rename(dist, backup)
+        except OSError as e:
+            return BuildOutcome(
+                build_succeeded=False, artifact_usable=had_dist,
+                reason=BuildReason.BUILD_FAILED,
+                detail=f"could not move old dist aside for swap: {e}",
+                had_previous_bundle=had_dist,
+            )
+    try:
+        os.rename(staging, dist)
+    except OSError as e:
+        # Step 2 failed. Roll back the old bundle so the gateway keeps
+        # serving it.
+        if backup.exists():
+            try:
+                os.rename(backup, dist)
+            except OSError as rollback_err:
+                return BuildOutcome(
+                    build_succeeded=False, artifact_usable=False,
+                    reason=BuildReason.BUILD_FAILED,
+                    detail=(
+                        f"swap failed and rollback failed: swap={e}, "
+                        f"rollback={rollback_err}; old dist at {backup}"
+                    ),
+                    had_previous_bundle=had_dist,
+                )
+        return BuildOutcome(
+            build_succeeded=False, artifact_usable=had_dist,
+            reason=BuildReason.BUILD_FAILED,
+            detail=f"build succeeded but atomic swap into web/dist failed: {e}",
+            had_previous_bundle=had_dist,
+        )
+    # Swap complete: old bundle is now at ``backup``, new bundle at ``dist``.
+    # Remove the backup — failure is cosmetic (a stale backup that gets
+    # cleared at the next successful swap), not a functional issue.
+    try:
+        shutil.rmtree(backup)
+    except OSError:
+        pass
+
+    return BuildOutcome(
+        build_succeeded=True,
+        artifact_usable=True,
+        reason=BuildReason.OK,
+        had_previous_bundle=had_dist,
+    )
 
 
 def _is_tty() -> bool:
@@ -435,9 +585,15 @@ def describe_outcome(outcome: BuildOutcome) -> str:
     """
     if outcome.reason is BuildReason.OK:
         return "完整 Dashboard 已构建。"
-    if outcome.used_stale:
+    if outcome.artifact_usable:
+        # Build failed but a previous bundle is still in place. Be honest about
+        # both: the build ask did not happen, the gateway keeps serving the
+        # old bundle. The previous code reported this as success — that
+        # contradicted the failed build the user just sat through.
         return ("构建失败，继续使用上一次的 Dashboard 产物（可能已过期）。"
                 f"\n原因：{outcome.detail[:400]}")
+    return ("构建失败，未产生可服务的 Dashboard 产物。"
+            f"\n原因：{outcome.detail[:400]}")
     hints = {
         BuildReason.NODE_MISSING: (
             f"未找到 Node.js {MIN_NODE_MAJOR}+，跳过 Dashboard 构建。"

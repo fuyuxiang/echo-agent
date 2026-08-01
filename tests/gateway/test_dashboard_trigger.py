@@ -21,7 +21,9 @@ def trigger(monkeypatch, tmp_path):
     monkeypatch.setattr(dashboard_build, "dashboard_build_needed", lambda d: True)
     monkeypatch.setattr(
         dashboard_build, "build_dashboard",
-        lambda d, **kw: called.append(kw) or BuildOutcome(ok=True, reason=BuildReason.OK),
+        lambda d, **kw: called.append(kw) or BuildOutcome(
+            build_succeeded=True, artifact_usable=True, reason=BuildReason.OK,
+        ),
     )
     monkeypatch.delenv("_ECHO_AGENT_GATEWAY", raising=False)
     return called

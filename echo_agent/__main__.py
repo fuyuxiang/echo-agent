@@ -549,7 +549,13 @@ def _dispatch() -> None:
                 print("Dashboard 产物已是最新，无需构建。（强制重建：--force）")
                 _sys.exit(0)
         print(describe_outcome(outcome))
-        _sys.exit(0 if outcome.ok else 1)
+        # Exit on whether the BUILD COMMAND succeeded, not whether anything
+        # usable is in dist. artifact_usable is what the gateway uses to
+        # decide whether to serve the bundle; the CLI's job is "did the build
+        # we just asked for succeed". If the build failed but a previous
+        # bundle is still in place, the gateway will keep serving it — the
+        # user gets a non-zero exit so they know their ask did not happen.
+        _sys.exit(0 if outcome.build_succeeded else 1)
 
     if args.command == "cli":
         import sys as _sys
