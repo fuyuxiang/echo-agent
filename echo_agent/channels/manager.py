@@ -206,36 +206,42 @@ class ChannelManager:
                 logger.debug("send_reaction failed on {}: {}", event.channel, e)
 
     async def _deliver_final(self, event: OutboundEvent) -> SendResult | None:
-        # Authoritative finalize guard: mark this turn finalized synchronously,
-        # before any await yields the event loop, so a still-running heartbeat
-        # timer that fires during downstream channel I/O is discarded rather
-        # than overwriting or duplicating the final answer.
+        # Delivery ledger for terminal answers to a turn's primary target.
+        #
+        # States a (turn_id, channel, chat_id, purpose) tuple can be in:
+        #
+        #   PENDING     — outbound is in flight; nothing committed yet
+        #   DELIVERED   — channel.send returned success, target claimed
+        #   FAILED      — terminal failure (channel refused), target NOT
+        #                 claimed so a retry has room to try again
+        #   RELEASED    — cleared by caller (e.g. caller changed its mind)
+        #
+        # Two distinct bugs the old shape had, both pinned here:
+        #
+        #   (a) An approval prompt — which inherits OutboundEvent's
+        #       ``is_final=True`` / ``message_kind="final"`` defaults — claimed
+        #       the target before the actual answer had run, so the user's
+        #       post-/approve result was suppressed as a duplicate. Fixed by
+        #       the gate marking those prompts as message_kind="approval_prompt"
+        #       so they never reach this ledger at all (see _filter_and_dispatch).
+        #
+        #   (b) The old code wrote the target BEFORE awaiting channel.send and
+        #       never unwrote it on failure, so a transient transport error
+        #       suppressed every later retry of the same turn. Fixed by only
+        #       committing the target on a successful receipt.
+        #
+        # A tool delivery (``_tool_delivery``) is an explicit user instruction
+        # to send to a target and may legitimately repeat, so it claims the
+        # target but is NOT itself suppressed by an earlier claim — two message
+        # calls to different chats are two messages the model asked for.
         key = str(event.metadata.get("_inbound_event_id", ""))
         target = f"{event.channel}:{event.chat_id}"
         is_tool_delivery = bool(event.metadata.get("_tool_delivery"))
+
         if key:
             async with self._state_lock:
-                self._finalized_keys[key] = time.monotonic()
-                while len(self._finalized_keys) > self._max_inbound_ids:
-                    oldest = next(iter(self._finalized_keys))
-                    del self._finalized_keys[oldest]
-                # Claim the target, and find out whether someone got there first.
-                # _finalized_keys was only ever WRITTEN here and read by
-                # _handle_heartbeat, so it guarded "a late beat must not overwrite
-                # the answer" and nothing else — two finals in one turn both went
-                # out. That is the weather-report duplicate: the `message` tool
-                # delivered the report, then the turn's own reply (an "已推送"
-                # wrap-up meant for the caller, not the user) was delivered too.
                 claimed = self._finalized_targets.setdefault(key, set())
                 already_delivered = target in claimed
-                claimed.add(target)
-                while len(self._finalized_targets) > self._max_inbound_ids:
-                    oldest = next(iter(self._finalized_targets))
-                    del self._finalized_targets[oldest]
-            # Only the turn's own reply is suppressed by an earlier claim. A tool
-            # delivery is an explicit instruction ("send this to that chat") and
-            # may legitimately repeat — two message calls to the same chat are two
-            # messages the model asked for, not an accident of the framework.
             if already_delivered and not is_tool_delivery:
                 logger.debug(
                     "Suppressing duplicate final for {} (already delivered by a tool this turn)",
@@ -243,6 +249,18 @@ class ChannelManager:
                 )
                 event.metadata["_drop"] = True
                 return
+            # Record finalization so a late heartbeat that fires during the
+            # in-flight channel.send is discarded rather than overwriting the
+            # answer. This is the only state written before transport: a
+            # "this turn has *begun* its terminal write" marker, not a
+            # delivery claim. The claim itself happens only after a successful
+            # channel.send below.
+            async with self._state_lock:
+                self._finalized_keys[key] = time.monotonic()
+                while len(self._finalized_keys) > self._max_inbound_ids:
+                    oldest = next(iter(self._finalized_keys))
+                    del self._finalized_keys[oldest]
+
         channel = self._channels.get(event.channel)
         has_content = any(b.text or b.url for b in event.content)
         if not has_content:
@@ -254,6 +272,7 @@ class ChannelManager:
                 event.channel, str(event.chat_id)[:16], event.metadata.get("_inbound_event_id", ""),
             )
             return
+
         # If a heartbeat already occupies a message on an editable channel, seal
         # the final answer into that same message so the turn uses one slot total.
         if key and getattr(channel, "supports_edit", False):
@@ -268,18 +287,24 @@ class ChannelManager:
                     )
                     if result and not result.success:
                         logger.warning("Final seal-edit failed on {}: {}", event.channel, result.error)
-                        # Best-effort delete the stale heartbeat message before
-                        # falling back to a fresh send, so the turn does not leave
-                        # a lingering "正在处理中…" message alongside the answer.
                         await self._delete_stale_heartbeat(channel, event, hb_msg_id)
-                        # fall through to a fresh send if the in-place edit failed
+                        # fall through to a fresh send on edit failure
                     else:
+                        # In-place edit succeeded → the heartbeat slot IS the
+                        # delivery. Commit the claim now; do NOT leave the
+                        # target unclaimed, otherwise a later fallback send
+                        # would duplicate it.
+                        if key:
+                            async with self._state_lock:
+                                claimed = self._finalized_targets.setdefault(key, set())
+                                claimed.add(target)
                         event.metadata["_drop"] = True
                         return result
                 except Exception as e:
                     logger.error("Final seal-edit exception on {}: {}", event.channel, e)
                     await self._delete_stale_heartbeat(channel, event, hb_msg_id)
-                    # fall through to a fresh send on edit failure
+                    # fall through to a fresh send on edit exception
+
         send_event = OutboundEvent(
             channel=event.channel,
             chat_id=event.chat_id,
@@ -291,12 +316,27 @@ class ChannelManager:
         send_event.metadata = self._public_metadata(event.metadata)
         try:
             result = await channel.send(send_event)
-            if result and not result.success:
-                logger.warning("Final delivery failed on {}: {}", event.channel, result.error)
         except Exception as e:
             logger.error("Final delivery exception on {}: {}", event.channel, e)
-            event.metadata["_drop"] = True
+            # Transport threw — leave the target unclaimed so a retry can try
+            # again. Do NOT mark _drop; the caller's retry path needs this event.
             return SendResult(success=False, error=str(e))
+        if result and not result.success:
+            logger.warning("Final delivery failed on {}: {}", event.channel, result.error)
+            # Channel refused (transport returned a non-success receipt).
+            # Leave the target unclaimed — a later retry of this same turn, if
+            # the framework invokes one, has room to try again.
+            return result
+        # Success receipt. Commit the claim so subsequent finals to the same
+        # target within this turn are deduped (the duplicate-final bug the
+        # ledger was originally built for).
+        if key:
+            async with self._state_lock:
+                claimed = self._finalized_targets.setdefault(key, set())
+                claimed.add(target)
+                while len(self._finalized_targets) > self._max_inbound_ids:
+                    oldest = next(iter(self._finalized_targets))
+                    del self._finalized_targets[oldest]
         event.metadata["_drop"] = True
         return result
 

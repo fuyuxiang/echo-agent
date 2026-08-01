@@ -471,6 +471,14 @@ class ApprovalGate:
             chat_id=event.chat_id,
             text=text,
             reply_to_id=event.reply_to_id,
+            # Approval prompts are NOT terminal — they are interactive prompts
+            # that happen to look like a message. Marking them ``final`` would
+            # claim the target in the delivery ledger, and the user's real
+            # answer after /approve would be suppressed as a duplicate. The
+            # default message_kind="final" therefore bypasses this: it is the
+            # wrong default for an interactive prompt.
+            is_final=False,
+            message_kind="approval_prompt",
         )
         out.metadata = dict(event.metadata)
         out.metadata["_approval_request"] = True
