@@ -356,3 +356,57 @@ def test_stale_swapbackup_is_cleared(web, monkeypatch):
     assert outcome.artifact_usable is True
     assert (web / "dist" / "index.html").read_text(encoding="utf-8") == "<html>fresh</html>"
     assert not backup.exists()
+
+
+# ── describe_outcome ─────────────────────────────────────────────────────────
+# 这个函数此前完全没有测试。它的失败原因提示表写在两条无条件 return 之后，整张表
+# 从未执行过：Node 缺失、版本过低、pnpm 不可用、依赖安装失败这些最常见的情况，
+# 用户只看到笼统的"构建失败"，拿不到该怎么修。下面按原因逐一锚定提示内容。
+
+def _outcome(reason, *, artifact_usable=False, detail=""):
+    return dashboard_build.BuildOutcome(
+        build_succeeded=reason is BuildReason.OK,
+        artifact_usable=artifact_usable or reason is BuildReason.OK,
+        reason=reason,
+        detail=detail,
+    )
+
+
+def test_describe_outcome_success():
+    assert dashboard_build.describe_outcome(_outcome(BuildReason.OK)) == "完整 Dashboard 已构建。"
+
+
+@pytest.mark.parametrize("reason,needle", [
+    (BuildReason.NODE_MISSING, "未找到 Node.js"),
+    (BuildReason.NODE_TOO_OLD, "请升级 Node.js"),
+    (BuildReason.NODE_DECLINED, "已跳过 Node.js 下载"),
+    (BuildReason.PNPM_UNAVAILABLE, "npm i -g pnpm@"),
+    (BuildReason.INSTALL_FAILED, "前端依赖安装失败"),
+    (BuildReason.BUILD_FAILED, "前端构建失败"),
+])
+def test_describe_outcome_gives_actionable_hint_per_reason(reason, needle):
+    """每种失败原因都必须给出该原因专属的可操作建议。"""
+    msg = dashboard_build.describe_outcome(_outcome(reason, detail="boom"))
+    assert needle in msg
+    assert "原因：boom" in msg
+
+
+def test_describe_outcome_stale_bundle_is_not_reported_as_success():
+    """构建失败但旧产物仍在:必须同时说明失败与"继续使用旧产物"。"""
+    msg = dashboard_build.describe_outcome(
+        _outcome(BuildReason.BUILD_FAILED, artifact_usable=True, detail="tsc error")
+    )
+    assert "构建失败" in msg
+    assert "上一次" in msg
+    assert "前端构建失败" in msg
+
+
+def test_describe_outcome_no_usable_artifact_says_so():
+    msg = dashboard_build.describe_outcome(_outcome(BuildReason.BUILD_FAILED))
+    assert "未产生可服务的 Dashboard 产物" in msg
+
+
+def test_describe_outcome_unknown_reason_still_describes_failure():
+    """没有专属提示的原因也不能返回空壳消息。"""
+    msg = dashboard_build.describe_outcome(_outcome(BuildReason.NOT_A_SOURCE_CHECKOUT))
+    assert "构建失败" in msg

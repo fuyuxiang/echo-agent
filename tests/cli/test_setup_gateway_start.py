@@ -47,6 +47,11 @@ def harness(monkeypatch, capsys):
         wiz, "run_service_action",
         lambda action, **kw: calls.append((action, kw)) or 0,
     )
+    # 屏蔽 Dashboard 构建询问。_offer_gateway_start 会先问「现在构建 Dashboard 吗」,
+    # 这些用例预置的 answers 本意是回答启动询问,却会被构建询问先取走 —— 在装有
+    # Node/pnpm 的机器(CI)上这会真的跑一遍 pnpm install + vite build,让一个讲服务
+    # 启动的单元测试耗时数分钟并依赖网络。构建本身由 tests/gateway/ 下的用例覆盖。
+    monkeypatch.setattr(wiz, "_maybe_offer_dashboard_build", lambda: None)
     # 启动后的确认轮询默认成功，避免每个用例都等 15 秒。
     # 真实轮询本身由 TestWaitUntilListening 直接测，不经过这个桩。
     monkeypatch.setattr(wiz, "_wait_until_listening", lambda *a, **kw: True)

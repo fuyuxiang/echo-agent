@@ -585,15 +585,10 @@ def describe_outcome(outcome: BuildOutcome) -> str:
     """
     if outcome.reason is BuildReason.OK:
         return "完整 Dashboard 已构建。"
-    if outcome.artifact_usable:
-        # Build failed but a previous bundle is still in place. Be honest about
-        # both: the build ask did not happen, the gateway keeps serving the
-        # old bundle. The previous code reported this as success — that
-        # contradicted the failed build the user just sat through.
-        return ("构建失败，继续使用上一次的 Dashboard 产物（可能已过期）。"
-                f"\n原因：{outcome.detail[:400]}")
-    return ("构建失败，未产生可服务的 Dashboard 产物。"
-            f"\n原因：{outcome.detail[:400]}")
+
+    # 按失败原因给可操作建议。这些提示原先写在函数末尾,但上面两条 return 是无条件的,
+    # 整张 hints 表从来没被执行过 —— Node 缺失/版本过低/pnpm 不可用/依赖安装失败这些
+    # 最常见的情况,用户只会看到笼统的"构建失败",拿不到该怎么修。
     hints = {
         BuildReason.NODE_MISSING: (
             f"未找到 Node.js {MIN_NODE_MAJOR}+，跳过 Dashboard 构建。"
@@ -617,5 +612,16 @@ def describe_outcome(outcome: BuildOutcome) -> str:
         ),
         BuildReason.BUILD_FAILED: "前端构建失败。\n重试：echo-agent dashboard build",
     }
-    base = hints.get(outcome.reason, "Dashboard 构建未完成。")
-    return f"{base}\n{outcome.detail[:400]}" if outcome.detail else base
+    base = hints.get(outcome.reason)
+    if outcome.artifact_usable:
+        # 构建失败但上一份产物还在。两件事都要说清:这次构建没成,gateway 继续用旧产物。
+        # 早先的实现把这种情况报成成功,与用户刚刚看到的失败自相矛盾。
+        head = "构建失败，继续使用上一次的 Dashboard 产物（可能已过期）。"
+    else:
+        head = "构建失败，未产生可服务的 Dashboard 产物。"
+    parts = [head]
+    if base:
+        parts.append(base)
+    if outcome.detail:
+        parts.append(f"原因：{outcome.detail[:400]}")
+    return "\n".join(parts)

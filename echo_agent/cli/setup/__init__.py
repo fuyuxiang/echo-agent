@@ -1454,6 +1454,7 @@ def _maybe_offer_dashboard_build() -> None:
     """
     try:
         from echo_agent.gateway.dashboard_build import (
+            BuildReason,
             build_dashboard,
             dashboard_build_needed,
             describe_outcome,
@@ -1474,7 +1475,11 @@ def _maybe_offer_dashboard_build() -> None:
         on_output=lambda line: print(f"    {line}", flush=True),
         confirm=lambda msg: ui.confirm(msg, default=True),
     )
-    (print_success if outcome.ok else print_warning)(describe_outcome(outcome))
+    # BuildOutcome 没有 ok 字段(拆成了 build_succeeded / artifact_usable),此处沿用
+    # describe_outcome 的判据:只有 reason 为 OK 才是纯成功。artifact_usable=True 但
+    # 构建失败时,消息是"继续使用上一次的产物",那属于警告而不是成功。
+    succeeded = outcome.reason is BuildReason.OK
+    (print_success if succeeded else print_warning)(describe_outcome(outcome))
 
 
 def _offer_gateway_start(
