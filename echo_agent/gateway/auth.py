@@ -17,7 +17,18 @@ from echo_agent.config.schema import GatewayAuthConfig
 
 class GatewayAuth:
 
-    def __init__(self, config: GatewayAuthConfig, data_dir: Path):
+    # Host names that mean "this machine" when the gateway is bound to a
+    # loopback address. Listed explicitly (rather than resolving "anything
+    # whose IP is loopback") because the relevant attack — DNS rebinding — is
+    # precisely a case where the browser sends a Host string that LOOKS local
+    # but is not: it is the attacker's domain that the rebinding has made
+    # resolve to 127.0.0.1. The string check is the whole point.
+    _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "[::1]"})
+
+    def __init__(
+        self, config: GatewayAuthConfig, data_dir: Path,
+        *, bound_host: str | None = None,
+    ):
         self._mode = config.mode
         self._allowed = set(config.allowed_users)
         self._admins = set(config.admin_users)
@@ -26,6 +37,10 @@ class GatewayAuth:
         self._allowed_origins = set(config.allowed_origins)
         self.token_header = config.token_header
         self._pairing_ttl = config.pairing_ttl_seconds
+        # allowed_hosts is a configured escape hatch; empty defers to a default
+        # derived from the bind address. See is_host_allowed.
+        self._allowed_hosts = set(config.allowed_hosts)
+        self._bound_host = (bound_host or "").strip()
         self._data_dir = data_dir / "gateway_auth"
         self._data_dir.mkdir(parents=True, exist_ok=True)
         self._audit_path = self._data_dir / "audit.jsonl"
@@ -125,14 +140,24 @@ class GatewayAuth:
         send neither header, so they are never flagged.
 
         ``host`` is the request's Host header. Pass it whenever it is available:
-        it is what lets ``same-site`` be checked rather than trusted.
+        it is what lets ``same-site`` be checked rather than trusted, and it is
+        what ``is_host_allowed`` uses to close the DNS-rebinding hole (see that
+        method). The two checks compose: same-origin/same-site routing is
+        decided here, and on top of that the Host must name a host this gateway
+        was reached on — a rebinding page sends ``Sec-Fetch-Site: same-origin``
+        plus a Host it controls, and Origin-vs-Host alone (both attacker's)
+        cannot stop that.
         """
         origin = (origin or "").strip()
         sec_fetch_site = (sec_fetch_site or "").strip()
         # No browser metadata at all → native client → not a browser request.
+        # Native clients send a Host but the CSRF primitive does not care —
+        # the rebinding check below still applies if they were to forge a
+        # browser-shaped request, but real curl/sdk never carry an Origin.
         if not origin and sec_fetch_site in ("", "none"):
             return False
-        # Same-origin is safe by definition.
+        # Same-origin is safe by definition. ALMOST — see is_host_allowed for
+        # the rebinding case this does not catch.
         if sec_fetch_site == "same-origin":
             return False
         # same-site is NOT same-origin: the browser is telling us the initiator
@@ -150,6 +175,83 @@ class GatewayAuth:
             return False
         # Everything else that carries a cross-site Origin or Sec-Fetch-Site.
         return True
+
+    def is_host_allowed(self, host: str) -> bool:
+        """Whether the request's Host names a host this gateway was reached on.
+
+        DNS rebinding closes the CSRF gate's other checks. The page is loaded
+        from ``evil.example``, the attacker rebinds its DNS to 127.0.0.1, and
+        the browser's subsequent request hits this gateway with:
+
+          - ``Origin: http://evil.example:58123`` (attacker's page origin)
+          - ``Sec-Fetch-Site: same-origin`` (correct: same scheme/host/port as
+            the page that made the request)
+          - ``Host: evil.example:58123`` (the rebinding target)
+
+        All three are consistent with each other AND with the gateway's own
+        bind (loopback peer, so ``_is_loopback_peer`` grants the trust
+        exemption). ``is_cross_site_browser`` therefore returns False. The only
+        signal that breaks the picture is ``Host``: this gateway was not
+        reached on a host name that resolves to ``evil.example`` from the
+        user's perspective.
+
+        Resolution order:
+
+          1. ``allowed_hosts`` (configured escape hatch for reverse proxies).
+          2. Empty config + bind is loopback → the loopback host set
+             (localhost / 127.0.0.1 / ::1). This is the secure default.
+          3. Empty config + bind is non-loopback → no default. An operator who
+             bound to 0.0.0.0 must list their proxy domain explicitly; the
+             loopback exemption does NOT extend to attacker-supplied names.
+
+        An empty Host is treated as untrusted — a bare origin alone is not
+        enough to be sure the peer reached a host we control. Native clients
+        typically send Host to a loopback address, so the second branch is
+        where they pass.
+        """
+        host = (host or "").strip()
+        if not host:
+            return False
+        # Strip IPv6 brackets so "[::1]" matches the entry in _LOOPBACK_HOSTS.
+        normalized = self._normalize_host(host)
+        if not normalized:
+            return False
+        if normalized in self._allowed_hosts:
+            return True
+        if not self._allowed_hosts and self._bound_is_loopback():
+            return normalized in self._LOOPBACK_HOSTS
+        return False
+
+    @staticmethod
+    def _normalize_host(host: str) -> str:
+        """Lowercase, strip port, preserve IPv6 brackets.
+
+        ``localhost:58123`` and ``[::1]:58123`` should compare equal to their
+        bare-host forms. The bracket shape is preserved on IPv6 because that is
+        how it appears in the Host header.
+        """
+        if host.startswith("["):
+            hostname, _, _ = host.partition("]")
+            return "[" + hostname.lstrip("[").lower() + "]"
+        lowered = host.lower()
+        # Strip a single trailing :port (we never see multiple colons outside of
+        # IPv6 literals, which the branch above handled).
+        if ":" in lowered:
+            return lowered.rsplit(":", 1)[0]
+        return lowered
+
+    def _bound_is_loopback(self) -> bool:
+        from echo_agent.cli.runtime_probe import _WILDCARD_HOSTS
+        import ipaddress
+
+        if not self._bound_host:
+            return False
+        if self._bound_host in _WILDCARD_HOSTS:
+            return False
+        try:
+            return ipaddress.ip_address(self._bound_host).is_loopback
+        except ValueError:
+            return self._bound_host == "localhost"
 
     @staticmethod
     def _origin_matches_host(origin: str, host: str) -> bool:

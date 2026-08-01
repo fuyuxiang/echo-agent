@@ -77,7 +77,13 @@ class GatewayServer:
         self._shutdown_event: asyncio.Event | None = None
 
         data_dir = workspace / "data"
-        self.auth = GatewayAuth(config.auth, data_dir)
+        # Pass the bind address to the auth so the Host-header check can derive
+        # a sensible default allowlist (loopback addresses when bound locally,
+        # none when bound to 0.0.0.0/::). For non-loopback binds, an empty
+        # allowed_hosts configuration is a deployment mistake: anyone reaching
+        # the gateway via DNS could claim to come from a non-existent domain.
+        self.auth = GatewayAuth(config.auth, data_dir, bound_host=config.host)
+        self._warn_host_allowlist_if_unset()
         self.media_cache = MediaCache(
             cache_dir=workspace / config.media_cache_dir,
             max_size_mb=config.media_cache_max_mb,
@@ -392,10 +398,19 @@ class GatewayServer:
         origin = request.headers.get("Origin", "").strip()
         sec_fetch_site = request.headers.get("Sec-Fetch-Site", "").strip()
         host = request.headers.get("Host", "").strip()
-        if not self.auth.is_cross_site_browser(origin, sec_fetch_site, host):
+        is_browser_request = bool(origin) or sec_fetch_site not in ("", "none")
+        if not is_browser_request:
             return None
-        self.auth.audit(action, ok=False, reason=f"cross-site origin rejected: {origin or '?'}")
-        return web.json_response({"error": "cross-site request forbidden"}, status=403)
+        # Both gates must pass independently — see reject_cross_site for why
+        # same-origin alone is not enough (DNS rebinding makes Origin and Host
+        # both attacker-controlled and consistent with each other).
+        if self.auth.is_cross_site_browser(origin, sec_fetch_site, host):
+            self.auth.audit(action, ok=False, reason=f"cross-site origin rejected: {origin or '?'}")
+            return web.json_response({"error": "cross-site request forbidden"}, status=403)
+        if not self.auth.is_host_allowed(host):
+            self.auth.audit(action, ok=False, reason=f"untrusted host rejected: {host or '?'}")
+            return web.json_response({"error": "cross-site request forbidden"}, status=403)
+        return None
 
     def _tokens_configured(self) -> bool:
         """Whether this deployment authenticates at all.
@@ -407,6 +422,35 @@ class GatewayServer:
         start on 0.0.0.0 — an admin token passes the read guard, so the two lists
         are one hierarchy, not two independent switches."""
         return bool(self._config.auth.api_tokens or self._config.auth.admin_tokens)
+
+    def _warn_host_allowlist_if_unset(self) -> None:
+        """Warn when the Host allowlist is empty and the bind is not loopback.
+
+        A non-loopback bind (``0.0.0.0`` / ``::`` / a LAN address) means
+        strangers can reach the gateway. Without an explicit
+        ``allowed_hosts`` entry, ``is_host_allowed`` refuses every Host the
+        server gets — DNS rebinding is closed but so is everything else.
+        The operator almost certainly meant to list their reverse-proxy
+        domain; surface the choice rather than fail silent.
+        """
+        if self._config.auth.allowed_hosts:
+            return
+        bound = (self._config.host or "").strip()
+        try:
+            import ipaddress
+            is_loopback = (
+                bound in ("localhost",) or ipaddress.ip_address(bound).is_loopback
+            )
+        except ValueError:
+            is_loopback = False
+        if not is_loopback:
+            logger.warning(
+                "Gateway bound to {} with empty auth.allowed_hosts. Every "
+                "browser-shaped request will be rejected for lacking a trusted "
+                "Host. List your reverse-proxy domain (e.g. 'echo.example.com') "
+                "in gateway.auth.allowed_hosts if you are behind one.",
+                bound,
+            )
 
     def _require_api_token(self, request: web.Request, *, action: str) -> web.Response | None:
         """Guard for read/chat-level endpoints. Admin tokens also pass (admin

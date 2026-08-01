@@ -3258,6 +3258,30 @@ class GatewayAuthConfig(_Base):
             "desc_en": "Pairing-mode token time-to-live (seconds)",
         },
     )
+    # Host header allowlist that closes the DNS-rebinding loop. The Origin /
+    # Host comparison alone cannot stop a rebind: both are attacker-controlled
+    # strings the moment DNS resolves to 127.0.0.1. The only authoritative
+    # signal is whether the Host matches a name this gateway was intended to be
+    # reached on — loopback addresses when bound locally, the proxy domain when
+    # behind one. Empty defers to the default for the bind address (loopback
+    # addresses when bound to loopback, none when bound to 0.0.0.0/::).
+    allowed_hosts: list[str] = Field(
+        default_factory=list,
+        json_schema_extra={
+            "status": "effective", "ref": "gateway/auth.py",
+            "desc_zh": "可接受的 Host 头列表。DNS rebinding 攻击中 Origin 与 Host 都是攻击者控制的字符串，比对二者无效；唯一可信信号是 Host 是否为本网关预期被访问的名字。绑 loopback 时留空默认接受 localhost/127.0.0.1/[::1]；绑 0.0.0.0/:: 时留空会启动告警；反代时显式列出代理域名",
+            "desc_en": (
+                "Accepted Host header values. DNS rebinding makes Origin and Host "
+                "both attacker-controlled strings — comparing them is useless. "
+                "The only authoritative signal is whether the Host matches a name "
+                "this gateway was intended to be reached on: loopback addresses "
+                "when bound to loopback, the proxy domain when behind one. Empty "
+                "defers to the bind-address default (loopback addresses when "
+                "bound to loopback; warns at startup when bound to 0.0.0.0/::). "
+                "Set explicitly for reverse-proxy deployments"
+            ),
+        },
+    )
 
 
 class GatewayConfig(_Base):

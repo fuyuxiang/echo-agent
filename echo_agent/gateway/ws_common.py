@@ -74,12 +74,34 @@ def reject_cross_site(request: web.Request, auth: Any, *, action: str) -> web.Re
 
     Returns a 403 response to return from the handler, or None to continue.
     Non-browser clients (the CLI) send no Origin / Sec-Fetch-Site and pass.
+
+    Two independent gates apply: the cross-site Origin/Sec-Fetch-Site check
+    (CSRF primitive), and the Host header must name a host this gateway was
+    intended to be reached on. The second one is what closes DNS rebinding:
+    with the first alone, a page whose DNS has been rebound to 127.0.0.1 sends
+    Sec-Fetch-Site=same-origin and Host=evil.example, both consistent with its
+    own page origin — and is let through.
+
+    Order matters. ``is_cross_site_browser`` returns False for *any*
+    non-browser request AND for legitimate same-origin browser requests; the
+    host check must run on both, since a same-origin rebound IS still a
+    browser request. So we identify browser requests first (by carrying an
+    Origin or a non-trivial Sec-Fetch-Site), then apply both gates. A request
+    that carries neither is non-browser and short-circuits.
     """
     origin = request.headers.get("Origin", "").strip()
     sec_fetch_site = request.headers.get("Sec-Fetch-Site", "").strip()
-    # Host lets the gate verify a `same-site` claim instead of trusting it.
     host = request.headers.get("Host", "").strip()
-    if not auth.is_cross_site_browser(origin, sec_fetch_site, host):
+    is_browser_request = bool(origin) or sec_fetch_site not in ("", "none")
+    if not is_browser_request:
         return None
-    auth.audit(action, ok=False, reason=f"cross-site origin rejected: {origin or '?'}")
-    return web.json_response({"error": "cross-site request forbidden"}, status=403)
+    # Browser request. Both gates must pass independently — same-origin alone
+    # is not enough (rebind), cross-site Origin alone is not enough (the
+    # allowlist claim), Host alone is not enough (proxy header forgery).
+    if auth.is_cross_site_browser(origin, sec_fetch_site, host):
+        auth.audit(action, ok=False, reason=f"cross-site origin rejected: {origin or '?'}")
+        return web.json_response({"error": "cross-site request forbidden"}, status=403)
+    if not auth.is_host_allowed(host):
+        auth.audit(action, ok=False, reason=f"untrusted host rejected: {host or '?'}")
+        return web.json_response({"error": "cross-site request forbidden"}, status=403)
+    return None
