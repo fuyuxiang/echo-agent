@@ -191,3 +191,53 @@ async def test_unauthenticated_connection_cap(dashboard_ws_url, monkeypatch):
             with pytest.raises(aiohttp.WSServerHandshakeError) as excinfo:
                 await s.ws_connect(info["url"])
             assert excinfo.value.status == 503
+
+
+@pytest.mark.asyncio
+async def test_unauthenticated_cap_holds_under_concurrent_race(
+    dashboard_ws_url, monkeypatch,
+):
+    """The pre-auth cap is checked before `await ws.prepare()` and bumped
+    only after. Two upgrades racing through that gate therefore both pass
+    the `< MAX` branch while neither has incremented the counter yet, and
+    afterwards both sit on a pre-auth reservation — exceeding the cap.
+
+    The fix is to bump the counter BEFORE any await, so the check and the
+    commit are atomic from the loop's perspective.
+    """
+    from aiohttp import web
+    from echo_agent.gateway import ws_common
+
+    monkeypatch.setattr(ws_common, "MAX_UNAUTHENTICATED_CLIENTS", 1)
+    # Long enough that the racing handlers all enter the cap branch before
+    # any of them gets to the bump. Short enough that the test stays snappy.
+    monkeypatch.setattr(ws_common, "DASHBOARD_AUTH_TIMEOUT_SECONDS", 5.0)
+
+    real_prepare = web.WebSocketResponse.prepare
+
+    async def slow_prepare(self, request):
+        # Hold the race window open so both handlers reach the cap-check
+        # branch before either one increments the counter.
+        await asyncio.sleep(0.05)
+        return await real_prepare(self, request)
+
+    monkeypatch.setattr(web.WebSocketResponse, "prepare", slow_prepare)
+
+    info = dashboard_ws_url
+
+    async with aiohttp.ClientSession() as s:
+        # Two truly concurrent upgrades — anything other than a real gather
+        # loses the race deterministically.
+        results = await asyncio.gather(
+            s.ws_connect(info["url"]),
+            s.ws_connect(info["url"]),
+            return_exceptions=True,
+        )
+        refused = [
+            r for r in results if isinstance(r, aiohttp.WSServerHandshakeError)
+        ]
+        # Exactly the over-cap upgrade must be refused with 503.
+        assert len(refused) == 1, (
+            f"cap was bypassed: results={results!r}, refused={refused!r}"
+        )
+        assert refused[0].status == 503

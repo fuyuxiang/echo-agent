@@ -44,17 +44,32 @@ class DashboardWebSocket:
             )
             return web.json_response({"error": "too many unauthenticated connections"}, status=503)
 
+        # Reserve the pre-auth slot BEFORE awaiting ws.prepare(). The cap
+        # check above and the increment below used to straddle that await,
+        # so a burst of concurrent upgrades could all observe
+        # `_unauthenticated < MAX` while none of them had bumped the counter
+        # yet — afterwards every one of them holds a pre-auth reservation,
+        # which is the very thing the cap was supposed to forbid.
+        self._unauthenticated += 1
+
         # Same server-driven heartbeat as the main WS: without it a client on a
         # stalled TCP connection dies unnoticed and keeps receiving nothing.
         hb = getattr(self._server._config, "ws_heartbeat_seconds", 0)
         ws = web.WebSocketResponse(heartbeat=hb if hb and hb > 0 else None)
-        await ws.prepare(request)
+        try:
+            await ws.prepare(request)
+        except Exception:
+            # The reservation above is only released once we know the
+            # upgrade actually landed. If it failed, give the slot back so a
+            # misbehaving client does not silently shrink the cap for the
+            # next legitimate one.
+            self._unauthenticated -= 1
+            raise
 
         client_id = f"dash_{self._counter}"
         self._counter += 1
         client = _DashboardClient(client_id, ws)
         authenticated = False
-        self._unauthenticated += 1
         # Absolute bound on the pre-auth window rather than a per-frame idle
         # timeout: the old form restarted its clock on every frame, so an
         # anonymous peer could hold one of the MAX_UNAUTHENTICATED_CLIENTS slots
