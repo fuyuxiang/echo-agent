@@ -71,6 +71,21 @@ class ToolExecutionContext:
     channel: str = ""
     chat_id: str = ""
     reply_to_id: str = ""
+    # Trust signals inherited from the InboundEvent that started this turn, so a
+    # nested call (a delegate/spawn worker running tools of its own) can be gated
+    # on the SAME facts as the turn that dispatched it. The worker executor has no
+    # InboundEvent to pass — it used to hand the gate event=None, which read as
+    # "not unattended, not authorized" and, combined with channel="", let a
+    # worker's exec call auto-approve on a path where the parent's own exec would
+    # have needed a human. Carrying them here keeps the parent's context
+    # authoritative.
+    #
+    # Both default False, which is the conservative reading: a context built by an
+    # older caller claims no authorization. They are only ever set FROM the typed
+    # InboundEvent fields (never from metadata) — see the note on
+    # InboundEvent.unattended for why that distinction is load-bearing.
+    unattended: bool = False
+    cron_authorized: bool = False
     # The inbound event this turn is answering. Tools that publish an
     # OutboundEvent themselves (message / notify / send_file / tts) must stamp it
     # so the delivery layer can tell "this turn already sent something to this

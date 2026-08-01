@@ -1077,6 +1077,12 @@ class InferenceStage:
                 chat_id=event.chat_id,
                 reply_to_id=event.reply_to_id or "",
                 inbound_event_id=event.event_id,
+                # Trust facts travel with the context so a nested call (a
+                # delegate/spawn worker) can be gated on them. Read from the
+                # typed InboundEvent fields only — never metadata, which external
+                # channels populate from untrusted input.
+                unattended=bool(getattr(event, "unattended", False)),
+                cron_authorized=bool(getattr(event, "cron_authorized", False)),
             )
 
             # pre_tool_call hook (may cancel/modify); modifications applied in place

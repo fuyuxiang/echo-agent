@@ -25,6 +25,13 @@ from echo_agent.security.risk_classifier import RiskLevel, classify_risk
 APPROVAL_SOURCE_HUMAN = "human"
 APPROVAL_SOURCE_AUTO = "auto"
 
+# Channel stand-in for a call made on behalf of a worker (delegate/spawn) rather
+# than by a human turn. Deliberately not a real channel name and not "": it must
+# not match _INTERACTIVE_CHANNELS (no keyboard behind it), must not match
+# trusted_channels, and must be recognisable in denial messages. Nothing sends to
+# it — it only ever flows into approval decisions.
+_NESTED_CHANNEL = "worker:nested"
+
 
 @dataclass
 class ApprovalCheck:
@@ -78,8 +85,33 @@ class ApprovalGate:
         channel: str = "",
         event: InboundEvent | None = None,
         running: bool = True,
+        unattended: bool = False,
+        cron_authorized: bool = False,
+        nested: bool = False,
     ) -> ApprovalCheck:
+        """Decide whether this tool call may proceed.
+
+        ``unattended`` / ``cron_authorized`` let a caller that holds no
+        InboundEvent — the delegate/spawn worker executor — still state the trust
+        facts of the turn that dispatched it. When ``event`` is given its typed
+        fields win; these parameters are the no-event path. Both default False so
+        an older caller claims nothing.
+
+        ``nested=True`` marks a call made on behalf of a worker rather than by a
+        human turn. It suppresses the interactive-channel shortcuts: a worker has
+        no keyboard to answer a prompt, so treating its ``channel=""`` as a local
+        cli session (which ``_INTERACTIVE_CHANNELS`` does) was what let a worker's
+        exec auto-approve while the same call from the parent needed consent.
+        """
         approval_cfg = self._config.permissions.approval
+        # A nested call carries the parent's channel for *provenance* (denial
+        # messages, unattended fallback), but it must never inherit that
+        # channel's pass-through privileges. Both cli_auto_approve and
+        # trusted_channels exist to smooth out work a human is watching; a worker
+        # is not watched by anyone. Rewriting unconditionally — not just for
+        # _INTERACTIVE_CHANNELS — is what keeps a trusted_channels entry (e.g.
+        # "telegram") from waving a worker's exec through Step 8.
+        effective_channel = _NESTED_CHANNEL if nested else channel
 
         # Step 1: Static guard (hard block dangerous patterns)
         guard = evaluate_tool_call(self._config, tool_name, arguments)
@@ -91,7 +123,7 @@ class ApprovalGate:
             ))
 
         # Step 2: Elevated rights check
-        if self._requires_elevated(tool_name) and not self._elevated_allowed(channel, sender_id):
+        if self._requires_elevated(tool_name) and not self._elevated_allowed(effective_channel, sender_id):
             return ApprovalCheck(ToolResult(
                 success=False,
                 error=(
@@ -144,11 +176,16 @@ class ApprovalGate:
         # these calls. A user adding "exec" to auto_approve, or trusting a
         # channel, is smoothing out their own interactive work — they are not
         # handing that authority to a job that fires at 3am with nobody there.
-        if self._is_unattended(event, channel):
+        # Unattended-ness is a fact about the ORIGIN, so this reads the real
+        # channel rather than the nested sentinel: a worker dispatched by a cron
+        # turn must still be recognised as unattended via the cron/scheduler
+        # fallback, even when the parent event's typed flag did not reach us.
+        if self._is_unattended(event, channel, unattended=unattended):
             if risk == RiskLevel.READ_ONLY:
                 return _approved()
             return self._resolve_unattended(
                 tool_name, risk, session_key, pattern_key, guard, event,
+                cron_authorized=cron_authorized,
             )
 
         # Step 5: READ_ONLY and WRITE always pass — they are protected by sandbox/path restrictions
@@ -159,26 +196,32 @@ class ApprovalGate:
         if tool_name in approval_cfg.auto_approve:
             return _approved()
 
-        # Step 7: CLI auto-approve. Unattended calls never reach here (Step 4),
-        # so this is always a human-at-the-keyboard session.
-        #
-        # DANGEROUS is excluded even with a human present. The
-        # premise of cli_auto_approve is smoothing out *repetitive, low-stakes*
-        # work; a DANGEROUS tool creates persistent state that outlives the turn
-        # (a cron job that will run unattended and carries its own grant, an
-        # installed skill). cronjob.execute() documented "only reached after the
-        # human approved this specific call" and signed a `tui-approval` grant on
-        # that basis — but this step made that untrue by default
-        # (profile=personal_cli + cli_auto_approve=True ship as defaults), so the
-        # model could mint a valid unattended grant nobody ever saw. A one-off
-        # convenience must not buy a persistent privilege: these land on the
-        # manual prompt, which is exactly where the user sees what they grant.
-        if self._should_auto_approve_cli(channel) and risk != RiskLevel.DANGEROUS:
-            return _approved()
+        # Steps 7-8 are interactive conveniences: both rest on "a human is
+        # watching this channel and will notice". A worker is watched by nobody,
+        # so neither applies to a nested call. Gating on the `nested` flag rather
+        # than on the sentinel's spelling means an operator who happens to list
+        # "worker:nested" in trusted_channels cannot reopen the containment.
+        if not nested:
+            # Step 7: CLI auto-approve. Unattended calls never reach here (Step 4),
+            # so this is always a human-at-the-keyboard session.
+            #
+            # DANGEROUS is excluded even with a human present. The
+            # premise of cli_auto_approve is smoothing out *repetitive, low-stakes*
+            # work; a DANGEROUS tool creates persistent state that outlives the turn
+            # (a cron job that will run unattended and carries its own grant, an
+            # installed skill). cronjob.execute() documented "only reached after the
+            # human approved this specific call" and signed a `tui-approval` grant on
+            # that basis — but this step made that untrue by default
+            # (profile=personal_cli + cli_auto_approve=True ship as defaults), so the
+            # model could mint a valid unattended grant nobody ever saw. A one-off
+            # convenience must not buy a persistent privilege: these land on the
+            # manual prompt, which is exactly where the user sees what they grant.
+            if self._should_auto_approve_cli(effective_channel) and risk != RiskLevel.DANGEROUS:
+                return _approved()
 
-        # Step 8: Channel trust — EXEC level auto-approved on trusted channels
-        if risk == RiskLevel.EXEC and self._is_trusted_channel(channel):
-            return _approved()
+            # Step 8: Channel trust — EXEC level auto-approved on trusted channels
+            if risk == RiskLevel.EXEC and self._is_trusted_channel(effective_channel):
+                return _approved()
 
         # Step 9: Approval mode "off" — bypass everything except hard blocks
         if approval_cfg.mode == "off":
@@ -226,8 +269,28 @@ class ApprovalGate:
 
         # Step 13: Manual approval flow
         approved_actions = self._approved_actions(tool_name, guard)
+        if nested:
+            # A worker cannot be the subject of an approval prompt: it holds no
+            # InboundEvent, so _publish_approval_request has nowhere to send the
+            # request, and nobody would answer it. Waiting anyway would park the
+            # worker for the full wait_timeout_seconds (300s by default) and then
+            # fail — the user sees a long stall and no explanation.
+            #
+            # Refuse immediately instead. The worker gets a clear error it can
+            # report back to the orchestrator, which can then either do the work
+            # itself (where the turn's own event CAN carry a prompt) or tell the
+            # user what needs approving. Fail-closed without the stall.
+            return ApprovalCheck(ToolResult(
+                success=False,
+                error=(
+                    f"Tool '{tool_name}' requires human approval and cannot be "
+                    "approved inside a delegated worker. Run it directly in the "
+                    "conversation, where the approval prompt can be answered."
+                ),
+                metadata={"nested_approval_refused": True},
+            ))
         return await self._manual_approval_flow(
-            tool_name, arguments, sender_id, channel, event, running,
+            tool_name, arguments, sender_id, effective_channel, event, running,
             guard, approved_actions, session_key, pattern_key, risk,
         )
 
@@ -465,12 +528,21 @@ class ApprovalGate:
         it into unattended/auto paths."""
         return channel in cls._INTERACTIVE_CHANNELS
 
-    def _is_unattended(self, event: InboundEvent | None, channel: str) -> bool:
+    def _is_unattended(
+        self, event: InboundEvent | None, channel: str, *, unattended: bool = False,
+    ) -> bool:
         # Read the typed trust field, never metadata: only a trusted producer
         # (scheduler/delivery.py) can set event.unattended, whereas metadata is
         # attacker-influenced on external channels. The channel fallback keeps
         # the bare cron/scheduler pseudo-channels unattended even if a caller
         # somehow constructed the event without the flag.
+        #
+        # ``unattended`` is the no-event path: a delegate/spawn worker has no
+        # InboundEvent but must not lose the fact that the turn dispatching it had
+        # nobody watching. Without it a scheduled job's worker looked interactive,
+        # which is the opposite of the truth.
+        if unattended:
+            return True
         if event and event.unattended:
             return True
         return channel in {"cron", "scheduler"}
@@ -478,9 +550,14 @@ class ApprovalGate:
     def _resolve_unattended(
         self, tool_name: str, risk: RiskLevel, session_key: str, pattern_key: str,
         guard: GuardDecision, event: InboundEvent | None = None,
+        *, cron_authorized: bool = False,
     ) -> ApprovalCheck:
         policy = self._config.permissions.approval.unattended_policy
         approved = self._approved_actions(tool_name, guard)
+        # Same event-vs-parameter split as _is_unattended: a worker dispatched by
+        # an authorized cron job inherits that job's grant, but only because the
+        # dispatching turn passed it explicitly. A worker can never manufacture it.
+        authorized = cron_authorized or bool(event is not None and event.cron_authorized)
 
         # Per-job authorization: a cron job only lands in the scheduler because
         # its creation passed the DANGEROUS-tier cronjob approval, which is the
@@ -494,7 +571,7 @@ class ApprovalGate:
         # job from creating more cron jobs / installing skills with no human in
         # the loop (a privilege-escalation / recursion vector). The authorization
         # is scoped to the job's own work, not to spawning new privileged state.
-        if event is not None and event.cron_authorized:
+        if authorized:
             if risk in (RiskLevel.WRITE, RiskLevel.EXEC):
                 return ApprovalCheck(approved_actions=approved)
             # DANGEROUS (and anything else) falls through to the deny below.
@@ -508,11 +585,13 @@ class ApprovalGate:
             success=False,
             error=(
                 f"Tool '{tool_name}' requires approval but no user is available "
-                f"(unattended mode).{self._unattended_hint(risk, event)}"
+                f"(unattended mode).{self._unattended_hint(risk, event, authorized=authorized)}"
             ),
         ))
 
-    def _unattended_hint(self, risk: RiskLevel, event: InboundEvent | None) -> str:
+    def _unattended_hint(
+        self, risk: RiskLevel, event: InboundEvent | None, *, authorized: bool = False,
+    ) -> str:
         """Tell the operator how to fix the denial, in the denial itself.
 
         Since WRITE is no longer waved through unattended, a job that used to
@@ -533,7 +612,7 @@ class ApprovalGate:
                 f" 定时任务 {label} 不允许创建定时任务/安装技能等高危操作，"
                 "无论是否已授权——这类操作需要人工在场确认。"
             )
-        if event is not None and event.cron_authorized:
+        if authorized:
             return f" 定时任务 {label} 的授权已失效或不覆盖该操作，请重新授权。"
         return (
             f" 定时任务 {label} 未获得无人值守授权。"

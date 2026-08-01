@@ -74,13 +74,27 @@ def build_worker_tool_executor(
                 success=False,
             )
 
+        # Gate the worker's call on the SAME facts as the turn that dispatched it.
+        # This used to pass channel="" and event=None, which the gate read as a
+        # local human-at-the-keyboard session (""  is in _INTERACTIVE_CHANNELS):
+        # a worker's exec auto-approved on cli_auto_approve even when the parent
+        # call arrived from telegram and would itself have needed consent, and a
+        # scheduled job's worker looked interactive rather than unattended. The
+        # dispatch is gated too (delegate/spawn are EXEC-tier), but a worker must
+        # not be able to reach further than whoever dispatched it.
+        #
+        # nested=True tells the gate no keyboard is behind this call, so the
+        # interactive shortcuts do not apply regardless of the channel string.
         approval_check = await approval_gate.check(
             tool_name,
             tool_call.arguments,
             parent_ctx.user_id if parent_ctx else "",
-            channel="",
+            channel=parent_ctx.channel if parent_ctx else "",
             event=None,
             running=True,
+            unattended=bool(parent_ctx.unattended) if parent_ctx else False,
+            cron_authorized=bool(parent_ctx.cron_authorized) if parent_ctx else False,
+            nested=True,
         )
         if approval_check.denial:
             return WorkerToolOutcome(
@@ -104,6 +118,13 @@ def build_worker_tool_executor(
             approved_actions=approval_check.approved_actions,
             approval_source=approval_check.approval_source,
             allowed_tools=frozenset(allowed_tools),
+            # Carry the origin and trust facts down, so a tool that itself
+            # consults them (or a deeper nesting level) sees the dispatching
+            # turn's context rather than a blank one.
+            channel=parent_ctx.channel if parent_ctx else "",
+            chat_id=parent_ctx.chat_id if parent_ctx else "",
+            unattended=bool(parent_ctx.unattended) if parent_ctx else False,
+            cron_authorized=bool(parent_ctx.cron_authorized) if parent_ctx else False,
         )
         result = await tool_registry.execute(tool_name, tool_call.arguments, worker_ctx)
         text = result.text
