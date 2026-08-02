@@ -207,11 +207,11 @@ class ContextStage:
             f"召回 {len(items)} 条记忆",
         )
 
-    async def _fetch_knowledge(self, query: str, user_id: str) -> tuple[list, str]:
+    async def _fetch_knowledge(self, query: str, user_id: str, *, channel: str = "") -> tuple[list, str]:
         """Inline knowledge retrieval. Vector path is async; keyword-only path
         degrades internally. Scoped by user_id for access control."""
         results = await self._knowledge.search_async(
-            query, limit=self._config.knowledge.max_results, user_id=user_id
+            query, limit=self._config.knowledge.max_results, user_id=user_id, channel=channel
         )
         context = self._knowledge.format_results(results)
         return results, context
@@ -520,7 +520,7 @@ class ContextStage:
                 if self._retrieval_on_miss == "sync" or not knowledge_prefetch_active:
                     try:
                         knowledge_results, knowledge_context = (
-                            await self._fetch_knowledge(event.text, event.sender_id)
+                            await self._fetch_knowledge(event.text, event.sender_id, channel=event.channel)
                         )
                     except Exception as e:
                         logger.debug("Knowledge retrieval failed: {}", e)

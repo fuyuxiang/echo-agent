@@ -84,7 +84,7 @@ class RetrievalPrefetcher:
         cache_put: Callable[[str, "RetrievalCacheEntry"], Awaitable[None]],
         *,
         limit: int = 5,
-        knowledge_fetch: Callable[[str, str], Any] | None = None,
+        knowledge_fetch: Callable[[str, str, str], Any] | None = None,
     ) -> None:
         self._retriever = retriever
         self._cache_put = cache_put
@@ -96,7 +96,7 @@ class RetrievalPrefetcher:
         self._knowledge_fetch = knowledge_fetch
         self._knowledge_is_async = inspect.iscoroutinefunction(knowledge_fetch)
 
-    async def prefetch(self, session_key: str, query: str, user_id: str = "", memory_scope: str = "", scope_version: int = 0) -> None:
+    async def prefetch(self, session_key: str, query: str, user_id: str = "", memory_scope: str = "", scope_version: int = 0, *, channel: str = "") -> None:
         """Retrieve once for ``query`` and write the result into the cache.
 
         Main-memory and knowledge retrieval are warmed together into a single
@@ -122,7 +122,7 @@ class RetrievalPrefetcher:
                 "retrieval prefetch failed for session %r", session_key, exc_info=True
             )
             return
-        knowledge_context = await self._prefetch_knowledge(user_id, query)
+        knowledge_context = await self._prefetch_knowledge(user_id, query, channel=channel)
         entry = RetrievalCacheEntry(
             query_text=query,
             query_tokens=query_tokens(query),
@@ -141,7 +141,7 @@ class RetrievalPrefetcher:
         await self._cache_put(session_key, entry)
 
 
-    async def _prefetch_knowledge(self, user_id: str, query: str) -> str | None:
+    async def _prefetch_knowledge(self, user_id: str, query: str, *, channel: str = "") -> str | None:
         """Warm knowledge retrieval for the cache.
 
         An async fetch (keyword + vector fusion) is awaited directly — its
@@ -156,11 +156,11 @@ class RetrievalPrefetcher:
             return None
         try:
             if self._knowledge_is_async:
-                context = await self._knowledge_fetch(query, user_id)
+                context = await self._knowledge_fetch(query, user_id, channel)
             else:
                 loop = asyncio.get_running_loop()
                 context = await loop.run_in_executor(
-                    None, lambda: self._knowledge_fetch(query, user_id)
+                    None, lambda: self._knowledge_fetch(query, user_id, channel)
                 )
             return context or None
         except Exception:

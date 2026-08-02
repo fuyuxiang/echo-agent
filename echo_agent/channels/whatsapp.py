@@ -74,8 +74,12 @@ class WhatsAppChannel(BaseChannel):
         if not self.should_deliver(event):
             return SendResult(success=True, skipped=True)
         text = event.text or ""
-        media = event.media or []
-        if not text and not media:
+        # Extract media blocks from content (non-text ContentBlocks with a URL)
+        media_blocks = [
+            b for b in event.content
+            if b.url and b.type.value != "text"
+        ]
+        if not text and not media_blocks:
             return SendResult(success=False, error="no content")
         if not self._session:
             return SendResult(success=False, error="no session")
@@ -83,12 +87,9 @@ class WhatsAppChannel(BaseChannel):
         url = f"{_GRAPH_API}/{self._phone_id}/messages"
 
         # Send media first if present
-        for item in media:
-            media_type = item.get("type", "image")
-            media_url = item.get("url", "")
-            if not media_url:
-                continue
-            media_result = await self._send_media(url, event.chat_id, media_type, media_url, caption=item.get("caption"))
+        for block in media_blocks:
+            media_type = block.type.value if block.type.value in ("image", "audio", "video", "file") else "image"
+            media_result = await self._send_media(url, event.chat_id, media_type, block.url)
             if not media_result.success:
                 return media_result
 
@@ -152,15 +153,19 @@ class WhatsAppChannel(BaseChannel):
         return web.Response(status=403, text="Forbidden")
 
     async def _webhook(self, request: web.Request) -> web.Response:
+        # Read raw body first — needed for HMAC verification before JSON parsing
+        raw_body = await request.read()
+
         # HMAC signature verification
         if self._app_secret:
             signature = request.headers.get("X-Hub-Signature-256", "")
-            if not self._verify_signature(request, signature):
+            if not self._verify_signature(raw_body, signature):
                 logger.warning("WhatsApp webhook signature verification failed")
                 return web.json_response({"error": "invalid signature"}, status=403)
 
         try:
-            data = await request.json()
+            import json as _json
+            data = _json.loads(raw_body)
         except Exception as e:
             logger.debug("Invalid JSON in WhatsApp webhook: {}", e)
             return web.json_response({"error": "invalid json"}, status=400)
@@ -178,17 +183,21 @@ class WhatsAppChannel(BaseChannel):
 
         return web.json_response({"status": "ok"})
 
-    def _verify_signature(self, request: web.Request, signature: str) -> bool:
-        """Verify HMAC-SHA256 signature from Meta."""
+    def _verify_signature(self, raw_body: bytes, signature: str) -> bool:
+        """Verify HMAC-SHA256 signature from Meta.
+
+        *raw_body* is the unmodified request payload; *signature* is the
+        ``X-Hub-Signature-256`` header value (``sha256=<hex>``).
+        """
         if not signature.startswith("sha256="):
             return False
-        expected_sig = signature[7:]  # Remove "sha256=" prefix
-
-        # We need the raw body for signature verification
-        # aiohttp already consumed it, so we need to store it
-        # This is a limitation - for now we'll trust the request if no body mismatch
-        # In production, use a middleware to capture raw body
-        return True  # TODO: Implement proper body-based HMAC verification
+        expected_hex = signature[7:]  # Remove "sha256=" prefix
+        computed = hmac.new(
+            self._app_secret.encode("utf-8"),
+            raw_body,
+            hashlib.sha256,
+        ).hexdigest()
+        return hmac.compare_digest(computed, expected_hex)
 
     async def _process_message(self, msg: dict[str, Any], value: dict[str, Any], contacts: list[dict]) -> None:
         msg_id = msg.get("id", "")

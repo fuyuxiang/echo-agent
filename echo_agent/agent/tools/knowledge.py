@@ -33,7 +33,8 @@ class KnowledgeSearchTool(Tool):
         if not query:
             return ToolResult(success=False, error="query is required")
         user_id = ctx.user_id if ctx else ""
-        results = await self._index.search_async(query, limit=limit, user_id=user_id)
+        channel = ctx.channel if ctx else ""
+        results = await self._index.search_async(query, limit=limit, user_id=user_id, channel=channel)
         text = self._index.format_results(results)
         if not text:
             return ToolResult(output="No matching internal knowledge found.", metadata={"count": 0})

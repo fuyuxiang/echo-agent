@@ -231,6 +231,7 @@ class ResponseStage:
                         self._scope_version_fn(event.memory_scope)
                         if self._scope_version_fn is not None else 0
                     ),
+                    channel=event.channel,
                 ),
                 tier=Tier.DISCARDABLE,
             )

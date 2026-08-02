@@ -359,12 +359,12 @@ class KnowledgeIndex:
             logger.info("knowledge vectors backfilled: {} chunks", len(ordered))
             return summary
 
-    async def search_async(self, query: str, *, limit: int = 5, user_id: str = "") -> list[KnowledgeSearchResult]:
+    async def search_async(self, query: str, *, limit: int = 5, user_id: str = "", channel: str = "") -> list[KnowledgeSearchResult]:
         self._ensure_loaded()
         with self._lock:
             chunks_snapshot = list(self._chunks)
             df_snapshot = Counter(self._df)
-        kw = self._keyword_scores(query, chunks_snapshot, df_snapshot, user_id=user_id)
+        kw = self._keyword_scores(query, chunks_snapshot, df_snapshot, user_id=user_id, channel=channel)
         vec: dict[str, float] = {}
         if self._vector_store and self._vector_store.available and self._embed_fn:
             try:
@@ -376,7 +376,7 @@ class KnowledgeIndex:
                 logger.debug("knowledge query embed failed; keyword-only")
         by_id = {c["id"]: c for c in chunks_snapshot}
         allowed_vec = {cid: s for cid, s in vec.items()
-                       if cid in by_id and self._allowed_for_user(by_id[cid].get("metadata", {}), user_id)}
+                       if cid in by_id and self._allowed_for_user(by_id[cid].get("metadata", {}), user_id, channel=channel)}
         fused = self._fuse(query, kw, allowed_vec)
         ranked = sorted(fused.items(), key=lambda kv: kv[1], reverse=True)[:limit]
         return self._to_results([(by_id[cid], sc) for cid, sc in ranked if cid in by_id])
@@ -407,7 +407,7 @@ class KnowledgeIndex:
 
     def _keyword_scores(
         self, query: str, chunks: list[dict[str, Any]],
-        df: Counter, *, user_id: str,
+        df: Counter, *, user_id: str, channel: str = "",
     ) -> dict[str, float]:
         query_terms = _tokenize(query)
         if not query_terms:
@@ -417,7 +417,7 @@ class KnowledgeIndex:
         query_lower = query.lower()
         scores: dict[str, float] = {}
         for chunk in chunks:
-            if not self._allowed_for_user(chunk.get("metadata", {}), user_id):
+            if not self._allowed_for_user(chunk.get("metadata", {}), user_id, channel=channel):
                 continue
             terms = Counter(chunk.get("terms", {}))
             if not terms:
@@ -451,12 +451,12 @@ class KnowledgeIndex:
             ))
         return results
 
-    def search(self, query: str, *, limit: int = 5, user_id: str = "") -> list[KnowledgeSearchResult]:
+    def search(self, query: str, *, limit: int = 5, user_id: str = "", channel: str = "") -> list[KnowledgeSearchResult]:
         self._ensure_loaded()
         with self._lock:
             chunks_snapshot = list(self._chunks)
             df_snapshot = Counter(self._df)
-        scores = self._keyword_scores(query, chunks_snapshot, df_snapshot, user_id=user_id)
+        scores = self._keyword_scores(query, chunks_snapshot, df_snapshot, user_id=user_id, channel=channel)
         by_id = {c["id"]: c for c in chunks_snapshot}
         ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:limit]
         return self._to_results([(by_id[cid], sc) for cid, sc in ranked])
@@ -607,7 +607,7 @@ class KnowledgeIndex:
                 return stripped[:80]
         return path.name
 
-    def _allowed_for_user(self, metadata: dict[str, Any], user_id: str) -> bool:
+    def _allowed_for_user(self, metadata: dict[str, Any], user_id: str, *, channel: str = "") -> bool:
         allowed = metadata.get("allowed_users") or metadata.get("allow_users") or metadata.get("users")
         if not allowed:
             return True
@@ -615,7 +615,22 @@ class KnowledgeIndex:
             allowed_values = {allowed}
         else:
             allowed_values = {str(value) for value in allowed}
-        return "*" in allowed_values or user_id in allowed_values
+        if "*" in allowed_values:
+            return True
+        # Match both namespaced ("telegram:12345") and bare ("12345") forms so
+        # that documents configured with either style work across channels.
+        if user_id in allowed_values:
+            return True
+        if channel and f"{channel}:{user_id}" in allowed_values:
+            return True
+        # Also check if the stored value is namespaced and the incoming user_id
+        # matches the bare part (e.g. stored "telegram:12345", incoming "12345"
+        # from telegram).
+        if channel:
+            for v in allowed_values:
+                if ":" in v and v.split(":", 1)[0] == channel and v.split(":", 1)[1] == user_id:
+                    return True
+        return False
 
     def _recompute_stats(self) -> None:
         self._df = Counter()

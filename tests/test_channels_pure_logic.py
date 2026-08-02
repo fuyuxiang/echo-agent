@@ -846,6 +846,7 @@ class TestWhatsAppParsing:
         await ch._process_message(
             {"from": "+15551234", "type": "text", "text": {"body": "hi wa"}},
             {},
+            [],
         )
         kw = ch._handle_message.call_args.kwargs
         assert kw["text"] == "hi wa"
@@ -857,7 +858,7 @@ class TestWhatsAppParsing:
     async def test_empty_message_dropped(self):
         ch = _whatsapp_channel()
         ch._handle_message = AsyncMock()
-        await ch._process_message({"from": "+1", "type": "text", "text": {"body": ""}}, {})
+        await ch._process_message({"from": "+1", "type": "text", "text": {"body": ""}}, {}, [])
         ch._handle_message.assert_not_called()
 
 
@@ -1022,7 +1023,7 @@ class TestGroupFlagNormalization:
         ch = _whatsapp_channel()
         ch._handle_message = AsyncMock()
         await ch._process_message(
-            {"from": "+1555", "type": "text", "text": {"body": "hi"}}, {})
+            {"from": "+1555", "type": "text", "text": {"body": "hi"}}, {}, [])
         assert ch._handle_message.call_args.kwargs["is_group"] is False
 
     @pytest.mark.asyncio

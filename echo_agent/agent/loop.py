@@ -553,13 +553,13 @@ class AgentLoop:
         # already initialized at this point.
         from echo_agent.memory.prefetch import RetrievalPrefetcher
 
-        async def _knowledge_fetch(query: str, user_id: str) -> str:
+        async def _knowledge_fetch(query: str, user_id: str, channel: str = "") -> str:
             # search_async, NOT the sync search(): the sync path is keyword-only,
             # so prefetching with it wrote a keyword-grade context into the cache
             # that the reply path then served on every cache hit — silently
             # dropping knowledge vector recall for those turns.
             results = await self.knowledge.search_async(
-                query, limit=config.knowledge.max_results, user_id=user_id
+                query, limit=config.knowledge.max_results, user_id=user_id, channel=channel
             )
             return self.knowledge.format_results(results)
 
@@ -1002,11 +1002,11 @@ class AgentLoop:
         # 这里补建并重指 response_stage，使回复后预取重新生效。
         from echo_agent.memory.prefetch import RetrievalPrefetcher
 
-        async def _knowledge_fetch(query: str, user_id: str) -> str:
+        async def _knowledge_fetch(query: str, user_id: str, channel: str = "") -> str:
             # search_async (keyword + vector), not the keyword-only sync search —
             # see the identical closure in __init__.
             results = await self.knowledge.search_async(
-                query, limit=config.knowledge.max_results, user_id=user_id
+                query, limit=config.knowledge.max_results, user_id=user_id, channel=channel
             )
             return self.knowledge.format_results(results)
 
@@ -1170,6 +1170,7 @@ class AgentLoop:
 
     async def stop(self) -> None:
         self._running = False
+        self.bus.unsubscribe_inbound(self._on_inbound)
         if self.evolution is not None:
             try:
                 await self.evolution.stop()
