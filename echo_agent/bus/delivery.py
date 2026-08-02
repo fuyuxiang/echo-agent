@@ -40,6 +40,13 @@ class DeliveryResult:
 
     @classmethod
     def from_send_result(cls, sr: "SendResult", channel: str) -> "DeliveryResult":
+        # A channel can intentionally skip a non-final event (for example an
+        # uneditable channel suppressing a progress chunk). That is successful
+        # handling, but it is not platform delivery. Preserve the historical
+        # ``ok`` compatibility of ACCEPTED while letting callers that require a
+        # real receipt (notably approval prompts) distinguish the two.
+        if sr.skipped:
+            return cls(DeliveryStage.ACCEPTED, channel, detail={"skipped": True})
         if sr.success:
             return cls(DeliveryStage.DELIVERED, channel, detail={"message_id": sr.message_id})
         return cls(DeliveryStage.FAILED, channel, error=sr.error or "send failed")

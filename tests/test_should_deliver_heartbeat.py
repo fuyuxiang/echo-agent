@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pytest
 
+from echo_agent.bus.delivery import DeliveryStage
 from echo_agent.bus.events import OutboundEvent
 from echo_agent.bus.queue import MessageBus
 from echo_agent.channels.base import BaseChannel, SendResult
@@ -64,9 +65,23 @@ def _progress_event(text: str = "thinking…") -> OutboundEvent:
     return out
 
 
+def _approval_prompt_event(text: str = "⚠️ 需要确认执行\n/approve abc123") -> OutboundEvent:
+    out = OutboundEvent.text_reply(channel="minimal", chat_id="c1", text=text)
+    out.is_final = False
+    out.message_kind = "approval_prompt"
+    out.metadata["_approval_request"] = True
+    return out
+
+
 def test_uneditable_channel_delivers_heartbeat():
     ch = _MinimalChannel()
     assert ch.should_deliver(_heartbeat_event()) is True
+
+
+def test_uneditable_channel_delivers_approval_prompt():
+    """Approval prompts are control messages, not disposable stream chunks."""
+    ch = _MinimalChannel()
+    assert ch.should_deliver(_approval_prompt_event()) is True
 
 
 def test_uneditable_channel_still_drops_non_final_non_heartbeat():
@@ -92,6 +107,26 @@ async def test_heartbeat_reaches_send_on_uneditable_channel():
     result = await ch.send(_heartbeat_event())
     assert result is not None and not result.skipped
     assert [e.text for e in ch.delivered] == ["正在处理中…"]
+
+
+@pytest.mark.asyncio
+async def test_approval_prompt_reaches_platform_via_full_bus():
+    """Pin the real weixin topology: global manager plus channel subscriber.
+
+    The regression lived between these layers: the manager accepted the event,
+    then the uneditable channel silently skipped it.  A DELIVERED receipt proves
+    that the platform-facing ``send`` path was actually reached.
+    """
+    bus = MessageBus()
+    manager = ChannelManager(ChannelsConfig(), bus)
+    ch = _MinimalChannel()
+    manager._channels["minimal"] = ch
+    bus.subscribe_outbound("minimal", ch.send)
+
+    result = await bus.publish_outbound(_approval_prompt_event())
+
+    assert result.stage is DeliveryStage.DELIVERED
+    assert [e.text for e in ch.delivered] == ["⚠️ 需要确认执行\n/approve abc123"]
 
 
 @pytest.mark.asyncio

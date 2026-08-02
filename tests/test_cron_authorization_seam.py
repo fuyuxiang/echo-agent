@@ -19,6 +19,7 @@ import pytest
 
 from echo_agent.agent.approval_gate import ApprovalGate
 from echo_agent.bus.queue import MessageBus
+from echo_agent.channels.base import SendResult
 from echo_agent.config.loader import load_config
 from echo_agent.permissions.manager import ApprovalManager
 from echo_agent.scheduler.authorization import grant
@@ -55,9 +56,15 @@ def _gate(**approval_overrides) -> ApprovalGate:
         require_approval=cfg.permissions.approval.require_approval,
         auto_approve=cfg.permissions.approval.auto_approve,
     )
+    bus = MessageBus()
+
+    async def _deliver_prompt(_event):
+        return SendResult(success=True, message_id="approval-prompt")
+
+    bus.subscribe_outbound_global(_deliver_prompt)
     return ApprovalGate(
         config=cfg, approval=appr, inference=_FakeInference(),
-        bus=MessageBus(), provider=None,
+        bus=bus, provider=None,
     )
 
 

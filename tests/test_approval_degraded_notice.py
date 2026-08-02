@@ -6,6 +6,7 @@ import pytest
 
 from echo_agent.agent.approval_gate import ApprovalGate
 from echo_agent.agent.degraded_notice import notice_for, REASON_APPROVAL_UNAVAILABLE
+from echo_agent.bus.delivery import DeliveryResult, DeliveryStage
 from echo_agent.agent.streaming import ProcessResult
 from echo_agent.bus.events import InboundEvent, ContentBlock, ContentType
 from echo_agent.bus.queue import MessageBus
@@ -226,4 +227,30 @@ async def test_smart_escalate_still_enters_manual_flow(monkeypatch):
     assert "超时" in check.notice
     assert "重新发起" in check.notice
     assert "/approve" not in check.notice
+    assert check.terminal is True
     assert gate._approval is not None  # sanity: gate held a real manager
+
+
+@pytest.mark.asyncio
+async def test_failed_prompt_delivery_cancels_without_waiting(monkeypatch):
+    gate = _gate_with_provider("ESCALATE")
+    monkeypatch.setattr(
+        gate._bus,
+        "publish_outbound",
+        AsyncMock(return_value=DeliveryResult(
+            DeliveryStage.FAILED, "weixin", error="transport down"
+        )),
+    )
+    wait = AsyncMock()
+    monkeypatch.setattr(gate._approval, "wait_for_decision", wait)
+
+    check = await gate.check(
+        "exec", {"command": "ls"}, "u1", channel="weixin", event=_exec_event()
+    )
+
+    wait.assert_not_awaited()
+    assert check.denial is not None
+    assert check.notify_user is True
+    assert check.terminal is True
+    assert "未能送达" in check.notice
+    assert not gate._approval.get_pending()

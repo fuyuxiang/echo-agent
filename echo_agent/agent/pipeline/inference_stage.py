@@ -106,6 +106,7 @@ class _Decision:
     exec_ctx: object = None  # ToolExecutionContext, set when RUN
     blocked_message: str = ""  # tool message text, set when BLOCKED
     blocked_meta: dict = field(default_factory=dict)  # span end metadata
+    terminal: bool = False  # deterministic denial: do not ask the LLM to rewrite it
     read_only: bool = False
     approved: bool = True
     paths: list = field(default_factory=list)
@@ -923,11 +924,18 @@ class InferenceStage:
             tool_call_fmts = [tc.to_openai_format() for tc in response.tool_calls]
             session.add_message("assistant", response.content or "", tool_calls=tool_call_fmts)
 
-            await self._execute_tool_batch(
+            terminal_denial = await self._execute_tool_batch(
                 ctx=ctx, response=response, messages=messages, session=session,
                 trace_id=trace_id, iteration=iteration, event=event,
                 repeat_tracker=_repeat_tracker, counters=counters,
             )
+            if terminal_denial:
+                # ResponseStage will replace the generic fallback below with the
+                # deterministic degraded notice. Drop any pre-tool preamble so
+                # the final reply cannot contradict the timeout/delivery fact.
+                response_text = ""
+                loop_exhausted = False
+                break
 
         if loop_exhausted:
             logger.warning(
@@ -979,7 +987,7 @@ class InferenceStage:
         return None, modified_args
 
     async def _execute_tool_batch(self, *, ctx, response, messages, session,
-                                  trace_id, iteration, event, repeat_tracker, counters):
+                                  trace_id, iteration, event, repeat_tracker, counters) -> bool:
         """Execute one batch of tool_calls in three phases:
 
         A. serial decision (approval / repeat guard / pre_tool_call hook) ->
@@ -1017,6 +1025,7 @@ class InferenceStage:
                 d.verdict = "BLOCKED"
                 d.blocked_message = approval_check.denial.text
                 d.blocked_meta = {"success": False, "denied": True}
+                d.terminal = approval_check.terminal is True
                 if approval_check.notify_user and approval_check.notice:
                     counters.degraded_notices.append(approval_check.notice)
                 decisions.append(d)
@@ -1356,6 +1365,8 @@ class InferenceStage:
                 # Counter NOT reset here — see run(): it is zeroed only after the
                 # background review succeeds, so a failed review re-triggers next
                 # turn instead of dropping this batch permanently.
+
+        return any(d.terminal for d in decisions)
 
     def _can_retract_draft(self, channel: str) -> bool:
         """True when *channel* can visually replace text it already delivered,

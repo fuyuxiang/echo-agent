@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from echo_agent.agent.degraded_notice import (
     GENERIC_FALLBACK_TEXT,
+    REASON_APPROVAL_DELIVERY_FAILED,
     REASON_APPROVAL_TIMEOUT,
     REASON_APPROVAL_UNAVAILABLE,
     REASON_LOOP_EXHAUSTED,
@@ -17,6 +18,13 @@ def test_notice_approval_unavailable_is_chinese():
     text = notice_for(REASON_APPROVAL_UNAVAILABLE)
     assert "安全审批暂时不可用" in text
     assert text.startswith("⚠️")
+
+
+def test_notice_approval_delivery_failed_cancels_instead_of_waiting():
+    text = notice_for(REASON_APPROVAL_DELIVERY_FAILED, tool="cronjob")
+    assert "cronjob" in text
+    assert "未能送达" in text
+    assert "已取消" in text
 
 
 def test_notice_approval_timeout_tells_user_to_retrigger():

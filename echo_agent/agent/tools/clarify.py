@@ -69,7 +69,9 @@ class ClarifyTool(Tool):
         "typing an answer in their own words, and their next message is routed back to you "
         "as the answer. Keep options short and easy to say out loud, and offer only a few; "
         "long or numerous options are hard to answer this way. Use this tool rather than "
-        "writing the options into your reply text, so the answer is bound to the question."
+        "writing the options into your reply text, so the answer is bound to the question. "
+        "Slash commands such as /approve and /deny still work on this channel; only the "
+        "clarify choices lack tappable controls."
     )
     description = INTERACTIVE_DESCRIPTION
     INTERACTIVE_PARAMETERS = _build_parameters(_INTERACTIVE_OPTIONS_DESCRIPTION)

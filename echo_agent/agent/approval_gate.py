@@ -7,11 +7,13 @@ from typing import Any
 
 
 from echo_agent.agent.degraded_notice import (
+    REASON_APPROVAL_DELIVERY_FAILED,
     REASON_APPROVAL_TIMEOUT,
     REASON_APPROVAL_UNAVAILABLE,
     notice_for,
 )
 from echo_agent.agent.tools.base import ToolResult
+from echo_agent.bus.delivery import DeliveryResult, DeliveryStage
 from echo_agent.bus.events import InboundEvent, OutboundEvent
 from echo_agent.bus.queue import MessageBus
 from echo_agent.config.schema import Config
@@ -39,6 +41,11 @@ class ApprovalCheck:
     approved_actions: frozenset[str] = frozenset()
     notify_user: bool = False
     notice: str = ""
+    # A terminal denial must end this inference turn after the tool result is
+    # paired and persisted. Approval timeout/delivery failure has deterministic
+    # user-facing copy; asking the LLM to paraphrase it produced contradictory
+    # instructions and false claims that IM channels cannot use slash commands.
+    terminal: bool = False
     # Which kind of decision let this call through — see
     # ToolExecutionContext.approval_source. Defaults to "auto" so any new
     # policy-based pass added later is conservative by construction: only the
@@ -354,9 +361,41 @@ class ApprovalGate:
             return ApprovalCheck(approved_actions=approved_actions)
 
         if event is not None:
-            await self._publish_approval_request(
+            delivery = await self._publish_approval_request(
                 event, approval_req.id, tool_name, guard, pattern_key, arguments, risk
             )
+            # MessageBus always returns DeliveryResult in production. Keep None
+            # compatible with lightweight third-party/test buses written before
+            # receipts existed, but require a real platform receipt whenever one
+            # is available: ACCEPTED can mean the channel intentionally skipped
+            # this non-final event, which is exactly how weixin lost prompts.
+            if (
+                isinstance(delivery, DeliveryResult)
+                and delivery.stage is not DeliveryStage.DELIVERED
+            ):
+                detail = delivery.error or delivery.stage.value
+                self._approval.deny(
+                    approval_req.id,
+                    reason=f"approval prompt delivery failed: {detail}",
+                    decided_by="system",
+                )
+                return ApprovalCheck(
+                    denial=ToolResult(
+                        success=False,
+                        error=(
+                            f"Approval prompt for '{tool_name}' was not delivered; "
+                            "the action was cancelled."
+                        ),
+                        metadata={"approval_request_id": approval_req.id},
+                    ),
+                    notify_user=True,
+                    notice=notice_for(
+                        REASON_APPROVAL_DELIVERY_FAILED,
+                        tool=tool_name,
+                        request_id=approval_req.id,
+                    ),
+                    terminal=True,
+                )
 
         if not running and self._is_interactive_channel(channel):
             return ApprovalCheck(ToolResult(
@@ -393,13 +432,14 @@ class ApprovalGate:
                 success=False,
                 error=(
                     f"Approval timed out for '{tool_name}'. "
-                    f"Request id: {approval_req.id}. "
-                    f"Reply `/approve {approval_req.id}` or `/deny {approval_req.id} <reason>`."
+                    f"Request id: {approval_req.id} has expired. "
+                    "Re-trigger the action to obtain a new approval request."
                 ),
                 metadata={"approval_request_id": approval_req.id},
             ),
             notify_user=True,
             notice=notice_for(REASON_APPROVAL_TIMEOUT, tool=tool_name, request_id=approval_req.id),
+            terminal=True,
         )
 
     @staticmethod
@@ -431,7 +471,7 @@ class ApprovalGate:
         pattern_key: str,
         arguments: dict[str, Any] | None = None,
         risk: RiskLevel = RiskLevel.EXEC,
-    ) -> None:
+    ) -> DeliveryResult | None:
         reason = guard.reason or "审批策略要求确认"
         action = self._describe_action(tool_name, arguments)
         # The scope wording is written out in full so the user knows exactly what
@@ -483,7 +523,7 @@ class ApprovalGate:
         out.metadata = dict(event.metadata)
         out.metadata["_approval_request"] = True
         out.metadata["_inbound_event_id"] = event.event_id
-        await self._bus.publish_outbound(out)
+        delivery = await self._bus.publish_outbound(out)
         # Additive: emit an interactive approval frame for an attached cli TUI.
         # Fires AFTER the text publish and never changes approval outcome.
         # Gate before building the params dict so IM channels pay nothing.
@@ -495,6 +535,7 @@ class ApprovalGate:
                  "risk": reason},
                 f"⚠️ 需要确认: {tool_name}",
             )
+        return delivery
 
     def _approval_required(self, tool_name: str, guard: GuardDecision, risk: RiskLevel) -> bool:
         approval_cfg = self._config.permissions.approval

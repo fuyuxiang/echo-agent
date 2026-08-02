@@ -867,6 +867,41 @@ async def test_approval_denial_with_notify_collects_notice():
 
 
 @pytest.mark.asyncio
+async def test_terminal_approval_denial_does_not_ask_llm_to_rephrase():
+    """Timeout/delivery failures have deterministic user copy already.
+
+    Feeding them back through a second LLM round caused the misleading Weixin
+    "reply 1/2/3" instructions, so a terminal denial must end tool inference.
+    """
+    from echo_agent.agent.tools.base import ToolResult
+
+    tc = ToolCallRequest(id="call_1", name="cronjob", arguments={"action": "add"})
+    provider = AsyncMock()
+    provider.chat_stream_with_retry = AsyncMock(return_value=LLMResponse(
+        content="Let me create that schedule.",
+        tool_calls=[tc],
+        finish_reason="tool_calls",
+    ))
+
+    notice = "⚠️ 审批等待已超时,请重新发起。"
+    gate = AsyncMock()
+    gate.check = AsyncMock(return_value=MagicMock(
+        denial=ToolResult(success=False, error="approval timed out"),
+        approved_actions=frozenset(),
+        notify_user=True,
+        notice=notice,
+        terminal=True,
+    ))
+
+    stage, _bus = _make_stage(provider=provider, approval_gate=gate)
+    result = await stage.run(_make_ctx())
+
+    assert provider.chat_stream_with_retry.call_count == 1
+    assert result.degraded_notices == [notice]
+    assert "Let me create" not in result.response_text
+
+
+@pytest.mark.asyncio
 async def test_repeat_blocked_collects_notice():
     # A repeat-blocked tool call must collect the repeat-blocked notice.
     from echo_agent.agent.degraded_notice import REASON_REPEAT_BLOCKED, notice_for

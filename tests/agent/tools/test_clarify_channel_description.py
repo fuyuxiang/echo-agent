@@ -34,6 +34,8 @@ def test_im_channel_drops_picker_wording():
 def test_im_channel_description_states_the_real_contract():
     desc = _clarify_schema("weixin:group")["function"]["description"]
     assert "letter" in desc.lower()
+    assert "/approve" in desc
+    assert "/deny" in desc
 
 
 def test_no_channel_defaults_to_text_wording():

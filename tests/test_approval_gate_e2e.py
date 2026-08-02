@@ -27,6 +27,7 @@ from echo_agent.agent.tools.code_exec import CodeExecTool
 from echo_agent.agent.tools.registry import ToolRegistry
 from echo_agent.bus.events import ContentBlock, ContentType, InboundEvent
 from echo_agent.bus.queue import MessageBus
+from echo_agent.channels.base import SendResult
 from echo_agent.config.loader import load_config
 from echo_agent.config.schema import Config
 from echo_agent.permissions.manager import ApprovalManager
@@ -51,6 +52,13 @@ def _exec_cfg() -> Config:
 
 
 def _make_gate(cfg, bus: MessageBus) -> ApprovalGate:
+    async def _deliver_prompt(_event):
+        return SendResult(success=True, message_id="approval-prompt")
+
+    # Manual approval is only meaningful after the prompt reaches a channel.
+    # Mirror that production receipt instead of leaving this gate/tool test with
+    # an outbound bus that has no platform handler at all.
+    bus.subscribe_outbound_global(_deliver_prompt)
     appr = ApprovalManager(
         require_approval=cfg.permissions.approval.require_approval,
         auto_approve=cfg.permissions.approval.auto_approve,

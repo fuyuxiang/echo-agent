@@ -28,6 +28,14 @@ def test_from_send_result_maps_success_and_failure():
     assert bad.error == "boom"
 
 
+def test_from_send_result_keeps_skipped_distinct_from_delivered():
+    skipped = DeliveryResult.from_send_result(
+        SendResult(success=True, skipped=True), "weixin"
+    )
+    assert skipped.stage is DeliveryStage.ACCEPTED
+    assert skipped.detail == {"skipped": True}
+
+
 @pytest.mark.asyncio
 async def test_publish_no_handler_returns_no_handler():
     bus = MessageBus()

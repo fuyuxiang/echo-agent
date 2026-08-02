@@ -9,6 +9,7 @@ across the pipeline.
 from __future__ import annotations
 
 REASON_APPROVAL_UNAVAILABLE = "approval_unavailable"
+REASON_APPROVAL_DELIVERY_FAILED = "approval_delivery_failed"
 REASON_APPROVAL_TIMEOUT = "approval_timeout"
 REASON_REPEAT_BLOCKED = "repeat_blocked"
 REASON_OUTPUT_TRUNCATED = "output_truncated"
@@ -25,6 +26,12 @@ def notice_for(reason: str, *, tool: str = "", request_id: str = "") -> str:
         return (
             "⚠️ 这步需要执行命令,但安全审批暂时不可用(模型服务异常),已暂停。"
             "请稍后回复让我重试。"
+        )
+    if reason == REASON_APPROVAL_DELIVERY_FAILED:
+        tool_label = tool or "该操作"
+        return (
+            f"⚠️ 这步需要你确认执行 `{tool_label}`,但审批提示未能送达,"
+            "操作已取消。请稍后重试。"
         )
     if reason == REASON_APPROVAL_TIMEOUT:
         tool_label = tool or "该操作"

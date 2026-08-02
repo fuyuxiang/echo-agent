@@ -36,6 +36,7 @@ from echo_agent.agent.approval_gate import (
 )
 from echo_agent.bus.events import ContentBlock, ContentType, InboundEvent
 from echo_agent.bus.queue import MessageBus
+from echo_agent.channels.base import SendResult
 from echo_agent.config.schema import Config
 from echo_agent.permissions.allowlist import ApprovalAllowlist, ApprovalLevel
 from echo_agent.permissions.manager import ApprovalManager
@@ -72,9 +73,15 @@ def _gate(
         require_approval=cfg.permissions.approval.require_approval,
         auto_approve=cfg.permissions.approval.auto_approve,
     )
+    bus = MessageBus()
+
+    async def _deliver_prompt(_event):
+        return SendResult(success=True, message_id="approval-prompt")
+
+    bus.subscribe_outbound_global(_deliver_prompt)
     return ApprovalGate(
         config=cfg, approval=appr, inference=_FakeInference(),
-        bus=MessageBus(), provider=None, registry=registry, allowlist=allowlist,
+        bus=bus, provider=None, registry=registry, allowlist=allowlist,
     )
 
 
