@@ -34,4 +34,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 // A 401 from any request means the token is no longer accepted. Clearing it
 // here (rather than in api.ts) keeps the store the single owner of auth state,
 // and Layout's <Navigate> then routes to /login without a page reload.
-setUnauthorizedHandler(() => useAuthStore.getState().logout());
+//
+// Preserve the fact learned from the 401 after logout resets the capability
+// probe. Without this, the initial unauthenticated /capabilities request calls
+// logout(), reset() bumps the probe generation, and the probe's catch discards
+// its own 401 as stale. authRequired then remains null and Layout renders a
+// permanent blank screen instead of navigating to /login.
+setUnauthorizedHandler(() => {
+  useAuthStore.getState().logout();
+  useCapabilitiesStore.setState({ admin: true, authRequired: true });
+});

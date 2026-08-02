@@ -6,6 +6,17 @@ import { useCapabilitiesStore } from "../stores/capabilities";
 import { useAuthStore } from "../stores/auth";
 import * as api from "../lib/api";
 
+const originalFetch = globalThis.fetch;
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: status === 200 ? "OK" : "Error",
+    json: async () => body,
+  } as Response;
+}
+
 /**
  * Layout 的登录闸门。
  *
@@ -35,6 +46,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  globalThis.fetch = originalFetch;
   vi.restoreAllMocks();
 });
 
@@ -94,5 +106,20 @@ describe("Layout 登录闸门", () => {
     await waitFor(() =>
       expect(useCapabilitiesStore.getState().authRequired).toBe(true),
     );
+  });
+
+  it("真实 apiFetch 收到 401 后进入登录页,不停在空白屏", async () => {
+    // Do not mock apiFetch here: its 401 handler logs out and resets the
+    // capability generation. That side effect is the regression this test
+    // must exercise; mocking apiFetch hid it and let the blank screen ship.
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      jsonResponse({ error: "unauthorized" }, 401),
+    );
+
+    renderAt();
+
+    expect(await screen.findByText("login-page")).toBeTruthy();
+    expect(useAuthStore.getState().token).toBeNull();
+    expect(useCapabilitiesStore.getState().authRequired).toBe(true);
   });
 });
