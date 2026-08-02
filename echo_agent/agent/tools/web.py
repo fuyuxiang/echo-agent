@@ -3,14 +3,24 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
-import socket
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import aiohttp
 
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
+# SSRF policy lives in security/net_guard.py so the media path enforces the
+# identical rules (see that module's docstring). Re-exported under the original
+# private names: they are part of this module's de-facto API — browser/actions.py
+# and browser/session.py import check_url_ssrf from here, and the test suite
+# monkeypatches these attributes.
+from echo_agent.security.net_guard import (  # noqa: F401
+    _ip_is_blocked,
+    check_url_ssrf,
+    resolve_and_validate,
+)
+from echo_agent.security.net_guard import RESOLVE_FAILED_PREFIX as _RESOLVE_FAILED_PREFIX
+from echo_agent.security.net_guard import PinnedResolver as _PinnedResolver
 
 
 def _error_kind_for(exc: BaseException) -> str:
@@ -28,101 +38,6 @@ def _error_kind_for(exc: BaseException) -> str:
     if isinstance(exc, (aiohttp.ClientError, OSError)):
         return "dependency"
     return "internal"
-
-
-def _ip_is_blocked(ip: ipaddress._BaseAddress) -> bool:
-    return bool(
-        ip.is_private or ip.is_loopback or ip.is_link_local
-        or ip.is_reserved or ip.is_multicast or ip.is_unspecified
-    )
-
-
-#: Marks a ``resolve_and_validate`` error as "DNS/resolver broke" rather than
-#: "the target is a policy-blocked address". Only the former is an infra fault:
-#: an SSRF rejection is a stable verdict that retrying cannot fix, so it must
-#: not open the circuit for every other caller of the tool.
-_RESOLVE_FAILED_PREFIX = "Blocked: cannot resolve host"
-
-
-async def resolve_and_validate(url: str) -> tuple[list[str], str | None]:
-    """Resolve *url*'s host and validate every resolved IP.
-
-    Returns ``(ips, error)``. ``ips`` is the list of validated address
-    strings (safe to pin a connection to); ``error`` is non-None when the
-    URL must be blocked. Pinning the returned IPs for the actual connection
-    closes the DNS-rebinding window between validation and connect.
-    """
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        return [], f"Blocked: unsupported URL scheme '{parsed.scheme}'"
-    host = parsed.hostname
-    if not host:
-        return [], "Blocked: URL has no host"
-    try:
-        infos = await asyncio.to_thread(socket.getaddrinfo, host, None)
-    except OSError as e:
-        return [], f"Blocked: cannot resolve host '{host}': {e}"
-    ips: list[str] = []
-    for info in infos:
-        addr = info[4][0]
-        try:
-            ip = ipaddress.ip_address(addr)
-        except ValueError:
-            continue
-        if _ip_is_blocked(ip):
-            return [], (
-                f"Blocked: '{host}' resolves to non-public address {ip}. "
-                "Set tools.web.allowPrivateAddresses to true to permit internal targets."
-            )
-        ips.append(addr)
-    if not ips:
-        return [], f"Blocked: cannot resolve host '{host}' to a usable address"
-    return ips, None
-
-
-async def check_url_ssrf(url: str) -> str | None:
-    """Return an error message when *url* points at a non-public address.
-
-    Blocks loopback, private, link-local (cloud metadata), reserved and
-    multicast targets — web_fetch takes model-controlled URLs, so without
-    this it is a free proxy into the host's internal network.
-    """
-    _, error = await resolve_and_validate(url)
-    return error
-
-
-class _PinnedResolver(aiohttp.abc.AbstractResolver):
-    """aiohttp resolver that hands back a pre-validated IP for a host.
-
-    Pins DNS so the address aiohttp connects to is exactly the one SSRF
-    validation approved, defeating rebinding (validate IP_a, connect IP_b)."""
-
-    def __init__(self, host_to_ips: dict[str, list[str]]):
-        self._map = host_to_ips
-
-    async def resolve(self, host: str, port: int = 0, family: int = socket.AF_INET) -> list[dict[str, Any]]:
-        ips = self._map.get(host)
-        if not ips:
-            raise OSError(f"host '{host}' not in pinned set")
-        results: list[dict[str, Any]] = []
-        for addr in ips:
-            try:
-                fam = socket.AF_INET6 if ipaddress.ip_address(addr).version == 6 else socket.AF_INET
-            except ValueError:
-                continue
-            if family not in (socket.AF_UNSPEC, fam):
-                continue
-            results.append({
-                "hostname": host, "host": addr, "port": port,
-                "family": fam, "proto": 0, "flags": socket.AI_NUMERICHOST,
-            })
-        if not results:
-            raise OSError(f"no pinned address for '{host}' in family {family}")
-        return results
-
-    async def close(self) -> None:
-        return None
-
 
 
 class WebFetchTool(Tool):

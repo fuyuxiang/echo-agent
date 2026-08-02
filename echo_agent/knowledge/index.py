@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import math
+import os
 import re
 import threading
 from collections import Counter
@@ -23,6 +24,10 @@ _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 # Fusion baseline mirrors echo_agent/memory/retrieval.py resonance weights.
 # Kept as a module constant (not config) until tuning data justifies a knob.
 _FUSION_BASE = 0.5
+
+#: On-disk index format. v3 adds the file manifest that makes deletions and
+#: renames detectable; a v2 index still loads but is rebuilt once to gain one.
+_INDEX_FORMAT = "echo-agent-knowledge-v3"
 
 
 @dataclass
@@ -102,6 +107,10 @@ class KnowledgeIndex:
         self.allowed_extensions = {ext.lower() for ext in (allowed_extensions or [".md", ".txt"])}
         self._chunks: list[dict[str, Any]] = []
         self._df: Counter[str] = Counter()
+        # Corpus snapshot (path → [mtime, size]) persisted with the index. This
+        # is what makes deletions and renames visible to _is_stale; see
+        # _build_manifest for why an mtime comparison alone cannot see them.
+        self._manifest: dict[str, list[float]] = {}
         self._loaded = False
         self._lock = threading.Lock()
         self._needs_rebuild = False
@@ -131,18 +140,49 @@ class KnowledgeIndex:
         elif self.index_path.exists():
             self.load()
 
+    def _scan_docs(self) -> list[Path]:
+        """Indexable files currently on disk, sorted for deterministic output."""
+        if not self.docs_dir.exists():
+            return []
+        return sorted(
+            path for path in self.docs_dir.rglob("*")
+            if path.is_file() and path.suffix.lower() in self.allowed_extensions
+        )
+
+    def _manifest_key(self, path: Path) -> str:
+        """Stable identity for a source file: the path recorded on its chunks."""
+        if path.is_relative_to(self.workspace):
+            return str(path.relative_to(self.workspace))
+        return str(path)
+
+    def _build_manifest(self, files: list[Path]) -> dict[str, list[float]]:
+        """Snapshot of the corpus: path → [mtime, size].
+
+        Recorded so staleness can be decided by *comparing sets* rather than by
+        asking "is any file newer than the index". The latter cannot see a
+        deletion or a rename at all — the surviving files are all older than the
+        index, so the index looked fresh while still serving chunks of documents
+        that no longer exist.
+        """
+        manifest: dict[str, list[float]] = {}
+        for path in files:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            manifest[self._manifest_key(path)] = [stat.st_mtime, float(stat.st_size)]
+        return manifest
+
     def rebuild(self) -> dict[str, Any]:
         with self._lock:
             self._chunks = []
             self._df = Counter()
             self.docs_dir.mkdir(parents=True, exist_ok=True)
-            files = [
-                path for path in self.docs_dir.rglob("*")
-                if path.is_file() and path.suffix.lower() in self.allowed_extensions
-            ]
-            for path in sorted(files):
+            files = self._scan_docs()
+            for path in files:
                 self._index_file(path)
             self._recompute_stats()
+            self._manifest = self._build_manifest(files)
             self._save()
             self._loaded = True
             self._needs_rebuild = False
@@ -156,16 +196,66 @@ class KnowledgeIndex:
             if not self.index_path.exists():
                 self._chunks = []
                 self._df = Counter()
+                self._manifest = {}
                 self._loaded = True
                 return
-            data = json.loads(self.index_path.read_text(encoding="utf-8"))
-            self._chunks = list(data.get("chunks", []))
-            if data.get("format") != "echo-agent-knowledge-v2" or any(
+            try:
+                data = json.loads(self.index_path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    raise ValueError("index root is not an object")
+                chunks = list(data.get("chunks", []))
+            except (json.JSONDecodeError, ValueError, OSError, UnicodeDecodeError) as e:
+                # A half-written or truncated index (power loss mid-save, full
+                # disk) used to raise straight out of here. ensure_ready() is
+                # called from AgentLoop.__init__, so that single corrupt file
+                # stopped the whole agent from starting, with a JSONDecodeError
+                # that named neither the file nor the cause. Quarantine it and
+                # rebuild from the source documents, which are the real
+                # authority — the index is a derived artifact.
+                self._quarantine_index(e)
+                self._chunks = []
+                self._df = Counter()
+                self._manifest = {}
+                self._needs_rebuild = True
+                self._loaded = True
+                return
+            self._chunks = chunks
+            raw_manifest = data.get("manifest")
+            self._manifest = raw_manifest if isinstance(raw_manifest, dict) else {}
+            if data.get("format") != _INDEX_FORMAT or any(
                 "content_hash" not in c for c in self._chunks
             ):
                 self._needs_rebuild = True
+            # An index written before manifests existed has none. Treat that as
+            # needing a rebuild rather than as "empty corpus", which would read
+            # as "every document was deleted" on the next staleness check.
+            if not self._manifest and self._chunks:
+                self._needs_rebuild = True
             self._recompute_stats()
             self._loaded = True
+
+    def _quarantine_index(self, reason: Exception) -> None:
+        """Move an unreadable index aside so the rebuild has a clean target.
+
+        Renamed rather than deleted: it is the only evidence of what went wrong,
+        and it may still be useful for diagnosis. Failure to move it is not
+        fatal — _save() will overwrite it anyway.
+        """
+        stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        broken = self.index_path.with_name(f"{self.index_path.name}.corrupt.{stamp}")
+        try:
+            self.index_path.replace(broken)
+            logger.error(
+                "Knowledge index at {} is unreadable ({}); quarantined to {} and "
+                "rebuilding from source documents.",
+                self.index_path, reason, broken.name,
+            )
+        except OSError as e:
+            logger.error(
+                "Knowledge index at {} is unreadable ({}) and could not be "
+                "quarantined ({}); rebuilding over it.",
+                self.index_path, reason, e,
+            )
 
     def attach_embedding(
         self, embed_fn: Callable[[str], Awaitable[list[float]]],
@@ -381,13 +471,57 @@ class KnowledgeIndex:
             self.load()
 
     def _is_stale(self) -> bool:
+        """Whether the index no longer matches the documents on disk.
+
+        Compares the recorded manifest against a fresh scan, so additions,
+        **deletions**, renames and in-place edits are all detected. The previous
+        "is any file newer than the index file" test could only ever see the
+        first and last of those: after a delete, every remaining file was older
+        than the index, so it reported fresh and kept serving chunks from the
+        removed document (a ghost hit that survived restarts).
+        """
         if not self.index_path.exists():
             return True
+        current = self._build_manifest(self._scan_docs())
+        recorded = self._recorded_manifest()
+        if recorded is None:
+            # Pre-manifest index: fall back to the old mtime heuristic rather
+            # than forcing a rebuild on every startup for existing installs.
+            return self._is_stale_by_mtime()
+        if set(current) != set(recorded):
+            return True
+        for key, (mtime, size) in current.items():
+            prev = recorded.get(key) or []
+            if len(prev) < 2 or mtime > prev[0] or size != prev[1]:
+                return True
+        return False
+
+    def _recorded_manifest(self) -> dict[str, list[float]] | None:
+        """The manifest stored in the index file, or None if it predates them.
+
+        Read from disk rather than from ``self._manifest``: staleness is checked
+        before ``load()`` in ``ensure_ready``, so the in-memory copy is empty at
+        that point and would read as "the corpus was emptied".
+        """
+        if self._manifest:
+            return self._manifest
+        try:
+            data = json.loads(self.index_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, ValueError, OSError, UnicodeDecodeError):
+            # Unreadable: let load() quarantine and rebuild rather than deciding
+            # freshness from a file we cannot parse.
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        manifest = data.get("manifest")
+        if isinstance(manifest, dict):
+            return manifest
+        return None
+
+    def _is_stale_by_mtime(self) -> bool:
         index_mtime = self.index_path.stat().st_mtime
-        if not self.docs_dir.exists():
-            return False
-        for path in self.docs_dir.rglob("*"):
-            if path.is_file() and path.suffix.lower() in self.allowed_extensions and path.stat().st_mtime > index_mtime:
+        for path in self._scan_docs():
+            if path.stat().st_mtime > index_mtime:
                 return True
         return False
 
@@ -455,11 +589,29 @@ class KnowledgeIndex:
             self._df.update(set(chunk.get("terms", {}).keys()))
 
     def _save(self) -> None:
+        """Write the index atomically.
+
+        temp + fsync + os.replace, because a plain ``write_text`` leaves a
+        truncated file behind if the process dies (or the disk fills) mid-write,
+        and that half-file is what the next startup tries to parse. os.replace is
+        atomic within a filesystem, so a reader sees either the old index or the
+        new one, never a partial one.
+        """
         self.index_path.parent.mkdir(parents=True, exist_ok=True)
         data = {
-            "format": "echo-agent-knowledge-v2",
+            "format": _INDEX_FORMAT,
             "generated_at": datetime.now().isoformat(),
             "docs_dir": str(self.docs_dir),
+            "manifest": self._manifest,
             "chunks": self._chunks,
         }
-        self.index_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp = self.index_path.with_name(f".{self.index_path.name}.tmp")
+        try:
+            with tmp.open("w", encoding="utf-8") as fh:
+                json.dump(data, fh, ensure_ascii=False, indent=2)
+                fh.flush()
+                os.fsync(fh.fileno())
+            tmp.replace(self.index_path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise

@@ -305,6 +305,14 @@ async def bootstrap(
         # Wire the real heartbeat config so verbosity (key_milestones/every_tool/
         # silent) actually takes effect at runtime; the manager otherwise defaults.
         channels._heartbeat_cfg = config.agent.heartbeat
+        # Let send_file ask a channel whether it can actually upload a file
+        # (BaseChannel.supports_files) instead of reporting "File sent" for an
+        # attachment the channel silently drops. Wired here rather than passed
+        # into discover_tools because the manager is built after the agent; the
+        # tool holds a late-bound callable, so the order does not matter.
+        _send_file_tool = agent.tools.get("send_file")
+        if _send_file_tool is not None:
+            _send_file_tool._channel_lookup = channels.get_channel
         health = HealthChecker(check_interval=config.observability.health_check_interval_seconds)
 
         from echo_agent.observability.monitor import ComponentHealth as CH

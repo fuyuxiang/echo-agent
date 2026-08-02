@@ -466,6 +466,9 @@ def _save_sync_buf(data_dir: Path, account_id: str, sync_buf: str) -> None:
 
 class WeixinChannel(BaseChannel):
     name = "weixin"
+    # Consumes structured IMAGE/FILE/AUDIO/VIDEO blocks via the WeChat CDN upload
+    # path, so send_file delivers a real attachment here.
+    supports_files = True
 
     def __init__(self, config: WeixinChannelConfig, bus: MessageBus):
         super().__init__(config, bus)

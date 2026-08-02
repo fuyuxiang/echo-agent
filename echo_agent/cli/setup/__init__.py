@@ -730,7 +730,10 @@ def setup_gateway(config: dict) -> None:
     if not gw["enabled"]:
         return
 
-    gw["host"] = ui.text(t("gateway.host"), default=str(gw.get("host", "0.0.0.0")))
+    # Offer the schema's loopback default rather than 0.0.0.0: accepting every
+    # prompt must not produce a network-exposed gateway (and, with no token set,
+    # one that _check_bind_safety refuses to start).
+    gw["host"] = ui.text(t("gateway.host"), default=str(gw.get("host", "127.0.0.1")))
     port_str = ui.text(t("gateway.port"), default=str(gw.get("port", 58123)))
     try:
         gw["port"] = int(port_str)
@@ -1336,7 +1339,9 @@ def _probe_config(config: dict) -> Any:
     return SimpleNamespace(
         gateway=SimpleNamespace(
             enabled=bool(gw.get("enabled", False)),
-            host=str(gw.get("host", "0.0.0.0")),
+            # Mirrors the schema default so the probe targets the same address
+            # the gateway will actually bind when the key is absent.
+            host=str(gw.get("host", "127.0.0.1")),
             port=port,
         ),
         workspace=str(config.get("workspace") or "."),
@@ -1482,6 +1487,39 @@ def _maybe_offer_dashboard_build() -> None:
     (print_success if succeeded else print_warning)(describe_outcome(outcome))
 
 
+def _unstartable_reason(config: dict) -> str:
+    """Why the saved gateway config cannot start, or "" when it can.
+
+    Mirrors ``gateway/server.py:_check_bind_safety``: a non-loopback bind with no
+    token of any kind is refused at startup. Checking it here turns a service
+    that fails on every start into an explanation at the one moment the user can
+    still act on it — quickstart never visits the gateway section, so nothing
+    else in that flow would notice.
+
+    Kept as a *duplicate* of the server's rule rather than a call into it,
+    because the wizard holds a raw YAML dict (possibly hand-edited, possibly not
+    schema-valid yet) and building a GatewayServer to ask would mean standing up
+    a bus, session manager and workspace mid-wizard. The pairing is pinned by a
+    test that fails if the two rules drift.
+    """
+    gw = config.get("gateway", {})
+    if not isinstance(gw, dict) or not gw.get("enabled"):
+        return ""
+    host = str(gw.get("host", "127.0.0.1")).strip()
+    if host in ("127.0.0.1", "localhost", "::1", ""):
+        return ""
+    auth = gw.get("auth", {})
+    if not isinstance(auth, dict):
+        auth = {}
+    has_token = bool(
+        auth.get("api_tokens") or auth.get("apiTokens")
+        or auth.get("admin_tokens") or auth.get("adminTokens")
+    )
+    if has_token:
+        return ""
+    return host
+
+
 def _offer_gateway_start(
     config: dict, config_path: Any, workspace: Any = None, *, section_only: bool = False
 ) -> None:
@@ -1499,6 +1537,16 @@ def _offer_gateway_start(
     from echo_agent.cli.runtime_probe import GatewayState
 
     if not is_interactive():
+        return
+
+    # Refuse to register a unit that provably cannot boot. Doing this before the
+    # probe (rather than letting `start` fail and reporting it) means the user
+    # gets the actual cause and the fix, not a generic "could not start".
+    bad_host = _unstartable_reason(config)
+    if bad_host:
+        print()
+        print_warning(t("startup.unstartable", host=bad_host))
+        print_info(t("startup.unstartable_fix"))
         return
 
     ws = _as_str(workspace)

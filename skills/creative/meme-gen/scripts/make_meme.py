@@ -3,14 +3,12 @@
 
 import argparse
 import sys
+from echo_agent.dependencies.skill_require import require  # noqa: E402
 import tempfile
 import urllib.request
 from pathlib import Path
 
-try:
-    from PIL import Image, ImageDraw, ImageFont
-except ImportError:
-    sys.exit("Install: pip install Pillow")
+require("skill.ocr-document")
 
 TEMPLATES = {
     "drake": "https://i.imgflip.com/30b1gx.jpg",

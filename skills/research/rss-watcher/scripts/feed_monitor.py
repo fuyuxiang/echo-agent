@@ -5,12 +5,10 @@ import argparse
 import hashlib
 import sqlite3
 import sys
+from echo_agent.dependencies.skill_require import require  # noqa: E402
 from pathlib import Path
 
-try:
-    import feedparser
-except ImportError:
-    sys.exit("Install: pip install feedparser")
+require("skill.rss-watcher")
 
 try:
     import yaml

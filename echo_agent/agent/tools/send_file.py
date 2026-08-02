@@ -40,10 +40,36 @@ class SendFileTool(Tool):
         "required": ["channel", "chat_id", "file_path"],
     }
 
-    def __init__(self, workspace: str, restrict: bool = False, publish_fn=None):
+    def __init__(self, workspace: str, restrict: bool = False, publish_fn=None,
+                 channel_lookup=None):
         self._workspace = str(Path(workspace).resolve())
         self._restrict = restrict
         self._publish = publish_fn
+        # Resolves a channel name to its adapter so capability can be checked
+        # before promising the model an upload. Optional: without it the tool
+        # degrades to reporting whatever the delivery receipt says.
+        self._channel_lookup = channel_lookup
+
+    def _unsupported_reason(self, channel: str) -> str:
+        """Why *channel* cannot deliver a file, or "" when it can (or is unknown).
+
+        Only channels that actually consume structured FILE/IMAGE blocks upload
+        an attachment; the rest send the caption text and drop the file. Saying
+        so up front is the difference between the model learning it must find
+        another route and the model believing a file was delivered.
+        """
+        if self._channel_lookup is None:
+            return ""
+        adapter = self._channel_lookup(channel)
+        if adapter is None:
+            return ""
+        if getattr(adapter, "supports_files", False):
+            return ""
+        return (
+            f"channel '{channel}' cannot send files — it delivers text only, so "
+            "the attachment would be dropped. Send the content as text, or use a "
+            "channel with file support."
+        )
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         if not self._publish:
@@ -63,6 +89,10 @@ class SendFileTool(Tool):
         resolved = resolve_path(file_path, self._workspace)
         if not resolved.exists():
             return ToolResult(success=False, error=f"File not found: {file_path}")
+
+        unsupported = self._unsupported_reason(params["channel"])
+        if unsupported:
+            return ToolResult(success=False, error=unsupported, error_kind="business")
 
         as_image = params.get("as_image")
         if as_image is None:
@@ -84,7 +114,18 @@ class SendFileTool(Tool):
             channel=params["channel"], chat_id=params["chat_id"], content=blocks,
         ).mark_tool_delivery(ctx)
         try:
-            await self._publish(event)
-            return ToolResult(output=f"File sent to {params['channel']}:{params['chat_id']} ({resolved.name})")
+            receipt = await self._publish(event)
         except Exception as e:
             return ToolResult(success=False, error=str(e))
+        # publish_outbound returns a DeliveryResult. Ignoring it is how this tool
+        # used to report "File sent" for a file that reached no handler at all
+        # (NO_HANDLER) or that the channel explicitly refused (FAILED).
+        if receipt is not None and not getattr(receipt, "ok", True):
+            stage = getattr(getattr(receipt, "stage", None), "value", "failed")
+            detail = getattr(receipt, "error", "") or stage
+            return ToolResult(
+                success=False,
+                error=f"File not delivered to {params['channel']}:{params['chat_id']}: {detail}",
+                error_kind="dependency",
+            )
+        return ToolResult(output=f"File sent to {params['channel']}:{params['chat_id']} ({resolved.name})")

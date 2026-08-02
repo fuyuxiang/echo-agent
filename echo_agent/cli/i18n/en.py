@@ -362,6 +362,11 @@ MESSAGES = {
         "disabled": "gateway.enabled=false in the config: echo-agent cli cannot connect "
                     "(WeChat / QQ and other channels do not depend on the gateway and keep working).",
         "disabled_fix": "To use echo-agent cli: echo-agent setup gateway",
+        "unstartable": "This config cannot start: the bind address is {host} (not loopback) "
+                       "but no access token is configured, so the gateway refuses to expose "
+                       "itself unauthenticated and every start will fail.",
+        "unstartable_fix": "Pick one: set gateway.host back to 127.0.0.1 (local use only), "
+                           "or configure gateway.auth.apiTokens and rerun `echo-agent setup gateway`.",
     },
     "dashboard": {
         "ask_build": "Build the full Dashboard now? (a few minutes on first run; skipping uses the built-in simplified page)",

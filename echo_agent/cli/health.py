@@ -215,7 +215,7 @@ def check_gateway(config: dict) -> dict:
     if not gw.get("enabled"):
         return {"name": t("doctor.gateway_name"), "status": WARN,
                 "detail": t("doctor.gateway_off")}
-    host = str(_get(gw, "host", default="0.0.0.0"))
+    host = str(_get(gw, "host", default="127.0.0.1"))
     port = int(_get(gw, "port", default=0) or 0)
     connect_host = "127.0.0.1" if host in ("0.0.0.0", "", "::") else host
     if port <= 0:

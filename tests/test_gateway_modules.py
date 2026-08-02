@@ -8,6 +8,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+def _public_addrinfo(ip: str = "93.184.216.34"):
+    """getaddrinfo result for a public IP.
+
+    Media downloads run under the SSRF guard, which resolves and validates the
+    host before connecting. Tests that mock only the HTTP session must also pin
+    resolution to a public address, or the guard rejects the URL before any
+    request is made.
+    """
+    import socket
+    return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 1. ProgressiveEditor
 # ══════════════════════════════════════════════════════════════════════════════
@@ -293,19 +305,28 @@ class TestMediaCache:
         cache = self._make(tmp_path)
         url = "https://cdn.example.com/photo.jpg"
 
-        mock_resp = AsyncMock()
+        # The transport now lives in security.net_guard (MediaCache delegates to
+        # guarded_download), and the body is consumed via iter_chunked rather
+        # than read() so an over-size response can be cut off mid-stream.
+        mock_resp = MagicMock()
         mock_resp.status = 200
         mock_resp.headers = {"Content-Type": "image/jpeg"}
-        mock_resp.read = AsyncMock(return_value=b"jpeg data bytes")
+
+        async def _chunks(_size):
+            yield b"jpeg data bytes"
+
+        mock_resp.content.iter_chunked = _chunks
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
 
-        mock_session = AsyncMock()
+        mock_session = MagicMock()
         mock_session.get = MagicMock(return_value=mock_resp)
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("echo_agent.gateway.media.aiohttp.ClientSession", return_value=mock_session):
+        with patch("socket.getaddrinfo", return_value=_public_addrinfo()), \
+             patch("echo_agent.security.net_guard.aiohttp.ClientSession", return_value=mock_session), \
+             patch("echo_agent.security.net_guard.aiohttp.TCPConnector", return_value=MagicMock()):
             result = await cache.download(url, "telegram")
             assert result is not None
             assert result.exists()
@@ -316,17 +337,20 @@ class TestMediaCache:
         cache = self._make(tmp_path)
         url = "https://cdn.example.com/gone.png"
 
-        mock_resp = AsyncMock()
+        mock_resp = MagicMock()
         mock_resp.status = 404
+        mock_resp.headers = {}
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
 
-        mock_session = AsyncMock()
+        mock_session = MagicMock()
         mock_session.get = MagicMock(return_value=mock_resp)
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("echo_agent.gateway.media.aiohttp.ClientSession", return_value=mock_session):
+        with patch("socket.getaddrinfo", return_value=_public_addrinfo()), \
+             patch("echo_agent.security.net_guard.aiohttp.ClientSession", return_value=mock_session), \
+             patch("echo_agent.security.net_guard.aiohttp.TCPConnector", return_value=MagicMock()):
             result = await cache.download(url, "telegram")
             assert result is None
 

@@ -32,10 +32,11 @@ export function Knowledge() {
   const fileRef = useRef<HTMLInputElement>(null);
   const { t } = useTranslation(["knowledge", "common"]);
   const confirm = useConfirm();
-  // Upload and delete are guarded by _admin_guard server-side; rebuild and the
-  // reads are not. Probe the token's scope so those two are visibly disabled
-  // instead of rendering as normal buttons that answer 403. null = still
-  // probing, treated as allowed to avoid a disabled flash on first paint.
+  // Upload, delete and rebuild are all guarded by _admin_guard server-side; only
+  // the reads are open to a plain api token. Probe the token's scope so those
+  // controls are visibly disabled instead of rendering as normal buttons that
+  // answer 403. null = still probing, treated as allowed to avoid a disabled
+  // flash on first paint.
   const isAdmin = useIsAdmin();
   const canWrite = isAdmin !== false;
 
@@ -103,7 +104,12 @@ export function Knowledge() {
         >
           <Upload size={16} /> {t("upload")}
         </button>
-        <button onClick={rebuild} className="flex items-center gap-1 bg-gray-100 px-3 py-1.5 rounded text-sm hover:bg-gray-200">
+        <button
+          onClick={rebuild}
+          disabled={!canWrite}
+          title={canWrite ? undefined : t("common:adminOnly")}
+          className="flex items-center gap-1 bg-gray-100 px-3 py-1.5 rounded text-sm hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
           <RefreshCw size={16} /> {t("rebuild")}
         </button>
         <span className="text-sm text-gray-500">

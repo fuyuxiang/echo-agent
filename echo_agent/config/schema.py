@@ -3293,12 +3293,28 @@ class GatewayConfig(_Base):
             "desc_en": "Enable the gateway service",
         },
     )
+    # Loopback by default. The previous 0.0.0.0 default combined with the empty
+    # apiTokens default into a config that _check_bind_safety refuses outright
+    # ("bind 0.0.0.0 without any API token"), so a quickstart install — which
+    # never visits the gateway section and therefore never sets a token — always
+    # produced a service that could not start. Binding locally is also the right
+    # default on its own terms: exposing an agent to the network should be an
+    # explicit act, not what happens when you accept every prompt.
     host: str = Field(
-        default="0.0.0.0",
+        default="127.0.0.1",
         json_schema_extra={
-            "status": "effective", "ref": "gateway/server.py:128",
-            "desc_zh": "网关监听地址",
-            "desc_en": "Gateway bind address",
+            "status": "effective", "ref": "gateway/server.py:_check_bind_safety",
+            "desc_zh": (
+                "网关监听地址。默认 127.0.0.1 仅本机可达;要对外提供服务改为 0.0.0.0 "
+                "并同时配置 auth.apiTokens(无 token 绑非回环地址会被拒绝启动),"
+                "反代场景还需在 auth.allowedHosts 列出代理域名"
+            ),
+            "desc_en": (
+                "Gateway bind address. Defaults to 127.0.0.1 (this machine only). "
+                "To serve the network, set 0.0.0.0 AND configure auth.apiTokens — "
+                "binding non-loopback without a token is refused at startup — and "
+                "list your proxy domain in auth.allowedHosts if behind a reverse proxy"
+            ),
         },
     )
     port: int = Field(
@@ -3369,6 +3385,55 @@ class GatewayConfig(_Base):
             "status": "effective", "ref": "gateway/server.py:80",
             "desc_zh": "媒体缓存大小上限(MB)",
             "desc_en": "Media cache size limit (MB)",
+        },
+    )
+    # Media URLs are attacker-controlled input: they arrive in a POST /message
+    # body or an inbound chat attachment. The download path therefore runs under
+    # the same SSRF guard as web_fetch (security/net_guard.py) plus the ceilings
+    # below. Without them a single request could probe internal services, read
+    # cloud instance metadata, or exhaust memory/disk with one huge response.
+    media_max_file_mb: int = Field(
+        default=25,
+        json_schema_extra={
+            "status": "effective", "ref": "gateway/media.py",
+            "desc_zh": "单个媒体文件下载大小上限(MB)。Content-Length 与实际字节流都会校验,超限即中止并删除临时文件",
+            "desc_en": (
+                "Per-file download ceiling (MB). Enforced on both Content-Length "
+                "and the real byte stream; an over-size download is aborted and "
+                "its partial file removed"
+            ),
+        },
+    )
+    media_max_urls_per_message: int = Field(
+        default=10,
+        json_schema_extra={
+            "status": "effective", "ref": "gateway/server.py",
+            "desc_zh": "单条消息允许携带的媒体 URL 数量上限,超出的部分被拒绝",
+            "desc_en": "Maximum media URLs accepted on one message; extras are rejected",
+        },
+    )
+    media_download_concurrency: int = Field(
+        default=4,
+        json_schema_extra={
+            "status": "effective", "ref": "gateway/media.py",
+            "desc_zh": "媒体并行下载数上限,避免一条消息打满出站连接与内存",
+            "desc_en": "Maximum parallel media downloads, bounding outbound connections and memory",
+        },
+    )
+    media_allow_private_addresses: bool = Field(
+        default=False,
+        json_schema_extra={
+            "status": "effective", "ref": "gateway/media.py",
+            "desc_zh": (
+                "是否允许媒体下载访问私有/回环地址(SSRF 风险)。与 tools.web.allowPrivateAddresses "
+                "同口径但独立开关:内网自建 CDN 可能需要开启,默认拦截。即使开启也仍然只允许 http/https"
+            ),
+            "desc_en": (
+                "Allow media downloads to reach private/loopback addresses (SSRF risk). "
+                "Same policy as tools.web.allowPrivateAddresses but a separate switch, "
+                "since an internal CDN may legitimately need it. Blocked by default; "
+                "the http/https scheme restriction applies either way"
+            ),
         },
     )
     emit_progress_events: bool = Field(

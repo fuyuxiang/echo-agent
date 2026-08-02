@@ -12,6 +12,10 @@ from echo_agent.gateway.api.tasks import TasksAPI
 def mock_server():
     server = MagicMock()
     server._require_api_token = MagicMock(return_value=None)
+    # Write endpoints moved to _write_guard (which delegates to
+    # _require_admin_token). Mirror the read-level stub for the write-level
+    # one so these tests exercise handler logic, not auth wiring.
+    server._require_admin_token = MagicMock(return_value=None)
     # spec_set=AgentLoop so assigning an attribute the loop does not expose
     # raises AttributeError here — catching contract drift the API would hit.
     server._agent_loop = MagicMock(spec_set=AgentLoop)

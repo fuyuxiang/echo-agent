@@ -16,7 +16,23 @@ class TasksAPI:
         self._server = server
 
     def _guard(self, request: web.Request, action: str) -> web.Response | None:
+        """Read-level guard: listing and fetching a task."""
         return self._server._require_api_token(request, action=action)
+
+    def _write_guard(self, request: web.Request, action: str) -> web.Response | None:
+        """Guard for state changes (create / update / delete / transition / retry).
+
+        These are not reads: creating a task enqueues work for the agent to run,
+        and delete/transition can interrupt a turn that is executing (see
+        ``_interrupt_session``). They used to accept any read-scope api token and
+        skipped CSRF entirely, so a deployment with separate ``admin_tokens`` gave
+        every chat-level token the ability to drive the board, and a malicious web
+        page could POST to a localhost gateway.
+
+        ``_require_admin_token`` adds both halves: an admin-scoped token, and the
+        CSRF + Host-allowlist check that blocks cross-site browser requests.
+        """
+        return self._server._require_admin_token(request, action=action)
 
     def _manager(self):
         return self._server._agent_loop.task_manager
@@ -40,7 +56,7 @@ class TasksAPI:
         })
 
     async def create_task(self, request: web.Request) -> web.Response:
-        guard = self._guard(request, "tasks_create")
+        guard = self._write_guard(request, "tasks_create")
         if guard is not None:
             return guard
 
@@ -76,7 +92,7 @@ class TasksAPI:
         return web.json_response({"task": task.to_dict()})
 
     async def update_task(self, request: web.Request) -> web.Response:
-        guard = self._guard(request, "tasks_update")
+        guard = self._write_guard(request, "tasks_update")
         if guard is not None:
             return guard
 
@@ -95,7 +111,7 @@ class TasksAPI:
         return web.json_response({"task": task.to_dict()})
 
     async def delete_task(self, request: web.Request) -> web.Response:
-        guard = self._guard(request, "tasks_delete")
+        guard = self._write_guard(request, "tasks_delete")
         if guard is not None:
             return guard
 
@@ -143,7 +159,7 @@ class TasksAPI:
             pass
 
     async def transition_task(self, request: web.Request) -> web.Response:
-        guard = self._guard(request, "tasks_transition")
+        guard = self._write_guard(request, "tasks_transition")
         if guard is not None:
             return guard
 
@@ -214,7 +230,7 @@ class TasksAPI:
         max_retries. Routing retry through the plain /transition endpoint (as the
         board used to) silently bypassed both — a task could be retried forever
         and its attempt count never moved."""
-        guard = self._guard(request, "tasks_retry")
+        guard = self._write_guard(request, "tasks_retry")
         if guard is not None:
             return guard
 

@@ -54,7 +54,12 @@ class KnowledgeAPI:
         return web.json_response(index.status())
 
     async def rebuild(self, request: web.Request) -> web.Response:
-        guard = self._guard(request, "knowledge_rebuild")
+        # A rebuild re-reads every document and recomputes embeddings — expensive,
+        # repeatable, and it rewrites the index other callers are querying. It sits
+        # with upload/delete (already admin-guarded) rather than with the read
+        # endpoints, and being admin-guarded also blocks a cross-site POST from
+        # kicking one off on a localhost gateway.
+        guard = self._admin_guard(request, "knowledge_rebuild")
         if guard is not None:
             return guard
 

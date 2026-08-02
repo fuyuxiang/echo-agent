@@ -360,6 +360,10 @@ MESSAGES = {
         "disabled": "配置中 gateway.enabled=false：echo-agent cli 无法连接"
                     "（微信 / QQ 等渠道不依赖网关，仍正常工作）。",
         "disabled_fix": "需要 echo-agent cli 时：echo-agent setup gateway",
+        "unstartable": "当前配置无法启动：监听地址是 {host}（非本机回环）却没有配置任何"
+                       "访问令牌，网关会拒绝以未认证状态对外暴露，每次启动都会失败。",
+        "unstartable_fix": "二选一：把 gateway.host 改回 127.0.0.1（仅本机使用），"
+                           "或配置 gateway.auth.apiTokens 后重新执行 echo-agent setup gateway。",
     },
     "dashboard": {
         "ask_build": "现在构建完整 Dashboard？（首次约需几分钟；跳过则先用内置简化页）",

@@ -87,15 +87,18 @@ describe("Skills 页", () => {
     );
   });
 
-  it("非 admin 令牌下禁用导入与删除,但保留查看与开关", async () => {
+  it("非 admin 令牌下禁用导入、删除与开关,但保留查看", async () => {
     mockApi(false);
     renderSkills();
 
     await waitFor(() => expect(screen.getByText("web search")).toBeInTheDocument());
     expect(screen.getByRole("button", { name: /导入技能/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: "删除技能 shell" })).toBeDisabled();
-    // 列表与 toggle 用的是 api token 权限，不该被一起关掉。
-    expect(screen.getByRole("switch", { name: "停用技能 web search" })).toBeEnabled();
+    // 开关会改变 agent 下一轮能用哪些技能，与安装/删除同一类变更，
+    // 已一并收口到 _admin_guard，因此只读令牌下必须禁用。
+    expect(screen.getByRole("switch", { name: "停用技能 web search" })).toBeDisabled();
+    // 列表与详情仍是只读权限可见的。
+    expect(screen.getByText("web search")).toBeInTheDocument();
     expect(screen.getAllByText(/需要管理员令牌/).length).toBeGreaterThan(0);
   });
 

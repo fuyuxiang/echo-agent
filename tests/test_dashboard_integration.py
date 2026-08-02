@@ -43,6 +43,9 @@ class TestTaskStateMachine:
 async def test_full_task_lifecycle():
     server = MagicMock()
     server._require_api_token = MagicMock(return_value=None)
+    # Write endpoints moved to _require_admin_token — mirror the stub so this
+    # test exercises handler logic rather than auth wiring.
+    server._require_admin_token = MagicMock(return_value=None)
 
     tasks_store: dict[str, TaskRecord] = {}
 

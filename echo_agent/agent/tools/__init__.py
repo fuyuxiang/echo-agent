@@ -146,10 +146,12 @@ def discover_tools(
     if skill_store:
         from echo_agent.agent.tools.skills import SkillsListTool, SkillViewTool, SkillManageTool
         from echo_agent.agent.tools.skill_install import SkillInstallTool
+        from echo_agent.agent.tools.skill_run import SkillRunTool
         tools.append(SkillsListTool(store=skill_store))
         tools.append(SkillViewTool(store=skill_store, approval=approval, bus=bus, config=config))
         tools.append(SkillManageTool(store=skill_store))
         tools.append(SkillInstallTool(store=skill_store))
+        tools.append(SkillRunTool(store=skill_store, approval=approval, bus=bus, config=config))
 
     if memory_store:
         from echo_agent.agent.tools.memory import MemoryTool

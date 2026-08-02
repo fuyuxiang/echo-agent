@@ -22,6 +22,7 @@ from loguru import logger
 
 from echo_agent.bus.events import InboundEvent, OutboundEvent, ContentBlock, ContentType
 from echo_agent.bus.queue import MessageBus
+from echo_agent.channels.base import SendResult
 from echo_agent.channels.manager import ChannelManager
 from echo_agent.channels.qqbot_media import detect_media_kind
 from echo_agent.config.schema import GatewayConfig
@@ -87,6 +88,9 @@ class GatewayServer:
         self.media_cache = MediaCache(
             cache_dir=workspace / config.media_cache_dir,
             max_size_mb=config.media_cache_max_mb,
+            max_file_mb=config.media_max_file_mb,
+            concurrency=config.media_download_concurrency,
+            allow_private=config.media_allow_private_addresses,
         )
         self.rate_limiter = RateLimiter()
         self.delivery_router = DeliveryRouter(bus)
@@ -591,6 +595,17 @@ class GatewayServer:
         if not text and not media_urls:
             return web.json_response({"error": "text or media_urls required"}, status=400)
 
+        # Bound the fan-out before any network work. Each URL becomes a guarded
+        # download (size-capped, SSRF-checked), but an unbounded *list* would
+        # still let one request open arbitrarily many of them at once.
+        if not isinstance(media_urls, list):
+            return web.json_response({"error": "media_urls must be a list"}, status=400)
+        max_urls = self._config.media_max_urls_per_message
+        if len(media_urls) > max_urls:
+            return web.json_response(
+                {"error": f"too many media_urls (max {max_urls})"}, status=400,
+            )
+
         rejection = self._authenticate_and_check_rate_limit(
             platform, user_id, chat_id, trusted=self._is_loopback_peer(request),
         )
@@ -780,7 +795,16 @@ class GatewayServer:
 
         Deliberately reports only booleans about the presented token — never the
         configured tokens or whether any exist beyond what the caller's own scope
-        already tells them."""
+        already tells them.
+
+        ``auth_required`` says whether this deployment authenticates at all. The
+        dashboard needs it because it treated ``!!token`` as "logged in": in the
+        officially supported open / no-token mode (see auth.authenticate_token,
+        which accepts every request when no token is configured) an empty token
+        is *correct*, yet Layout bounced it to /login, Login's probe succeeded
+        and navigated back to /, and Layout bounced it again — a redirect loop
+        out of which only typing a nonsense non-empty token could escape.
+        Reporting the fact server-side is what lets the UI stop guessing."""
         guard = self._require_api_token(request, action="capabilities")
         if guard is not None:
             return guard
@@ -797,7 +821,10 @@ class GatewayServer:
             is_admin = self.auth.authenticate_admin_token(
                 self.auth.token_from_headers(request.headers)
             )
-        return web.json_response({"admin": is_admin})
+        return web.json_response({
+            "admin": is_admin,
+            "authRequired": self._tokens_configured(),
+        })
 
     async def _handle_stats(self, request: web.Request) -> web.Response:
         guard = self._require_api_token(request, action="stats")
@@ -1068,40 +1095,72 @@ class GatewayServer:
 
         return websocket
 
-    async def _handle_outbound(self, event: OutboundEvent) -> None:
+    async def _handle_outbound(self, event: OutboundEvent) -> SendResult | None:
+        """Deliver a gateway-bound event to its live client, reporting the truth.
+
+        Returns ``None`` — "no opinion" — for anything this handler does not own.
+        That matters because this is a *global* outbound handler: it sees every
+        channel's events, and ``MessageBus._aggregate`` folds a returned
+        SendResult into the delivery verdict. Voting FAILED on, say, a Telegram
+        event because no WebSocket was attached would fault deliveries that in
+        fact succeeded on their own channel.
+
+        For events it does own, the receipt is real. Previously this returned
+        None unconditionally, which ``_aggregate`` reads as ACCEPTED — counted as
+        success by ``DeliveryResult.ok``. So a turn whose answer reached nobody
+        (client gone, no HTTP waiter) still reported success, and the cron run or
+        task that produced it was marked complete. The warning below already knew
+        the reply had been dropped; it just never told the caller.
+        """
         if event.metadata.get("_drop"):
-            return
+            return None
         if not event.channel.startswith("gateway:"):
-            return
+            return None
 
         _, platform = event.channel.split(":", 1)
         session_key = f"gateway:{platform}:{event.chat_id}"
         payload = self._build_outbound_payload(event)
 
+        # An HTTP waiter is a real delivery target: the caller is blocked on this
+        # reply and will receive it, whether or not a WebSocket is also attached.
+        answered_http_waiter = False
         correlation_id = str(event.metadata.get("_inbound_event_id") or event.reply_to_id or "")
         if correlation_id:
             future = self._pending_http.get(correlation_id)
             if future is not None and not future.done() and event.is_final:
                 try:
                     future.set_result(payload)
+                    answered_http_waiter = True
                 except asyncio.InvalidStateError:
                     pass
                 self._pending_http.pop(correlation_id, None)
 
         delivered = await self.broadcast_to_ws(session_key, payload)
+        if delivered or answered_http_waiter:
+            return SendResult(success=True)
+
+        is_final = event.is_final or event.message_kind == "final"
+        if not is_final:
+            # Interim stream frames are level-triggered progress: the final still
+            # carries the full text, so a dropped one is not a delivery failure.
+            # Stay silent rather than faulting the turn over a skipped frame.
+            return None
+
         # A dropped FINAL reply is the severe case: the turn's answer was
         # produced and persisted to history but never reached the live client
         # (closed/rebound socket), and there is no replay — so the CLI shows
         # nothing. Log it loudly with the routing key so the silent-drop is
-        # diagnosable instead of vanishing. Streaming interim frames drop
-        # quietly (the final still carries the full text).
-        if not delivered and (event.is_final or event.message_kind == "final"):
-            logger.warning(
-                "Outbound FINAL reply not delivered to live client "
-                "(session_key={}, event_id={}): socket missing or closed. "
-                "Reply is persisted to history but the attached client missed it.",
-                session_key, event.event_id,
-            )
+        # diagnosable instead of vanishing.
+        logger.warning(
+            "Outbound FINAL reply not delivered to live client "
+            "(session_key={}, event_id={}): socket missing or closed. "
+            "Reply is persisted to history but the attached client missed it.",
+            session_key, event.event_id,
+        )
+        return SendResult(
+            success=False,
+            error="no live gateway client for this session (reply persisted to history only)",
+        )
 
     async def broadcast_to_ws(self, session_key: str, data: dict[str, Any]) -> bool:
         ws = self._ws_clients.get(session_key)

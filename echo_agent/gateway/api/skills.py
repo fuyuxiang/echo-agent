@@ -66,7 +66,12 @@ class SkillsAPI:
         })
 
     async def toggle_skill(self, request: web.Request) -> web.Response:
-        guard = self._guard(request, "skills_toggle")
+        # Enabling a skill changes what the agent can do on its next turn, which
+        # is the same class of change as installing or deleting one — those
+        # already required an admin token while this did not. Admin-guarded also
+        # means CSRF-checked, closing the cross-site POST that could flip a
+        # skill on a localhost gateway.
+        guard = self._admin_guard(request, "skills_toggle")
         if guard is not None:
             return guard
 

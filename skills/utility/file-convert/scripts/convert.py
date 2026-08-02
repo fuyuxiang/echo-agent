@@ -5,6 +5,7 @@ import argparse
 import csv
 import json
 import sys
+from echo_agent.dependencies.skill_require import require  # noqa: E402
 from pathlib import Path
 
 try:
@@ -44,10 +45,7 @@ def json_to_yaml(src, dst):
 
 
 def md_to_html(src, dst):
-    try:
-        import markdown
-    except ImportError:
-        sys.exit("Install: pip install markdown")
+    require("skill.file-convert")
     text = Path(src).read_text()
     html = markdown.markdown(text, extensions=["tables", "fenced_code"])
     Path(dst).write_text(f"<!DOCTYPE html><html><body>{html}</body></html>")

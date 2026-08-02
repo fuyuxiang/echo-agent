@@ -2,19 +2,44 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from pathlib import Path
 
-import aiohttp
 from loguru import logger
+
+from echo_agent.security.net_guard import FetchLimits, GuardedFetchError, guarded_download
 
 
 class MediaCache:
+    """Content-addressed cache of downloaded media.
 
-    def __init__(self, cache_dir: Path, max_size_mb: int = 500):
+    Every URL reaching ``download`` is untrusted: it comes from a POST /message
+    body or an inbound chat attachment, both attacker-controlled. Downloads
+    therefore run through ``security.net_guard.guarded_download``, which applies
+    the same SSRF policy as web_fetch (scheme allowlist, private/metadata
+    address block, DNS pinning, per-hop redirect re-validation) plus a hard size
+    ceiling enforced on the real byte stream.
+    """
+
+    def __init__(
+        self,
+        cache_dir: Path,
+        max_size_mb: int = 500,
+        *,
+        max_file_mb: int = 25,
+        concurrency: int = 4,
+        allow_private: bool = False,
+    ):
         self._cache_dir = cache_dir
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._max_bytes = max_size_mb * 1024 * 1024
+        self._max_file_bytes = max(1, max_file_mb) * 1024 * 1024
+        self._allow_private = allow_private
+        # Bounds parallel downloads across the whole process, not per call site:
+        # callers gather() over a message's URLs, and several messages can be in
+        # flight at once.
+        self._slots = asyncio.Semaphore(max(1, concurrency))
 
     @property
     def cache_dir(self) -> Path:
@@ -26,6 +51,13 @@ class MediaCache:
         platform: str,
         headers: dict[str, str] | None = None,
     ) -> Path | None:
+        """Fetch *url* into the cache, returning its path or None on failure.
+
+        Returns None rather than raising: a rejected or oversized attachment
+        must degrade to "no media" for that one block, never fail the whole
+        turn. The reason is logged — an SSRF rejection at warning level, since
+        it may be a probe worth noticing.
+        """
         url_hash = hashlib.sha256(url.encode()).hexdigest()[:16]
         ext = self._guess_extension(url)
         platform_dir = self._cache_dir / platform
@@ -36,26 +68,41 @@ class MediaCache:
             target.touch()
             return target
 
+        # The served Content-Type names the extension when the URL does not.
+        # Captured from the final hop's headers so a redirect chain's last
+        # response decides, and applied by renaming after the bytes have landed.
+        served_type: list[str] = []
+
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=60)) as resp:
-                    if resp.status != 200:
-                        logger.warning("Media download failed ({}): {}", resp.status, url)
-                        return None
-
-                    content_type = resp.headers.get("Content-Type", "")
-                    if not ext and content_type:
-                        ext = self._ext_from_content_type(content_type)
-                        target = platform_dir / f"{url_hash}{ext}"
-
-                    data = await resp.read()
-                    target.write_bytes(data)
-                    logger.debug("Cached media: {} → {}", url[:80], target.name)
-                    return target
-
+            async with self._slots:
+                await guarded_download(
+                    url,
+                    target,
+                    headers=headers,
+                    limits=FetchLimits(max_bytes=self._max_file_bytes),
+                    allow_private=self._allow_private,
+                    on_content_type=served_type.append,
+                )
+        except GuardedFetchError as e:
+            level = logger.warning if e.blocked_by_policy else logger.info
+            level("Media download refused for {}: {}", url[:80], e)
+            return None
         except Exception as e:
             logger.error("Media download error for {}: {}", url[:80], e)
             return None
+
+        if not ext and served_type:
+            sniffed = self._ext_from_content_type(served_type[0])
+            if sniffed:
+                renamed = platform_dir / f"{url_hash}{sniffed}"
+                try:
+                    target.replace(renamed)
+                    target = renamed
+                except OSError as e:
+                    logger.debug("Could not apply sniffed extension {}: {}", sniffed, e)
+
+        logger.debug("Cached media: {} → {}", url[:80], target.name)
+        return target
 
     def get_cached(self, url: str) -> Path | None:
         url_hash = hashlib.sha256(url.encode()).hexdigest()[:16]

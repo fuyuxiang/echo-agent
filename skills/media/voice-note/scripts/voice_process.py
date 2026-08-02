@@ -6,17 +6,14 @@ import sys
 from pathlib import Path
 
 try:
-    from echo_agent.dependencies import require
+    from echo_agent.dependencies.skill_require import require
     require("skill.voice-note")
 except ImportError:
     pass
 
 
 def transcribe(audio_file, model_size="base", language=None, output=None):
-    try:
-        from faster_whisper import WhisperModel
-    except ImportError:
-        sys.exit("Install: pip install faster-whisper")
+    require("skill.voice-note")
 
     model = WhisperModel(model_size, device="cpu", compute_type="int8")
     segments, info = model.transcribe(audio_file, language=language)

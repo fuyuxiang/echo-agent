@@ -11,6 +11,7 @@ Example:
 """
 
 import sys
+from echo_agent.dependencies.skill_require import require  # noqa: E402
 import zipfile
 from pathlib import Path
 

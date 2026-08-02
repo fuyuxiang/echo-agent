@@ -115,6 +115,16 @@ class ChannelManager:
     def active_channels(self) -> list[str]:
         return [name for name, ch in self._channels.items() if ch.is_running]
 
+    def get_channel(self, name: str) -> BaseChannel | None:
+        """Look up a running adapter by name, or None.
+
+        Exposed so tools can ask a channel about its own capabilities (e.g.
+        send_file checking ``supports_files``) instead of assuming every channel
+        can do everything. Returns the adapter even if not yet started — the
+        capability flags are static and readable before start_all().
+        """
+        return self._channels.get(name)
+
     async def _on_inbound_lifecycle(self, event: InboundEvent) -> None:
         channel = self._channels.get(event.channel)
         if not channel:

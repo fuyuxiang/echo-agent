@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,21 @@ from echo_agent.bus.events import PollRequest
 
 _API = "https://api.telegram.org/bot{token}/{method}"
 _MAX_TEXT = 4096
+
+# Telegram's `parse_mode=HTML` rejects `<`, `>` and `&` that aren't part of
+# a known tag. The agent's text passes straight through with whatever the
+# LLM wrote — code with generics (`Foo<T>`), shell redirections (`> /dev/null`),
+# comparisons (`a & b`), and ampersands all show up in real replies and each
+# one makes Telegram return 400, dropping the whole message. Escape the three
+# metacharacters so the reply always lands. Callers that genuinely want
+# bold/italic markup can mark the event with metadata["telegram_markup"]
+# = True to opt out.
+_TG_HTML_UNSAFE_RE = re.compile(r"[<>&]")
+_TG_HTML_ESCAPE = {"<": "&lt;", ">": "&gt;", "&": "&amp;"}
+
+
+def _escape_html(text: str) -> str:
+    return _TG_HTML_UNSAFE_RE.sub(lambda m: _TG_HTML_ESCAPE[m.group(0)], text)
 _RECONNECT_BACKOFFS = [2, 5, 10, 30, 60]
 
 
@@ -123,6 +139,11 @@ class TelegramChannel(BaseChannel):
         text = event.text or ""
         if not text:
             return None
+        # Default: escape HTML metacharacters so any character the LLM emits
+        # lands. Set metadata["telegram_markup"] = True to send pre-formatted
+        # HTML and skip escaping.
+        if not event.metadata.get("telegram_markup"):
+            text = _escape_html(text)
         chat_id = event.chat_id
         reply_to = event.reply_to_id
         first_result: SendResult | None = None
@@ -160,6 +181,10 @@ class TelegramChannel(BaseChannel):
     ) -> SendResult:
         if not text:
             return SendResult(success=False, message_id=message_id, error="empty text")
+        # Mirror send(): escape HTML unless the caller marked the text as
+        # pre-formatted Telegram markup.
+        if not (metadata or {}).get("telegram_markup"):
+            text = _escape_html(text)
         result = await self._api("editMessageText", json={
             "chat_id": chat_id,
             "message_id": message_id,

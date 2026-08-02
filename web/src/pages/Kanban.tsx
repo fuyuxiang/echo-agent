@@ -21,18 +21,26 @@ import {
   canTransition,
 } from "../stores/kanban";
 import { useWsSubscribe } from "../hooks/use-ws";
+import { useIsAdmin } from "../stores/capabilities";
 import { toast } from "../stores/toast";
 import { TaskDetailDrawer } from "../components/TaskDetailDrawer";
 import i18n from "../i18n";
 import { Plus, X, RotateCcw, Check, Undo2, Play } from "lucide-react";
 
 export function Kanban() {
-  const { t } = useTranslation("kanban");
+  const { t } = useTranslation(["kanban", "common"]);
   const { tasks, loading, loaded, fetchTasks, transitionTask, createTask, updateLocal, addLocal } = useKanbanStore();
   const [newTitle, setNewTitle] = useState("");
   const [showArchived, setShowArchived] = useState(false);
   const [draggingFrom, setDraggingFrom] = useState<string | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
+  // Board writes (create / transition / retry / delete) are admin-guarded
+  // server-side: creating a task enqueues agent work, and a transition can
+  // interrupt a running turn. Probe the scope so a read-only token sees a
+  // read-only board instead of controls that answer 403 on every drag.
+  // null = still probing, treated as allowed to avoid a disabled flash.
+  const isAdmin = useIsAdmin();
+  const canWrite = isAdmin !== false;
 
   // 键盘可拖拽:此前只配了默认(鼠标)传感器,键盘用户完全无法移动任务。
   // PointerSensor 设 8px 激活距离,避免“点击查看详情”被误判成拖拽。
@@ -76,6 +84,12 @@ export function Kanban() {
     setDraggingFrom(null);
     const { active, over } = event;
     if (!over) return;
+    // A read-scope token cannot transition a task. Say so once instead of
+    // optimistically moving the card and snapping it back on the 403.
+    if (!canWrite) {
+      toast.info(i18n.t("common:adminOnly"));
+      return;
+    }
     const targetColumn = over.id as string;
     const taskId = active.id as string;
     const task = tasks.find((t) => t.id === taskId);
@@ -120,12 +134,24 @@ export function Kanban() {
           value={newTitle}
           onChange={(e) => setNewTitle(e.target.value)}
           placeholder={t("newPlaceholder")}
-          className="border rounded px-3 py-1.5 flex-1"
+          disabled={!canWrite}
+          className="border rounded px-3 py-1.5 flex-1 disabled:bg-gray-100 disabled:cursor-not-allowed"
         />
-        <button type="submit" className="bg-blue-600 text-white px-3 py-1.5 rounded flex items-center gap-1">
+        <button
+          type="submit"
+          disabled={!canWrite}
+          title={canWrite ? undefined : t("common:adminOnly")}
+          className="bg-blue-600 text-white px-3 py-1.5 rounded flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
           <Plus size={16} /> {t("create")}
         </button>
       </form>
+
+      {!canWrite && (
+        <div className="bg-amber-50 text-amber-700 rounded-lg px-4 py-2 text-sm mb-2">
+          {t("common:adminOnly")}
+        </div>
+      )}
 
       <div className="flex items-center justify-between mb-3 text-xs text-gray-500">
         <span>{t("autoClaimHint")}</span>
@@ -247,16 +273,20 @@ function KanbanCard({ task, onOpenDetail }: { task: TaskCard; onOpenDetail: (id:
   const { t } = useTranslation("kanban");
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({ id: task.id });
   const actions = useCardActions(task);
+  // Same server-side admin guard as the board's other writes. Read here rather
+  // than threaded down from Kanban: it is a store selector, so both components
+  // observe the same probed value.
+  const canWrite = useIsAdmin() !== false;
 
   const style = transform
     ? { transform: `translate(${transform.x}px, ${transform.y}px)` }
     : undefined;
 
-  // 卡片上展示的可用操作,依状态而定。
-  const canStart = task.status === "pending"; // 收件箱任务显式排队 → 触发 dispatcher 执行
-  const canCancel = ["pending", "queued", "running", "blocked", "suspended"].includes(task.status);
-  const canRetry = task.status === "failed";
-  const inReview = task.status === "review";
+  // 卡片上展示的可用操作,依状态而定。只读令牌下全部禁用。
+  const canStart = canWrite && task.status === "pending"; // 收件箱任务显式排队 → 触发 dispatcher 执行
+  const canCancel = canWrite && ["pending", "queued", "running", "blocked", "suspended"].includes(task.status);
+  const canRetry = canWrite && task.status === "failed";
+  const inReview = canWrite && task.status === "review";
 
   const detail =
     task.status === "failed"

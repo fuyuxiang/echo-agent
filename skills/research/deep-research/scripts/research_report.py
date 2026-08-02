@@ -3,12 +3,10 @@
 
 import argparse
 import sys
+from echo_agent.dependencies.skill_require import require  # noqa: E402
 from datetime import date
 
-try:
-    from duckduckgo_search import DDGS
-except ImportError:
-    sys.exit("Install: pip install duckduckgo_search")
+require("skill.web-search")
 
 try:
     import trafilatura

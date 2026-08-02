@@ -3,11 +3,9 @@
 
 import argparse
 import sys
+from echo_agent.dependencies.skill_require import require  # noqa: E402
 
-try:
-    import trafilatura
-except ImportError:
-    sys.exit("Install: pip install trafilatura")
+require("skill.web-extract")
 
 
 def extract(url: str, output_format: str = "txt", include_links: bool = False) -> str:

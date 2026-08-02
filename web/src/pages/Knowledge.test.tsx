@@ -49,25 +49,27 @@ describe("Knowledge 页", () => {
     expect(screen.getByText(/索引已过期/)).toBeInTheDocument();
   });
 
-  it("非 admin 令牌下禁用上传与删除,但重建仍可用", async () => {
+  it("非 admin 令牌下禁用上传、删除与重建", async () => {
     mockApi(false);
     renderKnowledge();
 
     await waitFor(() => expect(screen.getByText("guide.md")).toBeInTheDocument());
     expect(screen.getByRole("button", { name: /上传文档/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: "删除文档 guide.md" })).toBeDisabled();
-    // rebuild 不走 _admin_guard,不该被一起禁掉。
-    expect(screen.getByRole("button", { name: /重建索引/ })).toBeEnabled();
+    // rebuild 会重读全部文档并重算向量、且重写其他调用方正在查询的索引，
+    // 已与 upload/delete 一同收口到 _admin_guard，因此这里也必须禁用。
+    expect(screen.getByRole("button", { name: /重建索引/ })).toBeDisabled();
     expect(screen.getAllByText(/需要管理员令牌/).length).toBeGreaterThan(0);
   });
 
-  it("admin 令牌下上传与删除可用", async () => {
+  it("admin 令牌下上传、删除与重建都可用", async () => {
     mockApi(true);
     renderKnowledge();
 
     await waitFor(() => expect(screen.getByText("guide.md")).toBeInTheDocument());
     expect(screen.getByRole("button", { name: /上传文档/ })).toBeEnabled();
     expect(screen.getByRole("button", { name: "删除文档 guide.md" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /重建索引/ })).toBeEnabled();
   });
 
   it("删除确认里说明会重建整库,取消则不发请求", async () => {

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from echo_agent.knowledge.index import KnowledgeIndex
+from echo_agent.knowledge.index import _INDEX_FORMAT, KnowledgeIndex
 
 
 def _mk_index(tmp_path: Path) -> KnowledgeIndex:
@@ -21,7 +21,10 @@ def test_v2_index_has_content_hash(tmp_path: Path):
     idx.rebuild()
     import json
     data = json.loads((tmp_path / "idx.json").read_text(encoding="utf-8"))
-    assert data["format"] == "echo-agent-knowledge-v2"
+    # Tracks the constant, not a frozen literal: the format is bumped whenever
+    # the on-disk shape gains a field (v3 added the file manifest), and this
+    # test's real invariant is "a rebuild writes the current format".
+    assert data["format"] == _INDEX_FORMAT
     assert all("content_hash" in c for c in data["chunks"])
 
 
@@ -32,7 +35,7 @@ def test_keyword_scores_shared(tmp_path: Path):
     assert results and "Alpha" in results[0].title
 
 
-def test_v1_index_auto_upgrades_to_v2(tmp_path: Path):
+def test_legacy_index_auto_upgrades_to_current_format(tmp_path: Path):
     import json
 
     docs = tmp_path / "docs"
@@ -64,7 +67,7 @@ def test_v1_index_auto_upgrades_to_v2(tmp_path: Path):
     idx.ensure_ready(auto_index=True)
 
     data = json.loads(index_path.read_text(encoding="utf-8"))
-    assert data["format"] == "echo-agent-knowledge-v2"
+    assert data["format"] == _INDEX_FORMAT
     assert data["chunks"]
     assert all("content_hash" in c for c in data["chunks"])
 

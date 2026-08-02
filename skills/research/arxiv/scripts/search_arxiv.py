@@ -11,6 +11,7 @@ Usage:
     python search_arxiv.py --id 2402.03300,2401.12345
 """
 import sys
+from echo_agent.dependencies.skill_require import require  # noqa: E402
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET

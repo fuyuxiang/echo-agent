@@ -39,6 +39,17 @@ class BaseChannel(ABC):
     # CLI TUI does from a clarify_request frame). IM channels can only show text,
     # so the clarify tool must not promise the model a clickable picker there.
     supports_interactive_choices: bool = False
+    # Whether ``send()`` actually uploads FILE / IMAGE content blocks, rather
+    # than sending only the accompanying caption text.
+    #
+    # Most channels consume `event.text` and ignore structured media blocks
+    # entirely, so a send_file call to them delivered the caption and silently
+    # dropped the attachment — while the tool told the model "File sent". A
+    # channel that implements real uploads sets this True; send_file consults it
+    # and tells the model the truth when it is False. Default False is the
+    # conservative reading: a channel that has not been taught to upload cannot
+    # claim it.
+    supports_files: bool = False
 
     def __init__(self, config: Any, bus: MessageBus):
         self.config = config

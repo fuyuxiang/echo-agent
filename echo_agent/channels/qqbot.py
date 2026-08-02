@@ -115,6 +115,10 @@ class QQBotChannel(BaseChannel):
         self._max_md_unsupported_entries = 10000
         # Media support
         self._media_enabled = config.media_enabled
+        # Per-instance, not a class attribute: uploads are conditional on config
+        # here, so claiming file support unconditionally would let send_file
+        # report success on a deployment that has media turned off.
+        self.supports_files = bool(config.media_enabled)
         self._parse_tags = config.media_parse_tags
         self._max_file_size = config.media_max_file_size_mb * 1024 * 1024
         self._upload_cache: UploadCache | None = (

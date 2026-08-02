@@ -282,6 +282,9 @@ class AgentLoop:
         media_cache = MediaCache(
             cache_dir=workspace / config.gateway.media_cache_dir,
             max_size_mb=config.gateway.media_cache_max_mb,
+            max_file_mb=config.gateway.media_max_file_mb,
+            concurrency=config.gateway.media_download_concurrency,
+            allow_private=config.gateway.media_allow_private_addresses,
         )
         from echo_agent.agent.media.understanding import default_understanders
         understanders = default_understanders(

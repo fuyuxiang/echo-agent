@@ -6,15 +6,12 @@ import asyncio
 import sys
 
 try:
-    from echo_agent.dependencies import require
+    from echo_agent.dependencies.skill_require import require
     require("skill.tts-voice")
 except ImportError:
     pass
 
-try:
-    import edge_tts
-except ImportError:
-    sys.exit("Install: pip install edge-tts")
+require("skill.tts-voice")
 
 
 async def synthesize(text, voice="zh-CN-XiaoxiaoNeural", output="output.mp3", rate="+0%"):

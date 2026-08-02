@@ -507,3 +507,123 @@ def _stub_ui(select_returns: str):
         note=lambda *a, **kw: None,
         Choice=tuple,
     )
+
+
+# ── 注册前的可启动性校验 ──────────────────────────────────────────────────────
+#
+# 旧默认（host=0.0.0.0 + 空 apiTokens）会被 _check_bind_safety 拒绝启动，而
+# quickstart 从不进入 gateway 段、因此永远不会配 token —— 于是它注册出的服务
+# 每次启动都失败。默认值已改回 127.0.0.1；这里守住"用户手动配成暴露态又没有
+# token"时，向导必须当场解释而不是注册一个注定起不来的 unit。
+
+
+def _exposed_config(**auth):
+    cfg = {"gateway": {"enabled": True, "host": "0.0.0.0", "port": 58123}}
+    if auth:
+        cfg["gateway"]["auth"] = auth
+    return cfg
+
+
+def test_exposed_without_token_refuses_to_register(harness):
+    harness.state["runtime"] = _runtime(GatewayState.NOT_INSTALLED)
+    harness.answers.append(True)  # 若真去问了，这个 True 会让它注册
+
+    wiz._offer_gateway_start(_exposed_config(), None)
+
+    assert harness.calls == [], "不该注册或启动任何服务"
+    assert harness.asked == [], "不该询问 —— 应直接解释原因"
+    out = harness.out()
+    assert "0.0.0.0" in out and ("127.0.0.1" in out or "apiTokens" in out)
+
+
+def test_exposed_with_api_token_proceeds(harness):
+    harness.state["runtime"] = _runtime(GatewayState.NOT_INSTALLED)
+    harness.answers.append(True)
+
+    wiz._offer_gateway_start(_exposed_config(api_tokens=["s3cret"]), None)
+
+    assert [a for a, _ in harness.calls] == ["install", "start"]
+
+
+def test_exposed_with_admin_token_only_proceeds(harness):
+    """admin token 也算已认证 —— 与 _check_bind_safety 的口径一致，
+    否则只配了 adminTokens 的部署会被误判为无法启动。"""
+    harness.state["runtime"] = _runtime(GatewayState.NOT_INSTALLED)
+    harness.answers.append(True)
+
+    wiz._offer_gateway_start(_exposed_config(admin_tokens=["adm"]), None)
+
+    assert [a for a, _ in harness.calls] == ["install", "start"]
+
+
+def test_camel_case_token_keys_are_honoured(harness):
+    """配置支持驼峰别名；只认下划线会把已配 token 的部署判成不可启动。"""
+    harness.state["runtime"] = _runtime(GatewayState.NOT_INSTALLED)
+    harness.answers.append(True)
+
+    wiz._offer_gateway_start(_exposed_config(apiTokens=["s3cret"]), None)
+
+    assert [a for a, _ in harness.calls] == ["install", "start"]
+
+
+def test_loopback_without_token_is_fine(harness):
+    """本机回环无需 token —— 这正是新的默认形态，必须能一路注册成功。"""
+    harness.state["runtime"] = _runtime(GatewayState.NOT_INSTALLED)
+    harness.answers.append(True)
+
+    wiz._offer_gateway_start(_config(), None)
+
+    assert [a for a, _ in harness.calls] == ["install", "start"]
+
+
+def test_precheck_mirrors_server_bind_safety():
+    """向导的判据是 server._check_bind_safety 的副本（向导只有一份可能尚未通过
+    schema 校验的 YAML dict，构造 GatewayServer 去问代价过大）。这里逐组合比对
+    两者结论，使任何一侧单独改动都会被发现。"""
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
+    from echo_agent.config.schema import Config
+    from echo_agent.gateway.server import GatewayServer
+
+    cases = [
+        ("127.0.0.1", [], []),
+        ("localhost", [], []),
+        ("", [], []),
+        ("0.0.0.0", [], []),
+        ("0.0.0.0", ["t"], []),
+        ("0.0.0.0", [], ["a"]),
+        ("192.168.1.5", [], []),
+        ("192.168.1.5", ["t"], []),
+    ]
+    for host, api, admin in cases:
+        cfg = Config()
+        cfg.gateway.host = host
+        cfg.gateway.auth.api_tokens = list(api)
+        cfg.gateway.auth.admin_tokens = list(admin)
+        server = GatewayServer(
+            cfg.gateway, MagicMock(), MagicMock(), MagicMock(), Path("."),
+        )
+        try:
+            server._check_bind_safety()
+            server_refuses = False
+        except RuntimeError:
+            server_refuses = True
+
+        wizard_cfg = {"gateway": {
+            "enabled": True, "host": host,
+            "auth": {"api_tokens": list(api), "admin_tokens": list(admin)},
+        }}
+        wizard_refuses = bool(wiz._unstartable_reason(wizard_cfg))
+
+        assert wizard_refuses == server_refuses, (
+            f"host={host!r} api={api} admin={admin}: "
+            f"向导判定 {wizard_refuses}，服务端判定 {server_refuses}"
+        )
+
+
+def test_disabled_gateway_is_not_flagged_unstartable():
+    """gateway.enabled=false 时不存在"启动失败"问题，不该报不可启动。"""
+    assert wiz._unstartable_reason(
+        {"gateway": {"enabled": False, "host": "0.0.0.0"}}
+    ) == ""

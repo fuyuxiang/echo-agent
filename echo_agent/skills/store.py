@@ -158,6 +158,14 @@ class SkillStore:
                 return direct
         return None
 
+    def find_skill_dir(self, name: str) -> Path | None:
+        """Public version of ``_find_skill_dir``.
+
+        Exposed so the runnable script path (skill_run) can pin its cwd to
+        the skill root without reaching into a private API.
+        """
+        return self._find_skill_dir(name)
+
     def _read_meta(self, skill_dir: Path) -> SkillMeta | None:
         skill_md = skill_dir / "SKILL.md"
         if not skill_md.exists():

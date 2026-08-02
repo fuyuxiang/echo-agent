@@ -4,11 +4,9 @@
 import argparse
 import json
 import sys
+from echo_agent.dependencies.skill_require import require  # noqa: E402
 
-try:
-    from duckduckgo_search import DDGS
-except ImportError:
-    sys.exit("Install: pip install duckduckgo_search")
+require("skill.web-search")
 
 
 def search_text(query: str, max_results: int = 5, region: str = "wt-wt"):

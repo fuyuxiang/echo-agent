@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from pathlib import Path
 from typing import Any
 
-from echo_agent.agent.executors.base import BaseExecutor, ExecRequest
+from echo_agent.agent.executors.base import BaseExecutor, ExecRequest, prepend_interpreter_bin
 from echo_agent.agent.proc_lifecycle import spawn_shell, terminate_tree
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
 from echo_agent.security.guards import evaluate_shell_command
@@ -136,7 +136,7 @@ class ShellTool(Tool):
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=cwd,
-                    env={**os.environ, "WORKSPACE": self._workspace},
+                    env={**prepend_interpreter_bin(dict(os.environ)), "WORKSPACE": self._workspace},
                 )
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
                 output = stdout.decode(errors="replace")

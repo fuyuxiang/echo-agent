@@ -19,7 +19,8 @@ export function Skills() {
   const { t } = useTranslation(["skills", "common"]);
   const { data, loading, error, refetch } = useApi<{ skills: Skill[] }>("/skills");
   const confirm = useConfirm();
-  // delete / import / deps-install are admin-guarded; list and toggle are not.
+  // delete / import / deps-install / toggle are admin-guarded; only list and
+  // read are open to a plain api token.
   const isAdmin = useIsAdmin();
   const canAdmin = isAdmin !== false;
   const [selected, setSelected] = useState<string | null>(null);
@@ -149,7 +150,9 @@ export function Skills() {
                       aria-checked={skill.enabled}
                       aria-label={t(skill.enabled ? "disableAria" : "enableAria", { name: skill.name })}
                       onClick={() => toggle(skill.name)}
-                      className={`w-10 h-5 rounded-full transition-colors shrink-0 ${skill.enabled ? "bg-blue-600" : "bg-gray-300"}`}
+                      disabled={!canAdmin}
+                      title={canAdmin ? undefined : t("common:adminOnly")}
+                      className={`w-10 h-5 rounded-full transition-colors shrink-0 disabled:opacity-50 disabled:cursor-not-allowed ${skill.enabled ? "bg-blue-600" : "bg-gray-300"}`}
                     >
                       <div className={`w-4 h-4 bg-white rounded-full shadow transition-transform ${skill.enabled ? "translate-x-5" : "translate-x-0.5"}`} />
                     </button>

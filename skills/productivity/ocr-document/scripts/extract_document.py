@@ -3,14 +3,12 @@
 
 import argparse
 import sys
+from echo_agent.dependencies.skill_require import require  # noqa: E402
 from pathlib import Path
 
 
 def extract_pdf(filepath):
-    try:
-        import pymupdf
-    except ImportError:
-        sys.exit("Install: pip install pymupdf")
+    require("skill.ocr-document")
     doc = pymupdf.open(filepath)
     text = ""
     for page in doc:
@@ -20,23 +18,14 @@ def extract_pdf(filepath):
 
 
 def extract_docx(filepath):
-    try:
-        from docx import Document
-    except ImportError:
-        sys.exit("Install: pip install python-docx")
+    require("skill.excel-author")
     doc = Document(filepath)
     return "\n".join(p.text for p in doc.paragraphs)
 
 
 def extract_image_ocr(filepath):
-    try:
-        from PIL import Image
-    except ImportError:
-        sys.exit("Install: pip install Pillow")
-    try:
-        import pytesseract
-    except ImportError:
-        sys.exit("Install: pip install pytesseract (and Tesseract OCR binary)")
+    require("skill.ocr-document")
+    require("skill.ocr-document")
     img = Image.open(filepath)
     return pytesseract.image_to_string(img, lang="chi_sim+eng")
 

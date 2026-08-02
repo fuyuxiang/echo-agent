@@ -5,6 +5,7 @@ Minimal validator for echo-agent skill folders.
 
 import re
 import sys
+from echo_agent.dependencies.skill_require import require  # noqa: E402
 from pathlib import Path
 from typing import Optional
 

@@ -4,6 +4,7 @@
 import argparse
 import json
 import sys
+from echo_agent.dependencies.skill_require import require  # noqa: E402
 import urllib.request
 from datetime import date, datetime
 
