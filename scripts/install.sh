@@ -62,6 +62,9 @@ PYTHON_VERSION="3.11"
 NODE_VERSION="22"
 BRANCH="master"
 RUN_SETUP=true
+# Force the post-install wizard even when a valid provider configuration is
+# already present. Normal upgrades keep the user's working config untouched.
+FORCE_SETUP=false
 # Probing: measure real latency to each candidate download source and use the
 # fastest one, instead of guessing by GeoIP/locale. --no-mirror-probe turns off
 # ALL THREE probes (PyPI index, code host, Node.js dist mirror) — the name predates
@@ -141,6 +144,7 @@ require_value() {
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --skip-setup) RUN_SETUP=false; shift ;;
+        --reconfigure) FORCE_SETUP=true; shift ;;
         --branch) require_value "$1" "${2:-}"; BRANCH="$2"; shift 2 ;;
         --dir) require_value "$1" "${2:-}"; INSTALL_DIR="$2"; shift 2 ;;
         --no-mirror-probe) MIRROR_PROBE=false; shift ;;
@@ -169,6 +173,8 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  --skip-setup       Skip interactive setup wizard"
+            echo "  --reconfigure      Run setup even when an existing valid provider"
+            echo "                     configuration is detected"
             echo "  --branch NAME      Git branch to install (default: master)"
             echo "  --dir PATH         Installation directory (default: ~/.echo-agent/echo-agent)"
             echo "  --no-mirror-probe  Disable ALL download-source speed probes:"
@@ -224,6 +230,11 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [ "$RUN_SETUP" != true ] && [ "$FORCE_SETUP" = true ]; then
+    echo "Options --skip-setup and --reconfigure cannot be used together." >&2
+    exit 1
+fi
 
 # Resolve paths that derive from the options above. Doing this after parsing is
 # what makes --dir actually take effect.
@@ -1777,8 +1788,47 @@ service_installed_by_wizard() {
     [ -f "$HOME/.config/systemd/user/echo-agent.service" ]
 }
 
+# Classify the install workspace's existing user configuration without parsing
+# YAML in shell. Prints the discovered config path (when any) and returns:
+#   0 = valid config with at least one named provider (setup already complete)
+#   1 = no config, or config is valid but provider setup is incomplete
+#   2 = config exists but cannot be parsed/validated
+#
+# find_local_config_file is intentional: the installer is deciding only for its
+# own $ECHO_HOME, so it must not fall back to a config from another workspace.
+existing_setup_config_state() {
+    local venv_python="$INSTALL_DIR/venv/bin/python"
+    if [ ! -x "$venv_python" ]; then
+        return 1
+    fi
+
+    "$venv_python" - "$ECHO_HOME" <<'PYEOF'
+import sys
+from pathlib import Path
+
+from echo_agent.cli.setup import has_any_provider_configured
+from echo_agent.config.loader import find_local_config_file, load_config
+
+workspace = Path(sys.argv[1]).expanduser()
+path = find_local_config_file(workspace)
+if path is None or not path.exists():
+    raise SystemExit(1)
+
+print(path)
+try:
+    # Full schema validation catches malformed YAML and values that the runtime
+    # would reject. Provider readiness deliberately inspects the user file, not
+    # packaged defaults or environment overrides.
+    load_config(config_path=path)
+    ready = has_any_provider_configured(config_path=path)
+except Exception:
+    raise SystemExit(2) from None
+raise SystemExit(0 if ready else 1)
+PYEOF
+}
+
 run_setup_wizard() {
-    local echo_cmd
+    local echo_cmd config_path="" config_state=1
 
     if [ "$RUN_SETUP" != true ]; then
         log_info "Skipping setup wizard (--skip-setup)"
@@ -1788,6 +1838,29 @@ run_setup_wizard() {
     echo_cmd="$INSTALL_DIR/venv/bin/echo-agent"
     if [ ! -x "$echo_cmd" ]; then
         return 0
+    fi
+
+    if [ "$FORCE_SETUP" != true ]; then
+        if config_path="$(existing_setup_config_state)"; then
+            log_success "Existing Echo Agent configuration detected: $config_path"
+            log_info "Keeping the existing configuration. To change it later: echo-agent setup"
+            return 0
+        else
+            config_state=$?
+        fi
+
+        if [ "$config_state" -eq 2 ]; then
+            log_warn "Existing Echo Agent configuration is invalid: ${config_path:-$ECHO_HOME}"
+            log_warn "Keeping it unchanged and skipping setup to avoid overwriting it."
+            log_info "Inspect it with: echo-agent config validate -w '$ECHO_HOME'"
+            return 0
+        fi
+        if [ -n "$config_path" ]; then
+            log_warn "Existing Echo Agent configuration is incomplete: $config_path"
+            log_info "At least one named Provider is required; continuing to setup."
+        fi
+    else
+        log_info "Reconfiguration requested (--reconfigure)."
     fi
 
     if prompt_yes_no "Run Echo Agent setup now?" "yes"; then

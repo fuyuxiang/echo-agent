@@ -301,3 +301,10 @@ def test_has_provider_false_with_empty_providers(tmp_path):
     f.write_text("models:\n  providers: []\n", encoding="utf-8")
     with patch(f"{_T}.resolve_config_file", return_value=f):
         assert setup_mod.has_any_provider_configured() is False
+
+
+def test_has_provider_false_with_unnamed_provider(tmp_path):
+    f = tmp_path / "echo-agent.yaml"
+    f.write_text("models:\n  providers:\n    - {}\n", encoding="utf-8")
+    with patch(f"{_T}.resolve_config_file", return_value=f):
+        assert setup_mod.has_any_provider_configured() is False

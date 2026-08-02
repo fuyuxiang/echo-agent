@@ -1853,7 +1853,11 @@ def has_any_provider_configured(config_path: str | Path | None = None, workspace
     with open(config_file, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     providers = (data.get("models", {}) or {}).get("providers", []) or []
-    return bool(providers)
+    # An empty mapping/list item is not a usable provider. Keeping this predicate
+    # aligned with the doctor capability check prevents the installer from
+    # treating ``providers: [{}]`` as a completed setup and silently skipping the
+    # wizard.
+    return any(isinstance(provider, dict) and provider.get("name") for provider in providers)
 
 
 def prompt_first_run_setup(
