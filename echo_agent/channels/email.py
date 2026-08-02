@@ -9,6 +9,7 @@ import imaplib
 import json
 import re
 import smtplib
+from dataclasses import dataclass
 from pathlib import Path
 from email.header import decode_header
 
@@ -19,6 +20,23 @@ from echo_agent.bus.queue import MessageBus
 from echo_agent.channels.base import BaseChannel, SendResult
 from echo_agent.config.schema import EmailChannelConfig
 from echo_agent.utils.text import html_to_text
+
+
+@dataclass(frozen=True)
+class _FetchedEmail:
+    """One UID in the contiguous IMAP batch returned by ``_fetch_imap``.
+
+    Filtered senders and empty/malformed messages are represented too, with
+    ``publish=False``.  The async poller can then advance one contiguous UID
+    watermark without either retrying permanent skips forever or jumping over
+    a publishable message that the inbound bus did not accept.
+    """
+
+    uid: int
+    from_addr: str = ""
+    subject: str = ""
+    body: str = ""
+    publish: bool = False
 
 
 class EmailChannel(BaseChannel):
@@ -122,30 +140,50 @@ class EmailChannel(BaseChannel):
         while self._running:
             try:
                 messages = await loop.run_in_executor(None, self._fetch_imap)
-                for uid, from_addr, subject, body in messages:
-                    self._subject_map[from_addr] = subject
-                    # Mark-after-publish: the watermark already advanced
-                    # inside ``_fetch_imap`` so a transient bus failure here
-                    # will be retried on the next poll (the UID stays in
-                    # the watermark's search range). Publish returns a
-                    # bool; ``accepted=False`` just means this turn didn't
-                    # hand it off — we keep moving forward.
-                    await self._handle_message(
-                        sender_id=from_addr, chat_id=from_addr, text=body,
-                        metadata={"subject": subject, "uid": uid},
-                    )
+                await self._process_fetched(messages)
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error("Email poll error: {}", e)
             await asyncio.sleep(self.config.poll_interval_seconds)
 
-    def _fetch_imap(self) -> list[tuple[str, str, str, str]]:
-        """Return ``[(uid_str, from_addr, subject, body), ...]`` for unseen mail.
+    async def _process_fetched(self, messages: list[_FetchedEmail]) -> None:
+        """Publish and acknowledge a contiguous batch in ascending UID order.
+
+        A UID becomes durable only after its inbound event was accepted by the
+        bus.  Filtered/empty messages need no publish and are acknowledged
+        immediately.  On the first failed publish we stop, leaving that UID and
+        every later UID above the persisted watermark for the next poll.
+        """
+        for message in messages:
+            if message.publish:
+                self._subject_map[message.from_addr] = message.subject
+                accepted = await self._handle_message(
+                    sender_id=message.from_addr,
+                    chat_id=message.from_addr,
+                    text=message.body,
+                    metadata={"subject": message.subject, "uid": str(message.uid)},
+                )
+                if accepted is None:
+                    logger.warning(
+                        "Email UID {} was not accepted by the inbound bus; "
+                        "keeping watermark at {} for retry",
+                        message.uid,
+                        self._last_seen_uid,
+                    )
+                    break
+
+            self._last_seen_uid = max(self._last_seen_uid, message.uid)
+            self._save_state()
+
+    def _fetch_imap(self) -> list[_FetchedEmail]:
+        """Fetch the contiguous UID batch above the durable watermark.
 
         Uses UID SEARCH (not the sequence-number SEARCH), and only asks the
-        server for UIDs above the persisted watermark. Two prior bugs this
-        fixes:
+        server for UIDs above the persisted watermark.  This synchronous method
+        deliberately does *not* mutate or save the watermark: publish happens
+        later on the event loop, and only a successfully accepted inbound event
+        may acknowledge a publishable email.
 
         * The old code did ``conn.search(None, "UNSEEN")`` and stored the
           returned sequence numbers in ``_processed_uids``. Sequence numbers
@@ -155,13 +193,14 @@ class EmailChannel(BaseChannel):
         * The dedup state was in-memory only, so every restart re-fetched
           every UNSEEN message and republished them.
 
-        ``is_allowed`` and the body parse run inside this fetch (rather than
-        the poll loop) so the poll loop can advance the watermark uniformly
-        for every seen UID — a sender outside ``allow_from`` must not keep
-        the watermark pinned and force the server to rescan the same UIDs
-        forever.
+        Filtered senders and empty bodies are returned as non-publishable
+        records.  They still occupy their place in the ordered batch, allowing
+        the poller to acknowledge them without skipping over an earlier email
+        whose publish failed.
         """
-        results: list[tuple[str, str, str, str]] = []
+        results: list[_FetchedEmail] = []
+        conn = None
+        watermark = self._last_seen_uid
         try:
             if self.config.use_ssl:
                 conn = imaplib.IMAP4_SSL(self.config.imap_host, self.config.imap_port)
@@ -169,36 +208,59 @@ class EmailChannel(BaseChannel):
                 conn = imaplib.IMAP4(self.config.imap_host, self.config.imap_port)
             conn.login(self.config.username, self.config.password)
             conn.select("INBOX")
-            _, data = conn.uid("SEARCH", None, f"UID {self._last_seen_uid + 1}:*")
+            _, data = conn.uid("SEARCH", None, f"UID {watermark + 1}:*")
             uids = data[0].split() if data[0] else []
-            for uid in uids:
-                uid_str = uid.decode()
-                # Advance the watermark unconditionally for every UID we
-                # see: the watermark is the high-water mark of *seen*
-                # messages, not the set of UIDs we actually published.
-                # Without this an empty-body message (or one filtered out
-                # by ``allow_from``) would pin the watermark and force the
-                # server to rescan it on every poll.
+            uid_values: list[int] = []
+            for raw_uid in uids:
                 try:
-                    self._last_seen_uid = max(self._last_seen_uid, int(uid_str))
+                    uid = int(raw_uid.decode())
                 except ValueError:
+                    logger.warning("Ignoring invalid IMAP UID: {!r}", raw_uid)
                     continue
-                _, msg_data = conn.uid("FETCH", uid_str, "(RFC822)")
+                # RFC sequence ranges can resolve ``N:*`` backwards when N is
+                # above the mailbox's current maximum.  Filter the server's
+                # result explicitly so the last acknowledged UID is not fetched
+                # and published again on an otherwise empty poll.
+                if uid > watermark:
+                    uid_values.append(uid)
+
+            for uid in sorted(set(uid_values)):
+                _, msg_data = conn.uid("FETCH", str(uid), "(RFC822)")
                 if not msg_data or not msg_data[0]:
-                    continue
+                    # Do not jump over a UID we failed to fetch.  Retrying the
+                    # same contiguous suffix is safer than permanently losing
+                    # one message because a server returned a partial response.
+                    logger.warning("IMAP FETCH returned no body for UID {}; retrying later", uid)
+                    break
                 raw = msg_data[0][1]
-                msg = email.message_from_bytes(raw)
-                from_addr = self._parse_address(msg.get("From", ""))
-                if not self.is_allowed(from_addr):
-                    continue
-                subject = self._decode_header(msg.get("Subject", ""))
-                body = self._extract_body(msg)
-                if body:
-                    results.append((uid_str, from_addr, subject, body))
-            self._save_state()
-            conn.logout()
+                try:
+                    msg = email.message_from_bytes(raw)
+                    from_addr = self._parse_address(msg.get("From", ""))
+                    if not self.is_allowed(from_addr):
+                        results.append(_FetchedEmail(uid=uid))
+                        continue
+                    subject = self._decode_header(msg.get("Subject", ""))
+                    body = self._extract_body(msg)
+                    results.append(_FetchedEmail(
+                        uid=uid,
+                        from_addr=from_addr,
+                        subject=subject,
+                        body=body,
+                        publish=bool(body),
+                    ))
+                except Exception as e:
+                    # MIME parsing is deterministic for a given raw message. A
+                    # poison email must not pin every later UID forever.
+                    logger.warning("Skipping malformed email UID {}: {}", uid, e)
+                    results.append(_FetchedEmail(uid=uid))
         except Exception as e:
             logger.error("IMAP fetch error: {}", e)
+        finally:
+            if conn is not None:
+                try:
+                    conn.logout()
+                except Exception:
+                    pass
         return results
 
     @staticmethod
