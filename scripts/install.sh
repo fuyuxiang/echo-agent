@@ -1337,15 +1337,31 @@ prefetch_embedding_model() {
         return 0
     fi
 
-    # Our own release mirrors first; on success the fastembed load below is an
-    # offline cache hit and doubles as the verification step.
-    fetch_embedding_model_from_release || true
-
-    log_info "Prefetching local embedding model '$EMBED_MODEL' into $EMBED_CACHE_DIR ..."
+    # Our own release mirrors first. Remember whether they produced a complete
+    # cache: fastembed 0.8 probes its HF source even when the legacy GCS-layout
+    # cache is already present unless local_files_only is explicitly set. On CN
+    # networks that redundant probe can route the final ONNX file through Xet,
+    # fail with a CAS 401, and falsely report a failed prefetch despite the
+    # release model being fully usable.
+    local release_ready=0
+    if fetch_embedding_model_from_release; then
+        release_ready=1
+        log_info "Verifying release-cached embedding model offline ..."
+    else
+        log_info "Prefetching local embedding model '$EMBED_MODEL' into $EMBED_CACHE_DIR ..."
+    fi
     mkdir -p "$EMBED_CACHE_DIR"
 
     # Tight HF timeouts so a dead mirror fails fast and fastembed reaches its GCS
     # fallback within the budget. HF_ENDPOINT respects an operator override.
+    # Disable hf_xet by default on the online path: a CAS reconstruction 401
+    # escapes fastembed's own GCS fallback instead of behaving like a normal
+    # source miss. Operators can still explicitly opt back in with
+    # HF_HUB_DISABLE_XET=0.
+    #
+    # A ready release cache is additionally pinned offline, both via the HF env
+    # guard and TextEmbedding(local_files_only=True). This makes the verification
+    # prove what the runtime actually needs and prevents any redundant network IO.
     #
     # The whole command is the condition of an `if`, which is what actually makes
     # a failure non-fatal: `trap - ERR` alone does NOT suppress `set -e`, so the
@@ -1354,17 +1370,27 @@ prefetch_embedding_model() {
     # registration, and leaving the user with no `echo-agent` command at all.
     # This step is pure optimization: the runtime re-downloads on demand with
     # backoff (echo_agent/memory/local_embed.py), so it must never be fatal.
-    local rc=0
-    if HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-15}" \
+    local rc=0 hf_hub_offline="${HF_HUB_OFFLINE:-0}"
+    if [ "$release_ready" -eq 1 ]; then
+        hf_hub_offline=1
+    fi
+    if HF_HUB_OFFLINE="$hf_hub_offline" \
+       HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}" \
+       HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-15}" \
        HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-15}" \
        HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}" \
        FASTEMBED_CACHE_PATH="$EMBED_CACHE_DIR" \
-       run_with_timeout "$EMBED_PREFETCH_TIMEOUT" "$venv_python" - "$EMBED_MODEL" "$EMBED_CACHE_DIR" <<'PYEOF'
+       run_with_timeout "$EMBED_PREFETCH_TIMEOUT" "$venv_python" - \
+            "$EMBED_MODEL" "$EMBED_CACHE_DIR" "$release_ready" <<'PYEOF'
 import sys
 model_name, cache_dir = sys.argv[1], sys.argv[2]
+release_ready = sys.argv[3] == "1"
 try:
     from fastembed import TextEmbedding
-    emb = TextEmbedding(model_name=model_name, cache_dir=cache_dir)
+    kwargs = {"model_name": model_name, "cache_dir": cache_dir}
+    if release_ready:
+        kwargs["local_files_only"] = True
+    emb = TextEmbedding(**kwargs)
     # Force a real inference so the ONNX weights are materialized, not just metadata.
     next(iter(emb.embed(["预热"])), None)
     print("ok")
@@ -1380,11 +1406,15 @@ PYEOF
 
     if [ "$rc" -eq 0 ]; then
         log_success "Embedding model cached (offline-ready)."
+    elif [ "$release_ready" -eq 1 ]; then
+        log_warn "Release embedding cache is present but failed offline verification (rc=$rc)."
+        log_warn "Memory vector search starts in keyword-only mode. To diagnose locally:"
+        log_warn "  HF_HUB_OFFLINE=1 FASTEMBED_CACHE_PATH='$EMBED_CACHE_DIR' $INSTALL_DIR/venv/bin/python -c \"from fastembed import TextEmbedding; m=TextEmbedding(model_name='$EMBED_MODEL', cache_dir='$EMBED_CACHE_DIR', local_files_only=True); next(iter(m.embed(['预热'])), None)\""
     else
         log_warn "Embedding model prefetch failed or timed out (rc=$rc)."
         log_warn "Memory vector search starts in keyword-only mode and retries the"
         log_warn "download at runtime. To retry now:"
-        log_warn "  FASTEMBED_CACHE_PATH='$EMBED_CACHE_DIR' $INSTALL_DIR/venv/bin/python -c \"from fastembed import TextEmbedding; TextEmbedding(model_name='$EMBED_MODEL', cache_dir='$EMBED_CACHE_DIR')\""
+        log_warn "  HF_HUB_DISABLE_XET='${HF_HUB_DISABLE_XET:-1}' HF_ENDPOINT='${HF_ENDPOINT:-https://hf-mirror.com}' FASTEMBED_CACHE_PATH='$EMBED_CACHE_DIR' $INSTALL_DIR/venv/bin/python -c \"from fastembed import TextEmbedding; m=TextEmbedding(model_name='$EMBED_MODEL', cache_dir='$EMBED_CACHE_DIR'); next(iter(m.embed(['预热'])), None)\""
     fi
     return 0
 }
