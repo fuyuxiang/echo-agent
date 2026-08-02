@@ -105,6 +105,12 @@ SERVICE_SKIPPED=false
 # Set when the setup wizard ran and already offered to register/start the
 # service, so setup_service() does not ask the same question a second time.
 SETUP_HANDLED_SERVICE=false
+# True when the command-link directory was absent from the PATH inherited from
+# the user's shell. setup_path temporarily prepends that directory so the rest
+# of this installer can invoke echo-agent, but a child process cannot update its
+# parent's environment. print_success must therefore use this saved fact rather
+# than inspecting the installer's already-mutated PATH.
+COMMAND_PATH_NEEDS_REFRESH=false
 
 # --- Interactive detection ---
 if [ -t 0 ]; then
@@ -1612,6 +1618,8 @@ setup_path() {
     local link_display_dir
     local original_path="$PATH"
 
+    COMMAND_PATH_NEEDS_REFRESH=false
+
     if [ ! -x "$echo_bin" ]; then
         log_error "echo-agent entry point not found at $echo_bin"
         exit 1
@@ -1628,6 +1636,8 @@ setup_path() {
         log_info "$link_display_dir already on PATH"
         return 0
     fi
+
+    COMMAND_PATH_NEEDS_REFRESH=true
 
     LOGIN_SHELL="$(basename "${SHELL:-/bin/bash}")"
     SHELL_CONFIGS=()
@@ -1932,13 +1942,13 @@ print_success() {
     echo -e "${CYAN}${BOLD}Command link:${NC}"
     echo "  $(get_command_link_dir)/echo-agent"
     echo ""
-    if ! echo "$PATH" | tr ':' '\n' | grep -qx "$(get_command_link_dir)"; then
-        echo -e "${CYAN}${BOLD}If the command is not available yet:${NC}"
+    if [ "$COMMAND_PATH_NEEDS_REFRESH" = true ]; then
+        echo -e "${CYAN}${BOLD}Activate the command in this terminal:${NC}"
         case "$(basename "${SHELL:-/bin/bash}")" in
-            zsh) echo "  source ~/.zshrc" ;;
-            fish) echo "  source ~/.config/fish/config.fish" ;;
-            *) echo "  source ~/.bashrc" ;;
+            fish) printf '  fish_add_path %q\n' "$(get_command_link_dir)" ;;
+            *) printf '  export PATH=%q:%s\n' "$(get_command_link_dir)" "\$PATH" ;;
         esac
+        echo "  (or open a new terminal)"
         echo ""
     fi
     echo "To use a project-local workspace instead of ~/.echo-agent:"
