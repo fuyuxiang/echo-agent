@@ -156,17 +156,23 @@ class DingTalkChannel(BaseChannel):
         if msg_type == "text":
             text = data.get("text", {}).get("content", "").strip()
         elif msg_type == "picture":
-            pic_url = data.get("content", {}).get("downloadCode", "")
-            if not pic_url:
-                pic_url = data.get("content", {}).get("pictureDownloadCode", "")
-            if pic_url:
-                media.append({"type": "image", "url": pic_url})
+            download_code = data.get("content", {}).get("downloadCode", "")
+            if not download_code:
+                download_code = data.get("content", {}).get("pictureDownloadCode", "")
+            if download_code:
+                real_url = await self._resolve_download_code(download_code)
+                if real_url:
+                    media.append({"type": "image", "url": real_url})
+                else:
+                    logger.warning("Failed to resolve DingTalk downloadCode: {}", download_code[:20])
         elif msg_type == "richText":
             for item in data.get("content", {}).get("richText", []):
                 if "text" in item:
                     text += item["text"]
                 if "downloadCode" in item:
-                    media.append({"type": "image", "url": item["downloadCode"]})
+                    real_url = await self._resolve_download_code(item["downloadCode"])
+                    if real_url:
+                        media.append({"type": "image", "url": real_url})
         if not text and not media:
             return
         chat_id = sender_id if conversation_type == "1" else data.get("conversationId", "")
@@ -176,6 +182,31 @@ class DingTalkChannel(BaseChannel):
             metadata={"conversation_type": conversation_type},
             is_group=conversation_type == "2",
         )
+
+    async def _resolve_download_code(self, download_code: str) -> str | None:
+        """Convert DingTalk downloadCode to a real download URL.
+
+        DingTalk's downloadCode is a temporary token that needs to be exchanged
+        for an actual download URL via the API.
+        """
+        if not self._session or not download_code:
+            return None
+        await self._ensure_token()
+        # Use the media download API to get the real URL
+        url = f"{_API_BASE}/v1.0/robot/messageFiles/download"
+        headers = {"x-acs-dingtalk-access-token": self._access_token}
+        payload = {"downloadCode": download_code, "robotCode": self._robot_code}
+        try:
+            async with self._session.post(url, json=payload, headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("downloadUrl", "")
+                else:
+                    body = await resp.text()
+                    logger.warning("DingTalk downloadCode resolution failed ({}): {}", resp.status, body[:200])
+        except Exception as e:
+            logger.error("DingTalk downloadCode resolution error: {}", e)
+        return None
 
     async def _refresh_token(self) -> None:
         if not self._session:

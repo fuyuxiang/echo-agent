@@ -334,10 +334,19 @@ class DiscordChannel(BaseChannel):
         for att in d.get("attachments", []):
             url = att.get("url", "")
             ct = att.get("content_type", "")
+            filename = att.get("filename", "")
             if ct.startswith("image"):
-                media.append({"type": "image", "url": url})
+                media.append({"type": "image", "url": url, "filename": filename})
+            elif ct.startswith("audio"):
+                media.append({"type": "audio", "url": url, "filename": filename})
+            elif ct.startswith("video"):
+                media.append({"type": "video", "url": url, "filename": filename})
             else:
-                media.append({"type": "file", "url": url})
+                media.append({"type": "file", "url": url, "filename": filename})
+
+        # Allow messages with only attachments (no text content)
+        if not content and not media:
+            return
 
         # 引用上下文：Discord 在 referenced_message 带上被引用消息，解析其原文/作者
         # 交给 pipeline 统一注入（reply_to_id 仍是本条消息的出站锚点）。

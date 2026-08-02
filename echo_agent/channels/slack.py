@@ -267,12 +267,16 @@ class SlackChannel(BaseChannel):
         if not text and not media:
             return
 
+        # Include thread_ts in session_key so different threads have independent sessions
+        session_key = f"{self.name}:{channel_id}:{thread_ts}" if thread_ts else None
+
         await self._handle_message(
             sender_id=sender_id,
             chat_id=channel_id,
             text=text,
             media=media if media else None,
             metadata={"thread_ts": thread_ts, "channel_type": channel_type},
+            session_key=session_key,
             is_group=channel_type != "im",
         )
 

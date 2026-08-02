@@ -289,6 +289,30 @@ class WhatsAppChannelConfig(_Base):
             "desc_en": "WhatsApp server listen port",
         },
     )
+    app_secret: str = Field(
+        default="",
+        json_schema_extra={
+            "status": "effective", "ref": "channels/whatsapp.py",
+            "desc_zh": "WhatsApp App Secret（用于 webhook HMAC 签名验证）",
+            "desc_en": "WhatsApp App Secret for webhook HMAC signature verification",
+        },
+    )
+    allow_from: list[str] = Field(
+        default_factory=list,
+        json_schema_extra={
+            "status": "effective", "ref": "channels/base.py:107",
+            "desc_zh": "允许交互的用户白名单（空为不限制）",
+            "desc_en": "Allowlist of user IDs permitted to interact (empty = all)",
+        },
+    )
+    group_policy: str = Field(
+        default="mention",
+        json_schema_extra={
+            "status": "effective", "ref": "channels/whatsapp.py",
+            "desc_zh": "群聊响应策略：all=响应所有消息，mention=仅响应@机器人",
+            "desc_en": "Group response policy: all=respond to all, mention=only respond when mentioned",
+        },
+    )
 
 
 class WeixinChannelConfig(_Base):

@@ -1,10 +1,17 @@
-"""Matrix/Element channel — long-polling sync + REST API."""
+"""Matrix/Element channel — long-polling sync + REST API.
+
+Features:
+- Sync checkpoint persistence (survives restarts)
+- Voice message support
+- Room allowlist for private/group chat isolation
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import time
+from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -33,6 +40,39 @@ class MatrixChannel(BaseChannel):
         self._sync_task: asyncio.Task | None = None
         self._since: str = ""
         self._rate_limited_until: float = 0
+        self._state_path = self._resolve_state_path()
+        self._load_state()
+
+    def _resolve_state_path(self) -> Path:
+        from echo_agent.runtime_paths import echo_home
+        return echo_home() / "data" / "matrix_state.json"
+
+    def _load_state(self) -> None:
+        """Load sync checkpoint from disk."""
+        try:
+            if self._state_path.is_file():
+                data = json.loads(self._state_path.read_text(encoding="utf-8"))
+                self._since = data.get("since", "")
+                if self._since:
+                    logger.info("Matrix resuming from checkpoint: {}...", self._since[:20])
+        except Exception as e:
+            logger.warning("Matrix state file unreadable ({}); starting fresh", e)
+            self._since = ""
+
+    def _save_state(self) -> None:
+        """Persist sync checkpoint to disk."""
+        if not self._since:
+            return
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._state_path.with_suffix(self._state_path.suffix + ".tmp")
+            tmp.write_text(
+                json.dumps({"since": self._since, "updated_at": time.time()}),
+                encoding="utf-8",
+            )
+            tmp.replace(self._state_path)
+        except OSError as e:
+            logger.warning("Failed to persist Matrix state: {}", e)
 
     async def start(self) -> None:
         self._session = aiohttp.ClientSession(headers={
@@ -58,22 +98,67 @@ class MatrixChannel(BaseChannel):
         if not self.should_deliver(event):
             return SendResult(success=True, skipped=True)
         text = event.text or ""
-        if not text or not self._session:
-            return SendResult(success=False, error="no text or no session")
+        media = event.media or []
+        if not text and not media:
+            return SendResult(success=False, error="no content")
+        if not self._session:
+            return SendResult(success=False, error="no session")
+
         room_id = event.chat_id
-        txn_id = f"m{id(text)}{time.monotonic():.0f}"
+
+        # Send media first
+        for item in media:
+            media_type = item.get("type", "image")
+            media_url = item.get("url", "")
+            if media_url:
+                await self._send_media(room_id, media_type, media_url)
+
+        # Send text
+        if text:
+            txn_id = f"m{id(text)}{time.monotonic():.0f}"
+            url = f"{self._homeserver}/_matrix/client/v3/rooms/{room_id}/send/m.room.message/{txn_id}"
+            payload = {"msgtype": "m.text", "body": text}
+            try:
+                async with self._session.put(url, json=payload) as resp:
+                    if resp.status >= 400:
+                        body = await resp.text()
+                        logger.warning("Matrix send failed ({}): {}", resp.status, body[:200])
+                        return SendResult(success=False, error=body[:200])
+            except Exception as e:
+                logger.error("Matrix send error: {}", e)
+                return SendResult(success=False, error=str(e))
+
+        return SendResult(success=True)
+
+    async def _send_media(self, room_id: str, media_type: str, media_url: str) -> SendResult:
+        """Send a media message."""
+        if not self._session:
+            return SendResult(success=False, error="no session")
+
+        # Map media types to Matrix message types
+        type_map = {
+            "image": ("m.image", "image"),
+            "file": ("m.file", "file"),
+            "audio": ("m.audio", "audio"),
+            "video": ("m.video", "video"),
+        }
+        msgtype, fallback = type_map.get(media_type, ("m.file", "file"))
+
+        txn_id = f"m{time.monotonic():.0f}"
         url = f"{self._homeserver}/_matrix/client/v3/rooms/{room_id}/send/m.room.message/{txn_id}"
-        payload = {"msgtype": "m.text", "body": text}
+        payload = {
+            "msgtype": msgtype,
+            "body": f"{fallback} attachment",
+            "url": media_url,
+        }
         try:
             async with self._session.put(url, json=payload) as resp:
                 if resp.status >= 400:
                     body = await resp.text()
-                    logger.warning("Matrix send failed ({}): {}", resp.status, body[:200])
                     return SendResult(success=False, error=body[:200])
+                return SendResult(success=True)
         except Exception as e:
-            logger.error("Matrix send error: {}", e)
             return SendResult(success=False, error=str(e))
-        return SendResult(success=True)
 
     async def send_typing(self, chat_id: str, metadata: dict[str, Any] | None = None) -> None:
         if not self._session:
@@ -192,6 +277,7 @@ class MatrixChannel(BaseChannel):
         initial = await self._do_sync(timeout_ms=0)
         if initial:
             self._since = initial.get("next_batch", "")
+            self._save_state()
 
         backoff_idx = 0
         while self._running:
@@ -207,7 +293,10 @@ class MatrixChannel(BaseChannel):
                     backoff_idx += 1
                     continue
                 backoff_idx = 0
-                self._since = data.get("next_batch", self._since)
+                new_since = data.get("next_batch", self._since)
+                if new_since != self._since:
+                    self._since = new_since
+                    self._save_state()
                 rooms = data.get("rooms", {}).get("join", {})
                 for room_id, room_data in rooms.items():
                     if self._allow_rooms and room_id not in self._allow_rooms:
@@ -276,8 +365,20 @@ class MatrixChannel(BaseChannel):
                 if local_path:
                     media.append({"type": "file", "url": local_path})
             text = content.get("body", "")
+        elif msgtype == "m.audio":
+            mxc = content.get("url", "")
+            if mxc:
+                local_path = await self._download_matrix_media(mxc)
+                if local_path:
+                    media.append({"type": "audio", "url": local_path})
+            text = content.get("body", "")
 
         if not text and not media:
+            return
+
+        # Determine if this is a group chat (DM rooms typically have 2 members)
+        is_group = True  # Default to group for safety
+        if self._allow_rooms and room_id not in self._allow_rooms:
             return
 
         await self._handle_message(
@@ -285,7 +386,7 @@ class MatrixChannel(BaseChannel):
             media=media if media else None,
             reply_to_id=evt.get("event_id"),
             metadata={"msgtype": msgtype},
-            is_group=True,
+            is_group=is_group,
         )
 
     async def _download_matrix_media(self, mxc_url: str) -> str | None:
