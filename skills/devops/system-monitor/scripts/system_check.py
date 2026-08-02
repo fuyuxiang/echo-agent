@@ -3,12 +3,12 @@
 
 import argparse
 import json
-import sys
 from echo_agent.dependencies.skill_require import require  # noqa: E402
 
 require("skill.system-monitor")
 
-from datetime import datetime
+import psutil  # noqa: E402
+from datetime import datetime  # noqa: E402
 
 
 def check_cpu():

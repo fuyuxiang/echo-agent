@@ -2,8 +2,6 @@
 """PowerPoint presentation creator using python-pptx."""
 
 import argparse
-import sys
-from echo_agent.dependencies.skill_require import require  # noqa: E402
 from pathlib import Path
 
 

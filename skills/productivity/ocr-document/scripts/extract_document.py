@@ -6,6 +6,11 @@ import sys
 from echo_agent.dependencies.skill_require import require  # noqa: E402
 from pathlib import Path
 
+import pymupdf  # noqa: E402
+from docx import Document  # noqa: E402
+from PIL import Image  # noqa: E402
+import pytesseract  # noqa: E402
+
 
 def extract_pdf(filepath):
     require("skill.ocr-document")

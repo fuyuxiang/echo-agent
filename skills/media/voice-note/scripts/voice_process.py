@@ -2,7 +2,6 @@
 """Voice note processor: transcribe audio using faster-whisper."""
 
 import argparse
-import sys
 from pathlib import Path
 
 try:
@@ -10,6 +9,8 @@ try:
     require("skill.voice-note")
 except ImportError:
     pass
+
+from faster_whisper import WhisperModel  # noqa: E402
 
 
 def transcribe(audio_file, model_size="base", language=None, output=None):

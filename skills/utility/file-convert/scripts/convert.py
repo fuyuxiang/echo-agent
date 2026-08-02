@@ -13,6 +13,8 @@ try:
 except ImportError:
     yaml = None
 
+import markdown  # noqa: E402
+
 
 def csv_to_json(src, dst):
     with open(src, newline="", encoding="utf-8-sig") as f:

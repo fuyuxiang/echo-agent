@@ -3,7 +3,6 @@
 
 import argparse
 import asyncio
-import sys
 
 try:
     from echo_agent.dependencies.skill_require import require
@@ -11,7 +10,7 @@ try:
 except ImportError:
     pass
 
-require("skill.tts-voice")
+import edge_tts  # noqa: E402
 
 
 async def synthesize(text, voice="zh-CN-XiaoxiaoNeural", output="output.mp3", rate="+0%"):

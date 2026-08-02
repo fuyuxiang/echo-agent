@@ -6,7 +6,6 @@ import ast
 import math
 import operator
 import sys
-from echo_agent.dependencies.skill_require import require  # noqa: E402
 from datetime import datetime, date
 
 SAFE_OPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,

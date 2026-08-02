@@ -38,7 +38,6 @@ pip install feedparser
 python3 scripts/feed_monitor.py check        # check all feeds for new items
 python3 scripts/feed_monitor.py list         # list configured feeds
 python3 scripts/feed_monitor.py add "https://example.com/feed.xml" --category tech
-python3 scripts/feed_monitor.py import feeds.opml  # import OPML
 ```
 
 ## How It Works

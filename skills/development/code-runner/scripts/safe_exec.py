@@ -7,7 +7,6 @@ import os
 import platform
 import subprocess
 import sys
-from echo_agent.dependencies.skill_require import require  # noqa: E402
 import tempfile
 from pathlib import Path
 

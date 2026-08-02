@@ -2,13 +2,14 @@
 """Make meme images with Pillow text overlay."""
 
 import argparse
-import sys
-from echo_agent.dependencies.skill_require import require  # noqa: E402
 import tempfile
 import urllib.request
 from pathlib import Path
+from echo_agent.dependencies.skill_require import require  # noqa: E402
 
 require("skill.ocr-document")
+
+from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 
 TEMPLATES = {
     "drake": "https://i.imgflip.com/30b1gx.jpg",

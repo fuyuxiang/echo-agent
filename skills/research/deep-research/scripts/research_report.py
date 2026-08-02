@@ -2,11 +2,12 @@
 """Deep research: multi-step search → extract → synthesize with citations."""
 
 import argparse
-import sys
 from echo_agent.dependencies.skill_require import require  # noqa: E402
 from datetime import date
 
 require("skill.web-search")
+
+from duckduckgo_search import DDGS  # noqa: E402
 
 try:
     import trafilatura

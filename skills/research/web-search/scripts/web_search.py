@@ -3,10 +3,11 @@
 
 import argparse
 import json
-import sys
 from echo_agent.dependencies.skill_require import require  # noqa: E402
 
 require("skill.web-search")
+
+from duckduckgo_search import DDGS  # noqa: E402
 
 
 def search_text(query: str, max_results: int = 5, region: str = "wt-wt"):

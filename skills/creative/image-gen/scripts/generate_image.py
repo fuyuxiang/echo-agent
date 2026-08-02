@@ -5,7 +5,6 @@ import argparse
 import json
 import os
 import sys
-from echo_agent.dependencies.skill_require import require  # noqa: E402
 import urllib.request
 from pathlib import Path
 import base64

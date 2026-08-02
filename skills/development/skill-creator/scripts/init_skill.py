@@ -15,7 +15,6 @@ Examples:
 import argparse
 import re
 import sys
-from echo_agent.dependencies.skill_require import require  # noqa: E402
 from pathlib import Path
 
 MAX_SKILL_NAME_LENGTH = 64
