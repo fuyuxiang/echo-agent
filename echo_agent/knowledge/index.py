@@ -118,6 +118,16 @@ class KnowledgeIndex:
         self._vector_store: Any = None
         self._embed_timeout: float = 1.5
         self._chunk_vectors: dict[str, list[float]] = {}
+        # Single-flight guard for ``rebuild_async``. The body of rebuild_async
+        # crosses ``await`` points (executor + per-chunk embedding), so the
+        # plain ``threading.Lock`` from earlier only protected the synchronous
+        # halves and let two callers race on the same sidecar — A's sidecar
+        # write could clobber B's. ``asyncio.Lock`` serializes the whole
+        # rebuild; the *future* is cached so concurrent callers join it
+        # rather than queueing, which would otherwise let a user click
+        # "rebuild" twice and watch two backfills run sequentially.
+        self._rebuild_lock = asyncio.Lock()
+        self._rebuild_future: asyncio.Future[dict[str, Any]] | None = None
 
     @property
     def chunk_count(self) -> int:
@@ -291,39 +301,63 @@ class KnowledgeIndex:
         return False
 
     async def rebuild_async(self) -> dict[str, Any]:
+        # Single-flight: if a rebuild is already running, return its result
+        # when it completes rather than starting a parallel one. Two
+        # concurrent rebuilds racing on the vector sidecar was the data-
+        # integrity bug this protects (reviewer P2).
+        if self._rebuild_future is not None and not self._rebuild_future.done():
+            return await self._rebuild_future
         loop = asyncio.get_running_loop()
-        if not self._vector_store or not self._vector_store.available or not self._embed_fn:
-            return await loop.run_in_executor(None, self.rebuild)
-        # 0) 复用判定的权威依据是 sidecar 自记录的 content_hash,而非 self._chunks 的
-        #    旧 hash:重启启动期 ensure_ready 可能已把 self._chunks rebuild 成新内容,
-        #    此时旧 hash 已失真,只有 sidecar 知道每个向量是基于哪段文本算出来的。
-        self._ensure_loaded()
-        old_vectors = self._vector_store.load()
-        sidecar_hashes = self._vector_store.content_hashes()
-        # 1) 重建文本索引(同步内核,executor 防阻塞事件循环)
-        summary = await loop.run_in_executor(None, self.rebuild)
-        # 2) 仅对 id 命中且 sidecar 记录的 hash 与当前 chunk hash 一致的复用,余者重算
-        new_vectors: dict[str, list[float]] = {}
-        for chunk in self._chunks:
-            cid = chunk["id"]
-            reuse = old_vectors.get(cid)
-            if reuse is not None and sidecar_hashes.get(cid) == chunk["content_hash"]:
-                new_vectors[cid] = reuse
-                continue
-            try:
-                emb = await asyncio.wait_for(self._embed_fn(chunk["text"]), self._embed_timeout)
-            except Exception as e:
-                logger.warning("knowledge embed failed for {}: {}", cid, e)
-                continue
-            if emb:
-                new_vectors[cid] = emb
-        ordered = [(c["id"], new_vectors[c["id"]]) for c in self._chunks if c["id"] in new_vectors]
-        new_hashes = {c["id"]: c["content_hash"] for c in self._chunks if c["id"] in new_vectors}
-        self._vector_store.build(ordered)
-        self._vector_store.save(ordered, new_hashes)
-        self._chunk_vectors = new_vectors
-        logger.info("knowledge vectors backfilled: {} chunks", len(ordered))
-        return summary
+        future: asyncio.Future[dict[str, Any]] = loop.create_future()
+        self._rebuild_future = future
+        try:
+            result = await self._run_rebuild(loop)
+        except BaseException as exc:
+            future.set_exception(exc)
+            raise
+        else:
+            future.set_result(result)
+            return result
+        finally:
+            # Only clear if we're still the owner — another rebuild that
+            # started under the lock should keep its own future live.
+            if self._rebuild_future is future:
+                self._rebuild_future = None
+
+    async def _run_rebuild(self, loop: asyncio.AbstractEventLoop) -> dict[str, Any]:
+        async with self._rebuild_lock:
+            if not self._vector_store or not self._vector_store.available or not self._embed_fn:
+                return await loop.run_in_executor(None, self.rebuild)
+            # 0) 复用判定的权威依据是 sidecar 自记录的 content_hash,而非 self._chunks 的
+            #    旧 hash:重启启动期 ensure_ready 可能已把 self._chunks rebuild 成新内容,
+            #    此时旧 hash 已失真,只有 sidecar 知道每个向量是基于哪段文本算出来的。
+            self._ensure_loaded()
+            old_vectors = self._vector_store.load()
+            sidecar_hashes = self._vector_store.content_hashes()
+            # 1) 重建文本索引(同步内核,executor 防阻塞事件循环)
+            summary = await loop.run_in_executor(None, self.rebuild)
+            # 2) 仅对 id 命中且 sidecar 记录的 hash 与当前 chunk hash 一致的复用,余者重算
+            new_vectors: dict[str, list[float]] = {}
+            for chunk in self._chunks:
+                cid = chunk["id"]
+                reuse = old_vectors.get(cid)
+                if reuse is not None and sidecar_hashes.get(cid) == chunk["content_hash"]:
+                    new_vectors[cid] = reuse
+                    continue
+                try:
+                    emb = await asyncio.wait_for(self._embed_fn(chunk["text"]), self._embed_timeout)
+                except Exception as e:
+                    logger.warning("knowledge embed failed for {}: {}", cid, e)
+                    continue
+                if emb:
+                    new_vectors[cid] = emb
+            ordered = [(c["id"], new_vectors[c["id"]]) for c in self._chunks if c["id"] in new_vectors]
+            new_hashes = {c["id"]: c["content_hash"] for c in self._chunks if c["id"] in new_vectors}
+            self._vector_store.build(ordered)
+            self._vector_store.save(ordered, new_hashes)
+            self._chunk_vectors = new_vectors
+            logger.info("knowledge vectors backfilled: {} chunks", len(ordered))
+            return summary
 
     async def search_async(self, query: str, *, limit: int = 5, user_id: str = "") -> list[KnowledgeSearchResult]:
         self._ensure_loaded()
