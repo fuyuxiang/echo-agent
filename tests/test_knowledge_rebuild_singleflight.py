@@ -46,7 +46,14 @@ def _attach_vector_store(index: KnowledgeIndex):
     store.content_hashes = MagicMock(return_value={})
     store.build = MagicMock()
     store.save = MagicMock()
-    index.attach_embedding(placeholder, dimensions=3, embed_timeout=2.0)
+    # Keep this concurrency test independent of the optional ``faiss-cpu``
+    # extra.  The helper previously created ``store`` but never attached it,
+    # so environments without FAISS silently took the non-vector branch and
+    # reported zero embedding calls.
+    index._embed_fn = placeholder
+    index._embed_timeout = 2.0
+    index._vector_store = store
+    index._chunk_vectors = {}
 
 
 # ── coalescing ──────────────────────────────────────────────────────────────

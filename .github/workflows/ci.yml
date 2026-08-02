@@ -6,14 +6,24 @@ on:
   pull_request:
     branches: [ master ]
 
+# Every job only needs to read the checked-out repository. Keep the default
+# GITHUB_TOKEN read-only so adding a third-party step cannot silently widen it.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
 
@@ -41,16 +51,17 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -67,42 +78,57 @@ jobs:
 
   security:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
           cache: pip
 
-      - name: Install project (core + dev) and pip-audit
+      - name: Install project (all extras + dev) and pip-audit
         run: |
           # setuptools/wheel are venv bootstrap tools, not project deps; upgrade
           # them so pip-audit isn't flagged by CVEs in the runner's stale version.
           python -m pip install --upgrade pip setuptools wheel
-          pip install -e ".[dev]"
-          pip install pip-audit
+          pip install -e ".[all,dev]" pip-audit
 
-      - name: Run pip-audit
-        run: pip-audit
+      - name: Audit all installed Python dependencies
+        # The project itself is an unpublished editable checkout; skip only that
+        # local entry while auditing every installed direct/transitive dependency.
+        run: pip-audit --skip-editable
 
-  # The Dashboard SPA is built from source by scripts/install.sh (and by
-  # scripts/publish.sh when producing the wheel), so a broken web/ breaks user
-  # installs. Nothing in CI compiled the frontend before this job: TypeScript
-  # errors and a lockfile drifting out of sync with package.json both landed on
-  # master with CI fully green.
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: "10.34.5"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Audit production Dashboard dependencies
+        # Audit the frozen lockfile's runtime graph. Excluding dev-only build/test
+        # tools avoids turning unrelated tooling advisories into release blockers.
+        working-directory: web
+        run: pnpm audit --prod --audit-level=high
+
+  # The Dashboard SPA is built from source on first use (and by
+  # scripts/publish.sh when producing a wheel), so a broken web/ reaches users.
+  # Nothing in CI compiled the frontend before this job: TypeScript errors and
+  # a lockfile drifting out of sync with package.json both landed on master with
+  # CI fully green.
   dashboard:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        # scripts/install.sh bootstraps pnpm via corepack or `npm i -g pnpm`, so
-        # whatever major is current on the user's machine is what runs. Pinning
-        # CI to one major hid a real breakage: pnpm 11 flipped strictDepBuilds to
-        # true, turning an unapproved dependency build script into a hard
-        # ERR_PNPM_IGNORED_BUILDS failure, and users hit it while CI stayed
-        # green on 10. Test the pinned major and the next one.
+        # The on-demand builder accepts an existing pnpm or bootstraps a pinned
+        # fallback. Testing the current supported majors catches lockfile and
+        # dependency-build-policy differences before users hit them.
         pnpm-version: [10, 11]
     env:
       # Stop pnpm from honouring package.json's "packageManager" pin and
@@ -113,15 +139,15 @@ jobs:
       npm_config_manage_package_manager_versions: "false"
       pnpm_config_pm_on_fail: "ignore"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: ${{ matrix.pnpm-version }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "22"
+          node-version: "24"
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
 
@@ -147,3 +173,109 @@ jobs:
       - name: Run frontend tests
         working-directory: web
         run: pnpm test --run
+
+  # Exercise the complete release path without publishing: build the Dashboard,
+  # produce an sdist and a wheel from it, inspect both archives, then install and
+  # execute the wheel outside the checkout. This catches packaging-hook and
+  # MANIFEST regressions that editable installs and the Dashboard job cannot.
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: "10.34.5"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Dashboard
+        working-directory: web
+        run: pnpm build
+
+      - name: Build sdist and wheel from the sdist
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Verify distribution contents
+        run: |
+          python - <<'PY'
+          import sys
+          import tarfile
+          import zipfile
+          from pathlib import Path, PurePosixPath
+
+          marker = "echo_agent/_bundled/dashboard/index.html"
+          wheels = sorted(Path("dist").glob("*.whl"))
+          sdists = sorted(Path("dist").glob("*.tar.gz"))
+          if len(wheels) != 1 or len(sdists) != 1:
+              sys.exit(
+                  "ERROR: expected exactly one wheel and one sdist, found "
+                  f"{[path.name for path in wheels + sdists]}"
+              )
+
+          failures = []
+          for artifact in wheels + sdists:
+              if artifact.suffix == ".whl":
+                  with zipfile.ZipFile(artifact) as archive:
+                      names = set(archive.namelist())
+              else:
+                  with tarfile.open(artifact) as archive:
+                      # Strip the conventional <name>-<version>/ sdist root.
+                      names = {name.split("/", 1)[-1] for name in archive.getnames()}
+
+              if marker not in names:
+                  failures.append(f"{artifact.name} is missing {marker}")
+
+              stray = [name for name in names if "node_modules" in PurePosixPath(name).parts]
+              if stray:
+                  failures.append(
+                      f"{artifact.name} contains {len(stray)} node_modules entries; "
+                      f"first: {stray[0]}"
+                  )
+
+          if failures:
+              sys.exit("ERROR: " + "\nERROR: ".join(failures))
+          print("Verified " + ", ".join(path.name for path in wheels + sdists))
+          PY
+
+      - name: Install wheel and run smoke checks
+        run: |
+          SMOKE_VENV="${RUNNER_TEMP}/echo-agent-wheel-smoke"
+          python -m venv "$SMOKE_VENV"
+          "$SMOKE_VENV/bin/python" -m pip install dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$SMOKE_VENV/bin/python" - <<'PY'
+          from importlib.metadata import version
+          from importlib.resources import files
+
+          dashboard = files("echo_agent").joinpath("_bundled/dashboard/index.html")
+          if not dashboard.is_file():
+              raise SystemExit(f"installed wheel is missing Dashboard: {dashboard}")
+          print(f"installed echo-agent {version('echo-agent')} with Dashboard")
+          PY
+          "$SMOKE_VENV/bin/echo-agent" --help >/dev/null
+
+      - name: Upload verified distributions
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: echo-agent-dist
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7

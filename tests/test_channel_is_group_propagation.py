@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import inspect
+from unittest.mock import AsyncMock
+
+import pytest
 
 from echo_agent.channels import matrix as matrix_mod
 from echo_agent.channels import slack as slack_mod
@@ -13,9 +16,30 @@ def test_slack_on_event_passes_is_group_from_channel_type():
     assert "is_group" in src
 
 
-def test_matrix_handle_message_passes_is_group_true():
+@pytest.mark.asyncio
+async def test_matrix_handle_message_passes_is_group_true():
     # Matrix fail-closed:room 消息一律按群处理,不进 owner。
-    src = inspect.getsource(matrix_mod.MatrixChannel._on_message) \
-        if hasattr(matrix_mod.MatrixChannel, "_on_message") else \
-        inspect.getsource(matrix_mod.MatrixChannel)
-    assert "is_group=True" in src
+    channel = object.__new__(matrix_mod.MatrixChannel)
+    channel._user_id = "@bot:example.org"
+    channel._allow_rooms = None
+    channel._handle_message = AsyncMock()
+
+    await channel._on_event(
+        "!room:example.org",
+        {
+            "type": "m.room.message",
+            "event_id": "$event",
+            "sender": "@alice:example.org",
+            "content": {"msgtype": "m.text", "body": "hello"},
+        },
+    )
+
+    channel._handle_message.assert_awaited_once_with(
+        sender_id="@alice:example.org",
+        chat_id="!room:example.org",
+        text="hello",
+        media=None,
+        reply_to_id="$event",
+        metadata={"msgtype": "m.text"},
+        is_group=True,
+    )

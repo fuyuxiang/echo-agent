@@ -314,6 +314,12 @@ class KnowledgeIndex:
             result = await self._run_rebuild(loop)
         except BaseException as exc:
             future.set_exception(exc)
+            # The owner re-raises directly instead of awaiting ``future``.
+            # Mark the exception as retrieved so a rebuild with no concurrent
+            # waiter does not leak "Future exception was never retrieved" at
+            # event-loop shutdown. Any waiter already awaiting the same future
+            # still receives the original exception.
+            future.exception()
             raise
         else:
             future.set_result(result)

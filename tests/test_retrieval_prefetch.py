@@ -355,8 +355,19 @@ class _FakePrefetcher:
     def __init__(self):
         self.calls = []
 
-    async def prefetch(self, session_key, query, user_id="", memory_scope="", scope_version=0):
-        self.calls.append((session_key, query, user_id, memory_scope, scope_version))
+    async def prefetch(
+        self,
+        session_key,
+        query,
+        user_id="",
+        memory_scope="",
+        scope_version=0,
+        *,
+        channel="",
+    ):
+        self.calls.append(
+            (session_key, query, user_id, memory_scope, scope_version, channel)
+        )
 
 
 def _make_finalize_stage(prefetcher=None, spawn=None):
@@ -421,6 +432,7 @@ async def test_finalize_schedules_prefetch_as_discardable():
     # it was wired with this turn's session_key + query.
     await coros[0]
     assert pf.calls[0][:2] == ("sess-1", "deploy gateway")
+    assert pf.calls[0][-1] == "cli"
 
 
 @pytest.mark.asyncio
@@ -490,7 +502,7 @@ async def test_prefetcher_populates_knowledge_episodes_always_none():
         async def retrieve(self, query, limit=5, memory_scope="", episode_session_key=""):
             return [("m", 0.9)]
 
-    def _know(query, user_id):  # sync, CPU-bound in prod
+    def _know(query, user_id, channel):  # sync, CPU-bound in prod
         return "KB: relevant doc"
 
     written = {}
@@ -517,8 +529,8 @@ async def test_prefetcher_passes_user_id_to_knowledge():
         async def retrieve(self, query, limit=5, memory_scope="", episode_session_key=""):
             return []
 
-    def _know(query, user_id):
-        seen["know"] = (query, user_id)
+    def _know(query, user_id, channel):
+        seen["know"] = (query, user_id, channel)
         return ""
 
     async def cache_put(sk, e):
@@ -527,8 +539,10 @@ async def test_prefetcher_passes_user_id_to_knowledge():
     pf = RetrievalPrefetcher(
         _R(), cache_put, limit=5, knowledge_fetch=_know
     )
-    await pf.prefetch("sess-X", "deploy gateway", user_id="user-7")
-    assert seen["know"] == ("deploy gateway", "user-7")
+    await pf.prefetch(
+        "sess-X", "deploy gateway", user_id="user-7", channel="slack"
+    )
+    assert seen["know"] == ("deploy gateway", "user-7", "slack")
 
 
 @pytest.mark.asyncio
@@ -538,7 +552,7 @@ async def test_prefetcher_knowledge_failure_isolated():
         async def retrieve(self, query, limit=5, memory_scope="", episode_session_key=""):
             return [("m", 0.5)]
 
-    def _know(query, user_id):
+    def _know(query, user_id, channel):
         raise RuntimeError("knowledge scan blew up")
 
     written = {}
@@ -569,7 +583,7 @@ async def test_prefetcher_knowledge_runs_off_event_loop():
         async def retrieve(self, query, limit=5, memory_scope="", episode_session_key=""):
             return []
 
-    def _know(query, user_id):
+    def _know(query, user_id, channel):
         seen["thread"] = threading.get_ident()
         return "kb"
 
@@ -595,8 +609,8 @@ async def test_prefetcher_awaits_async_knowledge_fetch():
 
     seen = {}
 
-    async def _know(query, user_id):
-        seen["args"] = (query, user_id)
+    async def _know(query, user_id, channel):
+        seen["args"] = (query, user_id, channel)
         return "KB: vector-grade doc"
 
     written = {}
@@ -605,8 +619,10 @@ async def test_prefetcher_awaits_async_knowledge_fetch():
         written[sk] = e
 
     pf = RetrievalPrefetcher(_R(), cache_put, limit=5, knowledge_fetch=_know)
-    await pf.prefetch("s4", "deploy gateway", user_id="user-9")
-    assert seen["args"] == ("deploy gateway", "user-9")
+    await pf.prefetch(
+        "s4", "deploy gateway", user_id="user-9", channel="telegram"
+    )
+    assert seen["args"] == ("deploy gateway", "user-9", "telegram")
     assert written["s4"].knowledge_context == "KB: vector-grade doc"
     assert written["s4"].knowledge_user_id == "user-9"
 
@@ -618,7 +634,7 @@ async def test_prefetcher_async_knowledge_failure_isolated():
         async def retrieve(self, query, limit=5, memory_scope="", episode_session_key=""):
             return [("m", 0.7)]
 
-    async def _know(query, user_id):
+    async def _know(query, user_id, channel):
         raise RuntimeError("embed endpoint down")
 
     written = {}
@@ -722,7 +738,7 @@ async def test_prefetcher_stamps_knowledge_user_id():
         async def retrieve(self, query, limit=5, memory_scope="", episode_session_key=""):
             return []
 
-    def _know(query, user_id):
+    def _know(query, user_id, channel):
         return "KB for A"
 
     written = {}
