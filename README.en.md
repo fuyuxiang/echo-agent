@@ -29,7 +29,7 @@ Echo Agent is a self-hosted, long-running AI Agent. Unlike one-off Q&A, it can:
 
 - **Cross-session memory** — Four-tier cognitive memory with automatic decay and contradiction detection, solving memory explosion in long-running scenarios. Conversations never start from scratch.
 - **Self-evolving skills** — Generates improvement candidates from real execution traces, validated against an eval set before taking effect. Supports rollback.
-- **Unified multi-entry** — CLI, Gateway, Webhook, Cron and 12 messaging channels (Telegram / Discord / Slack / WeChat / Feishu / DingTalk etc.) share one state.
+- **Unified multi-entry** — CLI, Gateway, Webhook, Cron and 14 channels in total (Telegram / Discord / Slack / WeChat / WeCom / Feishu / DingTalk / QQ / WhatsApp / Email / Matrix) share one state.
 - **Safe and auditable** — High-risk tool calls go through unified approval, credentials are encrypted at rest, execution logs are fully auditable.
 
 In one sentence: **An agent that carries memory and ever-improving skills, working for you over time.**
@@ -69,7 +69,11 @@ echo-agent run
 ```bash
 # One-liner install script (Linux / macOS / WSL2 only; installs from source
 # into ~/.echo-agent and can register a background service — review before running)
+# From GitHub:
 curl -fsSL -o install.sh https://raw.githubusercontent.com/fuyuxiang/echo-agent/master/scripts/install.sh
+# From the Gitee mirror (faster inside mainland China):
+curl -fsSL -o install.sh https://gitee.com/fuyuxiang/echo-agent/raw/master/scripts/install.sh
+
 less install.sh && bash install.sh
 
 # The script probes GitHub and the Gitee mirror and clones from whichever
@@ -80,6 +84,11 @@ less install.sh && bash install.sh
 # are split across release assets.
 # --no-mirror-probe disables all three speed probes (PyPI index, code host and
 # Node.js dist mirror); each falls back to its first configured default.
+# Re-running the script upgrades in place: when an existing valid configuration is
+# detected the wizard is skipped and the configuration is left untouched.
+bash install.sh --reconfigure    # force the setup wizard to run again
+bash install.sh --skip-setup     # install the code only, never enter the wizard
+
 # For every flag and environment variable, including the model prefetch switches
 # (ECHO_SKIP_RERANK_PREFETCH and friends):
 bash install.sh --help
@@ -90,13 +99,14 @@ bash install.sh --help
 ### Common commands
 
 ```bash
-echo-agent run              # Interactive conversation (terminal TUI)
+echo-agent run              # Interactive conversation (plain terminal line input)
 echo-agent setup            # Setup wizard (models, channels, permissions; safe to rerun)
 echo-agent status           # Show current configuration status
 echo-agent gateway          # Run the resident gateway in the foreground
 echo-agent gateway install  # Register the gateway as a background service (recommended, see below)
-echo-agent cli              # Attach to the local resident gateway as a thin client
+echo-agent cli              # Attach to the local resident gateway as a thin client (terminal TUI)
 echo-agent cost             # Show cost attribution report
+echo-agent dashboard build  # Build the web Dashboard bundle (on demand, for source installs)
 ```
 
 > Inspect configuration with the CLI: `echo-agent config explain <key>` for a single option (description, type, default and allowed values), `echo-agent config dump` to view the active configuration (secrets are redacted), and `echo-agent config validate` to check a config file.
@@ -186,6 +196,7 @@ Please ensure lint and tests pass before submitting a PR (CI runs the same check
 **Good entry points:** channel adapters · built-in tools · MCP integrations · skill examples · eval datasets · documentation · deployment templates
 
 **Community:**
+- QQ group: [47572014](https://qm.qq.com/q/JWOPDBNssw)
 - [GitHub Discussions](https://github.com/fuyuxiang/echo-agent/discussions) — design discussion, usage questions
 - [GitHub Issues](https://github.com/fuyuxiang/echo-agent/issues) — bugs and feature requests
 

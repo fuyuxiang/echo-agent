@@ -11,6 +11,9 @@
 <br/>
 
 [![PyPI](https://img.shields.io/pypi/v/echo-agent)](https://pypi.org/project/echo-agent/)
+[![Python](https://img.shields.io/pypi/pyversions/echo-agent)](https://pypi.org/project/echo-agent/)
+[![CI](https://github.com/fuyuxiang/echo-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/fuyuxiang/echo-agent/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Downloads](https://static.pepy.tech/badge/echo-agent)](https://pepy.tech/project/echo-agent)
 [![GitHub stars](https://img.shields.io/github/stars/fuyuxiang/echo-agent?style=social)](https://github.com/fuyuxiang/echo-agent)
 
@@ -26,7 +29,7 @@ Echo Agent 是一个可自托管的长期运行 AI Agent。与一次性问答不
 
 - **跨会话记忆** — 四层认知记忆结构，自动衰减与矛盾检测，解决长期运行下的记忆膨胀问题，对话不再从零开始。
 - **自进化技能** — 从真实执行轨迹中生成候选改进，经评测验证后才生效，支持回滚。
-- **多入口归一** — CLI、Gateway、Webhook、Cron 及 Telegram / Discord / Slack / 微信 / 飞书 / 钉钉等 12 个通道共享同一份状态。
+- **多入口归一** — CLI、Gateway、Webhook、Cron 及 Telegram / Discord / Slack / 微信 / 企业微信 / 飞书 / 钉钉 / QQ / WhatsApp / 邮件 / Matrix 共 14 个通道共享同一份状态。
 - **安全可控** — 高风险工具调用经统一审批，凭证加密存储，执行日志可审计。
 
 一句话：**让 Agent 带着记忆和不断进化的技能，长期为你工作。**
@@ -35,7 +38,7 @@ Echo Agent 是一个可自托管的长期运行 AI Agent。与一次性问答不
 
 ## 快速开始
 
-环境要求：Python 3.11+，至少一个模型 API Key。.
+环境要求：Python 3.11+，至少一个模型 API Key。
 
 ```bash
 # 安装
@@ -81,6 +84,10 @@ bash install.sh --repo github    # 强制走 GitHub
 # 的固定顺序下载（分卷托管所致，与 --repo 无关）。
 # --no-mirror-probe 会同时关掉 PyPI 源、代码托管、Node.js 镜像三处测速，
 # 各自退回到第一个默认源。
+# 重复执行脚本即为升级：检测到已有可用配置时会跳过配置向导、保留现有配置。
+bash install.sh --reconfigure    # 强制重新走一遍配置向导
+bash install.sh --skip-setup     # 只装代码，完全不进配置向导
+
 # 完整选项与环境变量（含 ECHO_SKIP_RERANK_PREFETCH 等模型预取开关）：
 bash install.sh --help
 ```
@@ -97,6 +104,7 @@ echo-agent gateway          # 前台启动常驻网关
 echo-agent gateway install  # 把网关注册为后台服务（推荐的常驻方式，见下）
 echo-agent cli              # 以瘦客户端接入本机常驻网关（终端 TUI）
 echo-agent cost             # 查看成本归因报告
+echo-agent dashboard build  # 构建 Web Dashboard 前端产物（源码安装时按需执行）
 ```
 
 > 查看配置项：`echo-agent config explain <配置项>` 查看单项说明（含类型、默认值与可选值）、`echo-agent config dump` 查看当前生效配置（密钥自动脱敏）、`echo-agent config validate` 校验配置文件。
@@ -187,6 +195,8 @@ PR 前请确保 lint 和测试通过（CI 会在 PR 上自动运行同样的检�
 
 **社区：**
 - QQ群：[47572014](https://qm.qq.com/q/JWOPDBNssw)
+- [GitHub Discussions](https://github.com/fuyuxiang/echo-agent/discussions) — 设计讨论、使用问题
+- [GitHub Issues](https://github.com/fuyuxiang/echo-agent/issues) — Bug 与功能需求
 
 ---
 
