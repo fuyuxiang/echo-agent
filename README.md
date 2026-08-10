@@ -51,6 +51,9 @@ echo-agent setup
 echo-agent run
 ```
 
+配置向导已内置 Atlas Cloud（OpenAI-compatible endpoint），可选择
+`qwen/qwen3.8-max` 或模型目录实时返回的其他模型。
+
 <details>
 <summary>国内镜像 / Windows / 一键脚本</summary>
 

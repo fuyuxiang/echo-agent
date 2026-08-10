@@ -26,6 +26,22 @@ def test_model_section_deepseek_prefills_dialect_and_base():
     assert cfg["models"]["defaultModel"] == "deepseek-chat"
 
 
+def test_model_section_atlascloud_prefills_dialect_base_and_model():
+    cfg = {}
+    with patch(f"{_S}.ui.select_grouped", return_value="atlascloud"), \
+         patch(f"{_S}.ui.password", return_value="atlas-key"), \
+         patch(f"{_S}.ui.select", return_value="qwen/qwen3.8-max"), \
+         patch(f"{_S}.list_models", return_value=[]), \
+         patch(f"{_S}.verify_model", return_value=mv.VerifyResult("ok")):
+        setup_mod.setup_model(cfg)
+
+    prov = cfg["models"]["providers"][0]
+    assert prov["name"] == "openai"
+    assert prov["apiBase"] == "https://api.atlascloud.ai/v1"
+    assert prov["apiKey"] == "atlas-key"
+    assert cfg["models"]["defaultModel"] == "qwen/qwen3.8-max"
+
+
 def test_model_section_uses_dynamic_list_when_available():
     cfg = {}
     with patch(f"{_S}.ui.select_grouped", return_value="openai"), \

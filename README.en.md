@@ -51,6 +51,9 @@ echo-agent setup
 echo-agent run
 ```
 
+The provider picker includes Atlas Cloud through its OpenAI-compatible endpoint;
+select `qwen/qwen3.8-max` or another model returned by the live catalog.
+
 <details>
 <summary>China mirror / Windows / one-liner script</summary>
 
