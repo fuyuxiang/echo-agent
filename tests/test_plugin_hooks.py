@@ -219,3 +219,97 @@ def test_get_registered_hooks(registry):
     assert "pre_tool_call" in info
     assert info["pre_tool_call"] == ["p1", "p2"]
     assert info["on_agent_start"] == ["p1"]
+
+
+# ── kwarg filtering ────────────────────────────────────────────────────────
+# Callbacks receive only the keyword arguments they declare. Without this,
+# adding a kwarg at a dispatch site raises TypeError inside every fixed-signature
+# hook; dispatch swallows it into a warning, so the plugin silently stops
+# working. These tests pin that a new kwarg cannot break existing plugins.
+
+
+@pytest.mark.asyncio
+async def test_unknown_kwarg_does_not_break_fixed_signature_hook(registry):
+    calls = []
+
+    async def legacy(tool_name, params, ctx):
+        calls.append(tool_name)
+        return None
+
+    registry.register("pre_tool_call", legacy, plugin="legacy")
+    await registry.dispatch("pre_tool_call", "exec", {}, None, session_id="s1")
+    assert calls == ["exec"], "legacy hook must still be invoked"
+
+
+@pytest.mark.asyncio
+async def test_unknown_kwarg_does_not_break_sync_hook(registry):
+    calls = []
+
+    def legacy_sync(tool_name, params, ctx):
+        calls.append(tool_name)
+        return None
+
+    registry.register("pre_tool_call", legacy_sync, plugin="legacy-sync")
+    await registry.dispatch("pre_tool_call", "exec", {}, None, session_id="s1")
+    assert calls == ["exec"]
+
+
+@pytest.mark.asyncio
+async def test_declared_kwarg_is_delivered(registry):
+    seen = {}
+
+    async def modern(tool_name, params, ctx, session_id=None):
+        seen["session_id"] = session_id
+        return None
+
+    registry.register("pre_tool_call", modern, plugin="modern")
+    await registry.dispatch("pre_tool_call", "exec", {}, None, session_id="s1")
+    assert seen["session_id"] == "s1"
+
+
+@pytest.mark.asyncio
+async def test_keyword_only_param_is_delivered(registry):
+    seen = {}
+
+    async def kwonly(tool_name, params, ctx, *, session_id=None):
+        seen["session_id"] = session_id
+        return None
+
+    registry.register("pre_tool_call", kwonly, plugin="kwonly")
+    await registry.dispatch("pre_tool_call", "exec", {}, None, session_id="s1")
+    assert seen["session_id"] == "s1"
+
+
+@pytest.mark.asyncio
+async def test_var_keyword_hook_receives_everything(registry):
+    seen = {}
+
+    async def greedy(tool_name, params, ctx, **kw):
+        seen.update(kw)
+        return None
+
+    registry.register("pre_tool_call", greedy, plugin="greedy")
+    await registry.dispatch(
+        "pre_tool_call", "exec", {}, None, session_id="s1", extra=42
+    )
+    assert seen == {"session_id": "s1", "extra": 42}
+
+
+@pytest.mark.asyncio
+async def test_mixed_hooks_all_invoked_with_new_kwarg(registry):
+    """A registry holding old and new hooks keeps working when a kwarg is added."""
+    calls = []
+
+    async def legacy(value, ctx):
+        calls.append("legacy")
+        return None
+
+    async def modern(value, ctx, session_id=None):
+        calls.append(("modern", session_id))
+        return HookResult(modified=value + 1)
+
+    registry.register("pre_llm_call", legacy, plugin="legacy")
+    registry.register("pre_llm_call", modern, plugin="modern")
+    out = await registry.dispatch_modify("pre_llm_call", 1, None, session_id="s1")
+    assert calls == ["legacy", ("modern", "s1")]
+    assert out == 2, "modern hook's modification must still apply"

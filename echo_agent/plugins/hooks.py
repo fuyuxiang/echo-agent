@@ -37,13 +37,55 @@ class HookResult:
     cancel_reason: str = ""
 
 
+def _accepts_var_keyword(fn: Callable) -> bool:
+    """Whether *fn* declares **kwargs (and can therefore take anything)."""
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (ValueError, TypeError):
+        # Builtins and some C callables have no introspectable signature.
+        # Pass everything through — same behaviour as before this filter existed.
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params)
+
+
+def _known_keywords(fn: Callable) -> set[str]:
+    try:
+        return {
+            name
+            for name, p in inspect.signature(fn).parameters.items()
+            if p.kind
+            in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        }
+    except (ValueError, TypeError):
+        return set()
+
+
 def _ensure_async(fn: Callable) -> HookCallback:
-    """Wrap a sync function as async if needed."""
-    if inspect.iscoroutinefunction(fn):
-        return fn
+    """Wrap a callback so it is awaitable and tolerant of unknown kwargs.
+
+    Keyword arguments a callback does not declare are dropped rather than
+    forwarded. Without this, adding a new kwarg at a dispatch site raises
+    TypeError inside every hook with a fixed signature; dispatch catches it and
+    logs a warning, so the plugin silently stops working — worse than a crash
+    because nothing obvious breaks. Filtering here lets the core add hook
+    parameters without coordinating with every plugin author.
+
+    Positional arguments are still passed as-is: adding or removing those
+    remains a breaking change, so new hook inputs must be keyword arguments.
+    """
+    is_coro = inspect.iscoroutinefunction(fn)
+    accepts_all = _accepts_var_keyword(fn)
+    known = set() if accepts_all else _known_keywords(fn)
 
     async def _wrapper(*args: Any, **kwargs: Any) -> HookResult | None:
-        return fn(*args, **kwargs)
+        if accepts_all:
+            kw = kwargs
+        else:
+            kw = {k: v for k, v in kwargs.items() if k in known}
+        result = fn(*args, **kw)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
     _wrapper.__name__ = getattr(fn, "__name__", "anonymous")
     _wrapper.__qualname__ = getattr(fn, "__qualname__", "anonymous")
