@@ -73,7 +73,6 @@ def _ensure_async(fn: Callable) -> HookCallback:
     Positional arguments are still passed as-is: adding or removing those
     remains a breaking change, so new hook inputs must be keyword arguments.
     """
-    is_coro = inspect.iscoroutinefunction(fn)
     accepts_all = _accepts_var_keyword(fn)
     known = set() if accepts_all else _known_keywords(fn)
 
