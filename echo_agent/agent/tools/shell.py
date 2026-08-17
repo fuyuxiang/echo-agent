@@ -44,7 +44,7 @@ class ShellTool(Tool):
         workspace: str,
         allowed: list[str] | None = None,
         blocked: list[str] | None = None,
-        max_output: int = 16000,
+        max_output: int = 2000000,
         executor: BaseExecutor | None = None,
         exec_policy: Any | None = None,
         network_policy: str = "allow",
@@ -56,6 +56,13 @@ class ShellTool(Tool):
         self._executor = executor
         self._exec_policy = exec_policy
         self._network_policy = network_policy
+
+    def _bound(self, text: str) -> str:
+        """套采集上限。stderr 此前完全没套,而 return_code != 0 时它就是模型
+        读到的全部内容——构建失败、pytest 失败正是最常见的大输出场景。"""
+        if len(text) <= self._max_output:
+            return text
+        return text[:self._max_output] + f"\n... (truncated, {len(text)} total chars)"
 
     def _check_command(self, command: str) -> str | None:
         cmd_name = command.strip().split()[0] if command.strip() else ""
@@ -144,8 +151,8 @@ class ShellTool(Tool):
                 return_code = proc.returncode or 0
                 executor_name = "direct"
 
-            if len(output) > self._max_output:
-                output = output[:self._max_output] + f"\n... (truncated, {len(output)} total chars)"
+            output = self._bound(output)
+            err_output = self._bound(err_output)
 
             combined = output
             if err_output:

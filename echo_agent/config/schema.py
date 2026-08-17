@@ -1127,11 +1127,11 @@ class ExecToolConfig(_Base):
         },
     )
     max_output_chars: int = Field(
-        default=16000,
+        default=2000000,
         json_schema_extra={
             "status": "effective", "ref": "agent/tools/__init__.py:47",
-            "desc_zh": "命令输出截断的最大字符数",
-            "desc_en": "Maximum characters of command output before truncation",
+            "desc_zh": "命令输出的采集上限字符数(不是模型可见上限——后者由 spill.maxInlineChars 决定)",
+            "desc_en": "Acquisition character cap for command output (not the model-facing cap, which is spill.maxInlineChars)",
         },
     )
     host: Literal["auto", "local", "sandbox", "container", "remote"] = Field(

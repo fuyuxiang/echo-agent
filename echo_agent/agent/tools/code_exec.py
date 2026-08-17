@@ -46,7 +46,7 @@ class CodeExecTool(Tool):
         *,
         executor: BaseExecutor | None = None,
         allowed_languages: list[str] | None = None,
-        max_output: int = 32000,
+        max_output: int = 2000000,
         timeout_seconds: int = 60,
         exec_policy: Any | None = None,
         network_policy: str = "allow",

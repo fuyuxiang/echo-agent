@@ -48,7 +48,7 @@ class WebFetchTool(Tool):
         "type": "object",
         "properties": {
             "url": {"type": "string", "description": "URL to fetch."},
-            "max_chars": {"type": "integer", "description": "Max response chars.", "default": 16000},
+            "max_chars": {"type": "integer", "description": "Optional acquisition cap; omit to fetch the full page. Oversized content is spilled to disk with a retrieval path."},
         },
         "required": ["url"],
     }
@@ -72,7 +72,7 @@ class WebFetchTool(Tool):
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         url = params["url"]
-        max_chars = params.get("max_chars", 16000)
+        max_chars = min(params.get("max_chars", 2_000_000), 2_000_000)
         try:
             return await self._fetch_with_redirect_guard(url, max_chars)
         except Exception as e:
