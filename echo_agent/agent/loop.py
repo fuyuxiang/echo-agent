@@ -1152,6 +1152,19 @@ class AgentLoop:
             except Exception as e:
                 logger.warning("Unresolved-contradiction rebuild failed: {}", e)
         self._spawn_background(self._start_mcp_background())
+        if self.config.spill.enabled:
+            # 挂在 start() 而非 __init__:spawn 走 asyncio.create_task,而
+            # AgentLoop 在 app.py 里是在事件循环之外构造的,那里 create_task
+            # 会抛 "no running event loop"。
+            # DISCARDABLE:清扫漏一轮没有任何后果,不该占 DURABLE 的重试预算;
+            # 且 aclose 只 cancel DISCARDABLE,停机时这个常驻循环才收得住。
+            from echo_agent.spill.sweeper import sweep_forever
+            self._spawn_background(sweep_forever(
+                self._spill_store.root,
+                self.config.spill.retention_days,
+                self.config.spill.max_total_mb,
+                self.config.spill.sweep_interval_hours,
+            ))
         # Skill admission candidate store: ensure schema exists before the first
         # background skill review can stage a candidate. Must run BEFORE
         # subscribe_inbound to close the startup race where an inbound event
