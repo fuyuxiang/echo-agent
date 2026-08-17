@@ -43,7 +43,8 @@ class ToolRegistry:
         "code": "execute_code",
     }
 
-    def __init__(self, audit_log_path: Path | None = None, config: Any = None):
+    def __init__(self, audit_log_path: Path | None = None, config: Any = None,
+                 spill_policy: Any = None):  # SpillPolicy;用 Any 避免 registry 依赖 spill 包
         self._tools: dict[str, Tool] = {}
         self._replay_cache: collections.OrderedDict[str, dict[str, Any]] = collections.OrderedDict()
         self._execution_log: collections.deque[dict[str, Any]] = collections.deque(maxlen=_MAX_EXECUTION_LOG)
@@ -58,6 +59,9 @@ class ToolRegistry:
         # tool that passed registration already satisfies this check under the
         # same config, so this is a no-op unless the profile changed underneath.
         self._config = config
+        # execute 是所有工具的唯一收口点,超长输出的落盘策略挂在这里才能覆盖
+        # 动态注册的 MCP 工具——逐工具打补丁覆盖不到它们。未装配时是 no-op。
+        self._spill_policy = spill_policy
 
     def set_audit_log_path(self, path: Path) -> None:
         self._audit_log_path = path
@@ -207,7 +211,7 @@ class ToolRegistry:
                         }
                         while len(self._replay_cache) > _MAX_REPLAY_CACHE:
                             self._replay_cache.popitem(last=False)
-                return result
+                return self._apply_spill(resolved_name, exec_ctx, result)
             except asyncio.TimeoutError:
                 last_result = ToolResult(success=False, error=f"Tool '{name}' timed out after {tool.timeout_seconds}s", error_kind="timeout")
                 logger.warning("Tool {} timed out (attempt {}/{})", name, attempt + 1, max_attempts)
@@ -222,7 +226,18 @@ class ToolRegistry:
         log_entry["attempt"] = attempt
         self._execution_log.append(log_entry)
         self._append_audit(log_entry)
-        return last_result
+        return self._apply_spill(resolved_name, exec_ctx, last_result)
+
+    def _apply_spill(self, tool_name: str, ctx: ToolExecutionContext, result: ToolResult) -> ToolResult:
+        """把超长的模型可见文本落盘换成预览。spill 未装配时是 no-op。"""
+        if self._spill_policy is None:
+            return result
+        try:
+            return self._spill_policy.apply(tool_name, ctx.session_key, result)
+        except Exception as e:
+            # spill 是可选能力,它自身的缺陷不该让工具调用失败
+            logger.warning("spill 策略异常,保留原结果 tool={} err={}", tool_name, e)
+            return result
 
     def get_execution_log(self, limit: int = 100) -> list[dict[str, Any]]:
         return list(self._execution_log)[-limit:]
