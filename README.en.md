@@ -161,7 +161,14 @@ Once the gateway is running, attach from any local terminal with `echo-agent cli
 | **Model Routing** | Main reasoning, context compression, embeddings and risk approval each configurable with independent provider and model |
 | **Tool Approval** | Three modes: `manual` / `smart` / `off`, unattended channels default to denying high-risk calls |
 | **Cross-Process Interop** | A2A JSON-RPC + MCP client (with OAuth), dynamic tool registration |
+| **Output Preservation** | Oversized tool output is spilled to disk; the model sees a head/tail preview plus a retrieval path and can read/grep the full text on demand |
 | **Local-First** | Sessions, memory, traces and credentials stored in the workspace by default, credentials encrypted at rest |
+
+> Starting with this version, tool output exceeding `spill.maxInlineChars` (6000 characters by default)
+> is no longer shown to the model in full. It is replaced with "head + tail + spill path". The complete
+> content is kept under `data/spill` and retained for 7 days by default. If your skills or prompts rely
+> on tool output being directly visible and contiguous, set `spill.enabled: false` to turn this off,
+> or raise `spill.maxInlineChars`.
 
 ---
 
