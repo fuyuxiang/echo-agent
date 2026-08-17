@@ -54,7 +54,8 @@ def discover_tools(
             exec_policy=config.tools.exec,
             network_policy=config.execution.network_policy,
         ))
-    tools.append(ReadFileTool(ws, restrict))
+    spill_root = workspace / config.storage.spill_dir
+    tools.append(ReadFileTool(ws, restrict, spill_root=spill_root))
     tools.append(WriteFileTool(ws, restrict, safe_write_root))
     tools.append(EditFileTool(ws, restrict, safe_write_root))
     tools.append(ListDirTool(ws, restrict))
@@ -81,7 +82,7 @@ def discover_tools(
     tools.append(SendFileTool(ws, restrict, publish_fn=bus.publish_outbound))
 
     from echo_agent.agent.tools.search import SearchFilesTool
-    tools.append(SearchFilesTool(ws, restrict))
+    tools.append(SearchFilesTool(ws, restrict, spill_root=spill_root))
 
     from echo_agent.agent.tools.patch import PatchTool
     tools.append(PatchTool(ws, restrict, safe_write_root))

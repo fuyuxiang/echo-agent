@@ -48,9 +48,10 @@ class SearchFilesTool(Tool):
     }
     timeout_seconds = 30
 
-    def __init__(self, workspace: str, restrict: bool = False):
+    def __init__(self, workspace: str, restrict: bool = False, spill_root: Path | None = None):
         self._workspace = Path(workspace).resolve()
         self._restrict = restrict
+        self._spill_root = spill_root
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         pattern = params["pattern"]
@@ -69,6 +70,12 @@ class SearchFilesTool(Tool):
             return ToolResult(success=False, error=violation)
 
         if not search_root.is_dir():
+            # 安全校验已跑完,此处才判 spill:被清扫掉的产物目录给语义提示,
+            # 而不是让模型读一句它读不懂的 "Directory not found"。
+            from echo_agent.spill.expired import expired_notice
+            notice = expired_notice(str(search_root), str(self._workspace), self._spill_root)
+            if notice:
+                return ToolResult(success=False, error=notice, error_kind="business")
             return ToolResult(success=False, error=f"Directory not found: {sub}")
 
         # Offload the blocking traversal to a worker thread so the event loop

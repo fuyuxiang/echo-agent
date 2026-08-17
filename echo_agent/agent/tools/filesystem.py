@@ -24,9 +24,10 @@ class ReadFileTool(Tool):
         "required": ["path"],
     }
 
-    def __init__(self, workspace: str, restrict: bool = False):
+    def __init__(self, workspace: str, restrict: bool = False, spill_root: Path | None = None):
         self._workspace = str(Path(workspace).resolve())
         self._restrict = restrict
+        self._spill_root = spill_root
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         path = params["path"]
@@ -39,6 +40,12 @@ class ReadFileTool(Tool):
                 resolved.relative_to(self._workspace)
             except ValueError:
                 return ToolResult(success=False, error=f"Path {path} is outside workspace {self._workspace}")
+        # 安全校验之后、碰文件系统之前:顺序很关键,否则一条越权路径会先被
+        # spill 提示接走,把"拒绝访问"伪装成"产物已过期"。
+        from echo_agent.spill.expired import expired_notice
+        notice = expired_notice(path, self._workspace, self._spill_root)
+        if notice:
+            return ToolResult(success=False, error=notice, error_kind="business")
         try:
             target = resolve_path(path, self._workspace)
             with open(target, encoding="utf-8", errors="replace") as f:
