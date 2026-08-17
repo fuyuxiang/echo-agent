@@ -2961,6 +2961,61 @@ class StorageConfig(_Base):
             "desc_en": "Directory storing log files",
         },
     )
+    spill_dir: str = Field(
+        default="data/spill",
+        json_schema_extra={
+            "status": "effective", "ref": "spill/store.py:1",
+            "desc_zh": "工具输出溢出产物的存储目录",
+            "desc_en": "Directory storing spilled tool-output artifacts",
+        },
+    )
+
+
+# ── Spill config ─────────────────────────────────────────────────────────────
+
+class SpillConfig(_Base):
+    """超长工具输出落盘。跨工具生效,故挂 Config 顶层而非某个工具下。"""
+
+    enabled: bool = Field(
+        default=True,
+        json_schema_extra={
+            "status": "effective", "ref": "spill/policy.py:1",
+            "desc_zh": "是否把超长工具输出落盘并只给模型预览(关闭则原样透传,超长输出会直接占满上下文)",
+            "desc_en": "Spill oversized tool output to disk and show the model a preview only",
+        },
+    )
+    max_inline_chars: int = Field(
+        default=6000,
+        json_schema_extra={
+            "status": "effective", "ref": "spill/policy.py:1",
+            "desc_zh": "模型可见的工具输出字符上限,超出则落盘并替换为首尾预览加取回路径",
+            "desc_en": "Model-facing character cap for tool output; larger results are spilled and replaced with a head/tail preview",
+        },
+    )
+    retention_days: int = Field(
+        default=7,
+        json_schema_extra={
+            "status": "effective", "ref": "spill/sweeper.py:1",
+            "desc_zh": "spill 产物保留天数,超期删除",
+            "desc_en": "Days to retain spill artifacts before deletion",
+        },
+    )
+    max_total_mb: int = Field(
+        default=512,
+        json_schema_extra={
+            "status": "effective", "ref": "spill/sweeper.py:1",
+            "desc_zh": "spill 产物总体积上限(MB),超出按最旧优先删除",
+            "desc_en": "Total size cap (MB) for spill artifacts; oldest are deleted first when exceeded",
+        },
+    )
+    sweep_interval_hours: int = Field(
+        default=6,
+        json_schema_extra={
+            "status": "effective", "ref": "spill/sweeper.py:1",
+            "desc_zh": "spill 产物清扫间隔(小时)",
+            "desc_en": "Interval (hours) between spill artifact sweeps",
+        },
+    )
 
 
 # ── Observability configs ────────────────────────────────────────────────────
@@ -4190,6 +4245,7 @@ class Config(_Base):
     media_understanding: MediaUnderstandingConfig = Field(default_factory=MediaUnderstandingConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
+    spill: SpillConfig = Field(default_factory=SpillConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     compression: CompressionConfig = Field(default_factory=CompressionConfig)

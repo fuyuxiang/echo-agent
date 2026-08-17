@@ -274,9 +274,17 @@ class AgentLoop:
             audit_path=workspace / config.storage.logs_dir / "memory_audit.jsonl",
             allow_env_writes=config.memory.allow_model_environment_writes,
         )
+        from echo_agent.spill.policy import SpillPolicy
+        from echo_agent.spill.store import SpillStore
+        self._spill_store = SpillStore(workspace / config.storage.spill_dir)
         self.tools = ToolRegistry(
             audit_log_path=workspace / config.storage.logs_dir / "tool_audit.jsonl",
             config=config,
+            spill_policy=SpillPolicy(
+                self._spill_store,
+                max_inline_chars=config.spill.max_inline_chars,
+                enabled=config.spill.enabled,
+            ),
         )
         from echo_agent.gateway.media import MediaCache
         media_cache = MediaCache(
