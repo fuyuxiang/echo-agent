@@ -2980,8 +2980,8 @@ class SpillConfig(_Base):
         default=True,
         json_schema_extra={
             "status": "effective", "ref": "spill/policy.py:1",
-            "desc_zh": "是否把超长工具输出落盘并只给模型预览(关闭则原样透传,超长输出会直接占满上下文)",
-            "desc_en": "Spill oversized tool output to disk and show the model a preview only",
+            "desc_zh": "是否把超长工具输出落盘并只给模型预览(关闭则回退旧行为:输出由下游按 16000 字符哑截断,尾部结论丢失且无取回路径)",
+            "desc_en": "Spill oversized tool output to disk and show the model a preview only (off falls back to the old behaviour: output is bluntly truncated downstream at 16000 chars, losing the trailing conclusion with no way to retrieve it)",
         },
     )
     max_inline_chars: int = Field(
