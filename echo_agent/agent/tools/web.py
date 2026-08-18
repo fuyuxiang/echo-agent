@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlencode, urljoin, urlparse
 
 import aiohttp
 
@@ -195,6 +195,8 @@ class WebSearchTool(Tool):
                     results = await self._search_serpapi(session, query, max_results)
                 elif self._provider == "searxng":
                     results = await self._search_searxng(session, query, max_results)
+                elif self._provider == "serply":
+                    results = await self._search_serply(session, query, max_results)
                 else:
                     return ToolResult(success=False, error=f"Unsupported search provider: {self._provider}")
         except Exception as e:
@@ -290,4 +292,26 @@ class WebSearchTool(Tool):
                 "snippet": item.get("content", ""),
             }
             for item in data.get("results", [])[:max_results]
+        ]
+
+    async def _search_serply(self, session: aiohttp.ClientSession, query: str, max_results: int) -> list[dict[str, str]]:
+        # Serply takes the query and result count as URL-encoded path segments.
+        base = (self._api_base or "https://api.serply.io").rstrip("/")
+        url = f"{base}/v1/search/{urlencode({'q': query, 'num': max_results})}"
+        headers = {
+            "X-Api-Key": self._api_key,
+            "Accept": "application/json",
+            # Serply is behind Cloudflare, which rejects the default aiohttp
+            # User-Agent, so send an explicit one.
+            "User-Agent": "echo-agent",
+        }
+        async with session.get(url, headers=headers, proxy=self._proxy) as resp:
+            data = await self._read_json(resp)
+        return [
+            {
+                "title": item.get("title", ""),
+                "url": item.get("link", ""),
+                "snippet": item.get("description", ""),
+            }
+            for item in data.get("results", [])
         ]

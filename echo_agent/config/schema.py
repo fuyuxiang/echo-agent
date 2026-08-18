@@ -1234,12 +1234,12 @@ class WebToolConfig(_Base):
             "desc_en": "Search service API key",
         },
     )
-    search_provider: Literal["brave", "tavily", "serpapi", "searxng"] = Field(
+    search_provider: Literal["brave", "tavily", "serpapi", "searxng", "serply"] = Field(
         default="brave",
         json_schema_extra={
             "status": "effective", "ref": "agent/tools/__init__.py:58",
-            "desc_zh": "网络搜索服务提供商",
-            "desc_en": "Web search service provider",
+            "desc_zh": "网络搜索服务提供商 (serply 使用 Serply SERP API: https://serply.io, 文档 https://serply.io/docs)",
+            "desc_en": "Web search service provider (serply uses the Serply SERP API: https://serply.io, docs https://serply.io/docs)",
         },
     )
     search_api_base: str = Field(
