@@ -15,6 +15,7 @@
   "active": "活跃",
   "paused": "暂停",
   "triggerNow": "立即执行",
+  "pausedCannotTrigger": "任务已暂停，无法触发",
   "empty": "暂无定时任务",
   "triggerSuccess": "已触发执行",
   "triggerFailed": "触发失败",

@@ -38,7 +38,7 @@ export function Analytics() {
 
   const usage = tokens?.usage ?? [];
   const channelRows = channels?.channels ?? [];
-  const totalCost = usage.reduce((sum, d) => sum + (d.cost_usd ?? 0), 0);
+  const totalCost = error ? null : usage.reduce((sum, d) => sum + (d.cost_usd ?? 0), 0);
 
   return (
     <div className="space-y-6">
@@ -55,7 +55,7 @@ export function Analytics() {
           </button>
         ))}
         <span className="ml-auto text-sm text-gray-600">
-          {t("totalCost", { cost: totalCost.toFixed(4) })}
+          {t("totalCost", { cost: totalCost !== null ? totalCost.toFixed(4) : "-" })}
         </span>
       </div>
 

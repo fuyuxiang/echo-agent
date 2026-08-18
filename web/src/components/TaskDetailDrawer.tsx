@@ -4,6 +4,7 @@ import { X, Pencil, Ban } from "lucide-react";
 import { useApi } from "../hooks/use-api";
 import { relativeTime, fullTimestamp } from "../lib/datetime";
 import { statusMeta, useKanbanStore, canTransition, type TaskCard } from "../stores/kanban";
+import { useIsAdmin } from "../stores/capabilities";
 import { useConfirm } from "../components/ConfirmDialog";
 import { toast } from "../stores/toast";
 
@@ -28,6 +29,7 @@ export function TaskDetailDrawer({ task, onClose }: { task: TaskCard; onClose: (
   const { data, error, refetch } = useApi<{ task: TaskCard }>(`/tasks/${task.id}`);
   const { editTask, transitionTask, updateLocal } = useKanbanStore();
   const confirm = useConfirm();
+  const canWrite = useIsAdmin() !== false;
   const detail = data?.task ?? task;
   const meta = statusMeta(detail.status);
 
@@ -120,7 +122,7 @@ export function TaskDetailDrawer({ task, onClose }: { task: TaskCard; onClose: (
         <div className="flex items-start justify-between gap-3">
           <h2 id="task-detail-title" className="font-semibold text-base flex-1">{detail.title}</h2>
           <div className="flex items-center gap-1 shrink-0">
-            {!editing && (
+            {!editing && canWrite && (
               <button
                 onClick={startEdit}
                 aria-label={t("detail.editAria", { title: detail.title })}
@@ -130,7 +132,7 @@ export function TaskDetailDrawer({ task, onClose }: { task: TaskCard; onClose: (
                 <Pencil size={16} />
               </button>
             )}
-            {canCancel && (
+            {canCancel && canWrite && (
               <button
                 onClick={doCancel}
                 aria-label={t("detail.cancelTask")}

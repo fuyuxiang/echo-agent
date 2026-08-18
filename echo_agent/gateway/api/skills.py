@@ -189,6 +189,7 @@ class SkillsAPI:
         target.mkdir(parents=True, exist_ok=True)
         shutil.copytree(source, target, dirs_exist_ok=True)
 
+        store.persist_disable(meta.name)
         d = meta.to_dict()
         d["enabled"] = False
         return web.json_response({"success": True, "skill": d})

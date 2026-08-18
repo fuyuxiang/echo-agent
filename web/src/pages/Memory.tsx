@@ -78,7 +78,7 @@ export function Memory() {
       destructive: true,
     });
     if (!confirmed) return;
-    const ok = await runMutation(() => apiFetch(`/memory/${entry.id}`, { method: "DELETE" }), {
+    const ok = await runMutation(() => apiFetch(`/memory/${entry.id}?override=true`, { method: "DELETE" }), {
       success: t("deleteSuccess"), error: t("deleteFailed"),
     });
     if (ok) {

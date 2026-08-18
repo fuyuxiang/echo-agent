@@ -122,7 +122,7 @@ describe("Memory 页", () => {
     expect(await screen.findByText(/不可撤销/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "删除" }));
 
-    await waitFor(() => expect(spy).toHaveBeenCalledWith("/memory/m1", { method: "DELETE" }));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("/memory/m1?override=true", { method: "DELETE" }));
   });
 
   it("搜索结果里删除后本地剔除,不会退回分层列表", async () => {

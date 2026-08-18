@@ -88,12 +88,22 @@ class KnowledgeAPI:
             docs_dir.mkdir(parents=True, exist_ok=True)
 
         uploaded = []
+        rejected = []
+        allowed = getattr(index, "allowed_extensions", None)
+        if not isinstance(allowed, (set, frozenset, list, tuple)):
+            allowed = None
         while True:
             part = await reader.next()
             if part is None:
                 break
             if part.name == "file":
                 raw_name = part.filename or "unnamed.txt"
+                if allowed:
+                    from pathlib import PurePosixPath
+                    ext = PurePosixPath(raw_name).suffix.lower()
+                    if ext not in allowed:
+                        rejected.append(raw_name)
+                        continue
                 # Use part.filename's relative path as-is for the target path;
                 # _safe_relative_dest validates it stays within docs_dir,
                 # rejecting traversal/absolute paths with a 400.
@@ -113,13 +123,19 @@ class KnowledgeAPI:
                 uploaded.append(str(dest.relative_to(docs_dir.resolve())))
 
         if not uploaded:
+            if rejected:
+                return web.json_response({
+                    "error": f"unsupported file type(s): {', '.join(rejected)}. "
+                             f"Allowed: {', '.join(sorted(allowed))}",
+                    "rejected": rejected,
+                }, status=400)
             return web.json_response({"error": "no files uploaded"}, status=400)
 
         result = await index.rebuild_async()
-        return web.json_response({
-            "uploaded": uploaded,
-            "index": result,
-        })
+        resp: dict = {"uploaded": uploaded, "index": result}
+        if rejected:
+            resp["rejected"] = rejected
+        return web.json_response(resp)
 
     async def list_documents(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "knowledge_documents")

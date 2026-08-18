@@ -15,6 +15,7 @@
   "active": "Active",
   "paused": "Paused",
   "triggerNow": "Run now",
+  "pausedCannotTrigger": "Job is paused and cannot be triggered",
   "empty": "No cron jobs",
   "triggerSuccess": "Triggered",
   "triggerFailed": "Trigger failed",

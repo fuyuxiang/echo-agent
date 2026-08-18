@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { useNavigate } from "react-router";
 import { dashboardWS } from "../lib/ws";
 import { useAuthStore } from "../stores/auth";
+import { useAuthRequired } from "../stores/capabilities";
 
 type WsEvent = { type: string; payload: unknown };
 
@@ -20,6 +21,7 @@ export function useWsSubscribe(
   eventTypes: string[],
 ) {
   const token = useAuthStore((s) => s.token);
+  const authRequired = useAuthRequired();
   const logout = useAuthStore((s) => s.logout);
   const navigate = useNavigate();
 
@@ -33,14 +35,14 @@ export function useWsSubscribe(
   const typeList = useMemo(() => typesKey.split(",").filter(Boolean), [typesKey]);
 
   useEffect(() => {
-    if (!token || channelList.length === 0) return;
+    if ((authRequired !== false && !token) || channelList.length === 0) return;
 
     // Register listeners first: with a warm socket, events can arrive on the
     // same tick as subscribe().
     const unsubs = typeList.map((type) =>
       dashboardWS.on(type, (ev) => handlerRef.current(ev)),
     );
-    const release = dashboardWS.subscribe(token, channelList);
+    const release = dashboardWS.subscribe(token || "", channelList);
 
     // The token the socket authenticated with is no longer accepted; drop it
     // and route to login rather than letting the socket retry indefinitely.
@@ -57,5 +59,5 @@ export function useWsSubscribe(
       unsubs.forEach((u) => u());
       release();
     };
-  }, [token, channelList, typeList, logout, navigate]);
+  }, [token, authRequired, channelList, typeList, logout, navigate]);
 }

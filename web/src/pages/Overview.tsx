@@ -36,10 +36,10 @@ const POLL_INTERVAL_MS = 30_000;
 
 export function Overview() {
   const { t } = useTranslation(["overview", "common"]);
-  const { data: health, refetch: refetchHealth } = useApi<HealthData>("/health");
-  const { data: channels, refetch: refetchChannels } = useApi<{ channels: ChannelItem[] }>("/channels");
-  const { data: tasks, refetch: refetchTasks } = useApi<TasksData>("/tasks?board_id=default");
-  const { data: memory, refetch: refetchMemory } = useApi<{ total: number }>("/memory/stats");
+  const { data: health, error: healthErr, refetch: refetchHealth } = useApi<HealthData>("/health");
+  const { data: channels, error: channelsErr, refetch: refetchChannels } = useApi<{ channels: ChannelItem[] }>("/channels");
+  const { data: tasks, error: tasksErr, refetch: refetchTasks } = useApi<TasksData>("/tasks?board_id=default");
+  const { data: memory, error: memoryErr, refetch: refetchMemory } = useApi<{ total: number }>("/memory/stats");
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -73,17 +73,23 @@ export function Overview() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-2">
-        {STATUS_ICON[health?.status || "unhealthy"]}
+        {STATUS_ICON[health?.status || (healthErr ? "unhealthy" : "unhealthy")]}
         <span className="text-lg font-semibold capitalize">{health?.status || t("status.unknown")}</span>
       </div>
 
+      {(healthErr || channelsErr || tasksErr || memoryErr) && (
+        <div className="bg-amber-50 text-amber-700 border border-amber-200 rounded-lg p-3 text-sm">
+          {t("common:loadFailed", { error: healthErr || channelsErr || tasksErr || memoryErr })}
+        </div>
+      )}
+
       {/* 5 张卡此前硬编码 grid-cols-5,窄屏(笔记本分屏、平板)直接横向溢出。 */}
       <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-4">
-        <MetricCard icon={<Activity size={18} />} label={t("metrics.activeSessions")} value={health?.active_sessions ?? 0} />
-        <MetricCard icon={<Radio size={18} />} label={t("metrics.channelsOnline")} value={onlineChannels} />
-        <MetricCard icon={<Plug size={18} />} label={t("metrics.cliClients")} value={health?.ws_clients ?? 0} />
-        <MetricCard icon={<Brain size={18} />} label={t("metrics.memoryCount")} value={memory?.total ?? 0} />
-        <MetricCard icon={<Coins size={18} />} label={t("metrics.runningTasks")} value={statusCounts["running"] ?? 0} />
+        <MetricCard icon={<Activity size={18} />} label={t("metrics.activeSessions")} value={healthErr ? "-" : (health?.active_sessions ?? 0)} />
+        <MetricCard icon={<Radio size={18} />} label={t("metrics.channelsOnline")} value={channelsErr ? "-" : onlineChannels} />
+        <MetricCard icon={<Plug size={18} />} label={t("metrics.cliClients")} value={healthErr ? "-" : (health?.ws_clients ?? 0)} />
+        <MetricCard icon={<Brain size={18} />} label={t("metrics.memoryCount")} value={memoryErr ? "-" : (memory?.total ?? 0)} />
+        <MetricCard icon={<Coins size={18} />} label={t("metrics.runningTasks")} value={tasksErr ? "-" : (statusCounts["running"] ?? 0)} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -114,7 +120,7 @@ export function Overview() {
   );
 }
 
-function MetricCard({ icon, label, value }: { icon: React.ReactNode; label: string; value: number }) {
+function MetricCard({ icon, label, value }: { icon: React.ReactNode; label: string; value: number | string }) {
   return (
     <div className="bg-white rounded-lg border p-4 flex items-center gap-3">
       <div className="text-gray-500">{icon}</div>
