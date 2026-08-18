@@ -170,6 +170,58 @@ def _parse_aes_key(aes_key_b64: str) -> bytes:
 
 # ── API helpers ──────────────────────────────────────────────────────────────
 
+def _api_error(response: dict[str, Any]) -> str:
+    """本次调用的失败原因,成功则返回空串。
+
+    iLink 把失败分放在两个字段里:``errcode`` 和 ``ret``。轮询循环一直是两个
+    都查的(见 _poll_loop),发送路径过去只查 ``errcode`` 且缺省为 0,于是一个
+    形如 ``{"ret": -14}`` 的会话过期响应在轮询侧是致命错误,在发送侧却被读成
+    发送成功 —— 这正是"日志全绿但微信没收到"的成因之一。判定收敛到这里,
+    两条路径从此对"什么算失败"给出同一个答案。
+
+    ``ret``/``errcode`` 缺失当成 0(成功):这两个字段在正常响应里本就可以不
+    出现,把缺失当失败会把每一次正常发送都判成错。真正的空响应由调用方的
+    HTTP 状态检查与 _require_ok 的空 body 分支拦住。
+    """
+    for field in ("errcode", "ret"):
+        raw = response.get(field)
+        if raw in (None, 0):
+            continue
+        try:
+            code = int(raw)
+        except (TypeError, ValueError):
+            return f"{field}={raw!r}"
+        if code == 0:
+            continue
+        errmsg = str(response.get("errmsg") or "")
+        if code == _SESSION_EXPIRED_ERRCODE:
+            # 会话过期在发送侧无法自愈:token 已经不再有投递权,重试只会
+            # 继续静默失败。把语义点明,运维看日志就知道要重新扫码登录。
+            suffix = f": {errmsg}" if errmsg else ""
+            return f"{field}={code} (session expired, re-login required){suffix}"
+        return f"{field}={code}: {errmsg}"
+    return ""
+
+
+def _is_session_expired(response: dict[str, Any]) -> bool:
+    """响应是否表示 bot 会话已过期(两个字段任一为 -14)。"""
+    return any(
+        response.get(field) == _SESSION_EXPIRED_ERRCODE for field in ("errcode", "ret")
+    )
+
+
+def _require_ok(response: dict[str, Any], *, what: str) -> str:
+    """把"不像一个成功响应"的 body 也算成失败,返回失败原因或空串。
+
+    除了显式错误码,还有一类静默失败:响应根本不是 iLink 的 JSON 结构(网关
+    插的错误页、代理返回的空 body)。这种 body 里没有 errcode,过去被 dict.get
+    的缺省值读成成功。
+    """
+    if not isinstance(response, dict) or not response:
+        return f"{what} returned an empty or non-JSON response"
+    return _api_error(response)
+
+
 async def _api_post(
     session: aiohttp.ClientSession,
     *,
@@ -183,6 +235,12 @@ async def _api_post(
     url = f"{base_url}/{endpoint}"
     timeout = aiohttp.ClientTimeout(total=timeout_ms / 1000 + 5)
     async with session.post(url, data=body.encode(), headers=_headers(token, body), timeout=timeout) as resp:
+        # HTTP 状态先于 body 判定:非 2xx 时 body 往往是网关的错误页而不是
+        # iLink 的 JSON,解析出来没有 errcode,会被下游读成发送成功。CDN 上传
+        # 那一步一直是查状态码的,这里补齐同样的检查。
+        if resp.status < 200 or resp.status >= 300:
+            raw = await resp.text()
+            raise RuntimeError(f"{endpoint} HTTP {resp.status}: {raw[:200]}")
         return await resp.json(content_type=None)
 
 
@@ -605,10 +663,10 @@ class WeixinChannel(BaseChannel):
                     text=chunk,
                     context_token=context_token,
                 )
-                errcode = resp.get("errcode", 0)
-                if errcode and errcode != 0:
-                    logger.warning("weixin send error: errcode={} errmsg={}", errcode, resp.get("errmsg", ""))
-                    return SendResult(success=False, error=f"errcode={errcode}: {resp.get('errmsg', '')}")
+                failure = _require_ok(resp, what="sendmessage")
+                if failure:
+                    logger.warning("weixin send error: {}", failure)
+                    return SendResult(success=False, error=failure)
             except Exception as exc:
                 logger.error("weixin send failed to {}: {}", chat_id[:8] if chat_id else "?", exc)
                 return SendResult(success=False, error=str(exc))
@@ -813,9 +871,9 @@ class WeixinChannel(BaseChannel):
             filesize=_aes_padded_size(rawsize),
             aeskey_hex=aes_key.hex(),
         )
-        errcode = upload_response.get("errcode", 0)
-        if errcode and errcode != 0:
-            return SendResult(success=False, error=f"getuploadurl errcode={errcode}: {upload_response.get('errmsg', '')}")
+        failure = _require_ok(upload_response, what="getuploadurl")
+        if failure:
+            return SendResult(success=False, error=f"getuploadurl {failure}")
 
         upload_full_url = str(upload_response.get("upload_full_url") or "")
         upload_param = str(upload_response.get("upload_param") or "")
@@ -877,9 +935,12 @@ class WeixinChannel(BaseChannel):
             token=self._token,
             timeout_ms=_API_TIMEOUT_MS,
         )
-        errcode = resp.get("errcode", 0)
-        if errcode and errcode != 0:
-            return SendResult(success=False, error=f"sendmessage errcode={errcode}: {resp.get('errmsg', '')}")
+        failure = _require_ok(resp, what="sendmessage")
+        if failure:
+            logger.warning("weixin media send error: {}", failure)
+            return SendResult(success=False, error=f"sendmessage {failure}")
+        # client_id 是本地生成的 uuid,不是服务端回执。留作事件关联用,但不要
+        # 拿它当"平台确认送达"的凭据:服务端 message_id 目前不在响应里解析。
         return SendResult(success=True, message_id=str(msg["client_id"]))
 
     async def send_voice(
@@ -942,17 +1003,18 @@ class WeixinChannel(BaseChannel):
                 if isinstance(suggested, int) and suggested > 0:
                     timeout_ms = suggested
 
-                ret = response.get("ret", 0)
-                errcode = response.get("errcode", 0)
-                if ret not in (0, None) or errcode not in (0, None):
-                    if ret == _SESSION_EXPIRED_ERRCODE or errcode == _SESSION_EXPIRED_ERRCODE:
+                # 与发送路径共用 _api_error:两条路径对"什么算失败"必须同源,
+                # 否则又会出现同一个响应轮询侧致命、发送侧当成功的分歧。
+                failure = _api_error(response)
+                if failure:
+                    if _is_session_expired(response):
                         logger.error("weixin: session expired, pausing 10 minutes")
                         await asyncio.sleep(600)
                         consecutive_failures = 0
                         continue
                     consecutive_failures += 1
                     delay = _BACKOFF_DELAY if consecutive_failures >= _MAX_CONSECUTIVE_FAILURES else _RETRY_DELAY
-                    logger.warning("weixin: poll error ret={} errcode={} ({}/{})", ret, errcode, consecutive_failures, _MAX_CONSECUTIVE_FAILURES)
+                    logger.warning("weixin: poll error {} ({}/{})", failure, consecutive_failures, _MAX_CONSECUTIVE_FAILURES)
                     await asyncio.sleep(delay)
                     if consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
                         consecutive_failures = 0
