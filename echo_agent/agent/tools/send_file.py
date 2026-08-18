@@ -41,10 +41,13 @@ class SendFileTool(Tool):
     }
 
     def __init__(self, workspace: str, restrict: bool = False, publish_fn=None,
-                 channel_lookup=None):
+                 channel_lookup=None, spill_root: Path | None = None):
         self._workspace = str(Path(workspace).resolve())
         self._restrict = restrict
         self._publish = publish_fn
+        # spill 闸门在这里比在读取工具上更要紧:这条路径的终点是把文件当附件
+        # 投到聊天里,越权内容直接离开进程,连一次模型转述都不需要。
+        self._spill_root = spill_root
         # Resolves a channel name to its adapter so capability can be checked
         # before promising the model an upload. Optional: without it the tool
         # degrades to reporting whatever the delivery receipt says.
@@ -76,7 +79,7 @@ class SendFileTool(Tool):
             return ToolResult(success=False, error="Message bus not connected")
         file_path = params["file_path"]
 
-        violation = check_read(file_path, self._workspace)
+        violation = check_read(file_path, self._workspace, spill_root=self._spill_root)
         if violation:
             return ToolResult(success=False, error=violation)
         if self._restrict:

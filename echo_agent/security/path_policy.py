@@ -190,8 +190,46 @@ def resolve_path(path: str, workspace: str) -> Path:
     return raw.resolve() if raw.is_absolute() else (Path(workspace) / raw).resolve()
 
 
-def check_read(path: str, workspace: str) -> Optional[str]:
-    """Return an error message if reading this path should be denied, else None."""
+_SPILL_DENIAL = (
+    "Read denied: {path} is a spill artifact directory. "
+    "Use read_spill with the path from the truncation notice — it is the only "
+    "tool that can retrieve your own session's artifacts."
+)
+
+
+def _check_spill_read(path: str, workspace: str, spill_root: Path) -> Optional[str]:
+    """Deny generic reads of anything at or under the spill root.
+
+    The root itself is denied too: listing it leaks which sessions exist and how
+    much each produced. Compared on resolved paths, never string prefixes — a
+    ``..`` segment or a symlink defeats prefix matching.
+    """
+    try:
+        resolved = resolve_path(path, workspace)
+        root = Path(spill_root).resolve()
+    except (OSError, ValueError):
+        return None
+    if resolved == root or root in resolved.parents:
+        return _SPILL_DENIAL.format(path=path)
+    return None
+
+
+def check_read(path: str, workspace: str, spill_root: Optional[Path] = None) -> Optional[str]:
+    """Return an error message if reading this path should be denied, else None.
+
+    ``spill_root`` opts the caller into the spill gate: artifacts under it are
+    per-session private, and every generic read tool (read_file, search_files,
+    list_dir, read_document, send_file) is session-blind — it authorises on the
+    path alone. Since the path travels in model-visible text, one session
+    repeating it to another would hand over the content. Denying them all here
+    leaves ``read_spill``, which authorises on ctx.session_key, as the only way
+    in. NOTE: this is a path-layer gate; a shell tool can still ``cat`` the
+    file, so it only constitutes real isolation where exec is disabled.
+    """
+    if spill_root is not None:
+        denial = _check_spill_read(path, workspace, spill_root)
+        if denial:
+            return denial
     normalized = os.path.expanduser(path)
     resolved = resolve_path(path, workspace)
     resolved_str = str(resolved)

@@ -30,13 +30,15 @@ class ReadDocumentTool(Tool):
         "required": ["path"],
     }
 
-    def __init__(self, workspace: str, restrict: bool = False):
+    def __init__(self, workspace: str, restrict: bool = False, spill_root: Path | None = None):
         self._workspace = str(Path(workspace).resolve())
         self._restrict = restrict
+        self._spill_root = spill_root
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         path = params["path"]
-        violation = check_read(path, self._workspace)
+        # spill 产物是 .txt,extract 认得它,故这里同样是一条会话无关的读取路径。
+        violation = check_read(path, self._workspace, spill_root=self._spill_root)
         if violation:
             return ToolResult(success=False, error=violation)
         if self._restrict:
