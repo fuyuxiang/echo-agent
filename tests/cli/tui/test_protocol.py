@@ -43,8 +43,8 @@ def test_dedup_reports_repeats():
 def test_cog_types_exact_membership():
     assert COG_TYPES == frozenset({
         "memory_recalled", "memory_written", "thinking", "tool_call",
-        "approval_request", "cost_update", "heartbeat", "evolution",
-        "clarify_request", "clarify_closed",
+        "approval_request", "approval_closed", "cost_update", "heartbeat",
+        "evolution", "clarify_request", "clarify_closed",
     })
 
 

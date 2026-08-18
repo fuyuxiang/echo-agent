@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 from rich.markdown import Markdown
 from rich.markup import escape
@@ -244,9 +245,47 @@ def _mask(value: str) -> str:
     return "••••" + text[-4:]
 
 
+_BEARER_RE = re.compile(r"(Bearer\s+)\S+", re.IGNORECASE)
+_URL_SECRET_RE = re.compile(
+    r"([?&](?:token|key|api_key|apikey|secret|access_token|password)=)([^&\s]+)",
+    re.IGNORECASE,
+)
+_HEADER_FLAG_RE = re.compile(
+    r"(-H\s+['\"]?(?:Authorization|X-Api-Key)['\"]?\s*:\s*)\S+",
+    re.IGNORECASE,
+)
+
+
+def _mask_sensitive_strings(text: str) -> str:
+    """Mask Bearer tokens, URL secret params, and CLI header flags in a string."""
+    text = _BEARER_RE.sub(lambda m: m.group(1) + "••••", text)
+    text = _URL_SECRET_RE.sub(lambda m: m.group(1) + "••••", text)
+    text = _HEADER_FLAG_RE.sub(lambda m: m.group(1) + "••••", text)
+    return text
+
+
+def _redact_value(key: str, value, *, value_width: int = 60) -> str:
+    """Recursively redact a value: mask if the key is secret, otherwise recurse
+    into dicts/lists looking for nested secrets."""
+    if _is_secret_key(key):
+        return _mask(value)
+    if isinstance(value, dict):
+        parts = []
+        for k, v in value.items():
+            parts.append(f"{k}={_redact_value(k, v, value_width=value_width)}")
+        shown = "{" + ", ".join(parts) + "}"
+        return _clip(shown, value_width)
+    if isinstance(value, list):
+        items = [_redact_value(key, item, value_width=value_width) for item in value]
+        shown = "[" + ", ".join(items) + "]"
+        return _clip(shown, value_width)
+    shown = _clip(value, value_width)
+    return _mask_sensitive_strings(shown)
+
+
 def format_params(params: dict, *, value_width: int = 60) -> list[str]:
     """Render call parameters as one ``key=value`` line per entry, with secrets
-    masked.
+    masked recursively.
 
     Both the approval panel and the tool detail view used to print ``str(dict)``,
     i.e. a raw Python repr: it wrapped unreadably for anything non-trivial and
@@ -255,10 +294,7 @@ def format_params(params: dict, *, value_width: int = 60) -> list[str]:
     """
     lines: list[str] = []
     for key, value in (params or {}).items():
-        if _is_secret_key(key):
-            shown = _mask(value)
-        else:
-            shown = _clip(value, value_width)
+        shown = _redact_value(key, value, value_width=value_width)
         lines.append(f"{key}={shown}")
     return lines
 

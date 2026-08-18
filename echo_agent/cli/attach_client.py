@@ -286,7 +286,10 @@ async def run_client(
                     payload = msg.json()
                 except Exception:
                     continue
-                bridge.dispatch(payload)
+                try:
+                    bridge.dispatch(payload)
+                except Exception:
+                    continue
             # Loop exit means the socket closed / a non-TEXT frame arrived. No
             # error frame is sent on a clean gateway shutdown, so flip the
             # status bar to disconnected here rather than leaving it "●已连接".

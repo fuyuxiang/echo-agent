@@ -136,6 +136,10 @@ class DetailPrefs:
             raise ValueError(f"unknown section: {section}")
         if state not in STATES:
             raise ValueError(f"unknown state: {state}")
+        # activity has no expanded view (heartbeat/cost_update are handled
+        # inline and never create transcript blocks), so treat it as collapsed.
+        if section == "activity" and state == "expanded":
+            state = "collapsed"
         return replace(self, **{section: state})
 
     def describe(self) -> list[tuple[str, str]]:

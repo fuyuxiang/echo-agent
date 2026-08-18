@@ -8,8 +8,8 @@ from dataclasses import dataclass
 
 COG_TYPES = frozenset({
     "memory_recalled", "memory_written", "thinking", "tool_call",
-    "approval_request", "cost_update", "heartbeat", "evolution",
-    "clarify_request", "clarify_closed",
+    "approval_request", "approval_closed", "cost_update", "heartbeat",
+    "evolution", "clarify_request", "clarify_closed",
 })
 
 
@@ -60,6 +60,8 @@ class CogDedup:
         self._max = max_entries
 
     def seen(self, cog_event_id: str) -> bool:
+        if not cog_event_id:
+            return False
         if cog_event_id in self._seen:
             return True
         self._seen[cog_event_id] = None

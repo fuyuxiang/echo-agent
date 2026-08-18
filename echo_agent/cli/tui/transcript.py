@@ -59,6 +59,11 @@ class TranscriptView(VerticalScroll):
         # indent rails reason about "this turn" without nesting the widget tree —
         # see turn_layout for why a container widget was rejected.
         self._turn_seq = 0
+        # Event ID of the last completed reply, used for reconnection dedup.
+        self._last_reply_event_id: str = ""
+        # Set by /clear to signal that the next replay should not dedup
+        # (the on-screen text is gone, so text comparison would be wrong).
+        self._cleared_since_last_reply = False
         # Which trace sections are visible/expanded. Read from the environment at
         # construction so a user's shell default applies to the very first turn,
         # then mutated in place by /details.
@@ -123,6 +128,7 @@ class TranscriptView(VerticalScroll):
         self._thinking_blocks.clear()
         self._last_memory = None
         self._last_thinking = None
+        self._cleared_since_last_reply = True
         # Survivors keep whatever margin they were mounted with; the next block
         # is spaced as if it opens a fresh screen.
         self._prev_group = None
@@ -155,9 +161,11 @@ class TranscriptView(VerticalScroll):
         self._place(w)
         return w
 
-    def start_reply(self) -> AgentReply:
+    def start_reply(self, turn_seq: int = 0) -> AgentReply:
         w = AgentReply()
         self._place(w)
+        if turn_seq > 0:
+            w.turn_seq = turn_seq
         return w
 
     def add_cognitive(self, ev: CogEvent) -> CognitiveBlock | None:

@@ -4,6 +4,7 @@ keybindings; upstream sends go through the injected send_coro."""
 from __future__ import annotations
 
 import time
+from collections import deque
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -107,6 +108,12 @@ class EchoTUI(App):
         # ECHO_BRAND_* so a white-label deployment can rebrand without code edits.
         self._brand = load_brand()
         self._replies: dict[str, object] = {}
+        # Pending turn_seqs awaiting their accepted frame, in submit order.
+        # Popped in on_turn_accepted to build _event_turn_seq.
+        self._pending_turn_seqs: deque[int] = deque()
+        # Maps event_id → turn_seq so replies are attributed to the correct turn
+        # even when a second turn was submitted before the first reply arrived.
+        self._event_turn_seq: dict[str, int] = {}
         # Model of in-flight turns keyed by event_id. Replaces the old single
         # _active_event_id string, which a control reply's (approve/deny/clarify)
         # accepted frame — or a second queued turn — would overwrite, making
@@ -276,12 +283,15 @@ class EchoTUI(App):
         primary (conversation) turn becomes the interrupt target; a control
         reply (approve/deny/clarify) is tracked separately so it never becomes
         the Ctrl+C target nor stops the running turn's timer."""
-        self._turns.on_accepted(event_id)
+        kind = self._turns.on_accepted(event_id)
+        if kind == "primary" and event_id and self._pending_turn_seqs:
+            self._event_turn_seq[event_id] = self._pending_turn_seqs.popleft()
 
     def on_user_reply_token(self, inbound_id: str, text: str) -> None:
         r = self._replies.get(inbound_id)
         if r is None:
-            r = self._tv.start_reply()
+            ts = self._event_turn_seq.get(inbound_id, 0)
+            r = self._tv.start_reply(turn_seq=ts)
             self._replies[inbound_id] = r
         r.append_token(text)
 
@@ -299,22 +309,35 @@ class EchoTUI(App):
             r.clear_stream()
 
     def on_user_reply_final(self, inbound_id: str, text: str) -> None:
+        # Classify BEFORE rendering: control replies (approve/deny/clarify acks)
+        # should not appear as assistant text in the transcript.
+        kind = self._turns.on_final(inbound_id)
         r = self._replies.pop(inbound_id, None)
+        if kind == "control":
+            # If streaming had already started a widget, hide it.
+            if r is not None:
+                try:
+                    r.remove()
+                except Exception:
+                    pass
+            self._event_turn_seq.pop(inbound_id, None)
+            return
         if r is None:
-            r = self._tv.start_reply()
+            ts = self._event_turn_seq.get(inbound_id, 0)
+            r = self._tv.start_reply(turn_seq=ts)
         # Finished reply: render markdown now that the text is complete.
         # Streaming (append_token) stays plain text since partial markdown
         # is broken and re-parsing every token would flicker.
         r.set_markdown(text)
-        # Retire this turn from the registry. Only stop the timer once NO primary
-        # (conversation) turn remains outstanding — a control reply's final
-        # (approve/deny/clarify ack) must not stop the original turn's timer, and
-        # a queued second turn must keep it running.
-        kind = self._turns.on_final(inbound_id)
+        # Track for reconnection dedup.
+        if inbound_id:
+            self._tv._last_reply_event_id = inbound_id
+            self._tv._cleared_since_last_reply = False
+        # Clean up the turn_seq mapping for this event.
+        self._event_turn_seq.pop(inbound_id, None)
+        # kind was resolved above (before rendering). For non-control replies,
+        # stop offering an interrupt once the turn settles.
         if kind != "control":
-            # A conversation reply (correlated or the uncorrelated standalone one
-            # a pre-reconnect turn produces) means that work is accounted for, so
-            # stop offering an interrupt for it.
             self._turns.note_turn_settled()
         if not self._turns.has_active_primary:
             self.query_one(StatusBar).stop_turn_timer()
@@ -434,6 +457,16 @@ class EchoTUI(App):
             # answering it — see the comment in on_user_reply_final for why the
             # mid-turn final frames must not be used for that.
             self._retire_clarify(ev.data.get("clarify_id", ""))
+            return
+        if ev.cog_type == "approval_closed":
+            # The server closed this approval (timeout or resolved externally).
+            # Symmetric with clarify_closed: the TUI cannot guess from final
+            # frames alone, so an explicit signal is needed.
+            if self._pending_approval is not None:
+                request_id = ev.data.get("request_id", "")
+                if not request_id or self._pending_approval.request_id == request_id:
+                    self._pending_approval = None
+                    self._unlock_prompt()
             return
         if ev.cog_type == "cost_update":
             bar = self.query_one(StatusBar)
@@ -590,6 +623,9 @@ class EchoTUI(App):
         # and, more importantly, to hand the keyboard back: the prompt has to stay
         # usable for /reconnect, which a locked clarify would block.
         self._retire_clarify()
+        if self._pending_approval is not None:
+            self._pending_approval = None
+            self._unlock_prompt(focus=False)
 
     def notify_reconnected(self) -> None:
         """Restore the connected state after a successful reconnect. Called by
@@ -615,6 +651,8 @@ class EchoTUI(App):
         # would linger and a same-id frame after the reconnect would append into
         # the old, abandoned widget.
         self._replies.clear()
+        self._pending_turn_seqs.clear()
+        self._event_turn_seq.clear()
         try:
             bar = self.query_one(StatusBar)
             bar.set_connection(True)
@@ -632,24 +670,33 @@ class EchoTUI(App):
         self._activity_call("settle", "interrupted")
         self._unlock_prompt(focus=True)
 
-    def replay_missed_reply(self, text: str) -> None:
+    def replay_missed_reply(self, text: str, event_id: str = "") -> None:
         """Show a final reply recovered from history after a reconnect.
 
         The gateway drops live pushes to a dead socket without replay, so a reply
-        produced during an outage would otherwise be lost to the CLI. Dedup
-        against the last on-screen reply so a reconnect that missed nothing does
-        not echo the previous answer again."""
+        produced during an outage would otherwise be lost to the CLI. Dedup by
+        event_id first (reliable), then fall back to text comparison. Skip dedup
+        entirely after /clear (on-screen text is gone)."""
         if not text or not text.strip():
             return
-        try:
-            last = self._tv.last_turn_reply_text()
-        except Exception:
-            last = ""
-        if last and last.strip() == text.strip():
+        # Event-id-based dedup: if the server tells us which reply this is and
+        # it matches the last one we rendered, skip it.
+        if event_id and event_id == self._tv._last_reply_event_id:
             return
+        # Text-based fallback, unless /clear wiped the screen.
+        if not self._tv._cleared_since_last_reply:
+            try:
+                last = self._tv.last_turn_reply_text()
+            except Exception:
+                last = ""
+            if last and last.strip() == text.strip():
+                return
+        self._tv._cleared_since_last_reply = False
         self._tv.add_notice("[$text-muted]（补显示断连期间的回复）[/]")
         r = self._tv.start_reply()
         r.set_markdown(text)
+        if event_id:
+            self._tv._last_reply_event_id = event_id
         try:
             self._tv.add_notice("[$success]● 已重新连接[/]")
         except Exception:
@@ -800,6 +847,7 @@ class EchoTUI(App):
         # a later, unrelated submit look pre-confirmed.
         self._last_queue_confirm = 0.0
         self._tv.add_user(text)
+        self._pending_turn_seqs.append(self._tv._turn_seq)
         self.query_one(StatusBar).start_turn_timer()
         # Show progress from the submit, not from the first heartbeat: the
         # gateway waits out a silence threshold before its first beat, so the
@@ -1174,14 +1222,21 @@ class EchoTUI(App):
         blk = self._pending_approval
         if blk is None or blk.decision is not None:
             return
-        blk.mark("approve" if decision == "approve" else "deny")
         if self._send is not None:
             cmd = (approve_command(blk.request_id, level) if decision == "approve"
                    else deny_command(blk.request_id))
             # Control send: its accepted frame and ack reply must NOT become the
             # interrupt target nor stop the original (still-parked) turn's timer.
             self._turns.note_send("control")
-            await self._send(cmd)
+            try:
+                await self._send(cmd)
+            except Exception:
+                self.notify("发送失败，请重试", severity="error", timeout=3)
+                return
+            if not self._connected:
+                self.notify("发送失败（连接已断开），请重连后重试", severity="error", timeout=3)
+                return
+        blk.mark("approve" if decision == "approve" else "deny")
         self._pending_approval = None
         # Re-enable and refocus the prompt for the next turn.
         self._unlock_prompt()
@@ -1205,12 +1260,19 @@ class EchoTUI(App):
         # the keystroke is not silently converted into a wasted round trip.
         if not answer.strip():
             return
-        blk.mark(answer)
         if self._send is not None:
             # Control send (clarify answer): tracked separately so it doesn't
             # clobber the primary turn that is parked waiting for this answer.
             self._turns.note_send("control")
-            await self._send(clarify_command(blk.clarify_id, answer))
+            try:
+                await self._send(clarify_command(blk.clarify_id, answer))
+            except Exception:
+                self.notify("发送失败，请重试", severity="error", timeout=3)
+                return
+            if not self._connected:
+                self.notify("发送失败（连接已断开），请重连后重试", severity="error", timeout=3)
+                return
+        blk.mark(answer)
         self._pending_clarify = None
         self._clarify_free_input = False
         self._unlock_prompt()
