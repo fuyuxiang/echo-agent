@@ -37,6 +37,8 @@ export function useWsSubscribe(
   useEffect(() => {
     if ((authRequired !== false && !token) || channelList.length === 0) return;
 
+    if (authRequired === false) dashboardWS.openMode = true;
+
     // Register listeners first: with a warm socket, events can arrive on the
     // same tick as subscribe().
     const unsubs = typeList.map((type) =>

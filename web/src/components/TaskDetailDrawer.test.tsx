@@ -29,11 +29,10 @@ function task(overrides: Partial<TaskCard> = {}): TaskCard {
 }
 
 function mockApi(t: TaskCard) {
-  return vi.spyOn(api, "apiFetch").mockImplementation(async (path: string, init?: RequestInit) => {
+  return vi.spyOn(api, "apiFetch").mockImplementation(async (_path: string, init?: RequestInit) => {
     if (init?.method === "PUT" || init?.method === "POST") {
       return { task: { ...t, ...JSON.parse(String(init.body ?? "{}")) } } as never;
     }
-    if (path === `/tasks/${t.id}`) return { task: t } as never;
     return {} as never;
   });
 }
@@ -57,19 +56,12 @@ afterEach(() => {
 
 describe("TaskDetailDrawer 详情", () => {
   it("展示后端返回的 result —— 之前它在界面上没有任何落点", async () => {
-    mockApi(task({ status: "success", result: "已发送到群里" }));
-    renderDrawer(task({ status: "success" }));
+    const t = task({ status: "success", result: "已发送到群里" });
+    mockApi(t);
+    renderDrawer(t);
 
-    expect(await screen.findByText("已发送到群里")).toBeInTheDocument();
+    expect(screen.getByText("已发送到群里")).toBeInTheDocument();
     expect(screen.getByText("执行结果")).toBeInTheDocument();
-  });
-
-  it("详情拉取失败时退回看板本地记录并明确提示", async () => {
-    vi.spyOn(api, "apiFetch").mockRejectedValue(new Error("boom"));
-    renderDrawer(task());
-
-    expect(await screen.findByText(/以下为看板本地记录/)).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "写周报" })).toBeInTheDocument();
   });
 
   it("Escape 关闭抽屉", async () => {
@@ -82,11 +74,12 @@ describe("TaskDetailDrawer 详情", () => {
 });
 
 describe("TaskDetailDrawer 编辑", () => {
-  it("编辑表单用权威记录回填", async () => {
-    mockApi(task({ title: "写周报（后端最新）" }));
-    renderDrawer(task());
+  it("编辑表单用 store 记录回填", async () => {
+    const t = task({ title: "写周报（后端最新）" });
+    mockApi(t);
+    renderDrawer(t);
 
-    fireEvent.click(await screen.findByRole("button", { name: "编辑任务：写周报（后端最新）" }));
+    fireEvent.click(screen.getByRole("button", { name: "编辑任务：写周报（后端最新）" }));
 
     expect(screen.getByLabelText("标题")).toHaveValue("写周报（后端最新）");
     expect(screen.getByLabelText(/优先级/)).toHaveValue(3);

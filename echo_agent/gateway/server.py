@@ -266,6 +266,7 @@ class GatewayServer:
         assert app is not None
 
         app.router.add_get("/playground", self._handle_playground)
+        app.router.add_get("/meta", self._handle_meta)
         app.router.add_post(f"{prefix}/message", self._handle_message)
         app.router.add_get(f"{prefix}/health", self._handle_health)
         app.router.add_delete(f"{prefix}/sessions/{{key}}", self._handle_reset_session)
@@ -782,6 +783,21 @@ class GatewayServer:
         else:
             await self.hooks.emit("auth_failed", platform=platform, user_id=user_id)
             return web.json_response({"error": "invalid or expired code"}, status=403)
+
+    async def _handle_meta(self, request: web.Request) -> web.Response:
+        """Bootstrap metadata for the dashboard SPA.
+
+        No authentication required — the frontend needs this before it has a
+        token. Exposed at a fixed path (/meta) so the SPA can locate the real
+        API prefix without hardcoding it.
+        """
+        from echo_agent import __version__
+        return web.json_response({
+            "api_prefix": self._config.api_prefix,
+            "ws_path": "/ws/dashboard",
+            "version": __version__,
+            "auth_required": self._tokens_configured(),
+        })
 
     async def _handle_capabilities(self, request: web.Request) -> web.Response:
         """What the *calling token* is allowed to do.

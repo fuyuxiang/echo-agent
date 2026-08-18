@@ -1,5 +1,5 @@
 import { useApi } from "../hooks/use-api";
-import { apiFetch, getToken } from "../lib/api";
+import { apiFetch, apiUpload } from "../lib/api";
 import { relativeTime } from "../lib/datetime";
 import { runMutation } from "../stores/toast";
 import { useIsAdmin } from "../stores/capabilities";
@@ -47,21 +47,13 @@ export function Knowledge() {
     const ok = await runMutation(async () => {
       const form = new FormData();
       form.append("file", file);
-      // multipart 上传不走 apiFetch(它强制 JSON Content-Type),这里手动带 token,
-      // 并显式检查响应状态,否则失败会被静默忽略。
-      const resp = await fetch("/api/v1/knowledge/upload", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${getToken()}` },
-        body: form,
-      });
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({ error: resp.statusText }));
-        throw new Error(err.error || resp.statusText);
-      }
+      await apiUpload("/knowledge/upload", form);
     }, { success: t("uploadSuccess"), error: t("uploadFailed") });
-    // Every mutation here rebuilds the index server-side, so the status line
-    // (document/chunk counts, last rebuild) is stale unless it refetches too.
-    if (ok) { refetch(); refetchStatus(); }
+    if (ok) {
+      if (fileRef.current) fileRef.current.value = "";
+      refetch();
+      refetchStatus();
+    }
   };
 
   const rebuild = async () => {
@@ -120,7 +112,7 @@ export function Knowledge() {
           })}
           {status?.stale && <span className="ml-2 text-amber-600">{t("stale")}</span>}
         </span>
-        <input ref={fileRef} type="file" className="hidden" onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])} />
+        <input ref={fileRef} type="file" className="hidden" accept=".md,.txt,.rst,.json,.yaml,.yml,.py,.pdf,.docx,.xlsx,.pptx" onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])} />
       </div>
 
       {!canWrite && (

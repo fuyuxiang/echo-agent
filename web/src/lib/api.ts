@@ -1,4 +1,29 @@
-const API_BASE = "/api/v1";
+let API_BASE = "/api/v1";
+
+export interface MetaInfo {
+  api_prefix: string;
+  ws_path: string;
+  version: string;
+  auth_required: boolean;
+}
+
+let _meta: MetaInfo | null = null;
+
+export function getMeta(): MetaInfo | null {
+  return _meta;
+}
+
+export async function initApiBase(): Promise<void> {
+  try {
+    const resp = await fetch("/meta");
+    if (resp.ok) {
+      _meta = await resp.json();
+      if (_meta?.api_prefix) API_BASE = _meta.api_prefix;
+    }
+  } catch {
+    // Fallback to default /api/v1 — server may be too old to serve /meta.
+  }
+}
 
 export const TOKEN_STORAGE_KEY = "echo_token";
 
@@ -50,4 +75,23 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
     throw new Error(err.error || resp.statusText);
   }
   return resp.json();
+}
+
+export async function apiUpload(path: string, body: FormData): Promise<void> {
+  const resp = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${getToken()}` },
+    body,
+  });
+  if (resp.status === 401) {
+    if (location.pathname !== "/login") {
+      sessionStorage.setItem(RETURN_TO_STORAGE_KEY, location.pathname + location.search);
+    }
+    onUnauthorized?.();
+    throw new Error("Unauthorized");
+  }
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ error: resp.statusText }));
+    throw new Error(err.error || resp.statusText);
+  }
 }

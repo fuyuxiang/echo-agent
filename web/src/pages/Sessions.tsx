@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useApi } from "../hooks/use-api";
 import { apiFetch } from "../lib/api";
@@ -25,16 +25,18 @@ export function Sessions() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [search, setSearch] = useState("");
   const [historyError, setHistoryError] = useState<string | null>(null);
-
-  // 时间格式化(含 Invalid Date 兜底与 i18n locale)统一收口在 lib/datetime。
+  const seqRef = useRef(0);
 
   const loadHistory = async (key: string) => {
     setSelected(key);
     setHistoryError(null);
+    const seq = ++seqRef.current;
     try {
       const res = await apiFetch<{ messages: Message[] }>(`/sessions/${encodeURIComponent(key)}/history`);
+      if (seq !== seqRef.current) return;
       setMessages(res.messages);
     } catch (e: unknown) {
+      if (seq !== seqRef.current) return;
       setMessages([]);
       setHistoryError(e instanceof Error ? e.message : String(e));
     }

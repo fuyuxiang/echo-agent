@@ -13,6 +13,7 @@ export interface TaskCard {
   assignee: string;
   source: string;
   session_id: string;
+  board_id?: string;
   blocked_reason: string;
   review_summary: string;
   result: string;
@@ -94,8 +95,10 @@ export function canTransition(from: string, to: string): boolean {
 interface KanbanState {
   tasks: TaskCard[];
   loading: boolean;
-  /** true 表示已成功拉取过一次;用于区分“首屏加载”与“刷新中”。 */
+  /** true 表示已成功拉取过一次;用于区分”首屏加载”与”刷新中”。 */
   loaded: boolean;
+  /** 首次加载失败时的错误信息，用于持久渲染错误 + 重试。 */
+  fetchError: string | null;
   /**
    * 请求飞行期间被本地写过的任务 id。WS 推送、乐观更新、服务端回写都会登记进来,
    * 快照回来时这些 id 保留本地版本,其余仍以服务端为准。
@@ -165,13 +168,12 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
   tasks: [],
   loading: false,
   loaded: false,
+  fetchError: null,
   dirtyIds: new Set<string>(),
 
   fetchTasks: async () => {
-    // 快照发出前先记下当前 id 集合,作为“删除”与“新到”的分界(见 mergeSnapshot),
-    // 并清空脏标记:此刻之后的本地写入才可能比这份快照新。
     const idsAtRequestStart = new Set(get().tasks.map((t) => t.id));
-    set({ loading: true, dirtyIds: new Set<string>() });
+    set({ loading: true, dirtyIds: new Set<string>(), fetchError: null });
     try {
       const data = await apiFetch<{ tasks: TaskCard[] }>("/tasks?board_id=default");
       set((s) => ({
@@ -179,7 +181,9 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
         loaded: true,
       }));
     } catch (e) {
-      toast.error(i18n.t("kanban:toast.loadFailed", { error: e instanceof Error ? e.message : String(e) }));
+      const msg = e instanceof Error ? e.message : String(e);
+      toast.error(i18n.t("kanban:toast.loadFailed", { error: msg }));
+      set({ fetchError: msg });
     } finally {
       set({ loading: false });
     }

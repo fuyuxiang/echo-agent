@@ -40,6 +40,8 @@ export class DashboardWS {
   /** sockets we closed on purpose; their onclose must not trigger a reconnect */
   private retired: WeakSet<WebSocket> = new WeakSet();
   private idleTimer: number | null = null;
+  /** When true the server requires no token; reconnect even with an empty one. */
+  openMode = false;
 
   /** Called when the server rejects the token, so the UI can send the user
    *  back to the login screen instead of silently retrying forever. */
@@ -152,7 +154,7 @@ export class DashboardWS {
       this.sentChannels = new Set();
       if (this.authFailed) return;
       if (this.channelRefs.size === 0) return;
-      if (!useAuthStore.getState().token) return;
+      if (!useAuthStore.getState().token && !this.openMode) return;
       this.scheduleReconnect();
     };
   }
@@ -164,8 +166,9 @@ export class DashboardWS {
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
       const current = useAuthStore.getState().token;
-      if (!current || this.channelRefs.size === 0) return;
-      this.token = current;
+      if (!current && !this.openMode) return;
+      if (this.channelRefs.size === 0) return;
+      this.token = current || "";
       this.ensureConnected();
     }, delay);
   }

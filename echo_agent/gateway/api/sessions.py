@@ -13,7 +13,7 @@ class SessionsAPI:
         self._server = server
 
     def _guard(self, request: web.Request, action: str) -> web.Response | None:
-        return self._server._require_api_token(request, action=action)
+        return self._server._require_admin_token(request, action=action)
 
     async def list_sessions(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "sessions_list")

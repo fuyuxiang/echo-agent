@@ -29,7 +29,7 @@ import { Plus, X, RotateCcw, Check, Undo2, Play } from "lucide-react";
 
 export function Kanban() {
   const { t } = useTranslation(["kanban", "common"]);
-  const { tasks, loading, loaded, fetchTasks, transitionTask, createTask, updateLocal, addLocal } = useKanbanStore();
+  const { tasks, loading, loaded, fetchError, fetchTasks, transitionTask, createTask, updateLocal, addLocal } = useKanbanStore();
   const [newTitle, setNewTitle] = useState("");
   const [showArchived, setShowArchived] = useState(false);
   const [draggingFrom, setDraggingFrom] = useState<string | null>(null);
@@ -60,6 +60,7 @@ export function Kanban() {
     (ev) => {
       const task = ev.payload as TaskCard;
       if (!task || !task.id) return;
+      if (task.board_id && task.board_id !== "default") return;
       if (ev.type === "task_created") addLocal(task);
       else updateLocal(task.id, task); // transitioned / updated
     },
@@ -126,6 +127,12 @@ export function Kanban() {
   // 只有首屏(还没成功拉取过)才整页显示加载态。此前 loading 一置位就 return,
   // 会卸载整个 DndContext——任何一次 refetch 都让看板闪一下,拖拽状态也随之丢失。
   if (!loaded && loading) return <div className="p-8 text-center text-gray-500">{t("loading")}</div>;
+  if (!loaded && !loading && fetchError) return (
+    <div className="p-8 text-center space-y-3">
+      <p className="text-red-600 text-sm">{fetchError}</p>
+      <button onClick={fetchTasks} className="text-blue-600 hover:underline text-sm">{t("common:retry")}</button>
+    </div>
+  );
 
   return (
     <div className="h-full flex flex-col">

@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { X, Pencil, Ban } from "lucide-react";
-import { useApi } from "../hooks/use-api";
 import { relativeTime, fullTimestamp } from "../lib/datetime";
 import { statusMeta, useKanbanStore, canTransition, type TaskCard } from "../stores/kanban";
 import { useIsAdmin } from "../stores/capabilities";
@@ -11,26 +10,14 @@ import { toast } from "../stores/toast";
 /**
  * Right-hand drawer with a task's full record, plus the edit and cancel paths.
  *
- * The board card can only show a truncated two-line detail, and only for
- * failed/blocked/review. A task's `description` and — more importantly — its
- * `result` (what the Agent actually did) had no surface anywhere in the
- * dashboard, even though GET /tasks/{id} has always returned them.
- *
- * Editing is here rather than on the card because PUT /tasks/{id} covers five
- * fields (title/description/priority/assignee/labels) that do not fit a hover
- * strip. Before this, a task with a typo'd title could only be cancelled and
- * recreated, which loses its result, retry count and workflow link.
- *
- * Seeded with the board's copy so the panel paints immediately, then replaced
- * by the authoritative fetch.
+ * Uses the store's live task record (updated via WS) passed as the `task` prop.
  */
 export function TaskDetailDrawer({ task, onClose }: { task: TaskCard; onClose: () => void }) {
   const { t } = useTranslation(["kanban", "common"]);
-  const { data, error, refetch } = useApi<{ task: TaskCard }>(`/tasks/${task.id}`);
   const { editTask, transitionTask, updateLocal } = useKanbanStore();
   const confirm = useConfirm();
   const canWrite = useIsAdmin() !== false;
-  const detail = data?.task ?? task;
+  const detail = task;
   const meta = statusMeta(detail.status);
 
   const [editing, setEditing] = useState(false);
@@ -81,7 +68,6 @@ export function TaskDetailDrawer({ task, onClose }: { task: TaskCard; onClose: (
     if (ok) {
       setEditing(false);
       toast.success(t("toast.updated"));
-      refetch();
     }
   };
 
@@ -160,12 +146,6 @@ export function TaskDetailDrawer({ task, onClose }: { task: TaskCard; onClose: (
             <span key={l} className="bg-blue-100 text-blue-700 px-1.5 rounded">{l}</span>
           ))}
         </div>
-
-        {error && (
-          <div className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded p-2">
-            {t("detail.staleWarning")}
-          </div>
-        )}
 
         {editing ? (
           <form onSubmit={save} className="space-y-2 border rounded p-3">
