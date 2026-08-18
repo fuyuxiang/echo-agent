@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { useApi } from "../hooks/use-api";
 import { apiFetch } from "../lib/api";
 import { relativeTime } from "../lib/datetime";
+import { useIsAdmin } from "../stores/capabilities";
 import { RefreshCw } from "lucide-react";
 
 interface SessionItem {
@@ -21,6 +22,7 @@ interface Message {
 export function Sessions() {
   const { t } = useTranslation(["sessions", "common"]);
   const { data, loading, error, refetch } = useApi<{ sessions: SessionItem[] }>("/sessions");
+  const isAdmin = useIsAdmin();
   const [selected, setSelected] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [search, setSearch] = useState("");
@@ -76,7 +78,11 @@ export function Sessions() {
         <div className="flex-1 overflow-y-auto space-y-1">
           {loading && <div className="text-gray-400 text-sm px-3 py-2">{t("common:loading")}</div>}
           {error && !loading && (
-            <div className="text-red-500 text-sm px-3 py-2">{t("common:loadFailed", { error })}</div>
+            <div className="text-red-500 text-sm px-3 py-2">
+              {isAdmin === false || String(error).includes("403")
+                ? t("common:adminOnly")
+                : t("common:loadFailed", { error })}
+            </div>
           )}
           {!loading && !error && filtered.length === 0 && (
             <div className="text-gray-400 text-sm px-3 py-2">{t("empty")}</div>
@@ -100,7 +106,11 @@ export function Sessions() {
 
       <div className="flex-1 min-w-0 overflow-y-auto space-y-3">
         {historyError && (
-          <div className="text-red-500 text-sm text-center mt-20">{t("historyFailed", { error: historyError })}</div>
+          <div className="text-red-500 text-sm text-center mt-20">
+            {String(historyError).includes("403")
+              ? t("common:adminOnly")
+              : t("historyFailed", { error: historyError })}
+          </div>
         )}
         {!historyError && messages.map((msg, i) => (
           <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>

@@ -81,7 +81,7 @@ export function Cron() {
   // of fields because PUT accepts exactly the same shape POST does.
   const [editingId, setEditingId] = useState<string | null>(null);
   const [runsFor, setRunsFor] = useState<CronJob | null>(null);
-  const [inflightId, setInflightId] = useState<string | null>(null);
+  const [inflightOps, setInflightOps] = useState<Set<string>>(new Set());
   const [name, setName] = useState("");
   const [expr, setExpr] = useState("");
   const [command, setCommand] = useState("");
@@ -160,16 +160,16 @@ export function Cron() {
   };
 
   const trigger = async (id: string) => {
-    setInflightId(id);
+    setInflightOps(prev => new Set(prev).add(`${id}:trigger`));
     const ok = await runMutation(() => apiFetch(`/cron/${id}/trigger`, { method: "POST" }), {
       success: t("triggerSuccess"), error: t("triggerFailed"),
     });
-    setInflightId(null);
+    setInflightOps(prev => { const next = new Set(prev); next.delete(`${id}:trigger`); return next; });
     if (ok) refetch();
   };
 
   const toggleEnabled = async (job: CronJob) => {
-    setInflightId(job.id);
+    setInflightOps(prev => new Set(prev).add(`${job.id}:toggle`));
     const ok = await runMutation(
       () => apiFetch(`/cron/${job.id}`, {
         method: "PUT",
@@ -180,7 +180,7 @@ export function Cron() {
         error: t("toggleFailed"),
       },
     );
-    setInflightId(null);
+    setInflightOps(prev => { const next = new Set(prev); next.delete(`${job.id}:toggle`); return next; });
     if (ok) refetch();
   };
 
@@ -409,7 +409,7 @@ export function Cron() {
                         aria-checked={job.enabled}
                         aria-label={t(job.enabled ? "pauseAria" : "resumeAria", { name: job.name || job.id })}
                         onClick={() => toggleEnabled(job)}
-                        disabled={!canWrite || inflightId === job.id}
+                        disabled={!canWrite || inflightOps.has(`${job.id}:toggle`)}
                         title={canWrite ? undefined : t("common:adminOnly")}
                         className={`text-xs px-1.5 py-0.5 rounded hover:ring-1 hover:ring-blue-300 disabled:opacity-50 ${
                           job.enabled ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-600"
@@ -423,7 +423,7 @@ export function Cron() {
                     <td className="flex gap-1 py-2">
                       {/* Trigger / edit / delete are mutations; the run history
                           is read-scope and stays available to any token. */}
-                      <button onClick={() => trigger(job.id)} disabled={!canWrite || !job.enabled || inflightId === job.id} aria-label={t("triggerNow")} className="p-1 hover:bg-gray-100 rounded disabled:opacity-50" title={!canWrite ? t("common:adminOnly") : !job.enabled ? t("pausedCannotTrigger") : t("triggerNow")}><Play size={14} /></button>
+                      <button onClick={() => trigger(job.id)} disabled={!canWrite || !job.enabled || inflightOps.has(`${job.id}:trigger`)} aria-label={t("triggerNow")} className="p-1 hover:bg-gray-100 rounded disabled:opacity-50" title={!canWrite ? t("common:adminOnly") : !job.enabled ? t("pausedCannotTrigger") : t("triggerNow")}><Play size={14} /></button>
                       <button onClick={() => startEdit(job)} disabled={!canWrite} aria-label={t("editAria", { name: job.name || job.id })} className="p-1 hover:bg-gray-100 rounded disabled:opacity-50" title={canWrite ? t("edit") : t("common:adminOnly")}><Pencil size={14} /></button>
                       <button onClick={() => setRunsFor(job)} aria-label={t("runsAria", { name: job.name || job.id })} className="p-1 hover:bg-gray-100 rounded" title={t("runs")}><History size={14} /></button>
                       <button onClick={() => remove(job)} disabled={!canWrite} aria-label={t("common:delete")} className="p-1 hover:bg-red-50 rounded text-red-500 disabled:opacity-50" title={canWrite ? t("common:delete") : t("common:adminOnly")}><Trash2 size={14} /></button>

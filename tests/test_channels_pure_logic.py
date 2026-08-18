@@ -52,6 +52,8 @@ def _feishu_channel(encryption_key: str = "", verification_token: str = "vtoken"
     cfg.host = "0.0.0.0"
     cfg.port = 8083
     cfg.allow_from = []
+    cfg.group_policy = "all"
+    cfg.bot_open_id = ""
     return FeishuChannel(cfg, _mock_bus())
 
 

@@ -28,7 +28,28 @@ class FeishuChannel(BaseChannel):
         self._app_secret = config.app_secret
         self._verification_token = config.verification_token
         self._encryption_key = config.encryption_key
-        self._group_policy = getattr(config, "group_policy", "mention")
+
+        group_policy = getattr(config, "group_policy", "mention")
+        if not isinstance(group_policy, str) or group_policy not in ("mention", "all"):
+            group_policy = "mention"
+            if isinstance(getattr(config, "group_policy", None), str):
+                raise ValueError(
+                    f"Invalid feishu group_policy '{config.group_policy}': "
+                    f"must be 'mention' or 'all'"
+                )
+        self._group_policy = group_policy
+
+        bot_open_id = getattr(config, "bot_open_id", None)
+        bot_open_id = bot_open_id if isinstance(bot_open_id, str) else ""
+        if not bot_open_id:
+            logger.warning(
+                "Feishu channel: 'bot_open_id' not configured; "
+                "group mention filtering will fall back to app_id, "
+                "which may not match correctly"
+            )
+            bot_open_id = self._app_id
+        self._bot_open_id = bot_open_id
+
         self._session: aiohttp.ClientSession | None = None
         self._runner: web.AppRunner | None = None
         self._tenant_token: str = ""
@@ -149,7 +170,7 @@ class FeishuChannel(BaseChannel):
         if chat_type == "group" and self._group_policy == "mention":
             mentions = message.get("mentions") or []
             bot_mentioned = any(
-                m.get("id", {}).get("open_id") == self._app_id
+                m.get("id", {}).get("open_id") == self._bot_open_id
                 for m in mentions
             )
             if not bot_mentioned:
@@ -217,10 +238,12 @@ class FeishuChannel(BaseChannel):
             headers = {"Authorization": f"Bearer {self._tenant_token}"}
             if not self._session:
                 raise RuntimeError("no session")
-            async with self._session.get(url, headers=headers) as resp:
-                if resp.status != 200:
-                    raise RuntimeError(f"Feishu resource download failed ({resp.status})")
-                return await resp.read()
+            data = await self._fetch_with_limit(
+                self._session, url, max_bytes=self._max_media_download_bytes, headers=headers,
+            )
+            if data is None:
+                return b""
+            return data
 
         return await self._resolve_media_to_cache(image_key, "feishu", fetch, suffix=".jpg")
 

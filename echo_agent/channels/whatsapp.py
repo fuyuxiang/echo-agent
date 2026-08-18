@@ -300,10 +300,12 @@ class WhatsAppChannel(BaseChannel):
             download_url = info.get("url", "")
             if not download_url:
                 raise RuntimeError("Graph API returned no download URL")
-            async with self._session.get(download_url) as resp:
-                if resp.status != 200:
-                    raise RuntimeError(f"media download failed ({resp.status})")
-                return await resp.read()
+            data = await self._fetch_with_limit(
+                self._session, download_url, max_bytes=self._max_media_download_bytes,
+            )
+            if data is None:
+                return b""
+            return data
 
         return await self._resolve_media_to_cache(media_id, "whatsapp", fetch)
 

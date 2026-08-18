@@ -307,8 +307,7 @@ class QQBotChannel(BaseChannel):
     ) -> bool:
         if msg_type == "channel":
             logger.warning("QQBot: media not supported for channel type, sending as text")
-            await self._send_chunk(chat_id, f"[{item.kind}] {item.content}", msg_type, reply_to)
-            return True
+            return await self._send_chunk(chat_id, f"[{item.kind}] {item.content}", msg_type, reply_to)
         if not self._session:
             return False
 

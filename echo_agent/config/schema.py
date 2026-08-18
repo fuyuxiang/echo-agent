@@ -555,6 +555,14 @@ class FeishuChannelConfig(_Base):
             "desc_en": "Group trigger policy: mention=respond only when @mentioned, all=respond to every message",
         },
     )
+    bot_open_id: str = Field(
+        default="",
+        json_schema_extra={
+            "status": "effective", "ref": "channels/feishu.py:32",
+            "desc_zh": "机器人自身的 open_id，用于群聊 @mention 过滤",
+            "desc_en": "Bot's own open_id for group chat mention filtering",
+        },
+    )
 
 
 class DingTalkChannelConfig(_Base):

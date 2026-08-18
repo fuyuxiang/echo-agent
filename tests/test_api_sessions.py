@@ -10,7 +10,7 @@ from echo_agent.gateway.api.sessions import SessionsAPI
 @pytest.fixture
 def mock_server():
     server = MagicMock()
-    server._require_api_token = MagicMock(return_value=None)
+    server._require_admin_token = MagicMock(return_value=None)
     server.session_manager = MagicMock()
     return server
 
@@ -75,3 +75,23 @@ async def test_get_session_history_missing_returns_404(mock_server, api):
     async with TestClient(TestServer(app)) as client:
         resp = await client.get("/api/v1/sessions/nobody/history")
         assert resp.status == 404
+
+
+@pytest.mark.asyncio
+async def test_non_admin_request_rejected():
+    """非管理员请求应被 _require_admin_token 拒绝,返回 403。"""
+    server = MagicMock()
+    server._require_admin_token = MagicMock(
+        return_value=web.json_response({"error": "admin authorization required"}, status=403)
+    )
+    server.session_manager = MagicMock()
+
+    api = SessionsAPI(server)
+
+    app = web.Application()
+    app.router.add_get("/api/v1/sessions", api.list_sessions)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/api/v1/sessions")
+        assert resp.status == 403
+        data = await resp.json()
+        assert data["error"] == "admin authorization required"

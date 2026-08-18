@@ -67,6 +67,8 @@ class TTSTool(Tool):
             # not just that a file was written.
             if delivered is not None:
                 result.output = f"{result.output}; {delivered}"
+                if "failed" in delivered.lower() or "not delivered" in delivered.lower():
+                    result = ToolResult(success=False, output=result.output)
         return result
 
     async def _deliver(self, audio: Path, params: dict[str, Any], ctx: ToolExecutionContext | None) -> str | None:

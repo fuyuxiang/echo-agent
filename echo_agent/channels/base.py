@@ -7,9 +7,12 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from loguru import logger
+
+if TYPE_CHECKING:
+    import aiohttp
 
 from echo_agent.bus.events import InboundEvent, OutboundEvent, ContentBlock, ContentType, PollRequest
 from echo_agent.bus.queue import MessageBus
@@ -251,6 +254,67 @@ class BaseChannel(ABC):
 
     _media_cache_root: Path | None = None
     _max_media_download_bytes: int = 25 * 1024 * 1024  # 25 MB default
+    _STREAM_CHUNK_SIZE: int = 64 * 1024  # 64 KB chunks for streaming downloads
+
+    @classmethod
+    async def _fetch_with_limit(
+        cls,
+        session: "aiohttp.ClientSession",
+        url: str,
+        *,
+        max_bytes: int,
+        headers: dict[str, str] | None = None,
+    ) -> bytes | None:
+        """Streaming download with size guard to prevent memory exhaustion.
+
+        1. Checks Content-Length header first — rejects immediately if over limit.
+        2. Streams in 64 KB chunks, aborting if accumulated size exceeds *max_bytes*.
+        3. Returns the bytes on success, None if oversized or on HTTP error.
+        """
+        async with session.get(url, headers=headers) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"download failed ({resp.status})")
+
+            # Fast-reject if server advertises a Content-Length that exceeds limit
+            content_length = resp.headers.get("Content-Length")
+            if content_length is not None:
+                try:
+                    if int(content_length) > max_bytes:
+                        logger.warning(
+                            "Content-Length {} exceeds limit {} for {}",
+                            content_length, max_bytes, url[:80],
+                        )
+                        return None
+                except (ValueError, TypeError):
+                    pass  # malformed header — fall through to streaming
+
+            # Stream-read with running size check (preferred path for real aiohttp)
+            try:
+                content = resp.content
+                chunks_iter = content.iter_chunked(cls._STREAM_CHUNK_SIZE)
+                # Verify it's actually an async iterator (not a coroutine from a mock)
+                if not hasattr(chunks_iter, "__aiter__"):
+                    raise TypeError("not an async iterable")
+                buf = bytearray()
+                async for chunk in chunks_iter:
+                    buf.extend(chunk)
+                    if len(buf) > max_bytes:
+                        logger.warning(
+                            "Streaming download exceeded limit ({} > {}) for {}, aborting",
+                            len(buf), max_bytes, url[:80],
+                        )
+                        return None
+                return bytes(buf)
+            except (TypeError, AttributeError):
+                # Fallback: non-streaming read with post-check
+                data = await resp.read()
+                if len(data) > max_bytes:
+                    logger.warning(
+                        "Downloaded data exceeds limit ({} > {}) for {}",
+                        len(data), max_bytes, url[:80],
+                    )
+                    return None
+                return data
 
     async def _resolve_media_to_cache(
         self,

@@ -35,6 +35,8 @@ class WeComChannel(BaseChannel):
         self._token_expires: float = 0
 
     async def start(self) -> None:
+        if not self._encoding_aes_key and not self._token:
+            logger.warning("WeCom channel: both encoding_aes_key and token are empty — all webhook requests will be rejected (fail-closed)")
         self._session = aiohttp.ClientSession()
         await self._refresh_token()
         app = web.Application()
@@ -125,6 +127,8 @@ class WeComChannel(BaseChannel):
             nonce = request.query.get("nonce", "")
             if not self._check_signature(signature, timestamp, nonce):
                 return web.Response(status=403, text="Forbidden")
+        else:
+            return web.Response(status=403, text="Forbidden")
         try:
             root = ET.fromstring(body)
         except ET.ParseError:

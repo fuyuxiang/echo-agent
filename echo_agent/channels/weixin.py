@@ -554,10 +554,11 @@ class WeixinChannel(BaseChannel):
         # One refreshing typing-loop task per chat being processed.
         self._typing_tasks: dict[str, asyncio.Task] = {}
 
-    def _spawn_msg_task(self, coro: Any) -> None:
+    def _spawn_msg_task(self, coro: Any) -> asyncio.Task:
         task = asyncio.create_task(coro)
         self._msg_tasks.add(task)
         task.add_done_callback(self._on_msg_task_done)
+        return task
 
     def _on_msg_task_done(self, task: asyncio.Task) -> None:
         self._msg_tasks.discard(task)
@@ -1026,12 +1027,17 @@ class WeixinChannel(BaseChannel):
                 msgs = response.get("msgs") or []
                 if msgs:
                     last_message_time = time.monotonic()
+                batch_tasks = []
                 for message in msgs:
-                    self._spawn_msg_task(self._process_message_safe(message))
+                    task = self._spawn_msg_task(self._process_message_safe(message))
+                    batch_tasks.append(task)
 
-                # Save sync_buf AFTER dispatching messages: saving before processing
-                # creates a crash-loss window where sync_buf advances past messages
-                # that were never processed.
+                # Wait for message processing to complete before advancing cursor.
+                # This closes the crash-loss window where sync_buf advances past
+                # messages that were never processed.
+                if batch_tasks:
+                    await asyncio.gather(*batch_tasks, return_exceptions=True)
+
                 if new_sync_buf:
                     sync_buf = new_sync_buf
                     _save_sync_buf(self._data_dir, self._account_id, sync_buf)

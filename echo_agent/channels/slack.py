@@ -288,13 +288,15 @@ class SlackChannel(BaseChannel):
             if not self._session:
                 raise RuntimeError("no session")
             headers = {"Authorization": f"Bearer {self._bot_token}"}
-            async with self._session.get(url, headers=headers) as resp:
-                if resp.status != 200:
-                    raise RuntimeError(f"Slack file download failed ({resp.status})")
-                ct = resp.headers.get("Content-Type", "")
-                if "text/html" in ct:
-                    raise RuntimeError("Slack returned HTML login page instead of file")
-                return await resp.read()
+            data = await self._fetch_with_limit(
+                self._session, url, max_bytes=self._max_media_download_bytes, headers=headers,
+            )
+            if data is None:
+                return b""
+            # Slack may return an HTML login page instead of the file when auth fails
+            if b"<html" in data[:256] or b"<!DOCTYPE" in data[:256]:
+                raise RuntimeError("Slack returned HTML login page instead of file")
+            return data
 
         return await self._resolve_media_to_cache(url, "slack", fetch)
 

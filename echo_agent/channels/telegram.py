@@ -382,10 +382,12 @@ class TelegramChannel(BaseChannel):
             download_url = f"https://api.telegram.org/file/bot{self._token}/{file_path}"
             if not self._session:
                 raise RuntimeError("no session")
-            async with self._session.get(download_url) as resp:
-                if resp.status != 200:
-                    raise RuntimeError(f"download failed ({resp.status})")
-                return await resp.read()
+            data = await self._fetch_with_limit(
+                self._session, download_url, max_bytes=self._max_media_download_bytes,
+            )
+            if data is None:
+                return b""
+            return data
 
         return await self._resolve_media_to_cache(file_id, "telegram", fetch, suffix=ext)
 

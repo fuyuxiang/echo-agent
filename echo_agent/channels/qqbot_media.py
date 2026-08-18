@@ -261,13 +261,14 @@ class _CacheEntry:
     file_info: str
     file_uuid: str
     expires_at: float
-    last_access: float = 0.0
+    last_access: int = 0
 
 
 class UploadCache:
     def __init__(self, max_size: int = 500):
         self._max_size = max_size
         self._store: dict[str, _CacheEntry] = {}
+        self._access_seq = 0
 
     @staticmethod
     def compute_hash(data: str | bytes) -> str:
@@ -286,22 +287,24 @@ class UploadCache:
         if time.time() >= entry.expires_at:
             del self._store[key]
             return None
-        entry.last_access = time.time()
+        self._access_seq += 1
+        entry.last_access = self._access_seq
         return entry.file_info
 
     def set(
         self, content_hash: str, scope: str, target_id: str,
         file_type: int, file_info: str, file_uuid: str, ttl: int,
     ) -> None:
+        key = self._key(content_hash, scope, target_id, file_type)
         self._evict_expired()
-        if len(self._store) >= self._max_size:
+        if key not in self._store and len(self._store) >= self._max_size:
             oldest_key = min(self._store, key=lambda k: self._store[k].last_access)
             del self._store[oldest_key]
-        key = self._key(content_hash, scope, target_id, file_type)
+        self._access_seq += 1
         self._store[key] = _CacheEntry(
             file_info=file_info, file_uuid=file_uuid,
             expires_at=time.time() + max(ttl - 60, 0),
-            last_access=time.time(),
+            last_access=self._access_seq,
         )
 
     def _evict_expired(self) -> None:

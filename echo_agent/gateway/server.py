@@ -730,7 +730,7 @@ class GatewayServer:
         return web.json_response(status, status=code)
 
     async def _handle_list_sessions(self, request: web.Request) -> web.Response:
-        guard = self._require_api_token(request, action="list_sessions")
+        guard = self._require_admin_token(request, action="list_sessions")
         if guard is not None:
             return guard
         list_sessions = getattr(self.session_manager, "list_sessions_async", None)
@@ -739,7 +739,7 @@ class GatewayServer:
         return web.json_response({"sessions": gateway_sessions})
 
     async def _handle_reset_session(self, request: web.Request) -> web.Response:
-        guard = self._require_api_token(request, action="reset_session")
+        guard = self._require_admin_token(request, action="reset_session")
         if guard is not None:
             return guard
         key = request.match_info["key"]
