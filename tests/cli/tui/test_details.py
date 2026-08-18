@@ -52,7 +52,7 @@ def test_defaults_keep_the_answer_the_biggest_thing_on_screen():
     prefs = DetailPrefs()
     # 工具行的摘要已含动词/对象/结果/耗时，明细是原始参数与 diff，
     # 默认展开等于每次调用多 5~8 行，正是本次要消掉的噪声
-    assert prefs.state("tools") == "collapsed"
+    assert prefs.state("tools") == "lean"
     assert prefs.state("thinking") == "collapsed"
     # 逐帧的运行状态与页脚常驻指示器重复
     assert prefs.state("activity") == "hidden"
@@ -73,6 +73,37 @@ def test_a_failure_is_shown_even_when_its_section_is_hidden():
     assert prefs.shows("tool_call", failed=True) is True
 
 
+def test_lean_hides_successful_read_only_tools():
+    prefs = DetailPrefs(tools="lean")
+    assert prefs.shows("tool_call", tool_name="read_file") is False
+    assert prefs.shows("tool_call", tool_name="search_files") is False
+    assert prefs.shows("tool_call", tool_name="list_dir") is False
+    assert prefs.shows("tool_call", tool_name="web_fetch") is False
+
+
+def test_lean_shows_write_and_exec_tools():
+    prefs = DetailPrefs(tools="lean")
+    assert prefs.shows("tool_call", tool_name="write_file") is True
+    assert prefs.shows("tool_call", tool_name="exec") is True
+    assert prefs.shows("tool_call", tool_name="edit_file") is True
+
+
+def test_lean_shows_unknown_tools():
+    prefs = DetailPrefs(tools="lean")
+    assert prefs.shows("tool_call", tool_name="brand_new_tool") is True
+
+
+def test_lean_shows_failed_read_only_tools():
+    prefs = DetailPrefs(tools="lean")
+    assert prefs.shows("tool_call", failed=True, tool_name="read_file") is True
+
+
+def test_collapsed_still_shows_read_only_tools():
+    prefs = DetailPrefs(tools="collapsed")
+    assert prefs.shows("tool_call", tool_name="read_file") is True
+    assert prefs.shows("tool_call", tool_name="search_files") is True
+
+
 def test_non_trace_frames_never_go_through_the_filter():
     # 待批准/待澄清是必须处理的事，不是过程信息
     prefs = DetailPrefs(thinking="hidden", tools="hidden", activity="hidden")
@@ -91,7 +122,7 @@ def test_unknown_cog_type_stays_visible_but_quiet():
 def test_prefs_are_immutable_so_a_change_is_one_assignment():
     prefs = DetailPrefs()
     changed = prefs.with_section("tools", "expanded")
-    assert prefs.state("tools") == "collapsed"
+    assert prefs.state("tools") == "lean"
     assert changed.state("tools") == "expanded"
     assert changed is not prefs
 
@@ -127,6 +158,11 @@ def test_missing_env_falls_back_to_defaults():
 def test_command_accepts_both_languages_and_both_separators(arg):
     """/help 用中文列出这些分区，用户把那段文字原样敲回来不该得到"参数无效"。"""
     assert parse_command(arg) == ("tools", "expanded")
+
+
+@pytest.mark.parametrize("arg", ["tools lean", "工具 精简", "工具=精简", "tools=lean"])
+def test_command_lean_state_round_trips(arg):
+    assert parse_command(arg) == ("tools", "lean")
 
 
 @pytest.mark.parametrize("arg", ["", "   ", "tools", "tools expanded extra", "nope off", "工具 打开一点"])
@@ -171,6 +207,48 @@ async def test_a_failing_tool_still_lands_when_tools_are_hidden():
         # 成功的调用则始终不上屏
         assert tv.add_tool_call(_tool("c2", "running")) is None
         assert tv.add_tool_call(_tool("c2", "ok")) is None
+
+
+def _read_tool(tcid: str, status: str = "running") -> CogEvent:
+    data = {
+        "tool_call_id": tcid, "name": "read_file",
+        "params": {"path": "/tmp/a.py"}, "status": status,
+    }
+    if status != "running":
+        data.update({"result_text": "42 行", "duration_ms": 200})
+    return CogEvent("tool_call", f"ev_{tcid}_{status}", "in_1", data, "读取 a.py")
+
+
+@pytest.mark.asyncio
+async def test_lean_default_hides_successful_read_only_tool():
+    app = _T()
+    async with app.run_test():
+        tv = app.query_one(TranscriptView)
+        assert tv.details.state("tools") == "lean"
+        assert tv.add_tool_call(_read_tool("r1", "running")) is None
+        assert tv.add_tool_call(_read_tool("r1", "ok")) is None
+
+
+@pytest.mark.asyncio
+async def test_lean_shows_failed_read_only_tool():
+    app = _T()
+    async with app.run_test():
+        tv = app.query_one(TranscriptView)
+        assert tv.details.state("tools") == "lean"
+        assert tv.add_tool_call(_read_tool("r1", "running")) is None
+        block = tv.add_tool_call(_read_tool("r1", "error"))
+        assert block is not None
+        assert block in tv.children
+
+
+@pytest.mark.asyncio
+async def test_lean_shows_write_tools():
+    app = _T()
+    async with app.run_test():
+        tv = app.query_one(TranscriptView)
+        assert tv.details.state("tools") == "lean"
+        block = tv.add_tool_call(_tool("w1", "ok"))
+        assert block is not None
 
 
 @pytest.mark.asyncio

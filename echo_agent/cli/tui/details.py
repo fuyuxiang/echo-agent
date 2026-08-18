@@ -1,28 +1,20 @@
 """How much of the agent's working trace the transcript shows.
 
-Before this, verbosity was all-or-nothing per block: every cognitive frame the
-gateway sent became a line, and the only control was expanding one block by
-hand. Two opposite complaints came out of the same design — a long tool run
-buried the answer under trace lines, while someone debugging a bad answer wanted
-the thinking text open by default and had to hit ctrl+o on every single block.
-
-So visibility is a per-section setting with three states, not a global on/off:
+Visibility is a per-section setting with four states:
 
 - ``expanded``  — the line is shown, and its detail view opens on mount.
 - ``collapsed`` — the line is shown as a one-row summary; detail on demand.
+- ``lean``      — (tools only) successful read-only calls suppressed; writes/
+                  exec/failures shown. The default for tools.
 - ``hidden``    — the section is not mounted at all.
 
 The sections are the three bands of trace that answer different questions:
 ``thinking`` (why the agent decided this), ``tools`` (what it did to the world),
-``activity`` (what it is doing right now). Defaults follow how often each one is
-the thing you actually want: tool lines are the audit trail and stay visible,
-thinking is long prose so it stays summarized, and per-frame activity notes are
-redundant with the live footer indicator, so they start hidden.
+``activity`` (what it is doing right now).
 
 ``hidden`` is deliberately NOT allowed to hide failures. An error is the one
-trace the user cannot act on if they never see it, and "the agent silently did
-nothing" is exactly the bug report this setting would otherwise manufacture. See
-``shows``: a failed tool call is mounted whatever ``tools`` says.
+trace the user cannot act on if they never see it. Same rule applies to
+``lean``: a failed read is still mounted.
 """
 
 from __future__ import annotations
@@ -31,19 +23,16 @@ import os
 from dataclasses import dataclass, replace
 from typing import Mapping
 
+from echo_agent.security.risk_classifier import RiskLevel, classify_risk
+
 # Section keys, in the order /details lists them.
 SECTIONS: tuple[str, ...] = ("thinking", "tools", "activity")
 
-STATES: tuple[str, ...] = ("expanded", "collapsed", "hidden")
+STATES: tuple[str, ...] = ("expanded", "collapsed", "lean", "hidden")
 
 SECTION_DEFAULTS: dict[str, str] = {
     "thinking": "collapsed",
-    # Not ``expanded``: a tool's summary line already carries verb, object,
-    # result and duration — the audit trail. Its detail view is raw params plus a
-    # diff/result preview, 5-8 further rows per call, which on a multi-tool turn
-    # reproduces exactly the wall of trace this work set out to remove. Debugging
-    # a specific run is what ``/details tools expanded`` is for.
-    "tools": "collapsed",
+    "tools": "lean",
     "activity": "hidden",
 }
 
@@ -68,6 +57,7 @@ SECTION_LABELS: dict[str, str] = {
 STATE_LABELS: dict[str, str] = {
     "expanded": "展开",
     "collapsed": "折叠",
+    "lean": "精简",
     "hidden": "隐藏",
 }
 
@@ -85,6 +75,7 @@ _SECTION_ALIASES: dict[str, str] = {
 _STATE_ALIASES: dict[str, str] = {
     "展开": "expanded", "open": "expanded", "full": "expanded", "all": "expanded",
     "折叠": "collapsed", "收起": "collapsed", "short": "collapsed",
+    "精简": "lean", "简": "lean",
     "隐藏": "hidden", "关闭": "hidden", "off": "hidden", "none": "hidden",
 }
 
@@ -114,19 +105,24 @@ class DetailPrefs:
         trace at all (approvals, clarifies — always shown)."""
         return _SECTION_OF_COG.get(cog_type)
 
-    def shows(self, cog_type: str, *, failed: bool = False) -> bool:
+    def shows(self, cog_type: str, *, failed: bool = False, tool_name: str = "") -> bool:
         """Whether a frame of this type gets mounted.
 
-        ``failed`` overrides the setting: a tool that errored is mounted even
-        with ``tools=hidden``, because hiding it turns a visible failure into an
-        agent that appears to have done nothing at all.
+        ``failed`` overrides: a tool that errored is mounted even when its
+        section is hidden or lean.  Under ``lean``, only read-only tools that
+        succeeded are suppressed.
         """
         if failed:
             return True
         section = self.section_of(cog_type)
         if section is None:
             return True
-        return self.state(section) != "hidden"
+        st = self.state(section)
+        if st == "hidden":
+            return False
+        if st == "lean" and section == "tools" and tool_name:
+            return classify_risk(tool_name) != RiskLevel.READ_ONLY
+        return True
 
     def starts_expanded(self, cog_type: str) -> bool:
         """Whether the block opens its detail view on mount."""

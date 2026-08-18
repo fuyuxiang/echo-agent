@@ -111,6 +111,7 @@ def _tool_ev(tcid, status, name="read_file", **data):
 async def test_add_tool_call_flips_in_place():
     from textual.app import App
     from echo_agent.cli.tui.transcript import TranscriptView
+    from echo_agent.cli.tui.details import DetailPrefs
 
     class T(App):
         def compose(self):
@@ -119,6 +120,7 @@ async def test_add_tool_call_flips_in_place():
     app = T()
     async with app.run_test():
         tv = app.query_one(TranscriptView)
+        tv.details = DetailPrefs(tools="collapsed")
         b1 = tv.add_tool_call(_tool_ev("tc_1", "running"))
         assert b1.status == "running"
         assert tv.tool_block_count == 1

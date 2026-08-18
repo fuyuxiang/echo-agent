@@ -268,7 +268,7 @@ class TranscriptView(VerticalScroll):
             duration_ms=d.get("duration_ms"),
             expanded=self.details.starts_expanded("tool_call"),
         )
-        if not self.details.shows("tool_call", failed=failed):
+        if not self.details.shows("tool_call", failed=failed, tool_name=d.get("name", "")):
             return None
         self._tool_blocks[tcid] = block
         self._place(block)

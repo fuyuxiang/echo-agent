@@ -1000,7 +1000,7 @@ class EchoTUI(App):
             parsed = parse_details_arg(arg)
             if parsed is None:
                 self._tv.add_notice(
-                    "[$warning]用法: /details <思考|工具|状态> <展开|折叠|隐藏>[/]"
+                    "[$warning]用法: /details <思考|工具|状态> <展开|折叠|精简|隐藏>[/]"
                 )
                 return
             section, state = parsed

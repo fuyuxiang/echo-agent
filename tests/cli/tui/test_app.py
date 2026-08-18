@@ -237,10 +237,10 @@ async def test_tool_block_toggles_on_click_and_enter():
     async with app.run_test() as pilot:
         bridge = WSBridge(app)
         bridge.dispatch({"type": "message", "message_kind": "cognitive",
-                         "text": "🔧 read", "metadata": {
+                         "text": "🔧 edit", "metadata": {
                              "cog_type": "tool_call", "cog_event_id": "e1",
                              "_inbound_event_id": "in1",
-                             "data": {"name": "read_file", "status": "ok",
+                             "data": {"name": "edit_file", "status": "ok",
                                       "params": {"path": "a.py"},
                                       "result_text": "内容预览",
                                       "tool_call_id": "tc1"}}})

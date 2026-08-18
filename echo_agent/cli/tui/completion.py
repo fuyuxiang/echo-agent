@@ -27,7 +27,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/clear", "", "清空当前转录流", "local", False),
     SlashCommand("/copy", "[all]", "复制最近回复（all=整段对话）", "local", True),
     SlashCommand(
-        "/details", "[思考|工具|状态 展开|折叠|隐藏]",
+        "/details", "[思考|工具|状态 展开|折叠|精简|隐藏]",
         "查看或调整过程信息的显示程度", "local", True,
     ),
     SlashCommand("/save", "[路径]", "保存对话为 Markdown（默认存到 transcripts/）", "local", True),
