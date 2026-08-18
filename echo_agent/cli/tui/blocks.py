@@ -9,6 +9,17 @@ from rich.markdown import Markdown
 from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
+
+
+def _markup_safe(s: str) -> str:
+    """Escape user text for safe embedding inside Rich/Textual markup spans.
+
+    Rich's escape() only neutralizes sequences it considers valid tags, but
+    older Textual versions misparse bare brackets inside $-token style spans
+    (e.g. [$text-muted]...[/]).  Replacing both bracket characters is a
+    belt-and-suspenders guard that costs nothing for display-only summaries.
+    """
+    return s.replace("[", "⟨").replace("]", "⟩")
 from rich.theme import Theme as RichTheme
 from textual.widgets import Static
 
@@ -709,8 +720,8 @@ class ToolCallBlock(ExpandableBlock):
         return bool(self.params or self.result_text)
 
     def render_summary(self) -> str:
-        verb = escape(humanize_tool(self.tool_name))
-        obj = escape(pick_object(self.tool_name, self.params))
+        verb = _markup_safe(humanize_tool(self.tool_name))
+        obj = _markup_safe(pick_object(self.tool_name, self.params))
         sep = f"[$text-muted]{GLYPHS.sep}[/]"
         # A disclosure marker only where there IS a detail view, so the cue never
         # promises content that isn't there.
@@ -736,7 +747,7 @@ class ToolCallBlock(ExpandableBlock):
         mark = (
             f"[$success]{GLYPHS.ok}[/]" if ok else f"[$error]{GLYPHS.fail}[/]"
         )
-        summary = escape(summarize_result(
+        summary = _markup_safe(summarize_result(
             self.tool_name, self.result_meta, self.result_text, ok
         ))
         tone = "$text-muted" if ok else "$error"
@@ -755,7 +766,7 @@ class ToolCallBlock(ExpandableBlock):
         if self.params:
             # One line per parameter with secrets masked — a raw str(dict) both
             # wrapped unreadably and leaked credentials into the transcript.
-            rows.append(("参数", [escape(e) for e in format_params(self.params)]))
+            rows.append(("参数", [_markup_safe(e) for e in format_params(self.params)]))
         if self.result_text:
             # Edit-family tools return a diff — color it so added/removed lines
             # read at a glance. Everything else keeps the compact text preview.
@@ -766,7 +777,7 @@ class ToolCallBlock(ExpandableBlock):
                 rows.append(("变更", colorize_diff(self.result_text).split("\n")))
             else:
                 rows.append(
-                    ("结果", [escape(_clip(self.result_text, 200))])
+                    ("结果", [_markup_safe(_clip(self.result_text, 200))])
                 )
         for idx, (label, body) in enumerate(rows):
             elbow, cont = self.child_rail(last=idx == len(rows) - 1)
