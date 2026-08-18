@@ -161,14 +161,32 @@ Once the gateway is running, attach from any local terminal with `echo-agent cli
 | **Model Routing** | Main reasoning, context compression, embeddings and risk approval each configurable with independent provider and model |
 | **Tool Approval** | Three modes: `manual` / `smart` / `off`, unattended channels default to denying high-risk calls |
 | **Cross-Process Interop** | A2A JSON-RPC + MCP client (with OAuth), dynamic tool registration |
-| **Output Preservation** | Oversized tool output is spilled to disk; the model sees a head/tail preview plus a retrieval path and can read/grep the full text on demand |
+| **Output Preservation** | Oversized tool output is spilled to disk; the model sees a head/tail preview plus a retrieval path and can pull the full text back with `read_spill` by character range or regex |
 | **Local-First** | Sessions, memory, traces and credentials stored in the workspace by default, credentials encrypted at rest |
 
 > Starting with this version, tool output exceeding `spill.maxInlineChars` (6000 characters by default)
 > is no longer shown to the model in full. It is replaced with "head + tail + spill path". The complete
-> content is kept under `data/spill` and retained for 7 days by default. If your skills or prompts rely
+> content is kept under `storage.spillDir` (`data/spill` by default). If your skills or prompts rely
 > on tool output being directly visible and contiguous, set `spill.enabled: false` to turn this off,
 > or raise `spill.maxInlineChars`.
+>
+> **Retrieval goes through `read_spill` only.** Artifacts are per-session private: `read_spill`
+> authorises on the calling session's identity and can only retrieve artifacts that session produced
+> itself. `read_file` / `search_files` / `list_dir` / `read_document` / `send_file` all refuse the
+> artifact directory — they authorise on the path alone, and artifact paths travel in model-visible
+> text. `read_spill` reads by **character** range via `offset`/`limit` (so the tail of single-line
+> JSON or a compressed log is reachable), or searches within an artifact via `pattern`. Note this is
+> a path-layer boundary: with `exec` enabled a shell can still read the file directly, so it only
+> constitutes full isolation in deployments where `exec` is off (`minimal` / `messaging` profiles,
+> `public_gateway` / `daemon`).
+>
+> **Reclamation:** artifacts are bounded by both `spill.retentionDays` (default 7) and
+> `spill.maxTotalMb` (default 512 MB); whichever triggers first deletes them, so any single artifact
+> lives **at most** the retention period and may be reclaimed earlier under the size cap. Sweeps run
+> every `spill.sweepIntervalHours` (default 6) and are independent of `spill.enabled` — turning the
+> switch off only stops producing new artifacts, existing ones keep being reclaimed.
+> `storage.spillDir` must be a workspace-relative subdirectory: the sweeper deletes files under it,
+> and only ones matching the `session-*/<hex>-<tool>.txt` shape it wrote itself, never unrelated files.
 
 ---
 

@@ -159,13 +159,28 @@ echo-agent gateway uninstall  # 取消注册
 | **模型路由** | 主推理、上下文压缩、向量嵌入、风险审批可独立配置 provider 与模型 |
 | **工具审批** | 三档策略 `manual` / `smart` / `off`，无人值守通道默认拒绝高风险调用 |
 | **跨进程互操作** | A2A JSON-RPC + MCP 客户端（含 OAuth），支持动态工具注册 |
-| **输出保全** | 超长工具输出落盘保全，模型只见首尾预览与取回路径，可按需 read/grep 取回完整内容 |
+| **输出保全** | 超长工具输出落盘保全，模型只见首尾预览与取回路径，可用 `read_spill` 按字符区间或正则取回完整内容 |
 | **本地优先** | 会话、记忆、轨迹、凭证默认存放工作区，凭证加密落盘 |
 
 > 自本版本起，超过 `spill.maxInlineChars`（默认 6000 字符）的工具输出不再直接完整呈现给模型，
-> 而是替换为"头部 + 尾部 + 落盘路径"。完整内容保存在 `data/spill` 下，默认保留 7 天。
+> 而是替换为"头部 + 尾部 + 落盘路径"。完整内容保存在 `storage.spillDir`（默认 `data/spill`）下。
 > 若你的技能或提示词依赖"工具输出直接可见且连续"，请设 `spill.enabled: false` 关闭，
 > 或调高 `spill.maxInlineChars`。
+>
+> **取回只能用 `read_spill`。** 产物按会话私有：`read_spill` 以当前会话身份授权，
+> 只能取回本会话自己产生的产物；`read_file` / `search_files` / `list_dir` /
+> `read_document` / `send_file` 对产物目录一律拒绝——它们只认路径不认会话，而产物路径
+> 会出现在模型可见文本里。`read_spill` 支持 `offset`/`limit` 按**字符**区间读取
+> （单行 JSON、压缩日志的尾部因此可达），或用 `pattern` 在产物内做正则检索。
+> 注意这是路径层隔离：`exec` 开启时仍可用 shell 直接读文件，故完整隔离只在关闭
+> `exec` 的部署（`minimal` / `messaging` profile、`public_gateway` / `daemon`）中成立。
+>
+> **回收：** 产物受 `spill.retentionDays`（默认 7 天）与 `spill.maxTotalMb`（默认 512 MB）
+> 双限约束，两者任一触发即删除，故单个产物的实际存活时间**最长**为保留期，可能因容量
+> 上限更早被回收。清扫按 `spill.sweepIntervalHours`（默认 6 小时）周期执行，且与
+> `spill.enabled` 无关——关闭开关只是不再产生新产物，已有产物仍继续回收。
+> `storage.spillDir` 必须是工作区内的相对子目录：清扫器在该目录下删文件，且只删自己
+> 写出的 `session-*/<hex>-<tool>.txt` 形状，不会碰无关文件。
 
 ---
 
