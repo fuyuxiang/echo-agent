@@ -108,7 +108,7 @@ describe("Channels 页", () => {
     await screen.findByText("feishu");
     expect(screen.getAllByText("已启用")).toHaveLength(2);
     expect(screen.getByText("在线")).toBeInTheDocument();
-    expect(screen.getByText("离线")).toBeInTheDocument();
+    expect(screen.getByText("未连接")).toBeInTheDocument();
   });
 
   it("刷新按钮重新拉取通道状态", async () => {

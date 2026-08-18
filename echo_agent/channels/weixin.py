@@ -1022,15 +1022,19 @@ class WeixinChannel(BaseChannel):
 
                 consecutive_failures = 0
                 new_sync_buf = str(response.get("get_updates_buf") or "")
-                if new_sync_buf:
-                    sync_buf = new_sync_buf
-                    _save_sync_buf(self._data_dir, self._account_id, sync_buf)
 
                 msgs = response.get("msgs") or []
                 if msgs:
                     last_message_time = time.monotonic()
                 for message in msgs:
                     self._spawn_msg_task(self._process_message_safe(message))
+
+                # Save sync_buf AFTER dispatching messages: saving before processing
+                # creates a crash-loss window where sync_buf advances past messages
+                # that were never processed.
+                if new_sync_buf:
+                    sync_buf = new_sync_buf
+                    _save_sync_buf(self._data_dir, self._account_id, sync_buf)
 
                 # 活性检测：长时间无消息时重建连接
                 if time.monotonic() - last_message_time > _LIVENESS_TIMEOUT:

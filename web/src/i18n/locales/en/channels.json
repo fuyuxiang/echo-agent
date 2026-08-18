@@ -1,4 +1,7 @@
 {
   "title": "Channels",
-  "empty": "No enabled channels"
+  "empty": "No configured channels",
+  "notConnected": "Not connected",
+  "groupPolicy": "Group: {{policy}}",
+  "allowFrom": "Allowlist: {{count}}"
 }

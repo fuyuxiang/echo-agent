@@ -699,7 +699,7 @@ def setup_channels(config: dict) -> None:
             if value:
                 ch[field_key] = value
 
-        if ch_key in ("telegram", "discord", "slack", "qqbot", "email", "weixin", "dingtalk"):
+        if ch_key in ("telegram", "discord", "slack", "qqbot", "email", "weixin", "dingtalk", "whatsapp"):
             existing_allow = ch.get("allow_from") or ch.get("allowFrom") or []
             allow_default = ",".join(existing_allow) if isinstance(existing_allow, list) else str(existing_allow or "")
             allow_raw = ui.text(t("channels.allow_from"), default=allow_default)

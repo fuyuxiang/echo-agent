@@ -1131,7 +1131,8 @@ class TestChannelsAPI:
         names = {c["name"]: c for c in data["channels"]}
         assert names["telegram"]["running"] is True
         assert names["telegram"]["enabled"] is True
-        assert "discord" not in names
+        assert names["discord"]["enabled"] is False
+        assert names["discord"]["running"] is False
 
     @pytest.mark.asyncio
     async def test_list_channels_omits_cli(self):

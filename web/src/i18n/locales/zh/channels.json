@@ -1,4 +1,7 @@
 {
   "title": "通道",
-  "empty": "暂无已启用的通道"
+  "empty": "暂无已配置的通道",
+  "notConnected": "未连接",
+  "groupPolicy": "群聊: {{policy}}",
+  "allowFrom": "白名单: {{count}} 人"
 }

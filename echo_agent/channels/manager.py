@@ -575,7 +575,11 @@ class ChannelManager:
 
     @staticmethod
     def _public_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
-        return {key: value for key, value in metadata.items() if not key.startswith("_")}
+        # Preserve _inbound_event_id: webhook wait=true needs it for correlation.
+        return {
+            key: value for key, value in metadata.items()
+            if not key.startswith("_") or key == "_inbound_event_id"
+        }
 
     @staticmethod
     def _visible_stream_text(text: str, *, final: bool) -> str:

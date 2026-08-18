@@ -250,6 +250,7 @@ class BaseChannel(ABC):
         return self._running
 
     _media_cache_root: Path | None = None
+    _max_media_download_bytes: int = 25 * 1024 * 1024  # 25 MB default
 
     async def _resolve_media_to_cache(
         self,
@@ -275,6 +276,12 @@ class BaseChannel(ABC):
             data = await fetch()
             if not data:
                 logger.warning("Empty media response for {} on {}", source_id[:60], platform)
+                return None
+            if len(data) > self._max_media_download_bytes:
+                logger.warning(
+                    "Media too large ({:.1f} MB) for {} on {}, skipping",
+                    len(data) / 1024 / 1024, source_id[:60], platform,
+                )
                 return None
             target.write_bytes(data)
             logger.debug("Cached channel media: {} → {}", source_id[:60], target.name)
