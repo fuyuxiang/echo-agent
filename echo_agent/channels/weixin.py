@@ -1036,7 +1036,10 @@ class WeixinChannel(BaseChannel):
                 if time.monotonic() - last_message_time > _LIVENESS_TIMEOUT:
                     logger.warning("weixin: no messages for {}s, rebuilding session", _LIVENESS_TIMEOUT)
                     await self._poll_session.close()
-                    self._poll_session = aiohttp.ClientSession()
+                    # trust_env=True 必须跟 start() 里一致:靠 HTTPS_PROXY 出网的
+                    # 部署,重建后的会话不带这个参数就再也不走代理,轮询从此静默
+                    # 收不到消息 —— 而这条重建日志恰好长得像"一切正常"。
+                    self._poll_session = aiohttp.ClientSession(trust_env=True)
                     last_message_time = time.monotonic()
             except asyncio.CancelledError:
                 break
