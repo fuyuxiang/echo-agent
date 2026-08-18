@@ -157,6 +157,9 @@ class ShellTool(Tool):
             combined = output
             if err_output:
                 combined += f"\nSTDERR:\n{err_output}"
+            # combined 是模型实际读到的那一份,必须自己也受上限约束:stdout 与
+            # stderr 各自贴着上限时,合起来正好是两倍,采集上限就名不副实了。
+            combined = self._bound(combined)
 
             return ToolResult(
                 success=return_code == 0,

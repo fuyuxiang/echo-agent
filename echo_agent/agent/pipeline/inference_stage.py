@@ -986,6 +986,23 @@ class InferenceStage:
                 modified_args = hr.modified
         return None, modified_args
 
+    def _respill(self, tool_name: str, exec_ctx: Any, result: Any) -> Any:
+        """post_tool_call 之后补一次 spill。
+
+        registry 在 execute 内部已经 spill 过一次,但那不是最终写回边界:插件
+        可以替换 result,而替换后的超长文本只会撞上 _MAX_TOOL_RESULT_CHARS 的
+        哑截断。registry 侧的 apply 幂等,所以这次补调对未被插件改动的结果是
+        no-op。registry 没装 spill 或不是本类型时静默跳过。
+        """
+        applier = getattr(self._tools, "apply_spill", None)
+        if applier is None:
+            return result
+        try:
+            return applier(tool_name, exec_ctx, result)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("post_tool_call 后的 spill 补调失败,保留插件结果: {}", e)
+            return result
+
     async def _execute_tool_batch(self, *, ctx, response, messages, session,
                                   trace_id, iteration, event, repeat_tracker, counters) -> bool:
         """Execute one batch of tool_calls in three phases:
@@ -1157,6 +1174,9 @@ class InferenceStage:
                             "post_tool_call", result, d.tool_call.name,
                             d.tool_call.arguments, d.exec_ctx,
                         )
+                        # 插件可能把结果换成一段超长文本。此处才是最终写回边界,
+                        # 不再过一遍 spill 就会掉进下方 16000 字符的哑截断。
+                        result = self._respill(d.tool_call.name, d.exec_ctx, result)
                     return result
 
             conc_order = list(conc_idx)
@@ -1226,6 +1246,7 @@ class InferenceStage:
                     result = await self._hook_registry.dispatch_modify(
                         "post_tool_call", result, tool_call.name, tool_call.arguments, d.exec_ctx,
                     )
+                    result = self._respill(tool_call.name, d.exec_ctx, result)
 
                 _tool_duration_ms = int((_time.monotonic() - _tool_start_ts) * 1000)
                 _tool_result_meta: dict[str, Any] = {

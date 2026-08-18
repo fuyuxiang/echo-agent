@@ -228,8 +228,17 @@ class ToolRegistry:
         self._append_audit(log_entry)
         return self._apply_spill(resolved_name, exec_ctx, last_result)
 
-    def _apply_spill(self, tool_name: str, ctx: ToolExecutionContext, result: ToolResult) -> ToolResult:
-        """把超长的模型可见文本落盘换成预览。spill 未装配时是 no-op。"""
+    def apply_spill(self, tool_name: str, ctx: ToolExecutionContext, result: ToolResult) -> ToolResult:
+        """把超长的模型可见文本落盘换成预览。spill 未装配时是 no-op。
+
+        公开是因为 registry 不是最终写回边界:post_tool_call 插件可以在
+        execute 返回之后替换 result,插件产出的超长文本若不再过一遍这里,就会
+        被下游按 16000 字符哑截断,尾部丢失且没有取回路径——恰是 spill 要消除
+        的那个失效模式。调用点见 inference_stage 的 dispatch_modify 之后。
+
+        二次调用天然幂等:第一次替换后的预览长度必 <= cap,再进来直接原样返回,
+        不会落第二个文件。
+        """
         if self._spill_policy is None:
             return result
         try:
@@ -238,6 +247,9 @@ class ToolRegistry:
             # spill 是可选能力,它自身的缺陷不该让工具调用失败
             logger.warning("spill 策略异常,保留原结果 tool={} err={}", tool_name, e)
             return result
+
+    # 旧名:内部调用点仍在用,且外部可能已引用。
+    _apply_spill = apply_spill
 
     def get_execution_log(self, limit: int = 100) -> list[dict[str, Any]]:
         return list(self._execution_log)[-limit:]
