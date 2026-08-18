@@ -8,11 +8,12 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 import secrets
 from pathlib import Path
+
+from echo_agent.spill.layout import session_dir_name
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 _MAX_SEGMENT = 64
@@ -30,9 +31,12 @@ class SpillStore:
     def __init__(self, root: Path):
         self.root = Path(root).resolve()
 
+    def session_dir(self, session_key: str) -> Path:
+        """本会话的产物目录。read_spill 用它做授权边界,故必须与 save 同源。"""
+        return self.root / session_dir_name(session_key)
+
     def save(self, session_key: str, tool_name: str, content: str) -> Path:
-        digest = hashlib.sha256(session_key.encode("utf-8")).hexdigest()[:12]
-        session_dir = self.root / f"session-{digest}"
+        session_dir = self.session_dir(session_key)
         session_dir.mkdir(parents=True, exist_ok=True)
         name = f"{secrets.token_hex(4)}-{_safe_segment(tool_name)}.txt"
         path = session_dir / name
