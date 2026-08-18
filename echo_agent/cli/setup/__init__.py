@@ -514,7 +514,7 @@ def setup_tools(config: dict) -> None:
     if "web" in chosen:
         web = _ensure_dict(tools, "web")
         web["enabled"] = True
-        provider_choices = ["brave", "tavily", "serpapi", "searxng"]
+        provider_choices = ["brave", "tavily", "serpapi", "searxng", "serply"]
         cur_prov = web.get("search_provider") or web.get("searchProvider") or "brave"
         prov_idx = _choice(t("tools.web_provider"), provider_choices,
                            default=provider_choices.index(cur_prov) if cur_prov in provider_choices else 0)
