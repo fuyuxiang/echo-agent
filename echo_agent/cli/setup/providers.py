@@ -97,6 +97,13 @@ CATALOG: list[ProviderCatalogEntry] = [
         fallback_models=["deepseek-ai/DeepSeek-V3", "Qwen/Qwen2.5-72B-Instruct"],
         models_endpoint="https://api.siliconflow.cn/v1/models",
     ),
+    ProviderCatalogEntry(
+        id="atlascloud", label="Atlas Cloud", group="aggregator", dialect="openai",
+        api_base="https://api.atlascloud.ai/v1",
+        api_key_env_vars=("ATLASCLOUD_API_KEY",),
+        fallback_models=["qwen/qwen3.8-max"],
+        models_endpoint="https://api.atlascloud.ai/v1/models",
+    ),
     # ── local ──
     ProviderCatalogEntry(
         id="ollama", label="Ollama", group="local", dialect="openai",
