@@ -277,6 +277,8 @@ class AgentLoop:
         from echo_agent.spill.policy import SpillPolicy
         from echo_agent.spill.store import SpillStore
         self._spill_store = SpillStore(workspace / config.storage.spill_dir)
+        # 清扫循环的句柄,由 start() 建、aclose() 收。见 _start_spill_sweeper。
+        self._spill_sweep_task: asyncio.Task | None = None
         self.tools = ToolRegistry(
             audit_log_path=workspace / config.storage.logs_dir / "tool_audit.jsonl",
             config=config,
@@ -1152,19 +1154,7 @@ class AgentLoop:
             except Exception as e:
                 logger.warning("Unresolved-contradiction rebuild failed: {}", e)
         self._spawn_background(self._start_mcp_background())
-        if self.config.spill.enabled:
-            # 挂在 start() 而非 __init__:spawn 走 asyncio.create_task,而
-            # AgentLoop 在 app.py 里是在事件循环之外构造的,那里 create_task
-            # 会抛 "no running event loop"。
-            # DISCARDABLE:清扫漏一轮没有任何后果,不该占 DURABLE 的重试预算;
-            # 且 aclose 只 cancel DISCARDABLE,停机时这个常驻循环才收得住。
-            from echo_agent.spill.sweeper import sweep_forever
-            self._spawn_background(sweep_forever(
-                self._spill_store.root,
-                self.config.spill.retention_days,
-                self.config.spill.max_total_mb,
-                self.config.spill.sweep_interval_hours,
-            ))
+        self._start_spill_sweeper()
         # Skill admission candidate store: ensure schema exists before the first
         # background skill review can stage a candidate. Must run BEFORE
         # subscribe_inbound to close the startup race where an inbound event
@@ -1215,6 +1205,17 @@ class AgentLoop:
                 await proc_tool.aclose()
             except Exception as e:
                 logger.debug("ProcessTool aclose raised (ignored): {}", e)
+        # spill 清扫循环不属于调度器,自己收。它绝大多数时间停在 sleep 上,
+        # cancel 即刻生效;正在 to_thread 里扫的那一轮会跑完(线程不可中断),
+        # 故这里等它,不 fire-and-forget。
+        if self._spill_sweep_task is not None:
+            self._spill_sweep_task.cancel()
+            try:
+                await self._spill_sweep_task
+            except (asyncio.CancelledError, Exception) as e:  # noqa: BLE001
+                if not isinstance(e, asyncio.CancelledError):
+                    logger.debug("spill 清扫任务收尾异常(忽略): {}", e)
+            self._spill_sweep_task = None
         # All background work is spawned via ``_spawn_background`` and owned by
         # the scheduler; ``aclose`` cancels discardable tasks and flushes durable
         # ones. This is the single shutdown path for background work.
@@ -1243,6 +1244,28 @@ class AgentLoop:
     def _spawn_background(self, coro: Any, *, tier: Any = None) -> None:
         from echo_agent.agent.background import Tier
         self._bg_scheduler.spawn(coro, tier=tier or Tier.DISCARDABLE)
+
+    def _start_spill_sweeper(self) -> None:
+        """启动 spill 清扫循环,持有独立生命周期,不进 BackgroundScheduler。
+
+        调度器是为"有界的一次性工作"设计的,而这是个永不返回的循环,放进去有两个
+        后果:启动时若池已饱和,DISCARDABLE 会被永久丢弃(不是漏一轮,是这辈子
+        不再清扫);启动成功则永久占住一个信号量槽,max_background_tasks=1 时后续
+        DURABLE 全部排队等它——而它永远不结束。
+
+        不以 spill.enabled 为条件:关掉开关只是不再产生新产物,已有的敏感内容
+        仍须继续受 retentionDays/maxTotalMb 约束。目录不存在时循环自身是 no-op,
+        所以无条件启动是安全的。
+        """
+        from echo_agent.spill.sweeper import sweep_forever
+        # 挂在 start() 而非 __init__:AgentLoop 在 app.py 里于事件循环之外构造,
+        # 那里 create_task 会抛 "no running event loop"。
+        self._spill_sweep_task = asyncio.create_task(sweep_forever(
+            self._spill_store.root,
+            self.config.spill.retention_days,
+            self.config.spill.max_total_mb,
+            self.config.spill.sweep_interval_hours,
+        ))
 
     async def _lru_put(self, cache: OrderedDict, key: str, value: Any) -> None:  # type: ignore[type-arg]
         async with self._state_lock:
