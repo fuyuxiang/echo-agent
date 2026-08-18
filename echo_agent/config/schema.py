@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -2965,10 +2966,36 @@ class StorageConfig(_Base):
         default="data/spill",
         json_schema_extra={
             "status": "effective", "ref": "spill/store.py:1",
-            "desc_zh": "工具输出溢出产物的存储目录",
-            "desc_en": "Directory storing spilled tool-output artifacts",
+            "desc_zh": "工具输出溢出产物的存储目录(必须是工作区内的相对路径专用子目录)",
+            "desc_en": "Directory storing spilled tool-output artifacts (must be a dedicated workspace-relative subdirectory)",
         },
     )
+
+    @field_validator("spill_dir")
+    @classmethod
+    def _spill_dir_must_be_dedicated(cls, v: str) -> str:
+        """拒绝把 spill 根指到工作区本身或工作区之外。
+
+        清扫器会在这个目录下删文件。它虽只删自己认得的形状,但把根指到源码树
+        仍是配置错误,且让 spill 闸门去屏蔽整个工作区的读取——那会静默废掉
+        read_file/search_files。这里挡在源头,比在删除点补救可靠。
+        """
+        raw = v.strip()
+        if not raw:
+            raise ValueError("storage.spillDir must not be empty")
+        p = PurePosixPath(raw.replace("\\", "/"))
+        if p.is_absolute() or (len(raw) > 1 and raw[1] == ":"):
+            raise ValueError(
+                f"storage.spillDir must be workspace-relative, got absolute path: {v}"
+            )
+        parts = [seg for seg in p.parts if seg not in (".",)]
+        if any(seg == ".." for seg in parts):
+            raise ValueError(f"storage.spillDir must not escape the workspace: {v}")
+        if not parts:
+            raise ValueError(
+                "storage.spillDir must be a dedicated subdirectory, not the workspace root"
+            )
+        return raw
 
 
 # ── Spill config ─────────────────────────────────────────────────────────────
@@ -2984,16 +3011,21 @@ class SpillConfig(_Base):
             "desc_en": "Spill oversized tool output to disk and show the model a preview only (off falls back to the old behaviour: output is bluntly truncated downstream at 16000 chars, losing the trailing conclusion with no way to retrieve it)",
         },
     )
+    # 下限 500 不是保守起见:替换文本要装得下取回提示本身(约 100 字符)再加
+    # 一点头尾预览,cap 过小 compose 会一路返回 None,于是文件白写、模型仍拿到
+    # 超长原文——"配小一点更省 token"的直觉在这里得到相反的结果。
     max_inline_chars: int = Field(
-        default=6000,
+        default=6000, ge=500,
         json_schema_extra={
             "status": "effective", "ref": "spill/policy.py:1",
             "desc_zh": "模型可见的工具输出字符上限,超出则落盘并替换为首尾预览加取回路径",
             "desc_en": "Model-facing character cap for tool output; larger results are spilled and replaced with a head/tail preview",
         },
     )
+    # ge=1:0 或负值会让 cutoff 落到当下或未来,一次清扫就删光全部产物,而
+    # 模型手里的取回路径此时已经发出去了。
     retention_days: int = Field(
-        default=7,
+        default=7, ge=1,
         json_schema_extra={
             "status": "effective", "ref": "spill/sweeper.py:1",
             "desc_zh": "spill 产物保留天数,超期删除",
@@ -3001,15 +3033,17 @@ class SpillConfig(_Base):
         },
     )
     max_total_mb: int = Field(
-        default=512,
+        default=512, ge=1,
         json_schema_extra={
             "status": "effective", "ref": "spill/sweeper.py:1",
             "desc_zh": "spill 产物总体积上限(MB),超出按最旧优先删除",
             "desc_en": "Total size cap (MB) for spill artifacts; oldest are deleted first when exceeded",
         },
     )
+    # ge=1 与 sweep_forever 里的 max(1, ...) 兜底一致。差别在于这里会明确报错,
+    # 而兜底是静默把 0 改成 1 小时——配错的人得不到任何反馈。
     sweep_interval_hours: int = Field(
-        default=6,
+        default=6, ge=1,
         json_schema_extra={
             "status": "effective", "ref": "spill/sweeper.py:1",
             "desc_zh": "spill 产物清扫间隔(小时)",
