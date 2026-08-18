@@ -33,7 +33,9 @@ class MessageTool(Tool):
             text=params["text"],
         ).mark_tool_delivery(ctx)
         try:
-            await self._publish(event)
+            result = await self._publish(event)
+            if result and not result.ok:
+                return ToolResult(success=False, error=result.error or f"delivery failed ({result.stage.value})")
             return ToolResult(output=f"Message sent to {params['channel']}:{params['chat_id']}")
         except Exception as e:
             return ToolResult(success=False, error=str(e))

@@ -49,14 +49,15 @@ class TestCronChannel:
         bus.subscribe_outbound.assert_called_once_with("cron", ch.send)
 
     @pytest.mark.asyncio
-    async def test_send_returns_success(self):
+    async def test_send_returns_failure_for_dropped_content(self):
         from echo_agent.bus.events import OutboundEvent
 
         ch, _ = self._make()
         await ch.start()
         event = OutboundEvent.text_reply(channel="cron", chat_id="cron:job1", text="hello")
         result = await ch.send(event)
-        assert result.success is True
+        assert result.success is False
+        assert "unresolved" in result.error
 
     @pytest.mark.asyncio
     async def test_inject_success(self):

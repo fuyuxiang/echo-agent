@@ -547,6 +547,14 @@ class FeishuChannelConfig(_Base):
             "desc_en": "Feishu server listen port",
         },
     )
+    group_policy: str = Field(
+        default="mention",
+        json_schema_extra={
+            "status": "effective", "ref": "channels/feishu.py:135",
+            "desc_zh": "群聊触发策略: mention=仅被@时响应, all=响应所有消息",
+            "desc_en": "Group trigger policy: mention=respond only when @mentioned, all=respond to every message",
+        },
+    )
 
 
 class DingTalkChannelConfig(_Base):

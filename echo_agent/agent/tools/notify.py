@@ -33,5 +33,10 @@ class NotifyTool(Tool):
         event = OutboundEvent.text_reply(
             channel=channel, chat_id=chat_id, text=message,
         ).mark_tool_delivery(ctx)
-        await self._bus.publish_outbound(event)
-        return ToolResult(output=f"Notification sent to {channel}:{chat_id}")
+        try:
+            result = await self._bus.publish_outbound(event)
+            if result and not result.ok:
+                return ToolResult(success=False, error=result.error or f"delivery failed ({result.stage.value})")
+            return ToolResult(output=f"Notification sent to {channel}:{chat_id}")
+        except Exception as e:
+            return ToolResult(success=False, error=str(e))

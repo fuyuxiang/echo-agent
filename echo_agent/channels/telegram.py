@@ -147,6 +147,7 @@ class TelegramChannel(BaseChannel):
         chat_id = event.chat_id
         reply_to = event.reply_to_id
         first_result: SendResult | None = None
+        has_failure = False
         for chunk in self._chunk_text(text, _MAX_TEXT):
             payload = {
                 "chat_id": chat_id,
@@ -155,8 +156,6 @@ class TelegramChannel(BaseChannel):
                 **({"reply_to_message_id": reply_to} if reply_to else {}),
             }
             if reply_to:
-                # 被引用消息可能已被删除，Telegram 会报 "message to be replied not
-                # found"。这种情况下去掉锚点重发一次，避免整条回复发不出去。
                 result, err = await self._api("sendMessage", _return_error=True, json=payload)
                 if result is None and "replied" in err.lower():
                     logger.debug("Telegram reply anchor gone, resending without it: {}", err)
@@ -167,7 +166,11 @@ class TelegramChannel(BaseChannel):
             send_result = self._send_result(result, "Telegram sendMessage failed")
             if first_result is None:
                 first_result = send_result
+            if not send_result.success:
+                has_failure = True
             reply_to = None
+        if first_result and has_failure and first_result.success:
+            first_result = SendResult(success=False, error="one or more chunks failed")
         return first_result
 
     async def edit_message(
@@ -262,10 +265,13 @@ class TelegramChannel(BaseChannel):
                     "timeout": 30,
                     "allowed_updates": ["message"],
                 })
-                if not updates:
+                if updates is None:
                     delay = _RECONNECT_BACKOFFS[min(backoff_idx, len(_RECONNECT_BACKOFFS) - 1)]
                     await asyncio.sleep(delay)
                     backoff_idx += 1
+                    continue
+                if not updates:
+                    backoff_idx = 0
                     continue
                 backoff_idx = 0
                 for update in updates:
@@ -306,7 +312,7 @@ class TelegramChannel(BaseChannel):
                 file_id = file_obj.get("file_id", "")
                 if not file_id:
                     continue
-                media_type = "image" if kind == "photo" else kind
+                media_type = {"photo": "image", "document": "file", "voice": "audio"}.get(kind, kind)
                 local_path = await self._download_telegram_file(file_id)
                 if local_path:
                     media.append({"type": media_type, "url": local_path})
@@ -362,13 +368,17 @@ class TelegramChannel(BaseChannel):
 
     async def _download_telegram_file(self, file_id: str) -> str | None:
         """Resolve a Telegram file_id to a local cached path via getFile + download."""
+        result = await self._api("getFile", json={"file_id": file_id})
+        if not result:
+            return None
+        file_path = result.get("file_path", "")
+        if not file_path:
+            return None
+
+        import os
+        ext = os.path.splitext(file_path)[1] or ".bin"
+
         async def fetch() -> bytes:
-            result = await self._api("getFile", json={"file_id": file_id})
-            if not result:
-                raise RuntimeError("getFile returned no result")
-            file_path = result.get("file_path", "")
-            if not file_path:
-                raise RuntimeError("getFile returned empty file_path")
             download_url = f"https://api.telegram.org/file/bot{self._token}/{file_path}"
             if not self._session:
                 raise RuntimeError("no session")
@@ -377,7 +387,6 @@ class TelegramChannel(BaseChannel):
                     raise RuntimeError(f"download failed ({resp.status})")
                 return await resp.read()
 
-        ext = ".jpg"
         return await self._resolve_media_to_cache(file_id, "telegram", fetch, suffix=ext)
 
     async def _api(self, method: str, *, _return_error: bool = False, **kwargs: Any) -> Any:

@@ -28,6 +28,7 @@ class FeishuChannel(BaseChannel):
         self._app_secret = config.app_secret
         self._verification_token = config.verification_token
         self._encryption_key = config.encryption_key
+        self._group_policy = getattr(config, "group_policy", "mention")
         self._session: aiohttp.ClientSession | None = None
         self._runner: web.AppRunner | None = None
         self._tenant_token: str = ""
@@ -144,6 +145,15 @@ class FeishuChannel(BaseChannel):
         msg_type = message.get("message_type", "")
         msg_id = message.get("message_id", "")
         chat_type = message.get("chat_type", "")
+
+        if chat_type == "group" and self._group_policy == "mention":
+            mentions = message.get("mentions") or []
+            bot_mentioned = any(
+                m.get("id", {}).get("open_id") == self._app_id
+                for m in mentions
+            )
+            if not bot_mentioned:
+                return
 
         text = ""
         media: list[dict[str, str]] = []

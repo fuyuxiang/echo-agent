@@ -28,11 +28,6 @@ class CronChannel(BaseChannel):
         self._running = False
 
     async def send(self, event: OutboundEvent) -> SendResult | None:
-        # Reaching the cron pseudo-channel means delivery-target resolution
-        # failed upstream (job created without a resolvable channel/chat), so
-        # this content is about to be dropped into a black hole. That is a
-        # misconfiguration worth a warning, not a silent info line — otherwise
-        # a scheduled job "runs successfully" yet the user never hears anything.
         has_content = bool(event.text) or bool(getattr(event, "content", None))
         if has_content:
             logger.warning(
@@ -40,6 +35,7 @@ class CronChannel(BaseChannel):
                 "target) and is being dropped: {}",
                 event.chat_id, event.text[:200] if event.text else "<non-text content>",
             )
+            return SendResult(success=False, error="unresolved delivery target")
         return SendResult(success=True)
 
     async def inject(self, job_id: str, message: str, deliver_channel: str | None = None) -> None:

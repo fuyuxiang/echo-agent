@@ -110,6 +110,7 @@ class MatrixChannel(BaseChannel):
             if media_url:
                 await self._send_media(room_id, media_type, media_url)
 
+        message_id = ""
         if text:
             txn_id = f"m{id(text)}{time.monotonic():.0f}"
             url = f"{self._homeserver}/_matrix/client/v3/rooms/{room_id}/send/m.room.message/{txn_id}"
@@ -120,11 +121,13 @@ class MatrixChannel(BaseChannel):
                         body = await resp.text()
                         logger.warning("Matrix send failed ({}): {}", resp.status, body[:200])
                         return SendResult(success=False, error=body[:200])
+                    data = await resp.json()
+                    message_id = data.get("event_id", "")
             except Exception as e:
                 logger.error("Matrix send error: {}", e)
                 return SendResult(success=False, error=str(e))
 
-        return SendResult(success=True)
+        return SendResult(success=True, message_id=message_id)
 
     async def _send_media(self, room_id: str, media_type: str, media_url: str) -> SendResult:
         if not self._session:

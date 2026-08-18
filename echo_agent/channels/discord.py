@@ -79,13 +79,12 @@ class DiscordChannel(BaseChannel):
             return None
         url = f"{_API_BASE}/channels/{event.chat_id}/messages"
         first_result: SendResult | None = None
+        has_failure = False
         for chunk in _chunk_text(text, _MAX_TEXT):
             payload: dict[str, Any] = {"content": chunk}
             if event.reply_to_id:
                 payload["message_reference"] = {"message_id": event.reply_to_id}
             send_result = await self._post_message(url, payload)
-            # 被引用消息已删时 Discord 报 50035(无效引用)/10008(消息不存在)，
-            # 去掉 reference 重发一次，避免整条回复发不出去。
             if (
                 not send_result.success
                 and "message_reference" in payload
@@ -96,6 +95,10 @@ class DiscordChannel(BaseChannel):
                 send_result = await self._post_message(url, payload)
             if first_result is None:
                 first_result = send_result
+            if not send_result.success:
+                has_failure = True
+        if first_result and has_failure and first_result.success:
+            first_result = SendResult(success=False, error="one or more chunks failed")
         return first_result
 
     async def _post_message(self, url: str, payload: dict[str, Any]) -> SendResult:
@@ -326,9 +329,6 @@ class DiscordChannel(BaseChannel):
                 if not (ref and str(ref.get("author", {}).get("id", "")) == self._bot_id):
                     return
             content = content.replace(f"<@{self._bot_id}>", "").replace(f"<@!{self._bot_id}>", "").strip()
-
-        if not content:
-            return
 
         media: list[dict[str, str]] = []
         for att in d.get("attachments", []):

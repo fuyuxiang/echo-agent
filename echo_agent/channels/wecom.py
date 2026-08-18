@@ -119,6 +119,12 @@ class WeComChannel(BaseChannel):
                 body = decrypt_message(self._encoding_aes_key, self._corp_id, encrypt)
             except (ET.ParseError, ValueError):
                 return web.Response(text="success")
+        elif self._token:
+            signature = request.query.get("msg_signature", "") or request.query.get("signature", "")
+            timestamp = request.query.get("timestamp", "")
+            nonce = request.query.get("nonce", "")
+            if not self._check_signature(signature, timestamp, nonce):
+                return web.Response(status=403, text="Forbidden")
         try:
             root = ET.fromstring(body)
         except ET.ParseError:

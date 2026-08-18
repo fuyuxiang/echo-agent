@@ -42,6 +42,8 @@ class SlackChannel(BaseChannel):
         if auth and auth.get("ok"):
             self._bot_id = auth.get("user_id", "")
             logger.info("Slack bot: {} ({})", auth.get("user", ""), self._bot_id)
+        else:
+            logger.error("Slack auth.test failed — bot will run in degraded mode (no bot_id, WS may fail)")
         self._running = True
         self.bus.subscribe_outbound(self.name, self.send)
         self._ws_task = asyncio.create_task(self._ws_loop())

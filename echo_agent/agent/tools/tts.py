@@ -100,7 +100,9 @@ class TTSTool(Tool):
             channel=channel, chat_id=chat_id, content=blocks,
         ).mark_tool_delivery(ctx)
         try:
-            await self._publish(event)
+            result = await self._publish(event)
+            if result and not result.ok:
+                return f"delivery failed: {result.error or result.stage.value}"
             return f"delivered to {channel}:{chat_id}"
         except Exception as e:
             return f"delivery failed: {e}"

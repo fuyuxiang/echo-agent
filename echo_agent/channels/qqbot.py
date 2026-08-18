@@ -292,7 +292,9 @@ class QQBotChannel(BaseChannel):
                     if len(chunks) > 1 and j < len(chunks) - 1:
                         await asyncio.sleep(0.5)
             else:
-                await self._send_media(chat_id, msg_type, item, reply)
+                ok = await self._send_media(chat_id, msg_type, item, reply)
+                if not ok:
+                    all_ok = False
             if len(send_queue) > 1 and i < len(send_queue) - 1:
                 await asyncio.sleep(0.5)
 
@@ -302,13 +304,13 @@ class QQBotChannel(BaseChannel):
 
     async def _send_media(
         self, chat_id: str, msg_type: str, item: SendQueueItem, reply_to: str,
-    ) -> None:
+    ) -> bool:
         if msg_type == "channel":
             logger.warning("QQBot: media not supported for channel type, sending as text")
             await self._send_chunk(chat_id, f"[{item.kind}] {item.content}", msg_type, reply_to)
-            return
+            return True
         if not self._session:
-            return
+            return False
 
         scope = "c2c" if msg_type == "c2c" else "group"
         file_type = media_kind_to_file_type(item.kind)
@@ -347,16 +349,19 @@ class QQBotChannel(BaseChannel):
                 msg_id=reply_to,
             )
             logger.info("QQBot media sent: {} → {}/{}", item.kind, scope, chat_id)
+            return True
         except FileNotFoundError as e:
             logger.error("QQBot media file not found: {}", e)
             await self._send_chunk(
                 chat_id, f"[文件未找到] {source}", msg_type, reply_to,
             )
+            return False
         except Exception as e:
             logger.error("QQBot media send failed ({}): {}", item.kind, e)
             await self._send_chunk(
                 chat_id, f"[媒体发送失败] {e}", msg_type, reply_to,
             )
+            return False
 
     @staticmethod
     def _content_type_to_kind(ct: ContentType, url: str, mime: str) -> str:
