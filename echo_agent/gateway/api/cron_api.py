@@ -1,4 +1,3 @@
-# echo_agent/gateway/api/cron_api.py
 from __future__ import annotations
 
 from typing import TYPE_CHECKING

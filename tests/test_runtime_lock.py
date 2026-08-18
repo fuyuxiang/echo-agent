@@ -61,7 +61,6 @@ class TestAcquireInstanceLock:
     def test_reacquire_after_release(self, tmp_path: Path):
         lock1 = acquire_instance_lock(tmp_path)
         lock1.release()
-        # After release the same workspace must be lockable again.
         lock2 = acquire_instance_lock(tmp_path)
         try:
             assert isinstance(lock2, InstanceLock)

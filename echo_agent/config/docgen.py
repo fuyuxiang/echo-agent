@@ -12,7 +12,6 @@ iter_fields() yields three path shapes:
 
 render_yaml skips class 3 (the markers break YAML indentation) and emits
 classes 1 and 2 as indented key/value pairs, so the output always parses.
-render_markdown renders all three classes as table rows using the full path.
 """
 from __future__ import annotations
 

@@ -345,7 +345,7 @@ async def test_stale_cache_misses_then_degrades():
     assert "fresh-bounded" in captured["retrieval_context"]
 
 
-# --- ResponseStage post-reply prefetch trigger (Task 12) ---
+# --- ResponseStage post-reply prefetch trigger ---
 
 
 class _FakePrefetcher:
@@ -492,7 +492,7 @@ async def test_prefetch_cache_isolated_per_session_end_to_end():
     assert host._get_retrieval_cache("sess-B") is None
 
 
-# --- Task 13: episodic + knowledge folded into the same prefetch/cache ---
+# --- episodic + knowledge folded into the same prefetch/cache ---
 
 
 @pytest.mark.asyncio
@@ -727,7 +727,7 @@ async def test_context_episode_knowledge_sync_on_miss():
     knowledge.search_async.assert_called_once()
 
 
-# --- Task 13 finalization: knowledge ACL isolation + memory-off fallback ---
+# --- knowledge ACL isolation + memory-off fallback ---
 
 
 @pytest.mark.asyncio

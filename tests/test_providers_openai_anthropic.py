@@ -252,7 +252,6 @@ class TestOpenAIStreamToolCalls:
         out = await provider.chat_stream(messages=[{"role": "user", "content": "hi"}])
         assert out.content == "hi"
         assert create.await_count == 2
-        # First attempt carried stream_options; the retry dropped it.
         assert create.await_args_list[0].kwargs.get("stream_options") == {"include_usage": True}
         assert "stream_options" not in create.await_args_list[1].kwargs
 

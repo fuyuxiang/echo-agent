@@ -118,9 +118,9 @@ class EmailChannel(BaseChannel):
         return SendResult(success=True)
 
     def _send_smtp(self, to_addr: str, subject: str, body: str) -> None:
-        # No try/except: callers (``send``) depend on the exception to surface
-        # the failure. Logging only here used to turn every SMTP failure into
-        # a silent "success" — see reviewer P1-6 for the broader receipt story.
+        # No try/except: callers (send) depend on the exception to surface the
+        # failure. Logging-only previously turned every SMTP failure into a
+        # silent "success".
         msg = email.mime.text.MIMEText(body, "plain", "utf-8")
         msg["From"] = self.config.username
         msg["To"] = to_addr

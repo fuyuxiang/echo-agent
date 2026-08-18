@@ -20,7 +20,6 @@ def _make_config(*, enabled=True, allow=None, deny=None, extra_dirs=None, plugin
 
 @pytest.fixture
 def plugin_dir(tmp_path):
-    """Create a workspace with a project plugin."""
     d = tmp_path / "plugins" / "hello-plugin"
     d.mkdir(parents=True)
     (d / "plugin.yaml").write_text(
@@ -179,7 +178,6 @@ async def test_hooks_accessible(manager):
 
 @pytest.mark.asyncio
 async def test_allow_list_filtering(tmp_path):
-    """Only plugins in the allow list should be loaded."""
     d1 = tmp_path / "plugins" / "allowed-plugin"
     d1.mkdir(parents=True)
     (d1 / "plugin.yaml").write_text("name: allowed-plugin\n")
@@ -207,7 +205,6 @@ async def test_allow_list_filtering(tmp_path):
 
 @pytest.mark.asyncio
 async def test_sync_activate(tmp_path):
-    """Sync activate() functions should work."""
     d = tmp_path / "plugins" / "sync-plugin"
     d.mkdir(parents=True)
     (d / "plugin.yaml").write_text("name: sync-plugin\n")
@@ -248,13 +245,11 @@ async def test_deactivate_exception(tmp_path):
     with patch("echo_agent.plugins.loader._scan_entry_points", return_value=[]):
         await mgr.discover_and_load()
 
-    # Should not raise
     await mgr.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_config_key_passthrough(tmp_path):
-    """Plugin should receive its config section via config_key."""
     d = tmp_path / "plugins" / "cfg-plugin"
     d.mkdir(parents=True)
     (d / "plugin.yaml").write_text("name: cfg-plugin\nconfig_key: my_cfg\n")
@@ -281,7 +276,6 @@ async def test_config_key_passthrough(tmp_path):
 
 @pytest.mark.asyncio
 async def test_no_plugins_discovered(tmp_path):
-    """No plugins should result in empty list without errors."""
     config = _make_config()
     bus = MagicMock()
     tool_registry = MagicMock()
@@ -297,7 +291,6 @@ async def test_no_plugins_discovered(tmp_path):
 
 @pytest.mark.asyncio
 async def test_plugin_registers_tool(tmp_path):
-    """Plugin that registers a tool should have it tracked."""
     d = tmp_path / "plugins" / "tool-plugin"
     d.mkdir(parents=True)
     (d / "plugin.yaml").write_text("name: tool-plugin\n")
@@ -383,7 +376,6 @@ async def test_compat_mode_strips_tool_registered_without_permission(tmp_path, m
     from unittest.mock import MagicMock
     from echo_agent.agent.tools.base import Tool, ToolResult
 
-    # 构造一个最小 Tool 实例供 activate 注册
     class FakeTool(Tool):
         name = "test_tool"
         description = "test"
@@ -426,7 +418,5 @@ async def test_compat_mode_strips_tool_registered_without_permission(tmp_path, m
 
     await mgr._load_and_activate(record)
 
-    # compat 不拒绝激活
     assert record.status == "activated"
-    # 事后裁剪：unregister 应被调用
     tool_registry.unregister.assert_called_once_with("test_tool")

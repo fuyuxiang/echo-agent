@@ -62,14 +62,14 @@ async def test_reviewer_provenance_lands_on_candidate(admission):
     assert staged[0].channel == "telegram"
 
 
-# --- Level 2a: Fix1(a) signature guard --------------------------------------
+# --- signature guard: session_key/channel params present --- --------------------------------------
 def test_background_skill_review_signature_has_provenance_params():
     params = inspect.signature(ResponseStage._background_skill_review).parameters
     assert "session_key" in params
     assert "channel" in params
 
 
-# --- Level 2b: Fix1(b) finalize spawns review with event provenance ---------
+# --- finalize spawns review with event provenance ---
 class _FakeSessions:
     async def save(self, session):
         return None
@@ -84,7 +84,6 @@ class _FakeMemory:
 async def test_finalize_spawns_skill_review_with_event_provenance():
     captured = {}
 
-    # Stub _background_skill_review to record what finalize passes in.
     def _spy(self, messages, session_key="", channel=""):
         captured["session_key"] = session_key
         captured["channel"] = channel
@@ -128,7 +127,7 @@ async def test_finalize_spawns_skill_review_with_event_provenance():
     assert captured.get("channel") == "telegram"
 
 
-# --- E4: memory review dispatched DURABLE (not the default DISCARDABLE) ------
+# --- memory review dispatched DURABLE (not the default DISCARDABLE) ---
 class _RecordingSessions:
     """SessionManager stand-in: hands back one session, records saves, and
     exposes a real per-session lock so the counter-reset path is exercised."""
@@ -192,7 +191,6 @@ async def test_memory_review_dispatched_durable():
 
     await rs.finalize(ctx, result)
 
-    # Only the memory review should be scheduled here, and it must be DURABLE.
     assert len(spawned) == 1
     item, tier = spawned[0]
     assert tier == Tier.DURABLE
@@ -202,7 +200,7 @@ async def test_memory_review_dispatched_durable():
     assert called["args"] == (event.session_key, event.memory_scope)
 
 
-# --- E4: nudge counters cleared only after a review SUCCEEDS -----------------
+# --- nudge counters cleared only after a review SUCCEEDS ---
 @pytest.mark.asyncio
 async def test_memory_counter_cleared_only_on_review_success():
     """成功回调才清 review 计数:成功后清零并写回 session;失败(抛异常,交给
@@ -264,7 +262,7 @@ async def test_memory_counter_cleared_only_on_review_success():
     assert session2.metadata["_nudge_tool_iters_memory"] == 3
 
 
-# --- R4 Task6 Important 1: reset/save 失败不得触发昂贵的 review 重跑 -----------
+# --- reset/save 失败不得触发昂贵的 review 重跑 ---
 class _SaveFailsSessions:
     """SessionManager 替身:提供真锁与固定 session,但 save 恒抛异常——模拟
     metadata 持久化失败(磁盘满/存储抖动)。"""
@@ -365,7 +363,7 @@ async def test_reset_save_failure_restores_in_memory_counters():
     assert session.metadata["_nudge_tool_iters_memory"] == 3
 
 
-# --- R4 Task6 Important 2: review 进行中禁止重复派发 --------------------------
+# --- review 进行中禁止重复派发 ---
 @pytest.mark.asyncio
 async def test_review_inflight_blocks_duplicate_dispatch():
     """清零挪到成功回调后,触发条件是 ">= 阈值" 且每轮持久化。达阈值后、在后台
@@ -408,17 +406,13 @@ async def test_review_inflight_blocks_duplicate_dispatch():
         should_review_skills=False, should_review_memory=True,
     )
 
-    # Turn 1:达阈值,派发一次,标记 in-flight。
     await rs.finalize(_ctx(), result)
     assert len(spawned) == 1
     assert session.key in rs._memory_review_inflight
 
-    # Turn 2:review 仍进行中(标记未清),同样 should_review_memory=True,
-    # 但必须被去重,不得派发第二次。
     await rs.finalize(_ctx(), result)
     assert len(spawned) == 1
 
-    # 成功回调清掉 in-flight 标记后,下一轮允许再次派发。
     rs._memory_review_inflight.discard(session.key)
     await rs.finalize(_ctx(), result)
     assert len(spawned) == 2

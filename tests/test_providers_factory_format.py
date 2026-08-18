@@ -141,7 +141,6 @@ class TestCreateProvider:
             provider = create_provider(
                 ProviderConfig(name="openai", credential_pool=["k1", "k2"], models=["m"])
             )
-        # Pooled provider delegates get_default_model.
         assert provider.get_default_model() == "m"
 
 
@@ -272,7 +271,7 @@ class TestRotationDoesNotCloseAnInUseClient:
         await pooled.chat(messages=[{"role": "user", "content": "hi"}])
 
         assert inner._client is not old_client  # 已换新
-        old_client.close.assert_not_called()    # 但没被关掉
+        old_client.close.assert_not_called()
         old_client.aclose.assert_not_called()
         assert pooled._retired_clients == [old_client]
 
@@ -294,7 +293,6 @@ class TestRotationDoesNotCloseAnInUseClient:
         assert len(pooled._retired_clients) == 2
         await pooled.aclose()
 
-        # 两个退役客户端都关了,且 aclose 后列表清空(幂等,不重复关)。
         assert first.close.called or first.aclose.called
         assert second.close.called or second.aclose.called
         assert pooled._retired_clients == []
@@ -308,7 +306,7 @@ class TestRotationDoesNotCloseAnInUseClient:
             LLMResponse(content="Error: rate limit", finish_reason="error"),
             LLMResponse(content="recovered", finish_reason="stop"),
         ]
-        borrowed = inner._client  # 模拟另一个请求已经持有的句柄
+        borrowed = inner._client
         pooled = self._make(inner)
 
         await pooled.chat(messages=[{"role": "user", "content": "hi"}])

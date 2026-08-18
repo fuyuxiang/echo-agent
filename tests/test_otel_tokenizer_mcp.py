@@ -1,4 +1,4 @@
-"""Comprehensive tests for OTel, TokenCounter, MCP transport, and other uncovered modules."""
+"""OTel, TokenCounter, and MCP transport tests."""
 
 from __future__ import annotations
 
@@ -21,8 +21,6 @@ class TestTelemetryManagerWithoutOTel:
         with patch("echo_agent.observability.telemetry._HAS_OTEL", False):
             from echo_agent.observability.telemetry import TelemetryManager
             tm = TelemetryManager()
-            # available reads module-level flag, but instance was created under patch
-            # Just verify setup doesn't crash
             tm.setup()
 
     def test_setup_no_crash_without_otel(self):
@@ -129,7 +127,7 @@ class TestTraceLogger:
         from echo_agent.observability.monitor import TraceLogger
         tl = TraceLogger()
         tl.start_span("t5", "s5", "x", "x")
-        tl.flush_trace("t5")  # no crash, just removes from memory
+        tl.flush_trace("t5")
         assert tl.get_trace("t5") == []
 
     def test_get_recent_traces(self):
@@ -152,7 +150,7 @@ class TestTokenCounterFallback:
     def _make_counter(self) -> Any:
         from echo_agent.models.tokenizer import TokenCounter
         tc = TokenCounter(provider="unknown", model="test")
-        assert tc._tokenizer is None  # fallback
+        assert tc._tokenizer is None
         return tc
 
     def test_empty_string_returns_zero(self):
@@ -173,7 +171,6 @@ class TestTokenCounterFallback:
         ]
         result = tc.count_messages(msgs)
         assert result > 0
-        # 2 messages * 4 overhead + content tokens + role tokens + 2 conversation overhead
         assert isinstance(result, int)
 
     def test_count_messages_with_tool_calls(self):
@@ -242,7 +239,6 @@ class TestLLMResponse:
     def test_cache_hit_rate_with_cache(self):
         from echo_agent.models.provider import LLMResponse
         resp = LLMResponse(usage={"input_tokens": 100, "cache_read_input_tokens": 400})
-        # rate = 400 / (100 + 400) = 0.8
         assert abs(resp.cache_hit_rate - 0.8) < 1e-9
 
     def test_cache_hit_rate_no_cache(self):
@@ -325,17 +321,13 @@ class TestStreamableHttpTransport:
         session.close = AsyncMock()
         t._session = session
 
-        # send() must complete promptly even though the SSE body is still open.
         await asyncio.wait_for(t.send({"jsonrpc": "2.0", "id": 1, "method": "ping"}), timeout=1.0)
 
-        # Session ID was captured from response headers.
         assert t.session_id == "sess-1"
 
-        # The first SSE event eventually lands in the response queue.
         msg = await asyncio.wait_for(t._response_queue.get(), timeout=1.0)
         assert msg["id"] == 1
 
-        # Tear down: release the stalled stream and close the transport.
         body_release.set()
         await t.close()
 
@@ -364,7 +356,6 @@ class TestStdioTransport:
 
         t = StdioTransport(command="echo")
 
-        # Capture writes in order without actually launching a subprocess.
         writes: list[bytes] = []
 
         class _Stdin:

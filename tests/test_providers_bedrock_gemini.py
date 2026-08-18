@@ -430,7 +430,6 @@ class TestGeminiBuildClient:
         fake_google.generativeai = fake_genai
         with patch.dict("sys.modules", {"google": fake_google, "google.generativeai": fake_genai}):
             p = GeminiProvider(api_key="gem-key", default_model="gemini-pro")
-        # _build_client returns the module and calls configure when api_key set.
         assert p._client is fake_genai
         fake_genai.configure.assert_called_once_with(api_key="gem-key")
 
@@ -645,7 +644,6 @@ class TestGeminiChat:
         p._client = genai
         out = await p.chat(messages=[{"role": "user", "content": "hi"}])
         assert out.content == "reply"
-        # system_instruction omitted when no system message.
         model_kwargs = genai.GenerativeModel.call_args.kwargs
         assert "system_instruction" not in model_kwargs
 

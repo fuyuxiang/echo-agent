@@ -44,11 +44,11 @@ def test_set_generating_phase():
 def test_milestone_seq_increments_on_tool_transitions():
     st = SharedActivityState(started_at=0.0)
     assert st.milestone_seq == 0
-    st.enter_tool("web_search")          # thinking -> calling_tool
+    st.enter_tool("web_search")
     assert st.milestone_seq == 1
-    st.exit_tool()                        # tool done
+    st.exit_tool()
     assert st.milestone_seq == 2
-    st.set_generating()                   # entering finalize
+    st.set_generating()
     assert st.milestone_seq == 3
 
 
@@ -199,7 +199,7 @@ async def test_publish_exception_does_not_propagate():
 
 def test_enter_tool_same_phase_does_not_double_increment():
     st = SharedActivityState(started_at=0.0)
-    st.enter_tool("web_search")        # thinking -> calling_tool, seq 0 -> 1
+    st.enter_tool("web_search")
     assert st.milestone_seq == 1
     st.enter_tool("web_search")        # already calling_tool, must NOT bump
     assert st.milestone_seq == 1
@@ -209,7 +209,7 @@ def test_enter_tool_same_phase_does_not_double_increment():
 
 def test_set_generating_is_idempotent():
     st = SharedActivityState(started_at=0.0)
-    st.set_generating()                # thinking -> generating, seq 0 -> 1
+    st.set_generating()
     assert st.milestone_seq == 1
     st.set_generating()                # already generating, must NOT bump
     assert st.milestone_seq == 1
@@ -320,7 +320,7 @@ def test_key_milestone_bypasses_throttle():
     # but a key milestone (first tool entry) must beat anyway.
     hb = ProgressHeartbeat(_MsBus(), _MsEvent(), _ThrottleCfg())
     st = SharedActivityState(started_at=0.0)
-    st.enter_tool("web_search")  # first tool entry -> key milestone, seq 1
+    st.enter_tool("web_search")
     assert st.last_milestone_is_key is True
     st.last_visible_feedback_at = time.monotonic()  # very recent, within window
     assert hb._should_beat(st) is True  # key milestone is not throttled
@@ -344,9 +344,9 @@ def test_finalize_key_milestone_bypasses_throttle():
     hb = ProgressHeartbeat(_MsBus(), _MsEvent(), _ThrottleCfg())
     st = SharedActivityState(started_at=0.0)
     st.enter_tool("web_search")  # key, seq 1
-    st.exit_tool()               # non-key, seq 2
+    st.exit_tool()
     st.last_delivered_milestone = 2
-    st.set_generating()          # entering finalize -> key, seq 3
+    st.set_generating()
     assert st.last_milestone_is_key is True
     st.last_visible_feedback_at = time.monotonic()  # recent
     assert hb._should_beat(st) is True
@@ -361,12 +361,11 @@ def test_source_gate_advances_and_blocks_rebeat():
     # not rebeat; only a genuinely new milestone re-opens the gate.
     hb = ProgressHeartbeat(_MsBus(), _MsEvent(), _MsCfg())  # throttle disabled
     st = SharedActivityState(started_at=0.0)
-    st.enter_tool("web_search")  # seq 1
+    st.enter_tool("web_search")
     assert hb._should_beat(st) is True
-    # Simulate _run delivering and advancing the source gate.
     st.last_delivered_milestone = st.milestone_seq
     assert hb._should_beat(st) is False  # same milestone must not rebeat
-    st.exit_tool()  # seq 2 -> new milestone re-opens the gate
+    st.exit_tool()
     assert hb._should_beat(st) is True
 
 
@@ -380,7 +379,7 @@ async def test_run_loop_advances_source_gate_no_rebeat():
     st = SharedActivityState(started_at=time.monotonic())
     st.exit_tool()  # non-key milestone, seq 1 (avoids key-bypass re-beating)
     await hb.start(st)
-    await asyncio.sleep(0.05)  # many ticks at _TICK_SEC granularity
+    await asyncio.sleep(0.05)
     await hb.stop()
     assert len(bus.published) == 1  # exactly one beat, not one-per-tick
     assert st.last_delivered_milestone == 1

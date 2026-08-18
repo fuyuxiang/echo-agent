@@ -1,6 +1,6 @@
 """WhatsApp channel — Meta Cloud API webhook + REST.
 
-Security features:
+Features:
 - HMAC-SHA256 signature verification on incoming webhooks
 - Sender allowlist (empty = accept all)
 - Replay protection via message ID dedup
@@ -25,7 +25,6 @@ from echo_agent.channels.base import BaseChannel, SendResult
 from echo_agent.config.schema import WhatsAppChannelConfig
 
 _GRAPH_API = "https://graph.facebook.com/v21.0"
-# Replay protection: how long to remember processed message IDs
 _REPLAY_WINDOW_SECONDS = 3600
 _MAX_SEEN_IDS = 10000
 
@@ -42,7 +41,6 @@ class WhatsAppChannel(BaseChannel):
         self._group_policy = getattr(config, "group_policy", "mention")
         self._session: aiohttp.ClientSession | None = None
         self._runner: web.AppRunner | None = None
-        # Replay protection: message IDs we've already processed
         self._seen_message_ids: dict[str, float] = {}
         # Bot's own phone number for group mention detection
         self._bot_phone: str = ""
@@ -74,7 +72,6 @@ class WhatsAppChannel(BaseChannel):
         if not self.should_deliver(event):
             return SendResult(success=True, skipped=True)
         text = event.text or ""
-        # Extract media blocks from content (non-text ContentBlocks with a URL)
         media_blocks = [
             b for b in event.content
             if b.url and b.type.value != "text"
@@ -86,14 +83,12 @@ class WhatsAppChannel(BaseChannel):
 
         url = f"{_GRAPH_API}/{self._phone_id}/messages"
 
-        # Send media first if present
         for block in media_blocks:
             media_type = block.type.value if block.type.value in ("image", "audio", "video", "file") else "image"
             media_result = await self._send_media(url, event.chat_id, media_type, block.url)
             if not media_result.success:
                 return media_result
 
-        # Send text message
         if text:
             payload = {
                 "messaging_product": "whatsapp",
@@ -120,7 +115,6 @@ class WhatsAppChannel(BaseChannel):
         if not self._session:
             return SendResult(success=False, error="no session")
 
-        # Map our media types to WhatsApp types
         wa_type_map = {"image": "image", "file": "document", "audio": "audio", "video": "video"}
         wa_type = wa_type_map.get(media_type, "image")
 
@@ -280,7 +274,6 @@ class WhatsAppChannel(BaseChannel):
     def _is_replay(self, message_id: str) -> bool:
         """Check if message ID was already processed (replay protection)."""
         now = time.time()
-        # Clean old entries
         if len(self._seen_message_ids) > _MAX_SEEN_IDS:
             cutoff = now - _REPLAY_WINDOW_SECONDS
             self._seen_message_ids = {

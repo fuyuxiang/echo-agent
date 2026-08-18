@@ -373,7 +373,7 @@ class ChannelManager:
             async with self._state_lock:
                 if key in self._finalized_keys:
                     return
-        # Milestone dedup (Task 7): each turn delivers a given milestone seq at
+        # Milestone dedup: each turn delivers a given milestone seq at
         # most once. The seq is set by ProgressHeartbeat and always present on
         # real beats; _delivered_milestone keys off the turn's milestone, not a
         # msg id. This is the structural fix for weixin spam.

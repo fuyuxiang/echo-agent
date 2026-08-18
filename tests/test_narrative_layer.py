@@ -25,7 +25,7 @@ def test_snapshot_injects_episode_summaries_as_narrative(tmp_path):
 def test_snapshot_no_narrative_when_empty(tmp_path):
     s = MemoryStore(memory_dir=tmp_path / "mem", scope_policy="session")
     snap, _ = s.get_snapshot_with_ids(session_key="x", episode_summaries=None)
-    assert "## Recent Context" not in snap  # 无 summary 不注入空段
+    assert "## Recent Context" not in snap
 
 
 @pytest_asyncio.fixture
@@ -104,7 +104,6 @@ async def test_narrative_prefetch_uses_session_key_not_memory_scope(storage, tmp
         publish_response=False, trace_id="t", stream_publisher=None, intro_text="",
     )
 
-    # 叙事层必须命中真实 session_key 下的 episode summary
     assert "## Recent Context" in capture["memory_context"]
     assert "搬家到上海" in capture["memory_context"]
 

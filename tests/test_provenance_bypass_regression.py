@@ -43,7 +43,7 @@ async def test_tool_remove_cannot_delete_user_stated(tmp_path):
     tool = MemoryTool(service=MemoryService(s))  # 默认 model_inferred actor
     res = await tool.execute({"action": "remove", "target": "user", "key": "home"}, _CTX)
     assert res.success is False
-    assert s.get(e.id) is not None  # 未被删
+    assert s.get(e.id) is not None
 
 
 @pytest.mark.asyncio
@@ -98,13 +98,12 @@ def _make_api():
     from echo_agent.gateway.api.memory import MemoryAPI
 
     server = MagicMock()
-    server._require_admin_token = MagicMock(return_value=None)  # 授权通过
+    server._require_admin_token = MagicMock(return_value=None)
     api = MemoryAPI(server)
     store = MagicMock()
     # flush_pending_embeds 会被 await,须是异步桩(否则 override 放行分支 await MagicMock 抛 TypeError)
     store.flush_pending_embeds = AsyncMock()
     server._agent_loop.memory = store
-    # 写后失效同样 await,置异步桩
     server._agent_loop._invalidate_memory_caches = AsyncMock()
     # 端到端走真 MemoryService 的 admin 通道:置空 loop 上的单例槽,使 _service()
     # 就地用上面的 mock store + 异步失效/flush 构造真 service(验证 provenance 真拦)。
@@ -157,7 +156,6 @@ async def test_rest_update_tags_only_user_stated_denied_without_override(tmp_pat
 
 @pytest.mark.asyncio
 async def test_rest_update_tags_only_allowed_with_override(tmp_path):
-    # override=true 时 admin 仅改 tags 越权放行。
     api, store = _make_api()
     store.get.return_value = MemoryEntry(
         type=MemoryType.USER, key="home", content="上海", source="user_stated",

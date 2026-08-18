@@ -57,7 +57,6 @@ async def test_terminate_tree_reaps_direct_child():
     proc = await asyncio.create_subprocess_shell("sleep 30", **subprocess_kwargs())
     assert proc.returncode is None
     await terminate_tree(proc)
-    # Reaped: returncode is set, no zombie left behind.
     assert proc.returncode is not None
 
 
@@ -89,12 +88,10 @@ async def test_terminate_tree_kills_grandchildren():
     )
     line = await asyncio.wait_for(proc.stdout.readline(), timeout=5)
     grandchild_pid = int(line.strip())
-    # Grandchild is alive (signal 0 probes existence).
     os.kill(grandchild_pid, 0)
 
     await terminate_tree(proc)
 
-    # Poll until the grandchild is gone — it was signalled via the group.
     for _ in range(50):
         try:
             os.kill(grandchild_pid, 0)
@@ -122,7 +119,6 @@ async def test_terminate_tree_escalates_to_sigkill():
     await asyncio.sleep(0.5)
     await asyncio.wait_for(terminate_tree(proc, grace=1.0), timeout=10)
     assert proc.returncode is not None
-    # Killed by SIGKILL (negative returncode == -SIGKILL).
     assert proc.returncode == -signal.SIGKILL
 
 
@@ -177,7 +173,7 @@ async def test_terminate_tree_reaps_group_after_leader_already_exited():
     自己死掉为止。
     """
     proc, grandchild = await _spawn_backgrounder()
-    os.kill(grandchild, 0)  # 存活(signal 0 只探测存在性)
+    os.kill(grandchild, 0)
 
     await asyncio.wait_for(terminate_tree(proc, grace=2.0), timeout=15)
 

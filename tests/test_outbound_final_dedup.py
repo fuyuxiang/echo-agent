@@ -1,4 +1,3 @@
-# tests/test_outbound_final_dedup.py
 """One turn must not deliver two final messages to the same target.
 
 Observed as a cron weather job posting twice to WeChat at 06:30, with *different*

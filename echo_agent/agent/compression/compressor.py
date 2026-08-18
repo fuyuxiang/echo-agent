@@ -110,7 +110,6 @@ class ConversationCompressor(ContextEngine):
             if "media_refs" in msg:
                 del msg["media_refs"]
 
-        # Phase 1: Tool output pruning
         pruned_count = 0
         if self._pruner:
             prune_result = self._pruner.prune(working)
@@ -119,7 +118,6 @@ class ConversationCompressor(ContextEngine):
             if pruned_count:
                 logger.debug("Phase 1: pruned {} tool outputs", pruned_count)
 
-        # Phase 2: Boundary resolution
         boundary = self._boundary.resolve(working)
         if boundary.no_compression_needed:
             return CompressionResult(
@@ -137,7 +135,6 @@ class ConversationCompressor(ContextEngine):
             len(boundary.tail_messages),
         )
 
-        # Phase 2.5: Archive middle segment before lossy compression
         if self._storage and boundary.middle_messages:
             compression_id = uuid.uuid4().hex[:12]
             try:
@@ -162,14 +159,12 @@ class ConversationCompressor(ContextEngine):
         else:
             logger.debug("Phase 3: summary skipped or failed")
 
-        # Phase 4: Message reassembly
         assembled = self._assembler.assemble(
             head=boundary.head_messages,
             tail=boundary.tail_messages,
             summary=summary,
         )
 
-        # Phase 5: Structural validation
         validated = self._validator.validate(assembled)
 
         tokens_after = self.estimate_tokens(validated)

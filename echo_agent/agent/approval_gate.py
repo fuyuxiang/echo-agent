@@ -120,7 +120,6 @@ class ApprovalGate:
         # "telegram") from waving a worker's exec through Step 8.
         effective_channel = _NESTED_CHANNEL if nested else channel
 
-        # Step 1: Static guard (hard block dangerous patterns)
         guard = evaluate_tool_call(self._config, tool_name, arguments)
         if guard.denied:
             return ApprovalCheck(ToolResult(
@@ -129,7 +128,6 @@ class ApprovalGate:
                 metadata={"guard_pattern": guard.pattern_key},
             ))
 
-        # Step 2: Elevated rights check
         if self._requires_elevated(tool_name) and not self._elevated_allowed(effective_channel, sender_id):
             return ApprovalCheck(ToolResult(
                 success=False,

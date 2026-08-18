@@ -190,10 +190,7 @@ def load_config(
 
 
 def save_config(data: dict[str, Any], path: str | Path | None = None) -> Path:
-    """Write configuration dict to a YAML file.
-
-    Returns the path written to.
-    """
+    """Write configuration dict to a YAML file."""
     target = Path(path).expanduser() if path else default_config_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     with open(target, "w", encoding="utf-8") as f:

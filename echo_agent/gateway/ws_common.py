@@ -1,4 +1,3 @@
-# echo_agent/gateway/ws_common.py
 """Shared WebSocket handshake guards.
 
 Both WS endpoints need the same pre-upgrade cross-site gate and the same bound

@@ -131,9 +131,7 @@ class ToolResult:
 
 
 class Tool(ABC):
-    """Abstract base class for all agent tools.
-
-    Subclasses define name, description, parameters schema, required permissions,
+    """Subclasses define name, description, parameters schema, required permissions,
     and the execute method.
     """
 
@@ -151,7 +149,7 @@ class Tool(ABC):
         return True
 
     def readiness_detail(self) -> tuple[bool, str]:
-        """Returns (ready, reason). Override for tools with external dependencies."""
+        """Override for tools with external dependencies."""
         return True, "ok"
 
     @abstractmethod
@@ -159,7 +157,6 @@ class Tool(ABC):
         """Execute the tool with given parameters."""
 
     def validate_params(self, params: dict[str, Any]) -> list[str]:
-        """Validate parameters against the JSON schema."""
         errors = []
         required = self.parameters.get("required", [])
         properties = self.parameters.get("properties", {})

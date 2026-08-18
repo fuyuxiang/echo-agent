@@ -110,9 +110,7 @@ class StorageBackend(ABC):
         return []
 
     async def archive_messages(self, session_key: str, messages: list[dict[str, Any]], compression_id: str = "") -> None:
-        """Archive compressed-out messages for potential future retrieval."""
         pass
 
     async def load_archived_messages(self, session_key: str, limit: int = 100) -> list[dict[str, Any]]:
-        """Load archived messages for a session."""
         return []

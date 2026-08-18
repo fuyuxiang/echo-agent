@@ -107,13 +107,11 @@ async def test_resumable_returns_running_plan_only(tmp_path: Path):
         store = PlanRunStore(backend)
         plan = _plan()
         run_id = await store.create("sess1", "trace1", plan)
-        # Still running → resumable, returns (run_id, plan).
         resumable = await store.get_resumable("sess1")
         assert resumable is not None
         got_run_id, got_plan = resumable
         assert got_run_id == run_id
         assert got_plan.goal == "ship the feature"
-        # Mark complete → no longer resumable.
         plan.mark_step_complete(0, "ok")
         plan.mark_step_complete(1, "ok")
         await store.update(run_id, plan)

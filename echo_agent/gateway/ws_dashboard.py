@@ -1,4 +1,3 @@
-# echo_agent/gateway/ws_dashboard.py
 """Dashboard WebSocket endpoint — real-time event subscription for UI clients.
 
 Provides `/ws/dashboard` with token auth, channel subscribe/unsubscribe,

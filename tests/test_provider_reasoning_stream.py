@@ -124,8 +124,6 @@ class _Ev:
 
 
 class _AStream:
-    """模拟 anthropic SDK 的 messages.stream 上下文管理器。"""
-
     def __init__(self, events, final):
         self._events = events
         self._final = final

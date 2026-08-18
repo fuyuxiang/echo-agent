@@ -20,7 +20,6 @@ class TestDefaultConfigPath:
 
 class TestBundledSkillsDir:
     def test_returns_path_when_exists(self, tmp_path: Path):
-        # Create a fake package directory with a _bundled/skills subdir
         skills_dir = tmp_path / "_bundled" / "skills"
         skills_dir.mkdir(parents=True)
 
@@ -31,7 +30,6 @@ class TestBundledSkillsDir:
             assert result == skills_dir
 
     def test_returns_none_when_no_directory_exists(self, tmp_path: Path):
-        # Use a directory with no candidate subdirs
         fake_module_file = str(tmp_path / "runtime_paths.py")
         with patch("echo_agent.runtime_paths.__file__", fake_module_file):
             result = bundled_skills_dir()

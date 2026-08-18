@@ -31,7 +31,6 @@ def decrypt_message(encoding_aes_key: str, corp_id: str, encrypt_b64: str) -> st
     ciphertext = base64.b64decode(encrypt_b64)
     decryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
     raw = decryptor.update(ciphertext) + decryptor.finalize()
-    # strip PKCS7 padding
     if not raw:
         raise ValueError("empty plaintext")
     pad = raw[-1]

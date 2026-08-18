@@ -654,7 +654,6 @@ class AgentLoop:
         for tool in all_tools:
             self.tools.register(tool)
 
-        # Startup diagnostics: report tool readiness
         report = self.tools.get_readiness_report()
         not_ready = [(name, reason) for name, ready, reason in report if not ready]
         if not_ready:

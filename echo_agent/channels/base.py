@@ -33,7 +33,7 @@ class BaseChannel(ABC):
     name: str = "base"
     transcription_api_key: str = ""
     supports_edit: bool = False
-    supports_reactions: bool = False  # overridden by channels that implement send_reaction
+    supports_reactions: bool = False
     is_realtime: bool = True          # False for async channels (email/webhook/cron)
     # Whether this channel can render a real, selectable choice control (as the
     # CLI TUI does from a clarify_request frame). IM channels can only show text,

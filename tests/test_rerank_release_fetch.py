@@ -263,7 +263,7 @@ class TestBudgetIsSharedAcrossSources:
         monkeypatch.setattr("urllib.request.urlopen", tracking_urlopen)
 
         assert reranker._fetch_release_package() is False
-        assert opened == []  # 预算已过期,连第一个源都不该开
+        assert opened == []
         assert not (pkg_env.cache / SUBDIR).exists()
 
     def test_download_source_uses_the_deadline_it_is_given(self, pkg_env):

@@ -65,13 +65,11 @@ class TestIsApproved:
         al = ApprovalAllowlist()
         al.approve("session_1", "exec:ls", ApprovalLevel.SESSION)
         assert al.is_approved("session_1", "exec:ls") is True
-        # Different session should not see it
         assert al.is_approved("session_2", "exec:ls") is False
 
     def test_permanent_approval(self):
         al = ApprovalAllowlist()
         al.approve("session_1", "exec:git", ApprovalLevel.ALWAYS)
-        # Permanent is visible from any session
         assert al.is_approved("session_1", "exec:git") is True
         assert al.is_approved("session_2", "exec:git") is True
 
@@ -85,7 +83,6 @@ class TestApprove:
     def test_once_does_not_persist(self):
         al = ApprovalAllowlist()
         al.approve("s1", "exec:ls", ApprovalLevel.ONCE)
-        # ONCE approval is not stored
         assert al.is_approved("s1", "exec:ls") is False
 
     def test_session_approval(self):
@@ -120,12 +117,10 @@ class TestClearSession:
         al = ApprovalAllowlist()
         al.approve("s1", "exec:git", ApprovalLevel.ALWAYS)
         al.clear_session("s1")
-        # Permanent approvals remain
         assert al.is_approved("s1", "exec:git") is True
 
     def test_clear_nonexistent_session(self):
         al = ApprovalAllowlist()
-        # Should not raise
         al.clear_session("nonexistent")
 
 
@@ -141,7 +136,6 @@ class TestPersistence:
         al.approve("s1", "exec:git", ApprovalLevel.ALWAYS)
         al.approve("s1", "tool:memory", ApprovalLevel.ALWAYS)
 
-        # Verify file was written
         assert store_file.exists()
         data = json.loads(store_file.read_text())
         assert "permanent" in data
@@ -164,7 +158,6 @@ class TestPersistence:
         al = ApprovalAllowlist(store_path=store_file)
         al.approve("s1", "exec:ls", ApprovalLevel.SESSION)
 
-        # Session approvals don't trigger save
         if store_file.exists():
             data = json.loads(store_file.read_text())
             assert "exec:ls" not in data.get("permanent", [])
@@ -179,7 +172,6 @@ class TestFamilyWildcard:
     def test_wildcard_matches_any_command_in_family(self):
         al = ApprovalAllowlist()
         al.approve("s1", "exec:*", ApprovalLevel.SESSION_ALL)
-        # The prompted command AND later, differently-named ones all pass.
         assert al.is_approved("s1", "exec:pip") is True
         assert al.is_approved("s1", "exec:ffprobe") is True
         assert al.is_approved("s1", "exec:find") is True
@@ -187,14 +179,12 @@ class TestFamilyWildcard:
     def test_wildcard_does_not_cross_families(self):
         al = ApprovalAllowlist()
         al.approve("s1", "exec:*", ApprovalLevel.SESSION_ALL)
-        # code: and tool: families are untouched by an exec wildcard.
         assert al.is_approved("s1", "code:python") is False
         assert al.is_approved("s1", "tool:cronjob") is False
 
     def test_wildcard_is_session_scoped(self):
         al = ApprovalAllowlist()
         al.approve("s1", "exec:*", ApprovalLevel.SESSION_ALL)
-        # A different session does not inherit the grant.
         assert al.is_approved("s2", "exec:pip") is False
 
     def test_wildcard_not_written_to_disk(self, tmp_path):

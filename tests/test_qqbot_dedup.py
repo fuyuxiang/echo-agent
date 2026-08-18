@@ -63,7 +63,7 @@ def test_is_duplicate_does_not_evict_fresh_entries(monkeypatch) -> None:
         assert f"m{i}" in ch._seen_messages
 
 
-# ── send retry budget — P2-E ─────────────────────────────────────────────────
+# ── send retry budget ─────────────────────────────────────────────────
 
 
 class _FakeResp:
@@ -154,5 +154,4 @@ async def test_send_chunk_caps_token_refresh_loop() -> None:
 
     ok = await ch._send_chunk("chat1", "hi", "group", reply_to="")
     assert ok is False
-    # Bounded refresh attempts — we shouldn't have hit it >5 times.
     assert refresh_calls["n"] <= 5

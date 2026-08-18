@@ -21,11 +21,9 @@ async def test_expire_session_loads_on_cache_miss(tmp_path):
             storage=backend,
             expiry_hours=1,
         )
-        # 造一个 active 会话并落库,updated_at 设为 2 小时前(已过期)。
         sess = await mgr.get_or_create("telegram:c1")
         sess.updated_at = datetime.now() - timedelta(hours=2)
         await mgr.save(sess)
-        # 清空内存缓存,模拟长驻进程里该 key 早已淘汰出缓存。
         mgr._cache.clear()
 
         count = await mgr.cleanup_expired()
@@ -61,9 +59,9 @@ async def test_evict_oldest_cleans_vector_index(tmp_path):
     e2.embedding_id = "emb-2"
 
     store.add(e1)
-    store.add(e2)  # max_user=1, 触发对 e1 的淘汰
+    store.add(e2)
 
-    await asyncio.sleep(0.05)  # 让 _cleanup_deleted 调度的异步任务跑完
+    await asyncio.sleep(0.05)
     assert "emb-1" in removed
 
 
@@ -85,9 +83,9 @@ async def test_put_memory_snapshot_bounded_by_lru():
         await loop.put_memory_snapshot(f"s{i}", f"snap{i}")
 
     assert len(loop._memory_snapshots) == 3
-    assert "s0" not in loop._memory_snapshots  # 最旧被逐出
-    assert "s4" in loop._memory_snapshots      # 最新保留
-    assert len(loop._memory_snapshot_ids) == 3  # 并行 id 集 LRU 同样受限
+    assert "s0" not in loop._memory_snapshots
+    assert "s4" in loop._memory_snapshots
+    assert len(loop._memory_snapshot_ids) == 3
 
 
 def test_trace_files_pruned_to_limit(tmp_path):
@@ -102,8 +100,8 @@ def test_trace_files_pruned_to_limit(tmp_path):
     files = sorted(tmp_path.glob("trace_*.json"))
     assert len(files) == 3
     names = {f.name for f in files}
-    assert "trace_t0.json" not in names  # 最旧被裁
-    assert "trace_t4.json" in names      # 最新保留
+    assert "trace_t0.json" not in names
+    assert "trace_t4.json" in names
 
 
 def test_trace_prune_disabled_when_limit_non_positive(tmp_path):
@@ -132,7 +130,6 @@ def test_trace_prune_correct_when_mtime_identical(tmp_path):
     fixed = 1_700_000_000.0
     for p in tmp_path.glob("trace_*.json"):
         os.utime(p, (fixed, fixed))
-    # 再写两个,触发裁剪;此时磁盘上前 5 个 mtime 全相同
     for i in range(5, 7):
         tracer.start_span(trace_id=f"t{i}", span_id=f"sp{i}", name="x", kind="agent")
         tracer.flush_trace(f"t{i}")
@@ -140,7 +137,7 @@ def test_trace_prune_correct_when_mtime_identical(tmp_path):
     names = {p.name for p in tmp_path.glob("trace_*.json")}
     assert len(names) == 3
     assert names == {"trace_t4.json", "trace_t5.json", "trace_t6.json"}
-    assert "trace_t0.json" not in names  # 最旧被裁,不因 mtime 相同而误删最新
+    assert "trace_t0.json" not in names
 
 
 def test_trace_order_backfilled_after_restart(tmp_path):
@@ -161,7 +158,7 @@ def test_trace_order_backfilled_after_restart(tmp_path):
         second.flush_trace(f"t{i}")
 
     files = list(tmp_path.glob("trace_*.json"))
-    assert len(files) == 5  # 回填生效,旧文件参与裁剪,未泄漏
+    assert len(files) == 5
     names = {p.name for p in files}
-    assert "trace_t7.json" in names   # 最新保留
-    assert "trace_t0.json" not in names  # 重启前最旧被裁
+    assert "trace_t7.json" in names
+    assert "trace_t0.json" not in names

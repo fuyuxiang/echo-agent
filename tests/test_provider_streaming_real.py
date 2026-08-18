@@ -3,7 +3,6 @@ from echo_agent.models.provider import LLMProvider, StreamingUnsupported, LLMRes
 
 
 class _NoStreamProvider(LLMProvider):
-    """只实现 chat，不实现 chat_stream — 走基类默认。"""
     def __init__(self):
         super().__init__(api_key="k", api_base="b")
         self.chat_calls = 0
@@ -32,7 +31,7 @@ async def test_chat_stream_with_retry_falls_back_to_chat():
         on_delta=lambda d: deltas.append(d),
     )
     assert resp.content == "full answer"
-    assert p.chat_calls >= 1  # 确实降级到了 chat 路径
+    assert p.chat_calls >= 1
 
 
 @pytest.mark.asyncio
@@ -40,9 +39,6 @@ async def test_anthropic_chat_stream_emits_deltas_before_completion(monkeypatch)
     from echo_agent.models.providers.anthropic_provider import AnthropicProvider
     # 用一个产出两段 text delta 的假 stream，断言 on_delta 在拿到 final 前被调用
     deltas = []
-    # 在假 stream 的 get_final_message 上打桩计数，验证真流式（边收边吐）时序：
-    # 真流式下，首个 text delta 触发时 get_final_message 还没被调用；
-    # 伪流式（攒完所有 event 后再 get_final_message 统一回吐）会在 delta 之前先取 final。
     final_calls = {"count": 0}
     final_called_at_first_delta = {"value": None}
 
@@ -68,7 +64,6 @@ async def test_anthropic_chat_stream_emits_deltas_before_completion(monkeypatch)
             return _Final()
 
     async def _aiter_events():
-        # 模拟 content_block_delta 文本事件
         for t in ("hello ", "world"):
             yield type("E", (), {"type": "content_block_delta",
                                  "delta": type("D", (), {"type": "text_delta", "text": t})()})()
@@ -76,7 +71,6 @@ async def test_anthropic_chat_stream_emits_deltas_before_completion(monkeypatch)
     p._client = type("C", (), {"messages": type("M", (), {"stream": staticmethod(lambda **k: _Stream())})()})()
 
     def _on_delta(d):
-        # 首次 delta 触发时，记录此刻 get_final_message 是否已被调用
         if final_called_at_first_delta["value"] is None:
             final_called_at_first_delta["value"] = final_calls["count"] > 0
         deltas.append(d)
@@ -94,9 +88,6 @@ async def test_anthropic_chat_stream_emits_deltas_before_completion(monkeypatch)
 async def test_gemini_chat_stream_emits_deltas():
     from echo_agent.models.providers.gemini_provider import GeminiProvider
     deltas = []
-    # 在收尾 _parse_response 上打桩计数,验证真流式(边收边吐)时序:
-    # 真流式下,首个 delta 触发时 _parse_response 还没被调用;
-    # 伪流式(攒完所有 chunk 后再统一回吐)会在 delta 之前先收尾。
     parse_calls = {"count": 0}
     parse_called_at_first_delta = {"value": None}
 
@@ -120,11 +111,9 @@ async def test_gemini_chat_stream_emits_deltas():
     def _parse(resp, model_name):
         parse_calls["count"] += 1
         return __import__("echo_agent.models.provider", fromlist=["LLMResponse"]).LLMResponse(content="foobar", finish_reason="stop")
-    # 让 _parse_response 收尾产出聚合文本
     p._parse_response = _parse
 
     def _on_delta(d):
-        # 首次 delta 触发时,记录此刻 _parse_response 是否已被调用
         if parse_called_at_first_delta["value"] is None:
             parse_called_at_first_delta["value"] = parse_calls["count"] > 0
         deltas.append(d)
@@ -191,8 +180,6 @@ async def test_gemini_aggregate_feeds_real_parse_response():
 
 @pytest.mark.asyncio
 async def test_bedrock_claude_chat_stream_emits_deltas_before_completion():
-    # Bedrock Claude 路径走 messages.stream，与 Anthropic 同款边收边吐。
-    # 时序断言：首个 delta 触发时 get_final_message 尚未被调用（真流式而非攒完再吐）。
     from echo_agent.models.providers.bedrock_provider import BedrockProvider
     deltas = []
     final_calls = {"count": 0}
@@ -240,8 +227,6 @@ async def test_bedrock_claude_chat_stream_emits_deltas_before_completion():
 
 @pytest.mark.asyncio
 async def test_bedrock_converse_chat_stream_emits_deltas_during_iteration():
-    # Converse 路径走 boto3 converse_stream 同步 event 迭代，经 executor 适配。
-    # 时序断言：首个 delta 触发时仅消费了首个 event（边收边吐），而非全部 event 消费完后再统一回放。
     from echo_agent.models.providers.bedrock_provider import BedrockProvider
     deltas = []
     events_yielded = {"count": 0}
@@ -348,17 +333,14 @@ async def test_bedrock_converse_with_tools_falls_back_to_non_stream():
         messages=[{"role": "user", "content": "hi"}],
         tools=tools,
     )
-    # 带 tools 时走非流式 _chat_converse，不走流式 _chat_stream_converse
     assert converse_calls["count"] == 1
     assert stream_calls["count"] == 0
-    # tool_calls 不丢
     assert resp.tool_calls and resp.tool_calls[0].name == "do_it"
     assert resp.finish_reason == "tool_calls"
 
 
 @pytest.mark.asyncio
 async def test_bedrock_converse_without_tools_uses_real_stream():
-    # 无 tools 时仍走真流式 _chat_stream_converse。
     from echo_agent.models.providers.bedrock_provider import BedrockProvider
 
     p = BedrockProvider.__new__(BedrockProvider)
@@ -523,7 +505,7 @@ async def test_draft_policy_stream_emits_deltas_despite_tools():
         on_delta=lambda d: seen.append(d),
         draft_policy="stream",
     )
-    assert seen == ["it ", "is ", "sunny"]  # 未被攒成一整段
+    assert seen == ["it ", "is ", "sunny"]
 
 
 @pytest.mark.asyncio
@@ -544,7 +526,7 @@ async def test_draft_policy_stream_leaks_pretool_draft_by_design():
         draft_policy="stream",
     )
     assert seen == ["let me ", "check"]
-    assert out.has_tool_calls  # 调用方据此触发撤回
+    assert out.has_tool_calls
 
 
 @pytest.mark.asyncio
@@ -558,4 +540,4 @@ async def test_draft_policy_defaults_to_buffer_for_tool_bearing_calls():
         tools=[{"function": {"name": "get_weather"}}],
         on_delta=lambda d: seen.append(d),
     )
-    assert seen == ["it is sunny"]  # 整段一次释放
+    assert seen == ["it is sunny"]

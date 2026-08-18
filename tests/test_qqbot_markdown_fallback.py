@@ -49,7 +49,6 @@ class _FakeResp:
 
 
 def _install_session(ch: QQBotChannel, responses: list[_FakeResp]) -> list[dict]:
-    """Wire ch._session.post to yield queued responses; capture sent payloads."""
     sent_payloads: list[dict] = []
     it = iter(responses)
 
@@ -74,10 +73,8 @@ async def test_denied_markdown_downgrades_to_plain() -> None:
     )
     ok = await ch._send_chunk("g1", "hello **world**", "group", "")
     assert ok is True
-    # First attempt used markdown, second downgraded to plain text.
     assert payloads[0]["msg_type"] == 2
     assert payloads[1]["msg_type"] == 0
-    # Inline markers stripped in the downgraded plain-text body.
     assert payloads[1]["content"] == "hello world"
 
 
@@ -90,9 +87,7 @@ async def test_denial_is_cached_per_target() -> None:
     )
     await ch._send_chunk("g1", "x", "group", "")
     assert "g1" in ch._md_unsupported
-    # Later sends to the same target skip markdown up front.
     assert ch._markdown_allowed("g1", "group") is False
-    # A different target is still probed with markdown.
     assert ch._markdown_allowed("g2", "group") is True
 
 
@@ -103,7 +98,6 @@ async def test_cache_expiry_reprobes(monkeypatch) -> None:
     monkeypatch.setattr("echo_agent.channels.qqbot.time.time", lambda: base)
     ch._mark_markdown_unsupported("g1")
     assert ch._markdown_allowed("g1", "group") is False
-    # Past the TTL, the target is re-probed with markdown.
     monkeypatch.setattr(
         "echo_agent.channels.qqbot.time.time", lambda: base + _MD_UNSUPPORTED_TTL + 1
     )

@@ -53,8 +53,7 @@ async def test_heavy_stderr_does_not_deadlock(tmp_path):
     await asyncio.wait_for(collector, timeout=5)
     poll = await tool._poll(pid)
     assert "exited(0)" in poll.output
-    assert "[stderr]" in poll.output  # stderr_buf was actually populated
-    # Ring truncation kept stderr bounded.
+    assert "[stderr]" in poll.output
     assert len(tool._processes[pid]["stderr_buf"]) <= 100_000
     await tool.aclose()
 
@@ -64,7 +63,6 @@ async def test_timeout_kills_and_marks_process(tmp_path):
     tool = ProcessTool(str(tmp_path))
     pid = await _start(tool, "sleep 30", timeout=1)
     proc = tool._processes[pid]["process"]
-    # Watchdog must fire ~1s in, terminate/kill the child, and mark it timed_out.
     await asyncio.wait_for(proc.wait(), timeout=10)
     assert proc.returncode is not None
     assert tool._processes[pid]["timed_out"] is True
@@ -80,7 +78,6 @@ async def test_aclose_terminates_processes_and_clears_table(tmp_path):
     proc = tool._processes[pid]["process"]
     assert proc.returncode is None
     await tool.aclose()
-    # Process killed and table emptied.
     assert proc.returncode is not None
     assert tool._processes == {}
     # Idempotent: a second aclose over an empty table must not raise.
@@ -258,7 +255,6 @@ async def test_watchdog_bounds_backgrounded_work(tmp_path):
     await asyncio.wait_for(proc.wait(), timeout=5)
     assert proc.returncode == 0, "leader 应立即退出"
 
-    # watchdog 必须在 timeout 到点后回收整组并标记超时。
     await asyncio.wait_for(tool._processes[pid]["watchdog"], timeout=15)
     assert tool._processes[pid]["timed_out"] is True, "后台工作未被超时约束"
     assert not process_group_alive(proc), "超时后整组必须被回收"

@@ -192,7 +192,6 @@ async def test_empty_stop_retries_only_once() -> None:
     provider.chat_mock.return_value = LLMResponse(content=None, finish_reason="stop")
     with patch("asyncio.sleep", new_callable=AsyncMock):
         result = await provider.chat_with_retry(messages=[{"role": "user", "content": "hi"}])
-    # 1 initial + 1 retry, no more
     assert provider.chat_mock.call_count == 2
     assert not result.content
 

@@ -17,12 +17,11 @@ async def test_success_returns_vector_and_resets():
 @pytest.mark.asyncio
 async def test_trips_after_three_consecutive_failures():
     p = MagicMock()
-    p.embed = AsyncMock(return_value=None)  # 失败=返回空
+    p.embed = AsyncMock(return_value=None)
     fn = _ProviderEmbedFn(p, "m")
     for _ in range(3):
         assert await fn("x") == []
     assert fn.tripped is True
-    # 熔断后不再调底层
     p.embed.reset_mock()
     assert await fn("x") == []
     p.embed.assert_not_awaited()
