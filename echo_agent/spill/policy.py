@@ -17,9 +17,12 @@ class SpillPolicy:
     """把超长的模型可见文本换成"预览 + 取回路径"。"""
 
     # read_file 必须跳过,否则形成 read -> spill -> 再 read 死循环。
+    # read_spill 同理,而且更硬:它是取回通道本身,一旦它的输出也被落盘替换,
+    # 模型就永远在读"取回结果的取回提示",完整内容再也拿不到。它已有自己的
+    # 字符级上限,不需要这一层。
     # search_files 不跳过:它搜内容而非读回自身输出,无循环风险,而单条匹配行
     # 可能极长。
-    SKIP_TOOLS = frozenset({"read_file"})
+    SKIP_TOOLS = frozenset({"read_file", "read_spill"})
 
     def __init__(self, store: SpillStore, max_inline_chars: int, enabled: bool = True):
         self._store = store
@@ -44,6 +47,13 @@ class SpillPolicy:
 
         replacement = compose(text, str(path), self._cap)
         if replacement is None:
+            # compose 拒绝替换(cap 太小,连一句 notice 都放不下)时文件已经写完。
+            # 不删就留下一个没有任何引用者的孤儿:模型从未拿到它的路径,清扫器
+            # 要等到保留期才回收它。删除失败无所谓,清扫器兜底。
+            try:
+                path.unlink()
+            except OSError as e:
+                logger.debug("spill 孤儿产物清理失败 {}: {}", path, e)
             return result
 
         setattr(result, field, replacement)

@@ -23,6 +23,7 @@ TOOL_CAPABILITIES: dict[str, frozenset[str]] = {
     "patch": frozenset({"fs.read", "fs.write"}),
     "process": frozenset({"process.exec", "process.manage"}),
     "read_file": frozenset({"fs.read"}),
+    "read_spill": frozenset({"fs.read"}),
     "search_files": frozenset({"fs.read"}),
     "session_search": frozenset({"session.read"}),
     "skill_install": frozenset({"skill.install", "network.outbound", "fs.write"}),

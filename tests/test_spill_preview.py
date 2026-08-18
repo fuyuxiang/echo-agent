@@ -38,11 +38,22 @@ def test_never_grows(cap):
         assert len(out) < len(text)
 
 
-def test_mentions_locator_and_retrieval_tools():
+def test_mentions_locator_and_retrieval_tool():
     out = compose("z" * 50000, _LOCATOR, 6000)
     assert _LOCATOR in out
-    assert "read_file" in out
-    assert "search_files" in out
+    # 必须指向 read_spill:它是唯一按会话授权、且按字符寻址的取回通道。
+    assert "read_spill" in out
+
+
+def test_does_not_point_at_generic_file_tools():
+    """notice 不得再引导 read_file/search_files。
+
+    它们按路径授权(会话 A 复述路径给 B 即越权)、按行分页(单行长输出的尾部
+    读不到),且现在被 spill 闸门直接拒绝——继续引导等于把模型送进一堵墙。
+    """
+    out = compose("z" * 50000, _LOCATOR, 6000)
+    assert "read_file" not in out
+    assert "search_files" not in out
 
 
 def test_tiny_cap_returns_none_rather_than_oversized():

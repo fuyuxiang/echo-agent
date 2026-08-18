@@ -23,6 +23,10 @@ MINIMAL_TOOLS = frozenset({
     "message",
     "notify",
     "read_file",
+    # spill 对所有 profile 生效,取回工具就必须同样对所有 profile 可见。放在
+    # MINIMAL 里而不是 CODING:minimal/messaging 恰是 exec 关掉的部署,那里
+    # 没有 shell 兜底,取回工具被策略过滤掉就等于产物彻底不可达。
+    "read_spill",
     "search_files",
     "session_search",
     "skill_view",

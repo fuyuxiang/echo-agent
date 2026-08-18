@@ -54,13 +54,17 @@ def discover_tools(
             exec_policy=config.tools.exec,
             network_policy=config.execution.network_policy,
         ))
+    # spill 闸门传给每个"按路径授权"的读取入口。少传一个就留一个越权取回面,
+    # 故这里集中传一次,不让各调用点自己决定。
     spill_root = workspace / config.storage.spill_dir
     tools.append(ReadFileTool(ws, restrict, spill_root=spill_root))
     tools.append(WriteFileTool(ws, restrict, safe_write_root))
     tools.append(EditFileTool(ws, restrict, safe_write_root))
-    tools.append(ListDirTool(ws, restrict))
+    tools.append(ListDirTool(ws, restrict, spill_root=spill_root))
     from echo_agent.agent.tools.document import ReadDocumentTool
-    tools.append(ReadDocumentTool(ws, restrict))
+    tools.append(ReadDocumentTool(ws, restrict, spill_root=spill_root))
+    from echo_agent.agent.tools.read_spill import ReadSpillTool
+    tools.append(ReadSpillTool(spill_root=spill_root))
     if config.tools.web.enabled and config.execution.network_policy != "deny":
         tools.append(WebFetchTool(proxy=config.tools.web.proxy, allow_private=config.tools.web.allow_private_addresses))
         if config.tools.web.search_api_key or config.tools.web.search_provider == "searxng":
@@ -79,7 +83,8 @@ def discover_tools(
     tools.append(MessageTool(publish_fn=bus.publish_outbound))
 
     from echo_agent.agent.tools.send_file import SendFileTool
-    tools.append(SendFileTool(ws, restrict, publish_fn=bus.publish_outbound))
+    tools.append(SendFileTool(ws, restrict, publish_fn=bus.publish_outbound,
+                              spill_root=spill_root))
 
     from echo_agent.agent.tools.search import SearchFilesTool
     tools.append(SearchFilesTool(ws, restrict, spill_root=spill_root))

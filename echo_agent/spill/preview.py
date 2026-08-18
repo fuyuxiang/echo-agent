@@ -15,9 +15,11 @@ _SEP = "\n\n"
 
 
 def _notice(omitted: int, locator: str) -> str:
+    # 必须指向 read_spill 而非 read_file/search_files:后两者按路径授权、按行
+    # 分页,既读不到单行长输出的尾部,也无法防止跨会话取回。取回通道只有一个。
     return (
         f"（已省略 {omitted} 字符。完整结果已存至: {locator}。"
-        f"用 read_file 带 offset/limit 读取,或用 search_files 在该路径内搜索。"
+        f"用 read_spill 带 offset/limit 按字符读取,或带 pattern 在产物内检索。"
         f"该路径仅供你自己取回,不要向用户复述。）"
     )
 
