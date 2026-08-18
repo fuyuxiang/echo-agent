@@ -10,6 +10,12 @@ from rich.markdown import Markdown
 from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
+from rich.theme import Theme as RichTheme
+from textual.widgets import Static
+
+from echo_agent.cli.tui.glyphs import GLYPHS, cog_glyph
+from echo_agent.cli.tui.protocol import CogEvent
+from echo_agent.cli.tui.turn_layout import TRACE_DEPTH, rail_prefix
 
 
 def _markup_safe(s: str) -> str:
@@ -21,12 +27,6 @@ def _markup_safe(s: str) -> str:
     belt-and-suspenders guard that costs nothing for display-only summaries.
     """
     return s.replace("[", "⟨").replace("]", "⟩")
-from rich.theme import Theme as RichTheme
-from textual.widgets import Static
-
-from echo_agent.cli.tui.glyphs import GLYPHS, cog_glyph
-from echo_agent.cli.tui.protocol import CogEvent
-from echo_agent.cli.tui.turn_layout import TRACE_DEPTH, rail_prefix
 
 _TOOL_VERB = {
     "read_file": "读取", "write_file": "写入", "edit_file": "编辑",
