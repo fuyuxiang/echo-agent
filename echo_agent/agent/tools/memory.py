@@ -6,6 +6,7 @@ project, and environment across sessions.
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
@@ -33,6 +34,8 @@ class MemoryTool(Tool):
                          "list_contradictions", "resolve_contradiction"],
                 "description": "The operation to perform",
             },
+            # NB: target 的 enum/description 在门禁关闭时由 parameters_for_channel
+            # 收窄为仅 "user"——此处的静态声明是门禁开放态。
             "target": {
                 "type": "string",
                 "enum": ["user", "environment"],
@@ -103,6 +106,38 @@ class MemoryTool(Tool):
         self._service = service
         self._store = service.store
         self._contradiction_detector = contradiction_detector
+
+    @property
+    def _env_allowed(self) -> bool:
+        """ENV 门禁是否开放。service 为旧式桩(无此属性)时保守按开放处理,
+        以免裁剪掉桩本就允许的能力——真正的拒绝仍由 service 兜底。"""
+        return bool(getattr(self._service, "allow_env_writes", True))
+
+    def parameters_for_channel(self, channel: str | None) -> dict[str, Any]:
+        """ENV 门禁关闭时把 target 收窄为仅 "user"。
+
+        模型读的是整个函数 schema:把 "environment" 留在 enum 里等于宣称一种
+        service 必拒的能力,模型据此写入、被拒、再把英文错误翻译给用户——这条
+        路径正是「环境记忆写入被禁用了」这类噪音的来源。门禁关闭时直接不暴露。
+
+        注意这里只收窄"给模型看的"schema。registry 的 validate_params 读类级
+        self.parameters(仍含 environment),故忽略 enum 硬发 environment 的调用
+        不会被拦成 error_kind="validation",而是走到 service 门禁,拿到 _map_reject
+        里带 target="user" 重试指引的文案——这比一句参数非法更能让模型自行纠正。
+        """
+        base = super().parameters_for_channel(channel)
+        if self._env_allowed:
+            return base
+        params = copy.deepcopy(base)
+        target = params.get("properties", {}).get("target")
+        if isinstance(target, dict):
+            target["enum"] = ["user"]
+            target["description"] = (
+                "Memory type. Only 'user' is available: this deployment disables "
+                "ENVIRONMENT memory for the model, so save project facts, "
+                "conventions and tool configs as 'user' memories too."
+            )
+        return params
 
     def _resolve_entry(
         self,
@@ -259,10 +294,14 @@ class MemoryTool(Tool):
         """WriteResult 拒绝原因 → ToolResult 错误文案。"""
         reason = res.reason
         if reason == "rejected_env":
+            # 可操作的下一步而非死路:schema 已在门禁关闭时收窄 target,能走到这里
+            # 说明模型仍发了 environment(旧 schema/自造参数)。明确指向 target="user"
+            # 重试,避免模型把这当成"记忆功能故障"再转述给用户。
             return ToolResult(
                 success=False,
-                error="writing ENVIRONMENT or global-tagged memory is disabled "
-                      "(set memory.allow_model_environment_writes to enable)",
+                error="ENVIRONMENT and global-tagged memory are not writable here. "
+                      "Retry with target=\"user\" (and no 'global' tag) to save this "
+                      "fact in your own scope — do not report this as a failure to the user.",
             )
         if reason == "rejected_provenance":
             verb = {"replace": "overwrite", "remove": "remove"}.get(op, op)

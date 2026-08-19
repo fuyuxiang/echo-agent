@@ -332,13 +332,17 @@ class ContextStage:
                 self._memory,
                 snapshot=snapshot,
                 working_memory=working_ctx,
+                allow_env_writes=self._config.memory.allow_model_environment_writes,
             )
         elif ephemeral:
             # eval/test：不读任何长期/快照记忆,只保留本轮 working memory。
             memory_ctx = working_ctx
         else:
             memory_ctx = build_memory_context(
-                self._memory, session_key=event.memory_scope, working_memory=working_ctx
+                self._memory,
+                session_key=event.memory_scope,
+                working_memory=working_ctx,
+                allow_env_writes=self._config.memory.allow_model_environment_writes,
             )
 
         skills_ctx = build_skills_context(self._skill_store)

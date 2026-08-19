@@ -332,12 +332,26 @@ class SemanticManager:
         当前 memory_scope(不再默认 ENVIRONMENT 全局可见),写 ENV 需模型显式声明且
         受 allow_model_environment_writes 门禁约束。source="consolidated"
         优先级(2)高于 model_inferred(1) 是有意设计(睡眠蒸馏比单轮推断可信),保留。
+
+        门禁关闭时 ENVIRONMENT fact 仍交由 service 拒绝(不在此降级为 USER):
+        这批 fact 来自不可信的 LLM 对话,降级等于把它们塞进用户 scope 的召回,
+        绕过了管理员关闭开关的本意(见 test_memory_promote_scope)。真正的修复在
+        声明层——_build_extract_facts_tool 在门禁关闭时不暴露 environment,
+        模型不再被引导产出这类 fact。type 无法识别的 fact 跳过(不再抛 ValueError
+        中断整批提升)。
         """
         from echo_agent.memory.service import ActorContext
 
         promoted: list[MemoryEntry] = []
         for fact in extracted_facts:
-            fact_type = MemoryType(fact.get("type", "user"))
+            try:
+                fact_type = MemoryType(fact.get("type", "user"))
+            except ValueError:
+                logger.warning(
+                    "Skipping fact with unknown type {!r} from episode {}",
+                    fact.get("type"), episode.id,
+                )
+                continue
             # USER 落当前 scope(memory_scope 缺省回退 episode.session_key);
             # ENV 保持全局可见(memory_scope 空 → source_session 空)。
             scope = (memory_scope or episode.session_key) if fact_type == MemoryType.USER else ""

@@ -10,35 +10,53 @@ from loguru import logger
 from echo_agent.memory.render import render_memory_md
 from echo_agent.memory.store import MemoryStore
 
-_EXTRACT_FACTS_TOOL = [
-    {
-        "type": "function",
-        "function": {
-            "name": "save_facts",
-            "description": "Record durable facts distilled from an episode summary.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "facts": {
-                        "type": "array",
-                        "description": "Durable facts; empty when nothing is worth keeping.",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "type": {"type": "string", "enum": ["user", "environment"]},
-                                "key": {"type": "string"},
-                                "content": {"type": "string"},
-                                "importance": {"type": "number"},
+
+def _build_extract_facts_tool(allow_env_writes: bool) -> list[dict[str, Any]]:
+    """事实提取函数声明。consolidation 是 ENV 受限 actor,门禁关闭时
+    type="environment" 的 fact 必被 MemoryService 拒(promote 走 add 的同一道门禁),
+    故门禁关闭时不把 environment 摆进 enum,避免每轮睡眠整合白丢若干条事实。"""
+    types = ["user", "environment"] if allow_env_writes else ["user"]
+    type_desc = (
+        "Fact scope" if allow_env_writes
+        else "Fact scope. Only 'user' is accepted in this deployment."
+    )
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "save_facts",
+                "description": "Record durable facts distilled from an episode summary.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "facts": {
+                            "type": "array",
+                            "description": "Durable facts; empty when nothing is worth keeping.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "type": {
+                                        "type": "string",
+                                        "enum": types,
+                                        "description": type_desc,
+                                    },
+                                    "key": {"type": "string"},
+                                    "content": {"type": "string"},
+                                    "importance": {"type": "number"},
+                                },
+                                "required": ["key", "content"],
                             },
-                            "required": ["key", "content"],
                         },
                     },
+                    "required": ["facts"],
                 },
-                "required": ["facts"],
             },
-        },
-    }
-]
+        }
+    ]
+
+
+# 向后兼容:门禁开放态的完整声明(旧 import 仍可用)。
+_EXTRACT_FACTS_TOOL = _build_extract_facts_tool(allow_env_writes=True)
 
 
 class MemoryConsolidator:
@@ -71,6 +89,14 @@ class MemoryConsolidator:
         self._embed_fn = None
         self._auto_resolve_contradictions = False
         self._reflection_engine = None
+
+    @property
+    def _extract_facts_tool(self) -> list[dict[str, Any]]:
+        """事实提取声明,按 semantic manager 背后 service 的 ENV 门禁裁剪。
+        manager/service 未装配或为旧式桩时保守按开放处理(拒绝仍由 service 兜底)。"""
+        service = getattr(self._semantic_manager, "_service", None)
+        allow = bool(getattr(service, "allow_env_writes", True))
+        return _build_extract_facts_tool(allow)
 
     def set_episodic_manager(self, mgr):
         self._episodic_manager = mgr
@@ -159,7 +185,7 @@ class MemoryConsolidator:
                                 {"role": "system", "content": "Extract durable facts from this episode summary and call save_facts. Return an empty list when nothing is worth keeping."},
                                 {"role": "user", "content": episode.summary},
                             ],
-                            tools=_EXTRACT_FACTS_TOOL,
+                            tools=self._extract_facts_tool,
                             tool_choice={"type": "function", "function": {"name": "save_facts"}},
                         )
                         facts = self._parse_extracted_facts(response)

@@ -32,11 +32,23 @@ if the approach involved trial-and-error, domain knowledge, or steps that would 
 - Skills should capture the procedure, pitfalls, and verification steps — not just the final answer.
 - Use YAML frontmatter with at least 'name' and 'description' fields."""
 
-_MEMORY_GUIDANCE = """\
-You have persistent memory across sessions. Use the `memory` tool to manage it.
+_MEMORY_GUIDANCE_HEAD = """\
+You have persistent memory across sessions. Use the `memory` tool to manage it."""
 
+# ENV 门禁开放态的分类引导。关闭态见 _MEMORY_GUIDANCE_TARGETS_USER_ONLY——两者
+# 必须与 memory 工具 schema 的 target enum 保持一致,否则提示词会指示模型去做
+# 一件 MemoryService 必拒的事(每次白白多一轮失败调用 + 用户可见的告警噪音)。
+_MEMORY_GUIDANCE_TARGETS_BOTH = """\
 - Save user preferences, habits, and communication style as "user" memories.
-- Save project facts, conventions, tool configs, and domain knowledge as "environment" memories.
+- Save project facts, conventions, tool configs, and domain knowledge as "environment" memories."""
+
+_MEMORY_GUIDANCE_TARGETS_USER_ONLY = """\
+- Save memories with target="user" only. This deployment does not let you write "environment"
+  memory or 'global'-tagged entries, so record project facts, conventions, tool configs, and
+  domain knowledge as "user" memories as well — do not try "environment" and do not tell the
+  user that saving failed."""
+
+_MEMORY_GUIDANCE_TAIL = """\
 - Treat user memories as session/user scoped. Do not use a name or preference learned in one chat as a default
   for a different chat unless it appears in the current session memory.
 - Use `search` to check if relevant memories exist before starting a task.
@@ -56,6 +68,23 @@ CRITICAL: When the user explicitly asks you to "remember", "记住", "别忘了"
 similar instruction to retain information, you MUST immediately call the `memory` tool with action="add" \
 to persist it. A text-only reply like "好的，我记住了" without actually calling the memory tool is \
 NOT acceptable — the information will be lost in the next session. Always persist first, then confirm."""
+
+
+def build_memory_guidance(allow_env_writes: bool = True) -> str:
+    """记忆工具引导语,按 ENV 门禁状态选择 target 分类段。
+
+    allow_env_writes 缺省 True 是为兼容未透传该值的旧调用方(引导语退回原文案),
+    生产路径由 context_stage 依 config.memory.allow_model_environment_writes 显式传入。
+    """
+    targets = (
+        _MEMORY_GUIDANCE_TARGETS_BOTH if allow_env_writes
+        else _MEMORY_GUIDANCE_TARGETS_USER_ONLY
+    )
+    return f"{_MEMORY_GUIDANCE_HEAD}\n\n{targets}\n{_MEMORY_GUIDANCE_TAIL}"
+
+
+# 向后兼容:门禁开放态的完整引导语(旧 import 与断言仍可用)。
+_MEMORY_GUIDANCE = build_memory_guidance(allow_env_writes=True)
 
 _FENCE_TAG_RE = re.compile(r"</?\s*memory-context\s*>", re.IGNORECASE)
 _INTERNAL_CONTEXT_RE = re.compile(
@@ -96,9 +125,19 @@ def build_recalled_memory_block(raw_context: str) -> str:
     )
 
 
-def build_memory_context(memory_store: Any, snapshot: str = "", session_key: str = "", working_memory: str = "") -> str:
-    """Build the memory section for the system prompt."""
-    parts: list[str] = [_MEMORY_GUIDANCE]
+def build_memory_context(
+    memory_store: Any,
+    snapshot: str = "",
+    session_key: str = "",
+    working_memory: str = "",
+    allow_env_writes: bool = True,
+) -> str:
+    """Build the memory section for the system prompt.
+
+    allow_env_writes 透传给引导语,使提示词描述的可写目标与 memory 工具 schema、
+    MemoryService 的 ENV 门禁三者一致。
+    """
+    parts: list[str] = [build_memory_guidance(allow_env_writes)]
     if working_memory:
         parts.append(f"## Active Context\n\n{_sanitize_memory_content(working_memory)}")
     if snapshot:

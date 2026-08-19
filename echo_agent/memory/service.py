@@ -97,6 +97,16 @@ class MemoryService:
         """暴露底层 store 供入口做读操作(find/search/list);写操作仍须走本类。"""
         return self._store
 
+    @property
+    def allow_env_writes(self) -> bool:
+        """ENV/global 写是否开放给受限 actor。
+
+        供上游入口(工具 schema、reviewer/consolidator 的提示词与函数声明)据此
+        裁剪自己暴露给模型的能力——门禁关闭时就不该把 environment 摆上菜单,
+        否则模型按提示词写 ENV、每次都被本类拒一轮,徒增失败调用与用户可见告警。
+        """
+        return self._allow_env_writes
+
     def _service_write(self):
         """进入 store 的 service_write 上下文(若 store 支持),使本类经过的 store
         写不触发 _service_only 软告警。store 无此能力(旧实现/测试桩)时退回 no-op。"""

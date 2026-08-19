@@ -14,14 +14,28 @@ from echo_agent.memory.service import ActorContext, MemoryService
 from echo_agent.memory.types import MemoryEntry, MemoryType
 from echo_agent.models.provider import LLMProvider
 
-_REVIEW_PROMPT = """\
+_REVIEW_PROMPT_HEAD = """\
 Review the conversation above and decide if any information should be saved to memory.
 
-Focus on:
+Focus on:"""
+
+# reviewer 是 ENV 受限 actor(_ENV_RESTRICTED_ACTORS),门禁关闭时写 environment
+# 必被 service 拒。故 focus 段与 _TOOL_DEFS 的 target enum 一并按门禁裁剪,
+# 否则每轮 review 都会产出注定失败的 environment 写。
+_REVIEW_FOCUS_BOTH = """\
 - User preferences, habits, or communication style (save as "user" type)
 - Project facts, conventions, tool configurations, or domain knowledge (save as "environment" type)
+- Lessons learned from debugging or problem-solving"""
+
+_REVIEW_FOCUS_USER_ONLY = """\
+- User preferences, habits, or communication style
+- Project facts, conventions, tool configurations, or domain knowledge
 - Lessons learned from debugging or problem-solving
 
+All of the above must be saved with target="user" — this deployment does not allow
+writing "environment" memory. Do not attempt target="environment"."""
+
+_REVIEW_PROMPT_TAIL = """\
 Guidelines:
 - Only save information that would be useful in future conversations.
 - Do NOT save trivial or one-off details.
@@ -34,27 +48,48 @@ If nothing is worth saving, respond with "No memory changes needed." and stop.""
 
 _MAX_REVIEW_ITERATIONS = 6
 
-_TOOL_DEFS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "memory_manage",
-            "description": "Add, replace, or remove a persistent memory entry.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "action": {"type": "string", "enum": ["add", "replace", "remove"]},
-                    "target": {"type": "string", "enum": ["user", "environment"]},
-                    "key": {"type": "string", "description": "Short label for the entry"},
-                    "content": {"type": "string", "description": "Memory content"},
-                    "old_text": {"type": "string", "description": "Substring to match for replace/remove"},
-                    "importance": {"type": "number", "description": "0.0-1.0 importance score"},
+
+def _build_review_prompt(allow_env_writes: bool) -> str:
+    focus = _REVIEW_FOCUS_BOTH if allow_env_writes else _REVIEW_FOCUS_USER_ONLY
+    return f"{_REVIEW_PROMPT_HEAD}\n{focus}\n\n{_REVIEW_PROMPT_TAIL}"
+
+
+def _build_tool_defs(allow_env_writes: bool) -> list[dict[str, Any]]:
+    targets = ["user", "environment"] if allow_env_writes else ["user"]
+    target_desc = (
+        "Memory type" if allow_env_writes
+        else "Memory type. Only 'user' is writable in this deployment."
+    )
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "memory_manage",
+                "description": "Add, replace, or remove a persistent memory entry.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["add", "replace", "remove"]},
+                        "target": {
+                            "type": "string",
+                            "enum": targets,
+                            "description": target_desc,
+                        },
+                        "key": {"type": "string", "description": "Short label for the entry"},
+                        "content": {"type": "string", "description": "Memory content"},
+                        "old_text": {"type": "string", "description": "Substring to match for replace/remove"},
+                        "importance": {"type": "number", "description": "0.0-1.0 importance score"},
+                    },
+                    "required": ["action", "target"],
                 },
-                "required": ["action", "target"],
             },
-        },
-    }
-]
+        }
+    ]
+
+
+# 向后兼容:门禁开放态的完整提示词/函数声明(旧 import 仍可用)。
+_REVIEW_PROMPT = _build_review_prompt(allow_env_writes=True)
+_TOOL_DEFS = _build_tool_defs(allow_env_writes=True)
 
 
 class MemoryReviewer:
@@ -68,6 +103,11 @@ class MemoryReviewer:
         self._store = service.store
         self._model = model
         self._session_key = session_key
+        # 提示词与函数声明按 service 的 ENV 门禁裁剪,避免产出注定被拒的
+        # environment 写。旧式 service 桩无该属性时保守按开放处理。
+        self._allow_env_writes = bool(getattr(service, "allow_env_writes", True))
+        self._review_prompt = _build_review_prompt(self._allow_env_writes)
+        self._tool_defs = _build_tool_defs(self._allow_env_writes)
 
     def _resolve_entry(self, key: str, old_text: str, mem_type: MemoryType) -> tuple[MemoryEntry | None, str | None]:
         if key:
@@ -94,13 +134,13 @@ class MemoryReviewer:
         actions: list[str] = []
 
         messages = list(conversation)
-        messages.append({"role": "user", "content": _REVIEW_PROMPT})
+        messages.append({"role": "user", "content": self._review_prompt})
 
         for _ in range(_MAX_REVIEW_ITERATIONS):
             try:
                 response = await self._provider.chat_with_retry(
                     messages=messages,
-                    tools=_TOOL_DEFS,
+                    tools=self._tool_defs,
                     model=self._model or None,
                 )
             except Exception as e:
@@ -217,8 +257,8 @@ class MemoryReviewer:
             return f"Kept existing (higher provenance) [{target}] {key}"
         if reason == "rejected_env":
             return (
-                f"Error: writing ENVIRONMENT or global-tagged memory is disabled "
-                f"[{target}] {key}"
+                f"Error: ENVIRONMENT and global-tagged memory are not writable here — "
+                f"retry with target=\"user\" [{target}] {key}"
             )
         if reason == "rejected_scope":
             return f"Error: cannot write memory without a resolved scope [{target}] {key}"
