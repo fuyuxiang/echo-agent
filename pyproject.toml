@@ -48,6 +48,8 @@ Homepage = "https://github.com/fuyuxiang/echo-agent"
 Repository = "https://github.com/fuyuxiang/echo-agent"
 Issues = "https://github.com/fuyuxiang/echo-agent/issues"
 Discussions = "https://github.com/fuyuxiang/echo-agent/discussions"
+Documentation = "https://fuyuxiang.github.io/echo-agent"
+Changelog = "https://github.com/fuyuxiang/echo-agent/blob/master/CHANGELOG.md"
 
 [project.optional-dependencies]
 openai = ["openai>=1.30", "httpx[socks]>=0.23"]
@@ -96,6 +98,7 @@ all = [
 # decides for us. The lint job installs this same extra, so this line is the
 # single source of truth for the ruff version everywhere.
 dev = ["ruff==0.15.12", "pytest>=8.0", "pytest-asyncio>=0.23", "pytest-cov>=5.0"]
+docs = ["mkdocs-material>=9.5", "mkdocs-static-i18n>=1.2"]
 skills = [
     "duckduckgo_search>=7.0",
     "trafilatura>=2.0",

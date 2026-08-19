@@ -1,0 +1,67 @@
+name: Docs
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "echo_agent/config/schema.py"
+      - "echo_agent/config/docgen.py"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "echo_agent/config/schema.py"
+      - "echo_agent/config/docgen.py"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install docs dependencies
+        run: pip install -e ".[docs]"
+
+      - name: Generate config reference
+        run: python -m echo_agent.config.docgen --output-dir docs/reference --lang both
+
+      - name: Build docs
+        run: mkdocs build --strict
+
+      - name: Check internal links
+        run: |
+          pip install linkchecker
+          linkchecker site/ --check-extern --no-status --ignore-url 'https://github.com.*'
+
+      - name: Upload artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

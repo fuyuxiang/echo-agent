@@ -1,0 +1,86 @@
+name: Bug 报告 / Bug Report
+description: 报告一个问题 / Report a problem
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢报告问题！请尽量提供完整信息以帮助快速定位。
+        Thanks for reporting! Please provide as much detail as possible.
+
+  - type: input
+    id: version
+    attributes:
+      label: Echo Agent 版本 / Version
+      description: "运行 `echo-agent --version`"
+      placeholder: "0.3.7"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统 / Operating System
+      options:
+        - Linux
+        - macOS
+        - Windows (WSL2)
+        - Windows (native)
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python 版本 / Python Version
+      placeholder: "3.11.9"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述 / Description
+      description: 清晰描述遇到的问题
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤 / Steps to Reproduce
+      description: 能稳定复现的最小步骤
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为 / Expected Behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为 / Actual Behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志或错误信息 / Logs or Error Messages
+      description: 请移除其中的 API Key 和个人信息
+      render: text
+
+  - type: textarea
+    id: config
+    attributes:
+      label: 相关配置 / Relevant Configuration
+      description: 脱敏后的 YAML 配置片段
+      render: yaml

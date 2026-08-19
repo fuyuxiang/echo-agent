@@ -43,9 +43,15 @@ docs/superpowers/
 docs/*-design-*.md
 docs/*-plan-*.md
 docs/*roadmap*.md
-docs/config-reference*.md
-docs/config-reference*.yaml
 docs/*-backlog.md
+
+# Documentation build output
+site/
+
+# Auto-generated reference docs (rebuilt by CI)
+docs/reference/configuration.md
+docs/reference/configuration.en.md
+docs/assets/generated/
 
 # Local runtime state and generated workspace data
 /runtime/cron/jobs.json

@@ -1,0 +1,257 @@
+site_name: Echo Agent
+site_url: https://fuyuxiang.github.io/echo-agent
+site_description: 自托管、长期运行、带记忆和技能演化能力的 AI Agent Runtime
+site_author: Echo Agent contributors
+repo_url: https://github.com/fuyuxiang/echo-agent
+repo_name: fuyuxiang/echo-agent
+copyright: Copyright &copy; 2024-2026 Echo Agent contributors
+
+theme:
+  name: material
+  language: zh
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.indexes
+    - search.highlight
+    - search.suggest
+    - content.code.copy
+    - content.tabs.link
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: 切换到深色模式
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: 切换到浅色模式
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search:
+      lang:
+        - zh
+        - en
+  - i18n:
+      default_language: zh
+      languages:
+        zh:
+          name: 中文
+          build: true
+        en:
+          name: English
+          build: true
+          site_name: Echo Agent
+          nav_translations:
+            首页: Home
+            开始使用: Getting Started
+            安装: Installation
+            快速开始: Quickstart
+            升级与卸载: Upgrade & Uninstall
+            使用指南: Guides
+            模型接入: Models
+            Provider 总览: Provider Overview
+            本地模型: Local Models
+            路由与 Fallback: Routing & Fallback
+            工具与权限: Tools & Permissions
+            执行后端: Execution Backends
+            浏览器与媒体: Browser & Media
+            记忆管理: Memory Management
+            知识库: Knowledge Base
+            会话: Sessions
+            任务与规划: Tasks & Planning
+            定时任务: Scheduled Jobs
+            Dashboard: Dashboard
+            成本控制: Cost Control
+            核心概念: Concepts
+            架构总览: Architecture
+            Agent 循环: Agent Loop
+            事件与投递: Events & Delivery
+            工作区、会话与身份: Workspace, Session & Identity
+            记忆系统: Memory System
+            上下文压缩与 Spill: Context Compression & Spill
+            Skill、Tool 与 Plugin: Skills, Tools & Plugins
+            安全模型: Security Model
+            进化与评估: Evolution & Evaluation
+            多 Agent: Multi-Agent
+            集成与扩展: Integrations
+            通道总览: Channels Overview
+            Gateway: Gateway
+            认证: Authentication
+            反向代理: Reverse Proxy
+            使用 Skill: Using Skills
+            Skill 目录: Skill Catalog
+            使用 Plugin: Using Plugins
+            开发 Plugin: Developing Plugins
+            部署与运维: Operations
+            运行模式: Runtime Modes
+            后台服务: Background Service
+            部署: Deployment
+            安全加固: Security Hardening
+            备份与恢复: Backup & Restore
+            升级与迁移: Upgrade & Migrations
+            可观测性: Observability
+            性能: Performance
+            故障排查: Troubleshooting
+            参考手册: Reference
+            CLI 参考: CLI Reference
+            TUI 命令: TUI Commands
+            配置参考: Configuration Reference
+            配置指南: Configuration Guide
+            环境变量: Environment Variables
+            工具矩阵: Tools Matrix
+            安全 Profile 矩阵: Security Profile Matrix
+            Gateway API: Gateway API
+            WebSocket 协议: WebSocket Protocol
+            文件布局: Filesystem Layout
+            兼容性: Compatibility
+            术语表: Glossary
+            参与开发: Development
+            开发环境: Dev Setup
+            仓库地图: Repository Map
+            新增 Provider: Add a Provider
+            新增 Tool: Add a Tool
+            新增 Channel: Add a Channel
+            Skill 开发: Skill Authoring
+            Plugin API: Plugin API
+            Dashboard 开发: Dashboard Development
+            测试与评估: Testing & Evaluation
+            文档贡献: Documentation
+            发布流程: Release Process
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.mark
+  - pymdownx.keys
+  - tables
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+nav:
+  - 首页: index.md
+  - 开始使用:
+      - getting-started/index.md
+      - 安装: getting-started/installation.md
+      - 快速开始: getting-started/quickstart.md
+      - 升级与卸载: getting-started/upgrade-uninstall.md
+  - 使用指南:
+      - guides/index.md
+      - 模型接入:
+          - guides/models/index.md
+          - Provider 总览: guides/models/providers.md
+          - 本地模型: guides/models/local-models.md
+          - 路由与 Fallback: guides/models/routing-fallback.md
+      - 工具与权限: guides/tools-permissions.md
+      - 执行后端: guides/execution-backends.md
+      - 浏览器与媒体: guides/browser-media.md
+      - 记忆管理: guides/memory-management.md
+      - 知识库: guides/knowledge-base.md
+      - 会话: guides/sessions.md
+      - 任务与规划: guides/tasks-planning.md
+      - 定时任务: guides/scheduled-jobs.md
+      - Dashboard: guides/dashboard.md
+      - 成本控制: guides/cost-control.md
+  - 核心概念:
+      - concepts/index.md
+      - 架构总览: concepts/architecture.md
+      - Agent 循环: concepts/agent-loop.md
+      - 事件与投递: concepts/events-delivery.md
+      - 工作区、会话与身份: concepts/workspace-session-identity.md
+      - 记忆系统: concepts/memory-system.md
+      - 上下文压缩与 Spill: concepts/context-compression-spill.md
+      - Skill、Tool 与 Plugin: concepts/skills-tools-plugins.md
+      - 安全模型: concepts/security-model.md
+      - 进化与评估: concepts/evolution-evaluation.md
+      - 多 Agent: concepts/multi-agent.md
+  - 集成与扩展:
+      - integrations/index.md
+      - 通道总览: integrations/channels/index.md
+      - Telegram: integrations/channels/telegram.md
+      - Discord: integrations/channels/discord.md
+      - Slack: integrations/channels/slack.md
+      - 微信: integrations/channels/weixin.md
+      - 企业微信: integrations/channels/wecom.md
+      - 飞书: integrations/channels/feishu.md
+      - 钉钉: integrations/channels/dingtalk.md
+      - QQ: integrations/channels/qqbot.md
+      - WhatsApp: integrations/channels/whatsapp.md
+      - Email: integrations/channels/email.md
+      - Matrix: integrations/channels/matrix.md
+      - Webhook: integrations/channels/webhook.md
+      - CLI: integrations/channels/cli.md
+      - Cron: integrations/channels/cron.md
+      - Gateway:
+          - integrations/gateway/index.md
+          - 认证: integrations/gateway/authentication.md
+          - 反向代理: integrations/gateway/reverse-proxy.md
+      - Skill:
+          - 使用 Skill: integrations/skills/using-skills.md
+          - Skill 目录: integrations/skills/catalog.md
+      - Plugin:
+          - 使用 Plugin: integrations/plugins/using-plugins.md
+          - 开发 Plugin: integrations/plugins/developing-plugins.md
+      - MCP: integrations/mcp.md
+      - A2A: integrations/a2a.md
+  - 部署与运维:
+      - operations/index.md
+      - 运行模式: operations/runtime-modes.md
+      - 后台服务: operations/background-service.md
+      - 部署: operations/deployment.md
+      - 安全加固: operations/security-hardening.md
+      - 备份与恢复: operations/backup-restore.md
+      - 升级与迁移: operations/upgrade-migrations.md
+      - 可观测性: operations/observability.md
+      - 性能: operations/performance.md
+      - 故障排查: operations/troubleshooting.md
+  - 参考手册:
+      - reference/index.md
+      - CLI 参考: reference/cli.md
+      - TUI 命令: reference/tui-commands.md
+      - 配置参考: reference/configuration.md
+      - 配置指南: reference/configuration-guide.md
+      - 环境变量: reference/environment-variables.md
+      - 工具矩阵: reference/tools.md
+      - 安全 Profile 矩阵: reference/security-profile-matrix.md
+      - Gateway API: reference/gateway-api.md
+      - WebSocket 协议: reference/websocket-protocol.md
+      - 文件布局: reference/filesystem-layout.md
+      - 兼容性: reference/compatibility.md
+      - 术语表: reference/glossary.md
+  - 参与开发:
+      - development/index.md
+      - 开发环境: development/setup.md
+      - 仓库地图: development/repository-map.md
+      - 新增 Provider: development/add-provider.md
+      - 新增 Tool: development/add-tool.md
+      - 新增 Channel: development/add-channel.md
+      - Skill 开发: development/skill-authoring.md
+      - Plugin API: development/plugin-api.md
+      - Dashboard 开发: development/dashboard-development.md
+      - 测试与评估: development/testing-evaluation.md
+      - 文档贡献: development/documentation.md
+      - 发布流程: development/release-process.md

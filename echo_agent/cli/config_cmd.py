@@ -279,17 +279,23 @@ def _validate(config_path, workspace) -> int:
     return rc
 
 
-def gen_docs(out_dir: str = "docs") -> Path:
+def gen_docs(out_dir: str = "docs/reference") -> Path:
     """Developer command: write the reference files and dead-field backlog.
 
     返回写入目录,供调用处打印绝对路径。"""
     base = Path(out_dir)
     base.mkdir(parents=True, exist_ok=True)
-    (base / "config-reference.yaml").write_text(render_yaml("zh"), encoding="utf-8")
-    (base / "config-reference.en.yaml").write_text(render_yaml("en"), encoding="utf-8")
-    (base / "config-reference.md").write_text(render_markdown("zh"), encoding="utf-8")
-    (base / "config-reference.en.md").write_text(render_markdown("en"), encoding="utf-8")
-    (base / "config-dead-fields-backlog.md").write_text(render_backlog(), encoding="utf-8")
+    (base / "configuration.md").write_text(render_markdown("zh"), encoding="utf-8")
+    (base / "configuration.en.md").write_text(render_markdown("en"), encoding="utf-8")
+
+    generated = base.parent / "assets" / "generated"
+    generated.mkdir(parents=True, exist_ok=True)
+    (generated / "config-example.yaml").write_text(render_yaml("zh"), encoding="utf-8")
+    (generated / "config-example.en.yaml").write_text(render_yaml("en"), encoding="utf-8")
+
+    docs_internal = Path(".docs")
+    docs_internal.mkdir(parents=True, exist_ok=True)
+    (docs_internal / "config-dead-fields-backlog.md").write_text(render_backlog(), encoding="utf-8")
     return base
 
 

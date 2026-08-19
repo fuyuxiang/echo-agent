@@ -141,3 +141,31 @@ def render_backlog() -> str:
             lines.append(f"| `{f.snake_path}` | {f.extra.get('reason','')} |")
         lines.append("")
     return "\n".join(lines) + "\n"
+
+
+if __name__ == "__main__":
+    import argparse
+    from pathlib import Path
+
+    parser = argparse.ArgumentParser(description="Generate config reference docs")
+    parser.add_argument("--output-dir", default="docs/reference", help="Output directory")
+    parser.add_argument("--lang", default="both", choices=["zh", "en", "both"])
+    args = parser.parse_args()
+
+    base = Path(args.output_dir)
+    base.mkdir(parents=True, exist_ok=True)
+
+    if args.lang in ("zh", "both"):
+        (base / "configuration.md").write_text(render_markdown("zh"), encoding="utf-8")
+    if args.lang in ("en", "both"):
+        (base / "configuration.en.md").write_text(render_markdown("en"), encoding="utf-8")
+
+    generated = base.parent / "assets" / "generated"
+    generated.mkdir(parents=True, exist_ok=True)
+    if args.lang in ("zh", "both"):
+        (generated / "config-example.yaml").write_text(render_yaml("zh"), encoding="utf-8")
+    if args.lang in ("en", "both"):
+        (generated / "config-example.en.yaml").write_text(render_yaml("en"), encoding="utf-8")
+
+    print(f"配置参考已生成 / config reference generated: {base.resolve()}")
+
