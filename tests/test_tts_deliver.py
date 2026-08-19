@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from echo_agent.agent.tools.tts import TTSTool
+from echo_agent.bus.delivery import DeliveryResult, DeliveryStage
 from echo_agent.tools.base import ToolExecutionContext
 
 
@@ -72,7 +73,29 @@ async def test_deliver_reports_when_no_target(tmp_path):
         result = await tool.execute(
             {"text": "hi", "deliver": True, "output_path": "x.mp3"}, ctx
         )
-    # 文件仍生成成功，但明确告知未投递
-    assert result.success
+    # 音频文件仍保留供人工取用，但 deliver=true 的整体请求没有
+    # 完成，必须以失败告知调用者，不能让调度任务误报成功。
+    assert not result.success
     publish.assert_not_awaited()
     assert "not delivered" in result.output
+    assert "not delivered" in result.error
+    assert (tmp_path / "x.mp3").is_file()
+    assert result.metadata["path"].endswith("x.mp3")
+
+
+@pytest.mark.asyncio
+async def test_deliver_propagates_publish_failure(tmp_path):
+    publish = AsyncMock(return_value=DeliveryResult(
+        DeliveryStage.FAILED, "weixin", error="platform down",
+    ))
+    tool = TTSTool(workspace=str(tmp_path), publish_fn=publish)
+    ctx = ToolExecutionContext(channel="weixin", chat_id="userX")
+    with patch.object(TTSTool, "_edge_tts", _fake_edge):
+        result = await tool.execute(
+            {"text": "hi", "deliver": True, "output_path": "failed.mp3"}, ctx
+        )
+
+    assert not result.success
+    publish.assert_awaited_once()
+    assert "delivery failed: platform down" in result.error
+    assert result.metadata["path"].endswith("failed.mp3")

@@ -276,14 +276,26 @@ class TestPollLoop:
         ch = _make_weixin(tmp_path)
         ch._poll_session = MagicMock()
         ch._running = True
-        ch._spawn_msg_task = MagicMock(side_effect=lambda c: c.close())
         return ch
 
     @pytest.mark.asyncio
     async def test_processes_messages_then_stops(self, tmp_path, monkeypatch):
         ch = self._ch(tmp_path)
-        spawned: list[dict] = []
-        ch._spawn_msg_task = MagicMock(side_effect=lambda c: (c.close(), spawned.append(1)))
+        order: list[str] = []
+
+        async def fake_process_message(message):
+            # Force at least one event-loop turn so this test proves that the
+            # cursor is persisted after processing, rather than merely after
+            # the task is scheduled.
+            await asyncio.sleep(0)
+            order.append("processed")
+
+        ch._process_message_safe = AsyncMock(side_effect=fake_process_message)
+
+        def fake_save_sync_buf(data_dir, account_id, sync_buf):
+            order.append("saved")
+
+        monkeypatch.setattr(wx, "_save_sync_buf", fake_save_sync_buf)
 
         async def fake_get_updates(session, *, base_url, token, sync_buf, timeout_ms):
             ch._running = False  # one iteration only
@@ -295,9 +307,8 @@ class TestPollLoop:
 
         monkeypatch.setattr(wx, "_get_updates", fake_get_updates)
         await ch._poll_loop()
-        assert spawned == [1]  # one message spawned
-        # sync_buf persisted
-        assert wx._load_sync_buf(ch._data_dir, ch._account_id) == "BUF2"
+        ch._process_message_safe.assert_awaited_once()
+        assert order == ["processed", "saved"]
 
     @pytest.mark.asyncio
     async def test_session_expired_pauses_and_continues(self, tmp_path, monkeypatch):
@@ -373,4 +384,3 @@ class TestPollLoop:
             await task
         ch._on_msg_task_done(task)
         assert task not in ch._msg_tasks
-

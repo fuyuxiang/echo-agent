@@ -68,7 +68,13 @@ class TTSTool(Tool):
             if delivered is not None:
                 result.output = f"{result.output}; {delivered}"
                 if "failed" in delivered.lower() or "not delivered" in delivered.lower():
-                    result = ToolResult(success=False, output=result.output)
+                    # Keep the synthesis metadata (especially the saved path)
+                    # while making the requested synthesize-and-deliver
+                    # operation a real failure.  Failed ToolResults are rendered
+                    # from ``error``, so leaving only ``output`` here would show
+                    # callers a blank ``Error: `` despite the useful diagnosis.
+                    result.success = False
+                    result.error = result.output
         return result
 
     async def _deliver(self, audio: Path, params: dict[str, Any], ctx: ToolExecutionContext | None) -> str | None:
