@@ -22,7 +22,7 @@
 
     Run as a daemon or systemd service for 24/7 availability
 
-    [:octicons-arrow-right-24: Deployment guide](deployment/index.en.md)
+    [:octicons-arrow-right-24: Deployment guide](operations/deployment.md)
 
 -   :material-chat-processing:{ .lg .middle } **Platform Integrations**
 
@@ -30,7 +30,7 @@
 
     Connect your Agent to DingTalk, Feishu, WeChat, Slack, Telegram, and 14 channels total
 
-    [:octicons-arrow-right-24: Channel configuration](channels/index.en.md)
+    [:octicons-arrow-right-24: Channel configuration](integrations/channels/index.md)
 
 -   :material-puzzle:{ .lg .middle } **Extend & Develop**
 

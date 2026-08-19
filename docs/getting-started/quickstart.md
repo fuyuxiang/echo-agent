@@ -113,8 +113,8 @@ echo-agent skill list
 
 你已经成功运行了 Echo Agent。接下来可以：
 
-- **接入更多平台** — 将 Agent 接入钉钉、微信、Slack 等通道，见 [通道配置](../channels/index.md)
-- **后台运行** — 配置为系统服务，保持 7×24 在线，见 [部署指南](../deployment/index.md)
+- **接入更多平台** — 将 Agent 接入钉钉、微信、Slack 等通道，见 [通道配置](../integrations/channels/index.md)
+- **后台运行** — 配置为系统服务，保持 7×24 在线，见 [部署指南](../operations/deployment.md)
 - **打开 Dashboard** — 通过 Web 面板管理 Agent：
   ```bash
   echo-agent gateway

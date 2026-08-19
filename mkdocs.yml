@@ -44,12 +44,12 @@ plugins:
         - zh
         - en
   - i18n:
-      default_language: zh
       languages:
-        zh:
+        - locale: zh
+          default: true
           name: 中文
           build: true
-        en:
+        - locale: en
           name: English
           build: true
           site_name: Echo Agent

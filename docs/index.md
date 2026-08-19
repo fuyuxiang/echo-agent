@@ -22,7 +22,7 @@
 
     以守护进程或 systemd 服务部署，保持 Agent 7×24 在线
 
-    [:octicons-arrow-right-24: 部署指南](deployment/index.md)
+    [:octicons-arrow-right-24: 部署指南](operations/deployment.md)
 
 -   :material-chat-processing:{ .lg .middle } **接入平台**
 
@@ -30,7 +30,7 @@
 
     将 Agent 接入钉钉、飞书、微信、Slack、Telegram 等 14 个通道
 
-    [:octicons-arrow-right-24: 通道配置](channels/index.md)
+    [:octicons-arrow-right-24: 通道配置](integrations/channels/index.md)
 
 -   :material-puzzle:{ .lg .middle } **扩展开发**
 

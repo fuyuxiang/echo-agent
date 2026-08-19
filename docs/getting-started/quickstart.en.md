@@ -113,8 +113,8 @@ echo-agent skill list
 
 You've successfully run Echo Agent. Here's where to go next:
 
-- **Connect more platforms** — Integrate with DingTalk, WeChat, Slack, and more. See [Channel Configuration](../channels/index.en.md)
-- **Run in background** — Configure as a system service for 24/7 availability. See [Deployment Guide](../deployment/index.en.md)
+- **Connect more platforms** — Integrate with DingTalk, WeChat, Slack, and more. See [Channel Configuration](../integrations/channels/index.md)
+- **Run in background** — Configure as a system service for 24/7 availability. See [Deployment Guide](../operations/deployment.md)
 - **Open the Dashboard** — Manage your Agent via the web panel:
   ```bash
   echo-agent gateway
