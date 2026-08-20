@@ -482,6 +482,14 @@ README_EN = ROOT / "README.en.md"
 # break outright on PyPI, which has no notion of the repo tree.
 DOCS_SITE = "https://fuyuxiang.github.io/echo-agent/"
 
+# Pages emitted by a generator before MkDocs runs.  Their Markdown files are
+# intentionally gitignored, so they are absent in a clean checkout (including
+# the regular CI test job) even though the deployed routes are real.
+GENERATED_README_DOC_PAGES = {
+    ("reference/configuration", ".md"): "zh",
+    ("reference/configuration", ".en.md"): "en",
+}
+
 
 def test_readmes_link_to_docs_site():
     """Both READMEs must route readers to the documentation site."""
@@ -491,7 +499,7 @@ def test_readmes_link_to_docs_site():
 
 
 def test_readme_doc_links_resolve_to_real_pages():
-    """Every docs-site link in the READMEs must have a backing source page.
+    """Every docs-site link in the READMEs must have a source or generator.
 
     linkchecker only walks the built site, so a README pointing at a page that
     was renamed or never existed yields a 404 that CI cannot currently see.
@@ -513,8 +521,15 @@ def test_readme_doc_links_resolve_to_real_pages():
                 DOCS_DIR / f"{route}{suffix}",
                 DOCS_DIR / route / f"index{suffix}",
             ]
-            if not any(path.is_file() for path in candidates):
-                failures.append(f"{readme.name}:{line} -> {match.group(0)}")
+            if any(path.is_file() for path in candidates):
+                continue
+            generated_lang = GENERATED_README_DOC_PAGES.get((route, suffix))
+            if generated_lang:
+                from echo_agent.config.docgen import render_markdown
+
+                if render_markdown(generated_lang).strip():
+                    continue
+            failures.append(f"{readme.name}:{line} -> {match.group(0)}")
     assert not failures, "README 链接指向不存在的文档页:\n" + "\n".join(failures)
 
 
