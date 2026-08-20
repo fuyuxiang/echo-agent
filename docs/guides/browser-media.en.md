@@ -74,8 +74,8 @@ The Browser uses a per-owner isolation model: each session is bound to its creat
 - **Dialog handling**: Automatically handles `alert`/`confirm`/`prompt` dialogs, recording their content for the model to see
 - **Console capture**: Records page `error`/`warning` level console output
 
-!!! question "Needs maintainer confirmation"
-    The persistence strategy for session storage state (`storage_state_path`), whitelist configuration for `allow_private`, and the config.yaml path for `dialog_policy` need maintainer input with specific configuration examples.
+!!! note "Related settings"
+    Login-state persistence is controlled by `tools.browser.persist_login_state` (default false; there is no `storage_state_path` field). Private-address access is governed separately by `tools.web.allow_private_addresses` and `tools.browser.allow_private_addresses`, each scoped to its own tool. The dialog setting is `tools.browser.dialog_policy`.
 
 !!! warning "Security Restrictions"
     - `evaluate` blocks expressions that read cookies, localStorage, sessionStorage, and other sensitive data
@@ -94,7 +94,7 @@ Fetches page content from a URL, automatically following redirects (each hop is 
 tools:
   web:
     proxy: ""              # Optional HTTP proxy
-    allow_private: false   # Whether to allow private/internal addresses
+    allow_private_addresses: false   # Whether to allow private/internal addresses
 ```
 
 **Parameters**:
@@ -107,7 +107,7 @@ tools:
 !!! note "Limitations"
     - Maximum 5 redirect hops
     - 30-second timeout
-    - Private IPs blocked unless `allow_private: true`
+    - Private IPs blocked unless `tools.web.allow_private_addresses: true`
 
 ### web_search — Web Search
 
@@ -125,9 +125,10 @@ Executes queries via search engine APIs and returns structured results.
 
 ```yaml
 tools:
-  web_search:
-    provider: "brave"
-    api_key: "BSA-xxx"
+  web:
+    enabled: true
+    search_provider: "brave"   # brave | tavily | serpapi | searxng | serply
+    search_api_key: "BSA-xxx"
 ```
 
 ---
@@ -171,7 +172,7 @@ Echo Agent supports two image generation backends:
 ```yaml
 tools:
   image_gen:
-    provider: "openai"
+    backend: "openai"
     api_key: "sk-xxx"
     model: "dall-e-3"        # Default model
 ```
@@ -199,9 +200,9 @@ Supports multiple advanced models:
 ```yaml
 tools:
   image_gen:
-    provider: "fal"
+    backend: "fal"
     fal_key: "fal-xxx"
-    model: "fal-ai/flux/schnell"
+    fal_model: "fal-ai/flux/schnell"
 ```
 
 **Parameters**:
@@ -224,7 +225,7 @@ Uses Microsoft Edge online speech service, no API key required.
 ```yaml
 tools:
   tts:
-    backend: "edge"
+    default_backend: "edge"
     default_voice: "en-US-AriaNeural"
 ```
 
@@ -233,9 +234,9 @@ tools:
 ```yaml
 tools:
   tts:
-    backend: "openai"
+    default_backend: "openai"
     openai_api_key: "sk-xxx"
-    tts_model: "tts-1"        # or tts-1-hd
+    model: "tts-1"        # or tts-1-hd
     default_voice: "alloy"    # alloy/echo/fable/onyx/nova/shimmer
 ```
 

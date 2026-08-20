@@ -128,7 +128,7 @@ Pre-approved tool + argument pattern combinations to reduce interaction friction
 ## 8. Credential Security
 
 ```yaml
-credential_security:
+credentials:
   encryption_key_env: ECHO_AGENT_CREDENTIAL_KEY
   require_encryption: true
 ```

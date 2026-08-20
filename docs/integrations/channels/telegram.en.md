@@ -15,11 +15,12 @@ Supports both private chats and group conversations. In groups, the bot can be c
 
 ```yaml
 channels:
-  - type: telegram
+  telegram:
+    enabled: true
     token: "123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
     allow_from:
-      - 100000001        # User ID (numeric)
-      - 100000002
+      - "100000001"        # quote numeric IDs: the field is list[str]
+      - "100000002"
     proxy: "socks5://127.0.0.1:1080"   # Optional: socks5/http
     group_policy: mention               # open | mention
     reactions_enabled: true

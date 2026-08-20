@@ -72,7 +72,7 @@ VOLUME /data/echo-agent
 ENV ECHO_AGENT_HOME=/data/echo-agent
 ENV ECHO_AGENT_GATEWAY_HOST=0.0.0.0
 
-EXPOSE 8420
+EXPOSE 58123
 
 ENTRYPOINT ["echo-agent", "gateway", "--foreground"]
 ```
@@ -85,7 +85,7 @@ services:
   echo-agent:
     build: .
     ports:
-      - "127.0.0.1:8420:8420"
+      - "127.0.0.1:58123:58123"
     volumes:
       - echo-agent-data:/data/echo-agent
       - ./config.yaml:/data/echo-agent/config.yaml:ro
@@ -128,7 +128,7 @@ server {
     ssl_certificate_key /etc/ssl/private/echo-agent.key;
 
     location / {
-        proxy_pass http://127.0.0.1:8420;
+        proxy_pass http://127.0.0.1:58123;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -150,7 +150,7 @@ server {
 
 ```caddyfile
 echo-agent.example.com {
-    reverse_proxy localhost:8420 {
+    reverse_proxy localhost:58123 {
         # 长连接超时
         transport http {
             read_timeout 300s
@@ -169,7 +169,7 @@ echo-agent.example.com {
 ```yaml
 gateway:
   host: 127.0.0.1          # 仍然绑定本地
-  port: 8420
+  port: 58123
   auth:
     allowed_origins:
       - "https://echo-agent.example.com"
@@ -188,7 +188,7 @@ gateway:
 ```yaml
 # 实例 A: ~/.echo-agent-alice/config.yaml
 gateway:
-  port: 8420
+  port: 58123
 
 # 实例 B: ~/.echo-agent-bob/config.yaml
 gateway:
@@ -208,7 +208,7 @@ services:
   agent-alice:
     build: .
     ports:
-      - "127.0.0.1:8420:8420"
+      - "127.0.0.1:58123:58123"
     volumes:
       - alice-data:/data/echo-agent
     environment:
@@ -217,7 +217,7 @@ services:
   agent-bob:
     build: .
     ports:
-      - "127.0.0.1:8421:8420"
+      - "127.0.0.1:8421:58123"
     volumes:
       - bob-data:/data/echo-agent
     environment:

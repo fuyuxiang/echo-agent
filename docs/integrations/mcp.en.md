@@ -12,7 +12,7 @@ MCP is a standardized AI tool communication protocol. Echo Agent acts as an MCP 
 
 ```yaml
 tools:
-  mcpServers:
+  mcp_servers:
     filesystem:
       command: "npx"
       args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"]
@@ -31,7 +31,7 @@ tools:
 
 ```yaml
 tools:
-  mcpServers:
+  mcp_servers:
     my-server:
       command: "python"
       args: ["-m", "my_mcp_server"]
@@ -43,7 +43,7 @@ tools:
 
 ```yaml
 tools:
-  mcpServers:
+  mcp_servers:
     remote:
       url: "https://mcp.example.com/sse"
       headers:
@@ -55,11 +55,11 @@ tools:
 
 ```yaml
 tools:
-  mcpServers:
+  mcp_servers:
     my-server:
       command: "..."
-      toolsInclude: ["read_file", "write_file"]
-      toolsExclude: ["dangerous_tool"]
+      tools_include: ["read_file", "write_file"]
+      tools_exclude: ["dangerous_tool"]
 ```
 
 ## Security

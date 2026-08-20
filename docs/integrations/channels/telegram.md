@@ -15,11 +15,12 @@ Telegram 通道通过 Bot API 的 Long-polling（`getUpdates`）方式连接，�
 
 ```yaml
 channels:
-  - type: telegram
+  telegram:
+    enabled: true
     token: "123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
     allow_from:
-      - 100000001        # 用户 ID（数字）
-      - 100000002
+      - "100000001"        # 用户 ID 必须加引号：字段类型是 list[str]
+      - "100000002"
     proxy: "socks5://127.0.0.1:1080"   # 可选，支持 socks5/http
     group_policy: mention               # open | mention
     reactions_enabled: true

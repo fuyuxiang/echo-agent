@@ -126,17 +126,20 @@ document.upload(file="产品手册v2.pdf", collection="default", replace=true)
 
 ```yaml
 knowledge:
-  chunk_size: 512
-  chunk_overlap: 64
-  embedding_model: "text-embedding-ada-002"
-  faiss_index_path: "./data/faiss_index"
-  max_file_size_mb: 50
-  supported_formats:
-    - pdf
-    - docx
-    - xlsx
-    - pptx
+  enabled: true
+  docs_dir: data/knowledge
+  index_path: data/knowledge_index.json
+  chunk_size: 1200
+  chunk_overlap: 120
+  max_results: 5
+  auto_index: true
+  allowed_extensions:
+    - .md
+    - .txt
+    - .pdf
 ```
+
+`KnowledgeConfig` 只有以上 8 个字段。索引是本地 JSON 文件而非 FAISS，因此没有 `faiss_index_path`；受支持的扩展名字段是 `allowed_extensions`，不是 `supported_formats`；也没有 `embedding_model` 与 `max_file_size_mb` —— 嵌入模型相关配置在 `memory` 节。
 
 !!! question "需维护者确认"
     上述配置项的默认值及修改方式需确认，可能通过 Dashboard Config 页面或配置文件调整。

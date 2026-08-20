@@ -13,142 +13,138 @@ User Message → Channel Adapter → MessageBus → Agent Core
                            (register/start/route)
 ```
 
-- **BaseChannel** — Abstract base class for all channels. Defines the unified interface: `connect()`, `disconnect()`, `send()`, `onMessage()`, and the capability declaration method `getCapabilities()`
-- **MessageBus** — Message bus responsible for passing standardized message objects (`IncomingMessage` / `OutgoingMessage`) between channels and the Agent core
-- **ChannelManager** — Channel manager that dynamically loads channel instances from configuration, handles start/stop, health checks, and failure recovery
+- **BaseChannel** — Abstract base class for all channels (`echo_agent/channels/base.py`). Three abstract methods must be implemented: `start()`, `stop()`, `send()`. Capabilities are declared as class attributes, not via a method call
+- **MessageBus** — Message bus that passes standardized events between channels and the Agent core
+- **ChannelManager** — Loads the channel instances listed in `_CHANNEL_REGISTRY` according to configuration and handles their lifecycle
 
-### Message Standardization
+### Capability Declaration
 
-All raw messages received by channels are converted into a unified `IncomingMessage` format:
+A channel that does not implement a capability simply leaves the corresponding class attribute at its default `False` — no method override needed. The Agent core uses these flags to decide how to deliver messages:
 
-```typescript
-interface IncomingMessage {
-  id: string;
-  channel: string;        // channel identifier
-  sender: string;         // sender ID
-  content: string;        // text content
-  attachments?: File[];   // attachment list
-  replyTo?: string;       // quoted message ID
-  metadata: Record<string, any>;  // channel-specific metadata
-}
+```python
+class BaseChannel(ABC):
+    supports_edit: bool = False                  # can edit an already-sent message
+    supports_reactions: bool = False              # can add emoji reactions
+    supports_files: bool = False                  # can send files
+    supports_interactive_choices: bool = False    # supports interactive choices
+
+    @abstractmethod
+    async def start(self) -> None: ...
+
+    @abstractmethod
+    async def stop(self) -> None: ...
+
+    @abstractmethod
+    async def send(self, event: OutboundEvent) -> SendResult | None: ...
 ```
+
+`send()` returns `SendResult | None` — a global handler receiving an event that is not its own must return `None`, otherwise it produces a bogus delivery receipt.
 
 ## Channel Capability Matrix
 
-Each channel has different capabilities due to platform constraints. The Agent core uses this matrix to determine message delivery behavior (e.g., channels without edit support only receive final replies, not intermediate streaming updates).
+There are 14 channels, matching `_CHANNEL_REGISTRY` in `echo_agent/channels/manager.py` one for one. The capability columns below are taken from each adapter's class attribute declarations; anything not declared is `False`:
 
-| Channel | Connection | Msg Edit | Reactions | Files | Real-time | Group | Allowlist |
-|---------|-----------|----------|-----------|-------|-----------|-------|-----------|
-| Telegram | Long Polling / Webhook | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Discord | WebSocket (Gateway) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| WeChat Work | Webhook Callback | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ |
-| DingTalk | Webhook Callback | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ |
-| Feishu (Lark) | Event Subscription | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Slack | Socket Mode / Events API | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Matrix | Client-Server API (Sync) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Email (IMAP/SMTP) | IMAP IDLE | ❌ | ❌ | ✅ | ⚠️ | ❌ | ✅ |
-| Web Chat | WebSocket | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
-| CLI | stdin/stdout | ✅ (ANSI overwrite) | ❌ | ❌ | ✅ | ❌ | ❌ |
-| Webhook (Inbound) | HTTP POST | ❌ | ❌ | ✅ | ❌ | ❌ | ✅ |
-| Webhook (Outbound) | HTTP POST callback | ❌ | ❌ | ✅ | ❌ | ❌ | ✅ |
-| SMS (Twilio) | Webhook Callback | ❌ | ❌ | ❌ | ⚠️ | ❌ | ✅ |
-| Voice (Twilio) | WebSocket Stream | ❌ | ❌ | ❌ | ✅ | ❌ | ✅ |
+| Channel | Registry name | Connection | Msg Edit | Reactions | Send Files | Real-time |
+|---------|---------------|-----------|----------|-----------|------------|:---------:|
+| Telegram | `telegram` | Long Polling | ✅ | ✅ | ❌ | ✅ |
+| Discord | `discord` | WebSocket (Gateway) | ✅ | ✅ | ❌ | ✅ |
+| Slack | `slack` | Socket Mode (WebSocket) | ✅ | ✅ | ❌ | ✅ |
+| Matrix | `matrix` | Client-Server API (long-polling sync) | ❌ | ✅ | ❌ | ✅ |
+| WeChat | `weixin` | Long polling | ❌ | ❌ | ✅ | ✅ |
+| QQ Bot | `qqbot` | WebSocket (Gateway) | ❌ | ❌ | ⚠️ | ✅ |
+| WeCom (WeChat Work) | `wecom` | Webhook callback | ❌ | ❌ | ❌ | ✅ |
+| DingTalk | `dingtalk` | WebSocket | ❌ | ❌ | ❌ | ✅ |
+| Feishu / Lark | `feishu` | Webhook event subscription | ❌ | ❌ | ❌ | ✅ |
+| WhatsApp | `whatsapp` | Webhook callback | ❌ | ❌ | ❌ | ✅ |
+| Email | `email` | IMAP polling / SMTP send | ❌ | ❌ | ❌ | ❌ |
+| Webhook | `webhook` | HTTP POST | ❌ | ❌ | ❌ | ❌ |
+| CLI | `cli` | stdin/stdout | ❌ | ❌ | ❌ | ✅ |
+| Cron | `cron` | Internal scheduler trigger | ❌ | ❌ | ❌ | ❌ |
 
-> ⚠️ = Delayed or platform-limited (Email depends on IDLE push intervals; SMS affected by carrier delivery latency)
+The "Real-time" column reflects the `is_realtime` class attribute. `email`, `webhook` and `cron` are asynchronous channels; the rest are real-time. `supports_interactive_choices` is currently `False` on every channel.
+
+> ⚠️ The QQ Bot's file capability is decided at runtime: `supports_files` is assigned from `config.media_enabled`, so it is `False` when media is off.
+
+Always check `supports_files` before sending a file rather than assuming every channel can — today only `weixin` is unconditionally `True`, and `qqbot` depends on its configuration.
 
 ## Channel Descriptions
 
-### IM Channels
+### International IM
 
-- **Telegram** — One of the most feature-complete channels. Supports both Long Polling and Webhook modes via Bot API, Markdown/HTML formatted messages, and Inline Keyboard interactions.
-- **Discord** — Connects via Discord Bot Gateway. Supports Slash Commands, Thread conversations, and Embed rich text.
-- **Slack** — Supports Socket Mode (no public IP needed) and Events API. Integrates Block Kit interactive components.
-- **Matrix** — Open protocol with end-to-end encrypted room support. Ideal for self-hosted infrastructure scenarios.
-- **WeChat Work** — Enterprise internal messaging. Receives messages via application callbacks, sends replies through proactive push API.
-- **DingTalk** — Similar to WeChat Work. Supports both internal enterprise apps and group bot modes.
-- **Feishu (Lark)** — ByteDance office platform. Supports event subscriptions, message cards, and rich text replies.
+- **Telegram** — The most capable channel, supporting message edits and reactions. Outgoing text has `<`, `>` and `&` HTML-escaped; set `metadata["telegram_markup"] = True` to opt out when you genuinely need to send raw markup.
+- **Discord** — Connects via the Bot Gateway (WebSocket). Supports message edits and reactions.
+- **Slack** — Connects via Socket Mode, so no public IP is required. Supports message edits and reactions.
+- **Matrix** — Open protocol, received through the Client-Server API's long-polling sync. Supports reactions.
+- **WhatsApp** — Receives messages via webhook callbacks.
 
-### General Channels
+### China IM
 
-- **Web Chat** — Built-in web chat widget connecting directly to the Gateway via WebSocket. Suitable for embedding in product pages.
-- **CLI** — Command-line interaction channel. Works with zero configuration. Streaming output uses ANSI escape sequences for character-by-character overwriting.
-- **Email (IMAP/SMTP)** — Email channel using IMAP IDLE to monitor for new messages and SMTP to send replies. Supports attachments.
+- **WeChat (`weixin`)** — Long-polling based, and currently the only channel that unconditionally supports sending files.
+- **QQ Bot (`qqbot`)** — Connects via the Gateway (WebSocket); supports sending files once `media_enabled` is on.
+- **WeCom (`wecom`)** — Enterprise internal app receiving messages via callbacks; payload encryption lives in `wecom_crypto.py`.
+- **DingTalk (`dingtalk`)** — Connects over a WebSocket long connection, so no public callback URL is needed.
+- **Feishu / Lark (`feishu`)** — Connects via webhook event subscriptions.
 
-### Webhook Channels
+### Non-IM Channels
 
-- **Webhook (Inbound)** — Receives HTTP POST requests from external systems as message input. Suitable for CI/CD triggers, alert ingestion, etc.
-- **Webhook (Outbound)** — Posts Agent results to a configured external URL after processing. Suitable for async notifications.
-
-### Communication Channels
-
-- **SMS (Twilio)** — Sends and receives SMS via Twilio API. Suitable for notifications, verification codes, and short messages.
-- **Voice (Twilio)** — Enables voice conversations via Twilio Voice WebSocket with streaming STT/TTS processing.
+- **CLI (`cli`)** — Command-line interaction channel, usable with zero configuration.
+- **Email (`email`)** — Receives via IMAP polling and sends via SMTP.
+- **Webhook (`webhook`)** — Integrates external systems over HTTP POST. Suitable for CI/CD triggers, alert ingestion, and similar cases.
+- **Cron (`cron`)** — Fired by the internal scheduler on a schedule. It has no external counterpart and is used for recurring proactive tasks.
 
 ## Common Configuration
 
-All channels share a set of base configuration options:
+Most channels share the following base options (for the full per-field reference see the [configuration reference](../../reference/configuration.md), which is generated from the schema):
 
 ```yaml
 channels:
-  <channel_name>:
-    enabled: true                    # whether to enable
-    allow_from:                      # sender allowlist (empty = allow all)
+  telegram:
+    enabled: true                    # enable this channel
+    token: "..."                     # platform credential; the field name varies by channel
+    allow_from:                      # sender allowlist (empty = no restriction)
       - "user_id_1"
-      - "user_id_2"
-    group_policy: "mention_only"     # group chat policy: mention_only | all | disabled
-    max_message_length: 4096         # max single message length
-    timeout: 30000                   # request timeout (ms)
-    retry:
-      max_attempts: 3               # max retry attempts
-      backoff: "exponential"        # retry strategy
+    group_policy: "mention"          # group chat policy: open | mention
 ```
+
+For channel-specific fields (such as Telegram's `proxy`, `data_dir` and `reactions_enabled`), see that channel's own page.
 
 ### allow_from Allowlist
 
-The allowlist controls which users can interact with the Agent:
+Controls which users can interact with the Agent; the check lives in `BaseChannel.is_allowed()`:
 
 - Empty or unconfigured — accepts messages from all users
-- Configured with user ID list — only responds to listed users; other messages are silently discarded
-- Supports wildcards — e.g., `"group:*"` allows all group chats, `"admin:*"` allows all administrators
+- Configured with a user ID list — only responds to listed users; everything else is silently discarded
 
 ### group_policy Group Chat Policy
 
-Controls the Agent's trigger conditions in group chats:
+Controls when the Agent replies in group chats. There are only two values:
 
 | Policy | Behavior |
 |--------|----------|
-| `mention_only` | Only replies when @mentioned (default) |
-| `all` | Responds to all messages in the group |
-| `disabled` | Does not process group chat messages |
+| `mention` | Only replies when @-mentioned (default) |
+| `open` | Responds to all messages in the group |
+
+To avoid handling group chats at all, restrict senders with the allowlist or disable the channel.
 
 ## Streaming & Progressive Delivery
 
-Echo Agent's LLM responses are generated as a stream. For channels that support message editing, the system updates the sent message in real time, achieving a "typewriter effect":
+LLM responses are generated as a stream. Whether streaming incremental replies are enabled for a channel is decided by `stream_channels`, which defaults to `cli`, `telegram`, `discord`, `slack` and `gateway:*` (a `prefix:*` wildcard is supported). Once enabled, channels that support editing keep updating the message already sent, producing a "typewriter effect"; channels without edit support wait for generation to finish and send once.
 
-```
-Stream Tokens → Supports editing?
-                ├─ Yes → Call editMessage() every N tokens to update content
-                └─ No  → Wait for generation to complete, send final result once
-```
+### Flush Throttling
 
-### Edit Throttling
+Every incremental update costs an edit API call on IM channels, so flushes are governed by both a character threshold and a time interval — whichever is hit first triggers a flush:
 
-To avoid API rate limits, edit operations are throttled:
+| Option | Default | Effect |
+|--------|---------|--------|
+| `stream_flush_chars` | 180 | Flush once this many characters have accumulated |
+| `stream_flush_interval_ms` | 1500 | Maximum interval between flushes (ms) |
+| `stream_paragraph_mode` | `true` | Prefer splitting on paragraph boundaries |
 
-| Channel | Min Edit Interval | Notes |
-|---------|-------------------|-------|
-| Telegram | 1000ms | Bot API global limit 30 msg/s |
-| Discord | 500ms | Rate limit per channel |
-| Slack | 1000ms | Web API tier limits |
-| Feishu | 500ms | Open platform rate limit |
-| Web Chat | 100ms | Local WebSocket, no external limits |
-| CLI | 50ms | Terminal refresh rate |
+Local channels (`cli`, `gateway` websocket) face no rate limits and frames are cheap, so they get their own low-latency tier:
 
-### Degradation Strategy
+| Option | Default | Effect |
+|--------|---------|--------|
+| `stream_local_flush_chars` | 24 | Character threshold for local channels; `0` reuses the shared value |
+| `stream_local_flush_interval_ms` | 100 | Maximum flush interval for local channels (ms) |
 
-When a channel is temporarily unavailable (network interruption, API rate limiting), the system handles it with the following strategy:
-
-1. **Retry** — Automatic retry according to configured retry policy
-2. **Buffer** — Messages enter a local queue; sent in order once connection recovers
-3. **Degradation Notice** — After exceeding the buffer threshold, the user is notified via an alternate channel
-4. **Discard** — Messages past the maximum buffer time are discarded (configurable)
+Raising the two shared values reduces edit calls and the chance of tripping platform rate limits, at the cost of a choppier-looking reply.

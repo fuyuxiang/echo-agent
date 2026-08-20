@@ -42,19 +42,23 @@ Echo Agent 从多个来源发现插件，按优先级排列：
 plugins:
   enabled: true
   extra_dirs: ["./my-plugins"]
-  enable: ["my-plugin"]
-  disable: ["unwanted-plugin"]
+  allow: ["my-plugin"]           # 白名单，留空表示放行全部
+  deny: ["unwanted-plugin"]      # 黑名单
+  trusted_plugins: []            # 跳过沙箱校验
+  permission_mode: compat        # strict | compat | legacy
 ```
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `enabled` | bool | 全局开关，设为 false 禁用所有插件 |
 | `extra_dirs` | list | 额外的插件搜索目录 |
-| `enable` | list | 启用指定插件（白名单模式） |
-| `disable` | list | 禁用指定插件（黑名单模式） |
+| `allow` | list | 白名单；非空时只加载列表内的插件，留空表示放行全部 |
+| `deny` | list | 黑名单，命中即禁用 |
+| `trusted_plugins` | list | 跳过沙箱校验的插件 |
+| `permission_mode` | str | 权限模式：`strict` / `compat` / `legacy` |
 
-!!! warning "enable 与 disable 互斥"
-    如果同时指定了 `enable` 和 `disable` 列表，`enable` 优先。即只加载 `enable` 列表中的插件，`disable` 列表被忽略。
+!!! warning "deny 优先于 allow"
+    两个列表同时命中同一个插件时，**`deny` 生效** —— 过滤先查黑名单，命中即跳过，不再看白名单。
 
 ## 环境变量检查
 

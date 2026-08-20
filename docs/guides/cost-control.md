@@ -25,12 +25,15 @@ cost:
   soft_threshold_ratio: 0.8
   pricing_overrides:
     my-local-llama:
-      input_per_1k: 0.0
-      output_per_1k: 0.0
+      input_per_1m: 0.0
+      output_per_1m: 0.0
     custom-gpt4:
-      input_per_1k: 0.03
-      output_per_1k: 0.06
+      input_per_1m: 30.0
+      output_per_1m: 60.0
 ```
+
+!!! warning "单价按每百万 token 计"
+    覆盖项的键名是 `input_per_1m`、`output_per_1m`、`cache_read_per_1m`、`cache_write_per_1m` —— 单位是每 **1M** token，不是每 1K。`_resolve_price()` 用 `ov.get("input_per_1m", 0.0)` 读取，因此写成 `input_per_1k` 不会报错，而是取到默认值 `0.0`，结果是该模型的费用恒为零。
 
 ### 字段说明
 
@@ -76,12 +79,12 @@ cost:
   pricing_overrides:
     # 本地模型不计费
     ollama-llama3:
-      input_per_1k: 0.0
-      output_per_1k: 0.0
+      input_per_1m: 0
+      output_per_1m: 0
     # 自定义价格
     azure-gpt4o:
-      input_per_1k: 0.005
-      output_per_1k: 0.015
+      input_per_1m: 5
+      output_per_1m: 15
 ```
 
 未在覆盖表中出现的模型将使用内置定价数据。
@@ -124,17 +127,26 @@ Dashboard 的 Analytics 页面提供可视化成本视图：
 
 ### 1. 模型路由
 
-路由器支持成本感知决策 —— 简单任务自动分配到低成本模型：
+按任务类型把不同工作分流到不同模型，把便宜的模型用在简单任务上。分流规则写在 `models.routes`，每条规则用 `task_types` 匹配：
 
 ```yaml
-router:
-  strategy: cost_aware
-  rules:
-    - condition: "complexity == 'simple'"
-      prefer: cheap_model
-    - condition: "complexity == 'complex'"
-      prefer: capable_model
+models:
+  default_model: claude-sonnet-4-5
+  routes:
+    - task_types: [simple]
+      provider: openai
+      model: gpt-4o-mini
+      max_tokens: 4096
+    - task_types: [coding]
+      provider: anthropic
+      model: claude-sonnet-4-5
+      fallback_models: [gpt-4o]
 ```
+
+每条路由可设 `provider`、`model`、`task_types`、`fallback_models`、`max_tokens`、`temperature`、`context_window`。
+
+!!! note "不存在 router 配置节"
+    配置中没有 `router` 顶层节，也没有 `strategy: cost_aware` 或 `rules` / `condition` / `prefer` 这类字段。分流一律通过 `models.routes` 的 `task_types` 表达。
 
 ### 2. 提示缓存
 
@@ -178,12 +190,16 @@ cost:
   soft_threshold_ratio: 0.75
   pricing_overrides:
     local-llama3-70b:
-      input_per_1k: 0.0
-      output_per_1k: 0.0
+      input_per_1m: 0
+      output_per_1m: 0
     deepseek-chat:
-      input_per_1k: 0.001
-      output_per_1k: 0.002
+      input_per_1m: 1
+      output_per_1m: 2
 
-router:
-  strategy: cost_aware
+models:
+  default_model: claude-sonnet-4-5
+  routes:
+    - task_types: [simple]
+      provider: openai
+      model: gpt-4o-mini
 ```

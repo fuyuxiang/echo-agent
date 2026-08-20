@@ -1,236 +1,148 @@
 # 执行后端
 
-Echo Agent 提供三种执行后端，用于运行代码和命令。每种后端在隔离性、性能和适用场景上各有侧重，开发者应根据实际需求选择合适的后端。
+命令与代码类工具（`exec`、`execute_code`、`process`）不直接在 Agent 进程里跑，而是交给一个**执行器**。执行器决定隔离强度与运行位置。本页字段取自 `echo_agent/config/schema.py` 的 `ExecutionConfig`，行为取自 `echo_agent/agent/executors/factory.py`。
 
-## 概览
+## 四种执行器
 
-| 后端 | 工具 | 隔离性 | 性能 | 适用场景 |
-|------|------|--------|------|----------|
-| Shell | `shell`、`code_exec` | 无隔离，完全系统访问 | 最高 | 快速命令执行、脚本运行 |
-| Container | Docker 容器 | 强隔离（沙箱） | 中等（启动开销） | 不可信代码、多租户环境 |
-| Process | `process` | 进程级隔离 | 高 | 长时间运行的服务、交互式进程 |
+`execution.default_executor` 选择执行器，取值四种，默认 `sandbox`：
 
-## Shell 后端
+| 取值 | 隔离方式 | 运行位置 | 适用场景 |
+|------|----------|----------|----------|
+| `local` | 无额外隔离 | 本机，工作区内 | 完全信任的本地开发 |
+| `sandbox` | 独立沙箱目录（默认） | 本机 `sandbox_root` 下 | 默认选择，兼顾可用性与隔离 |
+| `container` | 容器 | 本机容器运行时 | 需要强隔离或固定运行环境 |
+| `remote` | SSH | 远程主机 | 算力或环境在别处 |
 
-Shell 后端通过 `shell` 和 `code_exec` 工具直接在宿主系统上执行命令和代码。
-
-!!! warning "安全警告"
-    Shell 后端拥有完全的系统访问权限。执行的命令可以读写任意文件、访问网络、安装软件包。仅在可信环境中使用此后端。
-
-### 工具说明
-
-- **shell 工具**：直接执行 shell 命令（`risk_level = "exec"`）
-- **code_exec 工具**：执行多种语言的代码片段（`risk_level = "exec"`）
-
-### 配置示例
+执行器实例在 `AgentLoop` 生命周期内长期复用，沙箱与容器的准备开销只付一次，不是每次工具调用都重建。
 
 ```yaml
 execution:
-  backend: shell
-  shell:
-    # 默认 shell 路径
-    command: /bin/bash
-    # 命令执行超时（秒）
-    timeout: 30
-    # 工作目录
-    working_dir: /workspace
-    # 环境变量
-    env:
-      PATH: /usr/local/bin:/usr/bin:/bin
-      LANG: en_US.UTF-8
+  default_executor: sandbox
+  network_policy: deny
 ```
 
-### 超时控制
+!!! note "不存在 execution.backend"
+    配置字段是 `default_executor`，且四种取值是平铺的枚举 —— 不存在 `execution.backend`，也不存在 `execution.shell`、`execution.container`、`execution.process` 这类按后端分组的嵌套小节。写成那种结构不会报错，但会被当作未知键静默忽略。
 
-Shell 后端支持命令级别的超时设置，防止命令无限期挂起：
+## 通用配置
+
+`ExecutionConfig` 的全部字段如下：
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `default_executor` | `sandbox` | 执行器类型 |
+| `network_policy` | `deny` | 出站网络策略：`allow` / `deny` / `restricted` |
+| `sandbox_root` | `/tmp/echo-agent-sandbox` | `sandbox` 执行器的根目录 |
+| `container_image` | `''` | `container` 执行器使用的镜像 |
+| `remote_host` | `''` | `remote` 执行器的目标主机 |
+| `remote_user` | `root` | SSH 用户 |
+| `remote_key_path` | `''` | SSH 私钥路径 |
+| `remote_strict_host_key` | `accept-new` | 主机密钥校验：`no` / `accept-new` / `yes` |
+| `remote_connect_timeout` | `10` | SSH 连接超时（秒） |
+| `max_background_tasks` | `64` | 后台任务并发上限 |
+
+`network_policy` 会传递给所有执行器。它默认为 `deny`，此时 `web_fetch`、`web_search` 以及任何带 `network.outbound` 能力的工具都不会暴露给模型，详见[安全档位矩阵](../reference/security-profile-matrix.md)。
+
+## local
+
+直接在工作区内执行，不做额外隔离。仅在完全信任且需要访问本机环境时使用。
 
 ```yaml
 execution:
-  shell:
-    timeout: 30          # 默认超时 30 秒
-    max_timeout: 300     # 最大允许超时 5 分钟
+  default_executor: local
 ```
 
-## Container 后端
+## sandbox
 
-Container 后端通过 Docker 提供完全隔离的执行环境，适用于运行不可信代码或需要环境一致性的场景。
-
-!!! question "需维护者确认"
-    以下容器配置细节（资源限制默认值、网络策略、镜像拉取策略）需要维护者根据实际部署环境确认。
-
-### Docker 环境准备
-
-确保宿主机已安装 Docker 并且 Echo Agent 进程有权限访问 Docker daemon：
-
-```bash
-# 验证 Docker 可用
-docker info
-
-# 确认用户在 docker 组中
-groups | grep docker
-```
-
-### 配置示例
+默认执行器。在 `sandbox_root` 下建立独立目录执行，与工作区隔离。
 
 ```yaml
 execution:
-  backend: container
-  container:
-    # 基础镜像
-    image: echo-agent/sandbox:latest
-    # 资源限制
-    resources:
-      memory: 512m
-      cpu_count: 2
-      pids_limit: 100
-    # 网络配置
-    network: none          # 禁用网络访问
-    # 自动清理
-    auto_remove: true
-    # 执行超时
-    timeout: 60
-    # 卷挂载（只读）
-    volumes:
-      - source: /data/shared
-        target: /mnt/shared
-        read_only: true
+  default_executor: sandbox
+  sandbox_root: /tmp/echo-agent-sandbox
 ```
 
-### 镜像配置
+## container
 
-!!! question "需维护者确认"
-    默认沙箱镜像的构建方式与预装工具链需确认。
+在容器内执行，隔离性最强，同时能固定运行环境。需要本机已安装并运行容器运行时，且 `container_image` 必须显式指定 —— 它默认为空。
 
 ```yaml
 execution:
-  container:
-    image: echo-agent/sandbox:latest
-    # 镜像拉取策略
-    pull_policy: if_not_present  # always | never | if_not_present
+  default_executor: container
+  container_image: python:3.12-slim
+  network_policy: deny
 ```
 
-### 资源限制
+资源限额、卷挂载等细节由容器运行时侧决定，配置中没有对应字段。
 
-Container 后端可以精确控制资源使用：
+## remote
+
+通过 SSH 在远程主机上执行。
 
 ```yaml
 execution:
-  container:
-    resources:
-      memory: 512m         # 内存上限
-      cpu_count: 2         # CPU 核数
-      pids_limit: 100      # 最大进程数
-      disk_size: 1g        # 磁盘配额
+  default_executor: remote
+  remote_host: 10.0.0.20
+  remote_user: echo
+  remote_key_path: ~/.ssh/echo_agent_ed25519
+  remote_strict_host_key: "yes"   # 必须加引号，否则 YAML 会解析为布尔值
+  remote_connect_timeout: 10
 ```
 
-### 卷挂载
+`remote_strict_host_key` 的默认值 `accept-new` 会在首次连接时自动接受主机密钥。生产环境建议改为 `"yes"`，并预先把主机密钥写入 `known_hosts`，以免首次连接被中间人劫持。
+
+!!! warning "yes 与 no 必须加引号"
+    该字段是字符串枚举（`no` / `accept-new` / `yes`）。YAML 会把不加引号的 `yes` 和 `no` 解析为布尔值，导致配置校验失败。写作 `"yes"` 或 `"no"`。
+
+## 按工具覆盖执行器
+
+`tools.exec` 有独立的 `host` 字段，可为 `exec` 工具单独指定执行器，覆盖 `default_executor`：
 
 ```yaml
 execution:
-  container:
-    volumes:
-      - source: ./workspace
-        target: /workspace
-        read_only: false
-      - source: /etc/ssl/certs
-        target: /etc/ssl/certs
-        read_only: true
+  default_executor: sandbox
+
+tools:
+  exec:
+    host: container        # 只有 exec 工具走容器
 ```
 
-!!! warning "安全警告"
-    避免将敏感目录（如 `/etc`、`~/.ssh`、`~/.aws`）以可写方式挂载到容器中。始终使用 `read_only: true`，除非确实需要写入。
+`tools.exec` 的其余字段用于约束命令本身：
 
-## Process 后端
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `enabled` | `true` | 是否启用 `exec` 工具 |
+| `security` | `allowlist` | 命令准入策略 |
+| `allowed_commands` | `[]` | 显式允许的命令 |
+| `blocked_commands` | `[]` | 显式拒绝的命令 |
+| `safe_bins` | 见下 | 视为安全的可执行文件清单 |
+| `ask` | `on_miss` | 何时请求审批 |
+| `max_output_chars` | `2000000` | 输出截断阈值 |
+| `host` | `sandbox` | 该工具使用的执行器 |
 
-Process 后端用于管理长时间运行的子进程，支持 stdin/stdout 交互式通信，适合运行服务、REPL 或需要持续交互的程序。
+`safe_bins` 默认包含 `awk`、`cat`、`date`、`echo`、`find`、`grep`、`head`、`ls`、`pwd` 等只读类命令。
 
-### 工具说明
+`execute_code` 的约束在 `tools.code_exec`，含 `enabled`、`allowed_languages`、`timeout_seconds` 三项。
 
-- **process 工具**：管理子进程的生命周期（`risk_level = "exec"`），支持启动、停止、发送输入、读取输出
+## 执行器对比
 
-### 生命周期管理
+| 维度 | local | sandbox | container | remote |
+|------|:-----:|:-------:|:---------:|:------:|
+| 隔离强度 | 无 | 中 | 强 | 取决于远端 |
+| 额外依赖 | 无 | 无 | 容器运行时 | SSH 可达 + 密钥 |
+| 启动开销 | 最低 | 低 | 中 | 中 |
+| 可访问本机工作区 | 是 | 否 | 否 | 否 |
 
-Process 后端管理进程的完整生命周期：
+## 安全建议
 
-1. **启动**：创建子进程并分配 ID
-2. **交互**：通过 stdin 发送输入，从 stdout/stderr 读取输出
-3. **监控**：检查进程状态、资源使用
-4. **终止**：优雅停止或强制终止进程
+- 保持 `network_policy: deny`，确有出站需求时再放开，并优先考虑 `restricted`。
+- 不要为了省事切到 `local`：它没有隔离，模型生成的命令直接作用于工作区。
+- `tools.exec.security` 保持 `allowlist`，用 `allowed_commands` 精确列出所需命令，而非放开全部再用 `blocked_commands` 排除 —— 黑名单容易被绕过。
+- 使用 `remote` 时把 `remote_strict_host_key` 设为 `yes`。
+- `exec`、`execute_code`、`process` 都属 `HIGH_RISK_TOOLS`，在 `daemon` 与 `public_gateway` 运行形态下默认被拒绝。要在这些形态下使用，需显式加入 `tools.also_allow`，并配合 `permissions.approval` 保留人工确认。
 
-### 配置示例
+## 相关页面
 
-```yaml
-execution:
-  backend: process
-  process:
-    # 最大并发进程数
-    max_concurrent: 5
-    # 进程空闲超时（秒）
-    idle_timeout: 300
-    # stdin/stdout 缓冲区大小
-    buffer_size: 65536
-    # 默认工作目录
-    working_dir: /workspace
-```
-
-### stdin/stdout 处理
-
-Process 后端通过管道与子进程通信：
-
-```yaml
-execution:
-  process:
-    # I/O 编码
-    encoding: utf-8
-    # stdout 读取超时
-    read_timeout: 10
-    # 是否合并 stderr 到 stdout
-    merge_stderr: false
-```
-
-## 后端对比
-
-| 特性 | Shell | Container | Process |
-|------|-------|-----------|---------|
-| **隔离级别** | 无 | 容器级（强） | 进程级（弱） |
-| **启动速度** | 即时 | 较慢（容器创建） | 快速 |
-| **资源控制** | 无 | 精确（cgroups） | 有限 |
-| **网络访问** | 完全 | 可配置 | 完全 |
-| **文件系统访问** | 完全 | 受限（挂载） | 完全 |
-| **持久性** | 无（一次性） | 无（默认销毁） | 有（进程存活期间） |
-| **交互能力** | 单次命令 | 单次命令 | 持续交互 |
-| **适用场景** | 快速脚本 | 沙箱执行 | 服务/REPL |
-
-## 安全最佳实践
-
-### 通用建议
-
-1. **最小权限原则**：优先使用 Container 后端执行不可信代码
-2. **超时设置**：始终配置超时，防止资源耗尽
-3. **资源限制**：为 Container 后端设置合理的内存和 CPU 限制
-4. **日志审计**：记录所有执行操作以便事后审计
-
-### Shell 后端安全
-
-!!! warning "安全警告"
-    Shell 后端不提供任何隔离。以下措施仅能降低风险，不能消除风险。
-
-- 限制可执行的命令白名单
-- 设置严格的超时时间
-- 避免以 root 身份运行
-- 使用 `working_dir` 限制工作目录
-
-### Container 后端安全
-
-- 使用 `network: none` 禁用网络（除非必需）
-- 设置 `read_only` 根文件系统
-- 限制 `pids_limit` 防止 fork 炸弹
-- 不挂载 Docker socket
-- 定期更新基础镜像
-
-### Process 后端安全
-
-- 限制最大并发进程数
-- 设置空闲超时自动清理
-- 监控进程资源使用
-- 避免以提升权限运行子进程
+- [安全档位矩阵](../reference/security-profile-matrix.md) — 工具准入与审批判定
+- [内置工具参考](../reference/tools.md) — `exec` / `execute_code` / `process` 的参数
+- [配置参考](../reference/configuration.md) — 由 schema 自动生成的逐项说明

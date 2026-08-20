@@ -49,12 +49,12 @@ gateway:
       - "ea-user-x7y8z9w0v1u2"
     admin_tokens:
       - "ea-admin-secret-token"
-    token_header: "X-Echo-Token"
+    token_header: "X-Echo-Agent-Token"
 ```
 
 - `api_tokens`：普通用户 Token，可执行对话和任务操作
 - `admin_tokens`：管理员 Token，可访问配置修改、服务管理等管理接口
-- `token_header`：自定义请求头名称，默认 `X-Echo-Token`
+- `token_header`：自定义请求头名称，默认 `X-Echo-Agent-Token`
 
 ### pairing 模式
 
@@ -84,15 +84,15 @@ gateway:
 ```yaml
 gateway:
   host: 127.0.0.1    # 仅本地访问（默认）
-  port: 8420
+  port: 58123
 ```
 
 如必须接受远程连接（如容器环境），使用防火墙限制来源：
 
 ```bash
 # iptables 示例：仅允许内网访问
-iptables -A INPUT -p tcp --dport 8420 -s 10.0.0.0/8 -j ACCEPT
-iptables -A INPUT -p tcp --dport 8420 -j DROP
+iptables -A INPUT -p tcp --dport 58123 -s 10.0.0.0/8 -j ACCEPT
+iptables -A INPUT -p tcp --dport 58123 -j DROP
 ```
 
 ### Origin 保护
@@ -121,37 +121,44 @@ Gateway 会拒绝 `Origin` 或 `Host` 头不在白名单中的请求。
 
 Echo Agent 提供分级安全配置，通过 profile 快速应用预定义策略：
 
-### security.profile（3 级）
+### security.profile：运行形态
 
-| 级别 | 名称 | 说明 |
-|------|------|------|
-| 1 | `relaxed` | 最少限制，适合本地开发 |
-| 2 | `standard` | 平衡安全与功能，默认值 |
-| 3 | `strict` | 最大限制，生产推荐 |
+`security.profile` 描述的是**部署形态**，而非"宽松到严格"的强度等级。合法取值只有三个：
+
+| 取值 | 含义 | 追加限制 |
+|------|------|----------|
+| `personal_cli` | 本机单人使用（默认） | 无 |
+| `daemon` | 长期后台运行 | 拒绝 4 个工具 + 4 类能力 |
+| `public_gateway` | 网关对外暴露 | 拒绝 11 个工具 + 8 类能力 |
 
 ```yaml
 security:
-  profile: strict
+  profile: public_gateway    # 对外暴露时使用
 ```
 
-### tools.profile（4 级）
+!!! warning "不存在 relaxed / standard / strict"
+    这三个名字不是合法取值，填入会在启动时被配置校验拒绝。请按部署形态选择上表中的取值。
 
-控制 Agent 可调用的工具范围：
+### tools.profile：工具白名单
 
-| 级别 | 名称 | 可用工具 |
-|------|------|---------|
-| 1 | `minimal` | MINIMAL_TOOLS — 仅基础对话 |
-| 2 | `messaging` | + MESSAGING_TOOLS — 消息通道 |
-| 3 | `coding` | + CODING_TOOLS — 代码读写执行 |
-| 4 | `full` | + HIGH_RISK_TOOLS — 系统管理 |
+控制 Agent 可调用的工具范围，四档累加，默认 `full`：
+
+| 档位 | 工具数 | 可用范围 |
+|------|--------|----------|
+| `minimal` | 14 | 只读问答 |
+| `messaging` | 18 | + 记忆与媒体生成 |
+| `coding` | 24 | + 文件写入与编排 |
+| `full` | 全部 | 白名单为 `*`，放通所有工具（默认） |
 
 ```yaml
 tools:
   profile: coding    # 生产环境建议不超过 coding
 ```
 
-!!! danger "HIGH_RISK_TOOLS 警告"
-    `full` 级别包含文件删除、系统命令等高风险工具。除非明确需要，否则不要在生产环境启用。
+!!! danger "默认档位是 full"
+    `full` 放通全部工具，包括 `exec`、`execute_code`、`process`、`skill_install`、`skill_manage`、`cronjob` 这 6 个 `HIGH_RISK_TOOLS`。生产环境应显式降到 `coding` 或更低，并配合 `security.profile` 收紧。
+
+两个字段是独立生效的：`tools.profile` 决定白名单，`security.profile` 在白名单之上追加拒绝。完整判定顺序见[安全档位矩阵](../reference/security-profile-matrix.md)。
 
 ---
 
@@ -171,10 +178,14 @@ Echo Agent 的内置工具按风险分为四组：
 ```yaml
 tools:
   profile: coding
-  disabled:
-    - "shell_execute"        # 禁用特定高风险工具
-    - "file_delete"
+  deny:                    # 显式禁用，优先于档位
+    - exec
+    - execute_code
+  also_allow:              # 在档位基础上额外放行
+    - web_search
 ```
+
+配置中没有 `tools.disabled`。三个列表的关系是：`deny` 显式禁用，`also_allow` 在档位之上追加，`allow` 则完全覆盖档位、只放行列出的工具。
 
 ---
 
@@ -214,27 +225,35 @@ chmod 600 ~/.echo-agent/config.yaml
 ```yaml
 # ~/.echo-agent/config.yaml — 生产环境
 security:
-  profile: strict
+  profile: daemon          # 或 public_gateway（对外暴露时）
 
 tools:
-  profile: coding
-  disabled:
-    - "shell_execute"
+  profile: coding          # 不使用默认的 full
+  deny:
+    - skill_install        # deny 是第一层判定，无法被绕过
 
 gateway:
   host: 127.0.0.1
-  port: 8420
+  port: 58123
   auth:
     mode: allowlist
-    api_tokens:
-      - "${ECHO_AGENT_API_TOKEN}"      # 通过环境变量注入
-    admin_tokens:
-      - "${ECHO_AGENT_ADMIN_TOKEN}"
     allowed_origins:
       - "http://localhost:3000"
     allowed_hosts:
       - "localhost"
 ```
 
-!!! question "需维护者确认"
-    配置文件中是否支持 `${ENV_VAR}` 语法进行环境变量替换？还是需要通过 `ECHO_AGENT_` 前缀的环境变量覆盖？
+禁用工具用 `tools.deny`，配置中没有 `tools.disabled` 字段。
+
+!!! warning "令牌不要写在配置文件里"
+    配置文件**不支持** `${ENV_VAR}` 形式的环境变量替换 —— 写成 `"${ECHO_AGENT_API_TOKEN}"` 会被当作字面字符串存为令牌值，而不是读取环境变量。
+
+    `api_tokens` 与 `admin_tokens` 是列表类型，也**无法**用环境变量注入 —— 环境变量的值一律是字符串，`ECHO_AGENT_GATEWAY__AUTH__API_TOKENS='["x"]'` 会因类型不符被校验拒绝。
+
+    可行的做法是把令牌写在配置文件里，并用文件权限保护：
+
+    ```bash
+    chmod 600 ~/.echo-agent/echo-agent.yaml
+    ```
+
+    确保该文件不进版本库。环境变量的覆盖规则与适用范围见[环境变量参考](../reference/environment-variables.md)。

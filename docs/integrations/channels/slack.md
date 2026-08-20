@@ -15,7 +15,8 @@ Slack 通道通过 Socket Mode（WebSocket）接收事件，使用 Web API 发�
 
 ```yaml
 channels:
-  - type: slack
+  slack:
+    enabled: true
     bot_token: "xoxb-your-bot-token"
     app_token: "xapp-your-app-token"
     allow_from:

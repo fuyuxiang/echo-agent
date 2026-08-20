@@ -1,236 +1,148 @@
 # Execution Backends
 
-Echo Agent provides three execution backends for running code and commands. Each backend offers different tradeoffs in isolation, performance, and capabilities. Choose the appropriate backend based on your requirements.
+Command and code tools (`exec`, `execute_code`, `process`) do not run inside the agent process. They are handed to an **executor**, which determines the isolation strength and where the work runs. The fields on this page come from `ExecutionConfig` in `echo_agent/config/schema.py`, and the behaviour from `echo_agent/agent/executors/factory.py`.
 
-## Overview
+## The four executors
 
-| Backend | Tools | Isolation | Performance | Use Case |
-|---------|-------|-----------|-------------|----------|
-| Shell | `shell`, `code_exec` | None (full system access) | Highest | Quick command execution, scripting |
-| Container | Docker container | Strong (sandboxed) | Moderate (startup overhead) | Untrusted code, multi-tenant environments |
-| Process | `process` | Process-level | High | Long-running services, interactive processes |
+`execution.default_executor` selects the executor. It accepts four values and defaults to `sandbox`:
 
-## Shell Backend
+| Value | Isolation | Runs on | Suited to |
+|-------|-----------|---------|-----------|
+| `local` | none beyond the process | this machine, inside the workspace | fully trusted local development |
+| `sandbox` | a separate sandbox directory (default) | this machine, under `sandbox_root` | the default choice, balancing usability and isolation |
+| `container` | a container | the local container runtime | strong isolation or a pinned environment |
+| `remote` | SSH | a remote host | when the compute or environment lives elsewhere |
 
-The Shell backend executes commands and code directly on the host system via the `shell` and `code_exec` tools.
-
-!!! warning "Security Warning"
-    The Shell backend has full system access. Executed commands can read/write arbitrary files, access the network, and install packages. Only use this backend in trusted environments.
-
-### Tools
-
-- **shell tool**: Executes shell commands directly (`risk_level = "exec"`)
-- **code_exec tool**: Executes code snippets in various languages (`risk_level = "exec"`)
-
-### Configuration
+The executor instance is reused for the lifetime of the `AgentLoop`, so sandbox and container setup costs are paid once rather than on every tool call.
 
 ```yaml
 execution:
-  backend: shell
-  shell:
-    # Default shell path
-    command: /bin/bash
-    # Command execution timeout (seconds)
-    timeout: 30
-    # Working directory
-    working_dir: /workspace
-    # Environment variables
-    env:
-      PATH: /usr/local/bin:/usr/bin:/bin
-      LANG: en_US.UTF-8
+  default_executor: sandbox
+  network_policy: deny
 ```
 
-### Timeout Control
+!!! note "There is no execution.backend"
+    The field is `default_executor`, and its four values are a flat enum. There is no `execution.backend`, and no per-backend subsections such as `execution.shell`, `execution.container` or `execution.process`. Writing that structure raises no error but is silently ignored as an unknown key.
 
-The Shell backend supports command-level timeout settings to prevent commands from hanging indefinitely:
+## Common options
+
+`ExecutionConfig` has exactly these fields:
+
+| Field | Default | Purpose |
+|-------|---------|---------|
+| `default_executor` | `sandbox` | Executor type |
+| `network_policy` | `deny` | Outbound policy: `allow` / `deny` / `restricted` |
+| `sandbox_root` | `/tmp/echo-agent-sandbox` | Root directory for the `sandbox` executor |
+| `container_image` | `''` | Image used by the `container` executor |
+| `remote_host` | `''` | Target host for the `remote` executor |
+| `remote_user` | `root` | SSH user |
+| `remote_key_path` | `''` | SSH private key path |
+| `remote_strict_host_key` | `accept-new` | Host key checking: `no` / `accept-new` / `yes` |
+| `remote_connect_timeout` | `10` | SSH connect timeout in seconds |
+| `max_background_tasks` | `64` | Concurrency ceiling for background tasks |
+
+`network_policy` is passed to every executor. Because it defaults to `deny`, `web_fetch`, `web_search` and any tool carrying the `network.outbound` capability are withheld from the model — see the [security profile matrix](../reference/security-profile-matrix.md).
+
+## local
+
+Executes directly in the workspace with no added isolation. Use it only when you fully trust the workload and need access to the local environment.
 
 ```yaml
 execution:
-  shell:
-    timeout: 30          # Default timeout: 30 seconds
-    max_timeout: 300     # Maximum allowed timeout: 5 minutes
+  default_executor: local
 ```
 
-## Container Backend
+## sandbox
 
-The Container backend provides fully isolated execution environments via Docker. It is suitable for running untrusted code or scenarios requiring environment consistency.
-
-!!! question "Needs Maintainer Confirmation"
-    The following container configuration details (default resource limits, network policies, image pull policies) need confirmation from maintainers based on the actual deployment environment.
-
-### Docker Setup
-
-Ensure Docker is installed on the host and the Echo Agent process has permission to access the Docker daemon:
-
-```bash
-# Verify Docker is available
-docker info
-
-# Confirm user is in the docker group
-groups | grep docker
-```
-
-### Configuration
+The default. Work runs in its own directory under `sandbox_root`, separate from the workspace.
 
 ```yaml
 execution:
-  backend: container
-  container:
-    # Base image
-    image: echo-agent/sandbox:latest
-    # Resource limits
-    resources:
-      memory: 512m
-      cpu_count: 2
-      pids_limit: 100
-    # Network configuration
-    network: none          # Disable network access
-    # Auto cleanup
-    auto_remove: true
-    # Execution timeout
-    timeout: 60
-    # Volume mounts (read-only)
-    volumes:
-      - source: /data/shared
-        target: /mnt/shared
-        read_only: true
+  default_executor: sandbox
+  sandbox_root: /tmp/echo-agent-sandbox
 ```
 
-### Image Configuration
+## container
 
-!!! question "Needs Maintainer Confirmation"
-    The build process and pre-installed toolchain for the default sandbox image need confirmation.
+Executes inside a container, giving the strongest isolation and a pinned environment. A container runtime must be installed and running, and `container_image` must be set explicitly — it defaults to empty.
 
 ```yaml
 execution:
-  container:
-    image: echo-agent/sandbox:latest
-    # Image pull policy
-    pull_policy: if_not_present  # always | never | if_not_present
+  default_executor: container
+  container_image: python:3.12-slim
+  network_policy: deny
 ```
 
-### Resource Limits
+Resource limits and volume mounts are decided on the container runtime side; there are no configuration fields for them here.
 
-The Container backend allows precise control over resource usage:
+## remote
+
+Executes on a remote host over SSH.
 
 ```yaml
 execution:
-  container:
-    resources:
-      memory: 512m         # Memory limit
-      cpu_count: 2         # CPU cores
-      pids_limit: 100      # Maximum process count
-      disk_size: 1g        # Disk quota
+  default_executor: remote
+  remote_host: 10.0.0.20
+  remote_user: echo
+  remote_key_path: ~/.ssh/echo_agent_ed25519
+  remote_strict_host_key: "yes"   # must be quoted, or YAML parses it as a bool
+  remote_connect_timeout: 10
 ```
 
-### Volume Mounts
+The default `accept-new` accepts the host key on first connection. In production prefer `"yes"` with the host key pre-seeded in `known_hosts`, so the first connection cannot be intercepted.
+
+!!! warning "Quote yes and no"
+    This field is a string enum (`no` / `accept-new` / `yes`). Unquoted `yes` and `no` are parsed by YAML as booleans, which fails configuration validation. Write `"yes"` or `"no"`.
+
+## Overriding the executor per tool
+
+`tools.exec` has its own `host` field, which overrides `default_executor` for the `exec` tool alone:
 
 ```yaml
 execution:
-  container:
-    volumes:
-      - source: ./workspace
-        target: /workspace
-        read_only: false
-      - source: /etc/ssl/certs
-        target: /etc/ssl/certs
-        read_only: true
+  default_executor: sandbox
+
+tools:
+  exec:
+    host: container        # only exec runs in a container
 ```
 
-!!! warning "Security Warning"
-    Avoid mounting sensitive directories (such as `/etc`, `~/.ssh`, `~/.aws`) as writable into containers. Always use `read_only: true` unless write access is genuinely required.
+The remaining `tools.exec` fields constrain the command itself:
 
-## Process Backend
+| Field | Default | Purpose |
+|-------|---------|---------|
+| `enabled` | `true` | Whether the `exec` tool is available |
+| `security` | `allowlist` | Command admission policy |
+| `allowed_commands` | `[]` | Explicitly permitted commands |
+| `blocked_commands` | `[]` | Explicitly denied commands |
+| `safe_bins` | see below | Executables treated as safe |
+| `ask` | `on_miss` | When to request approval |
+| `max_output_chars` | `2000000` | Output truncation threshold |
+| `host` | `sandbox` | Executor used by this tool |
 
-The Process backend manages long-running subprocesses with stdin/stdout interactive communication. It is suitable for running services, REPLs, or programs requiring ongoing interaction.
+`safe_bins` defaults to read-only utilities such as `awk`, `cat`, `date`, `echo`, `find`, `grep`, `head`, `ls` and `pwd`.
 
-### Tools
+Constraints for `execute_code` live under `tools.code_exec`, with three fields: `enabled`, `allowed_languages` and `timeout_seconds`.
 
-- **process tool**: Manages subprocess lifecycle (`risk_level = "exec"`), supporting start, stop, send input, and read output operations
+## Comparison
 
-### Lifecycle Management
+| Aspect | local | sandbox | container | remote |
+|--------|:-----:|:-------:|:---------:|:------:|
+| Isolation | none | medium | strong | depends on the host |
+| Extra prerequisites | none | none | container runtime | SSH reachability + key |
+| Startup cost | lowest | low | medium | medium |
+| Can reach the local workspace | yes | no | no | no |
 
-The Process backend manages the full lifecycle of a process:
+## Security guidance
 
-1. **Start**: Creates a subprocess and assigns an ID
-2. **Interact**: Sends input via stdin, reads output from stdout/stderr
-3. **Monitor**: Checks process status and resource usage
-4. **Terminate**: Gracefully stops or forcefully kills the process
+- Keep `network_policy: deny`; open it only when outbound access is genuinely needed, and prefer `restricted` first.
+- Do not switch to `local` for convenience: it has no isolation, so model-generated commands act directly on the workspace.
+- Keep `tools.exec.security` at `allowlist` and enumerate what you need in `allowed_commands`, rather than permitting everything and subtracting with `blocked_commands` — denylists are easy to work around.
+- With `remote`, set `remote_strict_host_key` to `"yes"`.
+- `exec`, `execute_code` and `process` all belong to `HIGH_RISK_TOOLS` and are denied by default under the `daemon` and `public_gateway` shapes. To use them there, add them to `tools.also_allow` explicitly and keep a human in the loop via `permissions.approval`.
 
-### Configuration
+## Related pages
 
-```yaml
-execution:
-  backend: process
-  process:
-    # Maximum concurrent processes
-    max_concurrent: 5
-    # Process idle timeout (seconds)
-    idle_timeout: 300
-    # stdin/stdout buffer size
-    buffer_size: 65536
-    # Default working directory
-    working_dir: /workspace
-```
-
-### stdin/stdout Handling
-
-The Process backend communicates with subprocesses via pipes:
-
-```yaml
-execution:
-  process:
-    # I/O encoding
-    encoding: utf-8
-    # stdout read timeout
-    read_timeout: 10
-    # Whether to merge stderr into stdout
-    merge_stderr: false
-```
-
-## Backend Comparison
-
-| Feature | Shell | Container | Process |
-|---------|-------|-----------|---------|
-| **Isolation Level** | None | Container-level (strong) | Process-level (weak) |
-| **Startup Speed** | Instant | Slower (container creation) | Fast |
-| **Resource Control** | None | Precise (cgroups) | Limited |
-| **Network Access** | Full | Configurable | Full |
-| **Filesystem Access** | Full | Restricted (mounts) | Full |
-| **Persistence** | None (one-shot) | None (destroyed by default) | Yes (process lifetime) |
-| **Interactivity** | Single command | Single command | Continuous interaction |
-| **Best For** | Quick scripts | Sandboxed execution | Services/REPLs |
-
-## Security Best Practices
-
-### General Recommendations
-
-1. **Principle of Least Privilege**: Prefer the Container backend for untrusted code execution
-2. **Timeout Configuration**: Always configure timeouts to prevent resource exhaustion
-3. **Resource Limits**: Set reasonable memory and CPU limits for Container backends
-4. **Audit Logging**: Log all execution operations for post-hoc auditing
-
-### Shell Backend Security
-
-!!! warning "Security Warning"
-    The Shell backend provides no isolation. The following measures can only reduce risk, not eliminate it.
-
-- Restrict commands to an allowlist
-- Set strict timeout values
-- Avoid running as root
-- Use `working_dir` to constrain the working directory
-
-### Container Backend Security
-
-- Use `network: none` to disable networking unless required
-- Set the root filesystem to `read_only`
-- Limit `pids_limit` to prevent fork bombs
-- Never mount the Docker socket
-- Regularly update base images
-
-### Process Backend Security
-
-- Limit the maximum number of concurrent processes
-- Set idle timeouts for automatic cleanup
-- Monitor process resource usage
-- Avoid running subprocesses with elevated privileges
+- [Security profile matrix](../reference/security-profile-matrix.md) — tool admission and approval
+- [Built-in tool reference](../reference/tools.md) — parameters for `exec`, `execute_code` and `process`
+- [Configuration reference](../reference/configuration.md) — per-option reference generated from the schema

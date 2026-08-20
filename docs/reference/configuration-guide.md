@@ -1,323 +1,155 @@
 # 配置指南
 
-Echo Agent 使用 YAML 格式的分层配置系统，支持多来源合并和环境变量覆盖。
+本页讲配置的**机制**：文件在哪、如何加载、如何覆盖、如何校验。逐个字段的含义、类型与默认值请查[配置参考](configuration.md) —— 那一页由 `echo_agent.config.docgen` 从 schema 自动生成，永远与代码同步。
+
+!!! note "两页的分工"
+    本页解释规则，不复制字段清单。手工维护的字段表会随代码演进而失准，因此这里只列出各配置节的用途与入口，具体字段一律以自动生成页和 `echo_agent/config/schema.py` 为准。
 
 ## 配置加载顺序
 
-配置按以下顺序加载，后加载的覆盖先加载的：
+`load_config()` 依次合并四个来源，后者覆盖前者：
 
-```
-1. Package 内置默认值（最低优先级）
-2. 用户 YAML 文件（-c 指定 或 ~/.echo-agent/config.yaml）
-3. ECHO_AGENT_ 环境变量
-4. CLI 运行时覆盖（--option 参数）
-5. Profile 默认值
-6. Pydantic 校验与类型转换（最高优先级）
-```
+| 顺序 | 来源 | 说明 |
+|------|------|------|
+| 1 | `echo_agent/config/default.yaml` | 包内默认配置，随版本发布 |
+| 2 | 用户配置文件 | 见下节的查找规则 |
+| 3 | `ECHO_AGENT_` 环境变量 | 见[环境变量参考](environment-variables.md) |
+| 4 | 调用方显式 overrides | 供程序化调用使用 |
 
-!!! tip "查看最终配置"
-    使用 `echo-agent config dump --show-source` 可查看每个字段的最终值及其来源。
-
----
+合并是**深合并**：只覆盖同名叶子字段，同级其他字段保留原值。因此用户配置只需写要改的部分，不必复制整份默认配置。
 
 ## 配置文件位置
 
-| 路径 | 作用域 | 说明 |
-|------|--------|------|
-| `~/.echo-agent/config.yaml` | 全局 | 用户级默认配置 |
-| `.echo-agent/config.yaml` | 工作区 | 项目级配置（覆盖全局） |
-| `-c <path>` | 手动指定 | CLI 参数指定的配置文件 |
+未通过 `--config` 指定路径时，按以下文件名在搜索目录中依次查找，取第一个存在的：
 
----
+1. `echo-agent.yaml`
+2. `echo-agent.yml`
+3. `config.yaml`
+4. `config.yml`
 
-## 顶层配置字段
+## 顶层配置节
 
-完整的顶层字段列表：
+配置树共 33 个配置节加 1 个标量字段 `workspace`。按用途分组如下：
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `agent` | object | Agent 核心行为配置 |
-| `security` | object | 安全策略与 Profile |
-| `channels` | object | 通道集成配置（Slack/Telegram/Discord 等） |
-| `models` | object | 模型提供商与参数 |
-| `tools` | object | 工具系统配置与 Profile |
-| `execution` | object | 执行环境参数 |
-| `permissions` | object | 权限策略 |
-| `credentials` | object | 凭据存储 |
-| `session` | object | 会话管理 |
-| `memory` | object | 长期记忆系统 |
-| `knowledge` | object | 知识库配置 |
-| `multi_agent` | object | 多 Agent 协作 |
-| `scheduler` | object | 定时任务调度 |
-| `checkpoint` | object | 检查点与快照 |
-| `validation` | object | 输入输出校验规则 |
-| `media_understanding` | object | 多媒体理解能力 |
-| `runtime` | object | 运行时参数 |
-| `storage` | object | 存储后端配置 |
-| `spill` | object | 大文件溢出存储 |
-| `observability` | object | 可观测性（日志/追踪/指标） |
-| `skills` | object | 技能系统 |
-| `compression` | object | 上下文压缩策略 |
-| `gateway` | object | Gateway 服务配置 |
-| `planning` | object | 规划与任务分解 |
-| `a2a` | object | Agent-to-Agent 协议 |
-| `evaluation` | object | 评估框架 |
-| `bus` | object | 事件总线 |
-| `rate_limit` | object | 频率限制 |
-| `circuit_breaker` | object | 熔断器 |
-| `plugins` | object | 插件系统 |
-| `ui` | object | UI 配置 |
-| `evolution` | object | 技能进化系统 |
-| `cost` | object | 费用管理 |
-| `workspace` | object | 工作区设置 |
+| 分组 | 配置节 |
+|------|--------|
+| 模型与推理 | `models`、`agent`、`planning`、`compression` |
+| 工具与执行 | `tools`、`execution`、`permissions`、`security` |
+| 通道与网关 | `channels`、`gateway`、`bus`、`a2a` |
+| 记忆与知识 | `memory`、`knowledge`、`session`、`spill` |
+| 任务与技能 | `scheduler`、`skills`、`evolution`、`multi_agent` |
+| 运行与运维 | `runtime`、`storage`、`checkpoint`、`observability` |
+| 成本与稳定性 | `cost`、`rate_limit`、`circuit_breaker` |
+| 其他 | `credentials`、`plugins`、`ui`、`validation`、`evaluation`、`media_understanding`、`workspace` |
 
----
+### 常用配置节速览
 
-## 核心配置详解
+以下只列出各节最常调整的入口字段及其真实默认值。
 
-### agent
-
-```yaml
-agent:
-  name: "my-echo-agent"          # Agent 实例名称
-  persona: "你是一个有帮助的助手"  # 系统人设提示词
-  language: "zh-CN"               # 首选回复语言
-  max_iterations: 20              # 单次任务最大迭代数
-  idle_timeout: 3600              # 空闲超时（秒）
-```
-
-### security
-
-```yaml
-security:
-  profile: standard              # 安全级别: minimal / standard / extended
-  sandbox: true                  # 启用沙箱隔离
-  allowed_paths:                 # 允许访问的文件路径
-    - /home/user/projects
-    - /tmp/echo-agent
-  blocked_commands:              # 禁止执行的命令
-    - rm -rf /
-    - format
-```
-
-Profile 详见 [安全配置矩阵](security-profile-matrix.md)。
-
-### models
+**models** — 模型与供应商。`default_model`、`fallback_model` 指定模型；`providers` 是供应商列表；`routes` 按任务类型分流；`model_windows` 覆盖上下文窗口。
 
 ```yaml
 models:
-  primary:
-    provider: anthropic          # 提供商: anthropic / openai / google / local
-    model: claude-sonnet-4-20250514  # 模型标识
-    api_key: ${ANTHROPIC_API_KEY}  # API Key（支持环境变量引用）
-    base_url: null               # 自定义端点（用于代理/本地模型）
-    max_tokens: 4096             # 最大输出 token
-    temperature: 0.7             # 采样温度
-  fallback:                      # 备选模型（主模型失败时使用）
-    provider: openai
-    model: gpt-4o
-    api_key: ${OPENAI_API_KEY}
+  default_model: claude-sonnet-4-5
+  providers:
+    - name: anthropic          # 供应商标识，不是 type
+      # api_key 可省略：留空时从 ANTHROPIC_API_KEY 环境变量自动发现
+      models: [claude-sonnet-4-5]
 ```
 
-### tools
+!!! warning "不存在 models.primary"
+    供应商由 `providers` 列表描述，其判别字段是 `name` 而非 `type`；模型由 `default_model` / `fallback_model` 指定。写成 `models.primary.provider` 这类结构不会报错，但会被 pydantic 当作未知键**静默忽略**，最终得到一份空模型配置。详见[模型配置指南](../guides/models/index.md)。
+
+**tools** — 工具准入。`profile` 选档位（默认 `full`）；`allow` / `also_allow` / `deny` 精细控制；`restrict_to_workspace` 限制文件操作范围。各工具的独立开关是嵌套节，如 `tools.exec`、`tools.browser`、`tools.web`。
+
+**security** — 只有一个字段 `profile`，取值 `personal_cli`（默认）/ `daemon` / `public_gateway`。
+
+**permissions** — 审批与提权，含 `approval`、`elevated`、`admin_users` 三部分。审批模式在 `permissions.approval.mode`，取值 `manual` / `smart`（默认）/ `off`。
 
 ```yaml
 tools:
-  profile: messaging             # 工具级别: minimal / messaging / coding / full
-  approval_mode: ask             # 审批模式: auto / ask / deny
-  timeout: 300                   # 工具执行超时（秒）
-  overrides:                     # 单工具级别覆盖
-    shell:
-      approval_mode: ask
-      timeout: 60
-    filesystem:
-      approval_mode: auto
-      allowed_paths:
-        - ./workspace
+  profile: coding
+security:
+  profile: daemon
+permissions:
+  approval:
+    mode: smart
 ```
 
-### channels
+准入与审批的完整判定顺序见[安全档位矩阵](security-profile-matrix.md)。
 
-```yaml
-channels:
-  slack:
-    enabled: true
-    bot_token: ${SLACK_BOT_TOKEN}
-    app_token: ${SLACK_APP_TOKEN}
-    allowed_channels:
-      - general
-      - dev-team
-  telegram:
-    enabled: true
-    bot_token: ${TELEGRAM_BOT_TOKEN}
-    allowed_users:
-      - 123456789
-  discord:
-    enabled: false
-    bot_token: ${DISCORD_BOT_TOKEN}
-```
-
-### gateway
+**gateway** — HTTP/WebSocket 网关。`enabled` 默认 `false`；`host` 默认 `127.0.0.1`；`port` 默认 `58123`；`api_prefix` 默认 `/api/v1`；`ws_path` 默认 `/ws`。鉴权在 `gateway.auth`，会话策略在 `gateway.session_policy`。
 
 ```yaml
 gateway:
-  host: 127.0.0.1
-  port: 8080
-  auth:
-    mode: pairing                # open / allowlist / pairing
-    api_tokens:
-      - "token-abc-123"
-    admin_tokens:
-      - "admin-xyz-789"
-    allowed_origins:
-      - "http://localhost:3000"
-    allowed_hosts:
-      - "localhost"
-    allowed_users: []
-    admin_users: []
-    token_header: "X-Echo-Token"
-    pairing_ttl_seconds: 300
-  cors:
-    enabled: true
-  tls:
-    enabled: false
-    cert_file: null
-    key_file: null
-```
-
-### memory
-
-```yaml
-memory:
-  backend: local                 # 存储后端: local / postgres
-  auto_save: true                # 自动保存对话记忆
-  consolidation_interval: 3600   # 记忆整合间隔（秒）
-  max_entries: 10000             # 最大记忆条目数
-  embedding:
-    enabled: true
-    model: text-embedding-3-small
-```
-
-### scheduler
-
-```yaml
-scheduler:
   enabled: true
-  max_concurrent: 5              # 最大并发任务数
-  timezone: "Asia/Shanghai"      # 时区
-  miss_policy: skip              # 错过执行策略: skip / run_once / run_all
+  host: 127.0.0.1      # 改为 0.0.0.0 即对外暴露，须同时启用鉴权
+  port: 58123
 ```
 
-### checkpoint
+**execution** — 执行后端。`default_executor` 默认 `sandbox`；`network_policy` 默认 `deny`，改为 `allow` 或 `restricted` 才允许出站访问。
 
-```yaml
-checkpoint:
-  enabled: true
-  interval: 3600                 # 自动检查点间隔（秒）
-  max_count: 50                  # 最大保留数量
-  auto_prune: true               # 自动清理过期检查点
-  retention_days: 30             # 保留天数
-```
+**observability** — 日志与追踪。`log_level` 默认 `INFO`；`trace_enabled`、`otel_enabled` 默认开启；`otel_endpoint` 为空时不导出。
 
-### observability
+**cost** — 成本控制。`enabled` 默认 `false`；`daily_budget_usd` 默认 `0.0`（不限制）；`soft_threshold_ratio` 默认 `0.8`。
 
-```yaml
-observability:
-  log_level: INFO                # DEBUG / INFO / WARNING / ERROR
-  log_file: null                 # 日志文件路径
-  otel_enabled: false            # OpenTelemetry 启用
-  otel_endpoint: null            # OTel Collector 端点
-  metrics_port: 9090             # Prometheus 指标端口
-  trace_sampling_rate: 0.1       # 追踪采样率
-```
+**rate_limit** — 限流。`session_rpm` 默认 `20`，`session_burst` 默认 `5`。
 
-### cost
+**circuit_breaker** — 熔断。`failure_threshold` 默认 `5`，`recovery_seconds` 默认 `60.0`，`half_open_max` 默认 `2`。
 
-```yaml
-cost:
-  tracking_enabled: true
-  daily_limit: 10.0              # 每日上限（USD）
-  monthly_limit: 200.0           # 每月上限（USD）
-  alert_threshold: 0.8           # 预警阈值（占比）
-  alert_channel: null            # 预警通知通道
-```
+**checkpoint** — 工作区快照。`enabled` 默认 `true`；`max_snapshots_per_workspace` 默认 `20`。快照**不含**数据库、会话、记忆与日志目录：对运行中的 SQLite 做文件级快照会得到撕裂的读取结果。
 
-### rate_limit
+**memory** — 记忆系统，字段较多（40 余项），涵盖分层、嵌入、重排与矛盾检测。默认启用且带本地嵌入模型，一般无需调整，详见[记忆系统](../concepts/memory-system.md)。
 
-```yaml
-rate_limit:
-  enabled: true
-  requests_per_minute: 60
-  tokens_per_minute: 100000
-  burst_multiplier: 1.5          # 突发倍率
-```
+### 字段命名
 
-### circuit_breaker
-
-```yaml
-circuit_breaker:
-  enabled: true
-  failure_threshold: 5           # 连续失败次数阈值
-  recovery_timeout: 60           # 恢复等待时间（秒）
-  half_open_requests: 3          # 半开状态试探请求数
-```
-
----
-
-## Profile 系统
-
-Profile 是预定义的配置模板，简化常见场景配置。
-
-### 安全 Profile
-
-| Profile | 说明 |
-|---------|------|
-| `minimal` | 最低安全限制，适合本地开发 |
-| `standard` | 平衡安全与功能（默认） |
-| `extended` | 最严格，适合生产环境 |
-
-### 工具 Profile
-
-| Profile | 包含工具范围 |
-|---------|-------------|
-| `minimal` | 仅只读工具 |
-| `messaging` | + 消息与媒体工具 |
-| `coding` | + 文件写入与代码执行 |
-| `full` | 所有工具（含高风险） |
-
----
+配置同时接受 snake_case 与 camelCase 两种写法，`allow_from` 与 `allowFrom` 等价。本文档统一使用 snake_case；`echo-agent config dump` 的输出为 camelCase，两者可以混用而不影响解析。
 
 ## 环境变量引用
 
-配置文件中支持 `${VAR_NAME}` 语法引用环境变量：
+!!! warning "配置文件不做变量替换"
+    配置值中的 `${VAR}` **不会**被展开，而是原样保留为字面字符串。写成 `api_key: "${ANTHROPIC_API_KEY}"` 会把这串字符本身当作 API Key。
 
-```yaml
-models:
-  primary:
-    api_key: ${ANTHROPIC_API_KEY}    # 从环境变量读取
-    base_url: ${API_PROXY:-null}     # 支持默认值语法
+正确的做法有两种。其一，完全不在配置里写凭据 —— 供应商 API Key 会从约定的环境变量自动发现：
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
----
+其二，用环境变量覆盖对应配置项（仅适用于标量字段，列表类型不支持）：
+
+```bash
+export ECHO_AGENT_MODELS__DEFAULT_MODEL=claude-sonnet-4-5
+```
+
+自动发现的变量名对照表与覆盖规则见[环境变量参考](environment-variables.md)。
 
 ## 配置校验
 
-```bash
-# 校验配置文件
-echo-agent config validate
+配置由 pydantic 校验，行为分两类，理解这一点对排查很关键：
 
-# 校验并显示错误详情
-echo-agent config validate -c ./config.yaml --verbose
+- **类型或取值非法** — 启动即报错并中止。例如把 `security.profile` 写成 `standard`（合法值只有三个），或把 `gateway.port` 写成非数字。
+- **未知字段** — 静默忽略，不报错、不警告。因此拼错字段名或用了不存在的结构时，表现为"配置没生效"而非报错。
+
+用以下命令在启动前检查配置：
+
+```bash
+echo-agent config validate
 ```
 
-常见校验错误：
+`config` 子命令共四个动作：
 
-| 错误 | 原因 | 解决方案 |
-|------|------|----------|
-| `Unknown field` | YAML 中存在未知字段 | 检查拼写或移除该字段 |
-| `Type error` | 类型不匹配 | 按文档修正值类型 |
-| `Missing required` | 缺少必填字段 | 补充必填值 |
-| `Invalid profile` | Profile 名称无效 | 使用有效的 Profile 名 |
+| 命令 | 作用 |
+|------|------|
+| `echo-agent config validate` | 校验配置合法性 |
+| `echo-agent config dump` | 输出合并后实际生效的配置（凭据自动脱敏），可加 `--format json` |
+| `echo-agent config explain <key>` | 解释某个配置项，接受点分路径 |
+| `echo-agent config gen-docs` | 重新生成配置参考页 |
 
-!!! question "需维护者确认"
-    配置文件中的 `${VAR:-default}` 默认值语法是否已完整实现？当前文档基于预期行为描述。
+排查"某项配置似乎没生效"时，优先怀疑第二类情况：用 `echo-agent config dump` 查看合并后的实际值，或用 `echo-agent config explain gateway.port` 确认字段路径拼写正确。
+
+## 相关页面
+
+- [配置参考](configuration.md) — 由 schema 自动生成的逐项说明
+- [环境变量参考](environment-variables.md) — 覆盖规则与凭据变量
+- [安全档位矩阵](security-profile-matrix.md) — 工具准入与审批判定

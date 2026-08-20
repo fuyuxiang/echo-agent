@@ -12,19 +12,21 @@ As conversation history grows toward the model's context window, older messages 
 
 ```yaml
 compression:
-  triggerRatio: 0.7   # compress when reaching 70% of window
-  targetRatio: 0.5    # compress down to 50%
+  trigger_ratio: 0.7          # compress on reaching 70% of the window
+  summary_target_ratio: 0.2   # token budget for the summary
+  tail_budget_ratio: 0.4      # share of the window kept as recent messages
+  head_protect_count: 3       # oldest messages never compressed
 ```
 
 ### 2. Tool Output Spill
 
-When a tool produces output exceeding the spill threshold, only a head/tail preview is sent to the model. The full output is stored as a spill file.
+When a tool produces output exceeding `max_inline_chars`, only a head/tail preview is sent to the model. The full output is stored as a spill artifact.
 
 ```yaml
 spill:
-  threshold: 8000     # characters before spill triggers
-  retentionDays: 7    # max retention
-  maxTotalMb: 500     # capacity limit
+  max_inline_chars: 6000  # characters before spill triggers
+  retention_days: 7       # max retention
+  max_total_mb: 512       # capacity limit
 ```
 
 The model receives:
@@ -38,8 +40,8 @@ The model receives:
 
 The `read_spill` tool allows the model to retrieve specific portions:
 
-- By character range: `read_spill(path, start=0, end=5000)`
-- By regex pattern: `read_spill(path, pattern="ERROR.*")`
+- By character offset: `read_spill(path, offset=0, limit=5000)` — offsets are characters, not lines, so single-line output such as minified JSON stays reachable
+- By regex pattern: `read_spill(path, pattern="ERROR.*")` — returns matching excerpts instead of a slice
 
 ## Security Boundaries
 

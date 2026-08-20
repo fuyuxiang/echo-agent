@@ -168,59 +168,117 @@ class LineChannel(BaseChannel):
 
 ## 步骤二：注册到 ChannelManager
 
-在 `echo_agent/channels/manager.py` 的通道映射中注册：
+注册表是 `echo_agent/channels/manager.py` 中的 `_CHANNEL_REGISTRY`：
 
 ```python
 from echo_agent.channels.line import LineChannel
 
-_CHANNEL_MAP: dict[str, type[BaseChannel]] = {
-    "cli": CliChannel,
+_CHANNEL_REGISTRY: dict[str, type[BaseChannel]] = {
+    "cli": CLIChannel,
     "telegram": TelegramChannel,
     "discord": DiscordChannel,
-    ...
+    # ...
     "line": LineChannel,  # ← 新增
 }
 ```
 
+也可以在包外调用 `register_channel_type("line", LineChannel)` 注册，效果等同于直接写入字典。
+
+!!! important "注册名必须与配置字段同名"
+    `start_all()` 通过 `getattr(self.config, name)` 取出该通道的配置，其中 `self.config` 是 `ChannelsConfig`。因此注册名必须与 `ChannelsConfig` 上的字段名完全一致，否则取不到配置，通道会被静默跳过。当前 14 个注册名与配置字段是一一对应的。
+
 ## 步骤三：添加配置项
 
-在 `echo_agent/config/schema.py` 中添加通道配置字段：
+在 `echo_agent/config/schema.py` 中新增一个通道配置类，并挂到 `ChannelsConfig` 上。配置是嵌套结构，不是扁平的前缀字段：
 
 ```python
-class ChannelsConfig(BaseModel):
-    ...
-    line_channel_token: str = ""
-    line_channel_secret: str = ""
-    line_enabled: bool = False
+class LineChannelConfig(_Base):
+    enabled: bool = Field(
+        default=False,
+        json_schema_extra={
+            "status": "effective", "ref": "channels/manager.py:615",
+            "desc_zh": "是否启用 LINE 通道",
+            "desc_en": "Enable the LINE channel",
+        },
+    )
+    channel_token: str = Field(default="", json_schema_extra={...})
+    channel_secret: str = Field(default="", json_schema_extra={...})
+    allow_from: list[str] = Field(default_factory=list, json_schema_extra={...})
+
+
+class ChannelsConfig(_Base):
+    # ...
+    line: LineChannelConfig = Field(default_factory=LineChannelConfig)
 ```
+
+对应的 YAML 形如（`line` 是本文假设的新通道，仓库中尚不存在）：
+
+```yaml
+channels:
+  line:
+    enabled: true
+    channel_token: "..."
+    channel_secret: "..."
+    allow_from: []
+```
+
+每个字段的 `json_schema_extra` 会被 `echo_agent.config.docgen` 读取，用于生成[配置参考](../reference/configuration.md)。省略它不会影响运行，但该字段不会出现在生成的文档里。
 
 ## 步骤四：实现可选功能
 
-### 消息编辑（如平台支持）
+可选方法在 `BaseChannel` 上均有默认实现，覆写时签名必须与基类一致。除 `send_typing`、`stop_typing`、`send_read_receipt` 返回 `None` 外，其余均返回 `SendResult`。
+
+### 消息编辑
+
+声明 `supports_edit = True` 后必须覆写本方法，流式回复依赖它更新已发出的消息。注意 `metadata` 与 `finalize` 是仅限关键字参数。
 
 ```python
-async def edit_message(self, chat_id: str, message_id: str, new_text: str) -> bool:
-    """编辑已发送的消息。"""
-    # 实现平台的消息编辑 API
-    return True
-```
-
-### 文件发送
-
-```python
-async def send_file(self, chat_id: str, file_path: str, caption: str = "") -> SendResult:
-    """发送文件/图片。"""
-    # 实现文件上传 API
-    pass
+async def edit_message(
+    self,
+    chat_id: str,
+    message_id: str,
+    text: str,
+    *,
+    metadata: dict[str, Any] | None = None,
+    finalize: bool = False,
+) -> SendResult:
+    """编辑已发送的消息。finalize 表示这是本轮的最后一次编辑。"""
+    ...
+    return SendResult(success=True, message_id=message_id)
 ```
 
 ### 表情回应
 
+声明 `supports_reactions = True` 后覆写这两个方法：
+
 ```python
-async def add_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
-    """对消息添加表情。"""
-    pass
+async def send_reaction(
+    self, chat_id: str, message_id: str, emoji: str,
+    metadata: dict[str, Any] | None = None,
+) -> SendResult:
+    ...
+
+async def remove_reaction(
+    self, chat_id: str, message_id: str, emoji: str,
+    metadata: dict[str, Any] | None = None,
+) -> SendResult:
+    ...
 ```
+
+### 其他可选方法
+
+| 方法 | 返回值 | 说明 |
+|------|--------|------|
+| `send_typing(chat_id, metadata=None)` | `None` | 显示"正在输入"状态 |
+| `stop_typing(chat_id)` | `None` | 结束输入状态 |
+| `send_read_receipt(chat_id, message_id, metadata=None)` | `None` | 已读回执 |
+| `send_poll(chat_id, poll, metadata=None)` | `SendResult` | 发送投票，`poll` 为 `PollRequest` |
+| `delete_message(chat_id, message_id, metadata=None)` | `SendResult` | 删除消息 |
+| `send_voice(chat_id, audio_source, metadata=None)` | `SendResult` | 发送语音 |
+
+### 文件发送
+
+文件能力通过类属性声明，而非覆写方法：将 `supports_files` 设为 `True`，实际发送在 `send()` 中依据事件内容处理。上层的 `send_file` 工具会先检查该属性，为假时不会尝试投递。
 
 ## should_deliver 机制
 
@@ -248,7 +306,7 @@ class SendResult:
 """tests/test_line_channel.py"""
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from echo_agent.channels.line import LineChannel
 from echo_agent.bus.events import OutboundEvent
@@ -257,9 +315,9 @@ from echo_agent.bus.events import OutboundEvent
 @pytest.fixture
 def channel():
     config = MagicMock()
-    config.line_channel_token = "test-token"
-    config.line_channel_secret = "test-secret"
-    config.transcription_api_key = ""
+    config.channel_token = "test-token"
+    config.channel_secret = "test-secret"
+    config.allow_from = []
     bus = MagicMock()
     return LineChannel(config, bus)
 
@@ -269,19 +327,27 @@ async def test_send_success(channel):
     channel._session = MagicMock()
     mock_resp = MagicMock()
     mock_resp.status = 200
-    channel._session.post = MagicMock(return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_resp)))
+    channel._session.post = MagicMock(
+        return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_resp))
+    )
 
-    event = OutboundEvent(chat_id="user123", text="Hello", is_final=True)
+    event = OutboundEvent.text_reply(channel="line", chat_id="user123", text="Hello")
     result = await channel.send(event)
     assert result.success
 
 
 @pytest.mark.asyncio
-async def test_send_skipped_non_final(channel):
-    event = OutboundEvent(chat_id="user123", text="thinking...", is_final=False)
-    result = await channel.send(event)
-    assert result.skipped  # supports_edit=False 跳过非 final
+async def test_non_final_is_not_delivered(channel):
+    event = OutboundEvent.text_reply(
+        channel="line", chat_id="user123", text="thinking...", is_final=False
+    )
+    assert channel.should_deliver(event) is False
 ```
+
+!!! warning "构造事件用 text_reply()，不要直接传 text="
+    `OutboundEvent` 与 `InboundEvent` 的正文字段是 `content: list[ContentBlock]`，没有 `text` 构造参数 —— `OutboundEvent(text="hi")` 会抛 `TypeError`。发送方向用类方法 `OutboundEvent.text_reply(channel=..., chat_id=..., text=...)`；读取方向用 `event.text` 属性，它会把内容块拼成字符串。
+
+    接收方向不要自己构造 `InboundEvent`：调用基类的 `self._build_event(sender_id=..., chat_id=..., text=...)`，它会执行 `allow_from` 白名单校验，并剥掉外部传入的 `_` 前缀内部控制键（如 `_cron_authorized`）。绕过它等于把审批闸门交给外部输入。
 
 ## 检查清单
 

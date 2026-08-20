@@ -30,43 +30,46 @@ Echo Agent 的性能瓶颈通常在模型调用延迟和本地数据 I/O。本�
 
 不同场景选择合适的模型，平衡成本与速度：
 
+按任务类型把不同场景分流到合适的模型，平衡成本与速度。分流规则写在 `models.routes`，用 `task_types` 匹配：
+
 ```yaml
 models:
-  routing:
-    # 简单对话用小模型
-    simple:
+  default_model: claude-sonnet-4-5
+  routes:
+    - task_types: [simple]
+      provider: openai
       model: gpt-4o-mini
       max_tokens: 1000
-    # 复杂推理用大模型
-    complex:
-      model: claude-sonnet-4-20250514
-      max_tokens: 4000
-    # 代码生成
-    coding:
-      model: claude-sonnet-4-20250514
+    - task_types: [coding]
+      provider: anthropic
+      model: claude-sonnet-4-5
       max_tokens: 8000
+      fallback_models: [gpt-4o]
 ```
 
-### 模型响应缓存
+配置中没有 `models.routing` 这样按场景名分组的嵌套结构，分流一律通过 `routes` 列表的 `task_types` 表达。
 
-对重复或相似请求启用缓存：
+### 上下文压缩
+
+Echo Agent 不缓存模型响应（配置中没有 `models.cache`）。降低重复输入开销的手段是上下文压缩，配置在 `compression`：
 
 ```yaml
-models:
-  cache:
-    enabled: true
-    ttl_seconds: 3600
-    max_entries: 1000
+compression:
+  enabled: true
+  trigger_ratio: 0.7          # 上下文占用达到该比例时触发
+  summary_target_ratio: 0.2   # 压缩后目标占比
+  tool_pruning_enabled: true  # 裁剪历史工具输出
 ```
 
 ### 并行工具调用
 
-当 Agent 需要调用多个独立工具时，启用并行执行：
+多个独立工具可以并行执行，配置在 `agent.tool_concurrency`，默认已启用：
 
 ```yaml
-tools:
-  parallel_execution: true
-  max_concurrent: 4
+agent:
+  tool_concurrency:
+    enabled: true
+    max_concurrent: 4
 ```
 
 !!! tip "模型降级"
@@ -80,28 +83,20 @@ Echo Agent 使用 SQLite 存储元数据和记忆。以下配置可显著改善 
 
 ### WAL 模式
 
-Write-Ahead Logging 提高并发读写性能：
+SQLite 的连接参数（`journal_mode`、`synchronous`、`cache_size`、`mmap_size` 等 PRAGMA）**不可通过配置调整** —— 配置中没有 `database` 节，代码里也没有设置这些 PRAGMA 的位置。
+
+可配置的只有存储路径，位于 `storage`：
 
 ```yaml
-database:
-  journal_mode: WAL          # 默认已启用
-  synchronous: NORMAL        # FULL / NORMAL / OFF
-  cache_size: -64000         # 64MB 页缓存（负数表示 KB）
-  mmap_size: 268435456       # 256MB 内存映射
+storage:
+  database_path: data/echo_agent.db
+  sessions_dir: data/sessions
+  memory_dir: data/memory
+  logs_dir: data/logs
+  spill_dir: data/spill
 ```
 
-### 关键配置说明
-
-| 参数 | 推荐值 | 说明 |
-|------|--------|------|
-| `journal_mode` | `WAL` | 读写分离，提高并发 |
-| `synchronous` | `NORMAL` | 平衡安全与性能 |
-| `cache_size` | `-64000` | 页缓存大小 (KB) |
-| `mmap_size` | `268435456` | 内存映射大小 (256MB) |
-| `busy_timeout` | `5000` | 锁等待超时 (ms) |
-
-!!! warning "synchronous = OFF"
-    将 `synchronous` 设为 `OFF` 可获得最佳写入性能，但系统崩溃时可能丢失数据。生产环境建议保持 `NORMAL`。
+数据库层面可做的优化因此集中在两点：把 `database_path` 放在本地 SSD 而非网络文件系统上，以及定期做 `VACUUM` 回收碎片。
 
 ### 索引维护
 
@@ -127,27 +122,30 @@ sqlite3 ~/.echo-agent/data/echo_agent.db "VACUUM;"
 
 ### 进程内存控制
 
+上下文与历史规模由 `session` 控制（`runtime` 只有 `single_instance` 一个字段，与内存无关）：
+
 ```yaml
-runtime:
-  memory:
-    max_context_tokens: 128000    # 单次上下文最大 token
-    session_history_limit: 50     # 会话历史保留轮数
-    gc_interval_seconds: 300      # 垃圾回收间隔
+session:
+  context_window_tokens: 0        # 0 表示按模型自身窗口
+  max_history_messages: 500       # 会话历史保留条数
+  compression_window_cap: 200000  # 压缩窗口上限
+  expiry_hours: 72                # 会话过期时间
 ```
 
 ### Spill（溢写）配置
 
-工具输出超过内存阈值时自动溢写到磁盘：
+工具输出过大时溢写到磁盘。配置在顶层 `spill` 节，不在 `runtime` 下：
 
 ```yaml
-runtime:
-  spill:
-    enabled: true
-    threshold_bytes: 1048576      # 1MB 触发溢写
-    directory: ~/.echo-agent/data/spill
-    max_disk_usage_bytes: 1073741824   # 1GB 磁盘上限
-    cleanup_after_seconds: 86400       # 24 小时后清理
+spill:
+  enabled: true
+  max_inline_chars: 6000     # 超过该字符数则溢写
+  max_total_mb: 512          # 溢写目录总大小上限
+  retention_days: 7          # 保留天数
+  sweep_interval_hours: 6    # 清理扫描间隔
 ```
+
+溢写目录路径由 `storage.spill_dir` 指定。溢写产物可用 `read_spill` 工具按需读回，详见[内置工具参考](../reference/tools.md)。
 
 ### 内存监控
 
@@ -165,53 +163,54 @@ cat /proc/$(pgrep -f echo-agent)/status | grep -i vm
 
 ### 向量索引调优
 
+知识库索引是本地 JSON 文件，不是 HNSW 之类的向量索引库，因此没有 `ef_construction`、`ef_search`、`m` 这类调参项 —— 配置中也不存在 `knowledge.index` 嵌套节。可调的是分块与检索规模：
+
 ```yaml
 knowledge:
-  index:
-    type: hnsw                # HNSW 近似最近邻
-    ef_construction: 200      # 构建时精度（越高越准，越慢）
-    ef_search: 50             # 检索时精度
-    m: 16                     # 每节点连接数
-  chunk_size: 512             # 文档分块大小
-  chunk_overlap: 64           # 分块重叠
+  enabled: true
+  chunk_size: 1200        # 文档分块大小（默认 1200）
+  chunk_overlap: 120      # 分块重叠（默认 120）
+  max_results: 5          # 单次检索返回条数
+  auto_index: true        # 变更后自动索引
+  index_path: data/knowledge_index.json
+  docs_dir: data/knowledge
 ```
+
+分块偏小会增加检索条数与召回噪声，偏大则降低定位精度。调整后需要重建索引才会生效。
 
 ### 索引重建
 
-知识库数据变更较多后，重建索引可恢复检索性能：
+索引是派生物：结构损坏时不要尝试修补，直接重建。重建可用 `knowledge_index` 工具（`action: rebuild`），或在 Dashboard 的 Knowledge 页触发。
 
-```bash
-# 通过 Agent 对话触发或编程接口调用
-echo-agent eval --task "重建知识库索引"
-```
+嵌入与重排模型的相关参数在 `memory` 节（`embedding_backend`、`rerank_enabled`、`rerank_top_k` 等），详见[配置参考](../reference/configuration.md)。
 
 ---
 
 ## 网络优化
 
-### 连接池
+配置中没有统一的 `network` 节，也没有连接池与全局超时字段。网络相关设置分散在各自的使用方：
+
+| 配置项 | 作用 |
+|--------|------|
+| `execution.network_policy` | 出站网络总闸，默认 `deny` |
+| `tools.web.proxy` | Web 工具的代理地址 |
+| `tools.web.timeout_seconds` | Web 工具超时，默认 `30` |
+| `tools.browser.nav_timeout_sec` | 浏览器导航超时 |
+| `channels.telegram.proxy` | Telegram 通道的代理地址 |
+| `gateway.media_download_concurrency` | 网关媒体下载并发，默认 `4` |
 
 ```yaml
-network:
-  connection_pool:
-    max_connections: 20
-    max_keepalive: 10
-    keepalive_expiry: 30
-  timeout:
-    connect: 10
-    read: 60
-    write: 30
+execution:
+  network_policy: allow
+
+tools:
+  web:
+    enabled: true
+    proxy: "http://proxy:8080"
+    timeout_seconds: 30
 ```
 
-### 代理配置
-
-```yaml
-network:
-  proxy:
-    http: "http://proxy:8080"
-    https: "http://proxy:8080"
-    no_proxy: "localhost,127.0.0.1"
-```
+所有出站请求都经 `echo_agent/security/net_guard.py` 的统一 SSRF 校验，私有地址默认被拒绝；确需访问内网时才放开对应的 `allow_private_addresses`。
 
 ---
 

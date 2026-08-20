@@ -1,402 +1,507 @@
 # 内置工具参考
 
-Echo Agent 提供 30 个内置工具，按风险等级分为四个类别。
+Echo Agent 内置 36 个工具。本页的工具名、参数、能力标签均取自代码中的注册信息：工具名是各工具类的 `name` 属性（定义在 `echo_agent/agent/tools/` 下），能力标签取自 `echo_agent/security/capabilities.py` 的 `TOOL_CAPABILITIES`，档位归属取自 `echo_agent/security/tool_policy.py`。
 
-## 风险等级概览
+!!! note "工具名不等于模块名"
+    工具名与实现它的模块文件名往往不同，调用时必须使用工具名。例如 `shell.py` 注册的工具是 `exec`，`code_exec.py` 注册的是 `execute_code`，`tts.py` 注册的是 `text_to_speech`，`web.py` 同时注册 `web_fetch` 与 `web_search`。
 
-| 等级 | 类别 | 说明 | 默认审批模式 |
-|------|------|------|-------------|
-| 1 | MINIMAL_TOOLS | 只读操作，无副作用 | `auto` |
-| 2 | MESSAGING_TOOLS | 消息发送与媒体操作 | `auto` |
-| 3 | CODING_TOOLS | 文件写入与代码修改 | `ask` |
-| 4 | HIGH_RISK_TOOLS | 系统执行与安装 | `ask` |
+## 两个 profile 的区别
 
----
+配置中有两个名为 `profile` 的字段，作用不同，不可混用：
+
+| 配置项 | 取值 | 默认值 | 作用 |
+|--------|------|--------|------|
+| `tools.profile` | `minimal` / `messaging` / `coding` / `full` | `full` | 决定哪些工具暴露给模型 |
+| `security.profile` | `personal_cli` / `daemon` / `public_gateway` | `personal_cli` | 决定运行形态的整体安全基线 |
+
+`tools.profile` 的四档是工具白名单，逐档累加；`full` 的白名单是 `*`，即放通全部工具。详见[安全档位矩阵](security-profile-matrix.md)。
+
+## 按档位可用的工具
+
+下表列出每个工具在哪些 `tools.profile` 档位下可用。`full` 档放通全部工具，故不单列。
+
+| 工具 | 实现模块 | minimal | messaging | coding | 能力标签 |
+|------|----------|:-------:|:---------:|:------:|----------|
+| `agents_list` | 无实现（见下） | ✅ | ✅ | ✅ | `agent.read` |
+| `agents_route` | 无实现（见下） | ✅ | ✅ | ✅ | `agent.dispatch` |
+| `clarify` | `clarify.py` | ✅ | ✅ | ✅ | `message.ask` |
+| `knowledge_search` | `knowledge.py` | ✅ | ✅ | ✅ | `knowledge.read` |
+| `list_dir` | `filesystem.py` | ✅ | ✅ | ✅ | `fs.read` |
+| `message` | `message.py` | ✅ | ✅ | ✅ | `message.send` |
+| `notify` | `notify.py` | ✅ | ✅ | ✅ | `message.send` |
+| `read_file` | `filesystem.py` | ✅ | ✅ | ✅ | `fs.read` |
+| `read_spill` | `read_spill.py` | ✅ | ✅ | ✅ | `fs.read` |
+| `search_files` | `search.py` | ✅ | ✅ | ✅ | `fs.read` |
+| `session_search` | `session_search.py` | ✅ | ✅ | ✅ | `session.read` |
+| `skill_view` | `skills.py` | ✅ | ✅ | ✅ | `skill.read` |
+| `skills_list` | `skills.py` | ✅ | ✅ | ✅ | `skill.read` |
+| `todo` | `todo.py` | ✅ | ✅ | ✅ | `task.write` |
+| `image_generate` | `image_gen_fal.py` | ❌ | ✅ | ✅ | `media.generate` `network.outbound` |
+| `memory` | `memory.py` | ❌ | ✅ | ✅ | `memory.read` `memory.write` |
+| `text_to_speech` | `tts.py` | ❌ | ✅ | ✅ | `media.generate` `network.outbound` |
+| `vision_analyze` | `vision.py` | ❌ | ✅ | ✅ | `media.read` |
+| `edit_file` | `filesystem.py` | ❌ | ❌ | ✅ | `fs.read` `fs.write` |
+| `knowledge_index` | `knowledge.py` | ❌ | ❌ | ✅ | `knowledge.write` `fs.read` |
+| `patch` | `patch.py` | ❌ | ❌ | ✅ | `fs.read` `fs.write` |
+| `task` | `task.py` | ❌ | ❌ | ✅ | `task.write` |
+| `workflow` | `workflow.py` | ❌ | ❌ | ✅ | `workflow.write` |
+| `write_file` | `filesystem.py` | ❌ | ❌ | ✅ | `fs.write` |
+| `browser` | `browser.py` | ❌ | ❌ | ❌ | 未分类 |
+| `cronjob` | `cronjob.py` | ❌ | ❌ | ❌ | `scheduler.write` |
+| `delegate_task` | `delegate.py` | ❌ | ❌ | ❌ | 未分类 |
+| `exec` | `shell.py` | ❌ | ❌ | ❌ | `process.exec` |
+| `execute_code` | `code_exec.py` | ❌ | ❌ | ❌ | `code.exec` `process.exec` |
+| `process` | `process.py` | ❌ | ❌ | ❌ | `process.exec` `process.manage` |
+| `read_document` | `document.py` | ❌ | ❌ | ❌ | 未分类 |
+| `send_file` | `send_file.py` | ❌ | ❌ | ❌ | 未分类 |
+| `skill_install` | `skill_install.py` | ❌ | ❌ | ❌ | `skill.install` `network.outbound` `fs.write` |
+| `skill_manage` | `skills.py` | ❌ | ❌ | ❌ | `skill.write` `fs.write` |
+| `skill_run` | `skill_run.py` | ❌ | ❌ | ❌ | 未分类 |
+| `spawn_task` | `delegate.py` | ❌ | ❌ | ❌ | 未分类 |
+| `web_fetch` | `web.py` | ❌ | ❌ | ❌ | `network.outbound` |
+| `web_search` | `web.py` | ❌ | ❌ | ❌ | `network.outbound` |
+
+标记为「未分类」的工具在 `TOOL_CAPABILITIES` 中没有条目，`tool_capabilities()` 对它们返回空集合，因此基于能力的拦截规则不会命中它们；这类工具只受工具名维度的策略约束。
+
+`agents_list` 与 `agents_route` 只出现在策略表（`capabilities.py`、`tool_policy.py`、`risk_classifier.py`）中，`echo_agent/agent/tools/` 下没有对应实现，因此当前不可调用。它们是为多 Agent 协作预留的名字，本页不为其提供参数说明。除这两项外，下文为全部 36 个已实现的工具逐一列出参数。
+
+## 高风险工具
+
+`HIGH_RISK_TOOLS` 是独立于档位的高风险集合，共 6 个：`cronjob`、`exec`、`execute_code`、`process`、`skill_install`、`skill_manage`。
+
+两个运行形态在此基础上追加限制：
+
+- **`public_gateway`** — 在高风险 6 个之外，另行拒绝 `edit_file`、`knowledge_index`、`patch`、`workflow`、`write_file`，共 11 个；同时按能力拒绝 `code.exec`、`fs.write`、`process.exec`、`process.manage`、`scheduler.write`、`skill.install`、`skill.write`、`workflow.write`。
+- **`daemon`** — 默认拒绝 `exec`、`execute_code`、`process`、`skill_install`；同时按能力拒绝 `code.exec`、`process.exec`、`process.manage`、`skill.install`。
 
 ## 工具详细列表
 
-### MINIMAL_TOOLS（只读）
+参数列中标记 `*` 的为必填。类型与默认值取自各工具的 `parameters` JSON Schema。
 
-#### browser
+### 文件与检索
 
-浏览网页并提取内容。
+#### read_file
 
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `url` | string | 是 | 目标 URL |
-| `selector` | string | 否 | CSS 选择器（过滤内容） |
-| `format` | string | 否 | 输出格式：text / markdown / html |
-| `timeout` | int | 否 | 超时（秒），默认 30 |
+读取文件内容。
 
-```json
-{
-  "tool": "browser",
-  "params": {
-    "url": "https://example.com",
-    "format": "markdown"
-  }
-}
-```
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|:----:|--------|------|
+| `path` | string | ✅ | — | 文件路径 |
+| `offset` | integer | | — | 起始行 |
+| `limit` | integer | | — | 读取行数 |
 
-#### clarify
+#### write_file
 
-向用户请求澄清信息。
+写入文件，文件不存在时创建。
 
 | 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `question` | string | 是 | 需要澄清的问题 |
-| `options` | list | 否 | 提供选项列表 |
+|------|------|:----:|------|
+| `path` | string | ✅ | 文件路径 |
+| `content` | string | ✅ | 写入内容 |
 
-#### knowledge
+#### edit_file
 
-查询知识库。
+替换文件中的字符串。
 
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `query` | string | 是 | 查询文本 |
-| `top_k` | int | 否 | 返回结果数，默认 5 |
-| `filter` | object | 否 | 元数据过滤条件 |
-
-#### memory
-
-读取/写入长期记忆。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `action` | string | 是 | read / write / search / delete |
-| `key` | string | 否 | 记忆键名（read/write/delete 时） |
-| `value` | string | 否 | 记忆内容（write 时） |
-| `query` | string | 否 | 搜索查询（search 时） |
-
-#### read_spill
-
-读取溢出存储中的大文件分片。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `spill_id` | string | 是 | 溢出文件 ID |
-| `offset` | int | 否 | 读取偏移 |
-| `limit` | int | 否 | 读取长度 |
-
-#### search
-
-搜索引擎查询。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `query` | string | 是 | 搜索关键词 |
-| `engine` | string | 否 | 搜索引擎：google / bing / duckduckgo |
-| `count` | int | 否 | 返回结果数，默认 5 |
-
-#### session_search
-
-搜索历史会话记录。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `query` | string | 是 | 搜索内容 |
-| `session_id` | string | 否 | 限定会话 ID |
-| `time_range` | object | 否 | 时间范围过滤 |
-
-#### skills
-
-列出可用技能。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `category` | string | 否 | 按分类过滤 |
-| `query` | string | 否 | 按名称/描述搜索 |
-
-#### todo
-
-查看和管理待办事项。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `action` | string | 是 | list / add / complete / remove |
-| `text` | string | 否 | 待办内容（add 时） |
-| `id` | string | 否 | 待办 ID（complete/remove 时） |
-
-#### vision
-
-分析图片内容。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `image` | string | 是 | 图片路径或 URL |
-| `prompt` | string | 否 | 分析提示 |
-
-#### web
-
-发送 HTTP 请求。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `url` | string | 是 | 请求 URL |
-| `method` | string | 否 | HTTP 方法，默认 GET |
-| `headers` | object | 否 | 请求头 |
-| `body` | string | 否 | 请求体 |
-
----
-
-### MESSAGING_TOOLS（消息与媒体）
-
-#### message
-
-通过通道发送消息。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `channel` | string | 是 | 目标通道标识 |
-| `content` | string | 是 | 消息内容 |
-| `reply_to` | string | 否 | 回复的消息 ID |
-| `format` | string | 否 | 格式：text / markdown |
-
-#### notify
-
-发送通知（支持多通道）。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `title` | string | 是 | 通知标题 |
-| `body` | string | 是 | 通知内容 |
-| `level` | string | 否 | 级别：info / warning / error |
-| `targets` | list | 否 | 通知目标列表 |
-
-#### send_file
-
-通过通道发送文件。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `channel` | string | 是 | 目标通道 |
-| `path` | string | 是 | 本地文件路径 |
-| `caption` | string | 否 | 文件说明 |
-
-#### image_gen
-
-生成图片（默认后端）。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `prompt` | string | 是 | 图片描述提示词 |
-| `size` | string | 否 | 尺寸：1024x1024 / 1792x1024 / 1024x1792 |
-| `style` | string | 否 | 风格：natural / vivid |
-
-#### image_gen_fal
-
-使用 Fal.ai 后端生成图片。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `prompt` | string | 是 | 图片描述 |
-| `model` | string | 否 | Fal 模型标识 |
-| `size` | string | 否 | 输出尺寸 |
-
-#### tts
-
-文本转语音。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `text` | string | 是 | 要转换的文本 |
-| `voice` | string | 否 | 语音模型 |
-| `output` | string | 否 | 输出文件路径 |
-
----
-
-### CODING_TOOLS（代码与文件写入）
-
-#### code_exec
-
-在沙箱中执行代码片段。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `code` | string | 是 | 代码内容 |
-| `language` | string | 否 | 语言：python / javascript / bash |
-| `timeout` | int | 否 | 超时（秒），默认 30 |
-
-#### document
-
-创建或编辑文档。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `action` | string | 是 | create / edit / append |
-| `path` | string | 是 | 文件路径 |
-| `content` | string | 是 | 内容 |
-
-#### filesystem
-
-文件系统操作。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `action` | string | 是 | read / write / list / mkdir / delete / move / copy |
-| `path` | string | 是 | 目标路径 |
-| `content` | string | 否 | 文件内容（write 时） |
-| `dest` | string | 否 | 目标路径（move/copy 时） |
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|:----:|--------|------|
+| `path` | string | ✅ | — | 文件路径 |
+| `old_string` | string | ✅ | — | 被替换的原字符串 |
+| `new_string` | string | ✅ | — | 替换后的字符串 |
+| `replace_all` | boolean | | `false` | 是否替换全部匹配 |
 
 #### patch
 
-对文件应用差异补丁。
+以统一 diff 格式或搜索替换块的形式应用补丁。
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|:----:|--------|------|
+| `file_path` | string | ✅ | — | 目标文件路径 |
+| `patch` | string | ✅ | — | 补丁内容 |
+| `fuzzy_threshold` | number | | `0.6` | 模糊匹配阈值 |
+
+#### list_dir
+
+列出指定路径下的文件与子目录。
 
 | 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `path` | string | 是 | 目标文件路径 |
-| `diff` | string | 是 | unified diff 格式的补丁内容 |
+|------|------|:----:|------|
+| `path` | string | ✅ | 目录路径 |
 
-#### delegate
+#### search_files
 
-将子任务委派给其他 Agent。
+按正则搜索文件内容，或按 glob 查找文件。
 
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `task` | string | 是 | 任务描述 |
-| `agent_type` | string | 否 | Agent 类型 |
-| `context` | object | 否 | 传递的上下文 |
+| 参数 | 类型 | 必填 | 默认值 | 取值 | 说明 |
+|------|------|:----:|--------|------|------|
+| `pattern` | string | ✅ | — | — | 搜索模式 |
+| `mode` | string | | — | `content` \| `glob` | 按内容搜索或按文件名匹配 |
+| `path` | string | | — | — | 搜索范围 |
+| `max_results` | integer | | `50` | — | 最大结果数 |
 
-#### task
+#### read_document
 
-管理任务分解与追踪。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `action` | string | 是 | create / update / complete / list |
-| `title` | string | 否 | 任务标题 |
-| `status` | string | 否 | 状态更新 |
-
-#### workflow
-
-定义和执行多步骤工作流。
+读取文档文件的文本内容，支持 pdf、docx、xlsx、pptx、txt、csv、md。
 
 | 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `action` | string | 是 | define / run / status / cancel |
-| `name` | string | 否 | 工作流名称 |
-| `steps` | list | 否 | 步骤定义（define 时） |
+|------|------|:----:|------|
+| `path` | string | ✅ | 文档路径 |
+| `max_chars` | integer | | 最大读取字符数 |
+| `unit` | integer \| string | | 读取单位 |
 
-#### skill_run
+#### read_spill
 
-执行已安装的技能。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `skill_id` | string | 是 | 技能标识 |
-| `input` | object | 否 | 技能输入参数 |
-
----
-
-### HIGH_RISK_TOOLS（高风险）
-
-!!! danger "高风险工具"
-    以下工具可执行系统命令、修改进程或安装外部代码。仅在 `tools.profile: full` 或明确启用时可用。
-
-#### shell
-
-执行 Shell 命令。
+读取被溢写到磁盘的工具输出产物，路径取自工具结果中的提示。
 
 | 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `command` | string | 是 | 要执行的命令 |
-| `cwd` | string | 否 | 工作目录 |
-| `timeout` | int | 否 | 超时（秒） |
-| `env` | object | 否 | 附加环境变量 |
+|------|------|:----:|------|
+| `path` | string | ✅ | 溢写产物路径 |
+| `offset` | integer | | 起始位置 |
+| `limit` | integer | | 读取长度 |
+| `pattern` | string | | 过滤模式 |
+
+### 知识与记忆
+
+#### knowledge_search
+
+检索本地知识库，返回带引用的片段。
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|:----:|--------|------|
+| `query` | string | ✅ | — | 查询文本 |
+| `max_results` | integer | | `5` | 返回结果数 |
+
+#### knowledge_index
+
+查看或重建本地知识索引。
+
+| 参数 | 类型 | 必填 | 取值 | 说明 |
+|------|------|:----:|------|------|
+| `action` | string | ✅ | `status` \| `rebuild` | 查看状态或重建索引 |
+
+#### memory
+
+管理跨会话的持久记忆。
+
+| 参数 | 类型 | 必填 | 取值 | 说明 |
+|------|------|:----:|------|------|
+| `action` | string | ✅ | `add` \| `replace` \| `remove` \| `search` \| `list` \| `list_contradictions` \| `resolve_contradiction` | 操作类型 |
+| `content` | string | | — | 记忆内容 |
+| `key` | string | | — | 记忆键 |
+| `old_text` | string | | — | 被替换的原文本 |
+| `query` | string | | — | 检索关键词 |
+| `tags` | string | | — | 标签 |
+| `importance` | number | | — | 重要度 |
+| `pinned` | boolean | | — | 是否置顶 |
+| `source` | string | | `user_stated` \| `model_inferred` | 记忆来源 |
+| `target` | string | | `user` \| `environment` | 记忆归属 |
+| `contradiction_id` | string | | — | 矛盾记录 ID |
+| `winner_id` | string | | — | 解决矛盾时保留的一方 |
+
+#### session_search
+
+按关键词或正则检索跨会话的历史消息。
+
+| 参数 | 类型 | 必填 | 默认值 | 取值 | 说明 |
+|------|------|:----:|--------|------|------|
+| `query` | string | ✅ | — | — | 查询文本 |
+| `max_results` | integer | | `20` | — | 最大结果数 |
+| `role_filter` | string | | — | `user` \| `assistant` \| `all` | 按角色过滤 |
+| `session_key` | string | | — | — | 限定会话 |
+
+### 消息与媒体
+
+#### message
+
+向指定通道与会话发送消息。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|:----:|------|
+| `channel` | string | ✅ | 目标通道注册名 |
+| `chat_id` | string | ✅ | 目标会话 ID |
+| `text` | string | ✅ | 消息正文 |
+
+#### notify
+
+向指定通道或当前会话发送通知消息。与 `message` 的区别是通道与会话均可省略，省略时投递到当前会话。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|:----:|------|
+| `message` | string | ✅ | 通知正文 |
+| `channel` | string | | 目标通道 |
+| `chat_id` | string | | 目标会话 ID |
+
+#### send_file
+
+向指定通道与会话发送本地文件或图片。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|:----:|------|
+| `channel` | string | ✅ | 目标通道注册名 |
+| `chat_id` | string | ✅ | 目标会话 ID |
+| `file_path` | string | ✅ | 本地文件路径 |
+| `caption` | string | | 附带说明文字 |
+| `as_image` | boolean | | 是否以图片形式发送 |
+
+调用前应确认目标通道的 `supports_files` 为真，否则文件无法送达。目前只有 `weixin` 恒定支持，`qqbot` 取决于 `media_enabled` 配置。详见[消息通道](../integrations/channels/index.md)。
+
+#### clarify
+
+向用户提问以澄清需求，可附带选项。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|:----:|------|
+| `question` | string | ✅ | 需要澄清的问题 |
+| `options` | array | | 供用户选择的选项列表 |
+
+#### image_generate
+
+根据文本提示生成图像。
+
+| 参数 | 类型 | 必填 | 取值 | 说明 |
+|------|------|:----:|------|------|
+| `prompt` | string | ✅ | — | 图像描述 |
+| `aspect_ratio` | string | | `landscape` \| `square` \| `portrait` | 画面比例 |
+
+`image_gen.py` 与 `image_gen_fal.py` 注册的工具名相同，实际启用哪一个取决于配置。
+
+#### text_to_speech
+
+将文本转为语音音频。默认使用 edge-tts，配置后可改用 OpenAI TTS。
+
+| 参数 | 类型 | 必填 | 取值 | 说明 |
+|------|------|:----:|------|------|
+| `text` | string | ✅ | — | 待合成文本 |
+| `backend` | string | | `edge` \| `openai` | 合成后端 |
+| `voice` | string | | — | 音色 |
+| `output_path` | string | | — | 输出文件路径 |
+| `deliver` | boolean | | — | 是否直接投递 |
+| `deliver_channel` | string | | — | 投递目标通道 |
+| `deliver_chat_id` | string | | — | 投递目标会话 |
+| `caption` | string | | — | 附带说明文字 |
+
+#### vision_analyze
+
+调用具备视觉能力的模型分析图像，输入可为本地路径或 URL。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|:----:|------|
+| `image` | string | ✅ | 图片路径或 URL |
+| `prompt` | string | ✅ | 针对图片的问题 |
+| `model` | string | | 指定模型 |
+
+### 网络访问
+
+#### web_search
+
+检索互联网信息。
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|:----:|--------|------|
+| `query` | string | ✅ | — | 查询文本 |
+| `max_results` | integer | | `5` | 最大结果数 |
+
+#### web_fetch
+
+抓取指定 URL 的内容。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|:----:|------|
+| `url` | string | ✅ | 目标 URL |
+| `max_chars` | integer | | 最大读取字符数 |
+
+#### browser
+
+驱动真实浏览器完成多步网页交互。会话通过 `session_id` 关联，元素通过快照中的 `ref` 定位。
+
+| 参数 | 类型 | 必填 | 取值 | 说明 |
+|------|------|:----:|------|------|
+| `action` | string | ✅ | `open` `navigate` `snapshot` `click` `type` `press` `scroll` `back` `forward` `reload` `hover` `select` `upload` `wait` `evaluate` `console` `screenshot` `get_images` `close` | 操作类型 |
+| `session_id` | string | | — | 浏览器会话 ID |
+| `url` | string | | — | 目标 URL |
+| `ref` | string | | — | 快照中的元素引用 |
+| `text` | string | | — | 输入文本 |
+| `key` | string | | — | 按键名 |
+| `press_enter` | boolean | | — | 输入后是否回车 |
+| `direction` | string | | `up` \| `down` \| `left` \| `right` \| `top` \| `bottom` | 滚动方向 |
+| `amount` | integer | | — | 滚动距离 |
+| `values` | array | | — | 下拉选择的值 |
+| `paths` | array | | — | 上传的文件路径 |
+| `expression` | string | | — | 待求值的表达式 |
+| `state` | string | | `load` \| `domcontentloaded` \| `networkidle` | 等待的页面状态 |
+| `full_page` | boolean | | — | 截图是否包含整页 |
+| `timeout_sec` | integer | | — | 超时（秒） |
+
+出站请求统一经 `echo_agent/security/net_guard.py` 的 SSRF 策略校验，无法解析的主机会被拒绝。
+
+### 执行与进程
+
+以下工具均属 `HIGH_RISK_TOOLS`。
+
+#### exec
+
+在工作区内执行 shell 命令。
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|:----:|--------|------|
+| `command` | string | ✅ | — | 待执行命令 |
+| `cwd` | string | | — | 工作目录 |
+| `timeout` | integer | | `30` | 超时（秒） |
+
+#### execute_code
+
+在沙箱子进程中执行代码片段。
+
+| 参数 | 类型 | 必填 | 默认值 | 取值 | 说明 |
+|------|------|:----:|--------|------|------|
+| `code` | string | ✅ | — | — | 代码内容 |
+| `language` | string | ✅ | — | `python` \| `javascript` \| `bash` | 语言 |
+| `timeout` | integer | | `30` | — | 超时（秒） |
 
 #### process
 
-管理系统进程。
+管理后台进程。
 
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `action` | string | 是 | list / start / stop / signal |
-| `pid` | int | 否 | 进程 ID（stop/signal 时） |
-| `command` | string | 否 | 启动命令（start 时） |
-| `signal` | string | 否 | 信号名称（signal 时） |
+| 参数 | 类型 | 必填 | 默认值 | 取值 | 说明 |
+|------|------|:----:|--------|------|------|
+| `action` | string | ✅ | — | `start` \| `list` \| `poll` \| `stop` | 操作类型 |
+| `command` | string | | — | — | 启动命令 |
+| `process_id` | string | | — | — | 进程 ID |
+| `timeout` | integer | | `300` | — | 超时（秒） |
+
+### 任务与编排
+
+#### todo
+
+管理待办清单，用于多步工作的规划。
+
+| 参数 | 类型 | 必填 | 取值 | 说明 |
+|------|------|:----:|------|------|
+| `action` | string | ✅ | `create` \| `update` \| `list` \| `complete` \| `delete` | 操作类型 |
+| `title` | string | | — | 标题 |
+| `items` | array | | — | 条目列表 |
+| `task_id` | string | | — | 条目 ID |
+| `status` | string | | `pending` \| `in_progress` \| `done` | 状态 |
+| `notes` | string | | — | 备注 |
+
+#### task
+
+带完整生命周期跟踪的任务管理。
+
+| 参数 | 类型 | 必填 | 取值 | 说明 |
+|------|------|:----:|------|------|
+| `action` | string | ✅ | `create` \| `list` \| `get` \| `start` \| `complete` \| `fail` \| `cancel` \| `retry` \| `update` | 操作类型 |
+| `title` | string | | — | 标题 |
+| `description` | string | | — | 描述 |
+| `task_id` | string | | — | 任务 ID |
+| `priority` | integer | | — | 优先级 |
+| `status_filter` | string | | — | 列表过滤条件 |
+| `result` | string | | — | 完成结果 |
+| `error` | string | | — | 失败原因 |
+| `workflow_id` | string | | — | 关联的工作流 ID |
+
+#### workflow
+
+按 DAG 依赖编排多步工作流。该引擎只负责编排，不执行业务逻辑。
+
+| 参数 | 类型 | 必填 | 取值 | 说明 |
+|------|------|:----:|------|------|
+| `action` | string | ✅ | `create` \| `start` \| `status` \| `advance` \| `pause` \| `resume` \| `cancel` \| `list` | 操作类型 |
+| `name` | string | | — | 工作流名称 |
+| `description` | string | | — | 描述 |
+| `steps` | array | | — | 步骤定义 |
+| `workflow_id` | string | | — | 工作流 ID |
+| `status_filter` | string | | — | 列表过滤条件 |
 
 #### cronjob
 
-创建/管理定时任务。
+管理定时任务。属 `HIGH_RISK_TOOLS`。
+
+| 参数 | 类型 | 必填 | 取值 | 说明 |
+|------|------|:----:|------|------|
+| `action` | string | ✅ | `create` \| `list` \| `delete` \| `trigger` | 操作类型 |
+| `name` | string | | — | 任务名称 |
+| `schedule` | string | | — | cron 表达式 |
+| `command` | string | | — | 执行内容 |
+| `job_id` | string | | — | 任务 ID |
+| `target_channel` | string | | — | 结果投递通道 |
+| `target_chat_id` | string | | — | 结果投递会话 |
+
+#### delegate_task
+
+将子任务委派给 worker agent，用于并行或隔离执行。
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|:----:|--------|------|
+| `goal` | string | | — | 总体目标 |
+| `tasks` | array | | — | 子任务列表 |
+| `tools` | array | | — | 允许 worker 使用的工具 |
+| `worker_profile` | string | | — | worker 的档位 |
+| `max_iterations` | integer | | `12` | 最大迭代轮数 |
+
+#### spawn_task
+
+派生一个可使用工具的后台 worker，异步执行。
 
 | 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `action` | string | 是 | create / delete / enable / disable / list |
-| `schedule` | string | 否 | cron 表达式（create 时） |
-| `command` | string | 否 | 执行内容（create 时） |
-| `id` | string | 否 | 任务 ID（其他操作时） |
+|------|------|:----:|------|
+| `task` | string | ✅ | 任务描述 |
+| `context` | string | | 附加上下文 |
+
+### 技能管理
+
+#### skills_list
+
+列出全部可用技能的精简元数据。该工具无参数。
+
+#### skill_view
+
+查看技能的完整内容（`SKILL.md`）或其中某个支持文件。省略 `file_path` 时返回 `SKILL.md`。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|:----:|------|
+| `name` | string | ✅ | 技能名 |
+| `file_path` | string | | 技能内的文件路径 |
+
+#### skill_run
+
+以 Agent 自身的 Python 解释器运行技能脚本，工作目录锁定为该技能目录。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|:----:|------|
+| `name` | string | ✅ | 技能名 |
+| `script` | string | ✅ | 脚本路径 |
+| `args` | array | | 命令行参数 |
+| `timeout` | integer | | 超时（秒） |
+
+#### skill_manage
+
+创建、编辑、打补丁或删除技能。属 `HIGH_RISK_TOOLS`。
+
+| 参数 | 类型 | 必填 | 取值 | 说明 |
+|------|------|:----:|------|------|
+| `action` | string | ✅ | `create` \| `edit` \| `patch` \| `delete` \| `write_file` \| `remove_file` | 操作类型 |
+| `name` | string | ✅ | — | 技能名 |
+| `category` | string | | — | 分类 |
+| `content` | string | | — | 内容 |
+| `file_path` | string | | — | 技能内的文件路径 |
+| `old_text` | string | | — | 被替换的原文本 |
+| `new_text` | string | | — | 替换后的文本 |
 
 #### skill_install
 
-安装外部技能包。
+从外部来源安装技能到本地技能库。属 `HIGH_RISK_TOOLS`。
 
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `source` | string | 是 | 技能来源（URL/路径/registry 名称） |
-| `verify` | bool | 否 | 是否验证签名，默认 true |
-| `sandbox` | bool | 否 | 是否沙箱安装，默认 true |
+| 参数 | 类型 | 必填 | 取值 | 说明 |
+|------|------|:----:|------|------|
+| `source` | string | ✅ | `git` \| `local` \| `url` | 来源类型 |
+| `location` | string | ✅ | — | 来源地址 |
+| `name` | string | | — | 安装后的技能名 |
+| `subdirectory` | string | | — | 源中的子目录 |
+| `run_install` | boolean | | — | 是否执行安装脚本 |
 
----
+## 相关页面
 
-## 审批模式
-
-每个工具的审批行为可通过配置覆盖：
-
-| 模式 | 行为 |
-|------|------|
-| `auto` | 自动执行，不需用户确认 |
-| `ask` | 执行前请求用户审批 |
-| `deny` | 禁止使用该工具 |
-
-配置示例：
-
-```yaml
-tools:
-  profile: coding
-  overrides:
-    shell:
-      approval_mode: ask      # Shell 命令需要审批
-    filesystem:
-      approval_mode: auto     # 文件操作自动执行
-    process:
-      approval_mode: deny     # 禁用进程管理
-```
-
----
-
-## 工具与 Profile 对应关系
-
-| 工具 | minimal | messaging | coding | full |
-|------|---------|-----------|--------|------|
-| browser | ✓ | ✓ | ✓ | ✓ |
-| clarify | ✓ | ✓ | ✓ | ✓ |
-| knowledge | ✓ | ✓ | ✓ | ✓ |
-| memory | ✓ | ✓ | ✓ | ✓ |
-| read_spill | ✓ | ✓ | ✓ | ✓ |
-| search | ✓ | ✓ | ✓ | ✓ |
-| session_search | ✓ | ✓ | ✓ | ✓ |
-| skills | ✓ | ✓ | ✓ | ✓ |
-| todo | ✓ | ✓ | ✓ | ✓ |
-| vision | ✓ | ✓ | ✓ | ✓ |
-| web | ✓ | ✓ | ✓ | ✓ |
-| message | — | ✓ | ✓ | ✓ |
-| notify | — | ✓ | ✓ | ✓ |
-| send_file | — | ✓ | ✓ | ✓ |
-| image_gen | — | ✓ | ✓ | ✓ |
-| image_gen_fal | — | ✓ | ✓ | ✓ |
-| tts | — | ✓ | ✓ | ✓ |
-| code_exec | — | — | ✓ | ✓ |
-| document | — | — | ✓ | ✓ |
-| filesystem | — | — | ✓ | ✓ |
-| patch | — | — | ✓ | ✓ |
-| delegate | — | — | ✓ | ✓ |
-| task | — | — | ✓ | ✓ |
-| workflow | — | — | ✓ | ✓ |
-| skill_run | — | — | ✓ | ✓ |
-| shell | — | — | — | ✓ |
-| process | — | — | — | ✓ |
-| cronjob | — | — | — | ✓ |
-| skill_install | — | — | — | ✓ |
-
-!!! question "需维护者确认"
-    `delegate`、`task`、`workflow` 的风险分类是否正确？它们涉及创建子 Agent，是否应归为 HIGH_RISK_TOOLS？
+- [安全档位矩阵](security-profile-matrix.md) — 档位与运行形态的完整对照
+- [配置参考](configuration.md) — 由 schema 自动生成的逐项配置说明
+- [消息通道](../integrations/channels/index.md) — 通道能力与投递限制

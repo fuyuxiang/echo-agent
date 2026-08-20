@@ -78,10 +78,12 @@ Browse and search memory entries across all tiers.
 
 **Key Features:**
 
-- Browse by tier (short-term, long-term, archive)
-- Full-text search across memory content
-- View memory metadata and associated sessions
-- Manually create or delete memory entries
+- Filter by the four tiers: `working`, `episodic`, `semantic`, `archival`
+- Search memory content
+- View memory metadata
+- Delete memory entries (the page offers no manual create action)
+
+This page is a cross-subject view: both the listing and the search require an admin token, since a regular API token can only read memories within its own scope.
 
 <!-- Screenshot placeholder: Memory search interface with entry cards and tier filters -->
 
@@ -104,10 +106,11 @@ Manage documents and knowledge base content.
 
 **Key Features:**
 
-- Upload and index documents
-- Browse knowledge base entries
-- Manage document categories and tags
-- View indexing status and vectorization progress
+- Upload documents and trigger an index rebuild
+- Browse indexed documents (path, size, modification time)
+- View index status: document count, chunk count, staleness, last rebuild time
+
+Upload, delete and rebuild are all guarded server-side by the admin guard. The page has no document category or tag features.
 
 <!-- Screenshot placeholder: Knowledge page showing document list and indexing status indicators -->
 
@@ -131,9 +134,9 @@ Visualize and manage tasks using a board layout.
 **Key Features:**
 
 - Drag and drop task cards to change status
-- Create, edit, and archive tasks
-- Filter by priority and tags
-- View task associations with sessions and memory
+- Toggle visibility of the archived columns (`cancelled`, `suspended`)
+
+Dragging requires write access: under a read-only token the board renders read-only, rather than offering controls that answer 403 on every drag.
 
 <!-- Screenshot placeholder: Kanban page showing multi-column board with task cards -->
 

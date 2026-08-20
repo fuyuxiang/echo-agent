@@ -261,12 +261,16 @@ permissions:
     unattended_policy: "deny"     # deny | allow_safe
     wait_timeout_seconds: 120     # Human approval timeout
     smart_model: ""               # Model used for Smart Approval
+  elevated:
+    enabled: true                 # Enable the elevation mechanism
     allow_from:                   # Per-channel user elevation mapping
       telegram: [user_123]
 ```
 
-!!! question "Maintainer confirmation needed"
-    Is the user ID format in `allow_from` consistent with the channel's `sender_id`? The current code performs exact string matching.
+`allow_from` lives under `permissions.elevated`, not under `approval`; the mapping has no effect while `elevated.enabled` is false.
+
+!!! note "Matching rules"
+    `allow_from` values are matched against the channel's `sender_id` as exact strings. `"*"` works both as a channel key (applies to every channel) and as a user value (applies to every user on that channel). Users in `permissions.admin_users` are always treated as elevated. Elevation applies only to `exec`, `execute_code` and `process`, and only when execution lands on a local/remote host or `tools.exec.security` is `full`.
 
 ### Workspace Restrictions
 

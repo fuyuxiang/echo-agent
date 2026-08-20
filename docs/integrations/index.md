@@ -41,9 +41,13 @@ channels:
 
 ### 连接 MCP 工具服务器
 
+MCP 服务器配置在 `tools.mcp_servers`（不是顶层 `mcp` 节），以服务器名为键：
+
 ```yaml
-mcp:
-  servers:
+tools:
+  mcp:
+    enabled: true
+  mcp_servers:
     filesystem:
       enabled: true
       command: "npx"
@@ -52,12 +56,13 @@ mcp:
 
 ### 启用 A2A 协议
 
+`a2a` 的字段是平铺的，没有 `agent_card` 嵌套节：
+
 ```yaml
 a2a:
   enabled: true
-  agent_card:
-    name: "my-agent"
-    description: "My Echo Agent instance"
+  agent_name: "my-agent"
+  agent_description: "My Echo Agent instance"
 ```
 
 ## 设计原则

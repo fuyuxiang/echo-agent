@@ -126,20 +126,20 @@ Knowledge base configuration resides in the system config:
 
 ```yaml
 knowledge:
-  chunk_size: 512
-  chunk_overlap: 64
-  embedding_model: "text-embedding-ada-002"
-  faiss_index_path: "./data/faiss_index"
-  max_file_size_mb: 50
-  supported_formats:
-    - pdf
-    - docx
-    - xlsx
-    - pptx
+  enabled: true
+  docs_dir: data/knowledge
+  index_path: data/knowledge_index.json
+  chunk_size: 1200
+  chunk_overlap: 120
+  max_results: 5
+  auto_index: true
+  allowed_extensions:
+    - .md
+    - .txt
+    - .pdf
 ```
 
-!!! question "Maintainer confirmation needed"
-    Default values and modification methods for the above settings need confirmation. Configuration may be adjusted via the Dashboard Config page or configuration files.
+Embedding and reranking models are configured in the `memory` section (`embedding_backend`, `rerank_enabled` and related fields), not under `knowledge`. The index is a local JSON file at `index_path`, so there is no FAISS index path to set.
 
 ## Dashboard Knowledge Page
 

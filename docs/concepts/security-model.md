@@ -128,7 +128,7 @@ is_control: bool = False       # 内部控制命令
 ## 8. 凭据安全
 
 ```yaml
-credential_security:
+credentials:
   encryption_key_env: ECHO_AGENT_CREDENTIAL_KEY
   require_encryption: true
 ```

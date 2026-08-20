@@ -1,217 +1,137 @@
 # Security Profile Matrix
 
-Echo Agent uses a layered security model with two independent profile axes: **security profiles** control system-level protections, while **tool profiles** control what the agent can do.
+This page describes how Echo Agent decides which tools reach the model and which calls need approval. Every value below is taken from `echo_agent/config/schema.py` and `echo_agent/security/tool_policy.py`.
 
-## Security Profiles (`security.profile`)
+!!! warning "The two `profile` fields are not interchangeable"
+    Configuration has two fields named `profile`. Their value sets are disjoint, and mixing them up silently leaves your intent unapplied:
 
-| Profile | Bind Address | Gateway Auth | Token Required | Origin Check | Pairing | Use Case |
-|---------|-------------|--------------|----------------|--------------|---------|----------|
-| `minimal` | `127.0.0.1` | Optional | No | No | Disabled | Local development, single-user |
-| `standard` | `127.0.0.1` | Enabled | Yes | Yes | Optional | Personal daemon, daily use |
-| `extended` | `0.0.0.0` | Enforced | Yes | Yes | Required | Shared server, exposed gateway |
+    - `tools.profile` — `minimal` / `messaging` / `coding` / `full`, default `full`
+    - `security.profile` — `personal_cli` / `daemon` / `public_gateway`, default `personal_cli`
 
-### `minimal`
+    There are no `standard`, `extended` or `strict` profiles. An undefined value is rejected by configuration validation at startup.
 
-Designed for local development and experimentation. No authentication barriers—the agent trusts all local connections.
+## tools.profile: the tool allowlist
 
-```yaml
-security:
-  profile: minimal
-```
+The four tiers are cumulative — each one contains every tool from the tier before it.
 
-!!! warning "Not for production"
-    The `minimal` profile disables most security checks. Never use it on a machine accessible from a network.
+| Profile | Tools | Intended use |
+|---------|-------|--------------|
+| `minimal` | 14 | Read-only Q&A; no file writes, no media generation |
+| `messaging` | 18 | Adds memory and media generation on top of `minimal` |
+| `coding` | 24 | Adds file writes and orchestration on top of `messaging` |
+| `full` | all | Allowlist is `*`, permitting every tool (default) |
 
-**Characteristics:**
+For the exact tool list per tier, see the profile table in the [built-in tool reference](tools.md).
 
-- Gateway binds to localhost only
-- No API token required
-- No Origin/Host header validation
-- Tool approvals default to `auto`
-- Cron jobs auto-authorized
-- No session isolation
+The `full` allowlist is the literal `*`, so newly added tools become available there automatically. The other three tiers are explicit sets, and new tools do not enter them on their own.
 
-### `standard`
+## security.profile: the deployment baseline
 
-The recommended profile for personal use. Balances convenience with protection.
+`security.profile` does not change the allowlist. It adds deny rules on top of it, either by tool name or by capability tag.
 
-```yaml
-security:
-  profile: standard
-```
+| Profile | Meaning | Additional denials |
+|---------|---------|--------------------|
+| `personal_cli` | Single user on their own machine (default) | none |
+| `daemon` | Long-running background service | 4 tools + 4 capabilities |
+| `public_gateway` | Gateway exposed beyond localhost | 11 tools + 8 capabilities |
 
-**Characteristics:**
+### daemon
 
-- Gateway binds to localhost
-- API token required for all requests
-- Origin header validated against `allowed_origins`
-- High-risk tools require explicit approval
-- Cron jobs require one-time authorization
-- Sessions isolated by channel
+Denied tools: `exec`, `execute_code`, `process`, `skill_install`
 
-### `extended`
+Denied capabilities: `code.exec`, `process.exec`, `process.manage`, `skill.install`
 
-For deployments exposed to a network or shared among multiple users.
+### public_gateway
 
-```yaml
-security:
-  profile: extended
-```
+Denied tools are the 6 members of `HIGH_RISK_TOOLS` (`cronjob`, `exec`, `execute_code`, `process`, `skill_install`, `skill_manage`) plus 5 write-capable tools (`edit_file`, `knowledge_index`, `patch`, `workflow`, `write_file`), 11 in total.
 
-**Characteristics:**
+Denied capabilities: `code.exec`, `fs.write`, `process.exec`, `process.manage`, `scheduler.write`, `skill.install`, `skill.write`, `workflow.write`
 
-- Gateway may bind to all interfaces
-- Both API and admin tokens required
-- Origin and Host headers strictly validated
-- Pairing-based authentication enforced for new clients
-- All non-read tools require approval
-- Cron jobs require per-execution authorization
-- Full audit logging enabled
-- Rate limiting enforced
+!!! danger "Before exposing the gateway"
+    Setting `security.profile: public_gateway` is not sufficient on its own. Confirm that authentication is enabled and that the listen address and allowed origins are restricted. The gateway listens on `127.0.0.1` by default; listening beyond localhost is a change you must make deliberately. See [security hardening](../operations/security-hardening.md).
 
-!!! danger "Network exposure"
-    When using `extended` with `0.0.0.0` binding, always deploy behind a reverse proxy with TLS termination. Echo Agent does not handle TLS natively.
+## Evaluation order
 
-## Tool Profiles (`tools.profile`)
+`is_tool_allowed()` evaluates layers in a fixed order and stops at the first denial:
 
-Tool profiles control which categories of built-in tools the agent may access.
+1. **Explicit deny** — a tool named in `tools.deny` is rejected. This layer has the highest precedence and cannot be waived by any other setting.
+2. **Allowlist** — if `tools.allow` is non-empty it becomes the only allowlist and the profile no longer participates; otherwise the `tools.profile` tier or `tools.also_allow` decides.
+3. **Deployment denials** — the tool-name and capability rules added by `security.profile`. A tool also named in `tools.allow` or `tools.also_allow` is exempt from this layer.
+4. **Network policy** — when `execution.network_policy` is `deny`, this rejects `web_fetch`, `web_search` and any tool carrying the `network.outbound` capability. Note that `deny` is the default.
 
-| Profile | Read | Search | Memory | Messaging | Media | Filesystem | Code Exec | Process | Cron | Skill Install |
-|---------|------|--------|--------|-----------|-------|------------|-----------|---------|------|---------------|
-| `minimal` | ✓ | ✓ | ✓ | — | — | — | — | — | — | — |
-| `messaging` | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — | — |
-| `coding` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — |
-| `full` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+A denied tool does not raise an error: it is simply absent from the model's tool list, and one INFO-level line is logged — `Tool policy skipped N tools`. When investigating "the agent never called my tool", check that log line first.
 
-### Tool Categories
+### Related options
 
-| Category | Tools | Risk Level |
-|----------|-------|------------|
-| MINIMAL_TOOLS | `clarify`, `knowledge`, `memory`, `read_spill`, `search`, `session_search`, `skills`, `todo`, `web`, `vision` | Read-only |
-| MESSAGING_TOOLS | `message`, `notify`, `send_file`, `image_gen`, `image_gen_fal`, `tts` | Medium |
-| CODING_TOOLS | `browser`, `code_exec`, `document`, `filesystem`, `patch`, `shell`, `skill_run`, `workflow` | High |
-| HIGH_RISK_TOOLS | `process`, `cronjob`, `delegate`, `skill_install`, `task` | Critical |
+| Option | Type | Default | Purpose |
+|--------|------|---------|---------|
+| `tools.deny` | list[str] | `[]` | Tool names to reject unconditionally |
+| `tools.allow` | list[str] | `[]` | When non-empty, the sole allowlist, overriding the profile |
+| `tools.also_allow` | list[str] | `[]` | Permits tools beyond the profile and exempts them from deployment denials |
+| `tools.profile` | enum | `full` | Tier allowlist |
+| `security.profile` | enum | `personal_cli` | Deployment baseline |
+| `execution.network_policy` | `allow` / `deny` / `restricted` | `deny` | Outbound network policy |
 
-### Approval Modes per Tool
+## Approval
 
-Each tool can be set to one of three approval modes:
+Passing admission does not mean a call runs unattended — it may still require approval. Approval settings live under `permissions.approval`, not under `security`: `SecurityConfig` has exactly one field, `profile`.
 
-| Mode | Behavior |
-|------|----------|
-| `auto` | Tool executes without user confirmation |
-| `ask` | User prompted before each execution |
-| `deny` | Tool is completely disabled |
+| Option | Type | Default | Purpose |
+|--------|------|---------|---------|
+| `mode` | `manual` / `smart` / `off` | `smart` | Approval mode |
+| `default_policy` | `approve` / `deny` / `ask` | `approve` | Fallback when no specific rule matches |
+| `require_approval` | list[str] | see below | Tools that require approval |
+| `auto_approve` | list[str] | `[]` | Tools approved automatically |
+| `auto_deny` | list[str] | `[]` | Tools denied automatically |
+| `cli_auto_approve` | bool | `true` | Auto-approve on the CLI channel |
+| `trusted_channels` | list[str] | `[]` | Channels exempt from approval |
+| `unattended_policy` | `deny` / `allow_safe` | `deny` | Behaviour when nobody is present |
+| `wait_timeout_seconds` | int | `300` | How long to wait for a human |
+| `smart_model` | str | `""` | Model used by `smart` mode |
+
+`require_approval` defaults to 9 entries: `cronjob`, `delegate_task`, `dep_install`, `exec`, `execute_code`, `process`, `skill_install`, `skill_manage`, `spawn_task`.
+
+!!! note "Valid approval modes"
+    `mode` accepts `manual`, `smart` and `off`. `auto`, `ask` and `deny` are not modes — of those, `approve`/`deny`/`ask` belong to `default_policy`.
+
+### Elevation
+
+`permissions.elevated` temporarily relaxes restrictions:
+
+| Option | Type | Default | Purpose |
+|--------|------|---------|---------|
+| `enabled` | bool | `false` | Whether elevation is available |
+| `allow_from` | dict | `{}` | Which sources may request it |
+
+## Examples
+
+This configuration keeps the `coding` tier, permits `exec`, and retains every other restriction of the daemon shape:
 
 ```yaml
 tools:
   profile: coding
-  overrides:
-    shell:
-      approval: ask
-    process:
-      approval: deny
+  also_allow:
+    - exec          # also exempts exec from the daemon denial
+
+security:
+  profile: daemon
+
+permissions:
+  approval:
+    mode: smart
+    require_approval:
+      - exec
 ```
 
-## Combined Profile Matrix
-
-The intersection of security and tool profiles determines the effective permissions:
-
-| Security × Tools | `minimal` | `messaging` | `coding` | `full` |
-|-----------------|-----------|-------------|----------|--------|
-| **`minimal`** | All auto | All auto | All auto | All auto |
-| **`standard`** | All auto | All auto | Coding: ask | High-risk: ask |
-| **`extended`** | All auto | Messaging: ask | Coding: ask | High-risk: ask, Cron: deny |
-
-!!! tip "Recommended combinations"
-    - **Local dev:** `minimal` + `full` — no friction, maximum capability
-    - **Personal daily use:** `standard` + `coding` — confirms destructive actions
-    - **Shared server:** `extended` + `messaging` — tight controls, audit everything
-    - **Public demo:** `extended` + `minimal` — read-only agent, no side effects
-
-## Overriding Profile Defaults
-
-Profiles set baseline permissions. You can override individual settings without changing the profile:
+To disable a tool outright, use `tools.deny` rather than removing it from an allowlist — `deny` is the first layer evaluated and cannot be bypassed by `also_allow` or elevation:
 
 ```yaml
-security:
-  profile: standard
-  # Override: disable pairing even though standard supports it
-  gateway_auth:
-    pairing_ttl_seconds: 0
-
 tools:
-  profile: coding
-  overrides:
-    # Allow shell without prompting (you trust your scripts)
-    shell:
-      approval: auto
-    # Block image generation entirely
-    image_gen:
-      approval: deny
+  deny:
+    - skill_install
 ```
 
-!!! question "Maintainer confirmation needed"
-    Can individual security overrides weaken a profile below its documented baseline (e.g., disabling token auth in `extended`)? Current implementation rejects downgrades—confirm this is intended behavior.
+## Related pages
 
-## Migrating Between Profiles
-
-### Upgrading (e.g., `minimal` → `standard`)
-
-1. Generate an API token:
-
-    ```bash
-    echo-agent gateway --gen-token
-    ```
-
-2. Update configuration:
-
-    ```yaml
-    security:
-      profile: standard
-    gateway:
-      auth:
-        api_tokens:
-          - "ea_tok_..."
-    ```
-
-3. Restart the gateway:
-
-    ```bash
-    echo-agent gateway restart
-    ```
-
-4. Update clients with the new token.
-
-### Downgrading (e.g., `extended` → `standard`)
-
-!!! warning "Security implications"
-    Downgrading removes protections. Review what each profile disables before proceeding.
-
-1. Ensure no external clients depend on pairing auth.
-2. Update configuration.
-3. Restart the gateway.
-4. Revoke any pairing tokens no longer needed:
-
-    ```bash
-    echo-agent gateway --revoke-pairings
-    ```
-
-## Configuration Reference
-
-```yaml
-security:
-  profile: standard          # minimal | standard | extended
-
-tools:
-  profile: coding            # minimal | messaging | coding | full
-  overrides:                 # per-tool approval overrides
-    <tool_name>:
-      approval: auto | ask | deny
-```
-
-| Environment Variable | Equivalent |
-|---------------------|------------|
-| `ECHO_AGENT_SECURITY__PROFILE` | `security.profile` |
-| `ECHO_AGENT_TOOLS__PROFILE` | `tools.profile` |
-| `ECHO_AGENT_TOOLS__OVERRIDES__SHELL__APPROVAL` | `tools.overrides.shell.approval` |
-
+- [Built-in tool reference](tools.md) — parameters and capability tags for all 36 tools
+- [Configuration reference](configuration.md) — per-option reference generated from the schema

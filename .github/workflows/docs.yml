@@ -28,9 +28,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
@@ -43,14 +43,36 @@ jobs:
       - name: Build docs
         run: mkdocs build --strict
 
+      # Serve the built site over HTTP instead of pointing linkchecker at
+      # file://. mkdocs-material emits root-absolute hrefs derived from
+      # site_url ("/echo-agent/..."), which under file:// resolve against the
+      # filesystem root and fail as "No such file or directory" no matter
+      # whether the site is deployed.
+      #
+      # --check-extern is deliberately omitted: it turned every third-party URL
+      # (and the not-yet-deployed Pages site listed in sitemap.xml) into a
+      # release blocker, so this step could never pass. This checks internal
+      # links only, which is what the step name promises.
       - name: Check internal links
         run: |
           pip install linkchecker
-          linkchecker site/ --check-extern --no-status --ignore-url 'https://github.com.*'
+          # site/ holds the content of <site_url>/, so mount it under the same
+          # /echo-agent/ prefix the generated hrefs expect. Serving site/ at the
+          # server root would 404 on every one of them.
+          mkdir -p serve-root
+          ln -s "$PWD/site" serve-root/echo-agent
+          python -m http.server 8000 --directory serve-root --bind 127.0.0.1 &
+          server=$!
+          trap 'kill "$server" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            curl -fsS -o /dev/null "http://127.0.0.1:8000/echo-agent/" && break
+            sleep 1
+          done
+          linkchecker "http://127.0.0.1:8000/echo-agent/" --no-status --no-warnings
 
       - name: Upload artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site/
 
@@ -64,4 +86,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

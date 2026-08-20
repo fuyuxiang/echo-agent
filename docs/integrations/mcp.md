@@ -12,7 +12,7 @@ MCP 是一种标准化的 AI 工具通信协议。Echo Agent 作为 MCP 客户�
 
 ```yaml
 tools:
-  mcpServers:
+  mcp_servers:
     filesystem:
       command: "npx"
       args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"]
@@ -33,7 +33,7 @@ tools:
 
 ```yaml
 tools:
-  mcpServers:
+  mcp_servers:
     my-server:
       command: "python"
       args: ["-m", "my_mcp_server"]
@@ -47,7 +47,7 @@ tools:
 
 ```yaml
 tools:
-  mcpServers:
+  mcp_servers:
     remote:
       url: "https://mcp.example.com/sse"
       headers:
@@ -59,11 +59,11 @@ tools:
 
 ```yaml
 tools:
-  mcpServers:
+  mcp_servers:
     my-server:
       command: "..."
-      toolsInclude: ["read_file", "write_file"]  # 白名单
-      toolsExclude: ["dangerous_tool"]           # 黑名单
+      tools_include: ["read_file", "write_file"]  # 白名单
+      tools_exclude: ["dangerous_tool"]           # 黑名单
 ```
 
 ## 安全

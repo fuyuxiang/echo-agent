@@ -1,375 +1,155 @@
 # Configuration Guide
 
-This guide explains how Echo Agent loads, merges, and validates configuration. For the full field reference with every option listed, see [Configuration Reference](configuration.en.md).
+This page covers the **mechanics** of configuration: where files live, how they are loaded, how overrides work, and how validation behaves. For the meaning, type and default of each individual field, see the [configuration reference](configuration.md) — that page is generated from the schema by `echo_agent.config.docgen` and is therefore always in step with the code.
 
-## Loading Order
+!!! note "How the two pages divide the work"
+    This page explains rules; it does not duplicate the field list. A hand-maintained field table drifts as the code evolves, so what follows describes each section's purpose and entry points, and defers to the generated page and `echo_agent/config/schema.py` for specifics.
 
-Configuration is assembled from multiple sources, each layer overriding the previous:
+## Load order
 
-```
-┌─────────────────────────────────────────────────────────┐
-│ 1. Package defaults (built into the Python package)     │
-├─────────────────────────────────────────────────────────┤
-│ 2. User YAML file (-c flag or ~/.echo-agent/config.yml) │
-├─────────────────────────────────────────────────────────┤
-│ 3. Environment variables (ECHO_AGENT_ prefix)           │
-├─────────────────────────────────────────────────────────┤
-│ 4. CLI runtime overrides (--set key=value)              │
-├─────────────────────────────────────────────────────────┤
-│ 5. Profile defaults (security/tool profiles applied)    │
-├─────────────────────────────────────────────────────────┤
-│ 6. Pydantic validation (type coercion + constraints)    │
-└─────────────────────────────────────────────────────────┘
-```
+`load_config()` merges four sources in order, each overriding the last:
 
-Later layers override earlier ones. Environment variables override YAML values; CLI flags override environment variables.
+| Order | Source | Notes |
+|-------|--------|-------|
+| 1 | `echo_agent/config/default.yaml` | Packaged defaults, shipped with the release |
+| 2 | User configuration file | See the lookup rules below |
+| 3 | `ECHO_AGENT_` environment variables | See the [environment variable reference](environment-variables.md) |
+| 4 | Explicit overrides from the caller | For programmatic use |
 
-!!! warning
-    Profile defaults are applied **after** CLI overrides. If a security profile restricts a field, your explicit override may be clamped or rejected during validation.
+The merge is a **deep merge**: only matching leaf fields are replaced, and sibling fields keep their existing values. A user configuration therefore only needs to contain what it changes.
 
----
+## Configuration file location
 
-## Config File Locations
+When no path is given via `--config`, these filenames are tried in order and the first one that exists is used:
 
-Echo Agent searches for configuration in this order:
+1. `echo-agent.yaml`
+2. `echo-agent.yml`
+3. `config.yaml`
+4. `config.yml`
 
-| Priority | Location | Notes |
-|----------|----------|-------|
-| 1 | `-c /path/to/config.yml` | Explicit CLI flag, highest priority |
-| 2 | `.echo-agent/config.yml` | Workspace-local config |
-| 3 | `~/.echo-agent/config.yml` | User-global config |
-| 4 | Package defaults | Built-in fallback |
+## Top-level sections
 
-Supported file extensions: `.yml`, `.yaml`
+The configuration tree has 33 sections plus one scalar field, `workspace`. Grouped by purpose:
 
-```bash
-# Use explicit config file
-echo-agent run -c /etc/echo-agent/production.yml
+| Group | Sections |
+|-------|----------|
+| Models and reasoning | `models`, `agent`, `planning`, `compression` |
+| Tools and execution | `tools`, `execution`, `permissions`, `security` |
+| Channels and gateway | `channels`, `gateway`, `bus`, `a2a` |
+| Memory and knowledge | `memory`, `knowledge`, `session`, `spill` |
+| Tasks and skills | `scheduler`, `skills`, `evolution`, `multi_agent` |
+| Runtime and operations | `runtime`, `storage`, `checkpoint`, `observability` |
+| Cost and stability | `cost`, `rate_limit`, `circuit_breaker` |
+| Other | `credentials`, `plugins`, `ui`, `validation`, `evaluation`, `media_understanding`, `workspace` |
 
-# Workspace-local (auto-detected)
-mkdir -p .echo-agent && cp config.yml .echo-agent/config.yml
-```
+### Frequently adjusted sections
 
-!!! tip
-    Workspace-local config (`.echo-agent/config.yml`) is ideal for project-specific tool permissions and model selections. Keep secrets in environment variables or the user-global config.
+Only the most commonly changed entry points are listed, with their real defaults.
 
----
-
-## Top-Level Structure
-
-The configuration file is organized into these top-level sections:
-
-```yaml
-# Echo Agent config.yml — all sections are optional
-security:       # Security profiles and access control
-channels:       # Channel integrations (Telegram, Discord, Slack, etc.)
-models:         # LLM provider configuration
-tools:          # Tool profiles, permissions, and approval modes
-execution:      # Execution engine settings
-permissions:    # Fine-grained permission rules
-credentials:    # API keys and secrets (prefer env vars)
-session:        # Session management and timeouts
-memory:         # Memory persistence settings
-knowledge:      # Knowledge base / RAG configuration
-multi_agent:    # Multi-agent coordination
-scheduler:      # Background task scheduling
-checkpoint:     # Checkpoint and recovery
-validation:     # Input/output validation rules
-media_understanding:  # Vision, audio, document parsing
-runtime:        # Runtime behavior (concurrency, limits)
-storage:        # Storage backend configuration
-spill:          # Large content spill-to-disk settings
-observability:  # Logging, tracing, metrics
-skills:         # Skill registry and evolution
-compression:    # Context compression settings
-gateway:        # Gateway server configuration
-planning:       # Planning and reasoning settings
-a2a:            # Agent-to-Agent protocol
-evaluation:     # Eval framework settings
-bus:            # Internal event bus
-rate_limit:     # Rate limiting rules
-circuit_breaker:  # Circuit breaker configuration
-plugins:        # Plugin system
-ui:             # TUI and dashboard settings
-agent:          # Core agent behavior
-evolution:      # Skill evolution settings
-cost:           # Cost tracking and budgets
-workspace:      # Workspace paths and layout
-```
-
----
-
-## YAML Structure Examples
-
-### Minimal Configuration
+**models** — models and providers. `default_model` and `fallback_model` select models; `providers` is a list of providers; `routes` splits traffic by task type; `model_windows` overrides context window sizes.
 
 ```yaml
 models:
-  default:
-    provider: anthropic
-    model: claude-sonnet-4-20250514
-    api_key: ${ANTHROPIC_API_KEY}
-
-channels:
-  cli:
-    enabled: true
+  default_model: claude-sonnet-4-5
+  providers:
+    - name: anthropic          # the provider discriminator, not "type"
+      # api_key may be omitted: discovered from ANTHROPIC_API_KEY when empty
+      models: [claude-sonnet-4-5]
 ```
 
-### Multi-Channel with Gateway
+!!! warning "There is no models.primary"
+    Providers are described by the `providers` list, whose discriminator is `name` rather than `type`; models are chosen with `default_model` / `fallback_model`. A structure like `models.primary.provider` does not raise an error — pydantic treats it as an unknown key and **silently ignores it**, leaving you with an empty model configuration. See the [model configuration guide](../guides/models/index.md).
+
+**tools** — tool admission. `profile` picks the tier (default `full`); `allow` / `also_allow` / `deny` give finer control; `restrict_to_workspace` limits file operations. Individual tool switches are nested sections, such as `tools.exec`, `tools.browser` and `tools.web`.
+
+**security** — a single field, `profile`, accepting `personal_cli` (default), `daemon` or `public_gateway`.
+
+**permissions** — approval and elevation, containing `approval`, `elevated` and `admin_users`. The approval mode lives at `permissions.approval.mode` and accepts `manual`, `smart` (default) or `off`.
 
 ```yaml
+tools:
+  profile: coding
 security:
   profile: daemon
+permissions:
+  approval:
+    mode: smart
+```
 
+For the full admission and approval evaluation order, see the [security profile matrix](security-profile-matrix.md).
+
+**gateway** — the HTTP/WebSocket gateway. `enabled` defaults to `false`; `host` to `127.0.0.1`; `port` to `58123`; `api_prefix` to `/api/v1`; `ws_path` to `/ws`. Authentication lives under `gateway.auth`, session behaviour under `gateway.session_policy`.
+
+```yaml
 gateway:
   enabled: true
-  host: 127.0.0.1
-  port: 3000
-  auth:
-    mode: allowlist
-    api_tokens:
-      - ${GATEWAY_TOKEN}
-
-channels:
-  cli:
-    enabled: true
-  telegram:
-    enabled: true
-    token: ${TELEGRAM_BOT_TOKEN}
-    allow_from: [123456789]
-  discord:
-    enabled: true
-    token: ${DISCORD_BOT_TOKEN}
-
-models:
-  default:
-    provider: anthropic
-    model: claude-sonnet-4-20250514
+  host: 127.0.0.1      # 0.0.0.0 exposes it beyond localhost; enable auth first
+  port: 58123
 ```
 
-### Restricted Coding Assistant
+**execution** — execution backends. `default_executor` defaults to `sandbox`; `network_policy` defaults to `deny`, and must be `allow` or `restricted` for outbound access.
 
-```yaml
-security:
-  profile: standard
+**observability** — logging and tracing. `log_level` defaults to `INFO`; `trace_enabled` and `otel_enabled` are on by default; nothing is exported while `otel_endpoint` is empty.
 
-tools:
-  profile: coding
-  approval_mode: ask
-  blocked:
-    - cronjob
-    - skill_install
-    - process
+**cost** — cost controls. `enabled` defaults to `false`; `daily_budget_usd` to `0.0` (no limit); `soft_threshold_ratio` to `0.8`.
 
-execution:
-  max_turns: 50
-  timeout_seconds: 300
+**rate_limit** — throttling. `session_rpm` defaults to `20`, `session_burst` to `5`.
 
-cost:
-  daily_budget_usd: 10.0
-  alert_threshold_pct: 80
-```
+**circuit_breaker** — `failure_threshold` defaults to `5`, `recovery_seconds` to `60.0`, `half_open_max` to `2`.
 
----
+**checkpoint** — workspace snapshots. `enabled` defaults to `true`; `max_snapshots_per_workspace` to `20`. Snapshots deliberately **exclude** the database, session, memory and log directories: a file-level snapshot of a live SQLite file is a torn read.
 
-## Profile System
+**memory** — the memory system, with 40-plus fields covering tiering, embeddings, reranking and contradiction detection. It is enabled by default with a local embedding model and rarely needs tuning; see [memory system](../concepts/memory-system.md).
 
-### Security Profiles
+### Field naming
 
-The `security.profile` field selects a preset that adjusts multiple security-related defaults:
+Configuration accepts both snake_case and camelCase: `allow_from` and `allowFrom` are equivalent. This documentation uses snake_case consistently, while `echo-agent config dump` emits camelCase. Mixing them does not affect parsing.
 
-| Profile | Use Case | Key Behaviors |
-|---------|----------|---------------|
-| `minimal` | Local development, single user | No auth required, all origins allowed, localhost only |
-| `standard` | Daemon mode, trusted network | Token auth enabled, restricted origins, audit logging |
-| `extended` | Public-facing gateway | Strict auth, rate limiting, IP allowlisting, full audit |
+## Environment variable interpolation
 
-```yaml
-security:
-  profile: standard
-```
+!!! warning "The configuration file does not interpolate variables"
+    A `${VAR}` in a configuration value is **not** expanded — it is kept verbatim as a literal string. Writing `api_key: "${ANTHROPIC_API_KEY}"` stores that exact text as the API key.
 
-!!! danger
-    Never use `minimal` profile when the gateway is exposed beyond localhost. It disables authentication entirely.
-
-### Tool Profiles
-
-The `tools.profile` field controls which tool categories are available:
-
-| Profile | Tools Included | Risk Level |
-|---------|---------------|------------|
-| `minimal` | Read-only tools (filesystem read, search, web, knowledge) | Low |
-| `messaging` | Minimal + media tools (message, send_file, notify, tts, image_gen) | Low–Medium |
-| `coding` | Messaging + write tools (filesystem write, patch, shell, code_exec) | Medium |
-| `full` | All 30 built-in tools including high-risk (process, cronjob, skill_install) | High |
-
-```yaml
-tools:
-  profile: coding
-  approval_mode: auto    # auto | ask | deny
-  blocked:               # explicitly deny specific tools
-    - process
-    - cronjob
-```
-
-!!! tip
-    Combine profiles with `approval_mode: ask` to allow powerful tools while keeping a human in the loop. Tools in the `HIGH_RISK` category always prompt regardless of approval mode unless explicitly set to `auto`.
-
----
-
-## Config Validation and Debugging
-
-Echo Agent provides three CLI subcommands for working with configuration:
-
-### config dump
-
-Print the fully-resolved configuration after all layers are merged:
+There are two correct approaches. First, keep credentials out of the file entirely — provider API keys are discovered from conventional environment variables:
 
 ```bash
-echo-agent config dump
-
-# Output as YAML (default)
-echo-agent config dump --format yaml
-
-# Output as JSON
-echo-agent config dump --format json
-
-# Show only a specific section
-echo-agent config dump --section models
+export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-### config explain
-
-Show where each value came from (which layer set it):
+Second, override the option through an environment variable (scalar fields only; list types are not supported):
 
 ```bash
-echo-agent config explain
-
-# Example output:
-# models.default.model = "claude-sonnet-4-20250514"
-#   └─ source: /home/user/.echo-agent/config.yml (line 4)
-#
-# gateway.port = 3000
-#   └─ source: environment variable ECHO_AGENT_GATEWAY__PORT
-#
-# security.profile = "standard"
-#   └─ source: CLI override (--set security.profile=standard)
+export ECHO_AGENT_MODELS__DEFAULT_MODEL=claude-sonnet-4-5
 ```
 
-### config validate
+See the [environment variable reference](environment-variables.md) for the discovery table and override rules.
 
-Check configuration for errors without starting the agent:
+## Validation
+
+Configuration is validated by pydantic, and its behaviour splits into two cases that matter for troubleshooting:
+
+- **Invalid type or value** — startup fails immediately with an error. For example writing `standard` for `security.profile` (only three values are legal), or a non-numeric `gateway.port`.
+- **Unknown field** — silently ignored, with no error and no warning. A misspelled field name or an invented structure therefore presents as "my setting had no effect" rather than as a failure.
+
+Check a configuration before starting:
 
 ```bash
 echo-agent config validate
-
-# With explicit file
-echo-agent config validate -c production.yml
 ```
 
-Output:
+The `config` subcommand has four actions:
 
-```
-✓ Configuration valid (38 sections, 0 errors, 2 warnings)
+| Command | Purpose |
+|---------|---------|
+| `echo-agent config validate` | Validate the configuration |
+| `echo-agent config dump` | Print the merged, effective configuration (credentials redacted); accepts `--format json` |
+| `echo-agent config explain <key>` | Explain one option, addressed by dotted path |
+| `echo-agent config gen-docs` | Regenerate the configuration reference page |
 
-Warnings:
-  - credentials.anthropic_api_key: using environment variable fallback
-  - gateway.auth.mode: "open" is not recommended for non-localhost binds
-```
+When a setting appears not to take effect, suspect the second case first: run `echo-agent config dump` to see the merged value, or `echo-agent config explain gateway.port` to confirm the path is spelled correctly.
 
----
+## Related pages
 
-## Common Patterns
-
-### Environment Variable Interpolation
-
-YAML values support `${VAR}` syntax for environment variable interpolation:
-
-```yaml
-models:
-  default:
-    api_key: ${ANTHROPIC_API_KEY}
-
-channels:
-  telegram:
-    token: ${TELEGRAM_BOT_TOKEN}
-```
-
-!!! warning
-    Missing environment variables cause a validation error at startup. Use `${VAR:-default}` syntax for optional values with defaults.
-
-### Per-Channel Model Override
-
-```yaml
-models:
-  default:
-    provider: anthropic
-    model: claude-sonnet-4-20250514
-  expensive:
-    provider: anthropic
-    model: claude-opus-4-20250514
-
-channels:
-  telegram:
-    enabled: true
-    model: expensive    # use opus for Telegram conversations
-```
-
-### Cost Controls
-
-```yaml
-cost:
-  daily_budget_usd: 25.0
-  alert_threshold_pct: 75
-  hard_limit: true       # stop processing when budget exhausted
-
-rate_limit:
-  requests_per_minute: 30
-  tokens_per_minute: 100000
-```
-
-### Workspace-Specific Tool Permissions
-
-```yaml
-# .echo-agent/config.yml in a project repo
-tools:
-  profile: coding
-  allowed:
-    - filesystem
-    - shell
-    - code_exec
-    - search
-    - patch
-  blocked:
-    - cronjob
-    - process
-
-permissions:
-  filesystem:
-    writable_paths:
-      - ./src
-      - ./tests
-    readable_paths:
-      - .
-  shell:
-    allowed_commands:
-      - npm
-      - pytest
-      - git
-```
-
----
-
-## Common Pitfalls
-
-!!! danger "Don't commit secrets"
-    Never put API keys directly in config files that are committed to version control. Use environment variables or a separate `credentials.yml` file that is `.gitignore`d.
-
-!!! warning "Profile overrides"
-    Setting `security.profile: extended` may override your explicit `gateway.auth.mode` setting. Use `config explain` to verify the final resolved value.
-
-!!! warning "Nested key syntax"
-    In YAML, nested keys use indentation. In environment variables, use double underscores: `ECHO_AGENT_GATEWAY__AUTH__MODE=pairing`. A single underscore is treated as part of the key name.
-
-!!! question "Maintainer confirmation needed"
-    Is there support for config file inheritance/composition (e.g., `_extends: base.yml`)? The loading order suggests only one YAML file is active at a time.
+- [Configuration reference](configuration.md) — per-option reference generated from the schema
+- [Environment variable reference](environment-variables.md) — override rules and credential variables
+- [Security profile matrix](security-profile-matrix.md) — tool admission and approval

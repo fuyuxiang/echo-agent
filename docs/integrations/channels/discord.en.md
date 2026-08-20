@@ -15,7 +15,8 @@ Supports server (Guild) text channels and DM conversations. In servers, the bot 
 
 ```yaml
 channels:
-  - type: discord
+  discord:
+    enabled: true
     token: "MTIzNDU2Nzg5.ABCdef.GHIjklMNOpqrsTUVwxyz0123456"
     allow_from:
       - "1234567890123456789"   # User ID (string)

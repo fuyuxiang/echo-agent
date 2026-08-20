@@ -18,7 +18,7 @@ The token header name defaults to `Authorization` with a `Bearer` prefix. Custom
 ```yaml
 gateway:
   auth:
-    token_header: X-Echo-Token
+    token_header: X-Echo-Agent-Token
 ```
 
 ### Auth Modes

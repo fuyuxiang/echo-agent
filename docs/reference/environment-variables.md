@@ -1,225 +1,138 @@
 # 环境变量参考
 
-Echo Agent 使用 `ECHO_AGENT_` 前缀的环境变量覆盖配置文件中的设置。
+Echo Agent 的环境变量分两类：一类是**配置覆盖变量**，由 `ECHO_AGENT_` 前缀按规则映射到配置项；另一类是少数**独立运行时变量**，由代码直接读取。本页机制与取值均以 `echo_agent/config/loader.py` 为准。
 
-## 命名规则
+## 配置覆盖变量
 
-### 前缀
+### 命名规则
 
-所有环境变量必须使用 `ECHO_AGENT_` 前缀。
+任何配置项都可以用环境变量覆盖，无需在代码中逐个声明。规则由 `_env_overrides()` 定义：
 
-### 嵌套分隔
+1. 以 `ECHO_AGENT_` 开头；
+2. 去掉前缀后转为小写；
+3. 用双下划线 `__` 分隔配置层级。
 
-使用双下划线 `__` 表示配置层级嵌套：
+因此 `gateway.port` 对应 `ECHO_AGENT_GATEWAY__PORT`，`permissions.approval.mode` 对应 `ECHO_AGENT_PERMISSIONS__APPROVAL__MODE`。
 
 ```bash
-# 对应 YAML 配置:
-# gateway:
-#   auth:
-#     mode: pairing
-ECHO_AGENT_GATEWAY__AUTH__MODE=pairing
+export ECHO_AGENT_GATEWAY__PORT=9000
+export ECHO_AGENT_TOOLS__PROFILE=coding
+export ECHO_AGENT_SECURITY__PROFILE=daemon
 ```
+
+!!! important "层级分隔必须是双下划线"
+    单下划线是字段名的一部分，不是层级分隔符。`gateway.api_prefix` 对应 `ECHO_AGENT_GATEWAY__API_PREFIX` —— `API_PREFIX` 里的单下划线属于字段名本身。写成 `ECHO_AGENT_GATEWAY_PORT`（单下划线）会被解析为顶层字段 `gateway_port`，该字段不存在，因此设置被静默忽略。
+
+### 可用变量取决于 schema
+
+由于映射是机械推导的，可用变量就是配置树上的全部字段，本页不再逐一罗列 —— 请查[配置参考](configuration.md)，把其中的配置路径按上述规则转写即可。顶层配置节共 34 个：
+
+`a2a`、`agent`、`bus`、`channels`、`checkpoint`、`circuit_breaker`、`compression`、`cost`、`credentials`、`evaluation`、`evolution`、`execution`、`gateway`、`knowledge`、`media_understanding`、`memory`、`models`、`multi_agent`、`observability`、`permissions`、`planning`、`plugins`、`rate_limit`、`runtime`、`scheduler`、`security`、`session`、`skills`、`spill`、`storage`、`tools`、`ui`、`validation`、`workspace`
+
+常用示例：
+
+| 配置项 | 环境变量 | 说明 |
+|--------|----------|------|
+| `gateway.host` | `ECHO_AGENT_GATEWAY__HOST` | 网关监听地址，默认 `127.0.0.1` |
+| `gateway.port` | `ECHO_AGENT_GATEWAY__PORT` | 网关端口，默认 `58123` |
+| `gateway.api_prefix` | `ECHO_AGENT_GATEWAY__API_PREFIX` | API 路径前缀，默认 `/api/v1` |
+| `tools.profile` | `ECHO_AGENT_TOOLS__PROFILE` | 工具档位，默认 `full` |
+| `security.profile` | `ECHO_AGENT_SECURITY__PROFILE` | 运行形态，默认 `personal_cli` |
+| `permissions.approval.mode` | `ECHO_AGENT_PERMISSIONS__APPROVAL__MODE` | 审批模式，默认 `smart` |
+| `execution.network_policy` | `ECHO_AGENT_EXECUTION__NETWORK_POLICY` | 出站网络策略，默认 `deny` |
+| `models.default_model` | `ECHO_AGENT_MODELS__DEFAULT_MODEL` | 默认模型 |
 
 ### 类型转换
 
-| 目标类型 | 环境变量值示例 | 转换规则 |
-|----------|---------------|----------|
-| `str` | `hello` | 原样使用 |
-| `int` | `8080` | `int()` 转换 |
-| `float` | `0.95` | `float()` 转换 |
-| `bool` | `true` / `1` / `yes` | 不区分大小写，视为 True |
-| `list` | `a,b,c` | 逗号分隔 |
-| `None` | `null` / `none` / 空串 | 视为 None |
-
----
-
-## 配置覆盖优先级
-
-环境变量在配置加载链中的位置：
-
-```
-Package 默认值（最低）
-    ↓
-用户 YAML（-c 指定或 ~/.echo-agent/config.yaml）
-    ↓
-ECHO_AGENT_ 环境变量       ← 此处
-    ↓
-CLI 运行时覆盖（--option）
-    ↓
-Profile 默认值
-    ↓
-Pydantic 校验（最高）
-```
-
-!!! tip "调试优先级"
-    使用 `echo-agent config dump --show-source` 可查看每个字段的最终值来源。
-
----
-
-## 核心环境变量
-
-### 通用
-
-| 变量 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `ECHO_AGENT_CONFIG` | str | `~/.echo-agent/config.yaml` | 配置文件路径 |
-| `ECHO_AGENT_DATA_DIR` | str | `~/.echo-agent/` | 全局数据目录 |
-| `ECHO_AGENT_WORKSPACE` | str | `.echo-agent/` | 工作区数据目录 |
-| `ECHO_AGENT_LOG_LEVEL` | str | `INFO` | 日志级别（DEBUG/INFO/WARNING/ERROR） |
-| `ECHO_AGENT_LOG_FILE` | str | — | 日志文件路径（不设置则输出到 stderr） |
-
-### 模型配置
-
-| 变量 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `ECHO_AGENT_MODELS__PRIMARY__PROVIDER` | str | — | 主模型提供商 |
-| `ECHO_AGENT_MODELS__PRIMARY__MODEL` | str | — | 主模型名称 |
-| `ECHO_AGENT_MODELS__PRIMARY__API_KEY` | str | — | 主模型 API Key |
-| `ECHO_AGENT_MODELS__PRIMARY__BASE_URL` | str | — | 自定义 API 端点 |
-| `ECHO_AGENT_MODELS__PRIMARY__MAX_TOKENS` | int | `4096` | 最大输出 token 数 |
-| `ECHO_AGENT_MODELS__PRIMARY__TEMPERATURE` | float | `0.7` | 采样温度 |
-
-### Gateway
-
-| 变量 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `ECHO_AGENT_GATEWAY__HOST` | str | `127.0.0.1` | 监听地址 |
-| `ECHO_AGENT_GATEWAY__PORT` | int | `8080` | 监听端口 |
-| `ECHO_AGENT_GATEWAY__AUTH__MODE` | str | `pairing` | 认证模式（open/allowlist/pairing） |
-| `ECHO_AGENT_GATEWAY__AUTH__API_TOKENS` | list | — | API token 列表（逗号分隔） |
-| `ECHO_AGENT_GATEWAY__AUTH__ADMIN_TOKENS` | list | — | 管理 token 列表 |
-| `ECHO_AGENT_GATEWAY__AUTH__ALLOWED_ORIGINS` | list | — | 允许的 Origin 列表 |
-| `ECHO_AGENT_GATEWAY__AUTH__ALLOWED_HOSTS` | list | — | 允许的 Host 列表 |
-| `ECHO_AGENT_GATEWAY__AUTH__TOKEN_HEADER` | str | `X-Echo-Token` | Token 头名称 |
-| `ECHO_AGENT_GATEWAY__AUTH__PAIRING_TTL_SECONDS` | int | `300` | 配对码有效期（秒） |
-
-### 安全
-
-| 变量 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `ECHO_AGENT_SECURITY__PROFILE` | str | `standard` | 安全 Profile（minimal/standard/extended） |
-| `ECHO_AGENT_SECURITY__SANDBOX` | bool | `true` | 是否启用沙箱 |
-| `ECHO_AGENT_TOOLS__PROFILE` | str | `messaging` | 工具 Profile（minimal/messaging/coding/full） |
-
-### 执行环境
-
-| 变量 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `ECHO_AGENT_EXECUTION__TIMEOUT` | int | `300` | 工具执行超时（秒） |
-| `ECHO_AGENT_EXECUTION__MAX_RETRIES` | int | `3` | 工具调用最大重试次数 |
-| `ECHO_AGENT_EXECUTION__SHELL` | str | `/bin/bash` | Shell 执行环境路径 |
-
-### 存储
-
-| 变量 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `ECHO_AGENT_STORAGE__BACKEND` | str | `sqlite` | 存储后端（sqlite/postgres） |
-| `ECHO_AGENT_STORAGE__SQLITE__PATH` | str | `data/sqlite/echo.db` | SQLite 数据库路径 |
-| `ECHO_AGENT_STORAGE__POSTGRES__DSN` | str | — | PostgreSQL 连接字符串 |
-
-### 可观测性
-
-| 变量 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `ECHO_AGENT_OBSERVABILITY__OTEL_ENDPOINT` | str | — | OpenTelemetry Collector 端点 |
-| `ECHO_AGENT_OBSERVABILITY__OTEL_ENABLED` | bool | `false` | 是否启用 OTel 导出 |
-| `ECHO_AGENT_OBSERVABILITY__METRICS_PORT` | int | `9090` | Prometheus metrics 端口 |
-
-### 会话与记忆
-
-| 变量 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `ECHO_AGENT_SESSION__MAX_HISTORY` | int | `100` | 会话最大历史消息数 |
-| `ECHO_AGENT_MEMORY__BACKEND` | str | `local` | 记忆存储后端 |
-| `ECHO_AGENT_MEMORY__AUTO_SAVE` | bool | `true` | 是否自动保存记忆 |
-
-### 费用控制
-
-| 变量 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `ECHO_AGENT_COST__DAILY_LIMIT` | float | — | 每日费用上限（USD） |
-| `ECHO_AGENT_COST__MONTHLY_LIMIT` | float | — | 每月费用上限（USD） |
-| `ECHO_AGENT_COST__ALERT_THRESHOLD` | float | `0.8` | 费用预警阈值（占比） |
-
-### 频率限制
-
-| 变量 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `ECHO_AGENT_RATE_LIMIT__REQUESTS_PER_MINUTE` | int | `60` | 每分钟请求上限 |
-| `ECHO_AGENT_RATE_LIMIT__TOKENS_PER_MINUTE` | int | `100000` | 每分钟 token 上限 |
-
----
-
-## 凭据环境变量
-
-模型 API Key 等敏感信息推荐通过环境变量传递，避免写入配置文件：
+`_env_overrides()` 收集到的值一律是字符串，类型转换交由 pydantic 在校验阶段完成。因此布尔值写 `true` / `false`，整数直接写数字即可：
 
 ```bash
-# 模型 API Keys
-export ECHO_AGENT_CREDENTIALS__ANTHROPIC_API_KEY=sk-ant-...
-export ECHO_AGENT_CREDENTIALS__OPENAI_API_KEY=sk-...
-export ECHO_AGENT_CREDENTIALS__GOOGLE_API_KEY=AIza...
-
-# 通道凭据
-export ECHO_AGENT_CREDENTIALS__SLACK_BOT_TOKEN=xoxb-...
-export ECHO_AGENT_CREDENTIALS__TELEGRAM_BOT_TOKEN=123456:ABC...
-export ECHO_AGENT_CREDENTIALS__DISCORD_BOT_TOKEN=MTI...
+export ECHO_AGENT_GATEWAY__PORT=9000              # 转为 int
+export ECHO_AGENT_PERMISSIONS__ELEVATED__ENABLED=true  # 转为 bool
 ```
 
-!!! danger "安全提醒"
-    切勿将 API Key 写入版本控制。使用 `.env` 文件时确保已加入 `.gitignore`。
+无法转换的值会在启动时以配置校验错误的形式报出，不会被静默忽略。
 
----
+### 列表与嵌套结构
 
-## 调试相关变量
+列表类型的配置项无法通过环境变量可靠表达。`tools.deny`、`permissions.approval.require_approval` 这类字段请写在 YAML 配置文件里。
 
-| 变量 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `ECHO_AGENT_DEBUG` | bool | `false` | 启用调试模式（详细日志 + 错误堆栈） |
-| `ECHO_AGENT_TRACE` | bool | `false` | 启用请求追踪（极详细） |
-| `ECHO_AGENT_DRY_RUN` | bool | `false` | 干运行模式（不执行实际工具调用） |
-| `ECHO_AGENT_PROFILE_PERF` | bool | `false` | 启用性能分析 |
+## 配置加载优先级
 
----
+`load_config()` 依次合并四个来源，后者覆盖前者：
+
+1. 包内默认配置 `echo_agent/config/default.yaml`
+2. 用户配置文件（见下）
+3. `ECHO_AGENT_` 前缀的环境变量
+4. 调用方传入的显式 overrides
+
+合并是深合并：只覆盖同名叶子字段，同级的其他字段保留。
+
+用户配置文件按以下文件名在搜索目录中依次查找：`echo-agent.yaml`、`echo-agent.yml`、`config.yaml`、`config.yml`。
+
+## 独立运行时变量
+
+以下变量不走配置树，由代码直接读取：
+
+| 变量 | 作用 |
+|------|------|
+| `ECHO_AGENT_CREDENTIAL_KEY` | 凭据加密密钥。变量名本身可通过 `credentials.encryption_key_env` 改写，此处为其默认值 |
+| `ECHO_AGENT_DISABLE_LAZY_INSTALLS` | 禁用运行时按需安装依赖 |
+| `ECHO_AGENT_SETUP_HANDLES_SERVICE` | 由安装向导设置，标记服务注册已由向导接管 |
+
+## 凭据变量
+
+模型供应商的 API Key 既可直接写在配置里，也可从环境变量自动发现（推荐后者）。发现规则定义在 `echo_agent/models/providers/__init__.py` 的 `_API_KEY_ENV`：
+
+| 供应商 | 环境变量 |
+|--------|----------|
+| `openai` | `OPENAI_API_KEY` |
+| `anthropic` | `ANTHROPIC_API_KEY` |
+| `gemini` / `google` | `GOOGLE_API_KEY` 或 `GEMINI_API_KEY` |
+| `openrouter` | `OPENROUTER_API_KEY` |
+
+`bedrock` / `aws` 不使用上述机制，而是走 AWS SDK 的标准凭据链，可用 `AWS_ACCESS_KEY_ID`、`AWS_REGION`、`AWS_PROFILE`、`AWS_WEB_IDENTITY_TOKEN_FILE` 等标准变量。
+
+其他工具类凭据：`FAL_KEY` 用于 FAL.ai 图像生成。
+
+!!! warning "配置文件不支持 ${VAR} 替换"
+    不要在配置文件中写 `api_key: "${ANTHROPIC_API_KEY}"` —— 配置加载器不做变量替换，这串字符会被原样当作 API Key。要么依赖上表的自动发现，要么直接写入受权限保护的配置文件（`chmod 600`）。
 
 ## 使用示例
 
-### Docker Compose 中使用
+### Docker Compose
 
 ```yaml
 services:
   echo-agent:
     image: echo-agent:latest
     environment:
-      - ECHO_AGENT_GATEWAY__HOST=0.0.0.0
-      - ECHO_AGENT_GATEWAY__PORT=8080
-      - ECHO_AGENT_GATEWAY__AUTH__MODE=allowlist
-      - ECHO_AGENT_MODELS__PRIMARY__PROVIDER=anthropic
-      - ECHO_AGENT_MODELS__PRIMARY__MODEL=claude-sonnet-4-20250514
-      - ECHO_AGENT_CREDENTIALS__ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - ECHO_AGENT_SECURITY__PROFILE=standard
-      - ECHO_AGENT_LOG_LEVEL=INFO
+      ECHO_AGENT_GATEWAY__HOST: 0.0.0.0     # 容器内需监听所有网卡
+      ECHO_AGENT_GATEWAY__PORT: 58123
+      ECHO_AGENT_SECURITY__PROFILE: public_gateway
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    ports:
+      - "58123:58123"
 ```
 
-### systemd 服务文件中使用
+将 `gateway.host` 改为 `0.0.0.0` 意味着对外暴露，务必同时启用鉴权并收紧来源，详见[安全加固](../operations/security-hardening.md)。
+
+### systemd
 
 ```ini
 [Service]
-Environment=ECHO_AGENT_GATEWAY__HOST=127.0.0.1
-Environment=ECHO_AGENT_GATEWAY__PORT=8080
-Environment=ECHO_AGENT_SECURITY__PROFILE=extended
-EnvironmentFile=/etc/echo-agent/env
+Environment=ECHO_AGENT_SECURITY__PROFILE=daemon
+Environment=ECHO_AGENT_GATEWAY__PORT=58123
+EnvironmentFile=/etc/echo-agent/credentials.env
 ```
 
-### Shell 临时覆盖
+### 临时覆盖
 
 ```bash
-# 临时使用调试模式运行
-ECHO_AGENT_DEBUG=true ECHO_AGENT_LOG_LEVEL=DEBUG echo-agent run
-
-# 临时切换模型
-ECHO_AGENT_MODELS__PRIMARY__MODEL=claude-sonnet-4-20250514 echo-agent run
+ECHO_AGENT_TOOLS__PROFILE=minimal echo-agent run
 ```
 
-!!! question "需维护者确认"
-    是否支持 `.env` 文件自动加载？当前行为需要确认：仅从工作目录加载还是同时检查 `~/.echo-agent/.env`。
+## 相关页面
+
+- [配置参考](configuration.md) — 由 schema 自动生成的逐项说明
+- [安全档位矩阵](security-profile-matrix.md) — 档位与运行形态

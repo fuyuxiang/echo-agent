@@ -87,26 +87,30 @@ sudo apt update && sudo apt install python3.12 python3.12-venv
 
 ### Provider Configuration
 
+Providers are a **list** under `models.providers`, each entry naming a provider and the models it serves. There is no per-alias mapping such as `models.default` or `models.azure`:
+
 ```yaml
 models:
-  default:
-    provider: anthropic
-    model: claude-sonnet-4-20250514
-    api_key: sk-ant-...
+  default_model: claude-sonnet-4-20250514
+  fallback_model: gpt-4o-mini
+  providers:
+    - name: anthropic
+      api_key: sk-ant-...
+      models: ["claude-sonnet-4-20250514"]
 
-  # Alternative: local model via Ollama
-  local:
-    provider: ollama
-    model: llama3:70b
-    base_url: http://localhost:11434
+    # Local model via Ollama
+    - name: ollama
+      api_base: http://localhost:11434
+      models: ["llama3:70b"]
 
-  # Alternative: Azure OpenAI
-  azure:
-    provider: azure
-    model: gpt-4o
-    api_key: ...
-    base_url: https://myinstance.openai.azure.com/
+    # Azure OpenAI
+    - name: azure
+      api_key: ...
+      api_base: https://myinstance.openai.azure.com/
+      models: ["gpt-4o"]
 ```
+
+The connection field is `api_base`, not `base_url`. Which model is used comes from `default_model` plus the `models.routes` rules, not from an alias key.
 
 ---
 
@@ -150,7 +154,7 @@ PRAGMA journal_mode=WAL;
 ```
 
 !!! warning "Network filesystems"
-    SQLite does not work reliably on NFS, CIFS/SMB, or other network filesystems. Store `data/sqlite/` on local disk.
+    SQLite does not work reliably on NFS, CIFS/SMB, or other network filesystems. Store `data/echo_agent.db` on local disk.
 
 ---
 

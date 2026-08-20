@@ -9,8 +9,7 @@ Echo Agent 的数据存储分为全局目录和工作区目录两个层次。
 ├── config.yaml                   # 全局配置文件
 ├── credentials.yaml              # 凭据存储（加密）
 ├── data/
-│   ├── sqlite/
-│   │   └── echo.db              # 主 SQLite 数据库
+│   ├── echo_agent.db            # 主 SQLite 数据库
 │   ├── memory/
 │   │   ├── long_term.json       # 长期记忆
 │   │   └── embeddings/          # 记忆向量索引
@@ -20,8 +19,8 @@ Echo Agent 的数据存储分为全局目录和工作区目录两个层次。
 │   │   └── index/               # 向量检索索引
 │   ├── spill/                   # 大文件溢出存储
 │   ├── logs/
-│   │   ├── echo-agent.log       # 主日志文件
-│   │   └── archive/             # 归档日志
+│   │   ├── tool_audit.jsonl     # 工具调用审计
+│   │   └── memory_audit.jsonl   # 记忆读写审计
 │   └── checkpoints/
 │       └── chk_<timestamp>/     # 检查点快照
 ├── skills/
@@ -60,13 +59,15 @@ Echo Agent 的数据存储分为全局目录和工作区目录两个层次。
 | `config.yaml` | 主配置文件 | 可能含 Token |
 | `credentials.yaml` | 加密凭据存储 | 是 |
 
-### data/sqlite/
+### 主数据库
+
+只有一个 SQLite 数据库，不是按子系统分文件。路径由 `storage.database_path` 指定，默认 `data/echo_agent.db`：
 
 | 文件 | 说明 | 大小范围 |
 |------|------|----------|
-| `echo.db` | 主数据库（会话、任务、调度等） | 10MB ~ 1GB |
-| `echo.db-wal` | WAL 日志 | 动态 |
-| `echo.db-shm` | 共享内存 | 动态 |
+| `echo_agent.db` | 主数据库（会话、任务、调度、成本、进化等） | 10MB ~ 1GB |
+| `echo_agent.db-wal` | WAL 日志 | 动态 |
+| `echo_agent.db-shm` | 共享内存 | 动态 |
 
 数据库包含的主要表：
 
@@ -99,19 +100,20 @@ Echo Agent 的数据存储分为全局目录和工作区目录两个层次。
 
 大内容溢出存储。当工具输出或上下文超过阈值时，内容写入此目录并返回引用 ID。
 
-| 文件命名 | 格式 | 说明 |
-|----------|------|------|
-| `<spill_id>.json` | JSON | 溢出内容 + 元数据 |
+产物按会话分目录存放，文件名形如 `<随机十六进制>-<工具名>.txt`，是纯文本而非 JSON。
 
 !!! tip "自动清理"
-    溢出文件默认 24 小时后自动清理。可通过 `spill.retention_hours` 配置。
+    默认保留 7 天（`spill.retention_days`），目录总量上限 512 MB（`spill.max_total_mb`），清理每 6 小时扫描一次（`spill.sweep_interval_hours`）。超量时会在保留期之外继续删除最旧的产物。
 
 ### data/logs/
 
-| 文件 | 说明 | 轮转策略 |
-|------|------|----------|
-| `echo-agent.log` | 当前日志 | 按大小轮转（10MB） |
-| `archive/echo-agent.log.<date>` | 归档日志 | 保留 7 天 |
+| 文件 | 说明 |
+|------|------|
+| `tool_audit.jsonl` | 工具调用审计 |
+| `memory_audit.jsonl` | 记忆读写审计 |
+| `loop_freeze.log` | 事件循环卡死时的看门狗转储 |
+
+日志本身不做按大小或按日期的轮转（配置中没有 `observability.log_rotation`）。受限的是追踪文件数量，由 `observability.max_trace_files` 按条数裁剪，默认 500，设为 0 或负数则不裁剪。
 
 日志使用 loguru 格式：
 
@@ -175,15 +177,14 @@ chk_20240115_120000/
 
 ```yaml
 # .echo-agent/config.yaml
-agent:
-  persona: "你是这个项目的开发助手"
 tools:
   profile: coding
-  overrides:
-    filesystem:
-      allowed_paths:
-        - ./src
-        - ./docs
+  restrict_to_workspace: true
+  exec:
+    security: allowlist
+    allowed_commands:
+      - pytest
+      - ruff
 ```
 
 ### memory/
@@ -209,7 +210,7 @@ tools:
 | `~/.echo-agent/` | `700` | 仅所有者可访问 |
 | `config.yaml` | `600` | 可能含敏感配置 |
 | `credentials.yaml` | `600` | 加密凭据 |
-| `data/sqlite/echo.db` | `600` | 数据库文件 |
+| `data/echo_agent.db` | `600` | 数据库文件 |
 | `data/logs/` | `700` | 日志目录 |
 | `skills/` | `700` | 技能代码目录 |
 
@@ -236,7 +237,7 @@ tools:
 | SQLite 数据库 | 10MB ~ 1GB | 约 1MB/天（中等使用） |
 | 记忆存储 | 1MB ~ 100MB | 缓慢 |
 | 知识库 | 取决于文档量 | 手动添加 |
-| 日志 | 最大 70MB | 自动轮转 |
+| 审计日志 | 持续增长 | 需自行用系统 logrotate 管理 |
 | 检查点 | 50MB ~ 5GB | 每小时一个 |
 | 溢出存储 | 0 ~ 500MB | 自动清理 |
 | 缓存 | 0 ~ 200MB | 自动过期 |

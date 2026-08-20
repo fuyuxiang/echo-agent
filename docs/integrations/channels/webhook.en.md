@@ -10,9 +10,10 @@ The Webhook channel provides a generic HTTP endpoint for custom integrations tha
 channels:
   webhook:
     enabled: true
-    webhookPath: "/webhook"
+    path: "/webhook"
     host: "0.0.0.0"
-    port: 8086
+    port: 8080
+    secret: ${WEBHOOK_SECRET}
 ```
 
 ## Capabilities

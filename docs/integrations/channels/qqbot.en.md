@@ -10,10 +10,12 @@ The QQ Bot channel connects via WebSocket gateway to QQ's official bot platform.
 channels:
   qqbot:
     enabled: true
-    appId: "your-app-id"
-    token: "your-token"
-    secret: "your-secret"
-    allowFrom: []
+    app_id: "your-app-id"
+    app_secret: "your-app-secret"
+    sandbox: false
+    markdown_support: true
+    media_enabled: true
+    allow_from: []
 ```
 
 ## Capabilities

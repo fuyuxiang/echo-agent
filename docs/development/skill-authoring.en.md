@@ -183,9 +183,17 @@ Organize Skills into directories by domain:
 ### Manual Testing
 
 ```bash
-# After starting the Agent, trigger a Skill through conversation
-echo-agent chat "Calculate 2^32 - 1"
+# Start the agent, then trigger the skill by talking to it on the CLI channel
+echo-agent run
 ```
+
+If a gateway is already running, attach to the same instance as a thin client:
+
+```bash
+echo-agent cli
+```
+
+Neither command takes the message as an argument — start it, then type your prompt in the interactive session, e.g. "Calculate 2^32 - 1".
 
 ### Evaluation Testing
 

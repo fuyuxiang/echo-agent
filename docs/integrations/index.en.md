@@ -41,9 +41,13 @@ channels:
 
 ### Connect an MCP Tool Server
 
+MCP servers are configured under `tools.mcp_servers` (not a top-level `mcp` section), keyed by server name:
+
 ```yaml
-mcp:
-  servers:
+tools:
+  mcp:
+    enabled: true
+  mcp_servers:
     filesystem:
       enabled: true
       command: "npx"
@@ -52,12 +56,13 @@ mcp:
 
 ### Enable A2A Protocol
 
+The `a2a` fields are flat — there is no `agent_card` subsection:
+
 ```yaml
 a2a:
   enabled: true
-  agent_card:
-    name: "my-agent"
-    description: "My Echo Agent instance"
+  agent_name: "my-agent"
+  agent_description: "My Echo Agent instance"
 ```
 
 ## Design Principles

@@ -37,15 +37,19 @@ echo-agent run
 
 ### 配置示例
 
+运行模式由启动命令决定，不是配置项 —— `runtime` 节只有 `single_instance` 一个字段，没有 `mode`。日志级别配在 `observability`：
+
 ```yaml
 # ~/.echo-agent/config.yaml
+observability:
+  log_level: DEBUG    # 前台调试常用更详细的日志
+
 runtime:
-  mode: foreground
-  log_level: DEBUG    # 前台模式常用更详细的日志
+  single_instance: true   # 同一工作区只允许一个实例
 ```
 
 !!! tip "调试技巧"
-    前台模式下可通过 `--log-level DEBUG` 覆盖配置文件中的日志级别，实时查看工具调用和模型交互的完整过程。
+    日志级别只能通过配置文件或 `ECHO_AGENT_OBSERVABILITY__LOG_LEVEL=DEBUG` 环境变量设置，`echo-agent run` 没有 `--log-level` 参数。
 
 ---
 
@@ -104,7 +108,7 @@ Gateway 支持三种认证模式：
 # ~/.echo-agent/config.yaml
 gateway:
   host: 127.0.0.1
-  port: 8420
+  port: 58123
   auth:
     mode: allowlist
     api_tokens:
@@ -112,7 +116,7 @@ gateway:
       - "token-user-bob"
     admin_tokens:
       - "token-admin-root"
-    token_header: "X-Echo-Token"
+    token_header: "X-Echo-Agent-Token"
     allowed_origins:
       - "http://localhost:3000"
     allowed_hosts:
@@ -162,12 +166,12 @@ CLI 客户端本身不运行 Agent 逻辑，而是通过 HTTP API 与 Gateway �
 
 ```bash
 # 通过环境变量
-export ECHO_AGENT_GATEWAY_URL=http://localhost:8420
+export ECHO_AGENT_GATEWAY_URL=http://localhost:58123
 export ECHO_AGENT_TOKEN=your-api-token
 echo-agent cli
 
 # 通过命令行参数
-echo-agent cli --gateway http://localhost:8420 --token your-api-token
+echo-agent cli --gateway http://localhost:58123 --token your-api-token
 ```
 
 ### 适用场景

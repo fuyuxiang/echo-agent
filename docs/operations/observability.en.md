@@ -34,11 +34,18 @@ Returns: status (healthy/degraded/unhealthy), active channels, WebSocket clients
 
 Enable OTLP export:
 
+OTel settings are flat fields under `observability` prefixed with `otel_`; there is no nested `otlp` section:
+
 ```yaml
 observability:
-  otelEnabled: true
-  otelEndpoint: "http://localhost:4317"
+  otel_enabled: true                     # default true
+  otel_endpoint: "http://localhost:4317" # nothing is exported while empty
+  otel_service_name: echo-agent
+  otel_export_interval_ms: 5000
+  trace_enabled: true
 ```
+
+`otel_enabled` is on by default, but `otel_endpoint` is empty by default — with no endpoint set, nothing is exported. There are no `protocol` or `headers` fields.
 
 Requires the `otel` extra:
 

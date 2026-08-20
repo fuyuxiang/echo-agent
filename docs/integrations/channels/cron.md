@@ -56,14 +56,16 @@ Dashboard Cron 页面支持可视化管理定时任务。
 
 ## 输出路由
 
-Cron 任务本身没有"发送"能力。其输出通过 Gateway 的 Delivery Router 路由到其他通道：
+Cron 通道本身没有"发送"能力，投递目标记在**每个任务**上，不是全局配置 —— 配置中没有 `gateway.deliveryRoutes` 这样的路由表。
 
-```yaml
-gateway:
-  deliveryRoutes:
-    - source: cron
-      target: telegram
-```
+任务载荷中的两个字段决定输出去向：
+
+| 字段 | 说明 |
+|------|------|
+| `deliver_channel` | 目标通道名，如 `telegram` |
+| `deliver_chat_id` | 目标会话 ID |
+
+两者留空时回落到任务的 `channel` / `chat_id`。用 `cronjob` 工具或 Dashboard 创建任务时指定即可。
 
 ## 常见问题
 

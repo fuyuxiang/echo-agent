@@ -18,12 +18,7 @@ The global directory stores user-wide configuration, data, and runtime state.
 │   ├── personal.yaml
 │   └── work.yaml
 ├── data/
-│   ├── sqlite/              # SQLite databases
-│   │   ├── memory.db        # Long-term memory store
-│   │   ├── sessions.db      # Session history
-│   │   ├── tasks.db         # Task queue
-│   │   ├── analytics.db     # Cost and usage analytics
-│   │   └── evolution.db     # Skill evolution records
+│   ├── echo_agent.db        # Main SQLite database
 │   ├── memory/              # Memory export and backup files
 │   │   ├── episodic/        # Episodic memory segments
 │   │   └── semantic/        # Semantic memory index
@@ -33,10 +28,9 @@ The global directory stores user-wide configuration, data, and runtime state.
 │   │   └── metadata.json    # Index metadata
 │   ├── spill/               # Large content overflow
 │   │   └── *.spill          # Individual spill files
-│   ├── logs/                # Application logs
-│   │   ├── echo-agent.log   # Main log (rotated)
-│   │   ├── gateway.log      # Gateway access log
-│   │   └── archive/         # Rotated log archives
+│   ├── logs/                # Audit trails and trace files
+│   │   ├── tool_audit.jsonl # Tool invocation audit
+│   │   └── memory_audit.jsonl
 │   └── checkpoints/         # State checkpoints
 │       └── <timestamp>/     # Individual checkpoint dirs
 ├── plugins/                 # Installed plugin packages
@@ -86,24 +80,26 @@ Each project can have a local `.echo-agent/` directory for workspace-specific ov
 
 ### Database Files
 
-| Database | Location | Purpose | Typical Size |
-|----------|----------|---------|--------------|
-| `memory.db` | `data/sqlite/` | Persistent agent memory | 10 MB - 1 GB |
-| `sessions.db` | `data/sqlite/` | Conversation history | 50 MB - 5 GB |
-| `tasks.db` | `data/sqlite/` | Task queue and results | 1 MB - 100 MB |
-| `analytics.db` | `data/sqlite/` | Cost tracking and metrics | 5 MB - 500 MB |
-| `evolution.db` | `data/sqlite/` | Skill evolution data | 1 MB - 50 MB |
+There is a single SQLite database, not one file per subsystem. Its path comes from `storage.database_path`, default `data/echo_agent.db`:
+
+| File | Purpose | Typical Size |
+|------|---------|--------------|
+| `echo_agent.db` | Sessions, tasks, scheduling, cost, evolution | 10 MB - 1 GB |
+| `echo_agent.db-wal` | WAL journal | Varies |
+| `echo_agent.db-shm` | Shared memory | Varies |
 
 !!! warning "Database locking"
     SQLite databases use WAL mode for concurrent reads. Only one Echo Agent instance should write to a given database at a time. Running multiple agents against the same global directory is unsupported.
 
 ### Log Files
 
-| File | Rotation | Max Size | Description |
-|------|----------|----------|-------------|
-| `echo-agent.log` | Daily | 50 MB | Main application log |
-| `gateway.log` | Daily | 20 MB | HTTP/WS request log |
-| `archive/*.gz` | — | Retained 7 days | Compressed old logs |
+| File | Description |
+|------|-------------|
+| `tool_audit.jsonl` | Tool invocation audit trail |
+| `memory_audit.jsonl` | Memory read/write audit trail |
+| `loop_freeze.log` | Watchdog dump written when the event loop stalls |
+
+Logs are not rotated by size or date, and there are no compressed archives — see [Trace files](#trace-files) for the one bound that does apply.
 
 ---
 
@@ -160,7 +156,7 @@ storage:
 | `config.yaml` | `600` | May contain sensitive settings |
 | `credentials.yaml` | `600` | Contains encrypted secrets |
 | `data/` | `700` | Database and runtime data |
-| `data/sqlite/*.db` | `600` | Sensitive data stores |
+| `data/echo_agent.db` | `600` | Sensitive data store |
 | `cache/` | `700` | Temporary data |
 | `plugins/` | `700` | Executable plugin code |
 
@@ -173,7 +169,7 @@ find ~/.echo-agent/data -type f -name "*.db" -exec chmod 600 {} \;
 ```
 
 !!! danger "Never run as root"
-    Echo Agent should never run as root. The gateway binds to unprivileged ports (default 3000) and does not require elevated permissions.
+    Echo Agent should never run as root. The gateway binds to an unprivileged port (default 58123) on loopback and does not require elevated permissions.
 
 ---
 
@@ -185,21 +181,20 @@ The spill directory stores large content that exceeds context window limits. Fil
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `spill.max_size_mb` | `500` | Maximum total spill directory size |
-| `spill.ttl_hours` | `24` | Delete spill files older than this |
-| `spill.cleanup_interval` | `1h` | How often to run cleanup |
+| `spill.max_total_mb` | `512` | Maximum total spill directory size |
+| `spill.retention_days` | `7` | Delete spill artifacts older than this |
+| `spill.sweep_interval_hours` | `6` | How often the sweeper runs |
 
-### Log Rotation
+Cleanup applies both rules: artifacts past `retention_days` go first, and if the directory still exceeds `max_total_mb` the oldest remaining artifacts are removed until it fits.
 
-Configure via `observability` settings:
+### Trace files
+
+There is no size- or age-based log rotation, and no `observability.log_rotation` section. What is bounded is the number of trace files, capped by count:
 
 ```yaml
 observability:
-  log_level: info
-  log_rotation:
-    max_size_mb: 50
-    max_age_days: 7
-    compress: true
+  log_level: INFO
+  max_trace_files: 500   # oldest traces are pruned past this; <=0 disables pruning
 ```
 
 ### Checkpoint Pruning
@@ -223,7 +218,7 @@ SQLite databases grow over time. Periodic VACUUM reduces file size:
 
 ```bash
 # Manual vacuum (agent must be stopped)
-sqlite3 ~/.echo-agent/data/sqlite/sessions.db "VACUUM;"
+sqlite3 ~/.echo-agent/data/echo_agent.db "VACUUM;"
 ```
 
 !!! question "Maintainer confirmation needed"
@@ -238,9 +233,9 @@ sqlite3 ~/.echo-agent/data/sqlite/sessions.db "VACUUM;"
 | Priority | Path | Contains |
 |----------|------|----------|
 | Critical | `credentials.yaml` | API keys (encrypted) |
-| Critical | `data/sqlite/memory.db` | Agent memory |
+| Critical | `data/echo_agent.db` | Sessions, tasks, cost, evolution |
 | High | `config.yaml` | Configuration |
-| High | `data/sqlite/sessions.db` | Conversation history |
+| High | `data/memory/` | Agent memory store |
 | High | `skills/promoted/` | Evolved skills |
 | Medium | `data/knowledge/` | Knowledge base |
 | Low | `cache/` | Regeneratable cache (skip) |
@@ -254,17 +249,15 @@ BACKUP_DIR="$HOME/echo-agent-backup/$(date +%Y%m%d)"
 mkdir -p "$BACKUP_DIR"
 
 # Stop the agent first for consistent backup
-echo-agent gateway stop
 
 # Copy critical files
 cp ~/.echo-agent/config.yaml "$BACKUP_DIR/"
 cp ~/.echo-agent/credentials.yaml "$BACKUP_DIR/"
-cp -r ~/.echo-agent/data/sqlite/ "$BACKUP_DIR/sqlite/"
+cp ~/.echo-agent/data/echo_agent.db "$BACKUP_DIR/"
+cp -r ~/.echo-agent/data/memory/ "$BACKUP_DIR/memory/"
 cp -r ~/.echo-agent/skills/promoted/ "$BACKUP_DIR/skills/"
 cp -r ~/.echo-agent/data/knowledge/ "$BACKUP_DIR/knowledge/"
 
-# Restart
-echo-agent gateway start
 
 echo "Backup complete: $BACKUP_DIR"
 ```

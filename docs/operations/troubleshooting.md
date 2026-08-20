@@ -30,8 +30,8 @@ echo-agent gateway logs
 echo-agent run
 
 # 3. 检查端口占用
-ss -tlnp | grep 8420    # Linux
-lsof -i :8420           # macOS
+ss -tlnp | grep 58123    # Linux
+lsof -i :58123           # macOS
 
 # 4. 验证配置
 echo-agent config validate
@@ -45,7 +45,7 @@ echo-agent deps status
 ```bash
 # 端口占用：修改端口或停止占用进程
 echo-agent gateway stop
-kill $(lsof -t -i :8420)
+kill $(lsof -t -i :58123)
 
 # 配置错误：修复 YAML 语法
 echo-agent config validate   # 会指出具体行号
@@ -82,10 +82,10 @@ chmod 700 ~/.echo-agent/data
 echo-agent gateway status
 
 # 2. 测试网络连通性
-curl -v http://localhost:8420/health
+curl -v http://localhost:58123/health
 
 # 3. 测试认证
-curl -H "X-Echo-Token: your-token" http://localhost:8420/health
+curl -H "X-Echo-Agent-Token: your-token" http://localhost:58123/health
 
 # 4. 检查 Gateway 日志中的拒绝记录
 echo-agent gateway logs | grep -i "rejected\|forbidden\|unauthorized"
@@ -252,15 +252,14 @@ find ~/.echo-agent/data/logs -name "*.gz" -mtime +7 -delete
 ```
 
 !!! tip "预防措施"
-    配置日志轮转和溢写清理策略，避免磁盘空间耗尽：
+    收紧溢写保留策略，避免磁盘空间耗尽：
     ```yaml
-    logging:
-      rotation: "100 MB"
-      retention: "7 days"
-    runtime:
-      spill:
-        cleanup_after_seconds: 86400
+    spill:
+      max_total_mb: 512      # 溢写目录总大小上限
+      retention_days: 7      # 保留天数
+      sweep_interval_hours: 6
     ```
+    日志轮转由代码内的 loguru 配置决定，没有对应的配置字段；日志目录是 `storage.logs_dir`。
 
 ---
 

@@ -22,15 +22,16 @@ Echo Agent 使用 [Loguru](https://github.com/Delgan/loguru) 作为日志框架�
 
 ### 日志级别配置
 
+日志级别配置在 `observability.log_level`。配置中没有 `logging` 节，也没有 `format`、`rotation`、`retention`、`compression` 这些字段 —— 日志格式与轮转由代码内的 loguru 配置决定，不对外暴露。
+
 ```yaml
 # ~/.echo-agent/config.yaml
-logging:
-  level: INFO              # TRACE / DEBUG / INFO / WARNING / ERROR / CRITICAL
-  format: "{time:YYYY-MM-DD HH:mm:ss} | {level:<8} | {name}:{function}:{line} - {message}"
-  rotation: "100 MB"       # 单文件大小上限
-  retention: "30 days"     # 保留时间
-  compression: "gz"        # 归档压缩
+observability:
+  log_level: INFO          # TRACE / DEBUG / INFO / WARNING / ERROR / CRITICAL
+  max_trace_files: 500     # 追踪文件数量上限
 ```
+
+日志目录由 `storage.logs_dir` 指定，默认 `data/logs`。
 
 ### 日志文件位置
 
@@ -78,8 +79,8 @@ Gateway 运行时通过 API 提供日志访问：
 echo-agent gateway logs
 
 # 等价 API 调用
-curl -H "X-Echo-Token: $TOKEN" \
-  http://localhost:8420/api/logs?lines=100&level=WARNING
+curl -H "X-Echo-Agent-Token: $TOKEN" \
+  http://localhost:58123/api/logs?lines=100&level=WARNING
 ```
 
 ### API 参数
@@ -100,17 +101,19 @@ Echo Agent 支持 OpenTelemetry 协议导出追踪和指标数据。
 
 ### 启用 OTLP 导出
 
+OTel 相关字段是 `observability` 下的平铺字段，前缀为 `otel_`，没有 `otlp` 嵌套节：
+
 ```yaml
 # ~/.echo-agent/config.yaml
 observability:
-  otlp:
-    enabled: true
-    endpoint: "http://localhost:4317"   # gRPC endpoint
-    protocol: grpc                       # grpc 或 http
-    headers:                             # 可选认证头
-      Authorization: "Bearer xxx"
-    export_interval_ms: 5000             # 指标导出间隔
+  otel_enabled: true                    # 默认 true
+  otel_endpoint: "http://localhost:4317" # 为空时不导出
+  otel_service_name: echo-agent
+  otel_export_interval_ms: 5000
+  trace_enabled: true
 ```
+
+`otel_enabled` 默认已开启，但 `otel_endpoint` 默认为空 —— 未填写端点时不会导出任何数据。配置中没有 `protocol` 与 `headers` 字段。
 
 ### 追踪 (Traces)
 
@@ -215,11 +218,12 @@ echo-agent cost --group-by model
 
 ```yaml
 cost:
-  budget:
-    daily_limit_usd: 10.0
-    monthly_limit_usd: 200.0
-    alert_threshold: 0.8    # 达到 80% 预算时告警
+  enabled: true
+  daily_budget_usd: 10.0      # 0 表示不限制
+  soft_threshold_ratio: 0.8   # 达到 80% 预算时软预警
 ```
+
+`cost` 没有 `budget` 嵌套节，也没有月度上限字段 —— 预算是按日的。详见[成本控制](../guides/cost-control.md)。
 
 ---
 
@@ -229,11 +233,11 @@ Gateway 暴露健康检查端点：
 
 ```bash
 # 基础健康检查
-curl http://localhost:8420/health
+curl http://localhost:58123/health
 # {"status": "healthy", "version": "0.3.7", "uptime_seconds": 3600}
 
 # 详细状态（需 admin token）
-curl -H "X-Echo-Token: $ADMIN_TOKEN" http://localhost:8420/health/detail
+curl -H "X-Echo-Agent-Token: $ADMIN_TOKEN" http://localhost:58123/health/detail
 ```
 
 !!! tip "监控集成"

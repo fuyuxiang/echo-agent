@@ -56,11 +56,13 @@ echo-agent cron authorize <job-id>
 
 ## Output Routing
 
-Cron channel has no send capability. Output is routed to other channels via Gateway Delivery Router:
+The cron channel has no send capability of its own. The delivery target is recorded **per job**, not globally — there is no `gateway.deliveryRoutes` routing table in the configuration.
 
-```yaml
-gateway:
-  deliveryRoutes:
-    - source: cron
-      target: telegram
-```
+Two fields on the job payload decide where output goes:
+
+| Field | Description |
+|-------|-------------|
+| `deliver_channel` | Target channel name, e.g. `telegram` |
+| `deliver_chat_id` | Target chat id |
+
+When either is empty it falls back to the job's own `channel` / `chat_id`. Set them when creating the job through the `cronjob` tool or the Dashboard.

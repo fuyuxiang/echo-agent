@@ -4,26 +4,32 @@ Echo Agent 的会话系统为每个对话提供隔离的上下文环境，支持
 
 ## 会话键组成
 
-会话通过复合键唯一标识，由以下四个维度组成：
+会话键由通道与会话两段组成，形如 `{channel}:{chat_id}`，实现见 `InboundEvent.session_key`：
 
-| 维度 | 说明 |
-|------|------|
-| `channel` | 通道标识（如 slack、wechat、api） |
-| `user` | 用户标识 |
-| `chat` | 会话/群组标识 |
-| `thread` | 线程/话题标识 |
+| 组成部分 | 来源 | 说明 |
+|----------|------|------|
+| `channel` | `event.channel` | 通道注册名，如 `slack`、`weixin`、`telegram` |
+| `chat_id` | `event.chat_id` | 平台侧的会话标识，私聊与群聊都用这一字段 |
 
-```yaml
-# 示例：一个完整的会话键
-channel: slack
-user: U12345
-chat: C67890
-thread: T11111
+```text
+slack:C67890
 ```
 
+若事件带有 `session_key_override`，则直接采用该值，不再按上述规则拼接。
+
+### 群聊内按人隔离
+
+群聊场景下可以进一步把发送者纳入键，由 `scoped_session_key(scope)` 决定：
+
+| scope | 私聊 | 群聊 |
+|-------|------|------|
+| `shared` | `slack:C67890` | `slack:C67890`（整群共用一个会话） |
+| `per_user` | `slack:D1` | `slack:C67890:U12345`（群内每人独立） |
+
+`per_user` 只在群聊且存在 `sender_id` 时才追加发送者后缀；私聊下两种策略结果一致。拼接是幂等的，已含发送者后缀的键不会被重复拼接。
+
 !!! note "隔离模型"
-    同一用户在不同通道、不同群组或不同线程中的消息互不干扰。
-    每个唯一的 (channel, user, chat, thread) 组合对应一个独立会话。
+    同一用户在不同通道、不同群组中的消息互不干扰。是否在群内按人隔离取决于 `scope` 策略，而非会话键本身的结构。
 
 ## 会话生命周期
 
@@ -127,9 +133,12 @@ Session Manager 确保不同通道间的会话完全隔离：
 - 处理连接断开后的会话状态保持
 - 支持会话在连接恢复后续接
 
+会话的空闲回收由网关的会话策略控制，单位是分钟：
+
 ```yaml
-websocket:
-  session_timeout: 300  # WebSocket 断开后会话保持时间（秒）
+gateway:
+  session_policy:
+    idle_timeout_minutes: 1440   # 会话空闲超时（分钟），默认 1440 即 24 小时
 ```
 
 ## 会话搜索

@@ -62,4 +62,4 @@ plugins:
   deny: [unwanted-plugin]  # these never load
 ```
 
-`allow` takes precedence: if non-empty, only listed plugins load.
+A non-empty `allow` restricts loading to the listed plugins. When a plugin appears in both lists, **`deny` wins** — filtering checks the blocklist first and skips the plugin without consulting the allowlist.

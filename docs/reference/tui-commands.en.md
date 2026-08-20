@@ -107,7 +107,7 @@ Switch the TUI color theme or list available themes.
 Available built-in themes: `dark`, `light`, `monokai`, `solarized`, `nord`.
 
 !!! tip
-    Set a permanent default in your config file under `ui.theme`.
+    Set a permanent default in your config file under `ui.locale` (only `locale` is exposed; theme is not persisted across restarts).
 
 ### /reconnect
 

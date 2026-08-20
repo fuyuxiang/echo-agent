@@ -74,8 +74,8 @@ Browser 采用 per-owner 隔离模型：每个会话绑定到创建者（通过 
 - **Dialog 处理**：自动处理 `alert`/`confirm`/`prompt` 弹窗，并记录内容供模型查看
 - **Console 记录**：捕获页面 `error`/`warning` 级别的控制台输出
 
-!!! question "需维护者确认"
-    会话存储状态（`storage_state_path`）的持久化策略、`allow_private` 白名单配置方式、以及 `dialog_policy` 在 config.yaml 中的暴露路径，需维护者补充具体配置示例。
+!!! note "相关配置项"
+    登录态持久化由 `tools.browser.persist_login_state` 控制（默认 false，配置中没有 `storage_state_path`）；内网放行由 `tools.web.allow_private_addresses` 与 `tools.browser.allow_private_addresses` 分别控制，各自只作用于自己的工具；`dialog_policy` 位于 `tools.browser.dialog_policy`。
 
 !!! warning "安全限制"
     - `evaluate` 操作会拦截读取 cookie、localStorage、sessionStorage 等敏感数据的表达式
@@ -94,7 +94,7 @@ Browser 采用 per-owner 隔离模型：每个会话绑定到创建者（通过 
 tools:
   web:
     proxy: ""              # 可选 HTTP 代理
-    allow_private: false   # 是否允许访问内网地址
+    allow_private_addresses: false   # 是否允许访问内网地址
 ```
 
 **参数**：
@@ -107,7 +107,7 @@ tools:
 !!! note "限制"
     - 最多跟踪 5 次重定向
     - 超时 30 秒
-    - 禁止访问内网 IP（除非 `allow_private: true`）
+    - 禁止访问内网 IP（除非 `tools.web.allow_private_addresses: true`）
 
 ### web_search — 网页搜索
 
@@ -125,9 +125,10 @@ tools:
 
 ```yaml
 tools:
-  web_search:
-    provider: "brave"
-    api_key: "BSA-xxx"
+  web:
+    enabled: true
+    search_provider: "brave"   # brave | tavily | serpapi | searxng | serply
+    search_api_key: "BSA-xxx"
 ```
 
 ---
@@ -171,7 +172,7 @@ Echo Agent 支持两种图像生成后端：
 ```yaml
 tools:
   image_gen:
-    provider: "openai"
+    backend: "openai"
     api_key: "sk-xxx"
     model: "dall-e-3"        # 默认模型
 ```
@@ -199,9 +200,9 @@ tools:
 ```yaml
 tools:
   image_gen:
-    provider: "fal"
+    backend: "fal"
     fal_key: "fal-xxx"
-    model: "fal-ai/flux/schnell"
+    fal_model: "fal-ai/flux/schnell"
 ```
 
 **参数**：
@@ -224,7 +225,7 @@ tools:
 ```yaml
 tools:
   tts:
-    backend: "edge"
+    default_backend: "edge"
     default_voice: "zh-CN-XiaoxiaoNeural"
 ```
 
@@ -233,9 +234,9 @@ tools:
 ```yaml
 tools:
   tts:
-    backend: "openai"
+    default_backend: "openai"
     openai_api_key: "sk-xxx"
-    tts_model: "tts-1"        # 或 tts-1-hd
+    model: "tts-1"        # 或 tts-1-hd
     default_voice: "alloy"    # alloy/echo/fable/onyx/nova/shimmer
 ```
 

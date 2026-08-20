@@ -261,12 +261,16 @@ permissions:
     unattended_policy: "deny"     # deny | allow_safe
     wait_timeout_seconds: 120     # 人工审批超时
     smart_model: ""               # Smart Approval 使用的模型
+  elevated:
+    enabled: true                 # 启用提权机制
     allow_from:                   # 各通道允许提权的用户映射
       telegram: [user_123]
 ```
 
-!!! question "需维护者确认"
-    `allow_from` 映射中用户 ID 的格式是否与通道的 `sender_id` 一致？目前代码中按字符串精确匹配。
+`allow_from` 属于 `permissions.elevated`，不在 `approval` 下；`elevated.enabled` 为 false 时该映射不生效。
+
+!!! note "匹配规则"
+    `allow_from` 的值按通道的 `sender_id` 做字符串精确匹配。`"*"` 既可作通道键（对所有通道生效）也可作用户值（对该通道所有用户生效）。`permissions.admin_users` 中的用户始终视为已提权。提权只对 `exec`、`execute_code`、`process` 三个工具生效，且仅当执行落在 local/remote 宿主或 `tools.exec.security` 为 `full` 时才需要。
 
 ### 工作区限制
 

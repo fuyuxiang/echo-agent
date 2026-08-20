@@ -25,12 +25,15 @@ cost:
   soft_threshold_ratio: 0.8
   pricing_overrides:
     my-local-llama:
-      input_per_1k: 0.0
-      output_per_1k: 0.0
+      input_per_1m: 0
+      output_per_1m: 0
     custom-gpt4:
-      input_per_1k: 0.03
-      output_per_1k: 0.06
+      input_per_1m: 30
+      output_per_1m: 60
 ```
+
+!!! warning "Prices are per million tokens"
+    The override keys are `input_per_1m`, `output_per_1m`, `cache_read_per_1m` and `cache_write_per_1m` — per **1M** tokens, not per 1K. `_resolve_price()` reads them with `ov.get("input_per_1m", 0.0)`, so a key like `input_per_1k` raises no error and instead falls back to `0.0`, leaving that model's cost permanently at zero.
 
 ### Field Reference
 
@@ -76,12 +79,12 @@ cost:
   pricing_overrides:
     # Local models at zero cost
     ollama-llama3:
-      input_per_1k: 0.0
-      output_per_1k: 0.0
+      input_per_1m: 0
+      output_per_1m: 0
     # Custom pricing
     azure-gpt4o:
-      input_per_1k: 0.005
-      output_per_1k: 0.015
+      input_per_1m: 5
+      output_per_1m: 15
 ```
 
 Models not listed in the override table use built-in pricing data.
@@ -124,17 +127,26 @@ The Dashboard Analytics page provides visual cost insights:
 
 ### 1. Model Routing
 
-The router supports cost-aware decisions — simple tasks are automatically routed to lower-cost models:
+Route different kinds of work to different models so cheaper models handle the simple tasks. Routing rules live in `models.routes`, and each rule matches on `task_types`:
 
 ```yaml
-router:
-  strategy: cost_aware
-  rules:
-    - condition: "complexity == 'simple'"
-      prefer: cheap_model
-    - condition: "complexity == 'complex'"
-      prefer: capable_model
+models:
+  default_model: claude-sonnet-4-5
+  routes:
+    - task_types: [simple]
+      provider: openai
+      model: gpt-4o-mini
+      max_tokens: 4096
+    - task_types: [coding]
+      provider: anthropic
+      model: claude-sonnet-4-5
+      fallback_models: [gpt-4o]
 ```
+
+Each route accepts `provider`, `model`, `task_types`, `fallback_models`, `max_tokens`, `temperature` and `context_window`.
+
+!!! note "There is no router section"
+    Configuration has no top-level `router` section, and no `strategy: cost_aware`, `rules`, `condition` or `prefer` fields. Routing is always expressed through `task_types` on `models.routes`.
 
 ### 2. Prompt Caching
 
@@ -178,12 +190,16 @@ cost:
   soft_threshold_ratio: 0.75
   pricing_overrides:
     local-llama3-70b:
-      input_per_1k: 0.0
-      output_per_1k: 0.0
+      input_per_1m: 0
+      output_per_1m: 0
     deepseek-chat:
-      input_per_1k: 0.001
-      output_per_1k: 0.002
+      input_per_1m: 1
+      output_per_1m: 2
 
-router:
-  strategy: cost_aware
+models:
+  default_model: claude-sonnet-4-5
+  routes:
+    - task_types: [simple]
+      provider: openai
+      model: gpt-4o-mini
 ```

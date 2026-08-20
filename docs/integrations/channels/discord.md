@@ -15,7 +15,8 @@ Discord 通道通过 WebSocket Gateway（v10）维持实时连接，并使用 RE
 
 ```yaml
 channels:
-  - type: discord
+  discord:
+    enabled: true
     token: "MTIzNDU2Nzg5.ABCdef.GHIjklMNOpqrsTUVwxyz0123456"
     allow_from:
       - "1234567890123456789"   # 用户 ID（字符串）

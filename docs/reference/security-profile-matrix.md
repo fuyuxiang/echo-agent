@@ -1,226 +1,137 @@
-# 安全配置矩阵
+# 安全档位矩阵
 
-Echo Agent 通过两个独立的 Profile 维度控制安全策略：安全级别（security.profile）和工具访问级别（tools.profile）。
+本页说明 Echo Agent 的工具准入判定：哪些工具会暴露给模型，以及哪些调用需要审批。所有取值均取自 `echo_agent/config/schema.py` 与 `echo_agent/security/tool_policy.py`。
 
-## 安全 Profile（security.profile）
+!!! warning "两个 profile 字段作用不同"
+    配置中有两个 `profile` 字段，取值互不通用，混用会导致配置不生效：
 
-控制运行时的安全边界与隔离策略。
+    - `tools.profile` — 取值 `minimal` / `messaging` / `coding` / `full`，默认 `full`
+    - `security.profile` — 取值 `personal_cli` / `daemon` / `public_gateway`，默认 `personal_cli`
 
-| 特性 | minimal | standard | extended |
-|------|---------|----------|----------|
-| 沙箱隔离 | 否 | 是 | 是（强化） |
-| 文件系统限制 | 无 | 工作区内 | 白名单路径 |
-| 网络访问限制 | 无 | 无 | 白名单域名 |
-| Shell 命令过滤 | 无 | 黑名单 | 白名单 |
-| 进程隔离 | 无 | 基本 | 完全隔离 |
-| 敏感信息检测 | 无 | 警告 | 拦截 |
-| 审计日志 | 基本 | 详细 | 完整（含参数） |
-| Token/凭据泄露防护 | 无 | 输出扫描 | 输入+输出扫描 |
-| 最大文件大小限制 | 无 | 50MB | 10MB |
-| 递归深度限制 | 无 | 20 层 | 10 层 |
+    不存在 `standard`、`extended`、`strict` 这些档位。填入未定义的值会在启动时被配置校验拒绝。
 
-### minimal
+## tools.profile：工具白名单
 
-适用场景：本地开发、受信任环境、快速测试。
+四档为累加关系，后一档包含前一档的全部工具。
 
-```yaml
-security:
-  profile: minimal
-```
+| 档位 | 工具数 | 适用场景 |
+|------|--------|----------|
+| `minimal` | 14 | 只读问答，不写文件、不发媒体 |
+| `messaging` | 18 | 在 `minimal` 基础上增加记忆与媒体生成 |
+| `coding` | 24 | 在 `messaging` 基础上增加文件写入与编排 |
+| `full` | 全部 | 白名单为 `*`，放通所有工具（默认） |
 
-- 不启用沙箱
-- 不限制文件系统和网络访问
-- 仅记录基本操作日志
-- 最大灵活性，最低安全性
+各档位的具体工具清单见[内置工具参考](tools.md)的档位对照表。
 
-!!! danger "风险提示"
-    `minimal` Profile 不提供任何安全隔离。仅建议在完全受控的本地环境中使用。
+`full` 档的白名单是字面量 `*`，因此新增工具会自动在该档可用；其余三档是显式集合，新工具不会自动进入。
 
-### standard（默认）
+## security.profile：运行形态基线
 
-适用场景：日常使用、团队共享实例。
+`security.profile` 不改变白名单，而是在白名单之上追加拒绝规则。拒绝可以按工具名，也可以按能力标签。
 
-```yaml
-security:
-  profile: standard
-```
+| 档位 | 含义 | 追加拒绝 |
+|------|------|----------|
+| `personal_cli` | 本机单人使用（默认） | 无 |
+| `daemon` | 长期后台运行 | 4 个工具 + 4 类能力 |
+| `public_gateway` | 网关对外暴露 | 11 个工具 + 8 类能力 |
 
-- 启用沙箱隔离
-- 限制文件访问在工作区目录内
-- 使用命令黑名单过滤危险命令
-- 扫描输出中的潜在凭据泄露
-- 记录详细操作日志
+### daemon
 
-### extended
+拒绝工具：`exec`、`execute_code`、`process`、`skill_install`
 
-适用场景：生产环境、面向外部用户、高合规要求。
+拒绝能力：`code.exec`、`process.exec`、`process.manage`、`skill.install`
 
-```yaml
-security:
-  profile: extended
-```
+### public_gateway
 
-- 强化沙箱（不可逃逸）
-- 文件访问仅限白名单路径
-- 网络请求仅限白名单域名
-- 命令执行使用白名单模式
-- 输入和输出双向凭据扫描
-- 完整审计日志（含所有参数）
+拒绝工具为 `HIGH_RISK_TOOLS` 的 6 个（`cronjob`、`exec`、`execute_code`、`process`、`skill_install`、`skill_manage`）再加 5 个写入类工具（`edit_file`、`knowledge_index`、`patch`、`workflow`、`write_file`），共 11 个。
 
----
+拒绝能力：`code.exec`、`fs.write`、`process.exec`、`process.manage`、`scheduler.write`、`skill.install`、`skill.write`、`workflow.write`
 
-## 工具 Profile（tools.profile）
+!!! danger "对外暴露网关前务必确认"
+    将网关暴露到公网前，除设置 `security.profile: public_gateway` 外，还需确认已启用鉴权、限制监听地址与来源。网关默认监听 `127.0.0.1`，改为对外监听是一项需要显式开启的动作。详见[安全加固](../operations/security-hardening.md)。
 
-控制 Agent 可以使用哪些工具类别。
+## 判定顺序
 
-| Profile | 可用工具数 | 包含类别 | 典型用途 |
-|---------|-----------|----------|----------|
-| `minimal` | 11 | MINIMAL_TOOLS | 只读助手、信息查询 |
-| `messaging` | 17 | + MESSAGING_TOOLS | 消息机器人、通知服务 |
-| `coding` | 24 | + CODING_TOOLS | 开发助手、代码生成 |
-| `full` | 30 | + HIGH_RISK_TOOLS | 完全自主 Agent |
+`is_tool_allowed()` 按固定顺序逐层判定，任一层拒绝即终止：
 
----
+1. **显式拒绝** — 工具名在 `tools.deny` 中，直接拒绝。这一层优先级最高，无法被任何配置豁免。
+2. **白名单** — 若配置了 `tools.allow`，则只有其中的工具通过，档位不再参与判定；否则由 `tools.profile` 的档位白名单或 `tools.also_allow` 决定。
+3. **运行形态拒绝** — 按 `security.profile` 追加的工具名与能力规则拒绝。工具名同时出现在 `tools.allow` 或 `tools.also_allow` 中时可豁免本层。
+4. **网络策略** — 当 `execution.network_policy` 为 `deny` 时，拒绝 `web_fetch`、`web_search` 以及任何带 `network.outbound` 能力的工具。`network_policy` 默认即为 `deny`。
 
-## 组合矩阵
+被拒绝的工具不会报错，而是不出现在模型的工具列表中，同时以 INFO 级别记录一条 `Tool policy skipped N tools` 日志。排查"工具没被调用"时应先看这条日志。
 
-安全 Profile 和工具 Profile 可独立配置。以下是推荐的组合：
+### 配置项对照
 
-| 组合 | security | tools | 适用场景 | 风险等级 |
-|------|----------|-------|----------|----------|
-| 安全查询 | extended | minimal | 面向外部的 Q&A Bot | 极低 |
-| 安全通知 | extended | messaging | 生产告警机器人 | 低 |
-| 标准开发 | standard | coding | 团队开发助手 | 中 |
-| 本地全能 | minimal | full | 本地开发完全自主 | 高 |
-| 生产全能 | extended | full | 生产环境完全自主 | 中高 |
+| 配置项 | 类型 | 默认值 | 作用 |
+|--------|------|--------|------|
+| `tools.deny` | list[str] | `[]` | 无条件拒绝的工具名 |
+| `tools.allow` | list[str] | `[]` | 非空时作为唯一白名单，覆盖档位 |
+| `tools.also_allow` | list[str] | `[]` | 在档位之外追加放通，并可豁免运行形态拒绝 |
+| `tools.profile` | 枚举 | `full` | 档位白名单 |
+| `security.profile` | 枚举 | `personal_cli` | 运行形态基线 |
+| `execution.network_policy` | `allow` / `deny` / `restricted` | `deny` | 出站网络策略 |
 
-!!! warning "不推荐的组合"
-    `minimal` + `full` 组合提供所有工具但无安全隔离。强烈建议至少使用 `standard` 安全 Profile。
+## 审批
 
----
+工具通过准入后，仍可能在执行前需要审批。审批配置位于 `permissions.approval` —— 注意不在 `security` 下，`SecurityConfig` 只有 `profile` 一个字段。
 
-## 详细权限对比
+| 配置项 | 类型 | 默认值 | 作用 |
+|--------|------|--------|------|
+| `mode` | `manual` / `smart` / `off` | `smart` | 审批模式 |
+| `default_policy` | `approve` / `deny` / `ask` | `approve` | 未命中具体规则时的默认处置 |
+| `require_approval` | list[str] | 见下 | 需要审批的工具名 |
+| `auto_approve` | list[str] | `[]` | 自动批准的工具名 |
+| `auto_deny` | list[str] | `[]` | 自动拒绝的工具名 |
+| `cli_auto_approve` | bool | `true` | CLI 通道是否自动批准 |
+| `trusted_channels` | list[str] | `[]` | 免审批的通道 |
+| `unattended_policy` | `deny` / `allow_safe` | `deny` | 无人值守场景的处置 |
+| `wait_timeout_seconds` | int | `300` | 等待人工响应的超时 |
+| `smart_model` | str | `""` | `smart` 模式使用的判定模型 |
 
-### 文件系统权限
+`require_approval` 的默认值为 9 项：`cronjob`、`delegate_task`、`dep_install`、`exec`、`execute_code`、`process`、`skill_install`、`skill_manage`、`spawn_task`。
 
-| 操作 | minimal | standard | extended |
-|------|---------|----------|----------|
-| 读取工作区文件 | ✓ | ✓ | ✓ |
-| 读取工作区外文件 | ✓ | 否 | 白名单 |
-| 写入工作区文件 | ✓ | ✓ | ✓ |
-| 写入工作区外文件 | ✓ | 否 | 否 |
-| 创建目录 | ✓ | 工作区内 | 白名单 |
-| 删除文件 | ✓ | 工作区内 | 需审批 |
-| 符号链接 | ✓ | 否 | 否 |
-| 修改权限 | ✓ | 否 | 否 |
+!!! note "审批模式的取值"
+    `mode` 的合法值是 `manual`、`smart`、`off`。`auto`、`ask`、`deny` 不是模式取值 —— 其中 `approve`/`deny`/`ask` 属于 `default_policy`。
 
-### 网络权限
+### 提权
 
-| 操作 | minimal | standard | extended |
-|------|---------|----------|----------|
-| HTTP/HTTPS 请求 | ✓ | ✓ | 白名单域名 |
-| 非标准端口 | ✓ | ✓ | 否 |
-| 本地网络访问 | ✓ | ✓ | 否 |
-| DNS 查询 | ✓ | ✓ | ✓ |
-| WebSocket 外连 | ✓ | ✓ | 白名单 |
+`permissions.elevated` 用于临时放开限制：
 
-### 执行权限
-
-| 操作 | minimal | standard | extended |
-|------|---------|----------|----------|
-| 任意 Shell 命令 | ✓ | 黑名单过滤 | 白名单模式 |
-| 安装软件包 | ✓ | 需审批 | 否 |
-| 启动后台进程 | ✓ | 需审批 | 否 |
-| 修改环境变量 | ✓ | 工作区内 | 否 |
-| 访问系统信息 | ✓ | 部分 | 最小集 |
-
----
+| 配置项 | 类型 | 默认值 | 作用 |
+|--------|------|--------|------|
+| `enabled` | bool | `false` | 是否启用提权 |
+| `allow_from` | dict | `{}` | 允许发起提权的来源 |
 
 ## 配置示例
 
-### 团队开发环境
+以下配置在 `coding` 档基础上放通 `exec`，同时保持后台运行形态的其余限制：
 
 ```yaml
-security:
-  profile: standard
-  allowed_paths:
-    - /home/dev/projects
-    - /tmp/echo-agent
-  blocked_commands:
-    - "rm -rf /"
-    - "dd if="
-    - "mkfs"
-    - "> /dev/"
-
 tools:
   profile: coding
-  approval_mode: ask
-  overrides:
-    shell:
-      approval_mode: ask
-      timeout: 60
-    filesystem:
-      approval_mode: auto
+  also_allow:
+    - exec          # 同时豁免 daemon 形态对 exec 的拒绝
+
+security:
+  profile: daemon
+
+permissions:
+  approval:
+    mode: smart
+    require_approval:
+      - exec
 ```
 
-### 生产环境 Bot
+若要彻底禁用某个工具，用 `tools.deny` 而非从白名单中移除 —— `deny` 是第一层判定，不会被 `also_allow` 或提权绕过：
 
 ```yaml
-security:
-  profile: extended
-  allowed_paths:
-    - /opt/echo-agent/workspace
-  allowed_domains:
-    - "api.anthropic.com"
-    - "api.openai.com"
-    - "slack.com"
-  allowed_commands:
-    - "curl"
-    - "jq"
-    - "python3"
-
 tools:
-  profile: messaging
-  approval_mode: auto
-  overrides:
-    notify:
-      approval_mode: auto
-    message:
-      approval_mode: auto
+  deny:
+    - skill_install
 ```
 
-### 本地开发（最大灵活性）
+## 相关页面
 
-```yaml
-security:
-  profile: minimal
-
-tools:
-  profile: full
-  approval_mode: auto
-```
-
----
-
-## 审批流程
-
-当工具的 `approval_mode` 为 `ask` 时，执行前需要用户确认：
-
-```
-┌─────────────┐     ┌──────────────┐     ┌─────────────┐
-│ Agent 请求  │────▶│  审批队列    │────▶│ 用户审批/拒绝│
-│ 使用工具    │     │  (pending)   │     │             │
-└─────────────┘     └──────────────┘     └─────────────┘
-                                                │
-                          ┌─────────────────────┤
-                          ▼                     ▼
-                   ┌─────────────┐     ┌─────────────┐
-                   │  执行工具   │     │  返回拒绝   │
-                   │  返回结果   │     │  Agent 调整 │
-                   └─────────────┘     └─────────────┘
-```
-
-TUI 中使用 `/approve` 和 `/deny` 命令处理审批。
-
-!!! question "需维护者确认"
-    审批超时行为：当用户长时间未响应审批请求时，默认行为是等待还是自动拒绝？超时时长是否可配置？
+- [内置工具参考](tools.md) — 36 个工具的参数与能力标签
+- [配置参考](configuration.md) — 由 schema 自动生成的逐项说明

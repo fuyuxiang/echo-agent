@@ -30,7 +30,7 @@ Echo Agent Gateway 提供 HTTP REST API 和 WebSocket 端点，用于外部系�
 ```http
 GET /api/sessions HTTP/1.1
 Host: localhost:8080
-X-Echo-Token: your-api-token-here
+X-Echo-Agent-Token: your-api-token-here
 ```
 
 Token Header 名称可通过 `gateway.auth.token_header` 自定义。

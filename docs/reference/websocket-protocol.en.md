@@ -23,7 +23,7 @@ ws://localhost:3000/ws/dashboard?token=<admin_token>
 Tokens can be provided via:
 
 1. **Query parameter**: `?token=<value>`
-2. **Header**: The configured `token_header` (default: `X-Echo-Token`)
+2. **Header**: The configured `token_header` (default: `X-Echo-Agent-Token`)
 
 !!! warning "Token security"
     When using query parameters, tokens may appear in server logs. Prefer header-based auth for production deployments.
@@ -406,7 +406,7 @@ All WebSocket frames are text (UTF-8 JSON). Binary data (images, files) is trans
 
 | Limit | Default | Configurable |
 |-------|---------|--------------|
-| Max concurrent sessions per token | 5 | `gateway.max_sessions_per_token` |
-| Max message size | 1 MB | `gateway.max_message_size` |
-| Max messages per minute | 60 | `rate_limit.ws_messages_per_minute` |
-| Idle timeout | 30 min | `session.timeout` |
+| Sessions per minute per session key | `rate_limit.session_rpm` | Yes (`rate_limit.session_rpm`) |
+| Burst headroom on the rate limiter | `rate_limit.session_burst` | Yes (`rate_limit.session_burst`) |
+| Idle timeout before session is reset | 24 h (`session_policy.idle_timeout_minutes`) | Yes (`gateway.session_policy.idle_timeout_minutes`) |
+| Max message size, max sessions per token | — | Not configurable in the schema; the gateway imposes its own limits at the framework level |
