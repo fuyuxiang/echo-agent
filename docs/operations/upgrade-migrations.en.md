@@ -71,5 +71,9 @@ echo-agent migrate rollback
 echo-agent gateway start
 ```
 
-!!! question "Maintainer Decision Required"
-    Formal backward compatibility and database downgrade guarantees are not yet defined.
+!!! warning "Downgrades rely on your own backup"
+    During Beta, schema downgrade is not guaranteed. `echo-agent migrate rollback` undoes the migrations it applied, but a release that reshapes data may leave a rollback unable to reconstruct the original state exactly.
+
+    That is why the sequence above copies the backup back **before** rolling back: the file copy is what actually restores the data, and `migrate rollback` reconciles the schema version afterwards. Skipping the backup step leaves you with no way back.
+
+    See [compatibility](../reference/compatibility.en.md) for what each version step does guarantee.

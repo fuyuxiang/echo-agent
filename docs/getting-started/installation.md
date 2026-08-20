@@ -118,15 +118,17 @@
     # 确保 Python 3.11+ 已安装
     python --version
 
-    # 安装（跳过 faiss）
+    # 最小安装（不含 faiss-cpu）
     pip install echo-agent[openai,anthropic]
 
-    # 或尝试完整安装（faiss 可能失败）
+    # 完整安装
     pip install echo-agent[all]
     ```
 
-!!! question "需维护者确认"
-    Windows 原生环境下 `fastembed` 的 ONNX Runtime 兼容性是否需要额外说明？
+!!! note "faiss 与 fastembed 是两件事"
+    `faiss-cpu` 属于 `[vector]` 与 `[all]` 分组，可以通过挑选 extra 来跳过；缺少它时向量检索降级为关键词检索，功能不中断。
+
+    `fastembed` 则是**核心依赖**，任何安装组合都会带上它，无法通过 extra 规避。它依赖 ONNX Runtime，在部分平台需要编译。若安装受阻，推荐在 Windows 上改用 WSL2——本项目的常驻服务注册也只支持 Linux / macOS / WSL2。
 
 ---
 

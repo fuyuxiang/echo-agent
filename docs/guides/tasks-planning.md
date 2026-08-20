@@ -191,8 +191,12 @@ Workflow 引擎**只做编排**——它解析依赖、创建步骤任务、推�
 4. `task complete` 自动触发 `workflow.advance()`，引擎检查依赖并调度后续步骤
 5. 所有步骤成功 → workflow 状态变为 `SUCCESS`；任一步骤失败 → workflow 变为 `FAILED`
 
-!!! question "需维护者确认"
-    当步骤任务完成后，workflow 的 advance 是否总是自动触发？当前实现中 TaskTool.complete 会调用 `_advance_workflow`（best-effort），若 advance 失败仅打日志不阻塞。是否需要后台补偿机制确保 workflow 最终一致性？
+!!! note "advance 是 best-effort，不是事务的一部分"
+    `task complete` 与 `task fail` 都会在状态落库**之后**触发一次 advance；`task cancel` 不触发。
+
+    任务状态的持久化与 workflow 的推进是两步，前者先完成。advance 失败时只记录一条告警，不会让工具调用失败、也不会回滚任务状态——代价是 DAG 的进度暂时停在原处，直到下一次显式执行 `workflow advance` 补上。系统没有后台补偿任务来兜这件事。
+
+    因此长时间无进展的 workflow 值得手动 `workflow status` 检查一次：任务已是终态而 workflow 仍停在旧步骤，就是 advance 丢过一次。
 
 ### Workflow 操作
 

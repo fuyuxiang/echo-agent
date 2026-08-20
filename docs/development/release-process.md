@@ -66,5 +66,13 @@ git push origin v0.3.x
 - [ ] CHANGELOG 已更新
 - [ ] Git tag 已创建
 
-!!! question "需维护者确认"
-    是否需要在发布时同步更新文档站版本标记？
+### 文档站的版本标记
+
+文档站不做多版本化（未使用 mike 等版本化插件），线上始终只有 master 的一份文档，`docs.yml` 在推送到 master 时自动重新部署。因此发布本身不需要额外的部署动作。
+
+但有几处版本号是手写在正文里的，发版时需一并更新：
+
+- `docs/index.md` 与 `docs/index.en.md` 的项目状态块
+- `docs/operations/upgrade-migrations.md` 的「当前版本」与升级示例
+
+改完这些页面的推送会触发 `docs.yml` 重新部署，无需手动干预。

@@ -171,11 +171,21 @@ gateway:
   auth:
     allowed_hosts:
       - "gateway.example.com"
-      - "localhost:8090"
 ```
 
-!!! question "Maintainer Confirmation Needed"
-    When `allowed_hosts` is empty, does the system automatically derive allowed Host values from the bind address (`host:port`)?
+The Host header is normalised before comparison: lowercased with the port stripped (brackets are preserved on IPv6 literals). List bare hostnames only — an entry like `localhost:8090` can never match, because the port is removed before the comparison happens.
+
+### What an empty `allowed_hosts` means
+
+Resolution proceeds in three steps, and an empty list does **not** derive anything from the bind address:
+
+| Case | Hosts accepted |
+|------|----------------|
+| `allowed_hosts` non-empty | Only the listed entries |
+| Empty, bound to loopback | A fixed loopback set: `localhost`, `127.0.0.1`, `[::1]` |
+| Empty, bound to a non-loopback address | No default — every Host is rejected |
+
+The third case is deliberate: a deployment that binds to `0.0.0.0` must list its own domain explicitly, and the loopback exemption does not extend to attacker-supplied names. An empty Host header is likewise treated as untrusted.
 
 ## Audit Logging
 

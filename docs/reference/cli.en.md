@@ -550,24 +550,29 @@ echo-agent evolution init-dataset [options]
 # Check evolution status
 echo-agent evolution status
 
-# Run one generation for a specific skill
-echo-agent evolution run --skill summarize --generations 1
+# Run one evolution cycle
+echo-agent evolution run
 
-# List pending candidates
+# List candidates, optionally filtered by status
 echo-agent evolution list-candidates
+echo-agent evolution list-candidates --status pending
+
+# Inspect one candidate
+echo-agent evolution show-candidate cand_7f3a2b
 
 # Promote a winning candidate
 echo-agent evolution promote cand_7f3a2b
 
-# Rollback if a promoted skill regresses
-echo-agent evolution rollback summarize --to-version 2
+# Roll a skill back to its pre-change version
+echo-agent evolution rollback summarize
 
 # Bootstrap evaluation data
-echo-agent evolution init-dataset --skill summarize --sessions 200
+echo-agent evolution init-dataset
 ```
 
-!!! question "Maintainer confirmation needed"
-    The `--force` flag on `evolution promote` bypasses minimum fitness threshold checks. Confirm whether this requires `admin_tokens` auth or if CLI-local access is sufficient.
+The positional argument is a skill name for `rollback` and a candidate id for `show-candidate` and `promote`. Apart from `--status` (which filters `list-candidates`), this subcommand takes no flags of its own — there is no `--force`, `--generations` or `--to-version`.
+
+Rollback restores the version retained at promotion time; the evolution engine keeps no per-version history to select from.
 
 ---
 

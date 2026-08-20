@@ -141,8 +141,10 @@ Information retrieval and deep research skills.
 | web-extract | Extract structured data from web pages (articles, tables, lists) | — |
 | web-search | Perform web searches and return structured results | `SERPAPI_KEY` or `TAVILY_API_KEY` |
 
-!!! question "Needs maintainer confirmation"
-    `deep-research` may consume significant tokens per invocation. Should a token usage estimate or cap be added?
+!!! warning "deep-research costs markedly more than the other skills"
+    It runs several rounds of search and page fetching, so a single invocation can consume tens of times the tokens of an ordinary exchange. The skill itself neither estimates usage nor imposes a cap.
+
+    Constrain it from the cost side instead: `cost.dailyBudgetUsd` sets a hard daily ceiling (reaching it refuses further calls) and `cost.softThresholdRatio` warns at a fraction of it. After the fact, `echo-agent cost` breaks spending down by model. See [cost control](../../guides/cost-control.en.md).
 
 ---
 

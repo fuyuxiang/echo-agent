@@ -108,8 +108,10 @@ docker-compose logs -f echo-agent
 !!! warning "容器内工具执行"
     容器化部署时，Agent 的工具执行（如 shell 命令）受限于容器环境。需要挂载工作目录或配置远程执行后端。
 
-!!! question "需维护者确认"
-    官方是否提供预构建 Docker 镜像？当前需用户自行构建。
+!!! note "没有官方镜像，需自行构建"
+    项目未发布预构建的 Docker 镜像，仓库中也没有 Dockerfile。上面的 Dockerfile 与 compose 片段是供你复制到自己项目里的示例，不是仓库内的现成文件。
+
+    容器化部署是社区[欢迎贡献的方向](https://github.com/fuyuxiang/echo-agent/issues)之一。
 
 ---
 

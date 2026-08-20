@@ -2,8 +2,7 @@
 
 The Echo Agent Dashboard is a web-based management interface for monitoring system status, managing sessions and resources, viewing logs, and analyzing usage data.
 
-!!! question "Maintainer Confirmation Required"
-    The default listening port and authentication configuration (e.g., API Key, OAuth) must be confirmed by maintainers based on the deployment environment.
+The Dashboard is served by the gateway process rather than on a port of its own; both its address and its authentication come from the `gateway` configuration.
 
 ## Architecture Overview
 
@@ -15,14 +14,13 @@ The Dashboard uses a frontend-backend separation architecture:
 
 ## Accessing the Dashboard
 
-After starting Echo Agent, open a browser and navigate to:
+Start the gateway (`echo-agent gateway`), then open the gateway address in a browser:
 
 ```
-http://<host>:<port>/dashboard
+http://127.0.0.1:58123/
 ```
 
-!!! question "Maintainer Confirmation Required"
-    The default port number needs confirmation. It is typically `8080` or configurable via the Config page.
+The Dashboard is a single-page application mounted at the gateway root. Its port is `gateway.port` (`58123` by default; set it to `0` for a dynamically assigned port, which is written to `workspace/.echo-agent/gateway.json`). When the frontend bundle has not been built, that address falls back to the built-in playground page — run `echo-agent dashboard build` to produce the bundle.
 
 ## Navigation Guide
 
@@ -200,11 +198,12 @@ Configure messaging channel connection parameters.
 
 ## Access Control
 
-!!! warning "Security Notice"
-    The Dashboard should not be exposed to the public internet by default. It is recommended to protect access using a reverse proxy with authentication middleware, or restrict the listening address to `127.0.0.1`.
+The Dashboard inherits the gateway's authentication; it has no authentication settings of its own. `gateway.host` defaults to `127.0.0.1`, so only the local machine is served.
 
-!!! question "Maintainer Confirmation Required"
-    The specific authentication method (Basic Auth, Token, OAuth2) must be determined based on the deployment plan.
+With no additional configuration (`gateway.auth.mode` at `allowlist` and an empty list), browser requests carrying a cross-site `Origin` are rejected, which means the Dashboard page cannot call the API in that state. To open browser access, set `gateway.auth.mode` to `open`, add the user to `gateway.auth.allowed_users`, or add the origin to `gateway.auth.allowed_origins`.
+
+!!! warning "Before exposing it publicly"
+    Configure authentication and TLS termination at a reverse proxy before changing `gateway.host` to a non-loopback address. See [gateway authentication](../integrations/gateway/authentication.md) and [security hardening](../operations/security-hardening.md).
 
 ## Monitoring and Alerts
 

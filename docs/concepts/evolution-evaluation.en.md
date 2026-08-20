@@ -166,7 +166,12 @@ class EvolutionRun:
 
 ## 8. Rollback Mechanism
 
-Skills that degrade production performance after promotion can be transitioned to `rolled_back` status, reverting to the pre-change version.
+A skill that degrades in production after promotion can be reverted to its pre-change version, moving the candidate to `rolled_back`.
 
-!!! question "Needs maintainer confirmation"
-    Is rollback triggered automatically (based on runtime metrics) or only manually? The `rolled_back` status exists in code but the trigger logic is not fully defined.
+Rollback is **manual only**; there is no automatic trigger driven by runtime metrics, so the system never decides on its own that a promoted skill has degraded. To roll one back:
+
+```bash
+echo-agent evolution rollback <skill-name>
+```
+
+Restoration takes one of two paths. For content-change candidates, the recorded patch is applied in reverse; if that fails, it falls back to the skill-directory snapshot retained at promotion time under `.evolution_backups/<candidate-id>/`. For disable candidates, the skill is simply re-enabled. If both paths fail, the rollback reports an error and leaves everything as it was rather than stopping halfway.

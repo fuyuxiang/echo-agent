@@ -135,8 +135,7 @@ export AWS_SECRET_ACCESS_KEY="..."
 export AWS_REGION="us-east-1"
 ```
 
-!!! question "需维护者确认"
-    是否提供 `.env.example` 文件作为模板？目前仓库中未找到统一的环境变量模板。
+仓库不提供 `.env.example` 模板：凭证的常规入口是 `echo-agent setup` 向导与配置文件，环境变量只作为覆盖手段。全部可用变量见[环境变量参考](../reference/environment-variables.md)。
 
 ## 常见问题
 

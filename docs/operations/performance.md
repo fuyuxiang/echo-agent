@@ -252,5 +252,7 @@ echo-agent config validate
 echo-agent cost --group-by model
 ```
 
-!!! question "需维护者确认"
-    是否提供内置 benchmark 命令（如 `echo-agent eval --benchmark`）用于测量本机性能基线？
+!!! note "没有内置的 benchmark 命令"
+    不存在 `echo-agent eval --benchmark` 这样的性能基线命令。`echo-agent eval` 用于技能评测，参数为 `--dataset`、`--tag`、`--parallel`、`--output`，衡量的是回答质量而非机器性能。
+
+    需要性能基线时，用 `echo-agent cost` 观察每轮的 token 与耗时，或按[可观测性](observability.md)接入 OpenTelemetry 采集分阶段延迟。

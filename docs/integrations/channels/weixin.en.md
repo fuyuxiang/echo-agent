@@ -52,8 +52,10 @@ channels:
 Start channel → Request login QR code → Display QR in terminal/logs → Scan with phone → Login success
 ```
 
-!!! question "Maintainer Confirmation Needed"
-    Session validity after QR login depends on iLink Bot server-side policy. Periodic re-scanning may be required. An `errcode: -14` response indicates session expiry and requires re-login.
+!!! warning "Sessions expire and require re-scanning"
+    How long a QR-login session stays valid is decided by the iLink Bot server, not by this project, so periodic re-scanning is required. An `errcode: -14` in the logs means the session has lapsed and must be re-established.
+
+    This channel therefore cannot run fully unattended. For long-running deployments, alert on that error code so a re-scan can be done promptly.
 
 ## Callback/Webhook Setup
 

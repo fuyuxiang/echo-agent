@@ -137,5 +137,15 @@ flowchart LR
 | `a2a/protocol.py` | A2A protocol implementation |
 | `a2a/client.py` | A2A client |
 
-!!! question "Needs maintainer confirmation"
-    Is there a global configuration for Worker concurrency limits? In the current code, concurrent delegate calls appear to be governed by the tool concurrency partitioning strategy (tool_concurrency.py), but no independent worker concurrency config option is visible.
+## Delegation limits
+
+Worker concurrency has its own configuration, independent of the tool concurrency partitioning strategy — the latter decides which calls *within one tool batch* may run in parallel (read-only, non-overlapping paths), and places no bound on the number of sub-agents.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `multiAgent.enabled` | `true` | Enable multi-agent delegation |
+| `multiAgent.maxDepth` | `3` | Maximum delegation nesting depth |
+| `multiAgent.maxParallelWorkers` | `4` | Maximum parallel sub-agents per delegation |
+| `multiAgent.maxIterations` | `12` | Maximum iterations per sub-agent |
+
+The two limits behave differently when exceeded: reaching `maxDepth` fails the `delegate` call outright and tells the primary agent to handle the task itself, whereas exceeding `maxParallelWorkers` truncates the task list to the cap and logs a warning — the dropped tasks never run. Split large batches into several delegations rather than relying on that truncation.

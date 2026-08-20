@@ -262,8 +262,18 @@ server {
 }
 ```
 
-!!! question "Maintainer Confirmation Needed"
-    Does Gateway support declaring trusted proxy IP ranges (trusted_proxies) via configuration, to correctly parse the client's real IP from the `X-Forwarded-For` chain?
+## On X-Forwarded-For
+
+The gateway has no `trusted_proxies` setting and does not derive the client IP from `X-Forwarded-For`, `X-Real-IP` or any other forwarded header. Every trust decision reads the real TCP peer address (the socket's `peername`), never `request.remote` and never a request header.
+
+This is deliberate: forwarded headers are client-controlled, so basing a "this came from localhost" verdict on one would let any remote caller forge local trust by setting a header. The trade-off is that behind a reverse proxy the peer address the gateway sees is the proxy's own.
+
+Two consequences worth planning for:
+
+- **The loopback exemption applies to the proxy, not the end user.** With proxy and gateway on the same host, the gateway sees a loopback peer, so every request arriving through the proxy inherits local trust. Such a deployment must authenticate at the proxy layer; the gateway's loopback check cannot distinguish users.
+- **Audit logs record the proxy's address.** If you need end-user IPs, log them at the reverse proxy — the gateway's logs cannot supply them.
+
+Also configure `gateway.auth.allowed_hosts` with the proxy's public domain: bound to a non-loopback address, an empty list rejects every request.
 
 ## Related Documentation
 

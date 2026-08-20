@@ -53,8 +53,11 @@ When `daily_budget_usd` is set to a positive value, the system accumulates spend
 - **Soft warning**: Triggered when daily spending reaches `daily_budget_usd * soft_threshold_ratio`. For example, with a $5 budget and 0.8 threshold, a warning fires at $4.
 - **Hard limit**: Triggered when daily spending reaches `daily_budget_usd` (see behavior below).
 
-!!! question "Needs maintainer confirmation"
-    When the daily budget is exhausted, does the system hard-stop (reject new requests) or degrade gracefully (fall back to cheaper models)? This behavior is pending confirmation.
+The hard cap is a **hard stop**: once `daily_budget_usd` is reached, further model calls are refused with a `BudgetExceeded` error carrying the amount spent and a note that the budget resets the next day. There is no automatic fallback to cheaper models — an exhausted budget stops work rather than silently changing output quality.
+
+The soft threshold only emits a warning log, once per budget period, and does not affect calls. The counter rolls over on the UTC calendar day.
+
+`daily_budget_usd` defaults to `0`, which disables the limit.
 
 ---
 

@@ -75,12 +75,7 @@ models:
     - **Streaming**: Supported by Ollama and vLLM, but may be unstable in certain configurations
     - **Context Window**: Local models are typically limited by available VRAM; usable context may be much smaller than advertised
 
-!!! question "Needs Maintainer Confirmation"
-    The following details require confirmation:
-
-    - Compatibility specifics for function calling format across each server
-    - Streaming output stability across all local servers
-    - How multimodal inputs (images) are passed through local model APIs
+    These servers are reached over the OpenAI-compatible protocol, so the tool-call format, streaming behaviour and image handling are all determined by the local server and the model it loads rather than implemented here. The same configuration can behave differently after a model swap, so verify a new model with one tool-calling conversation before relying on it.
 
 ## Performance Tips
 

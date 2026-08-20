@@ -135,8 +135,7 @@ export AWS_SECRET_ACCESS_KEY="..."
 export AWS_REGION="us-east-1"
 ```
 
-!!! question "Pending maintainer confirmation"
-    Should we provide an `.env.example` template file? No unified environment variable template currently exists in the repository.
+The repository ships no `.env.example` template: credentials normally go through the `echo-agent setup` wizard and the configuration file, with environment variables acting as overrides. For the full list, see the [environment variables reference](../reference/environment-variables.md).
 
 ## Troubleshooting
 

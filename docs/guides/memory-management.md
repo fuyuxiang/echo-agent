@@ -191,8 +191,7 @@ archival_entry = MemoryEntry(
 # 例如：多次提到"用户喜欢简洁代码风格"会被合并为一条确定性更高的记忆
 ```
 
-!!! question "需维护者确认"
-    整合触发的阈值（相似记忆数量、时间间隔）当前未在文档中明确。请确认默认整合策略的具体参数。
+整合在记忆条目数达到 `memory.consolidationThreshold`（默认 20）时触发；`memory.sleepConsolidation` 默认开启，会在空闲期额外执行一轮整合。
 
 ### 衰减与遗忘（Decay & Forgetting）
 
@@ -202,8 +201,7 @@ archival_entry = MemoryEntry(
 - 衰减到阈值以下的记忆会被标记为"遗忘"
 - 遗忘不等于删除——归档层可能仍保留
 
-!!! question "需维护者确认"
-    衰减速率参数（半衰期、最小权重阈值、遗忘触发条件）需要维护者确认具体默认值。
+衰减按 `memory.importanceDecayDays`（默认 30 天）的周期折减重要性分数。分数低于 `memory.archivalThreshold`（默认 0.05）的记忆移入归档层，低于 `memory.forgetThreshold`（默认 0.01）的记忆被遗忘。
 
 ## 检索模式
 
@@ -352,32 +350,29 @@ class MemoryEntry:
 
 ### 检索配置
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `default_mode` | hybrid | 默认检索模式 |
-| `top_k` | 10 | 返回结果数量 |
-| `similarity_threshold` | 0.7 | 向量相似度阈值 |
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `memory.retrievalOnMiss` | `degrade` | 检索缓存未命中时的行为：`degrade` 走有界同步检索、超时回退关键词检索；`sync` 始终完整同步检索 |
+| `memory.retrievalMissTimeoutSeconds` | `0.8` | 上述有界检索的时间预算（秒），`0` 表示完全跳过 |
+| `memory.rerankEnabled` | `true` | 是否对融合后的 top-K 做 cross-encoder 精排 |
+| `memory.rerankTopK` | `10` | 参与精排的候选数量 |
+| `memory.rerankMinScore` | `0.0` | 精排相关性下限，`0` 表示只重排不剔除 |
 
 ### 衰减配置
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `decay_rate` | — | 衰减速率 |
-| `min_weight` | — | 最低权重阈值 |
-| `forget_threshold` | — | 遗忘触发阈值 |
-
-!!! question "需维护者确认"
-    衰减相关参数（`decay_rate`、`min_weight`、`forget_threshold`）的默认值需要维护者确认。
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `memory.importanceDecayDays` | `30.0` | 重要性衰减周期（天） |
+| `memory.archivalThreshold` | `0.05` | 低于此分数的记忆进入归档层 |
+| `memory.forgetThreshold` | `0.01` | 低于此分数的记忆被遗忘 |
 
 ### 整合配置
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `consolidation_threshold` | — | 触发整合的相似记忆数 |
-| `consolidation_interval` | — | 整合检查间隔 |
-
-!!! question "需维护者确认"
-    整合触发条件的具体参数需要维护者确认。
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `memory.consolidationThreshold` | `20` | 触发记忆整合的条目数阈值 |
+| `memory.sleepConsolidation` | `true` | 是否启用空闲期整合 |
+| `memory.contradictionDetection` | `true` | 是否启用矛盾检测 |
 
 ## 记忆类型
 

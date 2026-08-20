@@ -161,8 +161,16 @@ When a single API key's rate limit is insufficient, configure a credential pool 
     - All keys in the pool should belong to the same provider and have identical model access permissions
     - The `api_key` field serves as the ultimate fallback, even if it is not listed in `credential_pool`
 
-!!! question "Maintainer Confirmation Needed"
-    Does the error counter reset after cooldown recovery? Is it possible to configure separate credential pools for different models?
+### Error counting and cooldown
+
+Rotation is round-robin, and each key tracks its own error count:
+
+- After 3 consecutive errors a key is marked exhausted and enters cooldown.
+- When the cooldown elapses the key rejoins the rotation and **its error count is reset to zero**, so no key is permanently blacklisted by past failures.
+- Any successful call immediately clears that key's error count and its exhausted flag.
+- When every key is exhausted at once, the pool resets as a whole and continues from the current cursor rather than restarting at the first key — otherwise all traffic would pile onto one key after each reset.
+
+`credential_pool` is configured per provider: every model under that provider shares one pool, and per-model pools are not supported. To isolate quota between models, declare several provider entries, each with its own credential pool, and route models to the appropriate provider.
 
 ## Full Configuration Example
 

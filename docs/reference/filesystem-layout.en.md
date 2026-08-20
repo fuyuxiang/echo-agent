@@ -221,8 +221,10 @@ SQLite databases grow over time. Periodic VACUUM reduces file size:
 sqlite3 ~/.echo-agent/data/echo_agent.db "VACUUM;"
 ```
 
-!!! question "Maintainer confirmation needed"
-    Is there a built-in `echo-agent db vacuum` or `echo-agent db optimize` command planned?
+!!! note "There is no built-in database maintenance command"
+    Echo Agent ships no `db` subcommand, so `VACUUM` is run with the `sqlite3` CLI as shown above. Stop the gateway first: vacuuming a database with an active writer will fail or block.
+
+    Routine operation rarely needs it. The database grows mainly through sessions and cost records, and space is reclaimed by session archival and memory forgetting rather than by manual compaction.
 
 ---
 

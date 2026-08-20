@@ -274,5 +274,4 @@ twine upload dist/*
 - [ ] entry point 正确注册（如需 PyPI 分发）
 - [ ] 本地安装测试通过
 
-!!! question "需维护者确认"
-    插件 SDK 是否计划提供 `echo-agent plugin init` 脚手架命令？当前需要手动创建所有文件。
+目前没有脚手架命令，插件文件需手工创建。`echo-agent plugin` 支持的动作为 `list`、`info`、`enable`、`disable`、`check`，其中 `check` 可用于校验已写好的插件能否正确加载。

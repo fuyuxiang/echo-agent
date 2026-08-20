@@ -2,8 +2,7 @@
 
 Echo Agent 知识库系统为对话提供长期文档检索能力，通过向量索引实现高效语义搜索。用户上传文档后，系统自动完成提取、分块、嵌入和索引，供 Agent 在对话中按需查询。
 
-!!! question "需维护者确认"
-    默认分块大小（chunk size）及重叠量（overlap）需根据实际部署环境确认，建议值为 chunk_size=512 tokens、overlap=64 tokens。
+分块默认按 1200 字符切分、相邻块重叠 120 字符（`knowledge.chunkSize` 与 `knowledge.chunkOverlap`），单位是字符而非 token。
 
 ## 架构概览
 
@@ -57,34 +56,42 @@ document.upload(file="产品手册.pdf", collection="default")
 
 长文本被切分为固定大小的片段，相邻片段保留重叠区域以保持上下文连贯性。
 
-!!! question "需维护者确认"
-    默认 chunk_size 与 overlap 参数需确认。推荐配置：
-    - `chunk_size`: 512 tokens
-    - `chunk_overlap`: 64 tokens
-    - 分块策略：按段落优先，超长段落按 token 截断
+默认参数：
+
+| 配置项 | 默认值 | 单位 |
+|--------|--------|------|
+| `knowledge.chunkSize` | 1200 | 字符 |
+| `knowledge.chunkOverlap` | 120 | 字符 |
 
 ### 4. 向量嵌入（Embedding）
 
 每个文本片段通过嵌入模型转为高维向量表示，捕获语义信息。
 
-!!! question "需维护者确认"
-    嵌入模型配置需确认，可能的选项包括：
-    - OpenAI `text-embedding-ada-002`（1536 维）
-    - 本地模型如 `sentence-transformers`
-    - 其他兼容 API 的嵌入服务
+嵌入相关配置位于 `memory` 节，与记忆系统共用：
 
-### 5. FAISS 索引
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `memory.embeddingBackend` | `auto` | `auto` 启动时探测 provider，失败静默回退本地模型；`local` 直接用本地模型；`provider` 强制 provider，探测失败即报错 |
+| `memory.embeddingModel` | 空 | provider 侧嵌入模型，留空则由 provider 决定 |
+| `memory.localEmbeddingModel` | `BAAI/bge-small-zh-v1.5` | 本地 fastembed 兜底模型，空串禁用兜底 |
 
-向量被写入 FAISS（Facebook AI Similarity Search）索引，支持高效近似最近邻检索。
+### 5. 向量索引
 
-## FAISS 向量索引
+分块向量交由 FAISS 建立索引，用于语义相似度检索。
 
-FAISS 是知识库的核心检索引擎，具备以下特性：
+## 向量索引
 
-- **高效检索**：百万级向量毫秒级响应
-- **近似最近邻**：基于余弦相似度或 L2 距离
-- **持久化存储**：索引文件保存到磁盘，重启后自动加载
-- **增量更新**：新文档上传后索引自动更新
+知识库的检索由两部分组成：JSON 索引文件保存分块文本与元数据（含 file manifest，用于检测文件的删除与重命名），向量则保存在紧邻它的 `.npz` sidecar 文件中，与记忆系统的向量表物理隔离。
+
+实现特性：
+
+- **精确检索**：使用 `IndexFlatIP` 做全量内积比对，非近似最近邻；向量经 L2 归一化，内积即余弦相似度
+- **持久化**：sidecar 随索引一同落盘，重启后加载
+- **变更检测**：sidecar 记录每个分块的内容哈希，分块 id 不变而文本改动时也能识别出向量已过期
+- **可降级**：未安装 `faiss` 或 `numpy` 时向量检索返回空结果，检索退回关键词路径，功能不中断
+
+!!! note "索引是派生物"
+    JSON 索引与 sidecar 均可从源文档重新生成。索引损坏时直接重建，不需要修复。
 
 ## 查询知识库
 
@@ -139,10 +146,9 @@ knowledge:
     - .pdf
 ```
 
-`KnowledgeConfig` 只有以上 8 个字段。索引是本地 JSON 文件而非 FAISS，因此没有 `faiss_index_path`；受支持的扩展名字段是 `allowed_extensions`，不是 `supported_formats`；也没有 `embedding_model` 与 `max_file_size_mb` —— 嵌入模型相关配置在 `memory` 节。
+`KnowledgeConfig` 只有以上 8 个字段。索引路径由工作区结构决定，没有 `faiss_index_path` 配置项；受支持的扩展名字段是 `allowed_extensions`，不是 `supported_formats`；也没有 `embedding_model` 与 `max_file_size_mb` —— 嵌入相关配置在 `memory` 节。
 
-!!! question "需维护者确认"
-    上述配置项的默认值及修改方式需确认，可能通过 Dashboard Config 页面或配置文件调整。
+以上配置项可写入配置文件，或用 `echo-agent config explain knowledge.<字段>` 查看单项的类型、默认值与说明。
 
 ## Dashboard Knowledge 页面
 

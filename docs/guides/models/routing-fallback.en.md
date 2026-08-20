@@ -22,9 +22,18 @@ On a successful match, `RouteDecision` contains:
 | `max_tokens` | Maximum output tokens |
 | `temperature` | Sampling temperature |
 
-!!! question "Needs maintainer confirmation"
-    The currently supported `task_type` enum values likely include `code`, `analysis`, `chat`, `summary`, etc.
-    Refer to the route configuration in source code for the definitive list.
+### task_type values
+
+`task_type` is inferred from the user's input by the framework and takes one of four values:
+
+| Value | Triggered when |
+|-------|----------------|
+| `code` | The text contains code-related markers: `bug`, `class `, `def `, `typescript`, `python`, or their Chinese equivalents |
+| `research` | The text contains retrieval intent: `search`, `find`, `look up`, or their Chinese equivalents |
+| `planning` | The text contains planning intent: `plan`, `schedule`, or their Chinese equivalents |
+| `chat` | Fallback when none of the above match |
+
+Strings listed in `models.routes[].task_types` are matched against the inferred value case-insensitively. In addition, when a route declares no `task_types`, it matches if `task_type` equals that route's `provider` name or appears as a substring of its `model`.
 
 ## Health State Machine
 

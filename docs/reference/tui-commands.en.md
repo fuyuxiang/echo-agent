@@ -215,5 +215,7 @@ The agent responds with an explanation without advancing the task.
 !!! tip "Multiline input"
     For pasting code blocks or multi-paragraph prompts, use `Shift+Enter` to insert newlines. The message is sent only when you press `Enter` on a line that isn't preceded by `Shift`.
 
-!!! question "Maintainer confirmation needed"
-    Is there a `/undo` or `/retry` command planned for re-running the last agent turn with modified instructions?
+!!! note "No /undo or /retry"
+    The catalog has thirteen commands and neither re-runs a turn. Local commands are `/help`, `/clear`, `/copy`, `/details`, `/save`, `/theme`, `/reconnect` and `/quit`; server commands are `/approve`, `/deny`, `/approvals` and `/clarify`.
+
+    To redo a turn, send a corrected message — the previous exchange stays in history, so the agent sees both. `/clear` only wipes the screen; the session and its history are untouched.

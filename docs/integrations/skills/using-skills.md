@@ -122,8 +122,10 @@ result = await ctx.tool_registry.invoke("openai_image", {
 - 如果用户未指定尺寸，默认使用 1024x1024
 ```
 
-!!! question "需维护者确认"
-    SKILL.md 中的 `requires_env` 字段是否支持设置默认值或备选变量名？当前实现中若变量缺失会直接跳过该技能。
+!!! warning "技能的 frontmatter 不支持 requires_env"
+    `requires_env` 是**插件** manifest 的字段，技能不具备它。技能 frontmatter 只识别 `name`、`description`、`category`、`version`、`tags` 五个字段，写入其他键不会生效。
+
+    因此技能不做加载前的环境变量检查：缺少凭证的技能照常出现在可用列表中，失败发生在脚本真正执行的时候。需要凭证的技能应在 `description` 里说明依赖，并在脚本内自行校验、给出清晰的报错。
 
 ## 技能与插件的区别
 

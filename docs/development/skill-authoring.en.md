@@ -217,5 +217,7 @@ Add test cases to the evaluation dataset (see [Testing & Evaluation](testing-eva
 - [ ] Placed in the correct category directory
 - [ ] Manual test verifies Agent can correctly trigger the Skill
 
-!!! question "Pending maintainer confirmation"
-    Do Skills support declaring mutual exclusion (two Skills should not trigger simultaneously) or priority? Currently it seems to rely entirely on LLM judgment.
+!!! note "There is no mutual exclusion or priority between skills"
+    Every enabled skill is injected into the system prompt as one flat list of name, category and description, and the model decides which one applies this turn. The framework offers no exclusion declaration and does not rank skills.
+
+    That makes the `description` the only place to encode distinctness: when two skills describe overlapping territory, the model is left guessing from wording and the outcome is unstable. Writing each skill's scope so it excludes the others is more effective than trying to correct the choice afterwards.

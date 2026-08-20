@@ -49,17 +49,17 @@ While active, a session continues to receive and process messages. Each interact
 
 ### Expired
 
-When a session has been inactive longer than the configured `expiry_hours`, its status transitions to `expired`. Expired sessions no longer accept new messages.
+When a session has been inactive longer than `session.expiryHours` (72 hours by default), its status transitions to `expired`.
 
-!!! question "需维护者确认"
-    Can expired sessions be reactivated under certain conditions, or must a new session be created?
+Expiry is not terminal: as long as the session is still in the in-memory cache, the next access flips it back to `active` and refreshes `updated_at`, so the conversation continues without creating a new session. This automatic recovery only applies on a cache hit.
 
 ### Archived
 
-Expired sessions undergo an archival process and transition to `archived` status.
+An `expired` session becomes `archived` after 168 hours (7 days) of silence and is dropped from the in-memory cache, so unlike `expired` it cannot be revived by access. That interval is currently fixed in code and has no configuration option.
 
-!!! question "需维护者确认"
-    What is the storage location and retention policy for archived sessions? Is archival triggered on a schedule or per-session?
+Where an archived session lands depends on the storage backend: with a database backend it stays in the database with `status` set to `archived`; with file storage its session file is moved into the `sessions/archive/` subdirectory.
+
+Both transitions are driven in bulk by `cleanup_expired`, which walks the session list, marks what is due for expiry, archives what is due for archival, and returns the number of sessions processed. A single session can also be archived directly through the API.
 
 ## History Management
 

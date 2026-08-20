@@ -83,8 +83,7 @@ On startup, the bot establishes a WebSocket connection to the Gateway and receiv
 3. Send heartbeats at the interval specified by `heartbeat_interval`.
 4. On disconnection, use `RESUME` to restore the session without message loss.
 
-!!! question "Needs maintainer confirmation"
-    Does the current implementation handle the Gateway's Invalid Session (op 9) event? This event requires a full re-IDENTIFY rather than RESUME.
+On `INVALID SESSION` (op 9) the channel clears the stored `session_id` and closes the connection; with no valid `session_id`, the reconnect necessarily goes through `IDENTIFY` rather than `RESUME`. `RECONNECT` (op 7) keeps the `session_id`, so that path resumes with `RESUME`.
 
 ---
 
@@ -135,7 +134,9 @@ The bot has built-in rate-limit response header parsing and automatic retry with
 
 ### How to respond only in specific channels within a server?
 
-Currently, filtering is done via `allow_from` by user ID. For channel-based filtering, channel IDs could be added to the configuration:
+The one filtering dimension the channel offers is `allow_from` — an allowlist of **user IDs**, unrestricted when empty.
 
-!!! question "Needs maintainer confirmation"
-    Is filtering by channel ID supported? If not, this should be considered as a future feature.
+!!! warning "Channel-level filtering is not supported"
+    There is no per-channel or per-guild filter setting. `allow_from` matches sender IDs only; putting channel IDs in it does not scope the channel — it makes every real user fail the match and silences the bot entirely.
+
+    To limit where the bot operates, use Discord's own permission model: add it only to the channels you want, or remove its read-messages permission elsewhere. Combined with `group_policy: mention` (the default), group messages must @-mention the bot before it responds.

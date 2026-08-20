@@ -89,8 +89,15 @@ context:
   unattended: false
 ```
 
-!!! question "Needs maintainer confirmation"
-    The detailed authorization flow for Cron Channel (such as channel-level auto-authorization rules) needs maintainer confirmation on the specific implementation.
+Authorization is granted **per job**; there is no channel-level auto-authorization rule. A newly created job starts unauthorized and does not inherit permission to run simply by belonging to the cron channel:
+
+```bash
+echo-agent cron list                  # list jobs and their authorization state
+echo-agent cron authorize <job_id>    # authorize one job
+echo-agent cron revoke <job_id>       # revoke it
+```
+
+The split is deliberate: scheduling and permission are separate concerns. A job's schedule can be edited freely, but whether it may act unsupervised takes one explicit human confirmation.
 
 ### Unattended Mode
 

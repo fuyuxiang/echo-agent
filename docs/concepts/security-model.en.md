@@ -145,5 +145,14 @@ All memory writes pass through `_scan_memory_content()`:
 - **Invisible character blocking**: detects U+200B/U+200C/U+200D/U+2060/U+FEFF and other zero-width characters
 - Any pattern match rejects the write and logs an audit entry
 
-!!! question "Needs maintainer confirmation"
-    Is the `net_guard.py` outbound allowlist policy static configuration or does it support runtime dynamic updates? Current documentation infers static based on code analysis.
+The outbound policy is static: the scheme allowlist is fixed to `http` and `https` (`file`, `data`, `gopher`, `ftp` and the rest are refused before a socket opens), and the address rules live in the module itself — not read from configuration, with no runtime reload hook.
+
+The guard has five layers, shared by media downloads and the web tools alike:
+
+| Layer | Purpose |
+|-------|---------|
+| Scheme allowlist | `http` / `https` only, so `file://` and `data:` cannot turn a URL fetch into a local read |
+| Address validation | Rejects loopback, private ranges and link-local addresses, including the cloud metadata endpoint `169.254.169.254` |
+| DNS pinning | Pins the resolution after validating the hostname, so the client cannot re-resolve into a DNS rebinding |
+| Per-hop revalidation | Every 30x target is validated again; an unchecked redirect is a redirect into the network |
+| Size ceiling | Enforced on `Content-Length` and on the bytes actually received |

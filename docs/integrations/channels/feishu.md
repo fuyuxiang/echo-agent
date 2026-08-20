@@ -192,8 +192,8 @@ POST https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/reply
 2. 检查是否包含 `bot_open_id`
 3. 若未配置 `bot_open_id`，回退使用 `app_id` 进行匹配
 
-!!! question "需维护者确认"
-    `bot_open_id` 可在机器人详情页或通过 API 获取。若未配置，系统会尝试用 `app_id` 匹配 mention 列表，但在某些场景下可能不准确。
+!!! tip "建议显式配置 bot_open_id"
+    `bot_open_id` 可在机器人详情页或通过 API 获取。未配置时回退用 `app_id` 匹配 mention 列表，这在部分场景下并不准确——群聊按 `mention` 策略工作时，匹配失败会表现为机器人对 @ 无反应。
 
 ## 常见问题
 

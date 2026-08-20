@@ -108,8 +108,10 @@ Token 有效期为 2 小时，通道层自动刷新，无需手动管理。
 
 ## 常见问题
 
-!!! question "需维护者确认"
-    群聊中 `openConversationId` 的获取方式是否需要额外的事件订阅权限？
+!!! question "群聊会话 ID 从哪里来？"
+    无需额外调用 API，也不需要为此单独申请权限。会话 ID 直接取自入站回调的 `conversationId` 字段，回复时以 `openConversationId` 原样带回。
+
+    单聊（`conversationType` 为 `1`）用发送者 ID 作为会话标识，群聊用 `conversationId`。因此只要机器人能收到消息回调，回复所需的会话 ID 就已经在手。
 
 **Q: 触发了速率限制怎么办？**
 

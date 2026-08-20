@@ -215,5 +215,7 @@ echo-agent gateway start
 | 服务无法启动 | 依赖版本不兼容 | 检查 Python 版本，重装依赖 |
 | 记忆数据丢失 | 迁移 Bug | 从备份恢复，报告 Issue |
 
-!!! question "需维护者确认"
-    是否提供 `echo-agent upgrade` 一站式升级命令（包含停止、备份、升级、迁移、重启的完整流程）？
+!!! note "没有一站式的 upgrade 命令"
+    不存在 `echo-agent upgrade`。升级需按本页顺序手动执行：停止服务 → 备份 `data/echo_agent.db` → `pip install -U` → `echo-agent migrate run` → `echo-agent gateway restart`。
+
+    源码安装是例外：重复执行 `install.sh` 即为升级，脚本会检测到已有配置并跳过配置向导。但它同样不代替数据库备份，执行前请自行复制。

@@ -101,19 +101,24 @@ gateway:
 !!! warning "Production Notice"
     In production, always set `auth.mode` to `allowlist` or `pairing` — never use `open` mode. Use sufficiently long random strings for `api_tokens` and `admin_tokens`.
 
-## Default Port
+## Default listen address
 
-Gateway listens on port **8090** by default. Override via the `gateway.port` config key or the `ECHO_GATEWAY_PORT` environment variable.
+The Gateway listens on `127.0.0.1:58123` by default. The port comes from `gateway.port` and the host from `gateway.host`; both can also be overridden with `ECHO_AGENT_GATEWAY_PORT` and `ECHO_AGENT_GATEWAY_HOST` (the prefix is `ECHO_AGENT_`, with underscores joining config path segments).
+
+Setting `gateway.port` to `0` lets the system assign a port; the one actually bound is written to `workspace/.echo-agent/gateway.json`.
 
 ## Quick Start
 
-1. Enable Gateway in your config file (`gateway.enabled: true`)
-2. Configure the authentication mode and allowed users list
-3. Start Echo Agent — Gateway will start automatically as a subprocess
-4. Visit `http://localhost:8090/health` to verify the service status
+The Gateway is a **standalone process**; no other command starts it implicitly:
 
-!!! question "Maintainer Confirmation Needed"
-    Can Gateway be started independently from the main process? This document assumes Gateway starts automatically as a sub-service of the main process.
+```bash
+echo-agent gateway              # run in the foreground
+echo-agent gateway install      # register as a resident background service
+```
+
+`echo-agent run` is an interactive session with its own agent and does not bring a gateway up alongside it. Conversely, once the gateway is running, `echo-agent cli` attaches to it as a thin client. The two share the same state, but their lifecycles are independent.
+
+Once started, visit `http://127.0.0.1:58123/health` to verify the service.
 
 ## Related Documentation
 

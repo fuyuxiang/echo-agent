@@ -457,5 +457,17 @@ X-RateLimit-Remaining: 45
 X-RateLimit-Reset: 1705312800
 ```
 
-!!! question "需维护者确认"
-    API 端点的分页是否统一使用 cursor-based 还是 offset-based？当前文档按 offset-based 描述。
+## 分页
+
+分页统一为 offset-based，通过 `limit` 与 `offset` 查询参数控制，没有 cursor 分页。
+
+各端点的默认 `limit` 并不统一，需按端点查阅：
+
+| 端点 | 默认 `limit` | 支持 `offset` |
+|------|-------------|--------------|
+| `/api/logs` | 200 | 是 |
+| `/api/memory` | 50 | 是 |
+| `/api/sessions` | 100 | 否 |
+| cron 执行历史 | 10 | 否 |
+
+未提供 `offset` 的端点只能取首屏，无法翻页。

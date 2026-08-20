@@ -296,5 +296,8 @@ async def test_send_skipped_non_final(channel):
 - [ ] Resource cleanup (close sessions in stop)
 - [ ] Write unit tests
 
-!!! question "Pending maintainer confirmation"
-    Is there a plan to support dynamic channel loading (similar to the Plugin mechanism), allowing third-party channels to be installed as independent packages?
+## On out-of-tree channel packages
+
+`echo_agent.channels.manager` exports `register_channel_type(name, cls)`, which inserts a channel type into the registry at runtime. The plugin system is not wired to it: nothing in the repository calls it, and a plugin's entry point does not register channels automatically.
+
+In practice, then, adding a channel means changing this repository — adding the class to `_CHANNEL_REGISTRY` and its fields to the configuration schema. Shipping a channel as a separate package would require calling `register_channel_type()` from the package's own initialisation and arranging for its configuration fields yourself. That path is neither supported nor covered by tests.

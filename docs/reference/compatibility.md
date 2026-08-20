@@ -37,15 +37,16 @@ Echo Agent 的平台支持、依赖要求和版本兼容信息。
 
 ## Python 版本
 
+`pyproject.toml` 声明 `requires-python = ">=3.11"`。
+
 | Python 版本 | 支持状态 | 说明 |
 |-------------|----------|------|
-| 3.11 | 完全支持 | 最低要求 |
-| 3.12 | 完全支持 | 推荐版本 |
-| 3.13 | 完全支持 | — |
-| 3.10 及以下 | 不支持 | 缺少必要语法特性 |
+| 3.11 | 完全支持 | 最低要求，CI 覆盖 |
+| 3.12 | 完全支持 | CI 覆盖 |
+| 3.13 及以上 | 未验证 | 满足 `requires-python` 因此可以安装，但不在 CI 矩阵内，也未在 PyPI classifier 中声明 |
+| 3.10 及以下 | 不支持 | 低于 `requires-python`，pip 会拒绝安装 |
 
-!!! tip "版本检查"
-    安装时会自动检查 Python 版本。如版本不满足要求会给出明确错误提示。
+"完全支持"的判据是 CI 在该版本上跑完整测试套件。目前矩阵为 3.11 与 3.12 两个版本；在更高版本上运行属于可行但未经验证的状态，遇到问题欢迎提 issue。
 
 ---
 
@@ -206,8 +207,7 @@ echo-agent migrate run      # 执行迁移
 echo-agent migrate rollback # 出问题时回滚
 ```
 
-!!! danger "备份提醒"
-    执行 `migrate run` 前建议先创建检查点：`echo-agent checkpoint list` 确认最新检查点存在。
+`migrate run` 支持 `--dry-run`，先预演再执行。
 
-!!! question "需维护者确认"
-    是否计划支持 Python 3.14（预计 2025 年 10 月发布）？是否有已知的兼容性问题需提前处理？
+!!! danger "备份数据库文件，而非依赖检查点"
+    执行 `migrate run` 前请直接复制 `data/echo_agent.db`。`echo-agent checkpoint` 是工作区**文件**的影子 Git 快照，其排除范围包含数据库、会话与记忆目录，无法用于恢复迁移后的数据。

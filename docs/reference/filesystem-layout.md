@@ -243,7 +243,17 @@ tools:
 | 缓存 | 0 ~ 200MB | 自动过期 |
 
 !!! tip "磁盘清理"
-    使用 `echo-agent checkpoint prune --older-than 7d` 清理旧检查点。缓存可直接删除 `~/.echo-agent/cache/` 目录。
+    `echo-agent checkpoint prune` 按配置的保留策略回收检查点，该命令不接受时间参数。保留上限由 `checkpoint.maxSnapshotsPerWorkspace`（默认每工作区 20 个快照）与 `checkpoint.maxTotalSizeMb`（默认 500 MB，超出触发 gc）共同决定。
 
-!!! question "需维护者确认"
-    Windows 平台下全局数据目录的位置是 `%APPDATA%\echo-agent\` 还是 `%USERPROFILE%\.echo-agent\`？当前文档以 `~/.echo-agent/` 描述。
+    工具输出产物在 `data/spill/`，由 `spill.retentionDays` 与 `spill.maxTotalMb` 自动回收，无需手工清理。
+
+### 跨平台路径
+
+全局目录一律取 `Path.home() / ".echo-agent"`，不按平台分支。因此：
+
+| 平台 | 实际位置 |
+|------|----------|
+| Linux / macOS | `~/.echo-agent/` |
+| Windows | `%USERPROFILE%\.echo-agent\` |
+
+Windows 上**不使用** `%APPDATA%`。文档中的 `~/.echo-agent/` 写法在三个平台都指向上表中的位置。

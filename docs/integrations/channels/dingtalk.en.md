@@ -108,8 +108,10 @@ The token is valid for 2 hours. The channel layer handles automatic refresh — 
 
 ## FAQ
 
-!!! question "Needs maintainer confirmation"
-    Does obtaining `openConversationId` for group chats require additional event subscription permissions?
+!!! question "Where does the group conversation ID come from?"
+    No extra API call and no separate permission are involved. The conversation ID is read straight off the inbound callback's `conversationId` field and echoed back as `openConversationId` when replying.
+
+    Direct messages (`conversationType` of `1`) use the sender ID as the conversation key; group chats use `conversationId`. So as long as the bot receives the message callback, it already holds the ID needed to reply.
 
 **Q: What happens when rate limits are triggered?**
 

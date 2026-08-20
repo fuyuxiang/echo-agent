@@ -102,5 +102,7 @@ The channel uses IMAP UIDs as watermarks to track processed emails. The watermar
 !!! question "How are HTML emails handled?"
     Inbound HTML email bodies are automatically converted to plain text before being passed to the agent. Outbound replies are sent as plain text.
 
-!!! question "Maintainer confirmation needed"
-    Is attachment handling on the roadmap for future versions? The current implementation ignores attachment parts entirely.
+!!! warning "Attachments are not processed"
+    Body extraction takes the first `text/plain` part, falling back to `text/html` converted to plain text. Every other MIME part — attachments included — is skipped: the agent neither sees attachment content nor learns that the mail had any.
+
+    Workflows that depend on attachments are therefore not served by this channel. To have documents processed, place them in the knowledge directory or the workspace and reference the path in the message body.

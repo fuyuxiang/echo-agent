@@ -287,5 +287,5 @@ parameters = {
 - [ ] 编写单元测试
 - [ ] output 格式对 LLM 友好（简洁、结构化）
 
-!!! question "需维护者确认"
-    工具注册是否计划迁移到声明式配置（如 YAML manifest），还是保持代码注册方式？
+!!! note "工具注册是代码注册"
+    工具通过代码注册到注册表，没有 YAML manifest 之类的声明式入口——参数 schema 由工具类自身给出。技能（Skill）才使用带 manifest 的目录结构，两者不是同一套机制，参见[技能编写](skill-authoring.md)。

@@ -128,5 +128,7 @@ max_pending: 1000
 !!! question "max_pending 达到上限后如何恢复？"
     当队列中的请求被处理完成后，自然腾出空间。不需要手动干预。如果持续触发限流，应考虑增加 Agent 处理能力或调大队列上限。
 
-!!! question "需维护者确认"
-    是否计划支持 SSE（Server-Sent Events）流式响应模式？当前同步模式只能一次性返回完整回复。
+!!! note "响应是一次性的 JSON，不支持流式"
+    通道只以 `application/json` 一次性返回完整回复，没有 SSE 或分块传输模式。调用方需要等待整轮推理结束，因此要把客户端超时设得足够长；服务端等待超时会返回 `504`。
+
+    需要增量输出时改用网关的 WebSocket 接口，它按 token 推送流式内容，参见 [WebSocket 协议](../../reference/websocket-protocol.md)。

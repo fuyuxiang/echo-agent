@@ -64,8 +64,8 @@ channels:
 
 Bot 启动时会自动调用 `deleteWebhook` 清除可能存在的旧 Webhook 设置，确保 `getUpdates` 正常工作。
 
-!!! question "需维护者确认"
-    如果之前通过其他框架设置过 Webhook，首次启动时可能需要等待最多 1 分钟才能切换到 polling 模式。
+!!! note "从 Webhook 切换到 polling"
+    如果同一个 Bot Token 此前被其他框架设置过 Webhook，首次启动可能需要等待最多 1 分钟才能切换到 polling 模式——Telegram 侧的 Webhook 撤销存在延迟。这段时间内 `getUpdates` 可能暂时收不到消息，等待即可，无需反复重启。
 
 ---
 

@@ -287,5 +287,5 @@ parameters = {
 - [ ] Write unit tests
 - [ ] Output format is LLM-friendly (concise, structured)
 
-!!! question "Pending maintainer confirmation"
-    Is there a plan to migrate tool registration to declarative configuration (e.g., YAML manifest), or will the code-based registration approach be maintained?
+!!! note "Tool registration is code-based"
+    Tools register into the registry from code; there is no declarative entry point such as a YAML manifest, and the parameter schema comes from the tool class itself. Skills are the ones that use a manifest-bearing directory layout — a separate mechanism, covered in [skill authoring](skill-authoring.en.md).

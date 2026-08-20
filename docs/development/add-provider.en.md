@@ -243,5 +243,21 @@ class LLMResponse:
 - [ ] Tool calls correctly converted to `ToolCallRequest` format
 - [ ] Usage statistics properly populated (affects cost tracking)
 
-!!! question "Pending maintainer confirmation"
-    Should the OpenAI-compatible mode (providers not in `_PROVIDER_MAP` automatically degrade to OpenAI SDK calls) be documented as a formal "custom Provider" entry point?
+## Integrating without writing code
+
+Most integrations need no new Provider class. `_PROVIDER_MAP` registers only the providers that require a dedicated SDK (`openai`, `anthropic`, `bedrock`/`aws`, `gemini`/`google`, `openrouter`); **any name not registered there is treated as OpenAI-compatible** and served through the OpenAI SDK.
+
+So reaching any OpenAI-compatible service is a configuration change:
+
+```yaml
+models:
+  providers:
+    - name: my-service
+      api_base: https://api.example.com/v1
+      api_key: ${MY_SERVICE_KEY}
+      models: ["my-model-v1"]
+```
+
+`api_base` is mandatory here: without it, config validation fails outright for an unregistered provider (`provider 'x' is OpenAI-compatible by default and requires api_base`), since there is no base URL to send requests to. A model must be named too, either through `models.defaultModel` or the entry's own `models` list.
+
+A new Provider class is only warranted when the target service is not OpenAI-compatible — a bespoke authentication flow, a different streaming format, or a different tool-call structure.

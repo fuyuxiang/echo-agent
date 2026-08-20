@@ -122,8 +122,10 @@ result = await ctx.tool_registry.invoke("openai_image", {
 - Default to 1024x1024 if user doesn't specify a size
 ```
 
-!!! question "Needs maintainer confirmation"
-    Does the `requires_env` field in SKILL.md support default values or fallback variable names? Current implementation skips the skill entirely when a variable is missing.
+!!! warning "Skill frontmatter has no requires_env field"
+    `requires_env` belongs to the **plugin** manifest; skills do not have it. Skill frontmatter recognises exactly five keys — `name`, `description`, `category`, `version` and `tags` — and any other key is ignored.
+
+    Skills therefore perform no environment check before loading: a skill missing its credentials still appears in the available list, and the failure surfaces when the script actually runs. State such dependencies in the `description`, and validate them inside the script with a clear error message.
 
 ## Skills vs Plugins
 

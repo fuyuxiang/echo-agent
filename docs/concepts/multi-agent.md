@@ -137,5 +137,15 @@ flowchart LR
 | `a2a/protocol.py` | A2A 协议实现 |
 | `a2a/client.py` | A2A 客户端 |
 
-!!! question "需维护者确认"
-    Worker 的并发度上限是否有全局配置？当前代码中 delegate 工具的并发调用数似乎由工具并发分区策略（tool_concurrency.py）统一控制，但未见独立的 worker 并发配置项。
+## 委派限额
+
+Worker 的并发度有独立配置，与工具并发分区策略无关——后者决定的是「一批工具调用中哪些可以并行」（只读且路径不冲突才并行），不约束子代理数量。
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `multiAgent.enabled` | `true` | 是否启用多代理委派 |
+| `multiAgent.maxDepth` | `3` | 委派嵌套最大深度 |
+| `multiAgent.maxParallelWorkers` | `4` | 单次委派的并行子代理数上限 |
+| `multiAgent.maxIterations` | `12` | 子代理的最大迭代轮数 |
+
+两种超限的处理方式不同：委派深度达到 `maxDepth` 时，`delegate` 调用直接失败并提示主代理自行处理；任务数超过 `maxParallelWorkers` 时，任务列表被截断到上限并记录一条告警，已截掉的任务不会执行。任务数多于上限时应分批委派，而不是依赖截断。

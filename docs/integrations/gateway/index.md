@@ -101,19 +101,24 @@ gateway:
 !!! warning "生产环境注意"
     在生产环境中务必将 `auth.mode` 设置为 `allowlist` 或 `pairing`，切勿使用 `open` 模式。同时请为 `api_tokens` 和 `admin_tokens` 使用足够长度的随机字符串。
 
-## 默认端口
+## 默认监听地址
 
-Gateway 默认监听 **8090** 端口。可通过 `gateway.port` 配置项或 `ECHO_GATEWAY_PORT` 环境变量覆盖。
+Gateway 默认监听 `127.0.0.1:58123`。端口用 `gateway.port` 配置，主机用 `gateway.host`；两者也可通过 `ECHO_AGENT_GATEWAY_PORT`、`ECHO_AGENT_GATEWAY_HOST` 环境变量覆盖（环境变量前缀为 `ECHO_AGENT_`，路径中的层级用下划线连接）。
+
+`gateway.port` 设为 `0` 时由系统动态分配，实际端口写入 `workspace/.echo-agent/gateway.json`。
 
 ## 快速启动
 
-1. 在配置文件中启用 Gateway（`gateway.enabled: true`）
-2. 配置认证模式与允许的用户列表
-3. 启动 Echo Agent，Gateway 将自动随主进程一同启动
-4. 访问 `http://localhost:8090/health` 验证服务状态
+Gateway 是**独立进程**，不随其他命令自动启动：
 
-!!! question "需维护者确认"
-    Gateway 是否支持独立于主进程单独启动？当前文档假设 Gateway 作为主进程的子服务自动启动。
+```bash
+echo-agent gateway              # 前台启动
+echo-agent gateway install      # 注册为后台常驻服务
+```
+
+`echo-agent run` 是自带 agent 的交互式会话，不会顺带起网关；反过来，网关运行后用 `echo-agent cli` 以瘦客户端接入。两者共享同一份状态，但生命周期彼此独立。
+
+启动后访问 `http://127.0.0.1:58123/health` 验证服务状态。
 
 ## 相关文档
 

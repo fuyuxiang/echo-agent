@@ -274,5 +274,4 @@ twine upload dist/*
 - [ ] Entry point correctly registered (if PyPI distribution needed)
 - [ ] Local installation test passes
 
-!!! question "Pending maintainer confirmation"
-    Is there a plan to provide an `echo-agent plugin init` scaffold command? Currently all files must be created manually.
+There is no scaffold command; plugin files are created by hand. `echo-agent plugin` supports `list`, `info`, `enable`, `disable` and `check`, the last of which verifies that a finished plugin loads correctly.

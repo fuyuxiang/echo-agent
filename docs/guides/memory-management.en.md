@@ -192,8 +192,7 @@ Memories can be created in two ways:
 # into one high-confidence memory
 ```
 
-!!! question "Needs maintainer confirmation"
-    The thresholds that trigger consolidation (number of similar memories, time interval) are not explicitly documented. Please confirm the default consolidation strategy parameters.
+Consolidation triggers once the entry count reaches `memory.consolidationThreshold` (20 by default). `memory.sleepConsolidation` is on by default and runs an additional pass while the agent is idle.
 
 ### Decay and Forgetting
 
@@ -203,8 +202,7 @@ Memories can be created in two ways:
 - Memories that decay below a threshold are marked as "forgotten"
 - Forgetting does not mean deletion — the archival tier may still retain the information
 
-!!! question "Needs maintainer confirmation"
-    Decay rate parameters (half-life, minimum weight threshold, forgetting trigger conditions) require maintainer confirmation for specific default values.
+Decay reduces the importance score over the period set by `memory.importanceDecayDays` (30 days by default). Memories scoring below `memory.archivalThreshold` (0.05) move to the archival tier; those below `memory.forgetThreshold` (0.01) are forgotten.
 
 ## Retrieval Modes
 
@@ -355,30 +353,27 @@ When a new memory is written, the system automatically checks for contradictions
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `default_mode` | hybrid | Default retrieval mode |
-| `top_k` | 10 | Number of results to return |
-| `similarity_threshold` | 0.7 | Vector similarity threshold |
+| `memory.retrievalOnMiss` | `degrade` | Behaviour on a retrieval-cache miss: `degrade` runs a time-bounded synchronous search and falls back to keyword search on timeout; `sync` always runs the full synchronous search |
+| `memory.retrievalMissTimeoutSeconds` | `0.8` | Time budget for that bounded search; `0` skips it entirely |
+| `memory.rerankEnabled` | `true` | Apply cross-encoder reranking to the fused top-K |
+| `memory.rerankTopK` | `10` | How many fused candidates get reranked |
+| `memory.rerankMinScore` | `0.0` | Absolute relevance floor; `0` reranks without dropping candidates |
 
-### Decay Configuration
+### Decay configuration
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `decay_rate` | — | Rate of memory decay |
-| `min_weight` | — | Minimum weight threshold |
-| `forget_threshold` | — | Threshold that triggers forgetting |
+| Option | Default | Description |
+|--------|---------|-------------|
+| `memory.importanceDecayDays` | `30.0` | Importance decay period, in days |
+| `memory.archivalThreshold` | `0.05` | Memories scoring below this move to the archival tier |
+| `memory.forgetThreshold` | `0.01` | Memories scoring below this are forgotten |
 
-!!! question "Needs maintainer confirmation"
-    Default values for decay parameters (`decay_rate`, `min_weight`, `forget_threshold`) require maintainer confirmation.
+### Consolidation configuration
 
-### Consolidation Configuration
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `consolidation_threshold` | — | Number of similar memories to trigger consolidation |
-| `consolidation_interval` | — | Interval between consolidation checks |
-
-!!! question "Needs maintainer confirmation"
-    Specific parameters for consolidation trigger conditions require maintainer confirmation.
+| Option | Default | Description |
+|--------|---------|-------------|
+| `memory.consolidationThreshold` | `20` | Entry count that triggers consolidation |
+| `memory.sleepConsolidation` | `true` | Run an extra consolidation pass while idle |
+| `memory.contradictionDetection` | `true` | Enable contradiction detection |
 
 ## Memory Types
 

@@ -46,15 +46,22 @@
 
 ## Core Capabilities
 
-| Capability | Description |
-|------------|-------------|
-| **Multi-model support** | OpenAI, Anthropic, Gemini, Bedrock, OpenRouter, plus OpenAI-compatible endpoints (DeepSeek, Qwen, Kimi, GLM, MiniMax, SiliconFlow, Ollama, LM Studio, vLLM) |
-| **14 channel adapters** | CLI, Cron, DingTalk, Discord, Email, Feishu, Matrix, QQ Bot, Slack, Telegram, Webhook, WeCom, WeChat, WhatsApp |
-| **Long-term memory** | Vector-based conversational memory with cross-session persistence |
-| **Skills evolution** | Agent autonomously distills and accumulates reusable skills over interactions |
-| **Plugin system** | Register external plugins via entry-points with hot-reload support |
-| **Dashboard** | Built-in web management panel for real-time conversations, cost tracking, and status monitoring |
-| **Scheduled tasks** | Built-in cron scheduler for time-triggered Agent execution |
+| Module | Description | Details |
+|--------|-------------|---------|
+| **Agent Loop** | Receive events → build context → call model → execute tools, shared across all entry points | [Agent loop](concepts/agent-loop.md) |
+| **Cognitive Memory** | Working / Episodic / Semantic / Archival four tiers, with decay, contradiction detection and importance reranking | [Memory system](concepts/memory-system.md) |
+| **Hybrid Retrieval** | BM25 + FAISS vector fusion, adaptive weighting per query, graceful degradation without FAISS | [Knowledge base](guides/knowledge-base.md) |
+| **Self-Evolution** | Trajectory recording → candidate generation → eval comparison → promote/reject, with cooldown and rollback | [Evolution & evaluation](concepts/evolution-evaluation.md) |
+| **Model Routing** | Main reasoning, context compression, embeddings and risk approval each configurable with independent provider and model | [Routing & fallback](guides/models/routing-fallback.md) |
+| **Tool Approval** | Three modes: `manual` / `smart` / `off`, unattended channels default to denying high-risk calls | [Tools & permissions](guides/tools-permissions.md) |
+| **Multi-model support** | OpenAI, Anthropic, Gemini, Bedrock, OpenRouter, plus OpenAI-compatible endpoints (DeepSeek, Qwen, Kimi, GLM, Ollama) | [Provider overview](guides/models/providers.md) |
+| **14 channel adapters** | CLI, Cron, DingTalk, Discord, Email, Feishu, Matrix, QQ Bot, Slack, Telegram, Webhook, WeCom, WeChat, WhatsApp | [Channel setup](integrations/channels/index.md) |
+| **Cross-Process Interop** | A2A JSON-RPC + MCP client (with OAuth), dynamic tool registration | [MCP](integrations/mcp.md) · [A2A](integrations/a2a.md) |
+| **Plugin system** | Register external plugins via entry-points | [Using plugins](integrations/plugins/using-plugins.md) |
+| **Dashboard** | Built-in web panel for conversations, cost and runtime status | [Dashboard](guides/dashboard.md) |
+| **Scheduled tasks** | Built-in cron scheduler for time-triggered Agent execution | [Scheduled jobs](guides/scheduled-jobs.md) |
+| **Output Preservation** | Oversized tool output is spilled to disk; the model sees a head/tail preview plus a retrieval path and can pull the full text back with `read_spill` | [Context compression & spill](concepts/context-compression-spill.md) |
+| **Local-First** | Sessions, memory, traces and credentials stored in the workspace by default, credentials encrypted at rest | [Security model](concepts/security-model.md) |
 
 ---
 

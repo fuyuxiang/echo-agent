@@ -123,8 +123,9 @@ class MemoryEntry:
     pinned: bool               # When True, always included in core snapshot
 ```
 
-!!! question "Maintainer Confirmation Needed"
-    Does `embedding_id` support multi-index? Is the current implementation a single embedding store?
+Memory vectors live in a single index (SQLite persistence backing an in-memory numpy matrix). One memory maps to one vector; a single entry cannot carry several. Knowledge-base vectors are a separate store (an adjacent `.npz` sidecar), physically isolated from memory vectors.
+
+Every stored vector is stamped with the `model_id` it was computed under. At startup, rows whose stamp differs from the active embedding model are not loaded into the matrix; they enter the re-embed queue instead, so changing the embedding model never lets stale vectors participate in retrieval from the wrong semantic space.
 
 ---
 
@@ -190,8 +191,9 @@ flowchart LR
 5. **Cross-Encoder Reranker** (optional): Precision re-ranking stage, trades latency for accuracy
 6. **Forgetting-Curve Weighting**: Final score multiplied by effective_importance (see Decay section)
 
-!!! question "Maintainer Confirmation Needed"
-    What are the activation conditions for the cross-encoder reranker? Is there a candidate count threshold or latency budget?
+Reranking is governed by `memory.rerankEnabled` (`true` by default) and runs whenever RRF fusion produced any candidates; there is no additional candidate-count threshold. It only touches the first `memory.rerankTopK` fused results (10 by default), leaving the rest in RRF order to bound the cost.
+
+The latency budget has two parts: a single inference waits up to `memory.rerankTimeoutSeconds` (5 by default), while model loading and download use `memory.rerankLoadTimeoutSeconds`. A timeout or failure in either returns the RRF order unchanged — reranking is a pure enhancement, never a recall gate. A `memory.rerankMinScore` above 0 drops low-scoring candidates, but if that would drop all of them the filter is skipped, so a misconfigured threshold cannot empty the recall set.
 
 ---
 
@@ -224,8 +226,7 @@ The following entries are **exempt from decay**:
 - `type == USER`: User identity and preferences never decay
 - `pinned == True`: Pinned entries always remain in the core snapshot
 
-!!! question "Maintainer Confirmation Needed"
-    What is the default value of base_half_life in days? Are different base values assigned to different ENVIRONMENT subtypes?
+The base half-life comes from `memory.importanceDecayDays`, 30 days by default, clamped to a minimum of 1 day. All non-USER types share that single base value; subtypes such as ENVIRONMENT are not given their own. What differs between types is the exemption rule (USER is exempt entirely), not the half-life.
 
 ---
 
@@ -373,8 +374,9 @@ Consolidation is the memory system's "sleep period" processing flow, analogous t
 - Triggered when system idle time exceeds configured threshold
 - Can be manually triggered via management interface
 
-!!! question "Maintainer Confirmation Needed"
-    Is the consolidation pipeline synchronous or async-queued? Is there backpressure control when many sessions terminate concurrently?
+Consolidation runs asynchronously and never blocks the reply: at session end the work is handed to the background task scheduler rather than executed on the request path.
+
+Concurrency is bounded in two ways. Per-session deduplication: the scheduler keeps a `pending` set, and scheduling a session already queued returns immediately, so the same memories are never consolidated in parallel. Task tiering: consolidation is tagged DURABLE, so a saturated scheduler queues it instead of dropping it, and what gets passed is a re-invocable task factory rather than a bare coroutine, allowing a retry after failure.
 
 ---
 

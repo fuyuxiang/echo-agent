@@ -41,8 +41,10 @@ tmux attach -t echo-agent
 
 ## Alternative: Docker
 
-!!! question "Maintainer Decision Required"
-    Official Docker image is not yet provided. Community Dockerfile contributions welcome.
+!!! note "No official image"
+    There is no published Docker image and no Dockerfile in the repository; a container deployment has to be built yourself. Contributions in this area are [welcome](https://github.com/fuyuxiang/echo-agent/issues).
+
+    Note that resident-service registration (`echo-agent gateway install`) targets systemd and launchd, so in a container you run `echo-agent gateway` in the foreground as the entrypoint instead.
 
 ## Verifying the Service
 

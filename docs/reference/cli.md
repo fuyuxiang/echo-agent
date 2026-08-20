@@ -294,7 +294,7 @@ echo-agent plugin enable slack-channel
 | `evolution list-candidates` | 列出候选技能 |
 | `evolution show-candidate <id>` | 显示候选详情 |
 | `evolution promote <id>` | 提升候选为正式技能 |
-| `evolution rollback <id>` | 回滚已提升的技能 |
+| `evolution rollback <技能名>` | 回滚已提升的技能（参数是技能名，不是候选 id） |
 | `evolution init-dataset` | 初始化评估数据集 |
 
 ```bash

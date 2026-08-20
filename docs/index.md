@@ -46,15 +46,22 @@
 
 ## 核心能力
 
-| 能力 | 说明 |
-|------|------|
-| **多模型支持** | OpenAI、Anthropic、Gemini、Bedrock、OpenRouter，以及 DeepSeek、Qwen、Kimi 等 OpenAI 兼容端点 |
-| **14 通道适配器** | CLI、Cron、钉钉、Discord、Email、飞书、Matrix、QQ Bot、Slack、Telegram、Webhook、企业微信、微信、WhatsApp |
-| **长期记忆** | 基于向量检索的对话记忆，跨会话持久化 |
-| **技能进化** | Agent 在交互中自动提炼、积累可复用技能 |
-| **插件体系** | 通过 entry-point 注册外部插件，支持热加载 |
-| **Dashboard** | 内置 Web 管理面板，实时查看对话、费用、状态 |
-| **定时任务** | 内置 Cron 调度器，定时触发 Agent 执行任务 |
+| 模块 | 说明 | 详见 |
+|------|------|------|
+| **Agent Loop** | 接收事件 → 构建上下文 → 调用模型 → 执行工具，跨入口共享同一条执行路径 | [Agent 循环](concepts/agent-loop.md) |
+| **认知记忆** | Working / Episodic / Semantic / Archival 四层，配合衰减、矛盾检测与重要性重排 | [记忆系统](concepts/memory-system.md) |
+| **混合检索** | BM25 + FAISS 向量融合召回，按查询特征自适应权重，FAISS 缺失时自动降级 | [知识库](guides/knowledge-base.md) |
+| **自进化引擎** | 轨迹记录 → 候选生成 → 评测对照 → 晋升/驳回，支持冷却期与一键回滚 | [技能进化与评测](concepts/evolution-evaluation.md) |
+| **模型路由** | 主推理、上下文压缩、向量嵌入、风险审批可独立配置 provider 与模型 | [路由与 Fallback](guides/models/routing-fallback.md) |
+| **工具审批** | 三档策略 `manual` / `smart` / `off`，无人值守通道默认拒绝高风险调用 | [工具与权限](guides/tools-permissions.md) |
+| **多模型支持** | OpenAI、Anthropic、Gemini、Bedrock、OpenRouter，以及 DeepSeek、Qwen、Kimi、GLM、Ollama 等 OpenAI 兼容端点 | [Provider 总览](guides/models/providers.md) |
+| **14 通道适配器** | CLI、Cron、钉钉、Discord、Email、飞书、Matrix、QQ Bot、Slack、Telegram、Webhook、企业微信、微信、WhatsApp | [通道配置](integrations/channels/index.md) |
+| **跨进程互操作** | A2A JSON-RPC + MCP 客户端（含 OAuth），支持动态工具注册 | [MCP](integrations/mcp.md) · [A2A](integrations/a2a.md) |
+| **插件体系** | 通过 entry-point 注册外部插件 | [使用插件](integrations/plugins/using-plugins.md) |
+| **Dashboard** | 内置 Web 管理面板，查看对话、费用与运行状态 | [Dashboard](guides/dashboard.md) |
+| **定时任务** | 内置 Cron 调度器，按计划触发 Agent 执行 | [定时任务](guides/scheduled-jobs.md) |
+| **输出保全** | 超长工具输出落盘保全，模型只见首尾预览与取回路径，可用 `read_spill` 按字符区间或正则取回完整内容 | [上下文压缩与输出保全](concepts/context-compression-spill.md) |
+| **本地优先** | 会话、记忆、轨迹、凭证默认存放工作区，凭证加密落盘 | [安全模型](concepts/security-model.md) |
 
 ---
 

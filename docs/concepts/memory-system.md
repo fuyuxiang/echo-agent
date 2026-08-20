@@ -123,8 +123,9 @@ class MemoryEntry:
     pinned: bool               # True 时始终包含在 core snapshot
 ```
 
-!!! question "需维护者确认"
-    `embedding_id` 是否支持多向量索引（multi-index）？当前实现是否为单一 embedding store？
+记忆向量由单一索引承载（SQLite 持久化 + numpy 内存矩阵），一条记忆对应一个向量，不支持同一条目挂多个向量。知识库的向量是另一套独立存储（旁挂 `.npz` sidecar），与记忆向量物理隔离。
+
+每个存储的向量都打上写入时的 `model_id`。启动时标记与当前嵌入模型不一致的行不会载入矩阵，而是进入重新嵌入队列——更换嵌入模型不会让旧向量以错误的语义空间参与检索。
 
 ---
 
@@ -190,8 +191,9 @@ flowchart LR
 5. **Cross-Encoder Reranker**（可选）：精排阶段，牺牲速度换精度
 6. **Forgetting-Curve 加权**：最终得分乘以 effective_importance（见 Decay 章节）
 
-!!! question "需维护者确认"
-    Cross-encoder reranker 的启用条件是什么？是否有候选数量阈值或延迟预算？
+精排由 `memory.rerankEnabled`（默认 `true`）控制，只要 RRF 融合后有候选就会执行，没有额外的候选数量门槛。它只作用于融合结果的前 `memory.rerankTopK` 条（默认 10），其余保持 RRF 原序，以此约束开销。
+
+延迟预算分两层：单次推理等待 `memory.rerankTimeoutSeconds`（默认 5 秒），模型加载与下载走 `memory.rerankLoadTimeoutSeconds`。任一超时或失败都返回 RRF 原序——精排是纯增强，不构成召回的闸门。`memory.rerankMinScore` 大于 0 时会丢弃低分候选，但若全部被丢则回退为不过滤，避免阈值配错清空召回。
 
 ---
 
@@ -224,8 +226,7 @@ effective_importance = importance * (0.5 ** (days_since_access / half_life))
 - `type == USER`：用户身份和偏好永不衰减
 - `pinned == True`：固定条目始终保持在 core snapshot 中
 
-!!! question "需维护者确认"
-    base_half_life 的默认值是多少天？是否区分 ENVIRONMENT 子类型设置不同基础值？
+基础半衰期取自 `memory.importanceDecayDays`，默认 30 天，最小值钳制为 1 天。所有非 USER 类型共用这一个基础值，不按 ENVIRONMENT 等子类型分别设置——类型间的差异体现在豁免规则（USER 完全豁免）而非不同的半衰期。
 
 ---
 
@@ -371,8 +372,9 @@ Consolidation 是记忆系统的"睡眠期"处理流程，类似人类睡眠时�
 - 系统空闲超过配置时间阈值时触发
 - 可手动触发（管理接口）
 
-!!! question "需维护者确认"
-    consolidation pipeline 是同步执行还是异步队列？大量会话并发结束时是否有背压控制？
+整合是异步执行的，不阻塞对话回复：会话结束时把任务交给后台任务调度器，而非在请求路径上同步跑完。
+
+并发控制有两层。一是按会话去重：调度器维护 `pending` 集合，同一会话已在队列中时重复调度直接返回，避免同一份记忆被并行整合。二是任务分级：整合任务标记为 DURABLE 级别，调度器饱和时将其排队而不丢弃，并且传入的是可重入的任务工厂而非裸协程，失败后能被重新调用。
 
 ---
 

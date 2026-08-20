@@ -137,11 +137,19 @@ If a new version has issues and you need to roll back:
 
 ```bash
 # Install a specific older version
-pip install echo-agent[all]==0.3.6
+Install the specific older version:
 
-# Restore database (if migration was applied)
-echo-agent checkpoint restore <pre-upgrade-checkpoint-id>
+```bash
+pip install echo-agent[all]==0.3.6
 ```
 
-!!! question "Maintainer Confirmation Needed"
-    Is database schema downgrade fully supported? Does the `migrate` command currently provide a `--downgrade` option?
+If `echo-agent migrate run` was applied during the upgrade, undo it with the matching command:
+
+```bash
+echo-agent migrate rollback
+```
+
+!!! warning "Checkpoints do not contain the database"
+    `echo-agent checkpoint` is a shadow Git snapshot of workspace **files**, and its exclusion list explicitly covers the SQLite database, the sessions directory, the memory directory and the logs directory (a file-level snapshot of a live SQLite file would be a torn read). `checkpoint restore` therefore cannot restore database state.
+
+    Data-layer rollback has exactly two routes: `echo-agent migrate rollback`, or a database file you copied yourself beforehand. Copy `data/echo_agent.db` before downgrading.

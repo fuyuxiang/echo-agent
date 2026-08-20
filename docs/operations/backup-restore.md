@@ -15,7 +15,7 @@ Echo Agent 的所有持久化数据存储在文件系统中，备份策略围绕
 │   ├── knowledge/               # 知识库索引（建议备份）
 │   ├── spill/                   # 工具输出溢写（可选备份）
 │   ├── logs/                    # 运行日志（可选备份）
-│   └── checkpoints/             # 状态检查点（建议备份）
+│   └── checkpoints/             # 文件检查点的影子 Git 仓库（可选备份）
 └── env                          # 环境变量（如有则备份）
 ```
 
@@ -27,7 +27,7 @@ Echo Agent 的所有持久化数据存储在文件系统中，备份策略围绕
 | `data/echo_agent.db` | 必须 | 会话、任务、元数据 |
 | `data/memory/` | 必须 | Agent 长期记忆，丢失不可恢复 |
 | `data/knowledge/` | 建议 | 知识库索引，可从源文档重建 |
-| `data/checkpoints/` | 建议 | 运行状态快照 |
+| `data/checkpoints/` | 可选 | 工作区文件的历史版本，不含数据库与记忆 |
 | `data/spill/` | 可选 | 大输出临时存储，通常可丢弃 |
 | `data/logs/` | 可选 | 历史日志，用于审计 |
 
@@ -161,7 +161,9 @@ echo-agent status
 ```
 
 !!! warning "检查点恢复的范围"
-    `checkpoint restore` 恢复 Agent 运行状态（会话、记忆快照），但不恢复配置文件变更。配置需从备份中单独恢复。
+    检查点是工作区**文件**的影子 Git 快照，用于回退 Agent 对文件的改动。它的排除范围包含 SQLite 数据库、会话目录、记忆目录与日志目录——对活跃的 SQLite 文件做文件级快照会读到撕裂状态，因此这些数据不在检查点内。
+
+    这意味着 `checkpoint restore` 不恢复会话与记忆。数据层的恢复走下一节的 SQLite 备份，配置文件也需从备份中单独恢复。
 
 ### 从 SQLite 备份恢复
 

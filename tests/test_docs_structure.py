@@ -405,3 +405,189 @@ def test_channel_count_consistent():
     content = channel_index.read_text(encoding="utf-8").lower()
     missing = [ch for ch in sorted(_CHANNEL_REGISTRY) if ch not in content]
     assert not missing, f"Channel 总览页缺少: {missing}"
+
+
+# Admonition titles that mark an unresolved question to the maintainers. These
+# are working notes, not documentation: a reader who sees "needs maintainer
+# confirmation" learns that the page is untrusted, and cannot tell which of the
+# unmarked statements are equally uncertain. Answer the question from the code
+# and state the answer, or drop the block — do not ship the doubt.
+_UNRESOLVED_TITLES = re.compile(
+    r'^!!! \w+ "(?:'
+    r'需维护者确认|待维护者确认|需确认|待补充'
+    r'|needs?[ _-]maintainer|maintainer[ _-](?:confirmation|decision)'
+    r'|pending[ _-]maintainer|awaiting[ _-]maintainer'
+    r')',
+    re.IGNORECASE,
+)
+
+
+def test_docs_have_no_unresolved_maintainer_questions():
+    """No page may ship an unresolved "needs maintainer confirmation" block.
+
+    A `!!! question "Q: ..."` FAQ entry is fine — mkdocs-material's question
+    admonition is the idiomatic way to render a FAQ. What this rejects is the
+    placeholder whose title says the content itself is unconfirmed.
+    """
+    offenders: list[str] = []
+    for md in sorted(DOCS_DIR.rglob("*.md")):
+        for line_no, line in enumerate(md.read_text(encoding="utf-8").splitlines(), 1):
+            if _UNRESOLVED_TITLES.match(line.strip()):
+                offenders.append(f"{md.relative_to(DOCS_DIR)}:{line_no}")
+    assert not offenders, (
+        "文档中仍有未解决的「需维护者确认」占位块，请查代码给出确定答案或删除：\n"
+        + "\n".join(offenders)
+    )
+
+
+def test_docs_avoid_hedged_defaults():
+    """Reject hedged wording where a concrete default belongs.
+
+    "The default port is typically 8080" is worse than silence: the reader
+    cannot act on it and cannot tell it is a guess. Defaults are readable from
+    the schema, so state them.
+    """
+    hedges = re.compile(
+        r"(?:默认[^。\n]{0,12}(?:通常为|大概是|可能是|应该是)"
+        r"|(?:通常为|可能包括|大约为)[^。\n]{0,20}(?:需确认|待确认)"
+        r"|default (?:port |value )?is typically"
+        r"|likely include|probably defaults to)",
+    )
+    offenders: list[str] = []
+    for md in sorted(DOCS_DIR.rglob("*.md")):
+        for line_no, line in enumerate(md.read_text(encoding="utf-8").splitlines(), 1):
+            if hedges.search(line):
+                offenders.append(f"{md.relative_to(DOCS_DIR)}:{line_no} {line.strip()[:70]}")
+    assert not offenders, (
+        "以下位置用推测语气描述默认值，请改为 schema 中的真实取值：\n" + "\n".join(offenders)
+    )
+
+
+# --------------------------------------------------------------------------
+# README guards.
+#
+# The READMEs sit outside DOCS_DIR, so neither `mkdocs build --strict` nor the
+# linkchecker step in docs.yml ever looks at them: every check above stops at
+# docs/. They are also the most-read pages in the project and ship verbatim as
+# the PyPI long description (pyproject sets readme = "README.md"), so the same
+# drift the docs are now guarded against has to be caught here explicitly.
+# --------------------------------------------------------------------------
+
+ROOT = Path(__file__).resolve().parent.parent
+README_ZH = ROOT / "README.md"
+README_EN = ROOT / "README.en.md"
+
+# Site prefix the READMEs must use. Relative links would resolve against the
+# repository on GitHub (landing on raw markdown, not the rendered site) and
+# break outright on PyPI, which has no notion of the repo tree.
+DOCS_SITE = "https://fuyuxiang.github.io/echo-agent/"
+
+
+def test_readmes_link_to_docs_site():
+    """Both READMEs must route readers to the documentation site."""
+    for readme in (README_ZH, README_EN):
+        text = readme.read_text(encoding="utf-8")
+        assert DOCS_SITE in text, f"{readme.name} 没有任何指向文档站的链接"
+
+
+def test_readme_doc_links_resolve_to_real_pages():
+    """Every docs-site link in the READMEs must have a backing source page.
+
+    linkchecker only walks the built site, so a README pointing at a page that
+    was renamed or never existed yields a 404 that CI cannot currently see.
+    """
+    failures: list[str] = []
+    for readme in (README_ZH, README_EN):
+        text = readme.read_text(encoding="utf-8")
+        for match in re.finditer(re.escape(DOCS_SITE) + r"([a-z0-9\-/]*)", text):
+            line = text[: match.start()].count("\n") + 1
+            route = match.group(1).strip("/")
+            # The English site is served under /en/ by mkdocs-static-i18n; the
+            # source file for both locales is the same path under docs/.
+            suffix = ".en.md" if route.split("/")[:1] == ["en"] else ".md"
+            if suffix == ".en.md":
+                route = "/".join(route.split("/")[1:])
+            if not route:
+                continue  # site root, always present
+            candidates = [
+                DOCS_DIR / f"{route}{suffix}",
+                DOCS_DIR / route / f"index{suffix}",
+            ]
+            if not any(path.is_file() for path in candidates):
+                failures.append(f"{readme.name}:{line} -> {match.group(0)}")
+    assert not failures, "README 链接指向不存在的文档页:\n" + "\n".join(failures)
+
+
+def test_readme_config_references_exist():
+    """Backtick-quoted config paths in the READMEs must exist in the schema.
+
+    Mirrors test_docs_inline_config_references_exist for the root READMEs,
+    which that test does not reach. Only dotted names whose first segment is a
+    real config section are checked, so filenames and module paths are ignored.
+    """
+    from echo_agent.config.schema import Config
+
+    failures: list[str] = []
+    for readme in (README_ZH, README_EN):
+        text = readme.read_text(encoding="utf-8")
+        for match in re.finditer(r"`([a-z][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_]+)+)`", text):
+            dotted = match.group(1)
+            if _resolve_field(Config, dotted.split(".")[0]) is None:
+                continue  # not a config reference at all (e.g. a filename)
+            if not _config_path_exists(dotted.split(".")):
+                failures.append(f"{readme.name}: {dotted}")
+    assert not failures, f"README 引用了不存在的配置项: {sorted(set(failures))}"
+
+
+def test_readme_cli_commands_are_real():
+    """`echo-agent <cmd>` in README shell blocks must be a real subcommand."""
+    main_src = (ROOT / "echo_agent" / "__main__.py").read_text(encoding="utf-8")
+    real = set(re.findall(r'add_parser\(\s*"([a-z][a-z0-9_-]*)"', main_src))
+    assert real, "could not parse any subcommand from __main__.py"
+
+    bogus: list[str] = []
+    for readme in (README_ZH, README_EN):
+        text = readme.read_text(encoding="utf-8")
+        for block in re.finditer(r"```(?:bash|sh|shell|console|powershell)\n(.*?)```", text, re.S):
+            base = text[: block.start()].count("\n") + 1
+            for offset, raw in enumerate(block.group(1).splitlines()):
+                line = raw.strip().lstrip("$ ").strip()
+                found = re.match(r"^echo-agent\s+([a-z][a-z0-9_-]*)", line)
+                if found and found.group(1) not in real:
+                    bogus.append(f"{readme.name}:{base + offset + 1} -> {found.group(1)}")
+    assert not bogus, f"README 使用了不存在的 CLI 子命令: {bogus}"
+
+
+def test_readme_zh_en_sections_match():
+    """The two READMEs must keep the same section structure.
+
+    They are maintained by hand in parallel; a section added to one and not the
+    other is the normal way they drift apart.
+    """
+    def levels(path: Path) -> list[str]:
+        return [
+            line.split(" ", 1)[0]
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if re.match(r"^#{2,3} ", line)
+        ]
+
+    zh, en = levels(README_ZH), levels(README_EN)
+    assert zh == en, (
+        "中英 README 的章节层级不一致（中文 "
+        f"{len(zh)} 节 / 英文 {len(en)} 节）：{zh} != {en}"
+    )
+
+
+def test_readme_channel_count_matches_registry():
+    """The channel count quoted in the READMEs must match the real registry."""
+    from echo_agent.channels.manager import _CHANNEL_REGISTRY
+
+    expected = len(_CHANNEL_REGISTRY)
+    failures: list[str] = []
+    for readme in (README_ZH, README_EN):
+        text = readme.read_text(encoding="utf-8")
+        for match in re.finditer(r"(\d+)\s*(?:个通道|channels)", text):
+            if int(match.group(1)) != expected:
+                line = text[: match.start()].count("\n") + 1
+                failures.append(f"{readme.name}:{line} 写了 {match.group(1)}，实际 {expected}")
+    assert not failures, "README 的通道数量与注册表不符:\n" + "\n".join(failures)

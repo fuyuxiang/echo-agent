@@ -83,8 +83,7 @@ Bot 启动时通过 Gateway 建立 WebSocket 连接，接收事件推送。连�
 3. 按 `heartbeat_interval` 定时发送心跳。
 4. 断线后使用 `RESUME` 恢复，避免消息丢失。
 
-!!! question "需维护者确认"
-    当前实现是否处理了 Gateway 返回的 Invalid Session（op 9）事件？该事件需要重新 IDENTIFY 而非 RESUME。
+收到 `INVALID SESSION`（op 9）时，通道清空已保存的 `session_id` 并关闭连接；由于 `session_id` 已失效，重连时自动走 `IDENTIFY` 而非 `RESUME`。`RECONNECT`（op 7）则保留 `session_id`，重连后继续用 `RESUME` 恢复。
 
 ---
 
@@ -135,7 +134,9 @@ Bot 内置了 rate-limit 响应头解析和自动等待。如果持续触发，�
 
 ### 群组中如何仅响应特定频道？
 
-当前通过 `allow_from` 按用户 ID 过滤。如需按频道过滤，可将频道 ID 加入配置：
+通道提供的过滤维度是 `allow_from`——**用户 ID** 白名单，留空表示不限制。
 
-!!! question "需维护者确认"
-    是否支持按频道 ID 过滤？如不支持，建议作为后续功能添加。
+!!! warning "不支持按频道过滤"
+    没有频道或服务器维度的过滤配置。`allow_from` 只比对发送者 ID，把频道 ID 填进去不会限制频道范围，反而会让所有真实用户都匹配失败、通道彻底静默。
+
+    要限制机器人的活动范围，用 Discord 自身的权限体系：只把机器人加入需要的频道，或在频道权限中移除其读取消息的权限。配合 `group_policy: mention`（默认值）可进一步要求群聊中必须 @ 机器人才响应。

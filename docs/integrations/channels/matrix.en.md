@@ -122,5 +122,7 @@ allow_rooms:
 !!! question "What happens on sync timeout or disconnection?"
     The channel has built-in retry logic. After a network interruption, it automatically reconnects and resumes from the last since token. No manual intervention needed.
 
-!!! question "Maintainer confirmation needed"
-    Is E2EE (end-to-end encryption) room support planned? The current implementation only processes unencrypted messages.
+!!! warning "Encrypted rooms are not supported"
+    The channel handles unencrypted messages only; there is no Olm / Megolm implementation in the code. Invited into an E2EE room the bot will join, but it cannot decrypt what it receives and therefore will not reply.
+
+    To use it where encryption is in play, create a separate unencrypted room — a room's encryption cannot be turned off once enabled.

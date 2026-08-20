@@ -244,5 +244,21 @@ class LLMResponse:
 - [ ] Tool calls 正确转为 `ToolCallRequest` 格式
 - [ ] Usage 统计正确填充（影响成本追踪）
 
-!!! question "需维护者确认"
-    OpenAI-compatible 模式（未在 `_PROVIDER_MAP` 中注册的 provider 自动降级为 OpenAI SDK 调用）是否需要文档化为正式的"自定义 Provider"入口？
+## 无需改代码的接入方式
+
+多数情况下不必新增 Provider 类。`_PROVIDER_MAP` 只登记了需要专用 SDK 的 provider（`openai`、`anthropic`、`bedrock`/`aws`、`gemini`/`google`、`openrouter`），**未登记的名字默认按 OpenAI 兼容协议处理**，走 OpenAI SDK 调用。
+
+因此接入任何兼容 OpenAI 接口的服务只需写配置：
+
+```yaml
+models:
+  providers:
+    - name: my-service
+      api_base: https://api.example.com/v1
+      api_key: ${MY_SERVICE_KEY}
+      models: ["my-model-v1"]
+```
+
+`api_base` 是必填项：未登记的 provider 缺少它时配置校验会直接报错（`provider 'x' is OpenAI-compatible by default and requires api_base`），因为没有基址就无从发起请求。模型也必须显式给出，来自 `models.defaultModel` 或该条目的 `models` 列表。
+
+只有当目标服务的协议与 OpenAI 不兼容——例如自有的鉴权流程、不同的流式格式或工具调用结构——才需要按下文新增 Provider 类。

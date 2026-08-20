@@ -2,8 +2,7 @@
 
 The Echo Agent knowledge base system provides long-term document retrieval capabilities for conversations through vector indexing and semantic search. Once documents are uploaded, the system automatically extracts, chunks, embeds, and indexes content for on-demand querying by the Agent.
 
-!!! question "Maintainer confirmation needed"
-    Default chunk size and overlap values should be confirmed based on the deployment environment. Suggested defaults: chunk_size=512 tokens, overlap=64 tokens.
+Documents are chunked at 1200 characters with a 120-character overlap between adjacent chunks (`knowledge.chunkSize` and `knowledge.chunkOverlap`). Both are measured in characters, not tokens.
 
 ## Architecture Overview
 
@@ -57,34 +56,42 @@ The system selects the appropriate extractor based on file extension and convert
 
 Long text is split into fixed-size segments with overlapping regions between adjacent chunks to maintain contextual coherence.
 
-!!! question "Maintainer confirmation needed"
-    Default chunk_size and overlap parameters need confirmation. Recommended configuration:
-    - `chunk_size`: 512 tokens
-    - `chunk_overlap`: 64 tokens
-    - Chunking strategy: paragraph-first, with token-based truncation for oversized paragraphs
+Default parameters:
+
+| Option | Default | Unit |
+|--------|---------|------|
+| `knowledge.chunkSize` | 1200 | characters |
+| `knowledge.chunkOverlap` | 120 | characters |
 
 ### 4. Embedding
 
 Each text segment is converted into a high-dimensional vector representation through the embedding model, capturing semantic information.
 
-!!! question "Maintainer confirmation needed"
-    Embedding model configuration needs confirmation. Possible options include:
-    - OpenAI `text-embedding-ada-002` (1536 dimensions)
-    - Local models such as `sentence-transformers`
-    - Other embedding services with compatible APIs
+Embedding configuration lives under the `memory` section and is shared with the memory system:
 
-### 5. FAISS Indexing
+| Option | Default | Description |
+|--------|---------|-------------|
+| `memory.embeddingBackend` | `auto` | `auto` probes the provider at startup and silently falls back to the local model on failure; `local` uses the local model directly; `provider` forces the provider and errors out if the probe fails |
+| `memory.embeddingModel` | empty | Provider-side embedding model; left empty, the provider decides |
+| `memory.localEmbeddingModel` | `BAAI/bge-small-zh-v1.5` | Local fastembed fallback model; an empty string disables the fallback |
 
-Vectors are written to the FAISS (Facebook AI Similarity Search) index, enabling efficient approximate nearest neighbor retrieval.
+### 5. Vector indexing
 
-## FAISS Vector Index
+Chunk vectors are indexed with FAISS for semantic similarity retrieval.
 
-FAISS serves as the core retrieval engine for the knowledge base with the following characteristics:
+## Vector index
 
-- **Efficient retrieval**: Millisecond response times for million-scale vector collections
-- **Approximate nearest neighbor**: Based on cosine similarity or L2 distance
-- **Persistent storage**: Index files saved to disk, automatically loaded on restart
-- **Incremental updates**: Index automatically updates when new documents are uploaded
+Retrieval rests on two files: a JSON index holding chunk text and metadata (including a file manifest, which is what makes deletions and renames detectable), and an `.npz` sidecar next to it holding the vectors, physically isolated from the memory system's vector table.
+
+Implementation characteristics:
+
+- **Exact search**: `IndexFlatIP` compares against every vector rather than approximating; vectors are L2-normalised, so the inner product is the cosine similarity
+- **Persistence**: the sidecar is written alongside the index and loaded on restart
+- **Change detection**: the sidecar records a content hash per chunk, so a vector is recognised as stale even when the chunk id is unchanged and only its text moved
+- **Degradation**: without `faiss` or `numpy` installed, vector search returns no results and retrieval falls back to the keyword path rather than failing
+
+!!! note "The index is derived data"
+    Both the JSON index and the sidecar can be regenerated from the source documents. A corrupted index should be rebuilt, not repaired.
 
 ## Querying the Knowledge Base
 

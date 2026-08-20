@@ -6,13 +6,16 @@ This page documents platform support, version requirements, and known limitation
 
 ## Python Version Support
 
+`pyproject.toml` declares `requires-python = ">=3.11"`.
+
 | Python Version | Status | Notes |
 |---------------|--------|-------|
-| 3.10 and below | Not supported | Missing required language features |
-| 3.11 | Supported | Minimum required version |
-| 3.12 | Supported | Recommended for production |
-| 3.13 | Supported | Tested in CI |
-| 3.14+ | Untested | May work but not guaranteed |
+| 3.10 and below | Not supported | Below `requires-python`; pip refuses to install |
+| 3.11 | Supported | Minimum required version, covered by CI |
+| 3.12 | Supported | Covered by CI |
+| 3.13 and above | Unverified | Installs, since it satisfies `requires-python`, but is not in the CI matrix and is not declared in the PyPI classifiers |
+
+"Supported" here means CI runs the full test suite on that version. The matrix currently covers 3.11 and 3.12; running on anything newer is possible but unverified, and issue reports are welcome.
 
 !!! warning "Python 3.11 minimum"
     Echo Agent uses `TaskGroup`, `ExceptionGroup`, and other features introduced in Python 3.11. Earlier versions will fail at import time.
@@ -325,5 +328,9 @@ iptables -A INPUT -p tcp --dport 3000 -j ACCEPT
 | Knowledge base | Large indexes (>10GB) slow to load | Split into workspaces |
 | Browser tool | Requires system Chromium | Install chromium package |
 
-!!! question "Maintainer confirmation needed"
-    Is there a maximum knowledge base size recommendation? What is the practical limit for the vector index before performance degrades significantly?
+!!! note "Knowledge base scaling characteristics"
+    No maximum size is enforced, and no benchmarked ceiling is published — the practical limit depends on your hardware, so treat the shape of the cost rather than a specific number as the guidance.
+
+    The index is `IndexFlatIP`, an exact search that compares the query against every stored vector, so query time grows linearly with chunk count and the whole matrix is held in memory. There is no approximate index (IVF, HNSW) to keep latency flat as the corpus grows.
+
+    Consequently a large corpus is better handled by indexing less: narrow `knowledge.allowedExtensions` and the documents directory to what the agent actually needs to consult, rather than pointing it at an entire archive. `knowledge.chunkSize` also trades directly against vector count — smaller chunks mean more precise hits and more vectors to compare.

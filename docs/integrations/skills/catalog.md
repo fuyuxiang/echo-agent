@@ -141,8 +141,10 @@ Echo Agent 提供 35 个内置技能，分布在 10 个类别中。本文列出�
 | web-extract | 从网页中提取结构化数据（文章、表格、列表） | — |
 | web-search | 执行网页搜索并返回结构化结果 | `SERPAPI_KEY` 或 `TAVILY_API_KEY` |
 
-!!! question "需维护者确认"
-    `deep-research` 单次调用可能消耗大量 token。是否应增加 token 用量预估提示或设置上限？
+!!! warning "deep-research 的开销显著高于其他技能"
+    它会执行多轮检索与网页抓取，单次调用的 token 消耗可能是普通对话的数十倍。技能本身不做用量预估，也没有内置上限。
+
+    需要约束时用成本侧的开关：`cost.dailyBudgetUsd` 设定每日硬上限（达到即拒绝新调用），`cost.softThresholdRatio` 在到达该比例时发出告警。事后用 `echo-agent cost` 按模型查看归因。参见[成本控制](../../guides/cost-control.md)。
 
 ---
 

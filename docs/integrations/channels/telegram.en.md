@@ -64,8 +64,8 @@ This channel uses **Long-polling** mode. No Webhook configuration is needed.
 
 On startup, the bot automatically calls `deleteWebhook` to clear any existing Webhook settings, ensuring `getUpdates` works correctly.
 
-!!! question "Needs maintainer confirmation"
-    If a Webhook was previously set by another framework, the first startup may require up to 1 minute before polling mode activates.
+!!! note "Switching from Webhook to polling"
+    If the same bot token previously had a Webhook set by another framework, the first startup may take up to a minute before polling takes over — Telegram's Webhook revocation is not instant. During that window `getUpdates` may return nothing; wait it out rather than restarting repeatedly.
 
 ---
 

@@ -847,6 +847,8 @@ gateway:
     pairing_ttl_seconds: 300     # pairing request expiry
 ```
 
-!!! question "Maintainer confirmation needed"
-    Is the `/api/config` endpoint intended to support live-reloading of gateway auth settings (e.g., adding a new token without restart)? Current behavior seems to require a gateway restart for auth changes to take effect.
+!!! note "Auth changes require a restart"
+    `/api/config` is read-only — only `GET /api/config` and `GET /api/config/models` are registered, with no write counterpart. There is no live-reload path for authentication settings.
+
+    Editing `gateway.auth` (adding a token, extending `allowed_users`) therefore means changing the configuration file and running `echo-agent gateway restart`. Tokens issued before the restart keep working until then; ones added after it take effect only once the process has restarted.
 

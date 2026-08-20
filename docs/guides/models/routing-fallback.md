@@ -22,9 +22,18 @@
 | `max_tokens` | 最大输出 token 数 |
 | `temperature` | 采样温度 |
 
-!!! question "需维护者确认"
-    当前支持的 `task_type` 枚举值可能包括 `code`、`analysis`、`chat`、`summary` 等，
-    具体值请以代码中 route 配置为准。
+### task_type 的取值
+
+`task_type` 由框架根据用户输入自动推断，共四种取值：
+
+| 取值 | 触发条件 |
+|------|----------|
+| `code` | 文本含代码相关词，如「代码」「报错」「函数」`bug`、`class `、`def `、`typescript`、`python` |
+| `research` | 文本含检索意图词，如「搜索」「查找」「查一下」`search`、`find`、`look up` |
+| `planning` | 文本含规划意图词，如「计划」「规划」「安排」`plan`、`schedule` |
+| `chat` | 未命中上述任一标记时的兜底值 |
+
+`models.routes[].task_types` 中填写的字符串与推断结果做不区分大小写的匹配。此外，当路由未配置 `task_types` 时，`task_type` 与该路由的 `provider` 同名、或作为子串出现在 `model` 中，也视为命中。
 
 ## 健康状态机
 

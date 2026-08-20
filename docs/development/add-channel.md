@@ -363,5 +363,8 @@ async def test_non_final_is_not_delivered(channel):
 - [ ] 资源清理（stop 中关闭 session）
 - [ ] 编写单元测试
 
-!!! question "需维护者确认"
-    通道注册是否计划支持动态加载（类似 Plugin 机制），允许第三方通道作为独立包安装？
+## 关于外部通道包
+
+`echo_agent.channels.manager` 导出了 `register_channel_type(name, cls)`，可在运行时向注册表插入通道类型。但插件系统目前没有接线到这个入口——仓库内没有任何调用方，插件的 entry-point 也不会自动注册通道。
+
+这意味着新增通道的实际路径仍是改动本仓库：把通道类加入 `_CHANNEL_REGISTRY`，并在配置 schema 中添加对应字段。第三方以独立包分发通道需要自行在包的初始化代码中调用 `register_channel_type()`，且要自行处理配置字段的注入——这条路径未经支持，也没有测试覆盖。

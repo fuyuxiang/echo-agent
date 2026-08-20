@@ -191,8 +191,12 @@ The Workflow engine **only orchestrates** — it resolves dependencies, creates 
 4. `task complete` automatically triggers `workflow.advance()`, engine checks dependencies and schedules subsequent steps
 5. All steps succeed → workflow status becomes `SUCCESS`; any step fails → workflow becomes `FAILED`
 
-!!! question "Needs Maintainer Confirmation"
-    After a step task completes, is workflow advance always triggered automatically? The current implementation has TaskTool.complete call `_advance_workflow` (best-effort) — if advance fails, it only logs a warning without blocking. Is a background compensation mechanism needed to ensure eventual consistency for workflows?
+!!! note "advance is best-effort, not part of the transaction"
+    Both `task complete` and `task fail` trigger one advance *after* the state has been persisted; `task cancel` does not.
+
+    Persisting the task state and advancing the workflow are two separate steps, and the first completes first. A failed advance only logs a warning — it does not fail the tool call and does not roll back the task state. The cost is that DAG progress stalls where it is until the next explicit `workflow advance`. There is no background compensation job covering this.
+
+    So a workflow that has not progressed for a while is worth checking with `workflow status`: a task in a terminal state while the workflow still sits on an older step means an advance was dropped.
 
 ### Workflow Operations
 

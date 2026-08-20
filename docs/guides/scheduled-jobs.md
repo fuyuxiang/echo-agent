@@ -89,8 +89,15 @@ context:
   unattended: false
 ```
 
-!!! question "需维护者确认"
-    Cron Channel 的授权流转细节（如通道级别的自动授权规则）需要维护者确认具体实现方式。
+授权按**单个任务**显式授予，没有通道级的自动授权规则——新建的定时任务默认未授权，不会因为属于 cron 通道就自动获得执行许可：
+
+```bash
+echo-agent cron list                  # 查看任务及其授权状态
+echo-agent cron authorize <job_id>    # 授权指定任务
+echo-agent cron revoke <job_id>       # 撤销授权
+```
+
+这样设计是为了让「定时」与「许可」分离：任务的调度配置可以随时改动，而它能否在无人看管时动手做事，需要一次明确的人工确认。
 
 ### 无人值守模式
 

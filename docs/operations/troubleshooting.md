@@ -193,16 +193,17 @@ echo-agent gateway logs | grep -i "memory.*save\|memory.*store"
 
 ### 修复
 
-```bash
-# 数据库损坏：从备份恢复
-echo-agent checkpoint list
-echo-agent checkpoint restore <latest-checkpoint>
+数据库损坏时从 SQLite 备份恢复，参见[备份与恢复](backup-restore.md#从-sqlite-备份恢复)。`echo-agent checkpoint` 是工作区文件的影子 Git 快照，其排除范围包含数据库与记忆目录，无法用于恢复数据库。
 
-# 检索不到：调整检索参数
-# knowledge:
-#   retrieval:
-#     similarity_threshold: 0.5   # 降低阈值
-#     top_k: 10                   # 增加返回数
+检索召回不足时，调整记忆检索与知识库的相关配置：
+
+```yaml
+memory:
+  rerankTopK: 20          # 扩大参与精排的候选数（默认 10）
+  rerankMinScore: 0.0     # 相关性下限，0 表示只重排不剔除
+knowledge:
+  maxResults: 10          # 知识检索返回的最大结果数（默认 5）
+  chunkSize: 800          # 缩小分块粒度，提高命中精度（默认 1200）
 ```
 
 ---

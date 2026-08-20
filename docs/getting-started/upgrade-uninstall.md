@@ -135,13 +135,19 @@ rm -rf node_modules dist
 
 如果新版本存在问题需要回退：
 
-```bash
-# 安装指定旧版本
-pip install echo-agent[all]==0.3.6
+安装指定旧版本：
 
-# 恢复数据库（如果已执行迁移）
-echo-agent checkpoint restore <upgrade前的checkpoint-id>
+```bash
+pip install echo-agent[all]==0.3.6
 ```
 
-!!! question "需维护者确认"
-    数据库 schema 降级是否完全支持？当前 `migrate` 命令是否提供 `--downgrade` 选项？
+若升级时执行过 `echo-agent migrate run`，用配套的回退命令撤销迁移：
+
+```bash
+echo-agent migrate rollback
+```
+
+!!! warning "checkpoint 不含数据库"
+    `echo-agent checkpoint` 是工作区**文件**的影子 Git 快照，其排除范围明确包含 SQLite 数据库、会话目录、记忆目录与日志目录（对活跃的 SQLite 文件做文件级快照会得到撕裂的读取结果）。因此 `checkpoint restore` 无法恢复数据库状态。
+
+    数据层的回退只有两条路径：`echo-agent migrate rollback`，或事先手工备份的数据库文件。降级前请先复制 `data/echo_agent.db`。

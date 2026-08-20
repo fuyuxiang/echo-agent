@@ -96,8 +96,10 @@ Agent: [调用 db-query 插件注册的 sql_query 工具]
 
 ## 常见问题
 
-!!! question "需维护者确认"
-    当 `enable` 列表为空数组 `[]` 时，行为是"加载所有"还是"不加载任何"？需要确认边界行为。
+!!! question "`allow` 为空数组时会加载哪些插件？"
+    加载全部。`plugins.allow` 为空表示不做白名单限制，所有发现到的插件都会加载；只有列表非空时才按白名单过滤，未列入的插件被标记为 `disabled`。
+
+    `plugins.deny` 的优先级高于 `allow`：同时出现在两个列表中的插件不会加载。要彻底关闭插件系统用 `plugins.enabled: false`，而不是给 `allow` 填一个空列表。
 
 ### 插件加载失败怎么办？
 

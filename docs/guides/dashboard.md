@@ -2,8 +2,7 @@
 
 Echo Agent Dashboard 是一个 Web 管理界面，用于监控系统状态、管理会话与资源、查看日志和分析数据。
 
-!!! question "需维护者确认"
-    Dashboard 默认监听端口及认证配置方式（如 API Key、OAuth）需由维护者根据部署环境确定。
+Dashboard 由网关进程提供，不占用独立端口，访问地址与认证方式均取自 `gateway` 配置。
 
 ## 架构概览
 
@@ -15,14 +14,13 @@ Dashboard 采用前后端分离架构：
 
 ## 访问方式
 
-启动 Echo Agent 后，在浏览器中访问：
+启动网关（`echo-agent gateway`）后，在浏览器中访问网关地址即可：
 
 ```
-http://<host>:<port>/dashboard
+http://127.0.0.1:58123/
 ```
 
-!!! question "需维护者确认"
-    默认端口号需确认，通常为 `8080` 或在 Config 页面中配置。
+Dashboard 是挂在网关根路径上的单页应用，端口由 `gateway.port` 决定（默认 `58123`，设为 `0` 时动态分配，实际端口写入 `workspace/.echo-agent/gateway.json`）。前端产物未构建时，该地址降级为内置 playground 页面；用 `echo-agent dashboard build` 构建产物。
 
 ## 页面导航
 
@@ -200,11 +198,12 @@ Dashboard 左侧为主导航栏，包含以下页面：
 
 ## 访问控制
 
-!!! warning "安全提示"
-    Dashboard 默认不应暴露在公网。建议通过反向代理配合认证中间件保护访问，或限制监听地址为 `127.0.0.1`。
+Dashboard 沿用网关的认证机制，没有独立的认证配置。`gateway.host` 默认为 `127.0.0.1`，只监听本机。
 
-!!! question "需维护者确认"
-    具体认证方式（Basic Auth、Token、OAuth2）需根据部署方案确定。
+零配置下（`gateway.auth.mode` 为 `allowlist` 且白名单为空），携带跨站 `Origin` 的浏览器请求会被拒绝，因此 Dashboard 页面此时无法调用接口。开放浏览器访问需要将 `gateway.auth.mode` 设为 `open`、把用户加入 `gateway.auth.allowed_users`，或把来源加入 `gateway.auth.allowed_origins`。
+
+!!! warning "暴露到公网前"
+    改变 `gateway.host` 使其监听非回环地址前，先完成认证配置与反向代理的 TLS 终止。详见[网关认证](../integrations/gateway/authentication.md)与[安全加固](../operations/security-hardening.md)。
 
 ## 监控与告警
 
