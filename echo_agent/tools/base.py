@@ -148,6 +148,23 @@ class Tool(ABC):
         """Whether this tool is functional (e.g. API keys configured). Default True."""
         return True
 
+    def describe_for_approval(self, arguments: dict[str, Any]) -> str:
+        """What a human is being asked to allow, beyond what the arguments show.
+
+        The approval prompt can otherwise only render the call's arguments, which
+        is fine for exec (the command IS the risk) but not for a tool whose
+        arguments are a reference to stored state: "action=authorize,
+        job_id=148fb4a4b9" asks someone to grant a scheduled job standing
+        unattended privileges without saying what it runs or who it messages.
+        Only the tool can resolve that id, so the tool gets to describe it.
+
+        Return "" to accept the generic rendering. May be multi-line; the gate
+        bounds the result. Must never raise and must never affect the decision —
+        this is display only, and a call that cannot be described still gets a
+        prompt.
+        """
+        return ""
+
     def readiness_detail(self) -> tuple[bool, str]:
         """Override for tools with external dependencies."""
         return True, "ok"

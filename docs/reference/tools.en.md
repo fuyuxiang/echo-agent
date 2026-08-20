@@ -419,13 +419,21 @@ Manage scheduled jobs. Belongs to `HIGH_RISK_TOOLS`.
 
 | Parameter | Type | Required | Values | Description |
 |-----------|------|:--------:|--------|-------------|
-| `action` | string | ✅ | `create` \| `list` \| `delete` \| `trigger` | Operation |
+| `action` | string | ✅ | `create` \| `list` \| `delete` \| `trigger` \| `authorize` \| `revoke` | Operation |
 | `name` | string | | — | Job name |
 | `schedule` | string | | — | cron expression |
 | `command` | string | | — | What to run |
-| `job_id` | string | | — | Job ID |
+| `job_id` | string | | — | Job ID (required for `delete`/`trigger`/`authorize`/`revoke`) |
 | `target_channel` | string | | — | Channel for results |
 | `target_chat_id` | string | | — | Chat for results |
+
+`authorize` grants unattended authorization to an **existing** job. Editing a
+job's content invalidates its authorization automatically (see
+[Scheduled jobs](../guides/scheduled-jobs.en.md)), so re-authorizing is a routine
+operation. Because `cronjob` belongs to `HIGH_RISK_TOOLS`, `authorize` always
+raises a human confirmation prompt listing the job's instruction, schedule and
+delivery target before the grant is issued. `revoke` withdraws it and needs no
+extra confirmation.
 
 #### delegate_task
 

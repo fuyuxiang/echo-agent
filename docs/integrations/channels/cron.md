@@ -32,8 +32,8 @@ channels:
 
 ```bash
 echo-agent cron list
-echo-agent cron authorize <job-id>
-echo-agent cron revoke <job-id>
+echo-agent cron authorize <job-id>   # 需先停止服务
+echo-agent cron revoke <job-id>      # 需先停止服务
 ```
 
 ### 通过 Agent 对话
@@ -42,17 +42,23 @@ Agent 可以通过 `cronjob` 工具自行创建定时任务：
 
 > "每天早上 9 点给我发送天气预报"
 
+也可以给已存在的任务补授权或撤销授权：
+
+> "授权定时任务 148fb4a4b9"
+
 ### 通过 Dashboard
 
 Dashboard Cron 页面支持可视化管理定时任务。
 
 ## 授权机制
 
-新创建的 Cron 任务默认需要授权才能执行。这是安全设计：
+新创建的 Cron 任务默认未获授权，任务仍会按时触发，但其中的写文件/执行命令等特权操作会被拒绝。这是安全设计：
 
-- 防止 Agent 在无人值守时创建并执行高风险定时任务
-- `echo-agent cron authorize <id>` 明确授权
-- 已授权任务修改后是否需要重新授权，取决于具体实现
+- 防止 Agent 在无人值守时让定时任务执行高风险操作
+- 授权按单个任务签发，三条路径：对话里说「授权定时任务 `<id>`」、Dashboard 定时任务页勾选、或停止服务后运行 `echo-agent cron authorize <id>`
+- 授权与任务内容绑定：修改指令、频率或投递目标后授权自动失效，需要重新授权（改名和暂停/恢复不会）
+
+详见[定时任务指南](../../guides/scheduled-jobs.md)。
 
 ## 输出路由
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from loguru import logger
 
 from echo_agent.agent.degraded_notice import (
     REASON_APPROVAL_DELIVERY_FAILED,
@@ -440,8 +441,7 @@ class ApprovalGate:
             terminal=True,
         )
 
-    @staticmethod
-    def _describe_action(tool_name: str, arguments: dict[str, Any] | None) -> str:
+    def _describe_action(self, tool_name: str, arguments: dict[str, Any] | None) -> str:
         """A one-line, human-readable summary of what is about to run.
 
         For shell/code tools the actual command/snippet is what the user needs to
@@ -454,11 +454,63 @@ class ApprovalGate:
         elif tool_name == "execute_code":
             lang = str(args.get("language", "")).strip()
             raw = f"[{lang}] " + str(args.get("code", "")).strip()
+        else:
+            # Let the tool describe a call whose arguments are a reference to
+            # stored state rather than the risk itself. Returns early: such a
+            # description is multi-field and bounds its own parts, so the generic
+            # one-line collapse and 200-char cut below would drop the last field
+            # off the end — for cronjob that is the delivery target, the fact
+            # deciding whether an unattended job can message people.
+            described = self._describe_via_tool(tool_name, args)
+            if described:
+                return described
         if not raw:
             # Fall back to a compact key=value view of the args.
             raw = ", ".join(f"{k}={str(v)[:60]}" for k, v in args.items()) or tool_name
         raw = " ".join(raw.split())  # collapse newlines/whitespace to one line
         return raw if len(raw) <= 200 else raw[:200] + " …(截断)"
+
+    # A described call may span several fields; cap each so one long instruction
+    # cannot push the rest out of a chat message.
+    _APPROVAL_FIELD_MAX = 160
+    _APPROVAL_FIELDS_MAX = 8
+
+    def _describe_via_tool(self, tool_name: str, args: dict[str, Any]) -> str:
+        """Ask the tool to describe its own call, for the prompt only.
+
+        Guarded end to end: this produces a display string, so no approval
+        decision may depend on whether the tool could describe itself. A tool
+        that raises, or is not registered, falls back to the generic argument
+        rendering — less detail in the prompt, never no prompt.
+        """
+        if self._registry is None:
+            return ""
+        try:
+            tool = self._registry.get(tool_name)
+        except Exception:  # pragma: no cover - display path only
+            return ""
+        # getattr rather than a direct call: MCP adapters and third-party tools
+        # are duck-typed and need not derive from Tool, so the hook may simply
+        # not be there. That is not an error worth logging on every prompt.
+        describe = getattr(tool, "describe_for_approval", None)
+        if not callable(describe):
+            return ""
+        try:
+            described = describe(dict(args))
+        except Exception as e:
+            logger.warning(
+                "Tool '{}' failed to describe itself for approval: {}", tool_name, e,
+            )
+            return ""
+        if not isinstance(described, str) or not described.strip():
+            return ""
+        lines = [" ".join(line.split()) for line in described.splitlines()]
+        kept = [line for line in lines if line][: self._APPROVAL_FIELDS_MAX]
+        return "\n".join(
+            line if len(line) <= self._APPROVAL_FIELD_MAX
+            else line[: self._APPROVAL_FIELD_MAX] + " …(截断)"
+            for line in kept
+        )
 
     async def _publish_approval_request(
         self,
@@ -659,12 +711,28 @@ class ApprovalGate:
                 f" 定时任务 {label} 不允许创建定时任务/安装技能等高危操作，"
                 "无论是否已授权——这类操作需要人工在场确认。"
             )
+        # Every path listed here must be one the reader can actually take. This
+        # message is only ever produced by a RUNNING agent, and `echo-agent cron
+        # authorize` refuses while the gateway holds the instance lock
+        # (cron_cmd._gateway_is_running) — so recommending it unqualified sent
+        # people to a command guaranteed to fail in precisely the situation that
+        # produced the advice. The gate cannot detect the lock, and should not
+        # learn to: coupling an approval decision to process-state probing is
+        # worse than the wrong wording. Making every listed path
+        # unconditionally true fixes it without that coupling, which is why the
+        # in-conversation route leads and the CLI carries its precondition.
+        from echo_agent.agent.tools.cronjob import UNAUTHORIZED_HINT
+
         if authorized:
-            return f" 定时任务 {label} 的授权已失效或不覆盖该操作，请重新授权。"
+            return (
+                f" 定时任务 {label} 的授权已失效或不覆盖该操作（修改任务内容会使授权失效）。"
+                + UNAUTHORIZED_HINT.format(job_id=job_id)
+            )
         return (
             f" 定时任务 {label} 未获得无人值守授权。"
-            f"运行 `echo-agent cron authorize {job_id}` 或在 Dashboard 定时任务页勾选授权后即可执行；"
-            "若希望所有任务都能做写入类操作，可将 permissions.approval.unattended_policy 设为 allow_safe。"
+            + UNAUTHORIZED_HINT.format(job_id=job_id)
+            + "若希望所有任务都能做写入类操作，"
+            "可将 permissions.approval.unattended_policy 设为 allow_safe。"
         )
 
     @staticmethod

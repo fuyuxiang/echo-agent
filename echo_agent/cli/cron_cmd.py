@@ -16,15 +16,12 @@ from typing import Any
 # runtime_lock.acquire_instance_lock so the probe below looks at the same file a
 # live agent actually holds.
 from echo_agent.runtime_lock import LOCK_FILENAME
-from echo_agent.scheduler.authorization import grant, verify
-
-# Mirrors delivery's own target resolution: a job with only a source_session_key
-# still gets delivered, so the confirmation screen must not claim otherwise.
-from echo_agent.scheduler.delivery import target_from_session_key
+from echo_agent.scheduler.authorization import consent_facts, grant, verify
 
 _RUNNING_GATEWAY_HINT = (
     "检测到 Gateway 正在运行，离线修改不会生效，且可能被运行中的实例覆盖。\n"
-    "请先停止服务后重试，或改用 Dashboard / REST 的 cron 接口授权。"
+    "请直接在对话里说「授权定时任务 <job_id>」，"
+    "或改用 Dashboard / REST 的 cron 接口授权；也可停止服务后重试本命令。"
 )
 
 
@@ -129,24 +126,16 @@ def _state_label(job: Any) -> str:
 
 
 def _describe(job: Any) -> str:
-    payload = job.payload if isinstance(job.payload, dict) else {}
-    instruction = str(payload.get("command") or payload.get("message") or "")
-    channel = str(payload.get("deliver_channel") or payload.get("channel") or "").strip()
-    chat_id = str(payload.get("deliver_chat_id") or payload.get("chat_id") or "").strip()
-    # Same fallback delivery applies at fire time. Reading only the explicit keys
-    # made a job that does deliver read as "goes nowhere" — the dangerous
-    # direction for a consent screen.
-    session_key = str(payload.get("source_session_key") or payload.get("session_key") or "").strip()
-    if (not channel or not chat_id) and session_key:
-        session_channel, session_chat_id = target_from_session_key(session_key)
-        channel = channel or session_channel
-        chat_id = chat_id or session_chat_id
-    target = f"{channel}:{chat_id}" if channel or chat_id else "(无投递目标，产出不会发给任何人)"
+    """The consent screen. Content comes from authorization.consent_facts so this
+    screen and the chat approval prompt cannot disagree about what a grant covers
+    — they used to resolve the delivery target independently, and only one of
+    them knew about the source_session_key fallback."""
+    facts = consent_facts(job)
     return (
-        f"任务   {job.id}  {job.name}\n"
-        f"频率   {job.cron_expr or '(非 cron 触发)'}\n"
-        f"投递   {target}\n"
-        f"指令   {instruction}\n"
+        f"任务   {facts['id']}  {facts['name']}\n"
+        f"频率   {facts['trigger']}\n"
+        f"投递   {facts['target']}\n"
+        f"指令   {facts['instruction']}\n"
     )
 
 

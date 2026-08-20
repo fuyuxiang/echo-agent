@@ -419,13 +419,18 @@ Echo Agent 内置 36 个工具。本页的工具名、参数、能力标签均�
 
 | 参数 | 类型 | 必填 | 取值 | 说明 |
 |------|------|:----:|------|------|
-| `action` | string | ✅ | `create` \| `list` \| `delete` \| `trigger` | 操作类型 |
+| `action` | string | ✅ | `create` \| `list` \| `delete` \| `trigger` \| `authorize` \| `revoke` | 操作类型 |
 | `name` | string | | — | 任务名称 |
 | `schedule` | string | | — | cron 表达式 |
 | `command` | string | | — | 执行内容 |
-| `job_id` | string | | — | 任务 ID |
+| `job_id` | string | | — | 任务 ID（`delete`/`trigger`/`authorize`/`revoke` 必填） |
 | `target_channel` | string | | — | 结果投递通道 |
 | `target_chat_id` | string | | — | 结果投递会话 |
+
+`authorize` 用于给**已存在**的任务补授权：任务内容被修改后授权会自动失效（见
+[定时任务](../guides/scheduled-jobs.md)），此时需要重新授权。由于 `cronjob` 属
+`HIGH_RISK_TOOLS`，`authorize` 一定会触发人工确认提示，提示中会列出该任务的指令、
+频率与投递目标，确认后才签发授权。`revoke` 撤销授权，不需要额外确认。
 
 #### delegate_task
 

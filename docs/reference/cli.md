@@ -209,8 +209,8 @@ echo-agent dashboard build [OPTIONS]
 | 子命令 | 说明 |
 |--------|------|
 | `cron list` | 列出所有定时任务 |
-| `cron authorize` | 授权待审批的定时任务 |
-| `cron revoke` | 撤销已授权的定时任务 |
+| `cron authorize` | 授权待审批的定时任务（需先停止服务） |
+| `cron revoke` | 撤销已授权的定时任务（需先停止服务） |
 
 ```bash
 # 列出所有定时任务
@@ -222,6 +222,12 @@ echo-agent cron authorize <task_id>
 # 撤销授权
 echo-agent cron revoke <task_id>
 ```
+
+!!! warning "authorize / revoke 需要服务处于停止状态"
+    这两个子命令直接改写 `<workspace>/data/scheduler.json`。运行中的 gateway 会
+    在内存中持有全部任务并定期整体回写，离线改动会被覆盖，因此命令检测到实例锁被
+    占用时会直接拒绝执行。服务运行期间请改用对话（「授权定时任务 `<job_id>`」）或
+    Dashboard 定时任务页授权。`cron list` 只读，任何时候都可用。
 
 ### cron list 输出
 

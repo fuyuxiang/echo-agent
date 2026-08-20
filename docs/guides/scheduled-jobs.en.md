@@ -89,15 +89,35 @@ context:
   unattended: false
 ```
 
-Authorization is granted **per job**; there is no channel-level auto-authorization rule. A newly created job starts unauthorized and does not inherit permission to run simply by belonging to the cron channel:
+Authorization is granted **per job**; there is no channel-level auto-authorization rule. A newly created job starts unauthorized and does not inherit permission to run simply by belonging to the cron channel.
+
+The split is deliberate: scheduling and permission are separate concerns. A job's schedule can be edited freely, but whether it may act unsupervised takes one explicit human confirmation.
+
+#### Re-authorizing an existing job
+
+A grant is bound to the job's content, so **editing the instruction, schedule or
+delivery target invalidates it**. Re-authorizing is therefore routine rather than
+exceptional. There are three paths:
+
+| Path | Works while running | Notes |
+|------|:---:|------|
+| Say "authorize scheduled job `<job_id>`" in chat | ✅ | The agent calls `cronjob(action="authorize")`, which first shows the job's instruction, schedule and delivery target for confirmation |
+| Tick the authorization box on the Dashboard cron page | ✅ | Equivalent to REST `PUT /cron/{id}` with `authorize_unattended: true` |
+| `echo-agent cron authorize <job_id>` | ❌ | Only with the **service stopped** |
+
+The CLI path is guarded by the instance lock: it refuses outright while the
+gateway is running, because an offline edit would be overwritten by the live
+instance. Use chat or the Dashboard while the service is up.
 
 ```bash
+# These require the service to be stopped first
 echo-agent cron list                  # list jobs and their authorization state
 echo-agent cron authorize <job_id>    # authorize one job
 echo-agent cron revoke <job_id>       # revoke it
 ```
 
-The split is deliberate: scheduling and permission are separate concerns. A job's schedule can be edited freely, but whether it may act unsupervised takes one explicit human confirmation.
+Revoking works from chat too: say "revoke authorization for scheduled job
+`<job_id>`" (`cronjob(action="revoke")`).
 
 ### Unattended Mode
 

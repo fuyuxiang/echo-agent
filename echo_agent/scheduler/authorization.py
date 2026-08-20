@@ -104,6 +104,74 @@ def compute_fingerprint(job: Any) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
+def consent_facts(job: Any) -> dict[str, str]:
+    """The facts a human must see before authorizing this job, as one dict.
+
+    Every surface that asks for consent has to show the same things, and they
+    are precisely the fingerprint's inputs: authorizing a job means allowing
+    THIS instruction, on THIS schedule, delivering THERE. Derived here, next to
+    compute_fingerprint, so "what the grant binds" and "what the user was told"
+    cannot drift — the CLI grew its own copy of this resolution (including the
+    session_key delivery fallback) and the chat prompt had none at all, which is
+    how a chat user came to be asked to approve a bare job id.
+
+    Returns display strings, never None, so callers can render without
+    branching. Deliberately not a formatted block: the CLI prints a table and
+    the chat prompt a message, and the two must be free to differ in layout
+    while agreeing on content.
+    """
+    payload = job.payload if isinstance(job.payload, dict) else {}
+    channel = str(payload.get("deliver_channel") or payload.get("channel") or "").strip()
+    chat_id = str(payload.get("deliver_chat_id") or payload.get("chat_id") or "").strip()
+    # Mirrors delivery.inbound_event_from_job's fallback: a job carrying only a
+    # source_session_key still gets delivered, so a consent screen that read the
+    # explicit keys alone reported "goes nowhere" for a job that does deliver —
+    # the dangerous direction to be wrong in.
+    session_key = str(
+        payload.get("source_session_key") or payload.get("session_key") or ""
+    ).strip()
+    if (not channel or not chat_id) and session_key:
+        session_channel, session_chat_id = _target_from_session_key(session_key)
+        channel = channel or session_channel
+        chat_id = chat_id or session_chat_id
+
+    trigger = str(getattr(job, "cron_expr", "") or "")
+    if not trigger:
+        interval_ms = int(getattr(job, "interval_ms", 0) or 0)
+        at_ms = int(getattr(job, "at_ms", 0) or 0)
+        if interval_ms:
+            trigger = f"每 {interval_ms // 1000} 秒"
+        elif at_ms:
+            trigger = "一次性任务"
+        else:
+            trigger = "(非 cron 触发)"
+
+    return {
+        "id": str(getattr(job, "id", "") or ""),
+        "name": str(getattr(job, "name", "") or ""),
+        "instruction": _instruction(job),
+        "trigger": trigger,
+        "target": (
+            f"{channel}:{chat_id}" if channel or chat_id
+            else "(无投递目标，产出不会发给任何人)"
+        ),
+    }
+
+
+def _target_from_session_key(session_key: str) -> tuple[str, str]:
+    """delivery's own resolution, imported at call time rather than duplicated.
+
+    delivery imports authorization (for verify), so a module-level import back
+    would be a cycle. Deferring it keeps a single implementation of the rule:
+    a second copy here would be free to drift from the one that decides where
+    output actually goes, and a consent screen that disagrees with delivery is
+    the failure this function exists to prevent.
+    """
+    from echo_agent.scheduler.delivery import target_from_session_key
+
+    return target_from_session_key(session_key)
+
+
 def grant(job: Any, *, operator: str, source: str) -> JobAuthorization:
     """Issue an authorization for the job's CURRENT content."""
     instruction = _instruction(job)

@@ -324,7 +324,8 @@ echo-agent cron list [--json]
 
 #### cron authorize
 
-Authorize a pending cron job for execution.
+Authorize a pending cron job for execution. **Requires the service to be
+stopped** — see the warning below.
 
 ```bash
 echo-agent cron authorize <job-id>
@@ -332,11 +333,20 @@ echo-agent cron authorize <job-id>
 
 #### cron revoke
 
-Revoke authorization for a cron job, preventing future runs.
+Revoke authorization for a cron job, preventing future runs. **Requires the
+service to be stopped.**
 
 ```bash
 echo-agent cron revoke <job-id>
 ```
+
+!!! warning "authorize / revoke need the service stopped"
+    Both rewrite `<workspace>/data/scheduler.json` directly. A running gateway
+    holds every job in memory and periodically rewrites the whole file, so an
+    offline edit would be overwritten — the commands therefore refuse outright
+    when they find the instance lock held. While the service is up, authorize
+    from chat ("authorize scheduled job `<job_id>`") or from the Dashboard cron
+    page instead. `cron list` is read-only and always available.
 
 ```bash
 # List all cron jobs
