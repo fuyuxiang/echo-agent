@@ -60,6 +60,20 @@ class Session:
                 return sliced[i:]
         return sliced
 
+    def get_display_history(self, max_messages: int = 100) -> list[dict[str, Any]]:
+        """Return the most recent messages for display (dashboard, exports).
+
+        Distinct from ``get_history`` on purpose: that one starts at
+        ``last_consolidated`` and aligns to an LLM-safe boundary, so a fully
+        consolidated session yields nothing — the compact view the model needs,
+        not the record a human wants to read. A viewer expects the actual
+        history, so this slices from the full ``messages`` list and does not
+        drop tool-pipeline entries. History before ``last_consolidated`` is kept
+        verbatim (compression only ever rewrites the tail past that index — see
+        agent/pipeline/context_stage.py), so these are real stored messages.
+        """
+        return self.messages[-max_messages:]
+
     def clear(self) -> None:
         self.messages.clear()
         self.last_consolidated = 0

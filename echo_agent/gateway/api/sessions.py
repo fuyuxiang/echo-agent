@@ -47,6 +47,10 @@ class SessionsAPI:
         session = await self._server.session_manager.get(key)
         if session is None:
             return web.json_response({"error": "not found"}, status=404)
-        messages = session.get_history(max_messages=limit)
+        # Display view, NOT get_history: the latter returns only messages after
+        # last_consolidated (the LLM's compact context), so a consolidated
+        # session shows an empty history here. get_display_history slices the
+        # full stored record instead — the messages a human expects to read.
+        messages = session.get_display_history(max_messages=limit)
 
         return web.json_response({"messages": messages, "total": len(messages)})
