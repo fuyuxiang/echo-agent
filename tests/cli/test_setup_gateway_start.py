@@ -627,3 +627,49 @@ def test_disabled_gateway_is_not_flagged_unstartable():
     assert wiz._unstartable_reason(
         {"gateway": {"enabled": False, "host": "0.0.0.0"}}
     ) == ""
+
+
+# ── 非回环绑定 + 空 allowed_hosts：可启动但浏览器全被 403 ──────────────────────
+#
+# is_host_allowed（gateway/auth.py）的 DNS-rebinding 护栏在「非回环绑定 + 空
+# allowed_hosts」下拒绝一切 Host —— 服务能起，本机 cli/curl 也能用，但浏览器
+# 请求（带 Origin/Sec-Fetch-Site）一律 403。向导过去从不追问 allowed_hosts，
+# 于是 0.0.0.0 + token 的部署「保存成功」却对浏览器完全不可达。这组用例守住
+# 探测函数的判据，与 server._warn_host_allowlist_if_unset 同源。
+
+
+def test_browser_unreachable_when_exposed_without_allowed_hosts():
+    assert wiz._browser_unreachable_reason(_exposed_config(api_tokens=["t"])) == "0.0.0.0"
+
+
+def test_browser_reachable_once_allowed_hosts_listed():
+    cfg = _exposed_config(api_tokens=["t"], allowed_hosts=["echo.example.com"])
+    assert wiz._browser_unreachable_reason(cfg) == ""
+
+
+def test_browser_unreachable_honours_camelcase_allowed_hosts():
+    """配置支持驼峰别名；只认下划线会把已配 allowedHosts 的部署误报为不可达。"""
+    cfg = _exposed_config(apiTokens=["t"], allowedHosts=["echo.example.com"])
+    assert wiz._browser_unreachable_reason(cfg) == ""
+
+
+def test_loopback_bind_never_flagged_browser_unreachable():
+    """回环绑定下空 allowed_hosts 会默认放行 localhost/127.0.0.1，不该报不可达。"""
+    assert wiz._browser_unreachable_reason(_config()) == ""
+
+
+def test_disabled_gateway_is_not_flagged_browser_unreachable():
+    assert wiz._browser_unreachable_reason(
+        {"gateway": {"enabled": False, "host": "0.0.0.0"}}
+    ) == ""
+
+
+def test_exposed_with_token_but_no_allowed_hosts_warns_yet_proceeds(harness):
+    """能启动，仍要注册 + 启动，但必须打出浏览器不可达的警告。"""
+    harness.state["runtime"] = _runtime(GatewayState.NOT_INSTALLED)
+    harness.answers.append(True)
+
+    wiz._offer_gateway_start(_exposed_config(api_tokens=["s3cret"]), None)
+
+    assert [a for a, _ in harness.calls] == ["install", "start"]
+    assert "allowed_hosts" in harness.out()

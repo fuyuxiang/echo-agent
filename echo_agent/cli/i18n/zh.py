@@ -225,6 +225,9 @@ MESSAGES = {
                              "服务将拒绝启动（无认证的网关不允许暴露到网络）。",
         "open_exposed_fix": "改绑到 127.0.0.1（仅本机）？选“否”请改用白名单 / 配对模式并配置 token。",
         "host_pinned": "已将 host 改为 127.0.0.1。",
+        "allowed_hosts": "允许的 Host（浏览器地址栏里的域名 / IP，多个用逗号分隔；非本机绑定时必填）",
+        "allowed_hosts_empty_warn": "未配置 allowed_hosts：绑定 {host} 后，所有浏览器请求都会被拒（403 cross-site "
+                                    "request forbidden）。请填入你在地址栏实际访问的域名或公网 IP（反代场景填代理域名）。",
         "open_tokens_cleared": "已清理遗留的 api_tokens（开放模式无需 token）。",
         "saved": "Gateway：{host}:{port}，认证 = {mode}",
     },
@@ -364,6 +367,11 @@ MESSAGES = {
                        "访问令牌，网关会拒绝以未认证状态对外暴露，每次启动都会失败。",
         "unstartable_fix": "二选一：把 gateway.host 改回 127.0.0.1（仅本机使用），"
                            "或配置 gateway.auth.apiTokens 后重新执行 echo-agent setup gateway。",
+        "browser_unreachable": "网关会在 {host} 上启动，但 gateway.auth.allowed_hosts 为空，"
+                               "所有浏览器请求都会被拒（403 cross-site request forbidden）；"
+                               "本地客户端（echo-agent cli / curl）仍可用。",
+        "browser_unreachable_fix": "在 gateway.auth.allowed_hosts 中填入你在地址栏访问的域名或公网 IP"
+                                   "（反代场景填代理域名），然后重新执行 echo-agent setup gateway。",
     },
     "dashboard": {
         "ask_build": "现在构建完整 Dashboard？（首次约需几分钟；跳过则先用内置简化页）",

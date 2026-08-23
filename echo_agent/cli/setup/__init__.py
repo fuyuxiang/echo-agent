@@ -782,6 +782,26 @@ def setup_gateway(config: dict) -> None:
         if removed:
             print_info(t("gateway.open_tokens_cleared"))
 
+    # A non-loopback bind makes the Host allowlist mandatory, not optional: with
+    # allowed_hosts empty, is_host_allowed refuses every browser-shaped request
+    # (see gateway/auth.py:is_host_allowed — the DNS-rebinding guard). The wizard
+    # never used to ask, so a 0.0.0.0 + token deployment saved "successfully" yet
+    # 403'd every browser. Ask here, on exactly the branch where it matters, and
+    # prefill with the host the user just typed so an IP/domain bind is one Enter.
+    final_host = str(gw["host"]).strip()
+    if final_host not in ("127.0.0.1", "localhost", "::1", ""):
+        existing_hosts = auth.get("allowed_hosts") or auth.get("allowedHosts") or []
+        default_hosts = ", ".join(existing_hosts) if existing_hosts else final_host
+        raw = ui.text(t("gateway.allowed_hosts"), default=default_hosts)
+        hosts = [h.strip() for h in str(raw).replace("\n", ",").split(",") if h.strip()]
+        # Drop the camelCase alias so the two keys cannot disagree downstream.
+        auth.pop("allowedHosts", None)
+        if hosts:
+            auth["allowed_hosts"] = hosts
+        else:
+            auth.pop("allowed_hosts", None)
+            print_warning(t("gateway.allowed_hosts_empty_warn", host=final_host))
+
     print_success(t("gateway.saved", host=gw["host"], port=gw["port"], mode=t(f"gateway.auth_{auth_keys[a_idx]}")))
 
 
@@ -1520,6 +1540,31 @@ def _unstartable_reason(config: dict) -> str:
     return host
 
 
+def _browser_unreachable_reason(config: dict) -> str:
+    """The bind host when a non-loopback gateway has no Host allowlist, else "".
+
+    Unlike ``_unstartable_reason`` this does not block startup: the service boots
+    fine, but ``is_host_allowed`` (gateway/auth.py) then rejects every
+    browser-shaped request for lacking a trusted Host, so the dashboard 403s.
+    Surfaces the same gap the wizard's gateway section now asks about, for the
+    path that skips it — a hand-edited yaml or a quickstart that never visited
+    that section. Mirrors ``gateway/server.py:_warn_host_allowlist_if_unset``,
+    which only logs where an operator will not see it.
+    """
+    gw = config.get("gateway", {})
+    if not isinstance(gw, dict) or not gw.get("enabled"):
+        return ""
+    host = str(gw.get("host", "127.0.0.1")).strip()
+    if host in ("127.0.0.1", "localhost", "::1", ""):
+        return ""
+    auth = gw.get("auth", {})
+    if not isinstance(auth, dict):
+        auth = {}
+    if auth.get("allowed_hosts") or auth.get("allowedHosts"):
+        return ""
+    return host
+
+
 def _offer_gateway_start(
     config: dict, config_path: Any, workspace: Any = None, *, section_only: bool = False
 ) -> None:
@@ -1548,6 +1593,15 @@ def _offer_gateway_start(
         print_warning(t("startup.unstartable", host=bad_host))
         print_info(t("startup.unstartable_fix"))
         return
+
+    # Startable but every browser request will 403 for lack of a trusted Host.
+    # A warning, not a return: the service does boot and native clients (cli /
+    # curl without an Origin) still work — only the browser dashboard is blocked.
+    unreachable_host = _browser_unreachable_reason(config)
+    if unreachable_host:
+        print()
+        print_warning(t("startup.browser_unreachable", host=unreachable_host))
+        print_info(t("startup.browser_unreachable_fix"))
 
     ws = _as_str(workspace)
     rt = probe_gateway(config=_probe_config(config), config_path=_as_str(config_path),

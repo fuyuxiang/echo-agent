@@ -225,6 +225,11 @@ MESSAGES = {
                              "the service will refuse to start (an unauthenticated gateway cannot be exposed to the network).",
         "open_exposed_fix": "Rebind to 127.0.0.1 (loopback only)? Choose No to switch to allowlist/pairing and set a token.",
         "host_pinned": "Host set to 127.0.0.1.",
+        "allowed_hosts": "Allowed hosts (the domain / IP as it appears in the browser's address bar, "
+                         "comma-separated; required for a non-loopback bind)",
+        "allowed_hosts_empty_warn": "allowed_hosts is empty: with a {host} bind, every browser request is rejected "
+                                    "(403 cross-site request forbidden). Enter the domain or public IP you actually "
+                                    "browse to (the proxy domain if you are behind a reverse proxy).",
         "open_tokens_cleared": "Cleared leftover api_tokens (open mode needs no token).",
         "saved": "Gateway: {host}:{port}, auth={mode}",
     },
@@ -367,6 +372,11 @@ MESSAGES = {
                        "itself unauthenticated and every start will fail.",
         "unstartable_fix": "Pick one: set gateway.host back to 127.0.0.1 (local use only), "
                            "or configure gateway.auth.apiTokens and rerun `echo-agent setup gateway`.",
+        "browser_unreachable": "The gateway will start on {host}, but gateway.auth.allowed_hosts is empty, "
+                               "so every browser request is rejected (403 cross-site request forbidden). "
+                               "Native clients (echo-agent cli / curl) still work.",
+        "browser_unreachable_fix": "List the domain or public IP you browse to under gateway.auth.allowed_hosts "
+                                   "(the proxy domain if behind a reverse proxy), then rerun `echo-agent setup gateway`.",
     },
     "dashboard": {
         "ask_build": "Build the full Dashboard now? (a few minutes on first run; skipping uses the built-in simplified page)",
