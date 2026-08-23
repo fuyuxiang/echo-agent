@@ -4,5 +4,9 @@
   "empty": "暂无会话",
   "messageCount": "{{count}} 条 · {{time}}",
   "historyFailed": "加载历史失败：{{error}}",
-  "selectHint": "选择一个会话查看历史"
+  "selectHint": "选择一个会话查看历史",
+  "toolCall": "调用工具：{{name}}",
+  "toolResult": "工具结果：{{name}}",
+  "unknownTool": "未知工具",
+  "emptyContent": "（无内容）"
 }

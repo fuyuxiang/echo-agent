@@ -468,6 +468,11 @@ X-RateLimit-Reset: 1705312800
 | `/api/logs` | 200 | 是 |
 | `/api/memory` | 50 | 是 |
 | `/api/sessions` | 100 | 否 |
+| `/api/sessions/{key}/history` | 100 | 否 |
 | cron 执行历史 | 10 | 否 |
 
 未提供 `offset` 的端点只能取首屏，无法翻页。
+
+`/api/sessions/{key}/history` 的 `limit` 取值范围是 `1`–`500`，越界返回 400。响应里
+`total` 是整段可见历史的条数（用于判断是否还有更早的记录），`returned` 才是本次返回
+的条数——两者不要混用。

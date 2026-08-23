@@ -4,5 +4,9 @@
   "empty": "No sessions",
   "messageCount": "{{count}} · {{time}}",
   "historyFailed": "Failed to load history: {{error}}",
-  "selectHint": "Select a session to view history"
+  "selectHint": "Select a session to view history",
+  "toolCall": "Tool call: {{name}}",
+  "toolResult": "Tool result: {{name}}",
+  "unknownTool": "unknown tool",
+  "emptyContent": "(no content)"
 }

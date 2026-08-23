@@ -4,6 +4,13 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from echo_agent.session.manager import Session
+
+#: Ceiling for the ``limit`` query parameter, taken from the model rather than
+#: restated, so the endpoint's validation and the slice inside
+#: ``get_display_history`` can never disagree.
+MAX_HISTORY_LIMIT = Session.MAX_DISPLAY_MESSAGES
+
 if TYPE_CHECKING:
     from echo_agent.gateway.server import GatewayServer
 
@@ -40,6 +47,18 @@ class SessionsAPI:
             limit = int(request.query.get("limit", "100"))
         except (ValueError, TypeError):
             return web.json_response({"error": "invalid limit parameter"}, status=400)
+        # Reject out-of-range rather than silently clamping, so a client asking
+        # for limit=0 or limit=-1 learns its request was wrong instead of getting
+        # a page it did not ask for. Parsing alone used to be the only check, and
+        # negative values then fell through to a Python slice: limit=0 returned
+        # the *entire* history and limit=-1 all but the first message — the
+        # opposite of a limit. Session.MAX_DISPLAY_MESSAGES is the ceiling, so
+        # this bound and the model's own clamp cannot drift.
+        if not 1 <= limit <= MAX_HISTORY_LIMIT:
+            return web.json_response(
+                {"error": f"limit must be between 1 and {MAX_HISTORY_LIMIT}"},
+                status=400,
+            )
 
         # 只读取,不创建:此前用 get_or_create,查询一个不存在的 key 会真的建出一个
         # 空会话并写进 LRU 缓存(还可能连带驱逐、落盘另一个会话)——一个 GET 产生了
@@ -49,8 +68,19 @@ class SessionsAPI:
             return web.json_response({"error": "not found"}, status=404)
         # Display view, NOT get_history: the latter returns only messages after
         # last_consolidated (the LLM's compact context), so a consolidated
-        # session shows an empty history here. get_display_history slices the
-        # full stored record instead — the messages a human expects to read.
-        messages = session.get_display_history(max_messages=limit)
+        # session shows an empty history here. The display view reads the full
+        # stored record and strips the entries that would misrepresent it to a
+        # human — see Session.get_display_history.
+        visible = session.display_messages()
+        messages = visible[-limit:]
 
-        return web.json_response({"messages": messages, "total": len(messages)})
+        # ``total`` is the size of the whole transcript, not of this page: a
+        # client needs it to know whether older history exists. It used to be
+        # ``len(messages)``, which is the page size by definition and told a
+        # client nothing. ``returned`` carries the page size, so the previous
+        # field's meaning is still available under an honest name.
+        return web.json_response({
+            "messages": messages,
+            "total": len(visible),
+            "returned": len(messages),
+        })
