@@ -13,17 +13,21 @@ from typing import Any
 from loguru import logger
 
 from echo_agent.config.schema import GatewayAuthConfig
+from echo_agent.gateway.host_rules import (
+    LOOPBACK_HOST_NAMES,
+    is_loopback_bind,
+    normalize_host,
+    normalize_host_entries,
+)
 
 
 class GatewayAuth:
 
     # Host names that mean "this machine" when the gateway is bound to a
-    # loopback address. Listed explicitly (rather than resolving "anything
-    # whose IP is loopback") because the relevant attack — DNS rebinding — is
-    # precisely a case where the browser sends a Host string that LOOKS local
-    # but is not: it is the attacker's domain that the rebinding has made
-    # resolve to 127.0.0.1. The string check is the whole point.
-    _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "[::1]"})
+    # loopback address. See host_rules.LOOPBACK_HOST_NAMES for why these are
+    # matched as strings rather than resolved. Kept as a class attribute for
+    # the tests and callers that reference it.
+    _LOOPBACK_HOSTS = LOOPBACK_HOST_NAMES
 
     def __init__(
         self, config: GatewayAuthConfig, data_dir: Path,
@@ -39,7 +43,16 @@ class GatewayAuth:
         self._pairing_ttl = config.pairing_ttl_seconds
         # allowed_hosts is a configured escape hatch; empty defers to a default
         # derived from the bind address. See is_host_allowed.
-        self._allowed_hosts = set(config.allowed_hosts)
+        #
+        # Normalized on the way in, with the same function applied to the
+        # incoming Host header: entries are hand-written or pasted out of an
+        # address bar, so "Echo.Example.com", "echo.example.com:58123" and a
+        # bare "::1" all have to match. Unnormalized, each of those was an
+        # allowlist that silently matched nothing. Wildcard entries are dropped
+        # (see normalize_host_entries) — they cannot appear in a Host header, so
+        # keeping them would leave a config that looks set and rejects
+        # everything.
+        self._allowed_hosts = set(normalize_host_entries(config.allowed_hosts))
         self._bound_host = (bound_host or "").strip()
         self._data_dir = data_dir / "gateway_auth"
         self._data_dir.mkdir(parents=True, exist_ok=True)
@@ -209,11 +222,9 @@ class GatewayAuth:
         typically send Host to a loopback address, so the second branch is
         where they pass.
         """
-        host = (host or "").strip()
-        if not host:
-            return False
-        # Strip IPv6 brackets so "[::1]" matches the entry in _LOOPBACK_HOSTS.
-        normalized = self._normalize_host(host)
+        # Same normalization as the configured entries (see __init__), so case,
+        # a trailing :port and IPv6 bracket shape never decide the verdict.
+        normalized = normalize_host(host)
         if not normalized:
             return False
         if normalized in self._allowed_hosts:
@@ -224,34 +235,22 @@ class GatewayAuth:
 
     @staticmethod
     def _normalize_host(host: str) -> str:
-        """Lowercase, strip port, preserve IPv6 brackets.
+        """Deprecated alias for ``host_rules.normalize_host``.
 
-        ``localhost:58123`` and ``[::1]:58123`` should compare equal to their
-        bare-host forms. The bracket shape is preserved on IPv6 because that is
-        how it appears in the Host header.
+        Kept because this was a documented seam for tests; the logic itself now
+        lives in one place shared with the config side and the wizard.
         """
-        if host.startswith("["):
-            hostname, _, _ = host.partition("]")
-            return "[" + hostname.lstrip("[").lower() + "]"
-        lowered = host.lower()
-        # Strip a single trailing :port (we never see multiple colons outside of
-        # IPv6 literals, which the branch above handled).
-        if ":" in lowered:
-            return lowered.rsplit(":", 1)[0]
-        return lowered
+        return normalize_host(host)
 
     def _bound_is_loopback(self) -> bool:
-        from echo_agent.cli.runtime_probe import _WILDCARD_HOSTS
-        import ipaddress
+        """Whether the bind address is reachable only from this machine.
 
-        if not self._bound_host:
-            return False
-        if self._bound_host in _WILDCARD_HOSTS:
-            return False
-        try:
-            return ipaddress.ip_address(self._bound_host).is_loopback
-        except ValueError:
-            return self._bound_host == "localhost"
+        Delegates to ``host_rules.is_loopback_bind`` — the same predicate
+        ``_check_bind_safety`` and the setup wizard use. Previously this had its
+        own copy that missed ``[::1]`` and disagreed with the server's check on
+        ``""`` and ``127.0.0.2``.
+        """
+        return is_loopback_bind(self._bound_host)
 
     @staticmethod
     def _origin_matches_host(origin: str, host: str) -> bool:

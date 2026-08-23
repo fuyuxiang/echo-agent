@@ -579,7 +579,13 @@ def test_loopback_without_token_is_fine(harness):
 def test_precheck_mirrors_server_bind_safety():
     """向导的判据是 server._check_bind_safety 的副本（向导只有一份可能尚未通过
     schema 校验的 YAML dict，构造 GatewayServer 去问代价过大）。这里逐组合比对
-    两者结论，使任何一侧单独改动都会被发现。"""
+    两者结论，使任何一侧单独改动都会被发现。
+
+    两者的 host 分类现在共用 gateway/host_rules.py。曾经各自持有一份字符串
+    元组，而元组里都含 ""——那其实是通配绑定（aiohttp 把 "" 绑到 0.0.0.0 与
+    ::），于是「host 为空 + 无 token」被双方一致判为可启动，把一个未认证的
+    网关暴露到网络。下面的 ""/"::"/"[::1]"/"127.0.0.2" 就是当年分歧所在，
+    必须留在用例里。"""
     from pathlib import Path
     from unittest.mock import MagicMock
 
@@ -589,10 +595,18 @@ def test_precheck_mirrors_server_bind_safety():
     cases = [
         ("127.0.0.1", [], []),
         ("localhost", [], []),
+        # 通配绑定：无 token 时双方都必须拒绝
         ("", [], []),
+        ("", ["t"], []),
+        ("::", [], []),
+        ("[::]", [], []),
         ("0.0.0.0", [], []),
         ("0.0.0.0", ["t"], []),
         ("0.0.0.0", [], ["a"]),
+        # 127/8 全段与 IPv6 回环：都是本机，无 token 也应放行
+        ("127.0.0.2", [], []),
+        ("::1", [], []),
+        ("[::1]", [], []),
         ("192.168.1.5", [], []),
         ("192.168.1.5", ["t"], []),
     ]
@@ -629,13 +643,15 @@ def test_disabled_gateway_is_not_flagged_unstartable():
     ) == ""
 
 
-# ── 非回环绑定 + 空 allowed_hosts：可启动但浏览器全被 403 ──────────────────────
+# ── 非回环绑定 + 空 allowed_hosts：可启动但管理端点全被 403 ────────────────────
 #
-# is_host_allowed（gateway/auth.py）的 DNS-rebinding 护栏在「非回环绑定 + 空
-# allowed_hosts」下拒绝一切 Host —— 服务能起，本机 cli/curl 也能用，但浏览器
-# 请求（带 Origin/Sec-Fetch-Site）一律 403。向导过去从不追问 allowed_hosts，
-# 于是 0.0.0.0 + token 的部署「保存成功」却对浏览器完全不可达。这组用例守住
-# 探测函数的判据，与 server._warn_host_allowlist_if_unset 同源。
+# is_host_allowed（gateway/auth.py）的 DNS-rebinding 护栏在「非回环绑定 + 无
+# 可用 allowed_hosts」下拒绝一切 Host。爆炸半径限于管理端点：该检查在
+# _check_csrf 里，而 _check_csrf 只被 _require_admin_token 调用，所以登录、
+# 只读页与本机 cli/curl 仍可用，而会话 / 配置 / 记忆写入 / 任务 / 定时 /
+# 知识库全部 403。向导过去从不追问 allowed_hosts，于是 0.0.0.0 + token 的部署
+# 「保存成功」却在浏览器里用不了管理功能。这组用例守住探测函数的判据，与
+# server._warn_host_allowlist_if_unset 同源。
 
 
 def test_browser_unreachable_when_exposed_without_allowed_hosts():
@@ -673,3 +689,226 @@ def test_exposed_with_token_but_no_allowed_hosts_warns_yet_proceeds(harness):
 
     assert [a for a, _ in harness.calls] == ["install", "start"]
     assert "allowed_hosts" in harness.out()
+
+
+def test_wildcard_allowed_hosts_entry_does_not_suppress_the_warning():
+    """allowed_hosts=[0.0.0.0] 不算已配置。
+
+    浏览器发送的是地址栏里的名字，永远不会是 0.0.0.0，所以这种条目匹配不到任何
+    请求，却因为「列表非空」抑制了告警——向导用绑定地址预填时正是这么写出来的。
+    """
+    cfg = _exposed_config(api_tokens=["t"], allowed_hosts=["0.0.0.0"])
+    assert wiz._browser_unreachable_reason(cfg) == "0.0.0.0"
+    cfg = _exposed_config(api_tokens=["t"], allowed_hosts=["::", ""])
+    assert wiz._browser_unreachable_reason(cfg) == "0.0.0.0"
+
+
+def test_empty_host_is_reported_not_silently_passed():
+    """host: "" 是通配绑定，两个探测都必须报问题且给出可读的名字。
+
+    返回值同时充当「有没有问题」的真值信号，直接回传空串会把暴露态报成正常——
+    这正是修复前的行为。
+    """
+    unstartable = wiz._unstartable_reason({"gateway": {"enabled": True, "host": ""}})
+    assert unstartable, "host 为空 + 无 token 必须判为不可启动"
+    assert "0.0.0.0" in unstartable
+
+    unreachable = wiz._browser_unreachable_reason(
+        {"gateway": {"enabled": True, "host": "", "auth": {"api_tokens": ["t"]}}}
+    )
+    assert unreachable
+    assert "0.0.0.0" in unreachable
+
+
+def test_loopback_variants_are_not_flagged():
+    """127/8 全段与 IPv6 回环都是本机，不该报不可达（旧字符串判据会误报）。"""
+    for host in ("127.0.0.2", "::1", "[::1]", "localhost"):
+        cfg = {"gateway": {"enabled": True, "host": host, "port": 58123}}
+        assert wiz._browser_unreachable_reason(cfg) == "", host
+        assert wiz._unstartable_reason(cfg) == "", host
+
+
+# ── setup_gateway 真正保存下来的配置 ──────────────────────────────────────────
+#
+# 上面那组只验证探测函数与告警文案。真正的失败模式在于「向导一路回车之后落盘的
+# 是什么」：探测函数可以全部正确，而向导仍然写出一份 allowed_hosts=[0.0.0.0] 的
+# 无效配置——它既匹配不到任何浏览器请求，又让告警闭嘴。所以这组用例直接调
+# setup_gateway，断言最终 config dict。
+
+
+@pytest.fixture
+def gateway_wizard(monkeypatch, capsys):
+    """驱动 setup_gateway：按脚本回答 text/confirm，返回落盘的 gateway 配置。
+
+    text 的答案用 None 表示「直接回车」——ui.text 在空输入时回落到 default，
+    而「用户是否拒绝了这一步」只能在过滤之后才能判断，这个语义必须被测到。
+
+    ``confirms`` 从「启用 Gateway？」之后的问题开始算：那一问固定回答 True，
+    否则每个用例都要在队首塞一个与被测行为无关的 True，一旦忘记就会静默地把
+    整段配置关掉并提前返回——断言仍然「通过」，但什么都没测到。
+    """
+    def run(config=None, *, texts=(), confirms=(), lan="", mode_idx=1):
+        text_answers = list(texts)
+        confirm_answers = [True, *confirms]
+        asked_texts: list[str] = []
+        asked_confirms: list[str] = []
+
+        def _text(message, default=""):
+            asked_texts.append(message)
+            answer = text_answers.pop(0) if text_answers else None
+            return default if answer is None else (answer or default)
+
+        def _confirm(message, default=True):
+            asked_confirms.append(message)
+            return confirm_answers.pop(0) if confirm_answers else default
+
+        monkeypatch.setattr(wiz.ui, "text", _text)
+        monkeypatch.setattr(wiz.ui, "confirm", _confirm)
+        monkeypatch.setattr(wiz.ui, "password", lambda message: "s3cret")
+        monkeypatch.setattr(wiz, "_choice", lambda q, labels, default=0: mode_idx)
+        monkeypatch.setattr(wiz, "_print_section_header", lambda key: None)
+        # 网络探测在单元测试里必须是确定的：真实调用会随运行机器的网卡而变。
+        monkeypatch.setattr(wiz, "_primary_lan_address", lambda: lan)
+
+        cfg = {"gateway": {"enabled": True}} if config is None else config
+        wiz.setup_gateway(cfg)
+        return SimpleNamespace(
+            gateway=cfg["gateway"],
+            auth=cfg["gateway"].get("auth", {}),
+            texts=asked_texts,
+            confirms=asked_confirms,
+            out=capsys.readouterr().out,
+        )
+
+    return run
+
+
+def test_wildcard_bind_never_prefills_the_bind_address(gateway_wizard):
+    """0.0.0.0 一路回车不得写出 allowed_hosts=[0.0.0.0]。
+
+    这是 7b54125 留下的主缺口：预填绑定地址让「按回车」产出一份浏览器永远匹配不到
+    的 allowlist，同时因为列表非空而抑制了后续告警——用户以为修好了，实际没修。
+    这里检测到 LAN 地址，回车应写入该地址。
+    """
+    result = gateway_wizard(texts=["0.0.0.0", "58123", None], lan="192.168.1.5")
+
+    assert result.auth["allowed_hosts"] == ["192.168.1.5"]
+    assert wiz._browser_unreachable_reason({"gateway": result.gateway}) == ""
+
+
+def test_wildcard_bind_without_detectable_lan_warns_instead_of_writing_junk(gateway_wizard):
+    """探不到 LAN 地址时留空：回车意味着「我知道，暂时不配」，而不是写入垃圾值。"""
+    result = gateway_wizard(texts=["0.0.0.0", "58123", None], lan="")
+
+    assert "allowed_hosts" not in result.auth
+    assert wiz._browser_unreachable_reason({"gateway": result.gateway}) == "0.0.0.0"
+    assert "allowed_hosts" in result.out
+
+
+def test_user_entered_hosts_are_normalized_and_wildcards_dropped(gateway_wizard):
+    """用户会直接从地址栏粘贴，带端口、带大写；也可能顺手填上绑定地址。
+
+    GatewayAuth 比较的是规范化后的值，所以向导必须以同一形式落盘，否则配置看着
+    对却匹配不到任何请求。
+    """
+    result = gateway_wizard(
+        texts=["0.0.0.0", "58123", "Echo.Example.com, 192.168.1.5:58123, 0.0.0.0"],
+    )
+
+    assert result.auth["allowed_hosts"] == ["echo.example.com", "192.168.1.5"]
+
+
+def test_saved_allowed_hosts_actually_match_real_host_headers(gateway_wizard, tmp_path):
+    """端到端闭环：向导落盘的值必须让 GatewayAuth 真的放行浏览器发来的 Host。
+
+    这是整条链路上唯一能证明「配完就能用」的断言——探测函数与文案都对，也不代表
+    保存下来的值能通过 is_host_allowed。
+    """
+    from echo_agent.config.schema import GatewayAuthConfig
+    from echo_agent.gateway.auth import GatewayAuth
+
+    result = gateway_wizard(texts=["0.0.0.0", "58123", "echo.example.com"])
+
+    auth = GatewayAuth(
+        GatewayAuthConfig(mode="allowlist", api_tokens=["s3cret"],
+                          allowed_hosts=result.auth["allowed_hosts"]),
+        tmp_path, bound_host=result.gateway["host"],
+    )
+    assert auth.is_host_allowed("echo.example.com:58123")
+    assert auth.is_host_allowed("ECHO.example.com")
+    assert not auth.is_host_allowed("evil.example")
+
+
+def test_loopback_bind_offers_to_clear_a_stale_allowlist(gateway_wizard):
+    """从暴露态切回本机时，遗留的 allowlist 会把本机 Dashboard 锁在门外。
+
+    显式 allowed_hosts 会覆盖默认的本机放行规则，而 _browser_unreachable_reason
+    看到回环绑定就直接返回，什么都不会说。
+    """
+    cfg = {"gateway": {"enabled": True, "host": "0.0.0.0", "port": 58123,
+                       "auth": {"mode": "allowlist", "api_tokens": ["t"],
+                                "allowed_hosts": ["echo.example.com"]}}}
+
+    result = gateway_wizard(cfg, texts=["127.0.0.1", "58123"], confirms=[True])
+
+    assert "allowed_hosts" not in result.auth, "接受清空后不该留下遗留条目"
+
+
+def test_declining_keeps_the_allowlist_but_normalizes_it(gateway_wizard):
+    """反代场景是保留域名的正当理由；选「否」必须原样保住用户的配置。
+
+    顺带收敛驼峰别名，避免 allowed_hosts / allowedHosts 两键并存互相打架。
+    """
+    cfg = {"gateway": {"enabled": True, "host": "0.0.0.0", "port": 58123,
+                       "auth": {"mode": "allowlist", "api_tokens": ["t"],
+                                "allowedHosts": ["Echo.Example.COM:443"]}}}
+
+    result = gateway_wizard(cfg, texts=["127.0.0.1", "58123"], confirms=[False])
+
+    assert result.auth["allowed_hosts"] == ["echo.example.com"]
+    assert "allowedHosts" not in result.auth
+
+
+def test_loopback_allowlist_that_already_covers_this_machine_is_left_alone(gateway_wizard):
+    """已经含本机地址的 allowlist 没有问题，不该多问一句。"""
+    cfg = {"gateway": {"enabled": True, "host": "127.0.0.1", "port": 58123,
+                       "auth": {"mode": "allowlist", "api_tokens": ["t"],
+                                "allowed_hosts": ["localhost", "echo.example.com"]}}}
+
+    result = gateway_wizard(cfg, texts=["127.0.0.1", "58123"])
+
+    assert result.auth["allowed_hosts"] == ["localhost", "echo.example.com"]
+    assert not any("allowed_hosts" in q for q in result.confirms)
+
+
+def test_loopback_bind_never_asks_for_an_allowlist(gateway_wizard):
+    """全新的本机默认部署：空 allowed_hosts 本就默认放行本机，不该追问。"""
+    result = gateway_wizard(texts=["127.0.0.1", "58123"])
+
+    assert "allowed_hosts" not in result.auth
+    assert not any("Host" in q or "allowed" in q.lower() for q in result.texts[2:])
+
+
+def test_primary_lan_address_never_raises_and_never_suggests_a_wildcard(monkeypatch):
+    """探测是尽力而为：离线或路由异常时必须返回 ""，而不是把向导带崩。"""
+    import socket
+
+    def _boom(*a, **kw):
+        raise OSError("network unreachable")
+
+    monkeypatch.setattr(socket, "socket", _boom)
+    assert wiz._primary_lan_address() == ""
+
+
+def test_primary_lan_address_rejects_loopback_results(monkeypatch):
+    """某些环境下内核会给出 127.0.0.1 —— 那不是可供他人访问的地址，不该作建议值。"""
+    class _Sock:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def settimeout(self, _): pass
+        def connect(self, _): pass
+        def getsockname(self): return ("127.0.0.1", 9)
+
+    import socket
+    monkeypatch.setattr(socket, "socket", lambda *a, **kw: _Sock())
+    assert wiz._primary_lan_address() == ""

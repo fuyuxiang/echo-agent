@@ -225,11 +225,25 @@ MESSAGES = {
                              "the service will refuse to start (an unauthenticated gateway cannot be exposed to the network).",
         "open_exposed_fix": "Rebind to 127.0.0.1 (loopback only)? Choose No to switch to allowlist/pairing and set a token.",
         "host_pinned": "Host set to 127.0.0.1.",
+        "empty_bind_label": "0.0.0.0 (empty host = all interfaces)",
         "allowed_hosts": "Allowed hosts (the domain / IP as it appears in the browser's address bar, "
                          "comma-separated; required for a non-loopback bind)",
-        "allowed_hosts_empty_warn": "allowed_hosts is empty: with a {host} bind, every browser request is rejected "
-                                    "(403 cross-site request forbidden). Enter the domain or public IP you actually "
-                                    "browse to (the proxy domain if you are behind a reverse proxy).",
+        "allowed_hosts_wildcard_hint": "The bind address {host} is a wildcard and cannot go in allowed_hosts — "
+                                       "a browser sends the name from its address bar, never {host}. Enter the "
+                                       "domain or machine IP you actually browse to.",
+        "allowed_hosts_set": "allowed_hosts set to: {hosts}",
+        "allowed_hosts_empty_warn": "No usable allowed_hosts entry: with a {host} bind, the dashboard's admin pages "
+                                    "(sessions, config, memory writes, tasks, cron, knowledge) are all rejected "
+                                    "(403 cross-site request forbidden); read-only pages and native clients still "
+                                    "work. Enter the domain or IP you actually browse to (the proxy domain if you "
+                                    "are behind a reverse proxy) — a wildcard (0.0.0.0 / ::) does not count.",
+        "stale_allowed_hosts_warn": "The current allowed_hosts ({hosts}) does not include a local address, but the "
+                                    "bind address is back on loopback. An explicit allowed_hosts replaces the "
+                                    "local-access default, so the dashboard's admin pages will reject "
+                                    "127.0.0.1 / localhost.",
+        "stale_allowed_hosts_clear": "Clear allowed_hosts and restore the local-access default? "
+                                     "(choose No to keep it if a reverse proxy sits in front)",
+        "stale_allowed_hosts_cleared": "Cleared allowed_hosts; local access is back on the default rule.",
         "open_tokens_cleared": "Cleared leftover api_tokens (open mode needs no token).",
         "saved": "Gateway: {host}:{port}, auth={mode}",
     },
@@ -372,11 +386,13 @@ MESSAGES = {
                        "itself unauthenticated and every start will fail.",
         "unstartable_fix": "Pick one: set gateway.host back to 127.0.0.1 (local use only), "
                            "or configure gateway.auth.apiTokens and rerun `echo-agent setup gateway`.",
-        "browser_unreachable": "The gateway will start on {host}, but gateway.auth.allowed_hosts is empty, "
-                               "so every browser request is rejected (403 cross-site request forbidden). "
-                               "Native clients (echo-agent cli / curl) still work.",
-        "browser_unreachable_fix": "List the domain or public IP you browse to under gateway.auth.allowed_hosts "
-                                   "(the proxy domain if behind a reverse proxy), then rerun `echo-agent setup gateway`.",
+        "browser_unreachable": "The gateway will start on {host}, but gateway.auth.allowed_hosts has no usable "
+                               "entry, so the dashboard's admin pages (sessions, config, memory writes, tasks, "
+                               "cron, knowledge) are all rejected (403 cross-site request forbidden). Login, "
+                               "read-only pages and native clients (echo-agent cli / curl) still work.",
+        "browser_unreachable_fix": "List the domain or IP you browse to under gateway.auth.allowed_hosts "
+                                   "(the proxy domain if behind a reverse proxy; a wildcard such as 0.0.0.0 / :: "
+                                   "does not count), then rerun `echo-agent setup gateway`.",
     },
     "dashboard": {
         "ask_build": "Build the full Dashboard now? (a few minutes on first run; skipping uses the built-in simplified page)",

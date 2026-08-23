@@ -167,6 +167,76 @@ def test_host_with_port_normalizes_correctly(
     assert auth.is_host_allowed(host) is True
 
 
+# ── The configured side of the comparison ───────────────────────────────────
+#
+# Every test above varies the *request* Host against a tidy allowlist. The
+# entries themselves are hand-written or pasted out of an address bar, and used
+# to be compared verbatim — so a capitalized domain, a pasted ``host:port`` or a
+# bare ``::1`` produced an allowlist that silently matched nothing. Both sides
+# now go through ``host_rules.normalize_host``.
+
+
+@pytest.mark.parametrize("entry,request_host", [
+    ("Echo.Example.com", "echo.example.com"),        # operator typed it capitalized
+    ("echo.example.com:58123", "echo.example.com"),  # pasted straight from the URL bar
+    ("::1", "[::1]:58123"),                          # bare IPv6, no brackets
+    ("  echo.example.com  ", "echo.example.com"),    # stray whitespace in YAML
+])
+def test_configured_entries_are_normalized_too(
+    tmp_data_dir: Path, entry: str, request_host: str,
+) -> None:
+    auth = GatewayAuth(
+        GatewayAuthConfig(allowed_hosts=[entry]), tmp_data_dir, bound_host="0.0.0.0",
+    )
+    assert auth.is_host_allowed(request_host) is True, f"entry {entry!r} never matched"
+
+
+def test_wildcard_entries_are_not_a_configured_allowlist(tmp_data_dir: Path) -> None:
+    """``allowed_hosts: [0.0.0.0]`` must behave as *unconfigured*, not as a rule.
+
+    The wizard used to prefill the allowlist with the bind address, so pressing
+    Enter on a ``0.0.0.0`` bind wrote exactly this. A browser never sends the
+    wildcard as its Host, so the list matched nothing — while looking configured
+    enough to silence the "no allowlist" warning. Dropping the entry restores the
+    honest state: still nothing trusted, but now reported as such.
+    """
+    auth = GatewayAuth(
+        GatewayAuthConfig(allowed_hosts=["0.0.0.0", "::"]),
+        tmp_data_dir, bound_host="0.0.0.0",
+    )
+    assert auth._allowed_hosts == set()
+    assert auth.is_host_allowed("0.0.0.0:58123") is False
+    assert auth.is_host_allowed("192.168.1.5:58123") is False
+
+
+def test_empty_bind_is_not_treated_as_loopback(tmp_data_dir: Path) -> None:
+    """``host: ""`` binds every interface, so it grants no loopback default.
+
+    ``_bound_is_loopback`` reached into the CLI's wildcard tuple for this, which
+    happened to be right here while ``_check_bind_safety`` — using its own tuple
+    that included ``""`` — allowed an unauthenticated gateway to start on it.
+    Both now share ``host_rules.is_loopback_bind``; this pins the auth half.
+    """
+    auth = GatewayAuth(GatewayAuthConfig(), tmp_data_dir, bound_host="")
+    assert auth._bound_is_loopback() is False
+    assert auth.is_host_allowed("localhost:58123") is False
+
+
+@pytest.mark.parametrize("bound", ["127.0.0.2", "::1", "[::1]"])
+def test_loopback_bind_variants_grant_the_local_default(
+    tmp_data_dir: Path, bound: str,
+) -> None:
+    """All of 127/8 and IPv6 loopback are local, in every spelling.
+
+    The old copy compared strings against ``("127.0.0.1", "localhost", "::1")``,
+    so a gateway bound to ``127.0.0.2`` (some proxy setups) or written ``[::1]``
+    lost the local default and 403'd its own dashboard.
+    """
+    auth = GatewayAuth(GatewayAuthConfig(), tmp_data_dir, bound_host=bound)
+    assert auth.is_host_allowed("localhost:58123") is True
+    assert auth.is_host_allowed("evil.example") is False
+
+
 # ── Integration: the WS handshake path ──────────────────────────────────────
 #
 # ``is_host_allowed`` alone is necessary but not sufficient. The full defense

@@ -273,7 +273,7 @@ Two consequences worth planning for:
 - **The loopback exemption applies to the proxy, not the end user.** With proxy and gateway on the same host, the gateway sees a loopback peer, so every request arriving through the proxy inherits local trust. Such a deployment must authenticate at the proxy layer; the gateway's loopback check cannot distinguish users.
 - **Audit logs record the proxy's address.** If you need end-user IPs, log them at the reverse proxy — the gateway's logs cannot supply them.
 
-Also configure `gateway.auth.allowed_hosts` with the proxy's public domain: bound to a non-loopback address, an empty list rejects every request.
+Also configure `gateway.auth.allowed_hosts` with the proxy's public domain: bound to a non-loopback address, a list with no usable entry makes every admin endpoint (sessions, config, memory writes, tasks, cron, knowledge) reject browser requests. Note that wildcard addresses (`0.0.0.0`, `::`) are not usable entries — listing one is the same as listing nothing.
 
 ## Related Documentation
 

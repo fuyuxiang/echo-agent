@@ -3394,20 +3394,31 @@ class GatewayAuthConfig(_Base):
     # reached on — loopback addresses when bound locally, the proxy domain when
     # behind one. Empty defers to the default for the bind address (loopback
     # addresses when bound to loopback, none when bound to 0.0.0.0/::).
+    #
+    # Entries are normalized before comparison (gateway/host_rules.py): case,
+    # a trailing :port and IPv6 bracket shape are all folded, so a value pasted
+    # out of a browser address bar matches. Wildcards (0.0.0.0 / :: / empty) are
+    # dropped rather than stored — a browser never sends the bind wildcard as its
+    # Host, so such an entry is an allowlist that matches nothing while looking
+    # configured.
     allowed_hosts: list[str] = Field(
         default_factory=list,
         json_schema_extra={
-            "status": "effective", "ref": "gateway/auth.py",
-            "desc_zh": "可接受的 Host 头列表。DNS rebinding 攻击中 Origin 与 Host 都是攻击者控制的字符串，比对二者无效；唯一可信信号是 Host 是否为本网关预期被访问的名字。绑 loopback 时留空默认接受 localhost/127.0.0.1/[::1]；绑 0.0.0.0/:: 时留空会启动告警；反代时显式列出代理域名",
+            "status": "effective", "ref": "gateway/host_rules.py",
+            "desc_zh": "可接受的 Host 头列表。DNS rebinding 攻击中 Origin 与 Host 都是攻击者控制的字符串，比对二者无效；唯一可信信号是 Host 是否为本网关预期被访问的名字。绑 loopback 时留空默认接受 localhost/127.0.0.1/[::1]；绑 0.0.0.0/:: 时留空会启动告警，且管理端点（会话/配置/记忆写入/任务/定时/知识库）会拒绝一切浏览器请求；反代时显式列出代理域名。条目会规范化后比较（忽略大小写、去端口、IPv6 方括号），通配符（0.0.0.0 / ::）不是有效条目，会被丢弃",
             "desc_en": (
                 "Accepted Host header values. DNS rebinding makes Origin and Host "
                 "both attacker-controlled strings — comparing them is useless. "
                 "The only authoritative signal is whether the Host matches a name "
                 "this gateway was intended to be reached on: loopback addresses "
                 "when bound to loopback, the proxy domain when behind one. Empty "
-                "defers to the bind-address default (loopback addresses when "
-                "bound to loopback; warns at startup when bound to 0.0.0.0/::). "
-                "Set explicitly for reverse-proxy deployments"
+                "defers to the bind-address default (loopback addresses when bound "
+                "to loopback; when bound to 0.0.0.0/:: it warns at startup and the "
+                "admin endpoints — sessions, config, memory writes, tasks, cron, "
+                "knowledge — reject every browser request). Entries are compared "
+                "normalized (case-insensitive, port stripped, IPv6 brackets "
+                "folded); a wildcard such as 0.0.0.0 or :: is not a usable entry "
+                "and is dropped. Set explicitly for reverse-proxy deployments"
             ),
         },
     )
@@ -3436,13 +3447,17 @@ class GatewayConfig(_Base):
             "desc_zh": (
                 "网关监听地址。默认 127.0.0.1 仅本机可达;要对外提供服务改为 0.0.0.0 "
                 "并同时配置 auth.apiTokens(无 token 绑非回环地址会被拒绝启动),"
-                "反代场景还需在 auth.allowedHosts 列出代理域名"
+                "反代场景还需在 auth.allowedHosts 列出代理域名。注意留空不等于本机:"
+                "空字符串与 :: 一样是通配绑定(等同 0.0.0.0),同样受上述限制"
             ),
             "desc_en": (
                 "Gateway bind address. Defaults to 127.0.0.1 (this machine only). "
                 "To serve the network, set 0.0.0.0 AND configure auth.apiTokens — "
                 "binding non-loopback without a token is refused at startup — and "
-                "list your proxy domain in auth.allowedHosts if behind a reverse proxy"
+                "list your proxy domain in auth.allowedHosts if behind a reverse "
+                "proxy. Note that leaving this empty does NOT mean local: an empty "
+                "string, like ::, is a wildcard bind equivalent to 0.0.0.0 and is "
+                "subject to the same rules"
             ),
         },
     )

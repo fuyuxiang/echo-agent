@@ -30,6 +30,7 @@ from echo_agent.gateway.auth import GatewayAuth
 from echo_agent.gateway.editor import ProgressiveEditor
 from echo_agent.gateway.health import GatewayHealthProvider
 from echo_agent.gateway.hooks import HookRegistry
+from echo_agent.gateway.host_rules import is_loopback_bind, normalize_host_entries
 from echo_agent.gateway.media import MediaCache
 from echo_agent.gateway.rate_limiter import RateLimiter
 from echo_agent.gateway.router import DeliveryRouter
@@ -214,10 +215,15 @@ class GatewayServer:
         adminTokens alone counts as authenticated: an admin token is accepted
         everywhere an API token is (admin implies read), so such a deployment is
         not open — refusing to start would be a false alarm.
+
+        The loopback verdict comes from ``host_rules.is_loopback_bind``, not a
+        local string tuple. The tuple used to contain ``""``, which is a
+        *wildcard* bind (aiohttp binds it to 0.0.0.0 and ::), so an empty host
+        with no token passed this check and exposed an unauthenticated gateway
+        to the network. It also rejected ``127.0.0.2``, which is loopback.
         """
         host = (self._config.host or "").strip()
-        loopback = host in ("127.0.0.1", "localhost", "::1", "")
-        if loopback or self._tokens_configured():
+        if is_loopback_bind(host) or self._tokens_configured():
             return
         raise RuntimeError(
             f"Gateway is configured to bind {host}:{self._config.port} without any "
@@ -432,30 +438,38 @@ class GatewayServer:
         """Warn when the Host allowlist is empty and the bind is not loopback.
 
         A non-loopback bind (``0.0.0.0`` / ``::`` / a LAN address) means
-        strangers can reach the gateway. Without an explicit
-        ``allowed_hosts`` entry, ``is_host_allowed`` refuses every Host the
-        server gets — DNS rebinding is closed but so is everything else.
-        The operator almost certainly meant to list their reverse-proxy
-        domain; surface the choice rather than fail silent.
+        strangers can reach the gateway. Without an explicit ``allowed_hosts``
+        entry, ``is_host_allowed`` refuses every Host the server gets — DNS
+        rebinding is closed but so is the operator's own browser.
+
+        Scope, stated precisely because the previous wording ("every
+        browser-shaped request") overstated it and invited operators to dismiss
+        the warning as a false alarm once the dashboard loaded: the Host check
+        runs in ``_check_csrf``, which only ``_require_admin_token`` calls. So
+        login, the overview page and the other ``_require_api_token`` reads keep
+        working, while every admin surface — sessions, config, memory writes,
+        tasks, cron, knowledge, shutdown — 403s.
+
+        Wildcard entries do not count as configured: they cannot appear in a
+        Host header, so ``allowed_hosts: [0.0.0.0]`` is an allowlist that
+        matches nothing (see ``host_rules.normalize_host_entries``, which is
+        what ``GatewayAuth`` itself applies).
         """
-        if self._config.auth.allowed_hosts:
+        if normalize_host_entries(self._config.auth.allowed_hosts):
             return
         bound = (self._config.host or "").strip()
-        try:
-            import ipaddress
-            is_loopback = (
-                bound in ("localhost",) or ipaddress.ip_address(bound).is_loopback
-            )
-        except ValueError:
-            is_loopback = False
-        if not is_loopback:
-            logger.warning(
-                "Gateway bound to {} with empty auth.allowed_hosts. Every "
-                "browser-shaped request will be rejected for lacking a trusted "
-                "Host. List your reverse-proxy domain (e.g. 'echo.example.com') "
-                "in gateway.auth.allowed_hosts if you are behind one.",
-                bound,
-            )
+        if is_loopback_bind(bound):
+            return
+        logger.warning(
+            "Gateway bound to {} with no usable auth.allowed_hosts entry. Admin "
+            "endpoints (sessions, config, memory writes, tasks, cron, knowledge, "
+            "shutdown) will reject every browser request for lacking a trusted "
+            "Host; read-only pages and native clients still work. List the domain "
+            "or address you browse to (e.g. 'echo.example.com') in "
+            "gateway.auth.allowed_hosts — note that a wildcard such as '0.0.0.0' "
+            "is not a usable entry.",
+            bound or "(empty = all interfaces)",
+        )
 
     def _require_api_token(self, request: web.Request, *, action: str) -> web.Response | None:
         """Guard for read/chat-level endpoints. Admin tokens also pass (admin
