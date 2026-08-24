@@ -753,6 +753,9 @@ class TestSkillViewTool:
         from echo_agent.agent.tools.skills import SkillViewTool
 
         store = MagicMock()
+        # Explicit: a bare MagicMock returns a truthy Mock for is_disabled(),
+        # which would send every case down the "skill is disabled" branch.
+        store.is_disabled.return_value = False
         return SkillViewTool(store=store), store
 
     @pytest.mark.asyncio
@@ -762,6 +765,16 @@ class TestSkillViewTool:
         result = await tool.execute({"name": "nope"}, _ctx())
         assert result.success is False
         assert "not found" in result.error
+
+    @pytest.mark.asyncio
+    async def test_view_disabled_skill_reports_disabled(self):
+        """禁用的技能给出"已禁用",而不是让用户以为技能不存在。"""
+        tool, store = self._make()
+        store.read_skill.return_value = None
+        store.is_disabled.return_value = True
+        result = await tool.execute({"name": "banned"}, _ctx())
+        assert result.success is False
+        assert "disabled" in result.error
 
     @pytest.mark.asyncio
     async def test_view_skill_success(self):

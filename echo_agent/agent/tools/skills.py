@@ -12,18 +12,8 @@ from typing import Any
 from loguru import logger
 
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
-from echo_agent.bus.events import OutboundEvent
-from echo_agent.dependencies.lazy_deps import (
-    INSTALL_TIMEOUT_SECONDS,
-    _is_satisfied,
-    install_authorized_async,
-)
-from echo_agent.permissions.manager import ApprovalStatus
+from echo_agent.dependencies.lazy_deps import _is_satisfied
 from echo_agent.skills.store import SkillStore
-
-# How long to wait for a user's /approve|/deny decision on a dependency
-# install before giving up and returning the skill view without the deps.
-_DEP_APPROVAL_TIMEOUT_SECONDS = 300
 
 
 class SkillsListTool(Tool):
@@ -52,12 +42,10 @@ class SkillsListTool(Tool):
 class SkillViewTool(Tool):
     name = "skill_view"
     risk_level = "read_only"
-    # A view may trigger a dependency install: up to _DEP_APPROVAL_TIMEOUT_SECONDS
-    # waiting for consent, then up to INSTALL_TIMEOUT_SECONDS installing. The
-    # registry wraps execute() in asyncio.wait_for(timeout_seconds); it must sit
-    # above both so a legitimately slow install runs to completion instead of
-    # being abandoned mid-write (see lazy_deps.INSTALL_TIMEOUT_SECONDS).
-    timeout_seconds = _DEP_APPROVAL_TIMEOUT_SECONDS + INSTALL_TIMEOUT_SECONDS + 30
+    # Pure reads now that dependency installs moved to skill_run, so the default
+    # tool timeout is plenty. This used to be ~630s to accommodate an approval
+    # wait plus a pip install inside a tool advertised as read_only.
+    timeout_seconds = 60
     description = (
         "View the full content of a skill (SKILL.md) or a specific supporting file. "
         "Without file_path, returns the full SKILL.md and lists linked files. "
@@ -75,34 +63,15 @@ class SkillViewTool(Tool):
         "required": ["name"],
     }
 
+    # approval/bus/config are still accepted so the call site in tools/__init__
+    # (and any external construction) keeps working, but this tool no longer
+    # installs anything, so it does not use them.
     def __init__(self, store: SkillStore, *, approval: Any = None, bus: Any = None, config: Any = None):
         self._store = store
-        self._approval = approval
-        self._bus = bus
         self._config = config
 
     def execution_mode(self, params: dict[str, Any]) -> str:
         return "read_only"
-
-    def _is_trusted_env(self, channel: str) -> bool:
-        """Mirror ApprovalGate's CLI-auto-approve and trusted-channel exemptions
-        without depending on an ApprovalGate instance. Used to skip the approval
-        prompt for dependency installs in trusted environments (CLI on personal
-        machine, or an explicitly trusted channel) — the same operations exec
-        already enjoys. config=None is treated as untrusted (backward compat).
-        """
-        if self._config is None:
-            return False
-        try:
-            approval_cfg = self._config.permissions.approval
-            cli_exempt = (
-                self._config.security.profile == "personal_cli"
-                and approval_cfg.cli_auto_approve
-                and channel in {"cli", "direct", ""}
-            )
-            return cli_exempt or channel in approval_cfg.trusted_channels
-        except Exception:
-            return False
 
     def _skill_pip_specs(self, name: str, content: str) -> list[str]:
         """Read a skill's declared pip deps from SKILL.md metadata.echo.requires.pip."""
@@ -119,18 +88,22 @@ class SkillViewTool(Tool):
     async def _precheck_deps(
         self, name: str, content: str, ctx: ToolExecutionContext | None
     ) -> str:
-        """If the skill declares pip deps that are missing, route them through the
-        approval closed-loop using the current channel's user. Returns an extra
-        text block to append to the skill view (empty when nothing to add).
+        """Report missing pip deps declared by the skill. Never installs.
 
-        Degrades to a no-op (returns "") when approval/bus are not injected or
-        there is no originating channel (worker / no-event contexts).
+        This used to install them — on a trusted CLI silently, elsewhere behind
+        an approval prompt. Two problems with that. The tool declares
+        ``risk_level="read_only"`` and is exposed in every profile including
+        public_gateway, so "read the docs for this skill" was a reachable path to
+        running pip; and ``install_authorized`` deliberately bypasses the
+        SKILL_DEPS allowlist, ``skills.allow_lazy_installs`` and
+        ``ECHO_AGENT_DISABLE_LAZY_INSTALLS``, so an externally authored SKILL.md
+        naming a hostile package got it built (pip executes build code) merely by
+        being looked at.
+
+        Reporting keeps the part users actually wanted — knowing up front why a
+        skill will not run — and leaves installing to skill_run, which is gated
+        as EXEC and already has the approval closed-loop for it.
         """
-        if self._approval is None or self._bus is None:
-            return ""
-        if ctx is None or not ctx.channel:
-            return ""
-
         specs = self._skill_pip_specs(name, content)
         if not specs:
             return ""
@@ -139,82 +112,57 @@ class SkillViewTool(Tool):
             return ""
 
         spec_list = " ".join(missing)
-
-        # Trusted-environment exemption: CLI on a personal machine, or an
-        # explicitly trusted channel, installs directly without an approval
-        # prompt — matching the exemptions exec already gets. The install is
-        # still gated by install_authorized (venv + _spec_is_safe), so this
-        # is controlled, not a bare install. Untrusted channels fall through
-        # to the approval closed-loop below.
-        if self._is_trusted_env(ctx.channel):
-            result = await install_authorized_async(tuple(missing), source=f"skill_view_trusted:{name}")
-            if result.get("success"):
-                installed = result.get("installed") or []
-                skipped = result.get("skipped") or []
-                detail = "、".join(str(x) for x in (list(installed) + list(skipped))) or spec_list
-                return f"\n\n---\n依赖已安装:{detail}。现在可以运行该技能脚本。"
-            return (
-                f"\n\n---\n注意:技能「{name}」依赖 {spec_list} 安装失败:"
-                f"{result.get('detail', '未知错误')}。暂时无法运行该技能脚本。"
-            )
-
-        req = self._approval.request_approval(
-            "dep_install",
-            tool_name="skill_view",
-            params={"skill": name, "missing": missing},
-            user_id=ctx.user_id,
-        )
-
-        prompt = (
-            f"技能「{name}」需要安装以下依赖才能运行其脚本:\n  {spec_list}\n"
-            f"回复 /approve {req.id} 授权安装,或 /deny {req.id} 拒绝。"
-        )
-        out = OutboundEvent.text_reply(
-            channel=ctx.channel,
-            chat_id=ctx.chat_id,
-            text=prompt,
-            reply_to_id=ctx.reply_to_id or None,
-        )
-        out.metadata["_dep_install_request"] = True
-        out.metadata["_skill_name"] = name
-        out.metadata["_missing"] = missing
-        out.metadata["_request_id"] = req.id
-        await self._bus.publish_outbound(out)
-
-        decided = await self._approval.wait_for_decision(
-            req.id, timeout_seconds=_DEP_APPROVAL_TIMEOUT_SECONDS
-        )
-        approved = decided is not None and getattr(decided, "status", None) == ApprovalStatus.APPROVED
-        if not approved:
-            return (
-                f"\n\n---\n注意:技能「{name}」缺少依赖 {spec_list},"
-                "用户未授权安装,需授权后才能运行该技能脚本。"
-            )
-
-        result = await install_authorized_async(tuple(missing), source=f"skill_view:{name}")
-        if result.get("success"):
-            installed = result.get("installed") or []
-            skipped = result.get("skipped") or []
-            detail = "、".join(str(x) for x in (list(installed) + list(skipped))) or spec_list
-            return f"\n\n---\n依赖已安装:{detail}。现在可以运行该技能脚本。"
+        env_note = self._env_notice(content)
         return (
-            f"\n\n---\n注意:技能「{name}」依赖 {spec_list} 安装失败:"
-            f"{result.get('detail', '未知错误')}。暂时无法运行该技能脚本。"
+            f"\n\n---\n注意:技能「{name}」声明的依赖 {spec_list} 尚未安装,"
+            "其脚本目前无法运行。使用 skill_run 运行该技能时会请求授权并安装这些依赖。"
+            + env_note
+        )
+
+    def _env_notice(self, content: str) -> str:
+        """Flag credential keys the skill declares but the environment lacks.
+
+        Cheap to compute and it answers the question a user would otherwise hit
+        as a mid-script failure ("why did image-gen exit immediately?").
+        """
+        try:
+            from echo_agent.skills.env import declared_env_keys
+            import os
+
+            missing_env = [k for k in declared_env_keys(content) if not os.environ.get(k)]
+        except Exception:
+            return ""
+        if not missing_env:
+            return ""
+        return (
+            "\n此外,该技能需要以下环境变量,当前未设置:"
+            + "、".join(missing_env)
         )
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         name = params["name"]
         file_path = params.get("file_path", "")
 
+        # Disabled skills no longer resolve, so say so rather than "not found"
+        # for a skill the user can plainly see in the admin UI.
+        disabled_hint = (
+            f"skill '{name}' is disabled; enable it to view its contents"
+            if self._store.is_disabled(name)
+            else ""
+        )
+
         if file_path:
             content = self._store.read_file(name, file_path)
             if content is None:
-                return ToolResult(success=False, error=f"File '{file_path}' not found in skill '{name}'")
+                return ToolResult(
+                    success=False,
+                    error=disabled_hint or f"File '{file_path}' not found in skill '{name}'",
+                )
             return ToolResult(success=True, output=content)
 
         content = self._store.read_skill(name)
         if content is None:
-            return ToolResult(success=False, error=f"Skill '{name}' not found")
+            return ToolResult(success=False, error=disabled_hint or f"Skill '{name}' not found")
 
         files = self._store.list_files(name)
         output = content

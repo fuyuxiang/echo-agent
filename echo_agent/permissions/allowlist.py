@@ -104,8 +104,17 @@ def build_pattern_key(tool_name: str, arguments: dict[str, Any]) -> str:
 
     For exec tools: exec:<command_name>
     For code tools: code:<language>
+    For skill_run: skill_run:<skill>/<script>
     For other tools: tool:<tool_name>
     """
+    if tool_name == "skill_run":
+        # tool:skill_run would make one "approve always" a standing permit for
+        # every script of every skill with any arguments — far broader than the
+        # exec:<command> grants it sits next to. Scope the grant to the single
+        # script the user actually looked at.
+        skill = str(arguments.get("name", "")).strip() or "unknown"
+        script = str(arguments.get("script", "")).strip() or "unknown"
+        return f"skill_run:{skill}/{script}"
     if tool_name == "exec":
         command = str(arguments.get("command", "")).strip()
         cmd_name = command.split()[0].rsplit("/", 1)[-1] if command else "unknown"

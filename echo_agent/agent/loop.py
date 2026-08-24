@@ -448,13 +448,22 @@ class AgentLoop:
             )
             self.knowledge.ensure_ready(auto_index=config.knowledge.auto_index)
 
-        skills_dir = _resolve_builtin_skills_dir(workspace, config.skills.skills_dir)
-        self.skill_store = SkillStore(
-            user_dir=workspace / "data" / "skills",
-            builtin_dir=skills_dir,
-            external_dirs=[Path(d) for d in config.skills.external_dirs],
-            disabled=config.skills.disabled,
-        )
+        # skills.enabled gates the whole subsystem. It was schema-only before:
+        # setting it false left every skill tool registered and the skill list
+        # still injected into the system prompt, so the switch did nothing.
+        # skill_store=None is the established "off" signal — build_tools() skips
+        # registering the five skill tools and build_skills_context() returns "".
+        self.skill_store = None
+        if config.skills.enabled:
+            skills_dir = _resolve_builtin_skills_dir(workspace, config.skills.skills_dir)
+            self.skill_store = SkillStore(
+                user_dir=workspace / "data" / "skills",
+                builtin_dir=skills_dir,
+                external_dirs=[Path(d) for d in config.skills.external_dirs],
+                disabled=config.skills.disabled,
+            )
+        else:
+            logger.info("Skills system disabled (skills.enabled=false)")
 
         self._running = False
         self._max_iterations = config.agent.max_iterations
@@ -590,7 +599,9 @@ class AgentLoop:
         # fire-and-forget in __init__ would race the first skill review).
         self._skill_admission = None
         self._skill_candidate_store = None
-        if storage is not None:
+        # SkillAdmission writes through skill_store unconditionally, so it can
+        # only exist when the skills system is on.
+        if storage is not None and self.skill_store is not None:
             from echo_agent.evolution.store import TrajectoryStore
             from echo_agent.skills.admission import SkillAdmission
             self._skill_candidate_store = TrajectoryStore(storage)

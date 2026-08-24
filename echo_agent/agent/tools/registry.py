@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,12 @@ _MAX_EXECUTION_LOG = 1000
 _MAX_AUDIT_FILE_BYTES = 5_000_000
 
 _SENSITIVE_KEYS = frozenset({"key", "token", "secret", "password", "api_key", "credential", "auth"})
+# Matches a CLI flag that names a secret, e.g. "--token", "-p", "--api-key".
+# Used to mask the *following* element of an argv list.
+_SENSITIVE_FLAG_RE = re.compile(
+    r"^--?(?:[\w-]*(?:key|token|secret|password|passwd|pwd|credential|auth)[\w-]*)$",
+    re.IGNORECASE,
+)
 
 
 def _mask_sensitive(params: dict[str, Any]) -> dict[str, Any]:
@@ -28,9 +35,44 @@ def _mask_sensitive(params: dict[str, Any]) -> dict[str, Any]:
             masked[k] = "***"
         elif isinstance(v, dict):
             masked[k] = _mask_sensitive(v)
+        elif isinstance(v, (list, tuple)):
+            # Lists were passed through verbatim, so a secret inside one landed
+            # in the audit log in cleartext — ["--token", "s3cr3t"] being the
+            # case the skill docs actively steered users toward.
+            masked[k] = _mask_sequence(v)
         else:
             masked[k] = v
     return masked
+
+
+def _mask_sequence(seq: Any) -> list[Any]:
+    """Mask secrets inside a list, including argv-style flag/value pairs."""
+    out: list[Any] = []
+    mask_next = False
+    for item in seq:
+        if isinstance(item, dict):
+            out.append(_mask_sensitive(item))
+            mask_next = False
+            continue
+        if isinstance(item, (list, tuple)):
+            out.append(_mask_sequence(item))
+            mask_next = False
+            continue
+        if mask_next and isinstance(item, str):
+            out.append("***")
+            mask_next = False
+            continue
+        if isinstance(item, str):
+            # "--token=s3cr3t" carries the value in the same token.
+            if "=" in item and _SENSITIVE_FLAG_RE.match(item.split("=", 1)[0]):
+                out.append(item.split("=", 1)[0] + "=***")
+                mask_next = False
+                continue
+            mask_next = bool(_SENSITIVE_FLAG_RE.match(item))
+        else:
+            mask_next = False
+        out.append(item)
+    return out
 
 
 class ToolRegistry:

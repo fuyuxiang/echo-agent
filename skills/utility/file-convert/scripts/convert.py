@@ -4,16 +4,13 @@
 import argparse
 import csv
 import json
-import sys
-from echo_agent.dependencies.skill_require import require  # noqa: E402
 from pathlib import Path
 
-try:
-    import yaml
-except ImportError:
-    yaml = None
+from echo_agent.dependencies.skill_require import require
 
-import markdown  # noqa: E402
+# Optional packages are imported inside the converters that need them, after
+# require() runs. `import markdown` at module scope meant a CSV→JSON conversion
+# (pure stdlib) still died on import when markdown was absent.
 
 
 def csv_to_json(src, dst):
@@ -33,21 +30,28 @@ def json_to_csv(src, dst):
 
 
 def yaml_to_json(src, dst):
-    if not yaml:
-        sys.exit("Install: pip install pyyaml")
+    require("skill.file-convert")
+    import yaml
+
     data = yaml.safe_load(Path(src).read_text())
     Path(dst).write_text(json.dumps(data, ensure_ascii=False, indent=2))
 
 
 def json_to_yaml(src, dst):
-    if not yaml:
-        sys.exit("Install: pip install pyyaml")
+    require("skill.file-convert")
+    import yaml
+
     data = json.loads(Path(src).read_text())
     Path(dst).write_text(yaml.dump(data, allow_unicode=True, default_flow_style=False))
 
 
 def md_to_html(src, dst):
-    require("skill.file-convert")
+    # skill.file-convert is pyyaml; the markdown extra lives under the .md key,
+    # so this path asked for the wrong package and then failed importing
+    # markdown, which nothing had installed.
+    require("skill.file-convert.md")
+    import markdown
+
     text = Path(src).read_text()
     html = markdown.markdown(text, extensions=["tables", "fenced_code"])
     Path(dst).write_text(f"<!DOCTYPE html><html><body>{html}</body></html>")

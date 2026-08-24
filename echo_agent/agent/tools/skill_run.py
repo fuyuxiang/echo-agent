@@ -29,13 +29,25 @@ from typing import Any
 from loguru import logger
 
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
-from echo_agent.dependencies.lazy_deps import install_authorized_async
+from echo_agent.dependencies.lazy_deps import INSTALL_TIMEOUT_SECONDS, install_authorized_async
+from echo_agent.skills.env import build_skill_env
 from echo_agent.skills.store import parse_frontmatter, SkillStore
+
+# Ceiling on the caller-supplied `timeout`. Kept in one place because
+# timeout_seconds below is derived from it — the two drifted apart before.
+_MAX_SCRIPT_TIMEOUT = 600
+# How long to wait for a user's /approve|/deny on a dependency install.
+_DEP_APPROVAL_TIMEOUT_SECONDS = 300
 
 
 class SkillRunTool(Tool):
     name = "skill_run"
     risk_level = "exec"
+    # Declared here as well as in security.capabilities.TOOL_CAPABILITIES:
+    # tool_capabilities() prefers the instance attribute, but is_tool_allowed is
+    # also called with a bare tool *name* in places, which only consults the
+    # table. Both routes have to agree or the policy depends on the call site.
+    capabilities = frozenset({"process.exec", "code.exec", "skill.read"})
     description = (
         "Run a skill's script with the agent's own Python interpreter and cwd "
         "set to the skill's directory. Declared pip dependencies in SKILL.md are "
@@ -63,12 +75,21 @@ class SkillRunTool(Tool):
             },
             "timeout": {
                 "type": "integer",
-                "description": "Hard ceiling in seconds. Defaults to 60.",
+                "description": f"Hard ceiling in seconds, max {_MAX_SCRIPT_TIMEOUT}. Defaults to 60.",
             },
         },
         "required": ["name", "script"],
     }
-    timeout_seconds = 120
+    # The registry wraps execute() in asyncio.wait_for(timeout_seconds), so this
+    # must clear everything execute() can legitimately wait on, or the outer
+    # cancel fires mid-run and the caller sees a timeout for work that was still
+    # progressing. Worst case: dependency approval, then the install, then the
+    # script itself at its own ceiling. The previous 120s sat *below* the 600s
+    # the timeout parameter accepted, so any longer-running skill was killed
+    # from the outside.
+    timeout_seconds = (
+        _DEP_APPROVAL_TIMEOUT_SECONDS + INSTALL_TIMEOUT_SECONDS + _MAX_SCRIPT_TIMEOUT + 30
+    )
 
     def __init__(self, store: SkillStore, *, approval: Any = None, bus: Any = None, config: Any = None):
         self._store = store
@@ -83,13 +104,22 @@ class SkillRunTool(Tool):
         name = params["name"]
         script_rel = params["script"]
         args = list(params.get("args") or [])
-        timeout = max(1, min(int(params.get("timeout") or 60), 600))
+        timeout = max(1, min(int(params.get("timeout") or 60), _MAX_SCRIPT_TIMEOUT))
 
+        # find_skill_dir now filters disabled skills, so this covers both cases
+        # the message claims. Distinguish them so a user who disabled a skill
+        # gets told that, rather than "not found" for a directory they can see.
         skill_root = self._store.find_skill_dir(name)
         if skill_root is None:
+            if self._store.is_disabled(name):
+                return ToolResult(
+                    success=False,
+                    error=f"skill '{name}' is disabled; enable it before running its scripts",
+                    error_kind="business",
+                )
             return ToolResult(
                 success=False,
-                error=f"skill '{name}' not found (or not enabled)",
+                error=f"skill '{name}' not found",
                 error_kind="business",
             )
         script_path = (skill_root / script_rel).resolve()
@@ -115,6 +145,12 @@ class SkillRunTool(Tool):
         # Use sys.executable — never "python3", which on a launchd/systemd
         # supervisor without the venv bin on PATH would resolve to the
         # system interpreter and miss every dep installed into the venv.
+        # env: a curated allowlist rather than {}. An empty env made
+        # requires.bins pure decoration (no PATH, so shutil.which never finds
+        # the declared binary) and broke every credential-taking skill, which
+        # pushed users toward passing secrets through args instead — worse for
+        # both audit logs and process listings. See skills.env for the rules.
+        env = build_skill_env(self._store.read_skill(name) or "")
         proc = await asyncio.create_subprocess_exec(
             sys.executable,
             str(script_path),
@@ -122,18 +158,20 @@ class SkillRunTool(Tool):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(skill_root),
-            env={},
-            # Inherit nothing — the script gets a clean env with just the
-            # PATH enrichment that comes from how sys.executable's bin/ is
-            # laid out. Caller-supplied env is intentionally not honored:
-            # skill scripts are documented behaviors, not arbitrary code.
+            env=env,
         )
         try:
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=timeout,
             )
-        except asyncio.TimeoutError:
-            proc.kill()
+        except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+            # Both paths must reap. The bare `proc.kill()` in the TimeoutError
+            # branch never awaited, and CancelledError was not handled at all —
+            # so an outer cancel (registry's wait_for) left the subprocess
+            # running detached, still holding whatever it was doing.
+            await _terminate(proc)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             return ToolResult(
                 success=False,
                 error=f"timeout after {timeout}s",
@@ -220,6 +258,38 @@ class SkillRunTool(Tool):
             return cli_exempt or channel in approval_cfg.trusted_channels
         except Exception:
             return False
+
+
+async def _terminate(proc: Any) -> None:
+    """Reap a subprocess without leaving it behind.
+
+    SIGTERM first so the script can unwind, SIGKILL if it ignores that. Always
+    awaits: kill() only posts the signal, and without the wait the child can
+    outlive us as a zombie or keep running through a SIGTERM handler.
+    """
+    if proc.returncode is not None:
+        return
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        return
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=5)
+        return
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        pass
+    except ProcessLookupError:
+        return
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        return
+    # Shielded: this runs on a cancellation path, so an unshielded await would
+    # be cancelled immediately and defeat the point of reaping at all.
+    try:
+        await asyncio.shield(asyncio.wait_for(proc.wait(), timeout=5))
+    except Exception as e:
+        logger.warning("skill_run subprocess did not exit after SIGKILL: {}", e)
 
 
 def _is_satisfied(spec: str) -> bool:

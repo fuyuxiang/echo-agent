@@ -253,8 +253,12 @@ async def bootstrap(
         except Exception as e:
             logger.debug("validation install failed (fail-open): {}", e)
 
-        # Self-evolving skill harness
-        if config.evolution.enabled:
+        # Self-evolving skill harness. Requires the skills system: every
+        # promotion path writes through skill_store, which is None when
+        # skills.enabled is false.
+        if config.evolution.enabled and agent.skill_store is None:
+            logger.info("Evolution engine skipped: skills system is disabled")
+        elif config.evolution.enabled:
             try:
                 from echo_agent.evaluation.dataset import EvalDataset
                 from echo_agent.evaluation.runner import EvalRunner

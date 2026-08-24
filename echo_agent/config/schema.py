@@ -3612,7 +3612,7 @@ class SkillsConfig(_Base):
     enabled: bool = Field(
         default=True,
         json_schema_extra={
-            "status": "effective", "ref": "agent/loop.py:227",
+            "status": "effective", "ref": "agent/loop.py:457",
             "desc_zh": "是否启用技能系统",
             "desc_en": "Enable the skills system",
         },
@@ -3620,7 +3620,7 @@ class SkillsConfig(_Base):
     skills_dir: str = Field(
         default="skills",
         json_schema_extra={
-            "status": "effective", "ref": "agent/loop.py:227",
+            "status": "effective", "ref": "agent/loop.py:458",
             "desc_zh": "技能脚本目录",
             "desc_en": "Skills directory",
         },
@@ -3628,7 +3628,7 @@ class SkillsConfig(_Base):
     creation_nudge_interval: int = Field(
         default=10,
         json_schema_extra={
-            "status": "effective", "ref": "agent/loop.py:237",
+            "status": "effective", "ref": "agent/loop.py:470",
             "desc_zh": "提示创建技能的轮次间隔",
             "desc_en": "Turn interval for nudging skill creation",
         },
@@ -3636,7 +3636,7 @@ class SkillsConfig(_Base):
     disabled: list[str] = Field(
         default_factory=list,
         json_schema_extra={
-            "status": "effective", "ref": "agent/loop.py:232",
+            "status": "effective", "ref": "agent/loop.py:463",
             "desc_zh": "禁用的技能列表",
             "desc_en": "List of disabled skills",
         },
@@ -3644,7 +3644,7 @@ class SkillsConfig(_Base):
     external_dirs: list[str] = Field(
         default_factory=list,
         json_schema_extra={
-            "status": "effective", "ref": "agent/loop.py:231",
+            "status": "effective", "ref": "agent/loop.py:462",
             "desc_zh": "额外加载技能的外部目录",
             "desc_en": "External directories from which to load skills",
         },

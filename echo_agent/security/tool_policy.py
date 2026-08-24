@@ -57,6 +57,11 @@ HIGH_RISK_TOOLS = frozenset({
     "process",
     "skill_install",
     "skill_manage",
+    # Runs a skill-authored Python file in a subprocess. Named here in addition
+    # to carrying process.exec/code.exec capabilities: the capability sets
+    # already deny it, but a name in the list is what a reader greps for when
+    # asking "is exec reachable in this profile?".
+    "skill_run",
 })
 
 PUBLIC_GATEWAY_DENY = HIGH_RISK_TOOLS | frozenset({
@@ -82,6 +87,7 @@ DAEMON_DENY_BY_DEFAULT = frozenset({
     "execute_code",
     "process",
     "skill_install",
+    "skill_run",
 })
 DAEMON_DENY_CAPABILITIES = frozenset({
     "code.exec",

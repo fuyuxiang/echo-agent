@@ -7,7 +7,11 @@ import urllib.request
 from pathlib import Path
 from echo_agent.dependencies.skill_require import require  # noqa: E402
 
-require("skill.ocr-document")
+# This skill needs Pillow, not the OCR stack. Requesting skill.ocr-document
+# pulled in pymupdf, python-docx and pytesseract — a much larger install than
+# needed, and on a machine without tesseract it failed outright, so meme-gen
+# was unusable for a dependency it never imports.
+require("skill.meme-gen")
 
 from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 

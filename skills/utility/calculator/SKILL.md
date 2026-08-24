@@ -84,7 +84,7 @@ change = (new - old) / old * 100
 ## Script
 
 ```bash
-python3 scripts/calc.py "2**32 - 1"
+python3 scripts/calc.py eval "2**32 - 1"
 python3 scripts/calc.py convert 100 km mi
 python3 scripts/calc.py date "2026-12-31" days-until
 python3 scripts/calc.py currency 100 USD CNY
