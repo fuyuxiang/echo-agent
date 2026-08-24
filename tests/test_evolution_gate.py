@@ -75,7 +75,6 @@ async def test_promotes_strict_improvement(tmp_path: Path):
             eval_runner_factory=factory,
             eval_dataset_loader=_dataset_loader(),
             skill_store=skill_store,
-            skill_manager=None,
             store=store,
             require_strict_improvement=True,
         )
@@ -113,7 +112,6 @@ async def test_rejects_regression_and_restores(tmp_path: Path):
             eval_runner_factory=factory,
             eval_dataset_loader=_dataset_loader(),
             skill_store=skill_store,
-            skill_manager=None,
             store=store,
             regression_threshold=0.05,
             require_strict_improvement=True,
@@ -152,7 +150,6 @@ async def test_rejects_tie_under_strict_mode(tmp_path: Path):
             eval_runner_factory=factory,
             eval_dataset_loader=_dataset_loader(),
             skill_store=skill_store,
-            skill_manager=None,
             store=store,
             require_strict_improvement=True,
         )
@@ -181,7 +178,6 @@ async def test_promotes_tie_under_loose_mode(tmp_path: Path):
             eval_runner_factory=factory,
             eval_dataset_loader=_dataset_loader(),
             skill_store=skill_store,
-            skill_manager=None,
             store=store,
             require_strict_improvement=False,
         )
@@ -208,7 +204,6 @@ async def test_empty_dataset_rejects_immediately(tmp_path: Path):
             eval_runner_factory=factory,
             eval_dataset_loader=lambda: empty_dataset,
             skill_store=skill_store,
-            skill_manager=None,
             store=store,
         )
         candidate = SkillCandidate(operation="create", skill_name="alpha")
@@ -232,7 +227,6 @@ async def test_review_required_holds_promotion(tmp_path: Path):
             eval_runner_factory=factory,
             eval_dataset_loader=_dataset_loader(),
             skill_store=skill_store,
-            skill_manager=None,
             store=store,
             candidate_review_required=True,
         )
@@ -277,7 +271,6 @@ async def test_apply_failure_rejects_without_eval(tmp_path: Path):
             eval_runner_factory=factory,
             eval_dataset_loader=_dataset_loader(),
             skill_store=skill_store,
-            skill_manager=None,
             store=store,
         )
         # Patch SkillCandidate to be unbuildable: missing description in frontmatter triggers create_skill error.

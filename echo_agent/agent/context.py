@@ -32,6 +32,20 @@ if the approach involved trial-and-error, domain knowledge, or steps that would 
 - Skills should capture the procedure, pitfalls, and verification steps — not just the final answer.
 - Use YAML frontmatter with at least 'name' and 'description' fields."""
 
+# Budget for the skills inventory in the system prompt. ~4k chars ≈ 1k tokens,
+# which comfortably fits the 35 bundled skills (measured: 4774 chars before
+# per-description truncation) while capping what a large installed set can cost
+# on every single turn. Raised deliberately rather than tuned: the model can
+# always call skills_list for the full picture.
+_SKILLS_MAX_CHARS = 6000
+# Per-description cap applied only when the full listing does not fit. Long
+# enough to stay useful as a selection signal, short enough that a handful of
+# verbose skills cannot crowd out the rest.
+_SKILLS_DESC_LIMIT = 100
+# Room set aside for the "… and N more skill(s)" line so appending it cannot push
+# the result back over max_chars. Sized for a 4-digit count plus the wording.
+_SKILLS_NOTICE_RESERVE = 120
+
 _MEMORY_GUIDANCE_HEAD = """\
 You have persistent memory across sessions. Use the `memory` tool to manage it."""
 
@@ -152,8 +166,20 @@ def build_memory_context(
     return "\n\n".join(parts) if len(parts) > 1 else parts[0]
 
 
-def build_skills_context(skill_store: Any) -> str:
-    """Build a compact skills section for the system prompt."""
+def build_skills_context(skill_store: Any, *, max_chars: int = _SKILLS_MAX_CHARS) -> str:
+    """Build a compact skills section for the system prompt.
+
+    Bounded, because this goes into *every* turn's system prompt. The 35 bundled
+    skills already cost ~1.2k tokens; a user with a few hundred installed would
+    silently hand a fixed five-figure token tax to every request, and the entry
+    that got squeezed out would be whatever sorted last.
+
+    Over budget, each description is truncated first (they are the bulk, and a
+    truncated description still identifies the skill well enough for the model to
+    call skill_view). Only if that is not enough do we drop entries, and then we
+    say how many were dropped and point at skills_list — the model has a tool for
+    the full inventory, so the prompt does not have to carry it.
+    """
     if skill_store is None:
         return ""
     try:
@@ -163,11 +189,52 @@ def build_skills_context(skill_store: Any) -> str:
         return ""
     if not skills:
         return _SKILLS_GUIDANCE + "\n\nNo skills available yet."
-    lines = [_SKILLS_GUIDANCE, "", "Available skills:"]
-    for s in skills:
-        tag = f" [{s.category}]" if s.category else ""
-        lines.append(f"  - {s.name}{tag}: {s.description}")
-    return "\n".join(lines)
+
+    header = [_SKILLS_GUIDANCE, "", "Available skills:"]
+    entries = [
+        (s.name, f" [{s.category}]" if s.category else "", (s.description or "").strip())
+        for s in skills
+    ]
+
+    body = _render_skill_entries(entries, desc_limit=None)
+    if _skills_len(header, body) > max_chars:
+        body = _render_skill_entries(entries, desc_limit=_SKILLS_DESC_LIMIT)
+
+    if _skills_len(header, body) <= max_chars:
+        return "\n".join(header + body)
+
+    # Over budget even with truncated descriptions, so entries have to go. The
+    # "N more" notice is itself part of the output, so reserve room for it before
+    # dropping — otherwise the result lands just *over* max_chars, which is the
+    # one thing this function exists to prevent.
+    dropped = 0
+    while body and _skills_len(header, body) > max_chars - _SKILLS_NOTICE_RESERVE:
+        # Drop from the tail and keep a running count; an unannounced truncation
+        # would make the model confidently believe a skill does not exist.
+        body.pop()
+        dropped += 1
+
+    if dropped:
+        body.append(
+            f"  … and {dropped} more skill(s) not listed here — "
+            "call `skills_list` for the complete inventory."
+        )
+    return "\n".join(header + body)
+
+
+def _render_skill_entries(
+    entries: list[tuple[str, str, str]], *, desc_limit: int | None,
+) -> list[str]:
+    lines: list[str] = []
+    for name, tag, desc in entries:
+        if desc_limit is not None and len(desc) > desc_limit:
+            desc = desc[:desc_limit].rstrip() + "…"
+        lines.append(f"  - {name}{tag}: {desc}" if desc else f"  - {name}{tag}")
+    return lines
+
+
+def _skills_len(header: list[str], body: list[str]) -> int:
+    return len("\n".join(header + body))
 
 
 def build_capabilities_context(tool_defs: list[dict[str, Any]] | None) -> str:

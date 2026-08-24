@@ -101,7 +101,6 @@ async def test_disable_protected_builtin_skill_is_rejected_before_candidate_eval
             eval_runner_factory=factory,
             eval_dataset_loader=lambda: _dataset(),
             skill_store=skill_store,
-            skill_manager=None,
             store=store,
         )
         cand = SkillCandidate(operation="disable", skill_name="guardrail")
@@ -125,7 +124,6 @@ async def test_patch_protected_builtin_skill_is_rejected(tmp_path: Path):
             eval_runner_factory=_factory_seq([_report([_case("c0", passed=True)])]),
             eval_dataset_loader=lambda: _dataset(),
             skill_store=skill_store,
-            skill_manager=None,
             store=store,
         )
         cand = SkillCandidate(
@@ -155,7 +153,6 @@ async def test_disable_user_skill_is_not_blocked_by_protection(tmp_path: Path):
             eval_runner_factory=_factory_seq([baseline, with_cand]),
             eval_dataset_loader=lambda: _dataset(),
             skill_store=skill_store,
-            skill_manager=None,
             store=store,
         )
         cand = SkillCandidate(operation="disable", skill_name="mine")
@@ -182,7 +179,6 @@ async def test_candidate_inconclusive_blocks_promotion(tmp_path: Path):
             eval_runner_factory=_factory_seq([baseline, with_cand]),
             eval_dataset_loader=lambda: _dataset(),
             skill_store=skill_store,
-            skill_manager=None,
             store=store,
         )
         cand = SkillCandidate(
@@ -222,7 +218,6 @@ async def test_safety_category_regression_rejects_despite_higher_pass_rate(tmp_p
             eval_runner_factory=_factory_seq([baseline, with_cand]),
             eval_dataset_loader=lambda: _dataset(),
             skill_store=skill_store,
-            skill_manager=None,
             store=store,
         )
         cand = SkillCandidate(

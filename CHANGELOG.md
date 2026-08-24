@@ -12,6 +12,8 @@
 - `SkillStore.write_file_bytes()`：技能的 `assets/` 目录终于能装图片和字体
 
 ### Changed
+- 技能清单注入系统提示时增加字符预算（约 6000 字符）。此前 35 个内置技能已占约 1.2k tokens 且无上限，装到几百个会给每一轮请求都加上固定的五位数 token 开销。超预算时先截断描述，仍不够才丢弃条目，并明确告知省略了多少个、指向 `skills_list`——静默省略会让模型笃定某个技能不存在
+- 移除 `SkillManager` 及其 `manifest.json`/`.status`/`config.json` 一套并行技能模型：生产代码从未构造它（`app.py` 恒传 `skill_manager=None`），磁盘上从未产生过对应文件，仅测试实例化。运行时一直只用 `SkillStore`，两套模型并存迟早漂移
 - **破坏性**：`tools.exec.enabled = false` 现在会同时停用技能脚本执行。跑技能脚本本身就是代码执行，此前它是 exec 总开关唯一漏掉的执行路径
 - **破坏性**：`security.profile` 为 `daemon` 或 `public_gateway` 时 `skill_run` 默认被拒。这两档本就拒掉了 `exec`/`execute_code`/`process`，需要保留的部署请显式配置 `tools.also_allow: [skill_run]`
 - **破坏性**：`skill_view` 不再自动安装依赖（此前在可信 CLI 上会静默 pip install）。它声明 `risk_level="read_only"` 却能触发装包，而 `install_authorized()` 不遵守 SKILL_DEPS 白名单、`skills.allow_lazy_installs` 与 `ECHO_AGENT_DISABLE_LAZY_INSTALLS`，等于「看一眼技能」就是供应链执行入口。依赖安装改由 `skill_run` 在授权后执行
@@ -20,6 +22,7 @@
 - 内置 `workflow-chain` 不再使用 `shell=True`：命令按 `shlex` 解析后以参数列表执行，`;`/`&&`/`|` 成为字面参数。需要管道的步骤请显式写 `sh -c '...'`
 
 ### Fixed
+- **安全**：`skill_run` 只回收直接子进程，技能脚本自己派生的孙进程（ffmpeg、pip、另一个脚本）在超时和外层取消两条路径上都会脱离管控继续运行。现改为经 `proc_lifecycle.spawn_exec`/`terminate_tree` 走进程组回收，与 `shell`/`code_exec`/`process` 一致——此前 `skill_run` 是唯一没走这条公共通道的执行工具
 - **安全**：`skill_run` 是 exec 策略的绕过通道。它声明 `risk_level="exec"` 却没有注册任何 capability，因此 `daemon`/`public_gateway` 精心构造的 `process.exec`/`code.exec` 拒绝集合对它一律失效，而内置 `workflow-chain` 提供了一个通用 shell 执行器。现已补齐 capabilities、策略名单、风险表与 guards 门禁
 - **安全**：技能的「禁用」此前只是隐藏。`list_all()` 过滤了禁用集合，但 `_find_skill_dir()` 没有，因此 `read_skill`/`read_file`/`skill_run` 照样解析得到——包括 evolution gate 用 `persist_disable()` 停用的作恶技能。禁用判据已下沉到唯一解析入口；管理操作（修复、删除、重新启用）显式绕过
 - **安全**：网关本地导入用 SKILL.md 里未校验的 `name`/`category` 拼接目标路径，`name: /tmp/x` 可写出 `user_dir` 之外。现按单段路径规则校验并对解析后的路径二次确认

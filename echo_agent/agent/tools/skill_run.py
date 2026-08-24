@@ -28,6 +28,7 @@ from typing import Any
 
 from loguru import logger
 
+from echo_agent.agent.proc_lifecycle import spawn_exec, terminate_tree
 from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
 from echo_agent.dependencies.lazy_deps import INSTALL_TIMEOUT_SECONDS, install_authorized_async
 from echo_agent.skills.env import build_skill_env
@@ -151,7 +152,14 @@ class SkillRunTool(Tool):
         # pushed users toward passing secrets through args instead — worse for
         # both audit logs and process listings. See skills.env for the rules.
         env = build_skill_env(self._store.read_skill(name) or "")
-        proc = await asyncio.create_subprocess_exec(
+        # spawn_exec, not create_subprocess_exec: it puts the child in its own
+        # process group and records the PGID, which is what lets terminate_tree
+        # reach grandchildren. Skill scripts routinely spawn their own children
+        # (ffmpeg, pip, another script), and a hand-rolled kill of just the
+        # direct child left those running detached — measured, not theoretical.
+        # Every other exec tool (shell, code_exec, process, checkpoint) already
+        # goes through this module; skill_run was the one that did not.
+        proc = await spawn_exec(
             sys.executable,
             str(script_path),
             *args,
@@ -165,11 +173,11 @@ class SkillRunTool(Tool):
                 proc.communicate(), timeout=timeout,
             )
         except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
-            # Both paths must reap. The bare `proc.kill()` in the TimeoutError
-            # branch never awaited, and CancelledError was not handled at all —
-            # so an outer cancel (registry's wait_for) left the subprocess
-            # running detached, still holding whatever it was doing.
-            await _terminate(proc)
+            # Both paths must reap the whole tree. The original code killed only
+            # the direct child on timeout and ignored CancelledError entirely, so
+            # an outer cancel (the registry's wait_for) left work running with no
+            # handle left to stop it.
+            await terminate_tree(proc)
             if isinstance(exc, asyncio.CancelledError):
                 raise
             return ToolResult(
@@ -258,38 +266,6 @@ class SkillRunTool(Tool):
             return cli_exempt or channel in approval_cfg.trusted_channels
         except Exception:
             return False
-
-
-async def _terminate(proc: Any) -> None:
-    """Reap a subprocess without leaving it behind.
-
-    SIGTERM first so the script can unwind, SIGKILL if it ignores that. Always
-    awaits: kill() only posts the signal, and without the wait the child can
-    outlive us as a zombie or keep running through a SIGTERM handler.
-    """
-    if proc.returncode is not None:
-        return
-    try:
-        proc.terminate()
-    except ProcessLookupError:
-        return
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=5)
-        return
-    except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
-    except ProcessLookupError:
-        return
-    try:
-        proc.kill()
-    except ProcessLookupError:
-        return
-    # Shielded: this runs on a cancellation path, so an unshielded await would
-    # be cancelled immediately and defeat the point of reaping at all.
-    try:
-        await asyncio.shield(asyncio.wait_for(proc.wait(), timeout=5))
-    except Exception as e:
-        logger.warning("skill_run subprocess did not exit after SIGKILL: {}", e)
 
 
 def _is_satisfied(spec: str) -> bool:

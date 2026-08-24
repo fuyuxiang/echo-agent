@@ -46,7 +46,6 @@ if TYPE_CHECKING:
     from echo_agent.evaluation.dataset import EvalDataset
     from echo_agent.evaluation.runner import EvalReport, EvalRunner
     from echo_agent.evolution.store import TrajectoryStore
-    from echo_agent.skills.manager import SkillManager
 
 
 EvalRunnerFactory = Callable[[], "EvalRunner"]
@@ -69,7 +68,6 @@ class PromotionGate:
         eval_runner_factory: EvalRunnerFactory,
         eval_dataset_loader: Callable[[], Awaitable["EvalDataset"]] | Callable[[], "EvalDataset"],
         skill_store: SkillStore,
-        skill_manager: "SkillManager | None",
         store: "TrajectoryStore",
         regression_threshold: float = 0.05,
         require_strict_improvement: bool = True,
@@ -82,7 +80,6 @@ class PromotionGate:
         self._make_runner = eval_runner_factory
         self._load_dataset = eval_dataset_loader
         self._skill_store = skill_store
-        self._skill_manager = skill_manager
         self._store = store
         self._regression_threshold = float(regression_threshold)
         self._require_strict = bool(require_strict_improvement)
@@ -246,7 +243,6 @@ class PromotionGate:
                 # The in-memory disable applied during eval evaporates on
                 # restart — make the promoted decision durable.
                 self._skill_store.persist_disable(candidate.skill_name)
-            self._refresh_skill_manager_after_promote(candidate, backup_dir, backup_token)
             # Keep the pre-change snapshot for rollback instead of deleting it:
             # the inverse-patch rollback is best-effort and create-rollback
             # otherwise has nothing to restore supporting files from.
@@ -589,18 +585,9 @@ class PromotionGate:
             **{k: v for k, v in base.items() if k not in {"total", "passed", "pass_rate", "avg_score", "duration_ms"}},
         }
 
-    def _refresh_skill_manager_after_promote(
-        self,
-        candidate: SkillCandidate,
-        backup_dir: Path,
-        backup_token: str,
-    ) -> None:
-        """Update SkillManager bookkeeping if available — non-fatal."""
-        if self._skill_manager is None:
-            return
-        try:
-            # SkillManager scans on init; refresh in-memory map.
-            if hasattr(self._skill_manager, "_load_installed"):
-                self._skill_manager._load_installed()
-        except Exception as e:
-            logger.debug("SkillManager refresh after promote failed: {}", e)
+    # _refresh_skill_manager_after_promote used to live here. It refreshed a
+    # second, parallel skill model (SkillManager, with its own manifest.json /
+    # .status files) that production never constructed — app.py passed
+    # skill_manager=None unconditionally, and no manifest.json ever existed on
+    # disk. SkillStore reads from disk on every lookup, so there is no cache to
+    # invalidate after a promotion.

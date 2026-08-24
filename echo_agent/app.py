@@ -292,7 +292,6 @@ async def bootstrap(
                     storage=storage,
                     provider=provider,
                     skill_store=agent.skill_store,
-                    skill_manager=None,
                     eval_runner_factory=_make_eval_runner,
                     eval_dataset_loader=_load_eval_dataset,
                     hooks=plugin_manager.hooks,

@@ -1,4 +1,11 @@
-"""Tests for echo_agent/skills/store.py and echo_agent/skills/manager.py."""
+"""Tests for echo_agent/skills/store.py.
+
+The SkillManager tests that used to live here were removed with the class: it was
+a second, parallel skill model (manifest.json / .status / config.json) that
+production never constructed — app.py passed skill_manager=None unconditionally
+and no manifest.json ever existed on disk. Its tests were the only callers, which
+is what made "82 tests green" say nothing about that code path working.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +13,6 @@ from pathlib import Path
 
 
 from echo_agent.skills.store import SkillStore, parse_frontmatter
-from echo_agent.skills.manager import SkillManager, SkillManifest, SkillStatus
 
 
 # ---------------------------------------------------------------------------
@@ -130,77 +136,3 @@ class TestSkillStore:
         err = store.create_skill("nodesc", content)
         assert err is not None
         assert "description" in err
-
-
-# ---------------------------------------------------------------------------
-# SkillManager
-# ---------------------------------------------------------------------------
-
-class TestSkillManager:
-    @staticmethod
-    def _make_source(tmp_path: Path, name: str = "test-skill") -> Path:
-        src = tmp_path / "source" / name
-        src.mkdir(parents=True, exist_ok=True)
-        (src / "SKILL.md").write_text(f"---\nname: {name}\n---\n\nContent.\n", encoding="utf-8")
-        return src
-
-    def test_install_and_get(self, tmp_path: Path):
-        mgr = SkillManager(tmp_path / "installed")
-        src = self._make_source(tmp_path, "alpha")
-        skill = mgr.install("alpha", src)
-        assert skill.manifest.name == "alpha"
-        assert skill.status == SkillStatus.INSTALLED
-        assert mgr.get_skill("alpha") is not None
-
-    def test_enable_and_disable(self, tmp_path: Path):
-        mgr = SkillManager(tmp_path / "installed")
-        src = self._make_source(tmp_path, "beta")
-        mgr.install("beta", src)
-        assert mgr.enable("beta") is True
-        assert mgr.get_skill("beta").status == SkillStatus.ENABLED
-        assert mgr.disable("beta") is True
-        assert mgr.get_skill("beta").status == SkillStatus.DISABLED
-
-    def test_uninstall(self, tmp_path: Path):
-        mgr = SkillManager(tmp_path / "installed")
-        src = self._make_source(tmp_path, "gamma")
-        mgr.install("gamma", src)
-        assert mgr.uninstall("gamma") is True
-        assert mgr.get_skill("gamma") is None
-        assert mgr.uninstall("gamma") is False
-
-    def test_configure(self, tmp_path: Path):
-        mgr = SkillManager(tmp_path / "installed")
-        src = self._make_source(tmp_path, "delta")
-        mgr.install("delta", src)
-        assert mgr.configure("delta", {"key": "value"}) is True
-        assert mgr.get_skill("delta").config["key"] == "value"
-
-    def test_list_skills_filter(self, tmp_path: Path):
-        mgr = SkillManager(tmp_path / "installed")
-        for name in ("s1", "s2", "s3"):
-            src = self._make_source(tmp_path, name)
-            mgr.install(name, src)
-        mgr.enable("s1")
-        enabled = mgr.list_skills(status=SkillStatus.ENABLED)
-        assert len(enabled) == 1
-        assert enabled[0].manifest.name == "s1"
-        all_skills = mgr.list_skills()
-        assert len(all_skills) == 3
-
-    def test_enable_with_unmet_deps_fails(self, tmp_path: Path):
-        mgr = SkillManager(tmp_path / "installed")
-        src = self._make_source(tmp_path, "needy")
-        manifest = SkillManifest(name="needy", dependencies=["missing-dep"])
-        mgr.install("needy", src, manifest=manifest)
-        assert mgr.enable("needy") is False
-        assert mgr.get_skill("needy").status != SkillStatus.ENABLED
-
-    def test_enable_nonexistent(self, tmp_path: Path):
-        mgr = SkillManager(tmp_path / "installed")
-        assert mgr.enable("nope") is False
-
-    def test_configure_nonexistent(self, tmp_path: Path):
-        mgr = SkillManager(tmp_path / "installed")
-        assert mgr.configure("nope", {"a": 1}) is False
-

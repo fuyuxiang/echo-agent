@@ -12,6 +12,7 @@ Two defects here were deterministic, not edge cases:
 from __future__ import annotations
 
 import asyncio
+import pathlib
 import sys
 
 import pytest
@@ -102,6 +103,87 @@ class TestProcessReaping:
         await asyncio.sleep(0.6)
         assert marker.stat().st_size == size_after_cancel, (
             "subprocess kept running after the tool call was cancelled"
+        )
+
+
+class TestProcessGroupReaping:
+    """Skill scripts spawn their own children (ffmpeg, pip, another script).
+
+    Killing only the direct child left those running detached — the previous
+    hand-rolled _terminate did exactly that. skill_run now goes through
+    proc_lifecycle.spawn_exec/terminate_tree like every other exec tool, so the
+    whole process group is swept.
+    """
+
+    def _spawner_body(self, marker) -> str:
+        return (
+            "import subprocess, sys, time\n"
+            "subprocess.Popen([sys.executable, '-c',\n"
+            f"  \"import time\\nf=open(r'{marker}','a')\\n\"\n"
+            "  \"\\nfor i in range(300):\\n f.write('x'); f.flush(); time.sleep(0.05)\"])\n"
+            "time.sleep(30)\n"
+        )
+
+    async def _assert_grandchild_stopped(self, marker):
+        size_at_stop = marker.stat().st_size if marker.exists() else 0
+        await asyncio.sleep(0.9)
+        assert (marker.stat().st_size if marker.exists() else 0) == size_at_stop, (
+            "grandchild process kept running after the tool call ended"
+        )
+
+    async def _wait_for_grandchild(self, marker):
+        for _ in range(80):
+            await asyncio.sleep(0.05)
+            if marker.exists() and marker.stat().st_size > 0:
+                return
+        raise AssertionError("grandchild never started; test cannot prove anything")
+
+    @pytest.mark.asyncio
+    async def test_cancel_reaps_grandchildren(self, user_dir, tmp_path):
+        marker = tmp_path / "gc_cancel.txt"
+        _make_skill(user_dir, script_body=self._spawner_body(marker))
+        tool = SkillRunTool(store=SkillStore(user_dir=user_dir))
+
+        task = asyncio.create_task(
+            tool.execute({"name": "runner", "script": "scripts/run.py", "timeout": 60}, None)
+        )
+        await self._wait_for_grandchild(marker)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await self._assert_grandchild_stopped(marker)
+
+    @pytest.mark.asyncio
+    async def test_timeout_reaps_grandchildren(self, user_dir, tmp_path):
+        marker = tmp_path / "gc_timeout.txt"
+        _make_skill(user_dir, script_body=self._spawner_body(marker))
+        tool = SkillRunTool(store=SkillStore(user_dir=user_dir))
+
+        result = await tool.execute(
+            {"name": "runner", "script": "scripts/run.py", "timeout": 1}, None,
+        )
+        assert result.error_kind == "timeout"
+        await self._assert_grandchild_stopped(marker)
+
+    def test_uses_shared_process_lifecycle(self):
+        """Pin the consolidation itself: a future edit reintroducing a bare
+        create_subprocess_exec here would silently lose group reaping.
+
+        Checks the parsed AST rather than the raw text, so prose in comments
+        mentioning the old API does not make this pass or fail spuriously.
+        """
+        import ast
+
+        tree = ast.parse(pathlib.Path("echo_agent/agent/tools/skill_run.py").read_text())
+        called = {
+            ast.unparse(node.func)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+        }
+        assert "spawn_exec" in called, "skill_run must spawn via proc_lifecycle"
+        assert "terminate_tree" in called, "skill_run must reap via proc_lifecycle"
+        assert not any("create_subprocess" in c for c in called), (
+            "skill_run must not spawn subprocesses directly; use proc_lifecycle"
         )
 
 
