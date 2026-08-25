@@ -916,15 +916,35 @@ class ChannelsConfig(_Base):
     # channels that can visually REPLACE what they already showed.
     #
     # gateway:cli qualifies: the TUI keeps a reply widget per turn and rewrites it
-    # via set_markdown. The plain "cli" channel does NOT — it prints straight to
+    # via set_markdown (see cli/tui/bridge.py, on_user_reply_reset). The plain
+    # "cli" channel does NOT — it prints straight to
     # stdout and cannot unprint, so a retraction there would leave the draft on
     # screen above the answer. IM channels are excluded too: editing is possible
     # but each edit burns API budget. Empty list = buffer everywhere, i.e. the
     # pre-existing conservative behaviour.
+    #
+    # gateway:desktop is the Electron client (repo echo-agent-desktop). It also
+    # qualifies: its renderer rebuilds the bubble from an accumulated buffer and
+    # acts on the reset frame (pages/Chat/index.tsx reads metadata._stream_reset,
+    # stores/chatStore.ts drops the turn's text). That contract lives in the other
+    # repo and CANNOT be verified from here — it is trusted because "desktop" is a
+    # known platform in gateway.known_platforms, i.e. a first-party client, not
+    # because a client happened to send platform="desktop". Any self-reported
+    # platform outside that list is folded to gateway:ws before reaching here, so
+    # an arbitrary caller cannot opt itself into retractable drafts.
+    #
+    # Leaving a redraw-capable channel out of this list is not a safe no-op: on a
+    # turn carrying tools draft_policy="buffer" makes chat_stream_with_retry hold
+    # every delta and release the whole answer as one on_delta call, which reaches
+    # the client as a single full-text frame — the UI looks like it is not
+    # streaming at all. The desktop client writes this key into its managed yaml
+    # itself, but only when the model config is applied (config-writer.ts); the
+    # first agent process of a fresh install starts before that, so the default
+    # here is what it actually gets on a first conversation.
     stream_optimistic_channels: list[str] = Field(
-        default_factory=lambda: ["gateway:cli"],
+        default_factory=lambda: ["gateway:cli", "gateway:desktop"],
         json_schema_extra={
-            "status": "effective", "ref": "agent/pipeline/inference_stage.py:617",
+            "status": "effective", "ref": "agent/pipeline/inference_stage.py:659",
             "desc_zh": "允许乐观流式(工具前草稿先发后撤回)的通道列表;仅限能就地重绘的通道",
             "desc_en": "Channels allowed to stream optimistically (pre-tool draft sent then retracted); only channels that can redraw in place",
         },
@@ -3546,6 +3566,45 @@ class GatewayConfig(_Base):
     )
     session_policy: GatewaySessionPolicyConfig = Field(default_factory=GatewaySessionPolicyConfig)
     auth: GatewayAuthConfig = Field(default_factory=GatewayAuthConfig)
+    # `platform` arrives as a client-supplied string on both the WS auth frame and
+    # POST /message, and it is interpolated straight into channel="gateway:{platform}"
+    # and the delivery key. So an unconstrained value lets a caller name its own
+    # channel — and channel names carry capability decisions elsewhere
+    # (channels.stream_optimistic_channels asserts "this channel can redraw in
+    # place"). A send-only script self-reporting a redraw-capable platform would be
+    # served retractable drafts it cannot retract, splicing the next iteration onto
+    # an abandoned one.
+    #
+    # Unknown values are folded to "ws" rather than rejected: third-party callers
+    # already post arbitrary platform strings today and rejecting would break them
+    # for no security gain — the fold already removes the capability confusion, and
+    # per-platform rate limits still key off the reported name. Note this is NOT an
+    # identity control; impersonation is handled by resolve_client_session_key.
+    known_platforms: list[str] = Field(
+        default_factory=lambda: [
+            "cli", "desktop", "ws", "api",
+            "telegram", "discord", "slack", "qqbot", "weixin", "wechat",
+        ],
+        json_schema_extra={
+            "status": "effective", "ref": "gateway/ws_session.py:normalize_platform",
+            "desc_zh": (
+                "网关认可的 platform 取值。客户端自报的 platform 会拼进通道名 "
+                "gateway:{platform},而通道名在别处承载能力判定(如 "
+                "channels.stream_optimistic_channels 断言该通道可就地重绘),"
+                "所以不在此列表的取值会被折叠为 ws,而不是直接拒绝——避免打断"
+                "已有的第三方接入。留空表示不做折叠(回到旧的完全自报行为)"
+            ),
+            "desc_en": (
+                "Platform values the gateway recognises. A client-reported platform "
+                "is interpolated into the channel name gateway:{platform}, and "
+                "channel names carry capability decisions elsewhere (e.g. "
+                "channels.stream_optimistic_channels asserts a channel can redraw "
+                "in place), so a value outside this list is folded to \"ws\" rather "
+                "than rejected — that keeps existing third-party callers working. "
+                "Empty list disables folding (legacy fully self-reported behaviour)"
+            ),
+        },
+    )
     platforms: dict[str, GatewayPlatformConfig] = Field(
         default_factory=dict,
         json_schema_extra={

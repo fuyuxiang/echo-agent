@@ -541,3 +541,21 @@ async def test_draft_policy_defaults_to_buffer_for_tool_bearing_calls():
         on_delta=lambda d: seen.append(d),
     )
     assert seen == ["it is sunny"]
+
+
+@pytest.mark.asyncio
+async def test_draft_policy_buffer_collapses_stream_into_one_frame():
+    # 显式 buffer 的塌缩形态：整段答案作为「单个」delta 放出。这正是把可重绘通道
+    # 漏配出 channels.stream_optimistic_channels 时客户端看到的现象 —— 一帧全文，
+    # 表现为完全没有流式效果，而不是某种安全的空操作。
+    resp = LLMResponse(content="it is sunny", finish_reason="stop")
+    p = _ScriptedStreamProvider(["it ", "is ", "sunny"], resp)
+    seen = []
+    await p.chat_stream_with_retry(
+        messages=[{"role": "user", "content": "weather?"}],
+        tools=[{"function": {"name": "get_weather"}}],
+        on_delta=lambda d: seen.append(d),
+        draft_policy="buffer",
+    )
+    assert len(seen) == 1
+    assert seen == ["it is sunny"]

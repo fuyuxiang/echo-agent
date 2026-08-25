@@ -3,6 +3,38 @@ ownership check in a single, unit-testable place."""
 
 from __future__ import annotations
 
+# What a client gets when it reports a platform the gateway does not know. "ws"
+# is the pre-existing default for a WS handshake that omits `platform`, so an
+# unknown value lands on the same conservative channel as "didn't say".
+UNKNOWN_PLATFORM_FALLBACK = "ws"
+
+
+def normalize_platform(reported: str | None, known: list[str] | None) -> str:
+    """Fold a client-reported ``platform`` onto a known value.
+
+    ``platform`` is client-supplied on both the WS auth frame and POST /message,
+    and it becomes part of ``channel="gateway:{platform}"``. Channel names carry
+    capability decisions elsewhere — ``channels.stream_optimistic_channels``
+    asserts "this channel can redraw text it already showed" — so an unconstrained
+    value would let any caller claim a first-party client's capabilities and be
+    served draft retractions it cannot honour.
+
+    Unknown values fold to ``ws`` instead of being rejected: existing third-party
+    callers post arbitrary platform strings and rejecting them buys no safety that
+    the fold does not already provide. An empty/missing ``known`` list disables
+    folding entirely, restoring the legacy fully-self-reported behaviour for
+    anyone who needs it.
+
+    This is deliberately NOT an identity control — two clients may both report
+    ``desktop``. Impersonation is handled by :func:`resolve_client_session_key`.
+    """
+    reported = (reported or "").strip()
+    if not reported:
+        return UNKNOWN_PLATFORM_FALLBACK
+    if not known:
+        return reported
+    return reported if reported in known else UNKNOWN_PLATFORM_FALLBACK
+
 
 def resolve_client_session_key(
     requested: str | None,

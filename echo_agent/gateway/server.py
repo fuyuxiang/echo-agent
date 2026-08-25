@@ -38,7 +38,7 @@ from echo_agent.gateway.session_context import set_session_vars, clear_session_v
 from echo_agent.gateway.session_policy import SessionResetPolicy
 from echo_agent.gateway import ws_common
 from echo_agent.gateway.ws_dashboard import DashboardWebSocket
-from echo_agent.gateway.ws_session import resolve_client_session_key
+from echo_agent.gateway.ws_session import normalize_platform, resolve_client_session_key
 from echo_agent.gateway.ws_skill import (
     handle_skill_disable,
     handle_skill_enable,
@@ -123,6 +123,21 @@ class GatewayServer:
             hooks_path = workspace / config.hooks_dir
             if hooks_path.is_dir():
                 self.hooks.load_from_dir(hooks_path)
+
+    def _normalize_platform(self, reported: str | None) -> str:
+        """Fold a client-reported platform onto a gateway-known value.
+
+        Anything explicitly configured under ``gateway.platforms`` counts as known
+        on top of the built-in list: a deployment that registered its own platform
+        (to give it a rate limit) must keep routing under that name rather than
+        collapsing to ws. See ws_session.normalize_platform for why unknown values
+        are folded rather than rejected.
+        """
+        known = getattr(self._config, "known_platforms", None)
+        if not isinstance(known, list) or not known:
+            # Missing key (older/stubbed config) or explicitly emptied: no folding.
+            return normalize_platform(reported, None)
+        return normalize_platform(reported, known + list(self._config.platforms or {}))
 
     @property
     def is_running(self) -> bool:
@@ -611,7 +626,10 @@ class GatewayServer:
         except json.JSONDecodeError:
             return web.json_response({"error": "invalid JSON"}, status=400)
 
-        platform = body.get("platform", "api")
+        # Folded before anything keys off it: platform reaches channel names,
+        # session keys, rate-limit buckets and audit records, and those must all
+        # agree on one value. Default stays "api" for a body that omits it.
+        platform = self._normalize_platform(body.get("platform") or "api")
         user_id = body.get("user_id", "")
         chat_id = body.get("chat_id", user_id)
         text = body.get("text", "")
@@ -784,9 +802,14 @@ class GatewayServer:
         except json.JSONDecodeError:
             return web.json_response({"error": "invalid JSON"}, status=400)
 
-        platform = body.get("platform", "")
-        if not platform:
+        if not body.get("platform", ""):
             return web.json_response({"error": "platform required"}, status=400)
+        # Folded with the same rule as /message and the WS handshake. The approved
+        # -users store is keyed by platform (auth.py, {platform}_approved.json), so
+        # pairing under the raw name while messages arrive under the folded one
+        # would file the approval where is_authorized never looks — the client
+        # would pair successfully and still be rejected.
+        platform = self._normalize_platform(body.get("platform"))
 
         code = self.auth.generate_pairing_code(platform)
         return web.json_response({"code": code, "ttl_seconds": self._config.auth.pairing_ttl_seconds})
@@ -797,12 +820,14 @@ class GatewayServer:
         except json.JSONDecodeError:
             return web.json_response({"error": "invalid JSON"}, status=400)
 
-        platform = body.get("platform", "")
         user_id = body.get("user_id", "")
         code = body.get("code", "")
 
-        if not all([platform, user_id, code]):
+        if not all([body.get("platform", ""), user_id, code]):
             return web.json_response({"error": "platform, user_id, code required"}, status=400)
+        # Same fold as pair_generate, so verify looks up the code under the key it
+        # was issued with.
+        platform = self._normalize_platform(body.get("platform"))
 
         if self.auth.verify_pairing(platform, user_id, code):
             await self.hooks.emit("auth_success", platform=platform, user_id=user_id)
@@ -940,7 +965,14 @@ class GatewayServer:
                         msg_type = data.get("type", "message")
 
                         if msg_type == "auth":
-                            platform = data.get("platform", "ws")
+                            # Folded up-front so every downstream use — the
+                            # authorization check, the session key, the delivery
+                            # key, the rate-limit bucket, the audit trail and the
+                            # inbound channel name — sees the same value. In
+                            # particular the channel name decides whether this
+                            # client is served retractable drafts, so it must not
+                            # be a free-form client string.
+                            platform = self._normalize_platform(data.get("platform"))
                             user_id = data.get("user_id", "")
                             chat_id = data.get("chat_id", user_id)
                             # 握手接受三个来源:auth 帧内的 token、请求头、URL 的
