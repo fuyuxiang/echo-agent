@@ -1067,16 +1067,25 @@ class GatewayServer:
                                 await websocket.send_json({"type": "error", "error": "authenticate first"})
                                 continue
                             manager = get_skill_manager()
-                            await websocket.send_json(await handle_skill_list(manager))
+                            await websocket.send_json(await handle_skill_list(
+                                manager, data.get("request_id"),
+                            ))
 
                         if msg_type == "skill.enable":
                             if not session_key:
                                 await websocket.send_json({"type": "error", "error": "authenticate first"})
                                 continue
                             manager = get_skill_manager()
-                            result = await handle_skill_enable(manager, str(data.get("name", "")))
+                            result = await handle_skill_enable(
+                                manager, str(data.get("name", "")),
+                                data.get("request_id"),
+                            )
                             if result is None:
-                                await websocket.send_json({"type": "accepted"})
+                                response = {"type": "accepted"}
+                                rid = data.get("request_id")
+                                if rid is not None:
+                                    response["request_id"] = rid
+                                await websocket.send_json(response)
                             else:
                                 await websocket.send_json(result)
 
@@ -1085,9 +1094,16 @@ class GatewayServer:
                                 await websocket.send_json({"type": "error", "error": "authenticate first"})
                                 continue
                             manager = get_skill_manager()
-                            result = await handle_skill_disable(manager, str(data.get("name", "")))
+                            result = await handle_skill_disable(
+                                manager, str(data.get("name", "")),
+                                data.get("request_id"),
+                            )
                             if result is None:
-                                await websocket.send_json({"type": "accepted"})
+                                response = {"type": "accepted"}
+                                rid = data.get("request_id")
+                                if rid is not None:
+                                    response["request_id"] = rid
+                                await websocket.send_json(response)
                             else:
                                 await websocket.send_json(result)
                     except Exception as e:
