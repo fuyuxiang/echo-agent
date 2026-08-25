@@ -292,8 +292,15 @@ def check_mcp(config: dict) -> dict | None:
     tools = _sub(config, "tools")
     mcp = _get(tools, "mcp", default={}) or {}
     servers = _get(tools, "mcp_servers", "mcpServers", default={}) or {}
-    enabled = (isinstance(mcp, dict) and mcp.get("enabled")) or bool(servers)
-    if not enabled:
+
+    # An explicit false wins over "but there are servers configured". The old
+    # `enabled or bool(servers)` meant doctor reported MCP as active for exactly
+    # the configuration the runtime now skips — the check disagreeing with the
+    # thing it is checking.
+    if isinstance(mcp, dict) and "enabled" in mcp:
+        if not mcp.get("enabled"):
+            return None
+    elif not servers:
         return None
     n = len(servers) if isinstance(servers, (dict, list)) else 0
     if n:

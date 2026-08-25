@@ -1163,7 +1163,12 @@ class AgentLoop:
                     )
             except Exception as e:
                 logger.warning("Unresolved-contradiction rebuild failed: {}", e)
-        self._spawn_background(self._start_mcp_background())
+        # DURABLE, not DISCARDABLE: MCP startup is the only thing that ever
+        # registers these tools, so if the background pool happens to be
+        # saturated at boot a DISCARDABLE task is dropped and the agent runs
+        # for its whole lifetime with no MCP tools and no error anyone sees.
+        from echo_agent.agent.background import Tier
+        self._spawn_background(self._start_mcp_background(), tier=Tier.DURABLE)
         self._start_spill_sweeper()
         # Skill admission candidate store: ensure schema exists before the first
         # background skill review can stage a candidate. Must run BEFORE
@@ -1342,6 +1347,18 @@ class AgentLoop:
             logger.error("MCP initialization failed (agent continues without MCP tools): {}", e)
 
     async def _start_mcp(self) -> None:
+        # tools.mcp.enabled 是 setup 向导写入的总开关,而这里过去只读 mcp_servers,
+        # 全代码库没有任何位置读它 —— 用户在向导里取消勾选 MCP、配置写入
+        # enabled: false,重启后所有 server 照旧连接。这就是那段注释声称要修掉的
+        # fake toggle 换个地方复现。显式关闭必须压过"还有 server 配置"。
+        if not self.config.tools.mcp.enabled:
+            if self.config.tools.mcp_servers:
+                logger.info(
+                    "MCP is disabled (tools.mcp.enabled=false) — skipping {} configured server(s)",
+                    len(self.config.tools.mcp_servers),
+                )
+            return
+
         mcp_servers = self._filter_mcp_servers(self.config.tools.mcp_servers)
         if not mcp_servers:
             return
