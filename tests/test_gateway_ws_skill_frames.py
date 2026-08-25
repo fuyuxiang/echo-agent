@@ -327,16 +327,14 @@ async def single_token_gateway(tmp_path):
         await bus.stop()
 
 
-@pytest.mark.parametrize("via", ["query", "header", "frame"])
+@pytest.mark.parametrize("via", ["header", "frame"])
 @pytest.mark.asyncio
-async def test_single_token_deployment_can_toggle_via_any_source(
+async def test_single_token_deployment_can_toggle_via_safe_sources(
     single_token_gateway, via,
 ):
-    """未配 admin_tokens 时三种来源都要放行。
+    """未配 admin_tokens 时,api 令牌按回落规则充当 admin —— 但只在安全来源上。
 
-    这类部署里 api 令牌按回落规则充当 admin,它并不是 admin 凭据,且同一个令牌
-    已经通过该来源完成了握手 —— 再按 admin 来源规则拦一次只会砸掉功能。URL 这
-    一路尤其要保住:"单令牌 + ?token= 连接" 是常见用法。
+    请求头与 auth 帧都不进访问日志,所以这两路照旧放行。
     """
     url, store = single_token_gateway
     _make_skill(store, "ppt-author", enabled=False)
@@ -344,6 +342,48 @@ async def test_single_token_deployment_can_toggle_via_any_source(
     frame = await _enable_via(url, token="only-tok", via=via)
     assert frame["type"] == "accepted", frame
     assert store.is_disabled("ppt-author") is False
+
+
+@pytest.mark.asyncio
+async def test_single_token_deployment_rejects_query_token_for_writes(
+    single_token_gateway,
+):
+    """单令牌部署 + ?token= 也不得执行写操作。
+
+    这是最常见的部署形态,也曾是最大的缺口:早先只在配了 admin_tokens 时才排除
+    URL 来源,理由是"同一个令牌已经通过 URL 握过手,再拦一次不增加安全性"。该推理
+    只在攻击者已持有令牌时成立,漏掉的是日志泄漏 —— ?token= 会进 aiohttp 默认
+    访问日志、反向代理日志、浏览器 history 与 referrer,存活期远长于令牌本身。
+    从日志里捞到令牌的人不该能改变 agent 下一轮的能力。与 HTTP
+    _require_admin_token 同口径:admin 只认请求头。
+    """
+    url, store = single_token_gateway
+    _make_skill(store, "ppt-author", enabled=False)
+
+    frame = await _enable_via(url, token="only-tok", via="query")
+    assert frame["type"] == "error"
+    assert "admin" in frame["message"]
+    assert store.is_disabled("ppt-author") is True  # 状态未变
+
+
+@pytest.mark.asyncio
+async def test_single_token_query_connection_can_still_list(single_token_gateway):
+    """只读的 skill.list 不受来源限制 —— ?token= 握手仍是合法的 api 作用域。
+
+    排除 URL 只针对状态修改帧;把 list 也拦掉会让 URL 握手这类用法整体不可用,
+    而 list 并不改变任何东西。
+    """
+    url, store = single_token_gateway
+    _make_skill(store, "ppt-author")
+
+    async with aiohttp.ClientSession() as s:
+        async with s.ws_connect(f"{url}?token=only-tok") as ws:
+            await _auth(ws)
+            await ws.send_json({"type": "skill.list"})
+            frame = await ws.receive_json()
+
+    assert frame["type"] == "skill.list_result"
+    assert any(item["name"] == "ppt-author" for item in frame["skills"])
 
 
 @pytest.mark.asyncio
