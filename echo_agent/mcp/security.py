@@ -128,28 +128,88 @@ def scan_tool_description(description: str) -> list[str]:
     return scan_text(description)
 
 
-def _walk_schema_text(schema: Any, depth: int = 0) -> list[str]:
-    """Yield every human-readable string inside a JSON schema.
+#: Schema keys whose *values* are prose the model reads directly.
+_SCHEMA_TEXT_KEYS = ("description", "title", "$comment", "deprecationMessage")
 
-    ``description``/``title``/``enum`` values inside ``inputSchema`` reach the
-    model verbatim in the function definition, so they are part of the attack
-    surface. Depth-bounded because the schema is untrusted input and may nest
-    arbitrarily (or, with a hostile ``$ref``-free cycle, unboundedly).
+#: Schema keys whose values are data the provider still renders into the function
+#: definition — an ``enum`` of allowed strings is as model-visible as a
+#: description, and used to be the cheapest bypass in this module: the walker
+#: recursed into lists but only collected strings found under a text *key*, so
+#: string *elements* were dropped on the floor. ``{"enum": ["ignore all previous
+#: instructions"]}`` scanned clean.
+_SCHEMA_VALUE_KEYS = ("enum", "const", "default", "examples", "pattern", "format")
+
+#: Budgets for walking an untrusted schema. A hostile server can send a schema
+#: that is deep, wide, or enormous; scanning must degrade by stopping rather than
+#: by burning unbounded CPU inside the connect path.
+_SCHEMA_MAX_DEPTH = 12
+_SCHEMA_MAX_NODES = 5000
+_SCHEMA_MAX_BYTES = 512 * 1024
+
+
+@dataclass
+class _WalkBudget:
+    nodes: int = 0
+    chars: int = 0
+
+    def exhausted(self) -> bool:
+        return self.nodes > _SCHEMA_MAX_NODES or self.chars > _SCHEMA_MAX_BYTES
+
+
+def _walk_schema_text(
+    schema: Any, depth: int = 0, budget: _WalkBudget | None = None,
+) -> list[str]:
+    """Yield every model-visible string inside a JSON schema.
+
+    Both prose keys (``description``, ``title``) and value keys (``enum``,
+    ``const``, ``default``, ``examples``…) reach the model verbatim in the
+    function definition, so all of them are attack surface. Bounded on three
+    axes — depth, node count and total characters — because the schema is
+    untrusted input that may nest arbitrarily or simply be huge.
     """
-    if depth > 8 or not isinstance(schema, (dict, list)):
+    if budget is None:
+        budget = _WalkBudget()
+    if depth > _SCHEMA_MAX_DEPTH or budget.exhausted():
         return []
 
     found: list[str] = []
+
+    def take(value: Any) -> None:
+        """Collect *value* if it is a string, recursing through containers."""
+        if isinstance(value, str):
+            if value:
+                budget.chars += len(value)
+                found.append(value)
+            return
+        if isinstance(value, (dict, list)):
+            found.extend(_walk_schema_text(value, depth + 1, budget))
+
     if isinstance(schema, list):
         for entry in schema:
-            found.extend(_walk_schema_text(entry, depth + 1))
+            budget.nodes += 1
+            if budget.exhausted():
+                break
+            # Strings inside a list are collected, not skipped — this is the
+            # enum bypass.
+            take(entry)
+        return found
+
+    if not isinstance(schema, dict):
         return found
 
     for key, value in schema.items():
-        if key in ("description", "title") and isinstance(value, str):
-            found.append(value)
+        budget.nodes += 1
+        if budget.exhausted():
+            break
+        if key in _SCHEMA_TEXT_KEYS or key in _SCHEMA_VALUE_KEYS:
+            take(value)
         elif isinstance(value, (dict, list)):
-            found.extend(_walk_schema_text(value, depth + 1))
+            found.extend(_walk_schema_text(value, depth + 1, budget))
+        elif isinstance(value, str):
+            # An unrecognised key with a string value: still rendered, still
+            # scanned. Cheaper to over-scan than to maintain an allowlist of
+            # every extension key a server may invent.
+            take(value)
     return found
 
 
