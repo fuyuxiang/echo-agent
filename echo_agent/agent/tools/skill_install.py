@@ -493,23 +493,56 @@ class SkillInstallTool(Tool):
                 )
                 if write_err:
                     raise RuntimeError(f"{rel}: {write_err}")
+
+            # Sweep files the previous version had and the new one does not.
+            # Copying is an overwrite, so without this an upgrade that *removed*
+            # a script or asset left the old copy on disk — still discoverable by
+            # skills_list and still executable, which makes "upgraded" a lie
+            # about what the skill can now do.
+            if backup is not None:
+                self._prune_removed_files(skill_name, {rel for rel, _ in plan})
         except Exception as e:
             self._rollback(skill_name, backup)
             return "", {}, f"Failed to copy support files ({e}); install rolled back"
 
         return skill_name, fm, ""
 
+    def _prune_removed_files(self, name: str, keep: set[str]) -> None:
+        """Delete support files not present in the new version."""
+        for rel in self._store.list_files(name, include_disabled=True):
+            if rel in keep:
+                continue
+            remove_err = self._store.remove_file(name, rel)
+            if remove_err:
+                # Surfaced to the caller, which rolls the install back: a
+                # partially pruned tree is a skill in neither version.
+                raise RuntimeError(f"could not remove stale file {rel}: {remove_err}")
+
     def _snapshot(self, name: str, content: str) -> dict[str, Any]:
-        """Capture an existing skill so a failed upgrade can be undone."""
+        """Capture an existing skill so a failed upgrade can be undone.
+
+        ``include_disabled=True`` throughout, and it has to be: the skill was
+        located that way (a disabled skill is still upgradeable), so listing its
+        files without the same flag returned nothing and a failed upgrade of a
+        disabled skill silently dropped every support file it had.
+
+        The disable state is captured too — restoring content and files while
+        leaving the skill enabled would turn a failed upgrade into a silent
+        re-enable of something the operator deliberately switched off.
+        """
         files: dict[str, bytes] = {}
         skill_dir = self._store.find_skill_dir(name, include_disabled=True)
         if skill_dir is not None:
-            for rel in self._store.list_files(name):
+            for rel in self._store.list_files(name, include_disabled=True):
                 try:
                     files[rel] = (skill_dir / rel).read_bytes()
                 except OSError:
                     continue
-        return {"content": content, "files": files}
+        return {
+            "content": content,
+            "files": files,
+            "disabled": self._store.is_disabled(name),
+        }
 
     def _rollback(self, name: str, backup: dict[str, Any] | None) -> None:
         """Undo a partial install: restore the previous skill, or remove ours.
@@ -524,11 +557,19 @@ class SkillInstallTool(Tool):
             self._store.update_skill(name, backup["content"])
             skill_dir = self._store.find_skill_dir(name, include_disabled=True)
             if skill_dir is not None:
-                for rel in self._store.list_files(name):
+                # include_disabled here as well: without it a disabled skill
+                # listed no files, so files the failed install had added were
+                # left behind next to the restored ones.
+                for rel in self._store.list_files(name, include_disabled=True):
                     if rel not in backup["files"]:
                         self._store.remove_file(name, rel)
             for rel, data in backup["files"].items():
                 self._store.write_file_bytes(name, rel, data)
+            # Restore the disable flag last. create_skill/update_skill do not
+            # touch it, but an install that ran persist_enable would otherwise
+            # leave a rolled-back skill enabled.
+            if backup.get("disabled") and not self._store.is_disabled(name):
+                self._store.persist_disable(name)
         except Exception as e:
             logger.error("Rollback of skill '{}' failed: {}", name, e)
 

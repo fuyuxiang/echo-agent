@@ -331,9 +331,16 @@ class SkillStore:
             logger.debug("Failed to read '{}' in skill '{}': {}", file_path, name, e)
             return None
 
-    def list_files(self, name: str) -> list[str]:
-        """List supporting files for a skill."""
-        skill_dir = self._find_skill_dir(name)
+    def list_files(self, name: str, *, include_disabled: bool = False) -> list[str]:
+        """List supporting files for a skill.
+
+        Disabled by default, like every other read path: a disabled skill's files
+        must not be reachable. ``include_disabled`` exists for the maintenance
+        callers that legitimately need them — snapshot and rollback around an
+        install, which must be able to save and restore a disabled skill's
+        support files or an upgrade that fails takes them with it.
+        """
+        skill_dir = self._find_skill_dir(name, include_disabled=include_disabled)
         if not skill_dir:
             return []
         files: list[str] = []

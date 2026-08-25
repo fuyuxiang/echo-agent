@@ -134,6 +134,130 @@ class TestRollback:
         assert "NEW BODY" not in content
         assert "body" in content
 
+    @pytest.mark.asyncio
+    async def test_failed_upgrade_of_a_disabled_skill_restores_everything(
+        self, store, source, monkeypatch,
+    ):
+        """A disabled skill is still upgradeable, so it must still be restorable.
+
+        The snapshot located the skill with ``include_disabled=True`` but then
+        listed its files without that flag — which returns nothing for a disabled
+        skill. So a failed upgrade restored SKILL.md and silently dropped every
+        support file the skill had, and the disable flag was not part of the
+        snapshot at all.
+        """
+        tool = SkillInstallTool(store=store)
+        first = await tool.execute(
+            {"source": "local", "location": str(source), "run_install": False}, None,
+        )
+        assert first.success is True
+        installed = store.find_skill_dir("demo-skill")
+        original_script = (installed / "scripts" / "run.py").read_bytes()
+
+        store.persist_disable("demo-skill")
+        assert store.is_disabled("demo-skill") is True
+
+        (source / "SKILL.md").write_text(
+            SKILL_MD.replace("body", "NEW BODY"), encoding="utf-8",
+        )
+        real = store.write_file
+        monkeypatch.setattr(
+            store, "write_file",
+            lambda n, rel, c: "boom" if rel.endswith("run.py") else real(n, rel, c),
+        )
+        second = await tool.execute(
+            {"source": "local", "location": str(source), "run_install": False}, None,
+        )
+        assert second.success is False
+        monkeypatch.undo()
+
+        # Content, support files and disable state all back where they were.
+        content = store.read_skill("demo-skill", include_disabled=True) or ""
+        assert "NEW BODY" not in content
+        assert "body" in content
+        restored = store.find_skill_dir("demo-skill", include_disabled=True)
+        assert (restored / "scripts" / "run.py").read_bytes() == original_script
+        assert store.is_disabled("demo-skill") is True, "must not silently re-enable"
+
+
+class TestUpgradeRemovesStaleFiles:
+    """A successful upgrade must not leave the previous version's files behind.
+
+    Copying is an overwrite, so a new version that *dropped* a script or asset
+    left the old copy on disk — still listed by skills_list and still executable.
+    """
+
+    @pytest.mark.asyncio
+    async def test_file_removed_in_the_new_version_is_gone(self, store, source):
+        (source / "scripts" / "legacy.py").write_text("print('old')\n", encoding="utf-8")
+
+        tool = SkillInstallTool(store=store)
+        first = await tool.execute(
+            {"source": "local", "location": str(source), "run_install": False}, None,
+        )
+        assert first.success is True, first.error
+        assert "scripts/legacy.py" in store.list_files("demo-skill")
+
+        (source / "scripts" / "legacy.py").unlink()
+        second = await tool.execute(
+            {"source": "local", "location": str(source), "run_install": False}, None,
+        )
+        assert second.success is True, second.error
+
+        files = store.list_files("demo-skill")
+        assert "scripts/legacy.py" not in files, "stale file survived the upgrade"
+        assert "scripts/run.py" in files
+        installed = store.find_skill_dir("demo-skill")
+        assert not (installed / "scripts" / "legacy.py").exists()
+
+    @pytest.mark.asyncio
+    async def test_stale_binary_asset_is_also_removed(self, store, source):
+        (source / "assets").mkdir()
+        (source / "assets" / "old.png").write_bytes(b"\x89PNG\x00\x01")
+
+        tool = SkillInstallTool(store=store)
+        assert (await tool.execute(
+            {"source": "local", "location": str(source), "run_install": False}, None,
+        )).success is True
+
+        (source / "assets" / "old.png").unlink()
+        (source / "assets" / "new.png").write_bytes(b"\x89PNG\x02\x03")
+        assert (await tool.execute(
+            {"source": "local", "location": str(source), "run_install": False}, None,
+        )).success is True
+
+        files = store.list_files("demo-skill")
+        assert "assets/old.png" not in files
+        assert "assets/new.png" in files
+
+    @pytest.mark.asyncio
+    async def test_a_fresh_install_prunes_nothing(self, store, source):
+        """Pruning applies to upgrades only — there is no previous version."""
+        tool = SkillInstallTool(store=store)
+        result = await tool.execute(
+            {"source": "local", "location": str(source), "run_install": False}, None,
+        )
+        assert result.success is True
+        assert store.list_files("demo-skill") == ["scripts/run.py"]
+
+    @pytest.mark.asyncio
+    async def test_stale_files_of_a_disabled_skill_are_pruned(self, store, source):
+        (source / "scripts" / "legacy.py").write_text("print('old')\n", encoding="utf-8")
+        tool = SkillInstallTool(store=store)
+        assert (await tool.execute(
+            {"source": "local", "location": str(source), "run_install": False}, None,
+        )).success is True
+
+        store.persist_disable("demo-skill")
+        (source / "scripts" / "legacy.py").unlink()
+        assert (await tool.execute(
+            {"source": "local", "location": str(source), "run_install": False}, None,
+        )).success is True
+
+        assert "scripts/legacy.py" not in store.list_files(
+            "demo-skill", include_disabled=True,
+        )
+
 
 class TestNameOverride:
     @pytest.mark.asyncio
