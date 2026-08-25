@@ -18,6 +18,13 @@ TOOL_CAPABILITIES: dict[str, frozenset[str]] = {
     "knowledge_search": frozenset({"knowledge.read"}),
     "list_dir": frozenset({"fs.read"}),
     "memory": frozenset({"memory.read", "memory.write"}),
+    # The MCP resource/prompt tools reach a third-party server just as an
+    # mcp_* tool call does, so they carry the same capability and are covered by
+    # the same deny lists. Named here as well as declared on the classes: the
+    # name-prefix fallback in tool_capabilities() would give them mcp.call
+    # anyway, but a reader greps this table.
+    "mcp_prompts": frozenset({"mcp.call"}),
+    "mcp_resources": frozenset({"mcp.call"}),
     "message": frozenset({"message.send"}),
     "notify": frozenset({"message.send"}),
     "patch": frozenset({"fs.read", "fs.write"}),

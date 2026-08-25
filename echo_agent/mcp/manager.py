@@ -40,6 +40,10 @@ class MCPManager:
         self._clients: dict[str, MCPClient] = {}
         self._configs: dict[str, MCPServerConfig] = {}
         self._registered_tools: dict[str, list[str]] = {}
+        # Not keyed by server: the resource/prompt tools span every connection and
+        # take a `server` parameter, so they are withdrawn only when MCP as a
+        # whole shuts down.
+        self._agent_tool_names: list[str] = []
         self._registry: ToolRegistry | None = None
         # One supervisor task per server, watching for connection loss.
         self._supervisors: dict[str, asyncio.Task] = {}
@@ -91,6 +95,14 @@ class MCPManager:
             for name in list(self._registered_tools):
                 self._unregister_server_tools(name)
             self._registered_tools.clear()
+            # The resource/prompt tools go too: with no connection left they can
+            # only fail, and leaving them registered is the same defect as
+            # leaving the per-server tools behind.
+            registry = self._registry
+            if registry is not None:
+                for tool_name in self._agent_tool_names:
+                    registry.unregister(tool_name)
+            self._agent_tool_names.clear()
 
         logger.info("All MCP servers disconnected")
 
@@ -107,8 +119,27 @@ class MCPManager:
                 except Exception as e:
                     logger.error("Tool discovery failed for '{}': {}", name, e)
 
+        self._register_agent_tools(registry)
         logger.info("Discovered {} MCP tools from {} servers", total, len(self._clients))
         return total
+
+    def _register_agent_tools(self, registry: ToolRegistry) -> None:
+        """Expose resources/* and prompts/* to the agent.
+
+        These are per-manager rather than per-server (they take a ``server``
+        parameter) so connecting five MCP servers adds two tool definitions, not
+        ten. Registered only when at least one server is connected: a tool the
+        model can see but never use costs context on every turn for nothing.
+        """
+        from echo_agent.mcp.agent_tools import MCPPromptsTool, MCPResourcesTool
+
+        if not self.connected_servers:
+            return
+        for tool_cls in (MCPResourcesTool, MCPPromptsTool):
+            if registry.has(tool_cls.name):
+                continue
+            registry.register(tool_cls(self))
+            self._agent_tool_names.append(tool_cls.name)
 
     @property
     def connected_servers(self) -> list[str]:
