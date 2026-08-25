@@ -46,6 +46,17 @@ from echo_agent.cli.prompt import (
 )
 from echo_agent.cli.runtime_probe import GatewayState, is_wsl, probe_gateway
 from echo_agent.cli.service import run_service_action
+# Host classification lives with the gateway's own rules (see
+# gateway/host_rules.py) so the wizard, server._check_bind_safety and
+# GatewayAuth cannot drift apart again. Imported from the submodule rather than
+# the package root: host_rules depends on nothing but the stdlib, while
+# ``echo_agent.gateway`` eagerly re-exports GatewayServer (and thus aiohttp).
+from echo_agent.gateway.host_rules import (
+    LOOPBACK_HOST_NAMES as _LOOPBACK_HOST_NAMES,
+    is_loopback_bind,
+    is_wildcard_bind,
+    normalize_host_entries,
+)
 from echo_agent.cli.setup import providers as provider_catalog
 from echo_agent.cli.setup.model_verify import (
     VerifyResult,
@@ -720,6 +731,136 @@ def setup_channels(config: dict) -> None:
 
 # ── Section 8: Gateway ────────────────────────────────────────────────────────
 
+def _bind_label(host: str) -> str:
+    """A host string safe to both print and test for truthiness.
+
+    ``host: ""`` is a wildcard bind (aiohttp binds it to 0.0.0.0 *and* ::), but
+    it is doubly unusable as-is: printing it shows the user nothing, and the
+    ``_*_reason`` probes use their return value as the "is there a problem"
+    flag, so returning "" for an exposed bind would report it as fine. Resolved
+    in one place by never handing back the bare empty string.
+
+    Localized through ``t()`` at call time rather than a module constant — the
+    wizard sets the process locale while running.
+    """
+    host = (host or "").strip()
+    return host or t("gateway.empty_bind_label")
+
+
+def _primary_lan_address() -> str:
+    """This machine's outward-facing IP, or "" when it cannot be determined.
+
+    Used as the prefill for ``allowed_hosts`` on a wildcard bind, where the bind
+    address itself is useless as a suggestion: a browser sends the name in the
+    address bar, never ``0.0.0.0``. Prefilling the wildcard produced an
+    allowlist that matched nothing while looking configured — the exact failure
+    the allowlist prompt exists to prevent.
+
+    Uses a connectionless UDP socket, so nothing is sent and no route needs to
+    work; it only asks the kernel which local address it *would* use. Non-raising
+    by contract — the wizard must survive an offline or oddly-routed host, in
+    which case the caller falls back to asking with no prefill.
+    """
+    import socket
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.settimeout(0.2)
+            # 203.0.113.0/24 is TEST-NET-3 (RFC 5737) — reserved for
+            # documentation, so this can never accidentally name a real peer.
+            sock.connect(("203.0.113.1", 9))
+            addr = str(sock.getsockname()[0])
+    except Exception:  # noqa: BLE001 - any failure means "no suggestion"
+        return ""
+    if not addr or is_loopback_bind(addr) or is_wildcard_bind(addr):
+        return ""
+    return addr
+
+
+def _ask_allowed_hosts(auth: dict, bind_host: str) -> None:
+    """Ask for the Host allowlist on a non-loopback bind, and validate the answer.
+
+    A non-loopback bind makes the allowlist mandatory rather than optional: with
+    no usable entry, ``is_host_allowed`` (gateway/auth.py) rejects the Host on
+    every admin request, so the dashboard's sessions / config / memory / tasks /
+    cron / knowledge pages all 403. The wizard never used to ask, so a
+    ``0.0.0.0`` + token deployment saved "successfully" and then failed in the
+    browser.
+
+    Two things this deliberately does NOT do:
+
+    * prefill the bind address when it is a wildcard — ``0.0.0.0`` is not a name
+      any browser sends, so that prefill turned "press Enter" into a broken
+      config that also suppressed the follow-up warning. A detected LAN address
+      is offered instead, and if none can be found the prompt is left blank so
+      Enter means "I know, not now" rather than silently writing junk.
+    * trust the raw answer — entries are normalized and wildcards dropped
+      (``host_rules.normalize_host_entries``), because ``GatewayAuth`` compares
+      normalized values and a pasted ``192.168.1.5:58123`` or a typed
+      ``Echo.Example.com`` would otherwise never match.
+
+    Note the interaction with ``ui.text``: an empty answer falls back to the
+    default, so "did the user decline?" can only be decided *after* filtering.
+    """
+    existing = normalize_host_entries(
+        auth.get("allowed_hosts") or auth.get("allowedHosts") or []
+    )
+    if existing:
+        suggestion = ", ".join(existing)
+    elif is_wildcard_bind(bind_host):
+        suggestion = _primary_lan_address()
+    else:
+        suggestion = bind_host
+
+    if is_wildcard_bind(bind_host):
+        print_info(t("gateway.allowed_hosts_wildcard_hint", host=bind_host))
+    raw = ui.text(t("gateway.allowed_hosts"), default=suggestion)
+    hosts = normalize_host_entries(str(raw).replace("\n", ",").split(","))
+
+    # Drop the camelCase alias so the two keys cannot disagree downstream.
+    auth.pop("allowedHosts", None)
+    if hosts:
+        auth["allowed_hosts"] = hosts
+        print_info(t("gateway.allowed_hosts_set", hosts=", ".join(hosts)))
+    else:
+        auth.pop("allowed_hosts", None)
+        print_warning(t("gateway.allowed_hosts_empty_warn", host=bind_host))
+
+
+def _reconcile_loopback_allowed_hosts(auth: dict) -> None:
+    """Offer to clear a stale allowlist left over from a non-loopback bind.
+
+    An explicit ``allowed_hosts`` *replaces* the loopback default rather than
+    adding to it (see ``is_host_allowed``), so a user who exposed the gateway on
+    ``0.0.0.0`` with ``allowed_hosts: [echo.example.com]`` and later came back
+    through this wizard to rebind to ``127.0.0.1`` was left with an allowlist
+    that rejects ``127.0.0.1`` and ``localhost`` — the local dashboard broke,
+    while the old public domain kept passing. Nothing warned, because
+    ``_browser_unreachable_reason`` sees a loopback bind and returns early.
+
+    Asked rather than done silently: this is the user's existing config, and a
+    reverse proxy in front of a loopback bind is a legitimate reason to keep the
+    domain listed. Declining is safe — the entries stay exactly as they were.
+    """
+    existing = normalize_host_entries(
+        auth.get("allowed_hosts") or auth.get("allowedHosts") or []
+    )
+    if not existing:
+        return
+    if any(h in _LOOPBACK_HOST_NAMES for h in existing):
+        return  # already reachable from this machine
+    print_warning(t("gateway.stale_allowed_hosts_warn", hosts=", ".join(existing)))
+    if not ui.confirm(t("gateway.stale_allowed_hosts_clear"), default=True):
+        # Keep the list, but normalize it and collapse the alias so the stored
+        # value is at least the one GatewayAuth will actually compare against.
+        auth.pop("allowedHosts", None)
+        auth["allowed_hosts"] = existing
+        return
+    auth.pop("allowedHosts", None)
+    auth.pop("allowed_hosts", None)
+    print_info(t("gateway.stale_allowed_hosts_cleared"))
+
+
 def setup_gateway(config: dict) -> None:
     _print_section_header("gateway")
     print_info(t("gateway.intro"))
@@ -754,7 +895,7 @@ def setup_gateway(config: dict) -> None:
     # whole service unable to boot. Catch the combo here rather than letting it
     # fail after save.
     host_norm = str(gw["host"]).strip()
-    if auth_keys[a_idx] == "open" and host_norm not in ("127.0.0.1", "localhost", "::1", ""):
+    if auth_keys[a_idx] == "open" and not is_loopback_bind(host_norm):
         print_warning(t("gateway.open_exposed_warn", host=host_norm))
         if ui.confirm(t("gateway.open_exposed_fix"), default=True):
             gw["host"] = "127.0.0.1"
@@ -782,25 +923,15 @@ def setup_gateway(config: dict) -> None:
         if removed:
             print_info(t("gateway.open_tokens_cleared"))
 
-    # A non-loopback bind makes the Host allowlist mandatory, not optional: with
-    # allowed_hosts empty, is_host_allowed refuses every browser-shaped request
-    # (see gateway/auth.py:is_host_allowed — the DNS-rebinding guard). The wizard
-    # never used to ask, so a 0.0.0.0 + token deployment saved "successfully" yet
-    # 403'd every browser. Ask here, on exactly the branch where it matters, and
-    # prefill with the host the user just typed so an IP/domain bind is one Enter.
+    # The Host allowlist is decided on exactly the branch where it matters.
+    # Both directions need handling, not just the exposed one: rebinding *back*
+    # to loopback leaves a stale allowlist that locks the local dashboard out
+    # (see _reconcile_loopback_allowed_hosts).
     final_host = str(gw["host"]).strip()
-    if final_host not in ("127.0.0.1", "localhost", "::1", ""):
-        existing_hosts = auth.get("allowed_hosts") or auth.get("allowedHosts") or []
-        default_hosts = ", ".join(existing_hosts) if existing_hosts else final_host
-        raw = ui.text(t("gateway.allowed_hosts"), default=default_hosts)
-        hosts = [h.strip() for h in str(raw).replace("\n", ",").split(",") if h.strip()]
-        # Drop the camelCase alias so the two keys cannot disagree downstream.
-        auth.pop("allowedHosts", None)
-        if hosts:
-            auth["allowed_hosts"] = hosts
-        else:
-            auth.pop("allowed_hosts", None)
-            print_warning(t("gateway.allowed_hosts_empty_warn", host=final_host))
+    if is_loopback_bind(final_host):
+        _reconcile_loopback_allowed_hosts(auth)
+    else:
+        _ask_allowed_hosts(auth, final_host)
 
     print_success(t("gateway.saved", host=gw["host"], port=gw["port"], mode=t(f"gateway.auth_{auth_keys[a_idx]}")))
 
@@ -1516,17 +1647,26 @@ def _unstartable_reason(config: dict) -> str:
     still act on it — quickstart never visits the gateway section, so nothing
     else in that flow would notice.
 
-    Kept as a *duplicate* of the server's rule rather than a call into it,
-    because the wizard holds a raw YAML dict (possibly hand-edited, possibly not
-    schema-valid yet) and building a GatewayServer to ask would mean standing up
-    a bus, session manager and workspace mid-wizard. The pairing is pinned by a
-    test that fails if the two rules drift.
+    The *policy* is still a duplicate of the server's rule (the wizard holds a
+    raw YAML dict, possibly hand-edited and not yet schema-valid, and building a
+    GatewayServer to ask would mean standing up a bus, session manager and
+    workspace mid-wizard), but the *host classification* underneath is now
+    shared — see gateway/host_rules.py. That is where the two used to diverge:
+    both had a local string tuple containing ``""``, which is a wildcard bind,
+    so an empty host with no token was reported startable and then exposed an
+    unauthenticated gateway. The pairing is pinned by a test that fails if the
+    two rules drift.
+
+    The return value doubles as the truthiness signal for "is there a problem",
+    so an exposed bind never yields "": ``host: ""`` is a wildcard, and returning
+    the empty string verbatim would report it as startable — the very bug this
+    function now catches.
     """
     gw = config.get("gateway", {})
     if not isinstance(gw, dict) or not gw.get("enabled"):
         return ""
     host = str(gw.get("host", "127.0.0.1")).strip()
-    if host in ("127.0.0.1", "localhost", "::1", ""):
+    if is_loopback_bind(host):
         return ""
     auth = gw.get("auth", {})
     if not isinstance(auth, dict):
@@ -1537,32 +1677,43 @@ def _unstartable_reason(config: dict) -> str:
     )
     if has_token:
         return ""
-    return host
+    return _bind_label(host)
 
 
 def _browser_unreachable_reason(config: dict) -> str:
-    """The bind host when a non-loopback gateway has no Host allowlist, else "".
+    """The bind host when a non-loopback gateway has no *usable* Host allowlist.
 
     Unlike ``_unstartable_reason`` this does not block startup: the service boots
-    fine, but ``is_host_allowed`` (gateway/auth.py) then rejects every
-    browser-shaped request for lacking a trusted Host, so the dashboard 403s.
+    fine, but ``is_host_allowed`` (gateway/auth.py) then rejects the Host on
+    every admin request, so the dashboard's sessions / config / memory / tasks /
+    cron / knowledge pages 403. Read-only pages and native clients keep working —
+    the Host check is reached through ``_check_csrf``, which only
+    ``_require_admin_token`` calls.
+
     Surfaces the same gap the wizard's gateway section now asks about, for the
-    path that skips it — a hand-edited yaml or a quickstart that never visited
+    paths that skip it — a hand-edited yaml, or a quickstart that never visited
     that section. Mirrors ``gateway/server.py:_warn_host_allowlist_if_unset``,
     which only logs where an operator will not see it.
+
+    "Usable" is the operative word: entries are run through
+    ``host_rules.normalize_host_entries``, so an ``allowed_hosts: [0.0.0.0]`` —
+    which is what prefilling the wizard with a wildcard bind address used to
+    produce — counts as unconfigured instead of silently suppressing this
+    warning. A wildcard cannot appear in a Host header, so such a list matches
+    nothing while looking configured.
     """
     gw = config.get("gateway", {})
     if not isinstance(gw, dict) or not gw.get("enabled"):
         return ""
     host = str(gw.get("host", "127.0.0.1")).strip()
-    if host in ("127.0.0.1", "localhost", "::1", ""):
+    if is_loopback_bind(host):
         return ""
     auth = gw.get("auth", {})
     if not isinstance(auth, dict):
         auth = {}
-    if auth.get("allowed_hosts") or auth.get("allowedHosts"):
+    if normalize_host_entries(auth.get("allowed_hosts") or auth.get("allowedHosts") or []):
         return ""
-    return host
+    return _bind_label(host)
 
 
 def _offer_gateway_start(

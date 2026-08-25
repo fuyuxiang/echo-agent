@@ -130,12 +130,8 @@ class TestSkillsAPI:
         meta = MagicMock()
         meta.name = "alpha"
         meta.to_dict.return_value = {"name": "alpha"}
-        root = MagicMock()
-        root.exists.return_value = True
-        root.rglob.return_value = [MagicMock(parent="p")]
-        store._all_roots.return_value = [(root, None)]
-        store._read_meta.return_value = meta
-        store._disabled = set()
+        store.list_all.return_value = [meta]
+        store.is_disabled.return_value = False
 
         resp = await api.list_skills(_Request())
         assert resp.status == 200
@@ -165,7 +161,7 @@ class TestSkillsAPI:
     @pytest.mark.asyncio
     async def test_toggle_skill_enable(self):
         api, store, _ = self._make()
-        store._disabled = {"alpha"}
+        store.is_disabled.return_value = True
         resp = await api.toggle_skill(_Request(match_info={"name": "alpha"}))
         data = await _payload(resp)
         assert data["success"] is True
@@ -175,7 +171,7 @@ class TestSkillsAPI:
     @pytest.mark.asyncio
     async def test_toggle_skill_disable(self):
         api, store, _ = self._make()
-        store._disabled = set()
+        store.is_disabled.return_value = False
         resp = await api.toggle_skill(_Request(match_info={"name": "alpha"}))
         data = await _payload(resp)
         assert data["skill"]["enabled"] is False
@@ -194,13 +190,13 @@ class TestSkillsAPI:
     async def test_delete_skill_success(self):
         api, store, _ = self._make()
         store.delete_skill.return_value = None
-        store._disabled = {"alpha"}
-        store._persisted_disabled = {"alpha"}
         resp = await api.delete_skill(_Request(match_info={"name": "alpha"}))
         assert resp.status == 200
         data = await _payload(resp)
         assert data["success"] is True
-        store._save_persisted_disabled.assert_called_once()
+        # Clearing the disable entries is now SkillStore.delete_skill's job, so
+        # the API layer only has to delegate.
+        store.delete_skill.assert_called_once_with("alpha")
 
     @pytest.mark.asyncio
     async def test_import_skill_invalid_json(self):
@@ -248,7 +244,7 @@ class TestSkillsAPI:
         store._read_meta.return_value = meta
         existing = tmp_path / "user" / "general" / "alpha"
         existing.mkdir(parents=True)
-        store._user_dir = tmp_path / "user"
+        store.user_dir = tmp_path / "user"
         resp = await api.import_skill(_Request(body={"path": str(src)}))
         assert resp.status == 409
         data = await _payload(resp)
@@ -265,7 +261,7 @@ class TestSkillsAPI:
         meta.category = "general"
         meta.to_dict.return_value = {"name": "alpha"}
         store._read_meta.return_value = meta
-        store._user_dir = tmp_path / "user"
+        store.user_dir = tmp_path / "user"
         resp = await api.import_skill(_Request(body={"path": str(src)}))
         assert resp.status == 200
         data = await _payload(resp)

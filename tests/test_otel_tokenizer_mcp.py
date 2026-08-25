@@ -292,6 +292,12 @@ class TestStreamableHttpTransport:
         body_release = asyncio.Event()
 
         class _StreamContent:
+            # Mirrors aiohttp's StreamReader: the SSE parser reads via
+            # iter_any() so it sees bytes as soon as they arrive rather than
+            # waiting for line boundaries.
+            def iter_any(self):
+                return self
+
             def __aiter__(self):
                 return self
 
@@ -306,6 +312,7 @@ class TestStreamableHttpTransport:
                 raise StopAsyncIteration
 
         resp = MagicMock()
+        resp.status = 200
         resp.headers = {"Content-Type": "text/event-stream", "Mcp-Session-Id": "sess-1"}
         resp.content = _StreamContent()
 
@@ -369,6 +376,9 @@ class TestStdioTransport:
 
         proc = type("P", (), {})()
         proc.stdin = _Stdin()
+        # A live child process: send() now refuses to write to one that has
+        # already exited, so the fixture has to say it is still running.
+        proc.returncode = None
         t._process = proc  # type: ignore[assignment]
 
         async def writer(i: int) -> None:
@@ -417,27 +427,144 @@ class TestMCPClient:
         assert client._notifications.maxsize > 0
 
 
-class TestHttpTransport:
-    def test_init_not_connected(self):
-        from echo_agent.mcp.transport import HttpTransport
-        t = HttpTransport(url="http://localhost:3000/")
-        assert t.is_connected is False
+class TestSSEFraming:
+    """SSE parsing for the Streamable HTTP transport.
 
-    def test_parse_sse_event_valid(self):
-        from echo_agent.mcp.transport import HttpTransport
-        t = HttpTransport(url="http://x")
-        result = t._parse_sse_event('data: {"jsonrpc":"2.0","id":1}')
-        assert result == {"jsonrpc": "2.0", "id": 1}
+    The legacy ``HttpTransport`` these tests used to cover is gone — it was never
+    constructed by the manager, only by this test class, and it carried the same
+    framing defects as the transport that does ship. What remains is the parser
+    that is actually reachable.
+    """
 
-    def test_parse_sse_event_no_data(self):
-        from echo_agent.mcp.transport import HttpTransport
-        t = HttpTransport(url="http://x")
-        assert t._parse_sse_event("event: ping") is None
+    def test_parse_event_valid(self):
+        from echo_agent.mcp.transport import _parse_sse_event
+        assert _parse_sse_event('data: {"jsonrpc":"2.0","id":1}') == {"jsonrpc": "2.0", "id": 1}
 
-    def test_parse_sse_event_invalid_json(self):
-        from echo_agent.mcp.transport import HttpTransport
-        t = HttpTransport(url="http://x")
-        assert t._parse_sse_event("data: not-json") is None
+    def test_parse_event_no_data_field(self):
+        from echo_agent.mcp.transport import _parse_sse_event
+        assert _parse_sse_event("event: ping") is None
+
+    def test_parse_event_invalid_json(self):
+        from echo_agent.mcp.transport import _parse_sse_event
+        assert _parse_sse_event("data: not-json") is None
+
+    def test_parse_event_tolerates_missing_and_extra_space(self):
+        """Spec: a ``data:`` value drops exactly one optional leading space."""
+        from echo_agent.mcp.transport import _parse_sse_event
+        assert _parse_sse_event('data:{"a":1}') == {"a": 1}
+        assert _parse_sse_event('data:  {"a":1}') == {"a": 1}
+
+    def test_parse_event_ignores_comments_and_similar_field_names(self):
+        from echo_agent.mcp.transport import _parse_sse_event
+        assert _parse_sse_event(': keepalive\ndata: {"a":1}') == {"a": 1}
+        assert _parse_sse_event('dataFoo: {"a":2}\ndata: {"a":1}') == {"a": 1}
+
+    def test_parse_event_joins_multiline_data(self):
+        from echo_agent.mcp.transport import _parse_sse_event
+        assert _parse_sse_event('data: {"a":\ndata: 1}') == {"a": 1}
+
+    def test_split_handles_crlf_framing(self):
+        """The framing bug that made HTTP MCP unusable in practice.
+
+        The official SDK terminates events with CRLFCRLF. The old parser split
+        only on ``\\n\\n``, so against a real server it never produced a single
+        event and every call over SSE timed out.
+        """
+        from echo_agent.mcp.transport import _split_sse_event
+
+        event, rest = _split_sse_event('event: message\r\ndata: {"id":1}\r\n\r\ntail')
+        assert event is not None and '"id":1' in event
+        assert rest == "tail"
+
+    def test_split_handles_lf_and_cr_framing(self):
+        from echo_agent.mcp.transport import _split_sse_event
+
+        event, rest = _split_sse_event('data: {"id":2}\n\ntail')
+        assert event == 'data: {"id":2}' and rest == "tail"
+        event, rest = _split_sse_event('data: {"id":3}\r\rtail')
+        assert event == 'data: {"id":3}' and rest == "tail"
+
+    def test_split_returns_none_until_terminated(self):
+        from echo_agent.mcp.transport import _split_sse_event
+
+        event, rest = _split_sse_event('data: {"id":4}\r\n')
+        assert event is None
+        assert rest == 'data: {"id":4}\r\n'
+
+
+class TestStreamableHttpProtocolHeaders:
+    def _transport(self):
+        from echo_agent.mcp.transport import StreamableHttpTransport
+        return StreamableHttpTransport(url="https://x/mcp", headers={"X-Custom": "1"})
+
+    def test_post_sends_required_accept_header(self):
+        """The spec requires both media types on every POST; without this a
+        compliant server answers 406."""
+        headers = self._transport()._request_headers()
+        assert headers["Accept"] == "application/json, text/event-stream"
+        assert headers["Content-Type"] == "application/json"
+        assert headers["X-Custom"] == "1"
+
+    def test_get_stream_accepts_event_stream_only(self):
+        headers = self._transport()._request_headers(for_get=True)
+        assert headers["Accept"] == "text/event-stream"
+        assert "Content-Type" not in headers
+
+    def test_protocol_version_header_sent_after_negotiation(self):
+        t = self._transport()
+        assert "MCP-Protocol-Version" not in t._request_headers()
+        t.set_protocol_version("2025-06-18")
+        assert t._request_headers()["MCP-Protocol-Version"] == "2025-06-18"
+
+    def test_session_id_header_sent_once_known(self):
+        t = self._transport()
+        assert "Mcp-Session-Id" not in t._request_headers()
+        t._session_id = "sess-9"
+        assert t._request_headers()["Mcp-Session-Id"] == "sess-9"
+
+    @pytest.mark.asyncio
+    async def test_http_error_raises_instead_of_hanging(self):
+        """A 406/500 used to be pushed onto the response queue with an id the
+        client never issued, so no future matched and the call waited out its
+        full timeout — a protocol error surfacing as a hang."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        t = self._transport()
+        resp = MagicMock()
+        resp.status = 406
+        resp.headers = {}
+        resp.text = AsyncMock(return_value="Not Acceptable")
+        with pytest.raises(ConnectionError, match="406"):
+            await t._check_status(resp, {"method": "initialize"})
+
+    @pytest.mark.asyncio
+    async def test_404_marks_the_session_expired(self):
+        """Per spec the client starts a new session by re-initialising; flagging
+        it lets the manager rebuild instead of reporting a generic error forever."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        t = self._transport()
+        t._session_id = "old"
+        resp = MagicMock()
+        resp.status = 404
+        resp.headers = {}
+        resp.text = AsyncMock(return_value="expired")
+        with pytest.raises(ConnectionError, match="session expired"):
+            await t._check_status(resp, {"method": "tools/call"})
+        assert t.session_expired is True
+        assert t.session_id is None
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_is_reported_distinctly(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        t = self._transport()
+        resp = MagicMock()
+        resp.status = 401
+        resp.headers = {}
+        resp.text = AsyncMock(return_value="no token")
+        with pytest.raises(ConnectionError, match="unauthorized"):
+            await t._check_status(resp, {"method": "tools/list"})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -609,5 +736,40 @@ class TestConfigDefaults:
 
     def test_mcp_server_config_transport(self):
         from echo_agent.config.schema import MCPServerConfig
-        m = MCPServerConfig()
+        m = MCPServerConfig(command="npx")
         assert m.connect_timeout == 60
+        assert m.timeout == 120
+        # Untrusted by default: a server's own annotations must not be able to
+        # lower the approval level required to call its tools.
+        assert m.trust_level == "untrusted"
+
+    def test_mcp_server_config_requires_exactly_one_transport(self):
+        """Both fields set used to mean "url silently wins", so a typo in one
+        produced a connection to the other with no indication why. Neither set
+        failed only at connect time, for what is purely a config error."""
+        from pydantic import ValidationError
+        from echo_agent.config.schema import MCPServerConfig
+
+        with pytest.raises(ValidationError, match="either 'url' or 'command'"):
+            MCPServerConfig()
+        with pytest.raises(ValidationError, match="not both"):
+            MCPServerConfig(command="npx", url="https://x/mcp")
+        # A disabled entry may be left incomplete — it is never connected.
+        assert MCPServerConfig(enabled=False).enabled is False
+
+    def test_mcp_server_config_rejects_nonpositive_timeouts(self):
+        from pydantic import ValidationError
+        from echo_agent.config.schema import MCPServerConfig
+
+        with pytest.raises(ValidationError):
+            MCPServerConfig(command="x", timeout=-1)
+        with pytest.raises(ValidationError):
+            MCPServerConfig(command="x", connect_timeout=0)
+
+    def test_mcp_oauth_requires_http_transport(self):
+        from pydantic import ValidationError
+        from echo_agent.config.schema import MCPServerConfig
+
+        with pytest.raises(ValidationError, match="oauth"):
+            MCPServerConfig(command="npx", auth="oauth")
+        assert MCPServerConfig(url="https://x/mcp", auth="oauth").auth == "oauth"

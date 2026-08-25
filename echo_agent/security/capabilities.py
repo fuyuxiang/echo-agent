@@ -18,6 +18,13 @@ TOOL_CAPABILITIES: dict[str, frozenset[str]] = {
     "knowledge_search": frozenset({"knowledge.read"}),
     "list_dir": frozenset({"fs.read"}),
     "memory": frozenset({"memory.read", "memory.write"}),
+    # The MCP resource/prompt tools reach a third-party server just as an
+    # mcp_* tool call does, so they carry the same capability and are covered by
+    # the same deny lists. Named here as well as declared on the classes: the
+    # name-prefix fallback in tool_capabilities() would give them mcp.call
+    # anyway, but a reader greps this table.
+    "mcp_prompts": frozenset({"mcp.call"}),
+    "mcp_resources": frozenset({"mcp.call"}),
     "message": frozenset({"message.send"}),
     "notify": frozenset({"message.send"}),
     "patch": frozenset({"fs.read", "fs.write"}),
@@ -28,6 +35,13 @@ TOOL_CAPABILITIES: dict[str, frozenset[str]] = {
     "session_search": frozenset({"session.read"}),
     "skill_install": frozenset({"skill.install", "network.outbound", "fs.write"}),
     "skill_manage": frozenset({"skill.write", "fs.write"}),
+    # skill_run spawns a Python interpreter on a file the skill author controls,
+    # so it is code execution by any measure — an empty capability set let it
+    # slip past every deny list built out of capabilities (DAEMON_*,
+    # PUBLIC_GATEWAY_*), which is exactly how it became a cheaper route to
+    # process.exec than exec itself. code.exec belongs here as much as
+    # process.exec: what it runs is Python source, same as execute_code.
+    "skill_run": frozenset({"process.exec", "code.exec", "skill.read"}),
     "skill_view": frozenset({"skill.read"}),
     "skills_list": frozenset({"skill.read"}),
     "task": frozenset({"task.write"}),

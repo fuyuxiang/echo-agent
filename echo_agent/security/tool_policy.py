@@ -57,6 +57,11 @@ HIGH_RISK_TOOLS = frozenset({
     "process",
     "skill_install",
     "skill_manage",
+    # Runs a skill-authored Python file in a subprocess. Named here in addition
+    # to carrying process.exec/code.exec capabilities: the capability sets
+    # already deny it, but a name in the list is what a reader greps for when
+    # asking "is exec reachable in this profile?".
+    "skill_run",
 })
 
 PUBLIC_GATEWAY_DENY = HIGH_RISK_TOOLS | frozenset({
@@ -69,6 +74,13 @@ PUBLIC_GATEWAY_DENY = HIGH_RISK_TOOLS | frozenset({
 PUBLIC_GATEWAY_DENY_CAPABILITIES = frozenset({
     "code.exec",
     "fs.write",
+    # An MCP tool's behaviour is defined by a third party, not by this codebase:
+    # the name, the description and the schema all come from the server, and the
+    # only thing bounding what it does is that server's own honesty. On a public
+    # gateway — untrusted callers, nobody watching — that is not a surface to
+    # open by default. Operators who do want it name the tool (or "mcp.call") in
+    # tools.allow, which is an explicit, greppable decision.
+    "mcp.call",
     "process.exec",
     "process.manage",
     "scheduler.write",
@@ -82,12 +94,16 @@ DAEMON_DENY_BY_DEFAULT = frozenset({
     "execute_code",
     "process",
     "skill_install",
+    "skill_run",
 })
 DAEMON_DENY_CAPABILITIES = frozenset({
     "code.exec",
     "process.exec",
     "process.manage",
     "skill.install",
+    # Same reasoning as the public-gateway list: a daemon runs unattended, so
+    # nobody is present to notice a third-party tool doing something unexpected.
+    "mcp.call",
 })
 
 PROFILE_TOOLS = {

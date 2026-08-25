@@ -91,6 +91,20 @@ class TestFetchGit:
         assert dest.endswith("repo")
 
 
+@pytest.fixture
+def allow_ssrf(monkeypatch):
+    """Let the URL reach the mocked downloader.
+
+    _fetch_url now validates the target before opening a socket, and the test
+    hosts here ("x") do not resolve, so without this every URL case would fail
+    on the SSRF check rather than exercising what it means to test.
+    """
+    async def _ok(url):
+        return None
+
+    monkeypatch.setattr(skill_install, "check_url_ssrf", _ok)
+
+
 class TestFetchUrl:
     @pytest.mark.asyncio
     async def test_invalid_url(self, tmp_path):
@@ -99,7 +113,22 @@ class TestFetchUrl:
         assert "Invalid URL" in err
 
     @pytest.mark.asyncio
-    async def test_download_failure(self, tmp_path):
+    async def test_ssrf_blocked_before_download(self, tmp_path, monkeypatch):
+        """指向内网/元数据地址的 URL 必须在发起下载前被拒。"""
+        async def _blocked(url):
+            return "Blocked: '169.254.169.254' resolves to non-public address"
+
+        monkeypatch.setattr(skill_install, "check_url_ssrf", _blocked)
+        run_mock = AsyncMock(return_value=(0, "", ""))
+        monkeypatch.setattr(skill_install, "_run", run_mock)
+
+        dest, err = await _fetch_url("http://169.254.169.254/latest/meta-data", str(tmp_path))
+        assert dest is None
+        assert "Blocked" in err
+        run_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_download_failure(self, tmp_path, allow_ssrf):
         with patch("echo_agent.agent.tools.skill_install._run",
                    AsyncMock(return_value=(1, "", "404"))):
             dest, err = await _fetch_url("https://x/a.tar", str(tmp_path))
@@ -107,15 +136,19 @@ class TestFetchUrl:
         assert "Download failed" in err
 
     @pytest.mark.asyncio
-    async def test_tar_extract_success(self, tmp_path):
-        with patch("echo_agent.agent.tools.skill_install._run",
-                   AsyncMock(return_value=(0, "", ""))):
+    async def test_tar_extract_success(self, tmp_path, allow_ssrf):
+        async def fake_run(cmd, cwd=None, timeout=60):
+            # curl is mocked, so materialize the archive the size check stats.
+            (Path(tmp_path) / "archive").write_bytes(b"tarball")
+            return 0, "", ""
+
+        with patch("echo_agent.agent.tools.skill_install._run", fake_run):
             dest, err = await _fetch_url("https://x/a.tar.gz", str(tmp_path))
         assert err == ""
         assert dest.endswith("download")
 
     @pytest.mark.asyncio
-    async def test_bad_zip(self, tmp_path):
+    async def test_bad_zip(self, tmp_path, allow_ssrf):
         # First _run (curl) succeeds; the archive file is not a real zip.
         async def fake_run(cmd, cwd=None, timeout=60):
             (Path(tmp_path) / "archive").write_bytes(b"not a zip")
@@ -125,6 +158,22 @@ class TestFetchUrl:
             dest, err = await _fetch_url("https://x/a.zip", str(tmp_path))
         assert dest is None
         assert "not a valid zip" in err
+
+    @pytest.mark.asyncio
+    async def test_zip_slip_rejected(self, tmp_path, allow_ssrf):
+        """zip 成员含 ../ → 拒绝解压,不写到目标目录之外。"""
+        import zipfile
+
+        async def fake_run(cmd, cwd=None, timeout=60):
+            with zipfile.ZipFile(Path(tmp_path) / "archive", "w") as zf:
+                zf.writestr("../escaped.txt", "pwned")
+            return 0, "", ""
+
+        with patch("echo_agent.agent.tools.skill_install._run", fake_run):
+            dest, err = await _fetch_url("https://x/a.zip", str(tmp_path))
+        assert dest is None
+        assert "escapes" in err
+        assert not (tmp_path.parent / "escaped.txt").exists()
 
 
 SKILL_MD = """---
@@ -233,7 +282,7 @@ class TestResolveName:
 class TestRunInstallSpecs:
     @pytest.mark.asyncio
     async def test_pip_unsafe_skipped(self):
-        results = await _run_install_specs([{"kind": "pip", "package": "x; rm -rf /"}])
+        results, failures = await _run_install_specs([{"kind": "pip", "package": "x; rm -rf /"}])
         assert any("skipped unsafe" in r for r in results)
 
     @pytest.mark.asyncio
@@ -249,7 +298,7 @@ class TestRunInstallSpecs:
         run_mock = AsyncMock(return_value=(0, "out", ""))
         monkeypatch.setattr(skill_install, "_run", run_mock)
 
-        results = await _run_install_specs([{"kind": "pip", "package": "requests"}])
+        results, failures = await _run_install_specs([{"kind": "pip", "package": "requests"}])
 
         assert len(calls) == 1
         specs, source = calls[0]
@@ -264,7 +313,7 @@ class TestRunInstallSpecs:
             return {"success": False, "detail": "boom"}
 
         monkeypatch.setattr(skill_install, "install_authorized_async", fake_install_authorized)
-        results = await _run_install_specs([{"kind": "pip", "package": "requests"}])
+        results, failures = await _run_install_specs([{"kind": "pip", "package": "requests"}])
         assert any("boom" in r for r in results)
 
     @pytest.mark.asyncio
@@ -273,7 +322,7 @@ class TestRunInstallSpecs:
         ia_mock = MagicMock()
         monkeypatch.setattr(skill_install, "_run", run_mock)
         monkeypatch.setattr(skill_install, "install_authorized_async", ia_mock)
-        results = await _run_install_specs([{"kind": "brew", "formula": "wget"}])
+        results, failures = await _run_install_specs([{"kind": "brew", "formula": "wget"}])
         run_mock.assert_called_once()
         ia_mock.assert_not_called()
         assert any("ok" in r for r in results)
@@ -282,30 +331,40 @@ class TestRunInstallSpecs:
     async def test_shell_does_not_install(self, monkeypatch):
         ia_mock = MagicMock()
         monkeypatch.setattr(skill_install, "install_authorized_async", ia_mock)
-        results = await _run_install_specs([{"kind": "shell", "command": "echo hi"}])
+        results, failures = await _run_install_specs([{"kind": "shell", "command": "echo hi"}])
         ia_mock.assert_not_called()
         assert any("skipped for safety" in r for r in results)
 
     @pytest.mark.asyncio
     async def test_brew_unsafe_skipped(self):
-        results = await _run_install_specs([{"kind": "brew", "formula": "x;y"}])
+        results, failures = await _run_install_specs([{"kind": "brew", "formula": "x;y"}])
         assert any("skipped unsafe" in r for r in results)
 
     @pytest.mark.asyncio
     async def test_shell_skipped_for_safety(self):
-        results = await _run_install_specs([{"kind": "shell", "command": "echo hi"}])
+        results, failures = await _run_install_specs([{"kind": "shell", "command": "echo hi"}])
         assert any("skipped for safety" in r for r in results)
 
     @pytest.mark.asyncio
     async def test_unknown_kind(self):
-        results = await _run_install_specs([{"kind": "wat"}])
+        results, failures = await _run_install_specs([{"kind": "wat"}])
         assert any("unknown install kind" in r for r in results)
 
 
 class TestSkillInstallExecute:
     def _make(self):
         store = MagicMock()
+        # SkillStore's write methods return None on success and an error string
+        # on failure. A bare MagicMock returns a truthy Mock, which the install
+        # now (correctly) reads as "this write failed" and rolls back — so the
+        # mock has to match the real contract.
         store.create_skill.return_value = None
+        store.update_skill.return_value = None
+        store.write_file.return_value = None
+        store.write_file_bytes.return_value = None
+        store.remove_file.return_value = None
+        store.read_skill.return_value = None
+        store.list_files.return_value = []
         return SkillInstallTool(store=store), store
 
     @pytest.mark.asyncio

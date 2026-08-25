@@ -17,6 +17,12 @@ interface SessionItem {
 interface Message {
   role: string;
   content: string;
+  // 后端展示视图对工具调用 / 工具结果打的标记(session/manager.py:
+  // display_messages)。它们确实发生过、也值得能看,但不是对话轮次 —— 以前
+  // 全部按“非 user 即 Agent 气泡”渲染,工具输出被当成 Agent 说的话。
+  internal?: boolean;
+  // 仅 internal 条目有:被调用的工具名。
+  name?: string;
 }
 
 export function Sessions() {
@@ -113,18 +119,33 @@ export function Sessions() {
           </div>
         )}
         {!historyError && messages.map((msg, i) => (
-          <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-            <div
-              className={`max-w-[85%] md:max-w-[70%] rounded-lg px-4 py-2 text-sm ${
-                msg.role === "user" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-800"
-              }`}
-            >
-              {/* Agent 回复通常是 Markdown(代码块、列表)。这里不引入渲染器,但
-                  pre-wrap + break-words 至少保住换行与长行折叠——此前长代码块挤成
-                  一行且不换行,基本没法读。 */}
-              <div className="whitespace-pre-wrap break-words">{msg.content}</div>
+          msg.internal ? (
+            /* 工具调用与工具结果:折叠成一条居中的细节行,默认收起。既不冒充
+               对话气泡,也不丢失 —— 排查问题时这些恰恰是最需要看的内容。 */
+            <details key={i} className="mx-auto w-full max-w-[90%] text-xs">
+              <summary className="cursor-pointer text-gray-500 hover:text-gray-700 py-1">
+                {msg.role === "tool"
+                  ? t("toolResult", { name: msg.name || t("unknownTool") })
+                  : t("toolCall", { name: msg.name || t("unknownTool") })}
+              </summary>
+              <div className="whitespace-pre-wrap break-words bg-gray-50 border border-gray-200 rounded p-2 mt-1 text-gray-700 font-mono">
+                {msg.content || t("emptyContent")}
+              </div>
+            </details>
+          ) : (
+            <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+              <div
+                className={`max-w-[85%] md:max-w-[70%] rounded-lg px-4 py-2 text-sm ${
+                  msg.role === "user" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-800"
+                }`}
+              >
+                {/* Agent 回复通常是 Markdown(代码块、列表)。这里不引入渲染器,但
+                    pre-wrap + break-words 至少保住换行与长行折叠——此前长代码块挤成
+                    一行且不换行,基本没法读。 */}
+                <div className="whitespace-pre-wrap break-words">{msg.content}</div>
+              </div>
             </div>
-          </div>
+          )
         ))}
         {!selected && <div className="text-gray-400 text-center mt-20">{t("selectHint")}</div>}
       </div>

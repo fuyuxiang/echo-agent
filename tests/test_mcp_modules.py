@@ -212,12 +212,26 @@ class TestMCPManager:
                 "Authorization": "Bearer ${MY_TOKEN}",
                 "X-Host": "${HOST}:8080",
                 "Plain": "no_vars_here",
-                "Missing": "${NOT_SET}",
+                "Bare": "$MY_TOKEN",
             })
             assert result["Authorization"] == "Bearer secret123"
             assert result["X-Host"] == "localhost:8080"
             assert result["Plain"] == "no_vars_here"
-            assert result["Missing"] == "${NOT_SET}"
+            # $VAR without braces is now expanded too; it used to pass through
+            # untouched, so a header written that way was sent literally.
+            assert result["Bare"] == "secret123"
+
+    def test_resolve_env_vars_missing_raises(self, tmp_path):
+        """A missing variable is a configuration error, not a value.
+
+        The literal "${NOT_SET}" used to be sent as the header value, so the
+        failure surfaced as an opaque 401 from the MCP server instead of naming
+        the variable that was never set.
+        """
+        mgr = self._make(tmp_path)
+        with patch.dict(os.environ, {}, clear=True):
+            with pytest.raises(ValueError, match="NOT_SET"):
+                mgr._resolve_env_vars({"Missing": "${NOT_SET}"}, "srv")
 
     def test_resolve_env_vars_empty(self, tmp_path):
         mgr = self._make(tmp_path)

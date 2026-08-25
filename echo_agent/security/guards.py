@@ -331,6 +331,23 @@ def evaluate_tool_call(config: Any, tool_name: str, arguments: dict[str, Any]) -
             approval_action="execute_code",
         )
 
+    if tool_name == "skill_run":
+        # Running a skill script is code execution, so the exec kill switch has
+        # to cover it: an operator who sets tools.exec.enabled=False expects no
+        # subprocess to run, and skill_run was the one exec path that ignored
+        # that. Deliberately no scan of `args` — those become argv, not a shell
+        # string, so shell-metacharacter findings there would be false
+        # positives (a skill legitimately receives --query "rm old files") and
+        # training users to wave through prompts costs more than it buys.
+        if not config.tools.exec.enabled:
+            return GuardDecision(
+                "deny",
+                reason="skill script execution is disabled (tools.exec.enabled=false)",
+                pattern_key="tool_disabled",
+                approval_action="exec",
+            )
+        return GuardDecision("allow", approval_action="exec")
+
     if tool_name == "process":
         if not config.tools.exec.enabled:
             return GuardDecision("deny", reason="process tool is disabled", pattern_key="tool_disabled", approval_action="process")

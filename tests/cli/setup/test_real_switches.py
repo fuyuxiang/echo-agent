@@ -151,3 +151,37 @@ def test_doctor_renders_probes(capsys):
     out = capsys.readouterr().out
     assert "provider" in out.lower()
     assert "workspace" in out.lower()
+
+
+# ── the MCP switch, end to end ────────────────────────────────────────────────
+#
+# The wizard write was already covered above; what was missing is every step
+# after it. tools.mcp.enabled was written by setup, described in the schema as
+# "effective", and read by nothing — so un-checking MCP wrote enabled: false and
+# every server connected anyway on the next start. doctor then disagreed too,
+# because it treated "servers are configured" as proof MCP was on.
+
+def test_health_mcp_explicit_false_is_respected():
+    """An explicit false wins over leftover server config."""
+    assert health.check_mcp({
+        "tools": {"mcp": {"enabled": False}, "mcp_servers": {"srv": {"command": "x"}}},
+    }) is None
+
+
+def test_health_mcp_enabled_reports_server_count():
+    r = health.check_mcp({
+        "tools": {"mcp": {"enabled": True}, "mcp_servers": {"a": {"command": "x"}}},
+    })
+    assert r["status"] == health.OK
+
+
+def test_health_mcp_enabled_without_servers_warns():
+    r = health.check_mcp({"tools": {"mcp": {"enabled": True}, "mcp_servers": {}}})
+    assert r["status"] == health.WARN
+
+
+def test_health_mcp_absent_switch_falls_back_to_servers():
+    """Configs predating the switch keep working: servers imply MCP is in use."""
+    assert health.check_mcp({"tools": {"mcp_servers": {}}}) is None
+    r = health.check_mcp({"tools": {"mcp_servers": {"a": {"command": "x"}}}})
+    assert r["status"] == health.OK

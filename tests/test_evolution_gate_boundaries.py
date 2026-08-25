@@ -102,7 +102,6 @@ async def test_baseline_eval_failure_rejects_immediately(tmp_path: Path):
             eval_runner_factory=_factory_raises(RuntimeError("eval bug"), after=0),
             eval_dataset_loader=lambda: _dataset(),
             skill_store=skill_store,
-            skill_manager=None,
             store=store,
         )
         cand = SkillCandidate(
@@ -131,7 +130,6 @@ async def test_candidate_eval_failure_rolls_back_and_rejects(tmp_path: Path):
             eval_runner_factory=_factory_raises(RuntimeError("flaky eval"), after=1),
             eval_dataset_loader=lambda: _dataset(),
             skill_store=skill_store,
-            skill_manager=None,
             store=store,
         )
         cand = SkillCandidate(
@@ -163,7 +161,6 @@ async def test_apply_failure_for_create_with_invalid_content(tmp_path: Path):
             eval_runner_factory=_factory_seq([baseline]),
             eval_dataset_loader=lambda: _dataset(),
             skill_store=skill_store,
-            skill_manager=None,
             store=store,
         )
         # Missing description in frontmatter
@@ -197,7 +194,6 @@ async def test_patch_promotion_modifies_existing_skill(tmp_path: Path):
             eval_runner_factory=_factory_seq([baseline, improved]),
             eval_dataset_loader=lambda: _dataset(),
             skill_store=skill_store,
-            skill_manager=None,
             store=store,
         )
         cand = SkillCandidate(
@@ -232,7 +228,6 @@ async def test_patch_apply_failure_when_old_text_missing(tmp_path: Path):
             eval_runner_factory=_factory_seq([baseline]),
             eval_dataset_loader=lambda: _dataset(),
             skill_store=skill_store,
-            skill_manager=None,
             store=store,
         )
         cand = SkillCandidate(
@@ -266,7 +261,6 @@ async def test_disable_operation_promotion(tmp_path: Path):
             eval_runner_factory=_factory_seq([baseline, improved]),
             eval_dataset_loader=lambda: _dataset(),
             skill_store=skill_store,
-            skill_manager=None,
             store=store,
         )
         cand = SkillCandidate(operation="disable", skill_name="alpha")
@@ -296,7 +290,6 @@ async def test_disable_apply_clears_set_after_rejection(tmp_path: Path):
             eval_runner_factory=_factory_seq([baseline, worse]),
             eval_dataset_loader=lambda: _dataset(),
             skill_store=skill_store,
-            skill_manager=None,
             store=store,
             regression_threshold=0.05,
         )
@@ -335,7 +328,6 @@ async def test_disable_rollback_preserves_user_configured_disabled(tmp_path: Pat
             eval_runner_factory=_factory_seq([baseline, worse]),
             eval_dataset_loader=lambda: _dataset(),
             skill_store=skill_store,
-            skill_manager=None,
             store=store,
             regression_threshold=0.05,
         )
@@ -375,7 +367,6 @@ async def test_disable_rollback_keeps_skill_already_disabled_by_user(tmp_path: P
             eval_runner_factory=_factory_seq([baseline, worse]),
             eval_dataset_loader=lambda: _dataset(),
             skill_store=skill_store,
-            skill_manager=None,
             store=store,
             regression_threshold=0.05,
         )
@@ -425,14 +416,12 @@ async def test_evaluate_takes_user_dir_lock(tmp_path: Path):
             eval_runner_factory=slow_factory,
             eval_dataset_loader=lambda: _dataset(case_count=1),
             skill_store=skill_store_a,
-            skill_manager=None,
             store=store,
         )
         gate_b = PromotionGate(
             eval_runner_factory=slow_factory,
             eval_dataset_loader=lambda: _dataset(case_count=1),
             skill_store=skill_store_b,
-            skill_manager=None,
             store=store,
         )
         cand_a = SkillCandidate(operation="disable", skill_name="alpha")
@@ -466,7 +455,6 @@ async def test_disable_apply_when_skill_store_lacks_disabled_attr(tmp_path: Path
             eval_runner_factory=_factory_seq([baseline]),
             eval_dataset_loader=lambda: _dataset(),
             skill_store=skill_store,
-            skill_manager=None,
             store=store,
         )
         # Drop the attribute to simulate a non-conforming store implementation.
@@ -495,7 +483,6 @@ async def test_promote_on_avg_score_only_improvement(tmp_path: Path):
             eval_runner_factory=_factory_seq([baseline, improved]),
             eval_dataset_loader=lambda: _dataset(),
             skill_store=skill_store,
-            skill_manager=None,
             store=store,
             require_strict_improvement=True,
         )
@@ -525,7 +512,6 @@ async def test_loose_mode_promotes_on_no_change_no_regression(tmp_path: Path):
             eval_runner_factory=_factory_seq([baseline, same]),
             eval_dataset_loader=lambda: _dataset(),
             skill_store=skill_store,
-            skill_manager=None,
             store=store,
             require_strict_improvement=False,
         )
@@ -554,7 +540,6 @@ async def test_dataset_loader_exception_returns_none(tmp_path: Path):
             eval_runner_factory=_factory_seq([_make_report(total=2, passed=2, score=1.0)]),
             eval_dataset_loader=boom_loader,
             skill_store=skill_store,
-            skill_manager=None,
             store=store,
         )
         cand = SkillCandidate(operation="create", skill_name="alpha")
@@ -580,7 +565,6 @@ async def test_async_dataset_loader_supported(tmp_path: Path):
             eval_runner_factory=_factory_seq([baseline, improved]),
             eval_dataset_loader=async_loader,
             skill_store=skill_store,
-            skill_manager=None,
             store=store,
         )
         cand = SkillCandidate(
@@ -614,23 +598,26 @@ def test_summarize_handles_report_summary_exception():
     assert summary["total_cases"] == 4
 
 
-# ── _refresh_skill_manager_after_promote ────────────────────────────────────
+# ── promoted skill is immediately visible ───────────────────────────────────
+#
+# Replaces two tests that asserted a SkillManager refresh hook fired after
+# promotion. That hook maintained a second, parallel skill model production never
+# constructed (app.py passed skill_manager=None unconditionally), so both tests
+# only ever proved a MagicMock got called. What actually matters is the property
+# the hook was nominally there to guarantee: after a promotion, the skill resolves
+# through the store the agent really reads from.
 
 
 @pytest.mark.asyncio
-async def test_refresh_skill_manager_called_when_provided(tmp_path: Path):
+async def test_promoted_skill_is_resolvable_through_store(tmp_path: Path):
     store, skill_store, backend = await _new_setup(tmp_path)
     try:
-        skill_manager = MagicMock()
-        skill_manager._load_installed = MagicMock()
-
         baseline = _make_report(total=3, passed=1, score=0.5)
         improved = _make_report(total=3, passed=3, score=0.9)
         gate = PromotionGate(
             eval_runner_factory=_factory_seq([baseline, improved]),
             eval_dataset_loader=lambda: _dataset(),
             skill_store=skill_store,
-            skill_manager=skill_manager,
             store=store,
         )
         cand = SkillCandidate(
@@ -641,18 +628,25 @@ async def test_refresh_skill_manager_called_when_provided(tmp_path: Path):
         await store.save_candidate(cand)
         decision = await gate.evaluate(cand)
         assert decision.promoted is True
-        skill_manager._load_installed.assert_called_once()
+        # SkillStore reads from disk on every lookup, so there is no cache to
+        # invalidate — the promoted skill is visible with no refresh step at all.
+        assert skill_store.find_skill_dir("alpha") is not None
+        assert "alpha" in [m.name for m in skill_store.list_all()]
     finally:
         await backend.close()
 
 
 @pytest.mark.asyncio
-async def test_refresh_skill_manager_swallows_exception(tmp_path: Path):
-    """If skill_manager._load_installed raises, the promotion still succeeds."""
+async def test_promoted_disable_is_durable(tmp_path: Path):
+    """A promoted 'disable' must survive a fresh store over the same directory."""
     store, skill_store, backend = await _new_setup(tmp_path)
     try:
-        skill_manager = MagicMock()
-        skill_manager._load_installed = MagicMock(side_effect=RuntimeError("scan failed"))
+        user_dir = skill_store.user_dir
+        target = user_dir / "victim"
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "SKILL.md").write_text(
+            "---\nname: victim\ndescription: y\n---\n", encoding="utf-8",
+        )
 
         baseline = _make_report(total=3, passed=1, score=0.5)
         improved = _make_report(total=3, passed=3, score=0.9)
@@ -660,17 +654,16 @@ async def test_refresh_skill_manager_swallows_exception(tmp_path: Path):
             eval_runner_factory=_factory_seq([baseline, improved]),
             eval_dataset_loader=lambda: _dataset(),
             skill_store=skill_store,
-            skill_manager=skill_manager,
             store=store,
         )
-        cand = SkillCandidate(
-            operation="create",
-            skill_name="alpha",
-            proposed_content="---\nname: alpha\ndescription: y\n---\n",
-        )
+        cand = SkillCandidate(operation="disable", skill_name="victim")
         await store.save_candidate(cand)
         decision = await gate.evaluate(cand)
         assert decision.promoted is True
+
+        reloaded = SkillStore(user_dir=user_dir)
+        assert reloaded.is_disabled("victim") is True
+        assert reloaded.find_skill_dir("victim") is None
     finally:
         await backend.close()
 
@@ -686,7 +679,6 @@ def test_cleanup_backup_swallows_filesystem_errors(tmp_path: Path):
         eval_runner_factory=lambda: MagicMock(),
         eval_dataset_loader=lambda: _dataset(),
         skill_store=SkillStore(user_dir=user_dir),
-        skill_manager=None,
         store=MagicMock(),
     )
     # Pass a path that does not exist.
@@ -704,7 +696,6 @@ def test_restore_backup_handles_missing_user_dir(tmp_path: Path):
         eval_runner_factory=lambda: MagicMock(),
         eval_dataset_loader=lambda: _dataset(),
         skill_store=skill_store,
-        skill_manager=None,
         store=MagicMock(),
     )
     backup_dir, _ = gate._snapshot_user_dir(user_dir)

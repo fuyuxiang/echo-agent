@@ -173,7 +173,9 @@ gateway:
       - "gateway.example.com"
 ```
 
-The Host header is normalised before comparison: lowercased with the port stripped (brackets are preserved on IPv6 literals). List bare hostnames only — an entry like `localhost:8090` can never match, because the port is removed before the comparison happens.
+The request's Host header and the configured entries are normalised by the same function before comparison (`gateway/host_rules.py`): lowercased, port stripped, IPv6 folded to bracketed form. So `Echo.Example.com`, `echo.example.com:58123` and a bare `::1` all match — including values pasted straight out of a browser's address bar.
+
+Wildcard addresses (`0.0.0.0`, `::`, an empty string) are not usable entries and are dropped. A browser sends the name from its address bar, never the wildcard the server bound to, so `allowed_hosts: [0.0.0.0]` matches nothing while looking configured — it counts as unconfigured and still warns at startup.
 
 ### What an empty `allowed_hosts` means
 
@@ -181,11 +183,23 @@ Resolution proceeds in three steps, and an empty list does **not** derive anythi
 
 | Case | Hosts accepted |
 |------|----------------|
-| `allowed_hosts` non-empty | Only the listed entries |
+| `allowed_hosts` has a usable entry | Only the listed entries |
 | Empty, bound to loopback | A fixed loopback set: `localhost`, `127.0.0.1`, `[::1]` |
 | Empty, bound to a non-loopback address | No default — every Host is rejected |
 
 The third case is deliberate: a deployment that binds to `0.0.0.0` must list its own domain explicitly, and the loopback exemption does not extend to attacker-supplied names. An empty Host header is likewise treated as untrusted.
+
+"Bound to loopback" is decided by address, not by literal match: all of `127.0.0.0/8` (including `127.0.0.2`), `::1`, `[::1]` and `localhost` count as local. Leaving `host` empty does **not** — an empty string, like `::`, is a wildcard bind equivalent to `0.0.0.0`, and falls into the third case.
+
+### What is actually affected
+
+The third case does not make the whole dashboard unreachable. The Host check lives in `_check_csrf`, which only `_require_admin_token` calls, so:
+
+- login, overview and other read-only pages (behind `_require_api_token`) keep working;
+- native clients (`echo-agent cli`, curl — no Origin header) are unaffected;
+- the admin endpoints — sessions, config, memory writes, tasks, cron, knowledge — all return 403 `cross-site request forbidden`.
+
+The distinction matters: concluding "the warning is a false alarm" because the home page loads leaves every admin feature broken.
 
 ## Audit Logging
 

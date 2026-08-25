@@ -29,7 +29,6 @@ if TYPE_CHECKING:
     from echo_agent.evaluation.dataset import EvalDataset
     from echo_agent.models.provider import LLMProvider
     from echo_agent.plugins.hooks import HookRegistry
-    from echo_agent.skills.manager import SkillManager
     from echo_agent.skills.store import SkillStore
     from echo_agent.storage.backend import StorageBackend
 
@@ -51,7 +50,6 @@ class EvolutionEngine:
         storage: "StorageBackend",
         provider: "LLMProvider",
         skill_store: "SkillStore",
-        skill_manager: "SkillManager | None",
         eval_runner_factory: EvalRunnerFactory,
         eval_dataset_loader: Callable[[], Awaitable["EvalDataset"]] | Callable[[], "EvalDataset"],
         hooks: "HookRegistry | None" = None,
@@ -63,7 +61,6 @@ class EvolutionEngine:
         self._storage = storage
         self._provider = provider
         self._skill_store = skill_store
-        self._skill_manager = skill_manager
         self._eval_dataset_loader = eval_dataset_loader
 
         self._store = TrajectoryStore(storage)
@@ -86,7 +83,6 @@ class EvolutionEngine:
             eval_runner_factory=eval_runner_factory,
             eval_dataset_loader=eval_dataset_loader,
             skill_store=skill_store,
-            skill_manager=skill_manager,
             store=self._store,
             regression_threshold=config.regression_threshold,
             require_strict_improvement=config.require_strict_improvement,

@@ -91,6 +91,65 @@ describe("Sessions 页", () => {
     expect(screen.getByText("feishu:oc 1")).toBeInTheDocument();
     expect(screen.queryByText("cli:local")).not.toBeInTheDocument();
   });
+
+  /**
+   * 后端展示视图给工具调用 / 工具结果打了 internal 标记(session/manager.py:
+   * display_messages)。旧渲染逻辑只分「user 靠右、其余靠左」,于是工具输出被
+   * 显示成 Agent 说的话 —— 用户读到的是一段自己从未收到过的回复。
+   */
+  function mockHistoryWithTools() {
+    return vi.spyOn(api, "apiFetch").mockImplementation(async (path: string) => {
+      if (path === "/sessions") return SESSIONS as never;
+      return {
+        messages: [
+          { role: "user", content: "北京天气" },
+          { role: "assistant", content: "", internal: true, name: "web_search" },
+          { role: "tool", content: "晴 28C", internal: true, name: "web_search" },
+          { role: "assistant", content: "北京今天晴。" },
+        ],
+        total: 4,
+        returned: 4,
+      } as never;
+    });
+  }
+
+  it("工具调用与结果折叠显示,不冒充 Agent 气泡", async () => {
+    mockHistoryWithTools();
+    render(<Sessions />);
+
+    fireEvent.click(await screen.findByText("cli:local"));
+
+    // 真正的对话内容照常显示。
+    expect(await screen.findByText("北京今天晴。")).toBeInTheDocument();
+    expect(screen.getByText("北京天气")).toBeInTheDocument();
+    // 工具条目带工具名的摘要行,而不是一条普通气泡。
+    expect(screen.getByText("调用工具：web_search")).toBeInTheDocument();
+    expect(screen.getByText("工具结果：web_search")).toBeInTheDocument();
+  });
+
+  it("工具内容默认收起,展开后可读", async () => {
+    mockHistoryWithTools();
+    render(<Sessions />);
+
+    fireEvent.click(await screen.findByText("cli:local"));
+    const summary = await screen.findByText("工具结果：web_search");
+
+    const details = summary.closest("details") as HTMLDetailsElement;
+    expect(details.open).toBe(false);
+
+    // 内容在 DOM 里(排查问题时需要),只是默认不展开。
+    expect(screen.getByText("晴 28C")).toBeInTheDocument();
+  });
+
+  it("真实 Agent 回复仍渲染为普通气泡", async () => {
+    mockHistoryWithTools();
+    render(<Sessions />);
+
+    fireEvent.click(await screen.findByText("cli:local"));
+    const reply = await screen.findByText("北京今天晴。");
+
+    expect(reply.closest("details")).toBeNull();
+  });
 });
 
 describe("Channels 页", () => {

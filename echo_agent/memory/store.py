@@ -52,7 +52,12 @@ _STOP_WORDS = frozenset({
 
 
 _MEMORY_THREAT_PATTERNS = [
-    (r"ignore\s+(previous|all|above|prior)\s+instructions", "prompt_injection"),
+    # The qualifiers stack in practice ("ignore ALL PREVIOUS instructions" is the
+    # canonical phrasing) and filler words sit between them ("ignore all of the
+    # above instructions"). Requiring a single qualifier directly adjacent to
+    # "instructions" missed every one of those. The Chinese pattern below already
+    # allowed for interstitial words; this keeps the two symmetric.
+    (r"ignore\s+(?:\w+\s+){0,4}?(previous|all|above|prior|prior\s+\w+)\s+(?:\w+\s+){0,3}?(instructions|prompts?|rules|directives)", "prompt_injection"),
     (r"you\s+are\s+now\s+", "role_hijack"),
     (r"do\s+not\s+tell\s+the\s+user", "deception_hide"),
     (r"system\s+prompt\s+override", "sys_prompt_override"),
@@ -93,7 +98,9 @@ def _normalize_tags(tags: Iterable[str]) -> list[str]:
     return _dedupe_keep_order(normalized)
 
 
-def _scan_memory_content(content: str) -> str | None:
+def _scan_memory_content(
+    content: str, *, exclude_threat_ids: frozenset[str] = frozenset(),
+) -> str | None:
     for char in _INVISIBLE_CHARS:
         if char in content:
             return (
@@ -102,6 +109,8 @@ def _scan_memory_content(content: str) -> str | None:
             )
 
     for pattern, threat_id in _MEMORY_THREAT_PATTERNS:
+        if threat_id in exclude_threat_ids:
+            continue
         if re.search(pattern, content, re.IGNORECASE):
             return (
                 f"Blocked: content matches threat pattern '{threat_id}'. "
@@ -111,13 +120,81 @@ def _scan_memory_content(content: str) -> str | None:
     return None
 
 
-def scan_text_for_threats(content: str) -> str | None:
+#: Threat IDs whose match means "this text is trying to steer the model": it
+#: addresses the agent and tells it to change behavior. In documentation these
+#: have no innocent reading, so a document carrying one is refused outright.
+INSTRUCTION_THREAT_IDS: frozenset[str] = frozenset({
+    "prompt_injection", "prompt_injection_zh",
+    "role_hijack", "role_hijack_zh",
+    "deception_hide", "deception_hide_zh",
+    "sys_prompt_override", "sys_prompt_override_zh",
+    "disregard_rules", "disregard_rules_zh",
+    "bypass_restrictions", "bypass_restrictions_zh",
+})
+
+#: Threat IDs that describe a *dangerous command or sensitive path* rather than
+#: an instruction to the model. In a memory entry these are alarming — nothing
+#: legitimately asks the agent to cat its own credentials. In documentation they
+#: are frequently honest: `~/.echo-agent/config.yaml` is where a skill's config
+#: lives (11 of the 35 shipped skills say so), and
+#: `curl "…/geo?key=$AMAP_API_KEY"` sends the skill's own key to the service
+#: that key belongs to. The pattern cannot tell that from exfiltration, because
+#: the difference is the destination host, not the shape.
+#:
+#: So for documents these downgrade to a warning instead of a refusal. That is
+#: not a gap: the commands still have to pass the exec/skill_run approval gate to
+#: actually run, and the user sees the warning at install time.
+COMMAND_SHAPED_THREAT_IDS: frozenset[str] = frozenset({
+    "agent_secret_path",
+    "ssh_access",
+    "ssh_backdoor",
+    "exfil_curl",
+    "exfil_wget",
+    "read_secrets",
+})
+
+
+def scan_text_for_threats(
+    content: str, *, exclude_threat_ids: frozenset[str] = frozenset(),
+) -> str | None:
     """Public entry point for the prompt-injection/exfiltration scan.
 
     Used by other subsystems whose output is injected into prompts (e.g. the
     evolution gate vetting candidate skill content) so they get the same
-    protections as memory writes."""
-    return _scan_memory_content(content)
+    protections as memory writes.
+
+    ``exclude_threat_ids`` drops specific patterns; ``scan_document_for_threats``
+    is the right entry point for documentation and uses it appropriately.
+    """
+    return _scan_memory_content(content, exclude_threat_ids=exclude_threat_ids)
+
+
+def scan_document_for_threats(content: str) -> tuple[str | None, list[str]]:
+    """Scan text that is documentation (a SKILL.md) rather than an assertion.
+
+    Returns ``(fatal, warnings)``. ``fatal`` is set when the content tries to
+    steer the model — those patterns have no innocent reading in a document, so
+    the caller should refuse. ``warnings`` lists command-shaped matches that are
+    frequently legitimate in docs (a config path, an API call passing the
+    service's own key); the caller should surface them to the user but need not
+    refuse, since executing any of it still has to clear the exec approval gate.
+
+    Splitting these apart matters because scanning a SKILL.md with the memory
+    ruleset rejected 12 of the 35 shipped skills.
+    """
+    fatal = _scan_memory_content(
+        content, exclude_threat_ids=COMMAND_SHAPED_THREAT_IDS,
+    )
+    if fatal:
+        return fatal, []
+
+    warnings: list[str] = []
+    for pattern, threat_id in _MEMORY_THREAT_PATTERNS:
+        if threat_id not in COMMAND_SHAPED_THREAT_IDS:
+            continue
+        if re.search(pattern, content, re.IGNORECASE):
+            warnings.append(threat_id)
+    return None, warnings
 
 
 def _atomic_write_text(path: Path, content: str) -> None:

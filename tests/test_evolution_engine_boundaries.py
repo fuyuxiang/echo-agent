@@ -80,7 +80,6 @@ async def _new_engine(
         storage=backend,
         provider=provider or AsyncMock(),
         skill_store=skill_store,
-        skill_manager=None,
         eval_runner_factory=eval_factory or (lambda: MagicMock()),
         eval_dataset_loader=dataset_loader or (lambda: MagicMock(cases=[1])),
         hooks=hooks,
@@ -294,7 +293,6 @@ def test_activate_cooldown_zero_seconds_is_noop(tmp_path: Path):
         storage=MagicMock(),
         provider=AsyncMock(),
         skill_store=MagicMock(),
-        skill_manager=None,
         eval_runner_factory=lambda: MagicMock(),
         eval_dataset_loader=lambda: MagicMock(),
     )
@@ -317,7 +315,6 @@ def test_engine_passes_actual_config_to_gate_validation(tmp_path: Path):
         storage=MagicMock(),
         provider=AsyncMock(),
         skill_store=MagicMock(),
-        skill_manager=None,
         eval_runner_factory=lambda: MagicMock(),
         eval_dataset_loader=lambda: MagicMock(),
     )
@@ -329,7 +326,7 @@ def test_activate_cooldown_empty_skill_name_is_noop(tmp_path: Path):
     config = EvolutionConfig(enabled=True, cooldown_seconds_after_promote=60)
     engine = EvolutionEngine(
         config=config, workspace=tmp_path, storage=MagicMock(),
-        provider=AsyncMock(), skill_store=MagicMock(), skill_manager=None,
+        provider=AsyncMock(), skill_store=MagicMock(),
         eval_runner_factory=lambda: MagicMock(), eval_dataset_loader=lambda: MagicMock(),
     )
     engine._activate_cooldown("")
@@ -340,7 +337,7 @@ def test_is_in_cooldown_expires(tmp_path: Path):
     config = EvolutionConfig(enabled=True, cooldown_seconds_after_promote=60)
     engine = EvolutionEngine(
         config=config, workspace=tmp_path, storage=MagicMock(),
-        provider=AsyncMock(), skill_store=MagicMock(), skill_manager=None,
+        provider=AsyncMock(), skill_store=MagicMock(),
         eval_runner_factory=lambda: MagicMock(), eval_dataset_loader=lambda: MagicMock(),
     )
     engine._cooldowns["alpha"] = _Cooldown(skill_name="alpha", until_ts=time.time() - 1)
@@ -353,7 +350,7 @@ def test_is_in_cooldown_active(tmp_path: Path):
     config = EvolutionConfig(enabled=True, cooldown_seconds_after_promote=60)
     engine = EvolutionEngine(
         config=config, workspace=tmp_path, storage=MagicMock(),
-        provider=AsyncMock(), skill_store=MagicMock(), skill_manager=None,
+        provider=AsyncMock(), skill_store=MagicMock(),
         eval_runner_factory=lambda: MagicMock(), eval_dataset_loader=lambda: MagicMock(),
     )
     engine._cooldowns["alpha"] = _Cooldown(skill_name="alpha", until_ts=time.time() + 60)

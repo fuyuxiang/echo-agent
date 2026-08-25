@@ -55,6 +55,11 @@ _TOOL_RISK_MAP: dict[str, RiskLevel] = {
     # tests/test_risk_classifier_consistency.py.
     "delegate_task": RiskLevel.EXEC,
     "spawn_task": RiskLevel.EXEC,
+    # skill_run spawns an interpreter on a skill-authored .py file. It already
+    # declares risk_level="exec" on the class, so classify_risk gates it
+    # correctly today; the entry exists so deleting that declaration cannot
+    # silently downgrade it to the WRITE fallback.
+    "skill_run": RiskLevel.EXEC,
     # DANGEROUS — always needs manual approval
     "cronjob": RiskLevel.DANGEROUS,
     "skill_install": RiskLevel.DANGEROUS,

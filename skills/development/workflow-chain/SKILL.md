@@ -41,10 +41,22 @@ steps:
 
 ## Security
 
-**Only run trusted workflow files.** The engine executes commands from the JSON
-workflow definition via `shell=True`. Never run workflow files from untrusted
-sources (downloads, user uploads, model-generated content) without manual review.
-Treat workflow JSON files with the same caution as shell scripts.
+**Only run trusted workflow files.** The engine runs the commands listed in the
+JSON workflow definition. Never run workflow files from untrusted sources
+(downloads, user uploads, model-generated content) without manual review.
+
+Each `command` is parsed with `shlex` and executed as a single program with a
+fixed argument list — **shell syntax is not interpreted**. `;`, `&&`, `|`, `>`
+and `$(...)` are passed through as literal arguments, so one step cannot chain
+into another command. A step that genuinely needs a pipeline or redirection has
+to ask for a shell explicitly:
+
+```json
+{"command": "sh -c 'grep ERROR app.log | wc -l > count.txt'"}
+```
+
+Writing it that way keeps the intent visible in the workflow file instead of
+every step carrying implicit shell power.
 
 ## Features
 

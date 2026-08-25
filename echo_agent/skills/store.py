@@ -21,6 +21,7 @@ from loguru import logger
 
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _MAX_CONTENT_BYTES = 100_000
+_MAX_FILE_BYTES = 1_048_576
 _ALLOWED_SUBDIRS = frozenset({"references", "templates", "scripts", "assets"})
 
 
@@ -56,6 +57,14 @@ def parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
         fm = yaml.safe_load(fm_text) or {}
     except yaml.YAMLError:
         fm = {}
+    # Valid YAML is not necessarily a mapping: "- item" parses to a list and
+    # "text" to a str, and every caller here goes straight to fm.get(). One
+    # malformed SKILL.md anywhere under a skills root used to raise
+    # AttributeError out of list_all() and take the entire skills context with
+    # it — all skills invisible because of one bad file. Treat non-mappings as
+    # "no frontmatter" so the damage stays local to that skill.
+    if not isinstance(fm, dict):
+        return {}, body
     return fm, body
 
 
@@ -122,15 +131,24 @@ class SkillStore:
             logger.warning("Failed to persist skill disables: {}", e)
 
     def persist_disable(self, name: str) -> None:
-        """Disable a skill durably (used by evolution promote)."""
-        self._disabled.add(name)
-        self._persisted_disabled.add(name)
+        """Disable a skill durably (used by evolution promote).
+
+        Expands to every alias of the skill: a skill installed under a name
+        override answers to both its directory name and its frontmatter name,
+        and disabling just one would leave the other runnable.
+        """
+        for alias in self.resolved_names(name):
+            self._disabled.add(alias)
+            self._persisted_disabled.add(alias)
         self._save_persisted_disabled()
 
     def persist_enable(self, name: str) -> None:
         """Undo a durable disable (used by evolution rollback)."""
-        self._disabled.discard(name)
-        self._persisted_disabled.discard(name)
+        # include_disabled: the skill is disabled right now — that is the whole
+        # reason we are here — so plain resolution would not find its aliases.
+        for alias in self.resolved_names(name):
+            self._disabled.discard(alias)
+            self._persisted_disabled.discard(alias)
         self._save_persisted_disabled()
 
     @property
@@ -147,10 +165,30 @@ class SkillStore:
                 roots.append((d, False))
         return roots
 
-    def _find_skill_dir(self, name: str) -> Path | None:
+    def _find_skill_dir(self, name: str, *, include_disabled: bool = False) -> Path | None:
+        """Locate a skill's directory by name.
+
+        This is the single entry point every read, write and run goes through,
+        so the disabled check belongs here rather than in each caller. It used
+        to live only in ``list_all()``, which meant a disabled skill was merely
+        *hidden*: read_skill, read_file and skill_run all still resolved it, and
+        the evolution gate's persist_disable() could not actually stop a
+        misbehaving skill from running. Callers that legitimately need a
+        disabled skill (re-enabling it, deleting it, admin listings) opt in via
+        ``include_disabled``.
+        """
+        if not include_disabled and name in self._disabled:
+            return None
         for root, _ in self._all_roots():
             for candidate in root.rglob("SKILL.md"):
-                fm, _ = parse_frontmatter(candidate.read_text(encoding="utf-8"))
+                # A single unreadable SKILL.md (bad encoding, races with an
+                # install, permissions) must not abort discovery for every
+                # other skill.
+                try:
+                    fm, _ = parse_frontmatter(candidate.read_text(encoding="utf-8"))
+                except (OSError, UnicodeDecodeError) as e:
+                    logger.debug("Skipping unreadable SKILL.md at {}: {}", candidate, e)
+                    continue
                 if fm.get("name") == name:
                     return candidate.parent
             direct = root / name
@@ -158,13 +196,44 @@ class SkillStore:
                 return direct
         return None
 
-    def find_skill_dir(self, name: str) -> Path | None:
+    def find_skill_dir(self, name: str, *, include_disabled: bool = False) -> Path | None:
         """Public version of ``_find_skill_dir``.
 
         Exposed so the runnable script path (skill_run) can pin its cwd to
         the skill root without reaching into a private API.
         """
-        return self._find_skill_dir(name)
+        return self._find_skill_dir(name, include_disabled=include_disabled)
+
+    def is_disabled(self, name: str) -> bool:
+        """Whether a skill is disabled, by either config or a persisted disable.
+
+        Public so callers can tell "disabled" from "missing" in their error
+        messages, and so the gateway stops reaching into ``store._disabled``.
+        """
+        return name in self._disabled
+
+    def resolved_names(self, name: str) -> set[str]:
+        """Every name that resolves to the same skill directory as ``name``.
+
+        A skill installed under a name override answers to two names: the
+        directory name (matched by the ``root / name`` probe) and the one in
+        frontmatter (matched by the rglob). Disabling only the name the user
+        typed would leave the other one runnable, so disable operations expand
+        through this.
+        """
+        skill_dir = self._find_skill_dir(name, include_disabled=True)
+        if skill_dir is None:
+            return {name}
+        names = {name, skill_dir.name}
+        skill_md = skill_dir / "SKILL.md"
+        try:
+            fm, _ = parse_frontmatter(skill_md.read_text(encoding="utf-8"))
+            fm_name = fm.get("name")
+            if isinstance(fm_name, str) and fm_name:
+                names.add(fm_name)
+        except (OSError, UnicodeDecodeError):
+            pass
+        return names
 
     def _read_meta(self, skill_dir: Path) -> SkillMeta | None:
         skill_md = skill_dir / "SKILL.md"
@@ -195,8 +264,12 @@ class SkillStore:
 
     # ── Progressive disclosure ──────────────────────────────────────────────
 
-    def list_all(self) -> list[SkillMeta]:
-        """Tier 0: compact metadata for all skills."""
+    def list_all(self, *, include_disabled: bool = False) -> list[SkillMeta]:
+        """Tier 0: compact metadata for all skills.
+
+        ``include_disabled`` is for admin surfaces (the gateway's skill list)
+        that must show a disabled skill in order to offer an enable button.
+        """
         results: list[SkillMeta] = []
         seen: set[str] = set()
         for root, _ in self._all_roots():
@@ -204,19 +277,37 @@ class SkillStore:
                 continue
             for skill_md in root.rglob("SKILL.md"):
                 meta = self._read_meta(skill_md.parent)
-                if meta and meta.name not in seen and meta.name not in self._disabled:
-                    seen.add(meta.name)
-                    results.append(meta)
+                if not meta or meta.name in seen:
+                    continue
+                if not include_disabled and self._is_dir_disabled(skill_md.parent, meta.name):
+                    continue
+                seen.add(meta.name)
+                results.append(meta)
         results.sort(key=lambda m: m.name)
         return results
 
-    def read_skill(self, name: str) -> str | None:
+    def _is_dir_disabled(self, skill_dir: Path, meta_name: str) -> bool:
+        """Whether a skill directory is disabled under any of its names.
+
+        Checked against the directory name too, not just the frontmatter name:
+        an aliased skill is reachable by both, so listing it as enabled while
+        one of its names is disabled would misreport its state.
+        """
+        return meta_name in self._disabled or skill_dir.name in self._disabled
+
+    def read_skill(self, name: str, *, include_disabled: bool = False) -> str | None:
         """Tier 1: full SKILL.md content."""
-        skill_dir = self._find_skill_dir(name)
+        skill_dir = self._find_skill_dir(name, include_disabled=include_disabled)
         if not skill_dir:
             return None
         skill_md = skill_dir / "SKILL.md"
-        return skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
+        if not skill_md.exists():
+            return None
+        try:
+            return skill_md.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            logger.warning("Failed to read SKILL.md for '{}': {}", name, e)
+            return None
 
     def read_file(self, name: str, file_path: str) -> str | None:
         """Tier 2: specific supporting file content."""
@@ -232,7 +323,13 @@ class SkillStore:
             target.resolve().relative_to(skill_dir.resolve())
         except ValueError:
             return None
-        return target.read_text(encoding="utf-8")
+        try:
+            return target.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            # assets/ legitimately holds PNGs and fonts. Returning None with a
+            # log beats propagating UnicodeDecodeError to the model as a crash.
+            logger.debug("Failed to read '{}' in skill '{}': {}", file_path, name, e)
+            return None
 
     def list_files(self, name: str) -> list[str]:
         """List supporting files for a skill."""
@@ -267,7 +364,10 @@ class SkillStore:
         if not fm.get("description"):
             return "frontmatter must include a 'description' field"
 
-        if self._find_skill_dir(name):
+        # include_disabled: a disabled skill still occupies its name on disk.
+        # Without this, creating over a disabled skill would silently write into
+        # its directory and the "already exists" guard would not fire.
+        if self._find_skill_dir(name, include_disabled=True):
             return f"skill '{name}' already exists"
 
         parent = self._user_dir / category if category else self._user_dir
@@ -280,8 +380,12 @@ class SkillStore:
         return None
 
     def update_skill(self, name: str, content: str) -> str | None:
-        """Replace full SKILL.md content. Returns error string or None."""
-        skill_dir = self._find_skill_dir(name)
+        """Replace full SKILL.md content. Returns error string or None.
+
+        Resolves disabled skills too: disabling a skill must stop it from
+        *running*, not lock the operator out of repairing or deleting it.
+        """
+        skill_dir = self._find_skill_dir(name, include_disabled=True)
         if not skill_dir:
             return f"skill '{name}' not found"
         if not self._is_writable(skill_dir):
@@ -301,8 +405,12 @@ class SkillStore:
         return None
 
     def patch_skill(self, name: str, old_text: str, new_text: str, file_path: str = "") -> str | None:
-        """Find-and-replace within SKILL.md or a supporting file."""
-        skill_dir = self._find_skill_dir(name)
+        """Find-and-replace within SKILL.md or a supporting file.
+
+        include_disabled: repairing a disabled skill is the normal way to make
+        it safe to re-enable.
+        """
+        skill_dir = self._find_skill_dir(name, include_disabled=True)
         if not skill_dir:
             return f"skill '{name}' not found"
         if not self._is_writable(skill_dir):
@@ -325,19 +433,44 @@ class SkillStore:
         return None
 
     def delete_skill(self, name: str) -> str | None:
-        """Remove a skill entirely."""
-        skill_dir = self._find_skill_dir(name)
+        """Remove a skill entirely.
+
+        include_disabled: deleting is the most likely thing an operator wants to
+        do to a skill they just disabled.
+        """
+        skill_dir = self._find_skill_dir(name, include_disabled=True)
         if not skill_dir:
             return f"skill '{name}' not found"
         if not self._is_writable(skill_dir):
             return f"skill '{name}' is read-only"
         shutil.rmtree(skill_dir)
+        # Drop the disable entries too, or the name stays poisoned: a later
+        # skill installed under it would be silently disabled with no directory
+        # left to explain why.
+        for alias in {name, skill_dir.name}:
+            self._disabled.discard(alias)
+            self._persisted_disabled.discard(alias)
+        self._save_persisted_disabled()
         logger.info("Deleted skill '{}'", name)
         return None
 
     def write_file(self, name: str, file_path: str, content: str) -> str | None:
-        """Add or overwrite a supporting file."""
-        skill_dir = self._find_skill_dir(name)
+        """Add or overwrite a supporting file (text)."""
+        return self._write_file_payload(name, file_path, content)
+
+    def write_file_bytes(self, name: str, file_path: str, data: bytes) -> str | None:
+        """Add or overwrite a supporting file (binary).
+
+        ``assets`` is in _ALLOWED_SUBDIRS precisely so skills can ship images
+        and fonts, but the only writer was text-only — so installing any skill
+        with a PNG died on UnicodeDecodeError partway through copying.
+        """
+        return self._write_file_payload(name, file_path, data)
+
+    def _write_file_payload(
+        self, name: str, file_path: str, payload: str | bytes,
+    ) -> str | None:
+        skill_dir = self._find_skill_dir(name, include_disabled=True)
         if not skill_dir:
             return f"skill '{name}' not found"
         if not self._is_writable(skill_dir):
@@ -348,18 +481,25 @@ class SkillStore:
         parts = Path(file_path).parts
         if not parts or parts[0] not in _ALLOWED_SUBDIRS:
             return f"file must be under one of: {', '.join(sorted(_ALLOWED_SUBDIRS))}"
-        if len(content.encode("utf-8")) > 1_048_576:
+        size = len(payload.encode("utf-8")) if isinstance(payload, str) else len(payload)
+        if size > _MAX_FILE_BYTES:
             return "file exceeds 1 MiB limit"
 
         target = skill_dir / file_path
+        # The subdir check above constrains the first segment, but a symlinked
+        # directory inside the skill could still redirect the write outside it.
+        try:
+            target.parent.resolve().relative_to(skill_dir.resolve())
+        except ValueError:
+            return "path traversal not allowed"
         target.parent.mkdir(parents=True, exist_ok=True)
-        self._atomic_write(target, content)
+        self._atomic_write(target, payload)
         logger.info("Wrote file '{}' in skill '{}'", file_path, name)
         return None
 
     def remove_file(self, name: str, file_path: str) -> str | None:
         """Remove a supporting file."""
-        skill_dir = self._find_skill_dir(name)
+        skill_dir = self._find_skill_dir(name, include_disabled=True)
         if not skill_dir:
             return f"skill '{name}' not found"
         if not self._is_writable(skill_dir):
@@ -391,8 +531,11 @@ class SkillStore:
 
         SQLite (evolution_candidates) is the source of truth; this is a derived,
         human-readable, git-visible copy. Preserves all other frontmatter.
+
+        include_disabled: the evolution gate disables a skill and records
+        provenance in the same promotion, in either order.
         """
-        skill_dir = self._find_skill_dir(name)
+        skill_dir = self._find_skill_dir(name, include_disabled=True)
         if not skill_dir:
             return f"skill '{name}' not found"
         if not self._is_writable(skill_dir):
@@ -433,18 +576,25 @@ class SkillStore:
         """A skill is protected from evolution if it resides outside user_dir
         (i.e. shipped builtin or external). Unknown skills are not protected —
         the caller's not-found handling takes over. Mirror of _is_writable,
-        exposed as the public evolution-safety predicate."""
-        skill_dir = self._find_skill_dir(name)
+        exposed as the public evolution-safety predicate.
+
+        include_disabled: a builtin skill stays protected while disabled —
+        reporting it unprotected would let evolution overwrite shipped files."""
+        skill_dir = self._find_skill_dir(name, include_disabled=True)
         if skill_dir is None:
             return False
         return not self._is_writable(skill_dir)
 
     @staticmethod
-    def _atomic_write(path: Path, content: str) -> None:
+    def _atomic_write(path: Path, content: str | bytes) -> None:
         fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(content)
+            if isinstance(content, bytes):
+                with os.fdopen(fd, "wb") as f:
+                    f.write(content)
+            else:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(content)
             os.replace(tmp, path)
         except BaseException:
             try:

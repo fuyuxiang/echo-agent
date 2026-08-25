@@ -2,15 +2,20 @@
 """CalDAV calendar client: list, add, upcoming events."""
 
 import argparse
-from echo_agent.dependencies.skill_require import require  # noqa: E402
 from datetime import datetime, timedelta
 
-import caldav  # noqa: E402
-from icalendar import Calendar, Event  # noqa: E402
+from echo_agent.dependencies.skill_require import require
+
+# caldav/icalendar are imported inside the functions that use them, after
+# require() has had a chance to install them. At module scope they ran first, so
+# a missing package killed the script on import and the lazy-install handshake
+# never happened.
 
 
 def _get_client(url, username, password):
     require("skill.calendar")
+    import caldav
+
     return caldav.DAVClient(url=url, username=username, password=password)
 
 
@@ -42,6 +47,8 @@ def upcoming(url, username, password, days=7, calendar_name=None):
 
 def add_event(url, username, password, summary, start_str, end_str=None, calendar_name=None):
     require("skill.calendar")
+    from icalendar import Calendar, Event
+
     client = _get_client(url, username, password)
     principal = client.principal()
     calendars = principal.calendars()

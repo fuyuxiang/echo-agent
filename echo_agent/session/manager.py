@@ -60,19 +60,77 @@ class Session:
                 return sliced[i:]
         return sliced
 
+    #: Upper bound on ``get_display_history(max_messages=...)``.
+    #:
+    #: The endpoint takes this from a query parameter, so it is attacker- (or
+    #: typo-) controlled. Serializing an entire long-running session to JSON on
+    #: request is a cheap way to make the gateway do expensive work, and no
+    #: viewer renders thousands of bubbles usefully.
+    MAX_DISPLAY_MESSAGES = 500
+
     def get_display_history(self, max_messages: int = 100) -> list[dict[str, Any]]:
-        """Return the most recent messages for display (dashboard, exports).
+        """Return the most recent messages as a *human-readable* transcript.
 
         Distinct from ``get_history`` on purpose: that one starts at
         ``last_consolidated`` and aligns to an LLM-safe boundary, so a fully
         consolidated session yields nothing — the compact view the model needs,
-        not the record a human wants to read. A viewer expects the actual
-        history, so this slices from the full ``messages`` list and does not
-        drop tool-pipeline entries. History before ``last_consolidated`` is kept
-        verbatim (compression only ever rewrites the tail past that index — see
-        agent/pipeline/context_stage.py), so these are real stored messages.
+        not the record a human wants to read. This slices the full ``messages``
+        list instead. History before ``last_consolidated`` is kept verbatim
+        (compression only ever rewrites the tail past that index — see
+        agent/pipeline/context_stage.py), so those are real stored messages.
+
+        What it is *not*: ``messages`` is not an immutable transcript. It is the
+        LLM's working record, and two kinds of entry in it misrepresent the
+        conversation to a human reader:
+
+        * The compressor injects a summary as ``role: user`` plus an
+          acknowledgement as ``role: assistant`` (agent/compression/assembler.py)
+          so the model treats the summary as reference material. Persisted, those
+          make a viewer show a machine-written summary as something the user
+          typed. Dropped here, matched against the assembler's own constants
+          rather than copied literals.
+        * Tool calls and tool results are interleaved with the conversation. They
+          are real and often worth seeing, but they are not chat turns, so they
+          are tagged (``internal: True``) for the client to render distinctly
+          instead of being passed off as ordinary agent replies.
+
+        Filtering happens *before* slicing, so ``max_messages`` counts messages
+        the user will actually see; otherwise a tool-heavy tail could fill the
+        whole window with entries the viewer then collapses.
+
+        Returns copies, never the stored dicts: the added ``internal`` tag must
+        not leak back into the list the LLM path reads.
         """
-        return self.messages[-max_messages:]
+        limit = max(1, min(int(max_messages), self.MAX_DISPLAY_MESSAGES))
+        return self.display_messages()[-limit:]
+
+    def display_messages(self) -> list[dict[str, Any]]:
+        """The full human-readable transcript, unsliced.
+
+        Split out from ``get_display_history`` so a caller can report how many
+        messages exist without paying for a second filtering pass or — worse —
+        reimplementing the filter and drifting from it. The history endpoint uses
+        it for ``total``, which previously reported the length of the *returned*
+        page and so always equalled ``len(messages)`` at small limits, telling a
+        client nothing about whether more history existed.
+        """
+        from echo_agent.agent.compression.assembler import SUMMARY_ACK, SUMMARY_PREFIX
+
+        visible: list[dict[str, Any]] = []
+        for msg in self.messages:
+            role = msg.get("role")
+            content = msg.get("content")
+            if isinstance(content, str):
+                if role == "user" and content.startswith(SUMMARY_PREFIX):
+                    continue
+                if role == "assistant" and content == SUMMARY_ACK:
+                    continue
+            entry = dict(msg)
+            # A tool result, or the assistant turn that only requested tools.
+            if role == "tool" or msg.get("tool_calls"):
+                entry["internal"] = True
+            visible.append(entry)
+        return visible
 
     def clear(self) -> None:
         self.messages.clear()

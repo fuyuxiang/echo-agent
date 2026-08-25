@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 from aiohttp import web
 
 if TYPE_CHECKING:
     from echo_agent.gateway.server import GatewayServer
+
+# A single safe path segment. Mirrors SkillStore's own name rule: no separators,
+# no "..", no absolute paths — anything joined into a filesystem path must match.
+_SAFE_SEGMENT_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 
 class SkillsAPI:
@@ -15,6 +20,20 @@ class SkillsAPI:
     def _store(self):
         return self._server._agent_loop.skill_store
 
+    def _unavailable(self) -> web.Response | None:
+        """503 when the skills system is off (skills.enabled=false).
+
+        skill_store is None in that case, and every endpoint here dereferences
+        it. Answering with a clear status beats an AttributeError surfacing as a
+        500 with no explanation.
+        """
+        if self._store() is None:
+            return web.json_response(
+                {"error": "skills system is disabled (skills.enabled=false)"},
+                status=503,
+            )
+        return None
+
     def _guard(self, request: web.Request, action: str) -> web.Response | None:
         return self._server._require_api_token(request, action=action)
 
@@ -22,20 +41,18 @@ class SkillsAPI:
         return self._server._require_admin_token(request, action=action)
 
     def _list_all_with_status(self) -> list[dict]:
-        """Return all skills (including disabled) with their enabled status."""
+        """Return all skills (including disabled) with their enabled status.
+
+        Uses the store's public listing rather than re-walking the roots through
+        private helpers, so admin listings stay consistent with what the agent
+        resolves.
+        """
         store = self._store()
         results: list[dict] = []
-        seen: set[str] = set()
-        for root, _ in store._all_roots():
-            if not root.exists():
-                continue
-            for skill_md in root.rglob("SKILL.md"):
-                meta = store._read_meta(skill_md.parent)
-                if meta and meta.name not in seen:
-                    seen.add(meta.name)
-                    d = meta.to_dict()
-                    d["enabled"] = meta.name not in store._disabled
-                    results.append(d)
+        for meta in store.list_all(include_disabled=True):
+            d = meta.to_dict()
+            d["enabled"] = not store.is_disabled(meta.name)
+            results.append(d)
         results.sort(key=lambda m: m["name"])
         return results
 
@@ -43,6 +60,9 @@ class SkillsAPI:
         guard = self._guard(request, "skills_list")
         if guard is not None:
             return guard
+        unavailable = self._unavailable()
+        if unavailable is not None:
+            return unavailable
 
         skills = self._list_all_with_status()
         return web.json_response({"skills": skills})
@@ -51,10 +71,16 @@ class SkillsAPI:
         guard = self._guard(request, "skills_get")
         if guard is not None:
             return guard
+        unavailable = self._unavailable()
+        if unavailable is not None:
+            return unavailable
 
         name = request.match_info["name"]
         store = self._store()
-        content = store.read_skill(name)
+        # include_disabled: this is the admin detail view, and reading a
+        # disabled skill is exactly how an operator decides whether to enable
+        # it. Reading is not running.
+        content = store.read_skill(name, include_disabled=True)
         if content is None:
             return web.json_response({"error": "not found"}, status=404)
 
@@ -62,6 +88,7 @@ class SkillsAPI:
         return web.json_response({
             "name": name,
             "content": content,
+            "enabled": not store.is_disabled(name),
             "files": files,
         })
 
@@ -74,13 +101,19 @@ class SkillsAPI:
         guard = self._admin_guard(request, "skills_toggle")
         if guard is not None:
             return guard
+        unavailable = self._unavailable()
+        if unavailable is not None:
+            return unavailable
 
         name = request.match_info["name"]
         store = self._store()
 
-        is_currently_disabled = name in store._disabled
+        # Refuse to toggle a name that does not exist on disk, so a typo does not
+        # silently create a permanent disable entry for a phantom skill.
+        if store.find_skill_dir(name, include_disabled=True) is None:
+            return web.json_response({"error": f"skill '{name}' not found"}, status=404)
 
-        if is_currently_disabled:
+        if store.is_disabled(name):
             store.persist_enable(name)
             enabled = True
         else:
@@ -96,16 +129,18 @@ class SkillsAPI:
         guard = self._admin_guard(request, "skills_delete")
         if guard is not None:
             return guard
+        unavailable = self._unavailable()
+        if unavailable is not None:
+            return unavailable
 
         name = request.match_info["name"]
         store = self._store()
+        # delete_skill now clears the disable entries itself (leaving them behind
+        # poisoned the name for any future skill installed under it), so the
+        # private-attribute cleanup that used to live here is gone.
         error = store.delete_skill(name)
         if error:
             return web.json_response({"error": error}, status=400)
-
-        store._disabled.discard(name)
-        store._persisted_disabled.discard(name)
-        store._save_persisted_disabled()
 
         return web.json_response({"success": True})
 
@@ -126,6 +161,9 @@ class SkillsAPI:
         guard = self._guard(request, "skills_deps_get")
         if guard is not None:
             return guard
+        unavailable = self._unavailable()
+        if unavailable is not None:
+            return unavailable
         name = request.match_info["name"]
         specs = self._skill_pip_specs(name)
         if specs is None:
@@ -143,6 +181,9 @@ class SkillsAPI:
         guard = self._admin_guard(request, "skills_deps_install")
         if guard is not None:
             return guard
+        unavailable = self._unavailable()
+        if unavailable is not None:
+            return unavailable
         name = request.match_info["name"]
         specs = self._skill_pip_specs(name)
         if specs is None:
@@ -156,6 +197,9 @@ class SkillsAPI:
         guard = self._admin_guard(request, "skills_import")
         if guard is not None:
             return guard
+        unavailable = self._unavailable()
+        if unavailable is not None:
+            return unavailable
 
         try:
             body = await request.json()
@@ -167,7 +211,7 @@ class SkillsAPI:
             return web.json_response({"error": "path is required"}, status=400)
 
         from pathlib import Path as P
-        source = P(path)
+        source = P(path).expanduser()
         if not source.exists() or not (source / "SKILL.md").exists():
             return web.json_response(
                 {"error": f"no SKILL.md found at '{path}'"}, status=400
@@ -180,14 +224,45 @@ class SkillsAPI:
                 {"error": "failed to parse SKILL.md"}, status=400
             )
 
+        # name and category come straight out of the imported SKILL.md, i.e.
+        # from a file this endpoint does not control. Unvalidated they were
+        # joined into a filesystem path: `name: /tmp/x` or `name: ../../x`
+        # relocated the write outside user_dir entirely.
+        if not _SAFE_SEGMENT_RE.match(meta.name):
+            return web.json_response(
+                {"error": f"invalid skill name in SKILL.md: '{meta.name}'"}, status=400
+            )
+        category = meta.category or "general"
+        if not _SAFE_SEGMENT_RE.match(category):
+            return web.json_response(
+                {"error": f"invalid category in SKILL.md: '{category}'"}, status=400
+            )
+
         import shutil
-        target = store._user_dir / (meta.category or "general") / meta.name
+        user_dir = store.user_dir
+        target = user_dir / category / meta.name
+        # Belt-and-braces after the segment checks: confirm the resolved target
+        # is still inside user_dir before creating anything.
+        try:
+            target.resolve().relative_to(user_dir.resolve())
+        except ValueError:
+            return web.json_response(
+                {"error": "resolved skill path escapes the skill directory"}, status=400
+            )
         if target.exists():
             return web.json_response(
                 {"error": f"skill '{meta.name}' already exists"}, status=409
             )
+        # Importing a skill the operator has not reviewed should not also import
+        # whatever the source tree happens to contain, and symlinks would copy
+        # host files in by reference.
         target.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(source, target, dirs_exist_ok=True)
+        try:
+            shutil.copytree(source, target, dirs_exist_ok=True, symlinks=False,
+                            ignore=shutil.ignore_patterns(".git", "__pycache__", ".venv", "venv"))
+        except Exception as e:
+            shutil.rmtree(target, ignore_errors=True)
+            return web.json_response({"error": f"import failed: {e}"}, status=400)
 
         store.persist_disable(meta.name)
         d = meta.to_dict()
