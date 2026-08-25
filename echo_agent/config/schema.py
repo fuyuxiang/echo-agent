@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
 
 
@@ -1546,15 +1546,15 @@ class MCPServerConfig(_Base):
     command: str = Field(
         default="",
         json_schema_extra={
-            "status": "effective", "ref": "mcp/manager.py:117",
-            "desc_zh": "stdio 传输方式下启动 MCP 服务的命令",
-            "desc_en": "Command launching the MCP server over stdio",
+            "status": "effective", "ref": "mcp/manager.py:_create_transport",
+            "desc_zh": "stdio 传输方式下启动 MCP 服务的命令(与 url 二选一)",
+            "desc_en": "Command launching the MCP server over stdio (mutually exclusive with url)",
         },
     )
     args: list[str] = Field(
         default_factory=list,
         json_schema_extra={
-            "status": "effective", "ref": "mcp/manager.py:119",
+            "status": "effective", "ref": "mcp/manager.py:_create_transport",
             "desc_zh": "启动 MCP 服务命令的参数",
             "desc_en": "Arguments for the MCP server launch command",
         },
@@ -1562,63 +1562,82 @@ class MCPServerConfig(_Base):
     env: dict[str, str] = Field(
         default_factory=dict,
         json_schema_extra={
-            "status": "effective", "ref": "mcp/manager.py:118",
-            "desc_zh": "MCP 服务进程的环境变量",
-            "desc_en": "Environment variables for the MCP server process",
+            "status": "effective", "ref": "mcp/manager.py:_resolve_env_vars",
+            "desc_zh": "MCP 服务进程的环境变量,支持 ${VAR} 与 $VAR 展开(变量缺失即报错)",
+            "desc_en": "Environment variables for the MCP server process; ${VAR}/$VAR expanded",
         },
     )
     url: str = Field(
         default="",
         json_schema_extra={
-            "status": "effective", "ref": "mcp/manager.py:108",
-            "desc_zh": "HTTP 传输方式下 MCP 服务地址",
-            "desc_en": "MCP server URL for HTTP transport",
+            "status": "effective", "ref": "mcp/manager.py:_create_transport",
+            "desc_zh": "Streamable HTTP 传输方式下 MCP 服务地址(与 command 二选一)",
+            "desc_en": "MCP server URL for Streamable HTTP transport (mutually exclusive with command)",
         },
     )
     headers: dict[str, str] = Field(
         default_factory=dict,
         json_schema_extra={
-            "status": "effective", "ref": "mcp/manager.py:109",
-            "desc_zh": "HTTP 连接 MCP 服务的自定义头",
-            "desc_en": "Custom headers for the MCP HTTP connection",
+            "status": "effective", "ref": "mcp/manager.py:_create_transport",
+            "desc_zh": "HTTP 连接 MCP 服务的自定义头,支持 ${VAR} 展开",
+            "desc_en": "Custom headers for the MCP HTTP connection; ${VAR} expanded",
         },
     )
-    auth: str = Field(
+    auth: Literal["", "oauth"] = Field(
         default="",
         json_schema_extra={
-            "status": "effective", "ref": "mcp/manager.py:110",
-            "desc_zh": "MCP 服务的认证凭据",
-            "desc_en": "Authentication credential for the MCP server",
+            # 原描述写「认证凭据」,实际是模式选择器且只认 "oauth" —— 类型收窄后
+            # 配置层就会直接拒绝其他取值,而不是静默走无认证。
+            "status": "effective", "ref": "mcp/manager.py:_acquire_oauth_token",
+            "desc_zh": "认证模式:留空为不认证(或自带 headers),oauth 为 OAuth 2.1 PKCE 浏览器授权",
+            "desc_en": "Auth mode: empty for none (or preset headers), 'oauth' for OAuth 2.1 PKCE",
+        },
+    )
+    trust_level: Literal["untrusted", "trusted"] = Field(
+        default="untrusted",
+        json_schema_extra={
+            "status": "effective", "ref": "mcp/tool_adapter.py:_classify_risk",
+            "desc_zh": (
+                "该 MCP 服务的信任级别。untrusted(默认):其工具至少按 exec 审批,"
+                "服务端声明的 readOnlyHint 不能降低审批等级;trusted:采信 annotations。"
+                "MCP 规范明确 annotations 仅为提示,不可作为安全判据 —— 只有你自己"
+                "掌控的服务才应设为 trusted。"
+            ),
+            "desc_en": (
+                "Trust level for this server. untrusted (default): tools are gated at "
+                "exec or above and server-supplied readOnlyHint cannot lower it; "
+                "trusted: annotations are honoured. Only set trusted for servers you control."
+            ),
         },
     )
     enabled: bool = Field(
         default=True,
         json_schema_extra={
-            "status": "effective", "ref": "mcp/manager.py:37",
+            "status": "effective", "ref": "mcp/manager.py:start_all",
             "desc_zh": "是否启用该 MCP 服务",
             "desc_en": "Enable this MCP server",
         },
     )
     timeout: int = Field(
-        default=120,
+        default=120, gt=0, le=3600,
         json_schema_extra={
-            "status": "effective", "ref": "mcp/manager.py:144",
-            "desc_zh": "MCP 调用超时(秒)",
-            "desc_en": "MCP call timeout (seconds)",
+            "status": "effective", "ref": "mcp/manager.py:_register_server_tools",
+            "desc_zh": "MCP 工具调用超时(秒)",
+            "desc_en": "MCP tool call timeout (seconds)",
         },
     )
     connect_timeout: int = Field(
-        default=60,
+        default=60, gt=0, le=600,
         json_schema_extra={
-            "status": "effective", "ref": "mcp/manager.py:95",
-            "desc_zh": "连接 MCP 服务的超时(秒)",
-            "desc_en": "MCP server connection timeout (seconds)",
+            "status": "effective", "ref": "mcp/manager.py:_connect_server",
+            "desc_zh": "连接与初始化握手的超时(秒)",
+            "desc_en": "Connection and initialize handshake timeout (seconds)",
         },
     )
     tools_include: list[str] = Field(
         default_factory=list,
         json_schema_extra={
-            "status": "effective", "ref": "mcp/manager.py:128",
+            "status": "effective", "ref": "mcp/security.py:validate_mcp_tools",
             "desc_zh": "仅暴露的 MCP 工具白名单(空为全部)",
             "desc_en": "Allowlist of MCP tools to expose (empty = all)",
         },
@@ -1626,11 +1645,26 @@ class MCPServerConfig(_Base):
     tools_exclude: list[str] = Field(
         default_factory=list,
         json_schema_extra={
-            "status": "effective", "ref": "mcp/manager.py:129",
+            "status": "effective", "ref": "mcp/security.py:validate_mcp_tools",
             "desc_zh": "排除的 MCP 工具黑名单",
             "desc_en": "Blocklist of MCP tools to exclude",
         },
     )
+
+    @model_validator(mode="after")
+    def _exactly_one_transport(self) -> "MCPServerConfig":
+        """url 与 command 必须二选一。
+
+        两者同时配置时旧行为是静默优先 url,于是 command 里的笔误无从发现;
+        两者都不配则在连接时才失败,而这是纯配置错误,应当在加载期就报出来。
+        """
+        if self.enabled and not self.url and not self.command:
+            raise ValueError("MCP server must set either 'url' or 'command'")
+        if self.url and self.command:
+            raise ValueError("MCP server must set exactly one of 'url' or 'command', not both")
+        if self.auth == "oauth" and not self.url:
+            raise ValueError("auth='oauth' only applies to HTTP MCP servers (set 'url')")
+        return self
 
 
 class MCPToolConfig(_Base):
@@ -1643,9 +1677,10 @@ class MCPToolConfig(_Base):
     enabled: bool = Field(
         default=True,
         json_schema_extra={
-            "status": "effective", "ref": "agent/loop.py:552",
-            "desc_zh": "是否启用 MCP 工具接入(取消后不加载任何 MCP 服务)",
-            "desc_en": "Enable MCP tool integration (unset skips loading all MCP servers)",
+            "status": "effective", "ref": "agent/loop.py:_start_mcp",
+            "desc_zh": "是否启用 MCP 工具接入(设为 false 时不加载任何 MCP 服务,"
+                       "即使 mcp_servers 里仍有配置)",
+            "desc_en": "Enable MCP tool integration (false skips every configured MCP server)",
         },
     )
 
@@ -1726,17 +1761,21 @@ class ToolsConfig(_Base):
     mcp_servers: dict[str, MCPServerConfig] = Field(
         default_factory=dict,
         json_schema_extra={
-            "status": "effective", "ref": "agent/loop.py:552",
-            "desc_zh": "MCP 服务配置(键为服务名)",
-            "desc_en": "MCP server configurations keyed by name",
+            "status": "effective", "ref": "agent/loop.py:_start_mcp",
+            "desc_zh": "MCP 服务配置(键为服务名;该键会参与工具名与凭据文件名,"
+                       "只允许字母数字与 . - _)",
+            "desc_en": "MCP server configurations keyed by name (the key feeds tool names "
+                       "and credential filenames; letters, digits, dot, dash, underscore only)",
         },
     )
     mcp_security_policy: Literal["warn", "block"] = Field(
         default="block",
         json_schema_extra={
-            "status": "effective", "ref": "agent/loop.py:558",
-            "desc_zh": "MCP 工具安全策略:warn 仅告警,block 拦截",
-            "desc_en": "MCP tool security policy: warn or block",
+            "status": "effective", "ref": "mcp/security.py:validate_mcp_tools",
+            "desc_zh": "MCP 工具注入扫描策略:block 拒绝可疑工具,warn 仅告警放行。"
+                       "扫描覆盖工具名、描述与 inputSchema 内的描述/标题",
+            "desc_en": "MCP injection-scan policy: block rejects suspicious tools, warn only logs. "
+                       "Covers tool name, description and inputSchema descriptions/titles",
         },
     )
     image_gen: ImageGenConfig = Field(default_factory=ImageGenConfig)
