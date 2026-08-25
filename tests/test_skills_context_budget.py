@@ -97,7 +97,6 @@ class TestDegradationOrder:
     def test_dropped_count_is_reported(self):
         out = build_skills_context(_store(500))
         assert "more skill(s) not listed" in out
-        listed = out.count("\n  - ") - 1  # the notice line also starts with "  …"
         notice = [line for line in out.splitlines() if "more skill(s)" in line]
         assert notice, "omission must be announced"
         assert "skills_list" in notice[0], "must point at the tool holding the full list"

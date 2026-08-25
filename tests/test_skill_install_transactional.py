@@ -85,8 +85,6 @@ class TestRollback:
     @pytest.mark.asyncio
     async def test_failed_copy_leaves_nothing_behind(self, store, source, monkeypatch):
         """A new install that fails mid-copy must not leave a partial skill."""
-        import echo_agent.agent.tools.skill_install as mod
-
         real = store.write_file
         calls = {"n": 0}
 
