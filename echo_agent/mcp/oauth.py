@@ -491,7 +491,16 @@ class MCPOAuthClient:
         }
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(endpoint, json=body, timeout=_METADATA_TIMEOUT) as resp:
+                # allow_redirects=False: this POST carries the redirect_uri we
+                # will accept a code on, and its response carries the client
+                # secret. aiohttp follows redirects by default and re-sends the
+                # body on a 307/308, so a hostile or compromised registration
+                # endpoint could bounce the whole exchange to another origin. The
+                # same-origin checks elsewhere validate the *initial* endpoint
+                # only — they say nothing about a redirect target.
+                async with session.post(
+                    endpoint, json=body, timeout=_METADATA_TIMEOUT, allow_redirects=False,
+                ) as resp:
                     if resp.status not in (200, 201):
                         text = (await resp.text())[:300]
                         logger.warning(
@@ -547,7 +556,14 @@ class MCPOAuthClient:
             body["client_secret"] = client_secret
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(token_endpoint, data=body, timeout=_TOKEN_TIMEOUT) as resp:
+            # allow_redirects=False: the body holds the authorization code, the
+            # PKCE verifier and possibly the client secret. A cross-origin 307/308
+            # would have aiohttp re-send all of it to whatever origin the token
+            # endpoint names — handing the credentials to a second server that
+            # the same-origin check on `token_endpoint` never saw.
+            async with session.post(
+                token_endpoint, data=body, timeout=_TOKEN_TIMEOUT, allow_redirects=False,
+            ) as resp:
                 if resp.status != 200:
                     text = (await resp.text())[:300]
                     raise MCPOAuthError(f"Token exchange failed ({resp.status}): {text}")
@@ -594,7 +610,12 @@ class MCPOAuthClient:
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(token_endpoint, data=body, timeout=_TOKEN_TIMEOUT) as resp:
+                # allow_redirects=False — same reason as the code exchange. A
+                # refresh token is longer-lived than an access token, so leaking
+                # it via a cross-origin redirect is the worse of the two.
+                async with session.post(
+                    token_endpoint, data=body, timeout=_TOKEN_TIMEOUT, allow_redirects=False,
+                ) as resp:
                     if resp.status != 200:
                         text = (await resp.text())[:200]
                         logger.warning(

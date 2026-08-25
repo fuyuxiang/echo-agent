@@ -240,6 +240,16 @@ class TestMCPClientReadLoop:
 # ===========================================================================
 
 
+def client_for(tmp_path):
+    """A real (unmocked) OAuth client pointed at a loopback MCP server.
+
+    Loopback is what makes plaintext http:// acceptable to
+    ``require_secure_endpoint``, so the redirect tests can run against local
+    aiohttp servers instead of mocks.
+    """
+    return MCPOAuthClient("redirect_probe", "http://127.0.0.1:9/", tmp_path)
+
+
 def _aiohttp_session(resp):
     """Build a fake aiohttp ClientSession whose get/post return `resp`."""
     resp.__aenter__ = AsyncMock(return_value=resp)
@@ -497,6 +507,114 @@ class TestMCPOAuthClient:
             "issuer": "https://as.example.com",
             "token_endpoint": "https://attacker.example.com/token",
         }) is None
+
+    # ── credential POSTs must not follow redirects ──────────────────────────
+    #
+    # aiohttp follows redirects by default and re-sends the body on 307/308. The
+    # same-origin validation covers the *initial* endpoint only, so without
+    # allow_redirects=False a hostile token endpoint could answer
+    # `307 Location: https://attacker/` and have the authorization code, PKCE
+    # verifier, refresh token or client secret delivered to another origin.
+
+    @pytest.mark.asyncio
+    async def test_exchange_code_does_not_follow_redirects(self, tmp_path):
+        client = self._make(tmp_path)
+        resp = MagicMock()
+        resp.status = 200
+        resp.json = AsyncMock(return_value={"access_token": "tok"})
+        session = _aiohttp_session(resp)
+        with patch("aiohttp.ClientSession", return_value=session):
+            await client._exchange_code(
+                "https://as.example.com/token", "c", "cid", "",
+                "verifier", "http://127.0.0.1:5555/callback",
+            )
+        assert session.post.call_args.kwargs["allow_redirects"] is False
+
+    @pytest.mark.asyncio
+    async def test_refresh_does_not_follow_redirects(self, tmp_path):
+        client = self._make(tmp_path)
+        resp = MagicMock()
+        resp.status = 200
+        resp.json = AsyncMock(return_value={"access_token": "new"})
+        session = _aiohttp_session(resp)
+        with patch("aiohttp.ClientSession", return_value=session):
+            await client._refresh_token({
+                "refresh_token": "rt",
+                "issuer": "https://as.example.com",
+                "token_endpoint": "https://as.example.com/token",
+            })
+        assert session.post.call_args.kwargs["allow_redirects"] is False
+
+    @pytest.mark.asyncio
+    async def test_registration_does_not_follow_redirects(self, tmp_path):
+        client = self._make(tmp_path)
+        resp = MagicMock()
+        resp.status = 201
+        resp.json = AsyncMock(return_value={"client_id": "c"})
+        session = _aiohttp_session(resp)
+        with patch("aiohttp.ClientSession", return_value=session):
+            await client._register_client(
+                "https://as.example.com/register", "http://127.0.0.1:5555/callback",
+                "https://as.example.com", "https://as.example.com/token",
+            )
+        assert session.post.call_args.kwargs["allow_redirects"] is False
+
+    @pytest.mark.asyncio
+    async def test_cross_origin_307_never_reaches_the_second_server(self, tmp_path):
+        """End-to-end over a real aiohttp client against two local servers.
+
+        The first answers 307 pointing at the second. With redirect-following on,
+        aiohttp replays the POST *body* — code, verifier, secret — at the second
+        origin. The assertion is that the second server records nothing.
+        """
+        from aiohttp import web
+
+        received: list[dict[str, str]] = []
+
+        async def attacker(request: web.Request) -> web.Response:
+            received.append(dict(await request.post()))
+            return web.json_response({"access_token": "attacker-issued"})
+
+        attacker_app = web.Application()
+        attacker_app.router.add_post("/token", attacker)
+        attacker_runner = web.AppRunner(attacker_app)
+        await attacker_runner.setup()
+        attacker_site = web.TCPSite(attacker_runner, "127.0.0.1", 0)
+        await attacker_site.start()
+        attacker_port = attacker_runner.addresses[0][1]
+
+        async def redirector(request: web.Request) -> web.Response:
+            raise web.HTTPTemporaryRedirect(
+                location=f"http://127.0.0.1:{attacker_port}/token",
+            )
+
+        as_app = web.Application()
+        as_app.router.add_post("/token", redirector)
+        as_runner = web.AppRunner(as_app)
+        await as_runner.setup()
+        as_site = web.TCPSite(as_runner, "127.0.0.1", 0)
+        await as_site.start()
+        as_port = as_runner.addresses[0][1]
+
+        try:
+            token_endpoint = f"http://127.0.0.1:{as_port}/token"
+            with pytest.raises(MCPOAuthError):
+                await client_for(tmp_path)._exchange_code(
+                    token_endpoint, "secret-code", "cid", "client-secret",
+                    "secret-verifier", "http://127.0.0.1:5555/callback",
+                )
+            assert received == [], "credentials were forwarded to the redirect target"
+
+            # And the refresh path, whose token is the longer-lived credential.
+            assert await client_for(tmp_path)._refresh_token({
+                "refresh_token": "secret-refresh",
+                "issuer": f"http://127.0.0.1:{as_port}",
+                "token_endpoint": token_endpoint,
+            }) is None
+            assert received == []
+        finally:
+            await as_runner.cleanup()
+            await attacker_runner.cleanup()
 
     @pytest.mark.asyncio
     async def test_refresh_after_401_without_refresh_token(self, tmp_path):
