@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -399,6 +400,152 @@ class TestMCPOAuthClient:
             )
         assert (cid, secret) == ("dyn-id", "shh")
         assert client._load_client_credentials() == ("dyn-id", "shh")
+
+    # ── persisted client credentials are bound to where they were issued ────
+    #
+    # The record is keyed only by server *name*, which is a config key the
+    # operator can repoint. Loading it unconditionally meant a secret issued by
+    # one AS could be sent to whoever the config named next — a credential leak
+    # triggered by an ordinary config edit.
+
+    def _register(self, client, *, issuer, token_endpoint, server_url=None):
+        """Persist a registration record as _register_client would."""
+        client._save_client_credentials({
+            "client_id": "dyn-id",
+            "client_secret": "shh",
+            "issuer": issuer,
+            "token_endpoint": token_endpoint,
+            "server_url": server_url if server_url is not None else client._server_url,
+            "redirect_uri": "http://127.0.0.1:5555/callback",
+            "registered_at": time.time(),
+        })
+
+    def test_matching_registration_is_reused(self, tmp_path):
+        client = self._make(tmp_path)
+        self._register(
+            client,
+            issuer="https://as.example.com",
+            token_endpoint="https://as.example.com/token",
+        )
+        assert client._load_client_credentials(
+            issuer="https://as.example.com",
+            token_endpoint="https://as.example.com/token",
+        ) == ("dyn-id", "shh")
+
+    def test_secret_is_not_reused_for_a_different_issuer(self, tmp_path):
+        client = self._make(tmp_path)
+        self._register(
+            client,
+            issuer="https://as.example.com",
+            token_endpoint="https://as.example.com/token",
+        )
+        assert client._load_client_credentials(
+            issuer="https://attacker.example.com",
+            token_endpoint="https://attacker.example.com/token",
+        ) == ("", "")
+        # Discarded, not merely withheld: the next attempt must re-register.
+        assert not client._client_file.exists()
+
+    def test_secret_is_not_reused_for_a_different_token_endpoint(self, tmp_path):
+        client = self._make(tmp_path)
+        self._register(
+            client,
+            issuer="https://as.example.com",
+            token_endpoint="https://as.example.com/token",
+        )
+        assert client._load_client_credentials(
+            issuer="https://as.example.com",
+            token_endpoint="https://elsewhere.example.com/token",
+        ) == ("", "")
+
+    def test_secret_is_not_reused_after_the_server_url_changes(self, tmp_path):
+        """The exact scenario: same config key, repointed at another address."""
+        client = self._make(tmp_path)
+        self._register(
+            client,
+            issuer="https://as.example.com",
+            token_endpoint="https://as.example.com/token",
+            server_url="https://old-mcp.example.com",
+        )
+        assert client._load_client_credentials(
+            issuer="https://as.example.com",
+            token_endpoint="https://as.example.com/token",
+        ) == ("", "")
+
+    def test_pre_binding_record_is_migrated_not_trusted(self, tmp_path):
+        """Old records carry no server_url, so their scope is unknowable."""
+        client = self._make(tmp_path)
+        client._save_client_credentials({"client_id": "old-id", "client_secret": "old-shh"})
+
+        assert client._load_client_credentials(
+            issuer="https://as.example.com",
+            token_endpoint="https://as.example.com/token",
+        ) == ("", "")
+        assert not client._client_file.exists()
+
+    def test_unbound_load_still_returns_the_record(self, tmp_path):
+        """Callers that pass no expectation get the record as-is."""
+        client = self._make(tmp_path)
+        client._save_client_credentials({"client_id": "c", "client_secret": "s"})
+        assert client._load_client_credentials() == ("c", "s")
+
+    @pytest.mark.asyncio
+    async def test_refresh_does_not_send_a_secret_to_a_new_endpoint(self, tmp_path):
+        """The refresh POST carries the client secret; it must not travel to a
+        token endpoint other than the one that issued it."""
+        client = self._make(tmp_path)
+        self._register(
+            client,
+            issuer="https://as.example.com",
+            token_endpoint="https://as.example.com/token",
+        )
+        resp = MagicMock()
+        resp.status = 200
+        resp.json = AsyncMock(return_value={"access_token": "new"})
+        session = _aiohttp_session(resp)
+        with patch("aiohttp.ClientSession", return_value=session):
+            await client._refresh_token({
+                "refresh_token": "rt",
+                "issuer": "https://other.example.com",
+                "token_endpoint": "https://other.example.com/token",
+            })
+        body = session.post.call_args.kwargs["data"]
+        assert "client_secret" not in body
+
+    @pytest.mark.asyncio
+    async def test_refresh_sends_the_secret_to_its_own_endpoint(self, tmp_path):
+        client = self._make(tmp_path)
+        self._register(
+            client,
+            issuer="https://as.example.com",
+            token_endpoint="https://as.example.com/token",
+        )
+        resp = MagicMock()
+        resp.status = 200
+        resp.json = AsyncMock(return_value={"access_token": "new"})
+        session = _aiohttp_session(resp)
+        with patch("aiohttp.ClientSession", return_value=session):
+            await client._refresh_token({
+                "refresh_token": "rt",
+                "issuer": "https://as.example.com",
+                "token_endpoint": "https://as.example.com/token",
+            })
+        assert session.post.call_args.kwargs["data"]["client_secret"] == "shh"
+
+    @pytest.mark.asyncio
+    async def test_registration_records_the_server_url(self, tmp_path):
+        client = self._make(tmp_path)
+        resp = MagicMock()
+        resp.status = 201
+        resp.json = AsyncMock(return_value={"client_id": "c", "client_secret": "s"})
+        session = _aiohttp_session(resp)
+        with patch("aiohttp.ClientSession", return_value=session):
+            await client._register_client(
+                "https://as.example.com/register", "http://127.0.0.1:5555/callback",
+                "https://as.example.com", "https://as.example.com/token",
+            )
+        record = json.loads(client._client_file.read_text())
+        assert record["server_url"] == "https://mcp.example.com"
 
     @pytest.mark.asyncio
     async def test_register_client_sends_the_exact_redirect_uri(self, tmp_path):

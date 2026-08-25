@@ -298,7 +298,12 @@ class MCPOAuthClient:
         server: asyncio.AbstractServer | None = None
 
         try:
-            client_id, client_secret = self._load_client_credentials()
+            # Bound load: a persisted secret is only reused when it was issued by
+            # this same issuer/token endpoint for this same resource. Otherwise it
+            # is discarded here and DCR runs again below.
+            client_id, client_secret = self._load_client_credentials(
+                issuer=issuer, token_endpoint=token_endpoint,
+            )
             if not client_id and isinstance(registration_endpoint, str) and registration_endpoint:
                 require_secure_endpoint(registration_endpoint, "registration_endpoint")
                 if not same_origin(registration_endpoint, issuer):
@@ -523,16 +528,80 @@ class MCPOAuthClient:
                 "client_secret": client_secret,
                 "issuer": issuer,
                 "token_endpoint": token_endpoint,
+                # The resource this registration was scoped to. Recorded so a
+                # later config edit that repoints the server name cannot silently
+                # reuse this secret against a different address.
+                "server_url": self._server_url,
                 "redirect_uri": redirect_uri,
                 "registered_at": time.time(),
             })
         return client_id, client_secret
 
-    def _load_client_credentials(self) -> tuple[str, str]:
+    def _load_client_credentials(
+        self, *, issuer: str = "", token_endpoint: str = "",
+    ) -> tuple[str, str]:
+        """Load the persisted DCR result, bound to where it was issued.
+
+        The record is keyed only by server *name*, which is a config key the
+        operator can repoint at a different address. Loading it unconditionally
+        meant a secret issued by one authorization server could be sent to
+        whoever the config named next — a credential leak triggered by an
+        ordinary config edit.
+
+        When *issuer* / *token_endpoint* are supplied they must match what was
+        recorded at registration; a mismatch discards the record so the caller
+        re-registers. Callers that only need the identifier for an already
+        origin-validated request (the refresh path) pass neither and get the
+        record as-is.
+        """
         data = self._read_json(self._client_file)
         if not data:
             return "", ""
+
+        stored_issuer = str(data.get("issuer", "") or "")
+        stored_endpoint = str(data.get("token_endpoint", "") or "")
+        stored_server = str(data.get("server_url", "") or "")
+
+        # Records written before this binding existed carry no server_url. They
+        # are migrated rather than trusted: without knowing which resource the
+        # secret was scoped to, reuse cannot be shown to be safe.
+        if issuer or token_endpoint:
+            if not stored_issuer or not stored_endpoint or not stored_server:
+                logger.info(
+                    "Discarding pre-binding client registration for '{}' — it does not "
+                    "record which authorization server issued it; re-registering",
+                    self._server_name,
+                )
+                self._discard_client_credentials()
+                return "", ""
+
+            mismatches = []
+            if issuer and not same_origin(stored_issuer, issuer):
+                mismatches.append(f"issuer {stored_issuer!r} != {issuer!r}")
+            if token_endpoint and not same_origin(stored_endpoint, token_endpoint):
+                mismatches.append(f"token_endpoint {stored_endpoint!r} != {token_endpoint!r}")
+            if stored_server != self._server_url:
+                mismatches.append(f"server_url {stored_server!r} != {self._server_url!r}")
+            if mismatches:
+                logger.warning(
+                    "MCP server '{}' now points somewhere else than when its client "
+                    "credentials were issued ({}). Discarding the old secret and "
+                    "re-registering rather than sending it to a different origin.",
+                    self._server_name, "; ".join(mismatches),
+                )
+                self._discard_client_credentials()
+                return "", ""
+
         return str(data.get("client_id", "") or ""), str(data.get("client_secret", "") or "")
+
+    def _discard_client_credentials(self) -> None:
+        try:
+            self._client_file.unlink(missing_ok=True)
+        except OSError as e:
+            logger.warning(
+                "Could not remove stale client credentials for '{}': {}",
+                self._server_name, e,
+            )
 
     def _save_client_credentials(self, data: dict[str, Any]) -> None:
         self._write_secret_json(self._client_file, data)
@@ -595,7 +664,15 @@ class MCPOAuthClient:
                 )
                 return None
 
-        client_id, client_secret = self._load_client_credentials()
+        # Bound here too: this POST carries the client secret, so it must not be
+        # sent to a token endpoint other than the one that issued it. On a
+        # mismatch the secret is discarded and the refresh proceeds as a public
+        # client — which the AS will reject, forcing clean re-authorization
+        # instead of leaking the old secret to a new origin.
+        client_id, client_secret = self._load_client_credentials(
+            issuer=issuer if isinstance(issuer, str) else "",
+            token_endpoint=token_endpoint,
+        )
         body = {
             "grant_type": "refresh_token",
             "refresh_token": token_data["refresh_token"],
