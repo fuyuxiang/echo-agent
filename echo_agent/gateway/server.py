@@ -44,8 +44,15 @@ from echo_agent.gateway.ws_skill import (
     handle_skill_enable,
     handle_skill_list,
 )
-from echo_agent.gateway.skill_singleton import get_skill_manager
 from echo_agent.session.manager import SessionManager
+
+
+def _skill_frame_error(message: str, request_id: str | None) -> dict:
+    """skill.* 分支的错误帧,形状与 ws_skill handler 的 error 帧一致。"""
+    frame = {"type": "error", "message": message}
+    if request_id is not None:
+        frame["request_id"] = request_id
+    return frame
 
 
 class GatewayServer:
@@ -896,6 +903,7 @@ class GatewayServer:
         user_id = ""
         chat_id = ""
         session_key = ""
+        ws_admin_token = ""
         # Absolute bound on the pre-auth window. Passing the per-frame timeout to
         # each wait_for restarted the clock on every frame, so a peer that kept
         # sending frames it had no right to send (junk, bad JSON, `message`
@@ -976,6 +984,9 @@ class GatewayServer:
                             # 让 _handle_outbound 无需任何 metadata 透传即可命中所有出站路径。
                             delivery_key = f"gateway:{platform}:{chat_id}"
                             self._ws_clients[delivery_key] = websocket
+                            # 记下握手令牌,供后续 skill.enable/disable 做 admin
+                            # 作用域判定 —— 之后的帧不再携带令牌,只能在此捕获。
+                            ws_admin_token = token
                             # Lifts the pre-auth deadline. Set here, past every
                             # rejection branch above, so a failed handshake never
                             # buys an unbounded socket.
@@ -1075,46 +1086,53 @@ class GatewayServer:
                         if msg_type == "ping":
                             await websocket.send_json({"type": "pong"})
 
-                        if msg_type == "skill.list":
+                        if msg_type in ("skill.list", "skill.enable", "skill.disable"):
                             # Skill 管理是已认证操作;前置 auth 握手未完成则拒收。
                             if not session_key:
                                 await websocket.send_json({"type": "error", "error": "authenticate first"})
                                 continue
-                            manager = get_skill_manager()
-                            await websocket.send_json(await handle_skill_list(
-                                manager, data.get("request_id"),
-                            ))
-
-                        if msg_type == "skill.enable":
-                            if not session_key:
-                                await websocket.send_json({"type": "error", "error": "authenticate first"})
+                            rid = data.get("request_id")
+                            # 与 HTTP api/skills.py 共用 agent 的同一个 store:
+                            # 两条路径必须看到同一份技能集合。skills.enabled=false
+                            # 时 store 为 None,此处如实回错而不是抛 AttributeError。
+                            store = self._agent_loop.skill_store if self._agent_loop else None
+                            if store is None:
+                                await websocket.send_json(_skill_frame_error(
+                                    "skills system is disabled (skills.enabled=false)", rid,
+                                ))
                                 continue
-                            manager = get_skill_manager()
-                            result = await handle_skill_enable(
-                                manager, str(data.get("name", "")),
-                                data.get("request_id"),
-                            )
-                            if result is None:
-                                response = {"type": "accepted"}
-                                rid = data.get("request_id")
-                                if rid is not None:
-                                    response["request_id"] = rid
-                                await websocket.send_json(response)
-                            else:
-                                await websocket.send_json(result)
 
-                        if msg_type == "skill.disable":
-                            if not session_key:
-                                await websocket.send_json({"type": "error", "error": "authenticate first"})
+                            # enable/disable 会改变 agent 下一轮能做什么,与 HTTP
+                            # toggle 同属高危写操作 —— 那边要求 admin 令牌,这里
+                            # 不能更松。list 是只读,沿用握手时的 api 作用域。
+                            if msg_type != "skill.list" and not self.auth.authenticate_admin_token(
+                                ws_admin_token,
+                            ):
+                                self.auth.audit(
+                                    f"ws_{msg_type.replace('.', '_')}",
+                                    platform=platform, user_id=user_id,
+                                    ok=False, reason="admin token required",
+                                )
+                                await websocket.send_json(_skill_frame_error(
+                                    "admin token required", rid,
+                                ))
                                 continue
-                            manager = get_skill_manager()
-                            result = await handle_skill_disable(
-                                manager, str(data.get("name", "")),
-                                data.get("request_id"),
+
+                            if msg_type == "skill.list":
+                                await websocket.send_json(await handle_skill_list(store, rid))
+                                continue
+
+                            handler = (
+                                handle_skill_enable if msg_type == "skill.enable"
+                                else handle_skill_disable
                             )
+                            result = await handler(store, str(data.get("name", "")), rid)
                             if result is None:
+                                self.auth.audit(
+                                    f"ws_{msg_type.replace('.', '_')}",
+                                    platform=platform, user_id=user_id, ok=True,
+                                )
                                 response = {"type": "accepted"}
-                                rid = data.get("request_id")
                                 if rid is not None:
                                     response["request_id"] = rid
                                 await websocket.send_json(response)

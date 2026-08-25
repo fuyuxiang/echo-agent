@@ -1,7 +1,11 @@
 """WS 协议扩展:Skills 管理消息 handler。
 
 接收 Desktop 端通过 WS 发来的 skill.list / skill.enable / skill.disable,
-直接调用 SkillManager 完成操作,返回结构化响应。
+调用 ``SkillStore`` 完成操作,返回结构化响应。
+
+store 由调用方从 ``agent_loop.skill_store`` 取,与 HTTP ``api/skills.py``
+共用同一个实例:两条路径必须看到同一份技能集合,且同样受
+``skills.enabled=false``(store 为 None)约束。
 
 返回值约定:
   - 成功:None(调用方路由走 accepted ack,并自己负责拼 request_id)
@@ -12,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from echo_agent.skills.manager import SkillManager
+from echo_agent.skills.store import SkillStore
 
 
 def _attach_request_id(frame: dict[str, Any], request_id: str | None) -> dict[str, Any]:
@@ -23,54 +27,67 @@ def _attach_request_id(frame: dict[str, Any], request_id: str | None) -> dict[st
 
 
 async def handle_skill_list(
-    manager: SkillManager, request_id: str | None = None,
+    store: SkillStore, request_id: str | None = None,
 ) -> dict:
-    """返回已安装 skills 清单及其状态。
+    """返回技能清单及其启用状态。
 
-    字段与 SkillManifest 对齐:name / version / description / author /
-    scope / dependencies / config_schema;另带 status 字段。
+    字段与 ``SkillMeta.to_dict()`` 对齐(name / description / category /
+    version / tags),另带 ``enabled`` 布尔值 —— 与 HTTP
+    ``GET /api/skills`` 的 ``_list_all_with_status`` 保持同一形状,
+    避免两条路径对同一状态给出不同表示。
+
+    include_disabled=True:这是管理视图,已禁用的技能正是操作者要看到并
+    决定是否启用的对象。
     """
-    skills = manager.list_skills()
+    skills: list[dict[str, Any]] = []
+    for meta in store.list_all(include_disabled=True):
+        item = meta.to_dict()
+        item["enabled"] = not store.is_disabled(meta.name)
+        skills.append(item)
+    skills.sort(key=lambda m: m["name"])
     return _attach_request_id(
-        {
-            "type": "skill.list_result",
-            "skills": [
-                {
-                    "name": s.manifest.name,
-                    "version": s.manifest.version,
-                    "description": s.manifest.description,
-                    "author": s.manifest.author,
-                    "scope": s.manifest.scope,
-                    "status": s.status.value,
-                    "dependencies": s.manifest.dependencies,
-                    "config_schema": s.manifest.config_schema,
-                }
-                for s in skills
-            ],
-        },
+        {"type": "skill.list_result", "skills": skills},
         request_id,
     )
+
+
+def _missing_skill_error(
+    store: SkillStore, name: str, request_id: str | None,
+) -> dict[str, Any] | None:
+    """磁盘上不存在该名字时返回 error 帧。
+
+    与 HTTP toggle 同理:拒绝对不存在的名字下手,否则一个拼写错误会为幽灵
+    技能留下永久的 disable 记录,把这个名字给未来真正安装的技能占死。
+    """
+    if store.find_skill_dir(name, include_disabled=True) is None:
+        return _attach_request_id(
+            {"type": "error", "message": f"skill not found: {name}"},
+            request_id,
+        )
+    return None
 
 
 async def handle_skill_enable(
-    manager: SkillManager, name: str, request_id: str | None = None,
+    store: SkillStore, name: str, request_id: str | None = None,
 ) -> dict | None:
-    """启用 skill。失败(不存在 / 依赖未满足)返回 error 帧。"""
-    if manager.enable(name):
-        return None
-    return _attach_request_id(
-        {"type": "error", "message": f"failed to enable skill: {name}"},
-        request_id,
-    )
+    """启用 skill。不存在时返回 error 帧。
+
+    走 ``persist_enable``,使启用状态跨重启存活 —— 仅改内存集合的话进程一退
+    就蒸发了。
+    """
+    error = _missing_skill_error(store, name, request_id)
+    if error is not None:
+        return error
+    store.persist_enable(name)
+    return None
 
 
 async def handle_skill_disable(
-    manager: SkillManager, name: str, request_id: str | None = None,
+    store: SkillStore, name: str, request_id: str | None = None,
 ) -> dict | None:
     """禁用 skill。不存在时返回 error 帧。"""
-    if manager.disable(name):
-        return None
-    return _attach_request_id(
-        {"type": "error", "message": f"failed to disable skill: {name}"},
-        request_id,
-    )
+    error = _missing_skill_error(store, name, request_id)
+    if error is not None:
+        return error
+    store.persist_disable(name)
+    return None
