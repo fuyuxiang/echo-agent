@@ -23,10 +23,34 @@ ws://localhost:3000/ws/dashboard?token=<admin_token>
 Tokens can be provided via:
 
 1. **Query parameter**: `?token=<value>`
-2. **Header**: The configured `token_header` (default: `X-Echo-Agent-Token`)
+2. **Header**: The configured `token_header` (default: `X-Echo-Agent-Token`), or `Authorization: Bearer <value>`
+3. **Auth frame**: a `{"type": "auth", "token": "<value>"}` first frame
 
-!!! warning "Token security"
-    When using query parameters, tokens may appear in server logs. Prefer header-based auth for production deployments.
+### Token source and scope
+
+All three sources complete the handshake and grant api scope, but **only headers and
+the auth frame grant admin scope**:
+
+| Source | Handshake | Read-only frames | State-changing frames |
+|--------|-----------|------------------|-----------------------|
+| Header | ✅ | ✅ | ✅ |
+| Auth frame | ✅ | ✅ | ✅ |
+| URL `?token=` | ✅ | ✅ | ❌ |
+
+A `?token=` value is recorded by aiohttp's default access log along with the query
+string, and also lands in reverse-proxy logs, browser history and referrers — the token
+outlives its own useful life in those logs. So no state-changing frame (for example
+`skill.enable` or `skill.disable`) accepts a URL-borne token. This matches the rule the
+HTTP admin endpoints already enforce.
+
+This holds **regardless of whether `admin_tokens` is configured**. In a single-token
+deployment that sets only `api_tokens`, the api token acts as admin by fallback and is
+subject to the same restriction.
+
+!!! warning "URL auth cannot perform writes"
+    A client connected with `?token=` that sends a state-changing frame receives an
+    `admin token required` error. Pass the token in a header or the auth frame instead.
+    Read-only frames are unaffected.
 
 ### Connection Lifecycle
 

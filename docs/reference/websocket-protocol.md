@@ -35,11 +35,41 @@ ws://localhost:8080/ws/session?token=your-api-token
 !!! warning "认证时限"
     使用首帧认证时，连接建立后必须在 5 秒内发送 auth 帧，否则连接将被服务端关闭。
 
+**方式三：请求头**
+
+```http
+Authorization: Bearer your-api-token
+```
+
+也可使用配置的 `token_header`（默认 `X-API-Token`）。
+
+### 令牌来源与作用域
+
+三种来源都能完成握手并取得 api 作用域，但**只有请求头与 auth 帧能取得 admin 作用域**：
+
+| 来源 | 握手 | 只读帧 | 状态修改帧 |
+|------|------|--------|------------|
+| 请求头 | ✅ | ✅ | ✅ |
+| auth 帧 | ✅ | ✅ | ✅ |
+| URL `?token=` | ✅ | ✅ | ❌ |
+
+`?token=` 会被 aiohttp 默认访问日志连同 query string 记下，也会进反向代理日志、
+浏览器 history 与 referrer —— 令牌在日志里的存活期远长于其本身。因此任何改变状态的
+帧（如 `skill.enable`、`skill.disable`）都不接受 URL 来源的令牌，与 HTTP 侧管理端点
+同一口径。
+
+这条规则**不依赖是否配置了 `admin_tokens`**。只配 `api_tokens` 的单令牌部署里，
+api 令牌按回落规则充当 admin，同样受此限制。
+
+!!! warning "URL 认证无法执行写操作"
+    以 `?token=` 连接的客户端调用状态修改帧会收到 `admin token required` 错误。
+    改用请求头或 auth 帧携带令牌即可。只读帧不受影响。
+
 ### 连接参数
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| `token` | string | API Token |
+| `token` | string | API Token（仅 api 作用域，不能用于状态修改帧） |
 | `session_id` | string | 恢复已有会话（可选） |
 | `channel` | string | 通道标识，默认 `websocket` |
 

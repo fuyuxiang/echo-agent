@@ -108,6 +108,16 @@ gateway:
     token_header: "X-API-Token"  # 默认值
 ```
 
+!!! warning "管理操作只认请求头"
+    HTTP 管理端点（shutdown、技能导入/安装/删除、知识库上传/删除）不接受 URL 的
+    `?token=`，令牌必须走请求头 —— 否则它会留在访问日志、代理日志与 referrer 里，
+    存活期远长于其本身。
+
+    WebSocket 侧同一口径：`?token=` 可以完成握手并执行只读帧，但状态修改帧（如
+    `skill.enable`）只接受请求头或 auth 帧中的令牌。这条规则不依赖是否配置了
+    `admin_tokens` —— 只配 `api_tokens` 的单令牌部署同样受限。详见
+    [WebSocket 协议参考](../../reference/websocket-protocol.md#令牌来源与作用域)。
+
 ## 环回地址豁免
 
 来自 `127.0.0.1` 或 `::1`（localhost）的请求可以绕过用户身份认证，简化本地开发和内部服务间调用。
