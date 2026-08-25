@@ -27,6 +27,8 @@ import aiohttp
 
 from loguru import logger
 
+from echo_agent.agent.proc_lifecycle import spawn_exec, terminate_tree
+
 #: Ceiling on a partially-received SSE event. A server that opens a stream and
 #: never sends a blank line would otherwise grow this buffer without bound.
 _MAX_SSE_BUFFER_BYTES = 8 * 1024 * 1024
@@ -132,8 +134,14 @@ class StdioTransport(MCPTransport):
     async def connect(self, timeout: float = 60) -> None:
         import os
         merged_env = {**os.environ, **(self._env or {})}
+        # spawn_exec, not create_subprocess_exec: it puts the server in its own
+        # process group so `close()` can reclaim the whole tree. An MCP server is
+        # very often a launcher (`npx`, `uvx`, a shell wrapper) whose real work
+        # runs in a grandchild, and signalling only the direct child left that
+        # grandchild running — an orphan holding the port or the credential it was
+        # handed. Same infrastructure the skills executor already uses.
         self._process = await asyncio.wait_for(
-            asyncio.create_subprocess_exec(
+            spawn_exec(
                 self._command, *self._args,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
@@ -226,26 +234,24 @@ class StdioTransport(MCPTransport):
         process, self._process = self._process, None
         if process is None:
             return
-        if process.returncode is not None:
-            return
         if process.stdin:
             try:
                 process.stdin.close()
             except Exception as e:
                 logger.debug("Failed to close MCP stdin: {}", e)
+        # No early return on an already-exited process: a launcher that has
+        # already exited can still have left the real server running in its
+        # group, and `returncode is not None` was exactly the shortcut that let
+        # those grandchildren escape. terminate_tree is a no-op on an empty
+        # group, so this is cheap on the common path.
         try:
-            process.terminate()
+            await terminate_tree(process, grace=5.0)
         except ProcessLookupError:
             return
-        try:
-            await asyncio.wait_for(process.wait(), timeout=5)
-        except asyncio.TimeoutError:
-            logger.warning("MCP server '{}' ignored SIGTERM — killing", self._command)
-            try:
-                process.kill()
-                await process.wait()
-            except ProcessLookupError:
-                pass
+        except Exception as e:
+            logger.warning(
+                "MCP server '{}' could not be fully terminated: {}", self._command, e,
+            )
 
     @property
     def is_connected(self) -> bool:
