@@ -48,8 +48,13 @@ def prepend_interpreter_bin(env: dict[str, str]) -> dict[str, str]:
         return env
     existing = env.get("PATH", "/usr/bin:/bin")
     parts = [p for p in existing.split(os.pathsep) if p]
-    if exe_dir not in parts:
-        env["PATH"] = os.pathsep.join([exe_dir, *parts])
+    # Rebuild rather than "prepend only when absent". Testing for absence left
+    # the goal unmet whenever the directory was already on PATH but *behind* a
+    # system Python or a wrapper: `python3` then resolved to the wrong
+    # interpreter, which is the exact failure this function exists to prevent.
+    # Moving it to the front is idempotent and keeps every other entry's order.
+    parts = [p for p in parts if p != exe_dir]
+    env["PATH"] = os.pathsep.join([exe_dir, *parts])
     return env
 
 

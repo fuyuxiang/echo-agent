@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import sys
 
+from echo_agent.agent.executors.base import prepend_interpreter_bin
 from echo_agent.skills.env import build_skill_env, declared_env_keys
 
 
@@ -132,3 +133,55 @@ class TestBuildSkillEnv:
         env = build_skill_env("", base={"HOME": "/x", "IGNORED": "y"})
         assert env["HOME"] == "/x"
         assert "IGNORED" not in env
+
+
+class TestInterpreterBinOrdering:
+    """The interpreter's directory must end up *first*, not merely present.
+
+    The old logic prepended only when the directory was absent from PATH. When
+    it was already there but behind a system Python or a wrapper, ``python3``
+    inside a skill script still resolved to the wrong interpreter — the exact
+    failure this is meant to prevent, left in place by an ordering assumption.
+    """
+
+    def _exe_dir(self) -> str:
+        return os.path.dirname(sys.executable)
+
+    def test_absent_directory_is_prepended(self):
+        env = prepend_interpreter_bin({"PATH": os.pathsep.join(["/usr/bin", "/bin"])})
+        assert env["PATH"].split(os.pathsep) == [self._exe_dir(), "/usr/bin", "/bin"]
+
+    def test_already_first_is_left_alone(self):
+        original = os.pathsep.join([self._exe_dir(), "/usr/bin", "/bin"])
+        env = prepend_interpreter_bin({"PATH": original})
+        assert env["PATH"] == original
+
+    def test_directory_in_the_middle_is_moved_to_the_front(self):
+        env = prepend_interpreter_bin({
+            "PATH": os.pathsep.join(["/usr/local/bin", self._exe_dir(), "/usr/bin"]),
+        })
+        assert env["PATH"].split(os.pathsep) == [
+            self._exe_dir(), "/usr/local/bin", "/usr/bin",
+        ]
+
+    def test_directory_at_the_end_is_moved_to_the_front(self):
+        env = prepend_interpreter_bin({
+            "PATH": os.pathsep.join(["/usr/bin", "/bin", self._exe_dir()]),
+        })
+        assert env["PATH"].split(os.pathsep) == [self._exe_dir(), "/usr/bin", "/bin"]
+
+    def test_duplicates_collapse_to_the_front_entry(self):
+        env = prepend_interpreter_bin({
+            "PATH": os.pathsep.join(["/usr/bin", self._exe_dir(), "/bin", self._exe_dir()]),
+        })
+        parts = env["PATH"].split(os.pathsep)
+        assert parts == [self._exe_dir(), "/usr/bin", "/bin"]
+
+    def test_empty_entries_are_dropped(self):
+        env = prepend_interpreter_bin({"PATH": os.pathsep.join(["", "/usr/bin", ""])})
+        assert env["PATH"].split(os.pathsep) == [self._exe_dir(), "/usr/bin"]
+
+    def test_is_idempotent(self):
+        once = prepend_interpreter_bin({"PATH": "/usr/bin"})
+        twice = prepend_interpreter_bin(dict(once))
+        assert once["PATH"] == twice["PATH"]
