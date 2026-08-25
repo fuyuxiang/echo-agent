@@ -38,6 +38,12 @@ from echo_agent.gateway.session_policy import SessionResetPolicy
 from echo_agent.gateway import ws_common
 from echo_agent.gateway.ws_dashboard import DashboardWebSocket
 from echo_agent.gateway.ws_session import resolve_client_session_key
+from echo_agent.gateway.ws_skill import (
+    handle_skill_disable,
+    handle_skill_enable,
+    handle_skill_list,
+)
+from echo_agent.gateway.skill_singleton import get_skill_manager
 from echo_agent.session.manager import SessionManager
 
 
@@ -1054,6 +1060,36 @@ class GatewayServer:
 
                         if msg_type == "ping":
                             await websocket.send_json({"type": "pong"})
+
+                        if msg_type == "skill.list":
+                            # Skill 管理是已认证操作;前置 auth 握手未完成则拒收。
+                            if not session_key:
+                                await websocket.send_json({"type": "error", "error": "authenticate first"})
+                                continue
+                            manager = get_skill_manager()
+                            await websocket.send_json(await handle_skill_list(manager))
+
+                        if msg_type == "skill.enable":
+                            if not session_key:
+                                await websocket.send_json({"type": "error", "error": "authenticate first"})
+                                continue
+                            manager = get_skill_manager()
+                            result = await handle_skill_enable(manager, str(data.get("name", "")))
+                            if result is None:
+                                await websocket.send_json({"type": "accepted"})
+                            else:
+                                await websocket.send_json(result)
+
+                        if msg_type == "skill.disable":
+                            if not session_key:
+                                await websocket.send_json({"type": "error", "error": "authenticate first"})
+                                continue
+                            manager = get_skill_manager()
+                            result = await handle_skill_disable(manager, str(data.get("name", "")))
+                            if result is None:
+                                await websocket.send_json({"type": "accepted"})
+                            else:
+                                await websocket.send_json(result)
                     except Exception as e:
                         # One message failed to process — report it and keep the
                         # connection alive. This is what stops a stray per-message
