@@ -943,7 +943,25 @@ class GatewayServer:
                             platform = data.get("platform", "ws")
                             user_id = data.get("user_id", "")
                             chat_id = data.get("chat_id", user_id)
-                            token = str(data.get("token") or self._request_token(request))
+                            # 握手接受三个来源:auth 帧内的 token、请求头、URL 的
+                            # ?token=。后者是历史入口,对 api 作用域保留。
+                            frame_token = str(data.get("token") or "")
+                            header_token = self.auth.token_from_headers(request.headers)
+                            token = str(frame_token or self._request_token(request))
+                            # admin 作用域的令牌来源:只在真正配置了 admin_tokens 时
+                            # 排除 URL —— ?token= 会被 aiohttp 默认访问日志连同 query
+                            # string 记下来(AppRunner 未关 access_log),令牌在日志里
+                            # 的存活期远长于其本身。与 HTTP _require_admin_token 同口径。
+                            #
+                            # 未配 admin_tokens 时不排除:那种部署下 api 令牌按
+                            # authenticate_admin_token 的回落规则充当 admin,它并不是
+                            # admin 凭据,且同一个令牌已经通过 URL 完成了握手 —— 再拦
+                            # 一次不增加任何安全性,只会让"单令牌 + URL 连接"这类常见
+                            # 部署的技能开关失效。
+                            if self._config.auth.admin_tokens:
+                                admin_candidate_token = frame_token or header_token
+                            else:
+                                admin_candidate_token = token
 
                             # Any configured token makes the check mandatory —
                             # admin_tokens alone must not leave the socket open,
@@ -986,7 +1004,9 @@ class GatewayServer:
                             self._ws_clients[delivery_key] = websocket
                             # 记下握手令牌,供后续 skill.enable/disable 做 admin
                             # 作用域判定 —— 之后的帧不再携带令牌,只能在此捕获。
-                            ws_admin_token = token
+                            # 存的是 admin_candidate_token(已排除 URL 来源),
+                            # 而不是 token。
+                            ws_admin_token = admin_candidate_token
                             # Lifts the pre-auth deadline. Set here, past every
                             # rejection branch above, so a failed handshake never
                             # buys an unbounded socket.

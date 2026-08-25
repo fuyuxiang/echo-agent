@@ -108,6 +108,28 @@ async def _auth(ws, token=None):
     assert (await ws.receive_json())["type"] == "auth_ok"
 
 
+async def _enable_via(url, *, token, via, skill="ppt-author"):
+    """握手时按 ``via`` 指定的方式携带令牌,然后尝试 skill.enable。
+
+    via: "frame" 放 auth 帧、"header" 走 Authorization、"query" 走 ?token=。
+    返回服务端对 skill.enable 的响应帧。
+    """
+    headers = {}
+    frame_token = None
+    if via == "header":
+        headers["Authorization"] = f"Bearer {token}"
+    elif via == "query":
+        url = f"{url}?token={token}"
+    elif via == "frame":
+        frame_token = token
+
+    async with aiohttp.ClientSession() as s:
+        async with s.ws_connect(url, headers=headers) as ws:
+            await _auth(ws, token=frame_token)
+            await ws.send_json({"type": "skill.enable", "name": skill})
+            return await ws.receive_json()
+
+
 @pytest.mark.asyncio
 async def test_skill_list_reads_agent_store(open_gateway):
     """list 必须读 agent_loop.skill_store —— 与 HTTP API 同一实例。"""
@@ -243,6 +265,96 @@ async def test_admin_token_can_enable_skill(scoped_gateway):
     async with aiohttp.ClientSession() as s:
         async with s.ws_connect(url) as ws:
             await _auth(ws, token="admin-tok")
+            await ws.send_json({"type": "skill.enable", "name": "ppt-author"})
+            assert (await ws.receive_json())["type"] == "accepted"
+
+    assert store.is_disabled("ppt-author") is False
+
+
+# --- admin 令牌来源:URL 不算 -------------------------------------------
+#
+# ?token= 会被 aiohttp 默认访问日志连同 query string 记下来,所以配置了
+# admin_tokens 时它不得充当 admin 凭据 —— 与 HTTP _require_admin_token 同口径。
+# 但这条排除只在真正做了令牌分离时生效,见下面的单令牌部署用例。
+
+
+@pytest.mark.asyncio
+async def test_admin_token_in_url_is_not_honoured(scoped_gateway):
+    """URL 里的 admin 令牌不得放行写操作(会泄漏进访问日志)。"""
+    url, store = scoped_gateway
+    _make_skill(store, "ppt-author", enabled=False)
+
+    frame = await _enable_via(url, token="admin-tok", via="query")
+    assert frame["type"] == "error"
+    assert "admin" in frame["message"]
+    assert store.is_disabled("ppt-author") is True  # 状态未变
+
+
+@pytest.mark.asyncio
+async def test_admin_token_in_header_is_honoured(scoped_gateway):
+    """请求头是 admin 令牌的正当通道。"""
+    url, store = scoped_gateway
+    _make_skill(store, "ppt-author", enabled=False)
+
+    frame = await _enable_via(url, token="admin-tok", via="header")
+    assert frame["type"] == "accepted"
+    assert store.is_disabled("ppt-author") is False
+
+
+@pytest.mark.asyncio
+async def test_admin_token_in_auth_frame_is_honoured(scoped_gateway):
+    """auth 帧里的令牌走 WS 载荷,不进访问日志,同样放行。"""
+    url, store = scoped_gateway
+    _make_skill(store, "ppt-author", enabled=False)
+
+    frame = await _enable_via(url, token="admin-tok", via="frame")
+    assert frame["type"] == "accepted"
+    assert store.is_disabled("ppt-author") is False
+
+
+# --- 单令牌部署不得被 URL 排除规则波及 ---------------------------------
+
+
+@pytest_asyncio.fixture
+async def single_token_gateway(tmp_path):
+    """只配 api_tokens:authenticate_admin_token 回落到它充当 admin。"""
+    store = SkillStore(user_dir=tmp_path / "skills")
+    server, bus, url = await _serve(tmp_path, store=store, api_tokens=["only-tok"])
+    try:
+        yield url, store
+    finally:
+        await server.stop()
+        await bus.stop()
+
+
+@pytest.mark.parametrize("via", ["query", "header", "frame"])
+@pytest.mark.asyncio
+async def test_single_token_deployment_can_toggle_via_any_source(
+    single_token_gateway, via,
+):
+    """未配 admin_tokens 时三种来源都要放行。
+
+    这类部署里 api 令牌按回落规则充当 admin,它并不是 admin 凭据,且同一个令牌
+    已经通过该来源完成了握手 —— 再按 admin 来源规则拦一次只会砸掉功能。URL 这
+    一路尤其要保住:"单令牌 + ?token= 连接" 是常见用法。
+    """
+    url, store = single_token_gateway
+    _make_skill(store, "ppt-author", enabled=False)
+
+    frame = await _enable_via(url, token="only-tok", via=via)
+    assert frame["type"] == "accepted", frame
+    assert store.is_disabled("ppt-author") is False
+
+
+@pytest.mark.asyncio
+async def test_open_deployment_can_toggle_without_token(open_gateway):
+    """无任何令牌的回环部署照旧可用(admin 判定直接放行)。"""
+    url, store = open_gateway
+    _make_skill(store, "ppt-author", enabled=False)
+
+    async with aiohttp.ClientSession() as s:
+        async with s.ws_connect(url) as ws:
+            await _auth(ws)
             await ws.send_json({"type": "skill.enable", "name": "ppt-author"})
             assert (await ws.receive_json())["type"] == "accepted"
 
