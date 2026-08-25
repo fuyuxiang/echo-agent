@@ -236,6 +236,13 @@ class MCPManager:
                 logger.debug("MCP '{}' transport teardown failed: {}", name, e)
 
     def _start_supervisor(self, name: str) -> None:
+        """Ensure exactly one live supervisor task watches *name*.
+
+        The "already running" check is what makes a reconnect issued *from* a
+        supervisor safe: that call must not spawn a second watcher for the same
+        server. The corollary is that the calling supervisor has to keep looping
+        rather than return — see ``_supervise``.
+        """
         existing = self._supervisors.get(name)
         if existing and not existing.done():
             return
@@ -289,59 +296,76 @@ class MCPManager:
         return True
 
     async def _supervise(self, name: str) -> None:
-        """Watch one server and rebuild the connection when it drops.
+        """Watch one server and rebuild the connection every time it drops.
 
         This is the piece the documentation already promised and the code never
         had: reconnection existed only inside the *initial* connect loop, so once
         a running server died its tools stayed registered and permanently broken
         until the process restarted.
+
+        The loop is deliberately long-lived. An earlier version returned after a
+        successful rebuild, reasoning that the new connection would bring its own
+        supervisor — but ``_connect_server`` reaches ``_start_supervisor`` while
+        *this* task is still running, and that call declines to create a second
+        watcher for the same server. The result was one-shot recovery: the
+        rebuilt connection was unwatched, so the second disconnect went
+        unnoticed and its tools stayed advertised but dead.
         """
         try:
             while not self._stopping:
                 await asyncio.sleep(1)
-                client = self._clients.get(name)
-                if client is None:
+                if not await self._supervise_once(name):
                     return
-                if client.is_connected:
-                    continue
-
-                logger.warning("MCP server '{}' lost its connection — rebuilding", name)
-                # A rebuild caused by a rejected credential needs a fresh token,
-                # not just a fresh socket. Read off the transport, which is where
-                # the 401 was actually observed.
-                transport = getattr(client, "_transport", None)
-                if getattr(transport, "auth_failed", False):
-                    await self._try_reauthorize(name)
-
-                await self._teardown_server(name)
-                if self._stopping:
-                    return
-
-                cfg = self._configs.get(name)
-                if cfg is None or not cfg.enabled:
-                    return
-                try:
-                    await self._connect_server(name, cfg)
-                except Exception as e:
-                    logger.error("MCP server '{}' could not be reconnected: {}", name, e)
-                    return
-
-                registry = self._registry
-                client = self._clients.get(name)
-                if registry is not None and client is not None:
-                    async with self._registry_lock:
-                        try:
-                            count = await self._register_server_tools(name, client, registry)
-                            logger.info(
-                                "Re-registered {} tools for MCP server '{}'", count, name,
-                            )
-                        except Exception as e:
-                            logger.error("Re-discovery failed for '{}': {}", name, e)
-                return  # the new connection has its own supervisor
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.error("MCP supervisor for '{}' failed: {}", name, e)
+
+    async def _supervise_once(self, name: str) -> bool:
+        """Run one health check / rebuild cycle.
+
+        Returns False when this server should no longer be supervised (gone from
+        ``_clients``, disabled, shutting down, or unreachable after a full retry
+        budget), True when supervision should continue — including right after a
+        successful rebuild.
+        """
+        client = self._clients.get(name)
+        if client is None:
+            return False
+        if client.is_connected:
+            return True
+
+        logger.warning("MCP server '{}' lost its connection — rebuilding", name)
+        # A rebuild caused by a rejected credential needs a fresh token, not just
+        # a fresh socket. Read off the transport, which is where the 401 was
+        # actually observed.
+        transport = getattr(client, "_transport", None)
+        if getattr(transport, "auth_failed", False):
+            await self._try_reauthorize(name)
+
+        await self._teardown_server(name)
+        if self._stopping:
+            return False
+
+        cfg = self._configs.get(name)
+        if cfg is None or not cfg.enabled:
+            return False
+        try:
+            await self._connect_server(name, cfg)
+        except Exception as e:
+            logger.error("MCP server '{}' could not be reconnected: {}", name, e)
+            return False
+
+        registry = self._registry
+        client = self._clients.get(name)
+        if registry is not None and client is not None:
+            async with self._registry_lock:
+                try:
+                    count = await self._register_server_tools(name, client, registry)
+                    logger.info("Re-registered {} tools for MCP server '{}'", count, name)
+                except Exception as e:
+                    logger.error("Re-discovery failed for '{}': {}", name, e)
+        return True
 
     async def _teardown_server(self, name: str) -> None:
         """Disconnect one server and withdraw its tools."""

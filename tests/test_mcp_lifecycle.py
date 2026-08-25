@@ -16,6 +16,7 @@ The manager's failure paths had no coverage, and that is where the defects were:
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -193,11 +194,82 @@ class TestReconnection:
 
         manager._connect_server = reconnect
 
-        with patch("asyncio.sleep", new=AsyncMock()):
-            await manager._supervise("srv")
+        # One health-check cycle. It reports True — supervision continues past a
+        # successful rebuild, which is what keeps a later disconnect observable.
+        assert await manager._supervise_once("srv") is True
 
         assert registry.tool_names == ["mcp_srv_renewed"]
         dead.disconnect.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_second_disconnect_is_also_rebuilt(self, tmp_path):
+        """Reconnection must not be one-shot.
+
+        The supervisor used to return after a successful rebuild, on the theory
+        that the new connection brought its own supervisor. It did not:
+        ``_connect_server`` reaches ``_start_supervisor`` while this task is
+        still alive, and that call declines to create a second watcher. So the
+        rebuilt connection went unwatched and the next drop was never noticed —
+        tools stayed advertised pointing at a dead server.
+        """
+        manager = _manager(tmp_path)
+        registry = ToolRegistry()
+        manager._registry = registry
+        manager._configs["srv"] = MCPServerConfig(command="echo")
+
+        dead = _client(connected=False)
+        manager._clients["srv"] = dead
+        manager._registered_tools["srv"] = ["mcp_srv_stale"]
+        registry.register(_stale_tool("mcp_srv_stale"))
+
+        generations: list[MagicMock] = []
+
+        async def reconnect(name, cfg):
+            fresh = _client(tools=[{"name": f"gen{len(generations) + 1}", "description": "d"}])
+            generations.append(fresh)
+            manager._clients[name] = fresh
+            # What the real _connect_server does at the end, and the exact call
+            # that used to be a no-op while leaving the old supervisor exiting.
+            manager._start_supervisor(name)
+
+        manager._connect_server = reconnect
+
+        async def tick(_delay):
+            # Drive the loop: drop the live connection until two rebuilds have
+            # happened, then let the supervisor wind down.
+            if len(generations) >= 2:
+                manager._stopping = True
+                return
+            if generations:
+                generations[-1].is_connected = False
+
+        with patch("asyncio.sleep", new=tick):
+            task = asyncio.create_task(manager._supervise("srv"))
+            manager._supervisors["srv"] = task
+            await task
+
+        assert len(generations) == 2, "the second disconnect must be rebuilt too"
+        # Both dead connections were torn down, not just the first.
+        dead.disconnect.assert_awaited_once()
+        generations[0].disconnect.assert_awaited_once()
+        # And the registry tracks the *current* generation only.
+        assert _server_tools(registry) == ["mcp_srv_gen2"]
+        assert manager._supervisors["srv"] is task, "no second supervisor was spawned"
+
+    @pytest.mark.asyncio
+    async def test_start_supervisor_does_not_duplicate_a_live_watcher(self, tmp_path):
+        manager = _manager(tmp_path)
+        manager._clients["srv"] = _client()
+        manager._configs["srv"] = MCPServerConfig(command="echo")
+
+        manager._start_supervisor("srv")
+        first = manager._supervisors["srv"]
+        manager._start_supervisor("srv")
+        assert manager._supervisors["srv"] is first
+
+        manager._stopping = True
+        first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
 
     @pytest.mark.asyncio
     async def test_supervisor_gives_up_cleanly_when_reconnect_fails(self, tmp_path):
