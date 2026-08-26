@@ -234,7 +234,7 @@ Gateway 暴露健康检查端点：
 ```bash
 # 基础健康检查
 curl http://localhost:58123/health
-# {"status": "healthy", "version": "0.3.7", "uptime_seconds": 3600}
+# {"status": "healthy", "version": "0.3.8", "uptime_seconds": 3600}
 
 # 详细状态（需 admin token）
 curl -H "X-Echo-Agent-Token: $ADMIN_TOKEN" http://localhost:58123/health/detail

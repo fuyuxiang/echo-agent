@@ -68,7 +68,7 @@
 ## Project Status
 
 !!! warning "Beta Stage"
-    Echo Agent is currently at **v0.3.7** in Beta. The core API is stabilizing, but breaking changes may still occur in:
+    Echo Agent is currently at **v0.3.8** in Beta. The core API is stabilizing, but breaking changes may still occur in:
 
     - Configuration file format (`config.yaml` schema)
     - Plugin / skill API interfaces

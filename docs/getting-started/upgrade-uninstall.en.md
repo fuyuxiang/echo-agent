@@ -11,7 +11,7 @@
     Upgrade to a specific version:
 
     ```bash
-    pip install echo-agent[all]==0.3.7
+    pip install echo-agent[all]==0.3.8
     ```
 
 === "Source Upgrade"

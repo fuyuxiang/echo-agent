@@ -217,15 +217,23 @@ Token Header 名称可通过 `gateway.auth.token_header` 自定义。
 
 #### POST /api/tasks
 
-创建任务。
+创建任务。需要 admin 权限。成功返回 `201` 与 `{"task": {...}}`。
 
 ```json
 {
-  "description": "整理本周会议纪要",
-  "priority": "normal",
-  "due_at": "2024-01-20T18:00:00Z"
+  "title": "整理本周会议纪要",
+  "description": "按项目分组，输出到知识库",
+  "priority": 5,
+  "labels": ["weekly"],
+  "assignee": "",
+  "source": "human",
+  "board_id": "default",
+  "parent_task_id": "",
+  "metadata": {}
 }
 ```
+
+只有 `title` 必填，为空返回 `400`。`priority` 是整数（默认 `5`），`metadata` 必须是对象，否则返回 `400`。`parent_task_id` 用于挂到父任务下。
 
 ---
 
@@ -373,7 +381,7 @@ Token Header 名称可通过 `gateway.auth.token_header` 自定义。
 ```json
 {
   "status": "healthy",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "uptime_seconds": 86400,
   "checks": {
     "database": "ok",

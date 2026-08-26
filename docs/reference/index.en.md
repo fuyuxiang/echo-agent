@@ -1,6 +1,6 @@
 # Reference Documentation
 
-This section provides complete technical reference for Echo Agent v0.3.7 Beta. Each page documents a specific subsystem with precise specifications, option tables, and usage examples.
+This section provides complete technical reference for Echo Agent v0.3.8 Beta. Each page documents a specific subsystem with precise specifications, option tables, and usage examples.
 
 !!! tip "Looking for tutorials?"
     Reference pages assume familiarity with Echo Agent concepts. For getting-started guides, see the [Quickstart](../getting-started/quickstart.en.md) section.
@@ -25,7 +25,7 @@ This section provides complete technical reference for Echo Agent v0.3.7 Beta. E
 
 | Property | Value |
 |----------|-------|
-| Version | v0.3.7 Beta |
+| Version | v0.3.8 Beta |
 | Python | 3.11+ |
 | Platforms | Linux, macOS, Windows (WSL2 recommended) |
 | License | See repository root |

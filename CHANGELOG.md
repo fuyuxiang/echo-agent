@@ -4,7 +4,12 @@
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-08-26
+
 ### Added
+- `models.providers.*.api_key_env`：从指定环境变量读取 API 密钥，宿主进程可注入临时凭据而不把密钥写入配置文件。优先级为 `api_key` > `api_key_env` > 约定的 `OPENAI_API_KEY` 等环境变量名，未配置时行为与此前完全一致
+- `ECHO_AGENT_*` 环境变量现在可以设置 list / dict 类型的配置项（值按 JSON 解析），例如 `ECHO_AGENT_GATEWAY__AUTH__ADMIN_TOKENS='["token"]'`。此前这类配置项只能写在 YAML 里，用环境变量设置必然校验失败
+- 任务创建接口补齐 `parent_task_id` 与 `metadata` 透传（`TaskManager.create` 早有这两个参数，此前 API 层丢弃）；`metadata` 非对象时返回 400
 - 建立完整文档站（MkDocs Material + 中英文双语）
 - 会话历史接口区分「人类可读记录」与「LLM 上下文」：过滤掉压缩注入的摘要对，工具调用 / 结果带 `internal` 标记由 Dashboard 折叠显示
 - 技能脚本可通过 `metadata.echo.requires.env` 声明所需的凭据环境变量，`skill_run` 只透传声明过的键。读一遍 SKILL.md 即可确定该技能能接触哪些密钥，不再需要把 token 塞进命令行参数
@@ -22,6 +27,9 @@
 - 内置 `workflow-chain` 不再使用 `shell=True`：命令按 `shlex` 解析后以参数列表执行，`;`/`&&`/`|` 成为字面参数。需要管道的步骤请显式写 `sh -c '...'`
 
 ### Fixed
+- **安全**：配置文件用驼峰键（`networkPolicy`）写的配置项无法被环境变量覆盖。schema 同时接受驼峰与下划线两种写法，但它们是两个不同的字典键，深合并后两者并存而 pydantic 取驼峰值，环境变量被静默丢弃。包内 `default.yaml` 本身就用驼峰，因此 `ECHO_AGENT_EXECUTION__NETWORK_POLICY=deny` 这类收紧设置一直不生效且无任何提示（fail-open）。现在各来源在合并前统一归一到字段名；归一只在读取时的内存中进行，不改写配置文件。受影响的还有向导写入的 `apiKey`/`apiBase`/`defaultModel`/`modelWindows`/`idleTimeoutMinutes`/`dailyResetHour` 等
+- 环境变量是否按 JSON 解析改为依据 schema 声明的字段类型，而非值的外观。曾按值的外观判断，导致取值恰好是 `false`/`true`/`null` 的字符串配置项（密码、token 等）被转成 bool/None 并使进程启动失败——schema 中有 121 个字符串字段受影响
+- 媒体下载在测试替身（AsyncMock）下会遗留未 await 的协程并触发 RuntimeWarning，回退到 `resp.read()` 前显式关闭
 - **安全**：`skill_run` 只回收直接子进程，技能脚本自己派生的孙进程（ffmpeg、pip、另一个脚本）在超时和外层取消两条路径上都会脱离管控继续运行。现改为经 `proc_lifecycle.spawn_exec`/`terminate_tree` 走进程组回收，与 `shell`/`code_exec`/`process` 一致——此前 `skill_run` 是唯一没走这条公共通道的执行工具
 - **安全**：`skill_run` 是 exec 策略的绕过通道。它声明 `risk_level="exec"` 却没有注册任何 capability，因此 `daemon`/`public_gateway` 精心构造的 `process.exec`/`code.exec` 拒绝集合对它一律失效，而内置 `workflow-chain` 提供了一个通用 shell 执行器。现已补齐 capabilities、策略名单、风险表与 guards 门禁
 - **安全**：技能的「禁用」此前只是隐藏。`list_all()` 过滤了禁用集合，但 `_find_skill_dir()` 没有，因此 `read_skill`/`read_file`/`skill_run` 照样解析得到——包括 evolution gate 用 `persist_disable()` 停用的作恶技能。禁用判据已下沉到唯一解析入口；管理操作（修复、删除、重新启用）显式绕过
@@ -58,5 +66,6 @@
 
 > 历史版本变更记录待补录。欢迎贡献者协助从 git 历史中整理。
 
-[Unreleased]: https://github.com/fuyuxiang/echo-agent/compare/v0.3.7...HEAD
+[Unreleased]: https://github.com/fuyuxiang/echo-agent/compare/v0.3.8...HEAD
+[0.3.8]: https://github.com/fuyuxiang/echo-agent/releases/tag/v0.3.8
 [0.3.7]: https://github.com/fuyuxiang/echo-agent/releases/tag/v0.3.7

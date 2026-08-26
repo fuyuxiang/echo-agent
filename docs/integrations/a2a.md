@@ -17,7 +17,7 @@ A2A 使 Agent 能够相互发现并通过标准化的 JSON-RPC 协议委派任�
   "name": "echo-agent",
   "description": "A modular AI agent framework",
   "url": "http://localhost:58123",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "capabilities": {"streaming": false, "pushNotifications": false},
   "skills": [{"id": "chat", "name": "chat"}, {"id": "tool_use", "name": "tool_use"}],
   "authentication": {"schemes": ["bearer"]}

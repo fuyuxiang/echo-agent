@@ -1,6 +1,6 @@
 # Compatibility Reference
 
-This page documents platform support, version requirements, and known limitations for Echo Agent v0.3.7 Beta.
+This page documents platform support, version requirements, and known limitations for Echo Agent v0.3.8 Beta.
 
 ---
 
@@ -237,7 +237,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git ffmpeg && \
     rm -rf /var/lib/apt/lists/*
 
-RUN pip install echo-agent==0.3.7
+RUN pip install echo-agent==0.3.8
 
 EXPOSE 3000
 VOLUME /root/.echo-agent/data
@@ -267,7 +267,7 @@ spec:
     spec:
       containers:
         - name: echo-agent
-          image: echo-agent:0.3.7
+          image: echo-agent:0.3.8
           ports:
             - containerPort: 3000
           volumeMounts:

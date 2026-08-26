@@ -44,7 +44,7 @@ export ECHO_AGENT_SECURITY__PROFILE=daemon
 
 ### 类型转换
 
-`_env_overrides()` 收集到的值一律是字符串，类型转换交由 pydantic 在校验阶段完成。因此布尔值写 `true` / `false`，整数直接写数字即可：
+标量配置项收集到的值保持字符串，类型转换交由 pydantic 在校验阶段完成。因此布尔值写 `true` / `false`，整数直接写数字即可：
 
 ```bash
 export ECHO_AGENT_GATEWAY__PORT=9000              # 转为 int
@@ -53,9 +53,33 @@ export ECHO_AGENT_PERMISSIONS__ELEVATED__ENABLED=true  # 转为 bool
 
 无法转换的值会在启动时以配置校验错误的形式报出，不会被静默忽略。
 
+字符串字段的值**不会**被解析，原样传入。取值恰好是 `false`、`null`、`[]` 的密码或 token 保持字面字符串：
+
+```bash
+export ECHO_AGENT_CHANNELS__TELEGRAM__TOKEN=false   # 字符串 "false"，不是布尔
+```
+
 ### 列表与嵌套结构
 
-列表类型的配置项无法通过环境变量可靠表达。`tools.deny`、`permissions.approval.require_approval` 这类字段请写在 YAML 配置文件里。
+schema 声明为列表或字典的配置项，环境变量值按 JSON 解析：
+
+```bash
+export ECHO_AGENT_GATEWAY__AUTH__ADMIN_TOKENS='["ephemeral-token"]'
+export ECHO_AGENT_TOOLS__DENY='["shell", "process"]'
+export ECHO_AGENT_MODELS__MODEL_WINDOWS='{"gpt-4": 128000}'
+```
+
+是否按 JSON 解析取决于 schema 声明的字段类型，不取决于值的外观，因此上一节的字符串字段不受影响。JSON 格式错误时保留原字符串，由 pydantic 报出具体字段名。
+
+`tools.mcp_servers`、`gateway.platforms` 这类「字典套子模型」的字段，既可以整体赋一个 JSON 对象，也可以按 `<字段>__<键名>__<子字段>` 单独覆盖：
+
+```bash
+export ECHO_AGENT_TOOLS__MCP_SERVERS__MYSRV__ARGS='["-m", "myserver"]'
+```
+
+!!! note "键名中不能带双下划线"
+
+    键名里出现 `__` 会与层级分隔符混淆，此时路径无法解析、值按字符串处理。这类配置请写在 YAML 里。
 
 ## 配置加载优先级
 
@@ -67,6 +91,8 @@ export ECHO_AGENT_PERMISSIONS__ELEVATED__ENABLED=true  # 转为 bool
 4. 调用方传入的显式 overrides
 
 合并是深合并：只覆盖同名叶子字段，同级的其他字段保留。
+
+配置文件里的驼峰写法（`networkPolicy`）与下划线写法（`network_policy`）是同一个配置项。合并前所有来源统一归一到下划线形式，因此环境变量能覆盖用向导生成或手写的驼峰键。归一只发生在读取时的内存中，不会改写配置文件本身。
 
 用户配置文件按以下文件名在搜索目录中依次查找：`echo-agent.yaml`、`echo-agent.yml`、`config.yaml`、`config.yml`。
 
@@ -95,8 +121,21 @@ export ECHO_AGENT_PERMISSIONS__ELEVATED__ENABLED=true  # 转为 bool
 
 其他工具类凭据：`FAL_KEY` 用于 FAL.ai 图像生成。
 
+### 指定密钥来源变量
+
+若密钥所在的环境变量不叫上表的名字，可用 `api_key_env` 指明，避免把密钥写进配置文件：
+
+```yaml
+models:
+  providers:
+    - name: openai
+      apiKeyEnv: MY_HOST_INJECTED_KEY
+```
+
+解析优先级为 `apiKey`（显式配置）> `apiKeyEnv` > 上表的约定变量名。三者都没有值时，行为与此前一致：按供应商决定是报缺失密钥还是允许无密钥访问。
+
 !!! warning "配置文件不支持 ${VAR} 替换"
-    不要在配置文件中写 `api_key: "${ANTHROPIC_API_KEY}"` —— 配置加载器不做变量替换，这串字符会被原样当作 API Key。要么依赖上表的自动发现，要么直接写入受权限保护的配置文件（`chmod 600`）。
+    不要在配置文件中写 `api_key: "${ANTHROPIC_API_KEY}"` —— 配置加载器不做变量替换，这串字符会被原样当作 API Key。要么依赖上表的自动发现，要么用上面的 `api_key_env`，要么直接写入受权限保护的配置文件（`chmod 600`）。
 
 ## 使用示例
 

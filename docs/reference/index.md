@@ -20,7 +20,7 @@
 
 ## 版本信息
 
-- **当前版本**: v0.3.7 Beta
+- **当前版本**: v0.3.8 Beta
 - **Python 要求**: 3.11+
 - **支持平台**: Linux, macOS, Windows (WSL2 推荐)
 

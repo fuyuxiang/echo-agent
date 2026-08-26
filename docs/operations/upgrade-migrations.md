@@ -14,7 +14,7 @@ Echo Agent 遵循语义化版本 (SemVer)：
 | MINOR (0.x.0) | 新功能 | 自动迁移 |
 | PATCH (0.0.x) | Bug 修复 | 完全兼容 |
 
-当前版本：**v0.3.7 Beta**
+当前版本：**v0.3.8 Beta**
 
 !!! warning "Beta 阶段注意"
     Beta 期间 MINOR 版本升级可能包含破坏性变更。升级前务必阅读 Changelog 并备份数据。

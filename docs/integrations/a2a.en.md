@@ -17,7 +17,7 @@ Served at `GET /.well-known/agent.json`:
   "name": "echo-agent",
   "description": "A modular AI agent framework",
   "url": "http://localhost:58123",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "capabilities": {"streaming": false, "pushNotifications": false},
   "skills": [{"id": "chat", "name": "chat"}, {"id": "tool_use", "name": "tool_use"}],
   "authentication": {"schemes": ["bearer"]}

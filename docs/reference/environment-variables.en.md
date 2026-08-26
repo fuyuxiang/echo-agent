@@ -43,11 +43,17 @@ Package defaults → User YAML → ECHO_AGENT_ env vars → CLI overrides → Pr
 
 Env vars override config file values but are overridden by explicit CLI flags.
 
+A camelCase key in YAML (`networkPolicy`) and its snake_case form
+(`network_policy`) are the same setting. Every source is normalized to the
+snake_case field name before merging, so an env var reliably overrides a
+camelCase key written by the setup wizard or by hand. Normalization happens in
+memory on load and never rewrites your config file.
+
 ---
 
 ## Type Coercion
 
-Environment variables are always strings. Echo Agent coerces them to the expected type:
+Environment variables are always strings. Whether a value is parsed as JSON is decided by the field's declared type in the schema — never by what the value looks like. Scalars stay strings and are coerced by pydantic during validation:
 
 | Target Type | Env Value | Result |
 |-------------|-----------|--------|
@@ -55,13 +61,50 @@ Environment variables are always strings. Echo Agent coerces them to the expecte
 | `bool` | `false`, `0`, `no`, `off` | `False` |
 | `int` | `"3000"` | `3000` |
 | `float` | `"0.5"` | `0.5` |
-| `list` | `"item1,item2,item3"` | `["item1", "item2", "item3"]` |
 | `list` | `'["item1","item2"]'` | `["item1", "item2"]` (JSON) |
 | `dict` | `'{"key": "value"}'` | `{"key": "value"}` (JSON) |
 | `str` | `"hello"` | `"hello"` |
+| `str` | `"false"` | `"false"` (stays a string) |
 
-!!! warning "List separator"
-    Comma-separated lists do not support values containing commas. Use JSON array syntax for complex list values.
+Because the decision follows the declared type, a secret or token whose value happens to read `false`, `null` or `[]` is passed through verbatim to a `str` field rather than becoming a bool/None.
+
+```bash
+export ECHO_AGENT_GATEWAY__AUTH__ADMIN_TOKENS='["ephemeral-token"]'
+export ECHO_AGENT_TOOLS__DENY='["shell", "process"]'
+export ECHO_AGENT_CHANNELS__TELEGRAM__TOKEN=false   # the string "false"
+```
+
+Mapping-of-submodel fields (`tools.mcp_servers`, `gateway.platforms`) accept either a whole JSON object or a per-key override addressed as `<field>__<key>__<subfield>`:
+
+```bash
+export ECHO_AGENT_TOOLS__MCP_SERVERS__MYSRV__ARGS='["-m", "myserver"]'
+```
+
+!!! warning "List syntax"
+    Lists must use JSON array syntax. Comma-separated values are not split — they reach validation as a single string and fail. Malformed JSON is left as the raw string so pydantic names the offending field.
+
+!!! note "Keys containing double underscores"
+    A user-chosen key containing `__` collides with the level separator, so the path cannot be resolved and the value is treated as a string. Configure these in YAML instead.
+
+---
+
+## Provider Credentials
+
+A provider API key can be written into the config, discovered from a conventional
+variable name (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, ...), or read from a
+variable you name yourself with `apiKeyEnv` — useful when a host process injects
+an ephemeral secret and you do not want it persisted to disk:
+
+```yaml
+models:
+  providers:
+    - name: openai
+      apiKeyEnv: MY_HOST_INJECTED_KEY
+```
+
+Resolution order is `apiKey` (explicit) > `apiKeyEnv` > the conventional variable
+name for that provider. With none of them set, behaviour is unchanged: the
+provider either reports a missing key or allows keyless access.
 
 ---
 

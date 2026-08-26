@@ -14,7 +14,7 @@ pip install echo-agent[all]
 
 ```bash
 echo-agent --version
-# echo-agent 0.3.7
+# echo-agent 0.3.8
 ```
 
 !!! tip "虚拟环境"
@@ -67,7 +67,7 @@ echo-agent run
 启动成功后你会看到类似输出：
 
 ```
-[INFO] Echo Agent v0.3.7 starting...
+[INFO] Echo Agent v0.3.8 starting...
 [INFO] Model: openai/gpt-4o
 [INFO] Memory: loaded (42 entries)
 [INFO] Skills: 12 active

@@ -474,16 +474,28 @@ Response:
 
 #### Create Task
 
+Requires an admin-scoped token. Returns `201` with `{"task": {...}}`.
+
 ```
 POST /api/tasks
 Content-Type: application/json
 
 {
   "title": "Analyze error logs from last 24h",
-  "priority": "high",
-  "context": {"log_path": "/var/log/app/errors.log"}
+  "description": "Group by service, summarise the top offenders",
+  "priority": 5,
+  "labels": ["ops"],
+  "assignee": "",
+  "source": "human",
+  "board_id": "default",
+  "parent_task_id": "",
+  "metadata": {}
 }
 ```
+
+Only `title` is required — an empty one returns `400`. `priority` is an integer
+(default `5`), and `metadata` must be an object or the request is rejected with
+`400`. Use `parent_task_id` to nest the task under an existing one.
 
 #### Cancel Task
 
@@ -772,7 +784,7 @@ No authentication required. Returns:
 ```json
 {
   "status": "healthy",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "uptime_seconds": 172800,
   "components": {
     "gateway": "healthy",

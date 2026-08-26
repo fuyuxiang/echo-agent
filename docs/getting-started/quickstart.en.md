@@ -14,7 +14,7 @@ Verify the installation:
 
 ```bash
 echo-agent --version
-# echo-agent 0.3.7
+# echo-agent 0.3.8
 ```
 
 !!! tip "Virtual Environment"
@@ -67,7 +67,7 @@ echo-agent run
 On successful startup, you'll see output like:
 
 ```
-[INFO] Echo Agent v0.3.7 starting...
+[INFO] Echo Agent v0.3.8 starting...
 [INFO] Model: openai/gpt-4o
 [INFO] Memory: loaded (42 entries)
 [INFO] Skills: 12 active

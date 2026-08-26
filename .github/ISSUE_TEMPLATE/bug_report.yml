@@ -13,7 +13,7 @@ body:
     attributes:
       label: Echo Agent 版本 / Version
       description: "运行 `echo-agent --version`"
-      placeholder: "0.3.7"
+      placeholder: "0.3.8"
     validations:
       required: true
 

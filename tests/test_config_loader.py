@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from echo_agent.config.loader import (
+    _canonicalize_keys,
     _deep_merge,
     _env_overrides,
     _find_config_file_in,
@@ -16,6 +18,7 @@ from echo_agent.config.loader import (
     resolve_config_file,
     save_config,
 )
+from echo_agent.config.schema import Config
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +127,104 @@ class TestEnvOverrides:
         )
         result = _env_overrides()
         assert result["gateway"]["auth"]["admin_tokens"] == ["ephemeral-token"]
+
+    def test_json_dict_for_mapping_field(self, monkeypatch):
+        monkeypatch.setenv("ECHO_AGENT_MODELS__MODEL_WINDOWS", '{"gpt-4": 128000}')
+        result = _env_overrides()
+        assert result["models"]["model_windows"] == {"gpt-4": 128000}
+
+    @pytest.mark.parametrize("raw", ["false", "true", "null", "[]", "{}", '{"a": 1}'])
+    def test_str_field_never_json_parsed(self, monkeypatch, raw):
+        """A secret that happens to read like JSON must stay a string.
+
+        Parsing by value shape turned tokens such as ``false`` into a bool and
+        made Config() reject a previously working deployment.
+        """
+        monkeypatch.setenv("ECHO_AGENT_CHANNELS__TELEGRAM__TOKEN", raw)
+        result = _env_overrides()
+        assert result["channels"]["telegram"]["token"] == raw
+        cfg = Config(**result)
+        assert cfg.channels.telegram.token == raw
+
+    def test_bool_field_still_coerced_by_pydantic(self, monkeypatch):
+        monkeypatch.setenv("ECHO_AGENT_CHANNELS__TELEGRAM__ENABLED", "true")
+        cfg = Config(**_env_overrides())
+        assert cfg.channels.telegram.enabled is True
+
+    def test_unknown_path_left_as_string(self, monkeypatch):
+        monkeypatch.setenv("ECHO_AGENT_NOT_A_FIELD__NESTED", "[1,2]")
+        result = _env_overrides()
+        assert result["not_a_field"]["nested"] == "[1,2]"
+
+    def test_malformed_json_container_left_as_string(self, monkeypatch):
+        """Keep the raw value so pydantic names the offending field."""
+        monkeypatch.setenv("ECHO_AGENT_GATEWAY__AUTH__ADMIN_TOKENS", "[unclosed")
+        result = _env_overrides()
+        assert result["gateway"]["auth"]["admin_tokens"] == "[unclosed"
+
+    def test_list_field_through_submodel_mapping(self, monkeypatch):
+        """``mcp_servers__<name>__args`` addresses a list inside a user key."""
+        monkeypatch.setenv("ECHO_AGENT_TOOLS__MCP_SERVERS__MYSRV__ARGS", '["-m", "srv"]')
+        result = _env_overrides()
+        assert result["tools"]["mcp_servers"]["mysrv"]["args"] == ["-m", "srv"]
+
+    def test_str_field_through_submodel_mapping(self, monkeypatch):
+        monkeypatch.setenv("ECHO_AGENT_TOOLS__MCP_SERVERS__MYSRV__COMMAND", "null")
+        result = _env_overrides()
+        assert result["tools"]["mcp_servers"]["mysrv"]["command"] == "null"
+
+
+# ---------------------------------------------------------------------------
+# alias normalization: camelCase YAML keys must not shadow env overrides
+# ---------------------------------------------------------------------------
+
+class TestAliasCanonicalization:
+    def test_camel_case_keys_rewritten_to_field_names(self):
+        out = _canonicalize_keys(Config, {"execution": {"networkPolicy": "allow"}})
+        assert out == {"execution": {"network_policy": "allow"}}
+
+    def test_recurses_into_list_of_submodels(self):
+        out = _canonicalize_keys(
+            Config, {"models": {"providers": [{"name": "openai", "apiKeyEnv": "K"}]}}
+        )
+        assert out["models"]["providers"][0]["api_key_env"] == "K"
+
+    def test_recurses_into_mapping_of_submodels(self):
+        out = _canonicalize_keys(
+            Config, {"tools": {"mcpServers": {"srv": {"connectTimeout": 5}}}}
+        )
+        assert out["tools"]["mcp_servers"]["srv"]["connect_timeout"] == 5
+
+    def test_unknown_keys_preserved(self):
+        """Compat migrations run on raw data and must survive this pass."""
+        out = _canonicalize_keys(
+            Config, {"agent": {"heartbeat": {"interval_sec": 30}}, "bogusKey": 1}
+        )
+        assert out["agent"]["heartbeat"]["interval_sec"] == 30
+        assert out["bogusKey"] == 1
+
+    def test_env_var_overrides_camel_case_yaml(self, tmp_path, monkeypatch):
+        """The regression this normalization exists for.
+
+        ``networkPolicy: allow`` in the packaged default.yaml used to make
+        ECHO_AGENT_EXECUTION__NETWORK_POLICY a silent no-op — a hardening
+        setting that failed open.
+        """
+        cfg = tmp_path / "echo-agent.yaml"
+        cfg.write_text("execution:\n  networkPolicy: allow\n", encoding="utf-8")
+        monkeypatch.setenv("ECHO_AGENT_EXECUTION__NETWORK_POLICY", "deny")
+        assert load_config(cfg).execution.network_policy == "deny"
+
+    def test_env_var_overrides_camel_case_packaged_default(self, monkeypatch):
+        monkeypatch.setenv("ECHO_AGENT_EXECUTION__NETWORK_POLICY", "deny")
+        assert load_config("/nonexistent").execution.network_policy == "deny"
+
+    def test_yaml_value_survives_when_no_env_override(self, tmp_path):
+        cfg = tmp_path / "echo-agent.yaml"
+        cfg.write_text(
+            "gateway:\n  apiPrefix: /from-yaml\n", encoding="utf-8"
+        )
+        assert load_config(cfg).gateway.api_prefix == "/from-yaml"
 
     def test_ignores_unrelated_vars(self, monkeypatch):
         monkeypatch.setenv("OTHER_VAR", "nope")

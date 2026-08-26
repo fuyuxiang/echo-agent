@@ -178,7 +178,7 @@ playwright install-deps chromium
 ```bash
 # 检查版本
 echo-agent --version
-# 输出: echo-agent 0.3.7
+# 输出: echo-agent 0.3.8
 
 # 检查运行状态
 echo-agent status

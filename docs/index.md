@@ -68,7 +68,7 @@
 ## 项目状态
 
 !!! warning "Beta 阶段"
-    Echo Agent 当前版本为 **v0.3.7**，处于 Beta 阶段。核心 API 趋于稳定，但在以下方面仍可能发生破坏性变更：
+    Echo Agent 当前版本为 **v0.3.8**，处于 Beta 阶段。核心 API 趋于稳定，但在以下方面仍可能发生破坏性变更：
 
     - 配置文件格式（`config.yaml` schema）
     - 插件 / 技能 API 接口
