@@ -684,6 +684,7 @@ class TestTelegramMediaDownload:
         ch._api = AsyncMock(return_value={"file_path": "photos/file_42.jpg"})
         mock_resp = AsyncMock()
         mock_resp.status = 200
+        mock_resp.headers = {}
         mock_resp.read = AsyncMock(return_value=b"\xff\xd8JPEG_DATA")
         mock_ctx = MagicMock()
         mock_ctx.__aenter__ = AsyncMock(return_value=mock_resp)
@@ -712,6 +713,7 @@ class TestFeishuMediaDownload:
 
         mock_resp = AsyncMock()
         mock_resp.status = 200
+        mock_resp.headers = {}
         mock_resp.read = AsyncMock(return_value=b"\x89PNG_IMAGE_DATA")
         mock_ctx = MagicMock()
         mock_ctx.__aenter__ = AsyncMock(return_value=mock_resp)
@@ -743,6 +745,7 @@ class TestWhatsAppMediaDownload:
             call_count += 1
             resp = AsyncMock()
             resp.status = 200
+            resp.headers = {}
             if call_count == 1:
                 resp.json = AsyncMock(return_value={"url": "https://cdn.whatsapp.net/file.enc"})
             else:
@@ -777,6 +780,7 @@ class TestMatrixMediaDownload:
 
         mock_resp = AsyncMock()
         mock_resp.status = 200
+        mock_resp.headers = {}
         mock_resp.read = AsyncMock(return_value=b"MATRIX_IMAGE")
         mock_ctx = MagicMock()
         mock_ctx.__aenter__ = AsyncMock(return_value=mock_resp)

@@ -11,7 +11,7 @@ def test_checkpoint_config_defaults():
 
 
 def test_checkpoint_config_fields_have_bilingual_desc():
-    fields = Config().checkpoint.model_fields
+    fields = type(Config().checkpoint).model_fields
     for name, f in fields.items():
         extra = f.json_schema_extra or {}
         assert extra.get("desc_zh"), f"{name} missing desc_zh"

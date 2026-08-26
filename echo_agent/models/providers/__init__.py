@@ -54,6 +54,22 @@ def _env_api_key(provider_name: str) -> str:
     return ""
 
 
+def _configured_api_key(config: ProviderConfig, provider_name: str) -> str:
+    """Resolve a key without mutating or persisting the provider config.
+
+    Explicit config remains highest priority for compatibility. api_key_env is
+    the secure host-injection path; conventional provider env names remain the
+    final fallback.
+    """
+    if config.api_key:
+        return config.api_key
+    if config.api_key_env:
+        value = os.environ.get(config.api_key_env, "").strip()
+        if value:
+            return value
+    return _env_api_key(provider_name)
+
+
 def _has_aws_credentials() -> bool:
     return bool(
         os.environ.get("AWS_ACCESS_KEY_ID")
@@ -90,7 +106,7 @@ def validate_provider_config(config: ProviderConfig, *, default_model: str = "")
         # boto3/AnthropicBedrock can still resolve instance/task role credentials at call time.
         return
 
-    if config.api_key or config.credential_pool or _env_api_key(provider_name):
+    if _configured_api_key(config, provider_name) or config.credential_pool:
         return
 
     if _allows_keyless_openai_compatible(provider_name, config):
@@ -129,7 +145,7 @@ def create_provider(config: ProviderConfig, *, default_model: str = "") -> LLMPr
         pool = CredentialPool(config.credential_pool)
         api_key = pool.get_next()
     else:
-        api_key = config.api_key or _env_api_key(name)
+        api_key = _configured_api_key(config, name)
 
     provider = cls(api_key=api_key, api_base=config.api_base, **kwargs)
     provider.request_timeout = float(config.timeout_seconds)

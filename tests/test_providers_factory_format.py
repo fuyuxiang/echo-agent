@@ -60,6 +60,16 @@ class TestValidateProviderConfig:
         monkeypatch.setenv("OPENAI_API_KEY", "from-env")
         validate_provider_config(ProviderConfig(name="openai", models=["m"]))
 
+    def test_explicit_api_key_env_satisfies(self, monkeypatch):
+        monkeypatch.setenv("DESKTOP_EPHEMERAL_MODEL_TOKEN", "broker-token")
+        validate_provider_config(
+            ProviderConfig(
+                name="openai",
+                api_key_env="DESKTOP_EPHEMERAL_MODEL_TOKEN",
+                models=["m"],
+            )
+        )
+
     def test_credential_pool_satisfies(self):
         validate_provider_config(
             ProviderConfig(name="openai", credential_pool=["a", "b"], models=["m"])
@@ -93,6 +103,18 @@ class TestCreateProvider:
 
         assert isinstance(provider, OpenAIProvider)
         assert provider.get_default_model() == "gpt-4"
+
+    def test_api_key_is_loaded_from_named_environment_variable(self, monkeypatch):
+        monkeypatch.setenv("DESKTOP_EPHEMERAL_MODEL_TOKEN", "broker-token")
+        with patch("echo_agent.models.providers.openai_provider.OpenAIProvider._build_client"):
+            provider = create_provider(
+                ProviderConfig(
+                    name="openai",
+                    api_key_env="DESKTOP_EPHEMERAL_MODEL_TOKEN",
+                    models=["gpt-4"],
+                )
+            )
+        assert provider.api_key == "broker-token"
 
     def test_default_model_override_takes_precedence(self):
         with patch("echo_agent.models.providers.openai_provider.OpenAIProvider._build_client"):

@@ -54,10 +54,30 @@ async def test_create_task(mock_server, api):
     app = web.Application()
     app.router.add_post("/api/v1/tasks", api.create_task)
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/api/v1/tasks", json={"title": "new task"})
+        resp = await client.post(
+            "/api/v1/tasks",
+            json={
+                "title": "new task",
+                "parent_task_id": "parent-1",
+                "metadata": {"priority": "high"},
+            },
+        )
         assert resp.status == 201
         data = await resp.json()
         assert data["task"]["title"] == "new task"
+        assert mock_server._agent_loop.task_manager.create.await_args.kwargs["parent_task_id"] == "parent-1"
+        assert mock_server._agent_loop.task_manager.create.await_args.kwargs["metadata"] == {"priority": "high"}
+
+
+@pytest.mark.asyncio
+async def test_create_task_rejects_non_object_metadata(mock_server, api):
+    app = web.Application()
+    app.router.add_post("/api/v1/tasks", api.create_task)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/api/v1/tasks", json={"title": "new task", "metadata": []})
+        assert resp.status == 400
+        assert (await resp.json())["error"] == "metadata must be an object"
+        mock_server._agent_loop.task_manager.create.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -294,6 +295,12 @@ class BaseChannel(ABC):
                 chunks_iter = content.iter_chunked(cls._STREAM_CHUNK_SIZE)
                 # Verify it's actually an async iterator (not a coroutine from a mock)
                 if not hasattr(chunks_iter, "__aiter__"):
+                    # AsyncMock turns arbitrary attributes into coroutine
+                    # functions. Close that synthetic coroutine before falling
+                    # back to resp.read(), otherwise every mocked media download
+                    # leaks a coroutine and emits a RuntimeWarning.
+                    if inspect.iscoroutine(chunks_iter):
+                        chunks_iter.close()
                     raise TypeError("not an async iterable")
                 buf = bytearray()
                 async for chunk in chunks_iter:

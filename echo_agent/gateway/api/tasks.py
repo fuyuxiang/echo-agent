@@ -67,6 +67,8 @@ class TasksAPI:
         title = body.get("title", "")
         if not title:
             return web.json_response({"error": "title is required"}, status=400)
+        if not isinstance(body.get("metadata", {}), dict):
+            return web.json_response({"error": "metadata must be an object"}, status=400)
 
         task = await self._manager().create(
             title=title,
@@ -76,6 +78,8 @@ class TasksAPI:
             assignee=body.get("assignee", ""),
             source=body.get("source", "human"),
             board_id=body.get("board_id", "default"),
+            parent_task_id=body.get("parent_task_id", ""),
+            metadata=body.get("metadata", {}),
         )
         return web.json_response({"task": task.to_dict()}, status=201)
 
@@ -239,4 +243,3 @@ class TasksAPI:
         except ValueError as e:
             return web.json_response({"error": str(e)}, status=400)
         return web.json_response({"task": task.to_dict()})
-

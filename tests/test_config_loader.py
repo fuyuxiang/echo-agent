@@ -117,6 +117,14 @@ class TestEnvOverrides:
         result = _env_overrides()
         assert result["llm"]["provider"] == "openai"
 
+    def test_json_list_for_nested_gateway_tokens(self, monkeypatch):
+        monkeypatch.setenv(
+            "ECHO_AGENT_GATEWAY__AUTH__ADMIN_TOKENS",
+            '["ephemeral-token"]',
+        )
+        result = _env_overrides()
+        assert result["gateway"]["auth"]["admin_tokens"] == ["ephemeral-token"]
+
     def test_ignores_unrelated_vars(self, monkeypatch):
         monkeypatch.setenv("OTHER_VAR", "nope")
         monkeypatch.delenv("ECHO_AGENT_MODEL", raising=False)
@@ -280,4 +288,3 @@ def test_migrate_drops_interval_sec_when_min_interval_present():
     out = migrate_heartbeat_config(data)
     assert out["agent"]["heartbeat"]["min_interval_sec"] == 45
     assert "interval_sec" not in out["agent"]["heartbeat"]
-

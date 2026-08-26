@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -96,10 +97,22 @@ def _env_overrides() -> dict[str, Any]:
         if not key.startswith(prefix):
             continue
         parts = key[len(prefix):].lower().split("__")
+        parsed_value: Any = value
+        # Nested list/dict settings (notably gateway auth tokens) cannot be
+        # represented if every environment value remains a string. Parse only
+        # explicit JSON containers/scalars; ordinary URLs, keys and model names
+        # stay byte-for-byte strings.
+        if value.lstrip().startswith(("[", "{")) or value.strip() in {
+            "true", "false", "null",
+        }:
+            try:
+                parsed_value = json.loads(value)
+            except json.JSONDecodeError:
+                parsed_value = value
         current = result
         for part in parts[:-1]:
             current = current.setdefault(part, {})
-        current[parts[-1]] = value
+        current[parts[-1]] = parsed_value
     return result
 
 

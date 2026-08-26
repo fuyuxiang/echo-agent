@@ -978,6 +978,14 @@ class ProviderConfig(_Base):
             "desc_en": "Provider API key",
         },
     )
+    api_key_env: str = Field(
+        default="",
+        json_schema_extra={
+            "status": "effective", "ref": "models/providers/__init__.py:create_provider",
+            "desc_zh": "从指定环境变量读取 API 密钥；用于宿主进程临时注入，避免密钥写入配置文件",
+            "desc_en": "Read the API key from this environment variable so a host can inject an ephemeral secret without persisting it",
+        },
+    )
     api_base: str = Field(
         default="",
         json_schema_extra={
