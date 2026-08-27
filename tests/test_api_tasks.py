@@ -80,6 +80,59 @@ async def test_create_task_rejects_non_object_metadata(mock_server, api):
         mock_server._agent_loop.task_manager.create.assert_not_awaited()
 
 
+# TaskRecord 是普通 dataclass,不做任何类型收敛,所以非法值会直接落盘并被原样读回。
+# 看板前端把 priority 当 number、labels 当数组用(web/src/stores/kanban.ts),
+# 因此这里不校验就等于让 API 写坏自己的数据契约。
+@pytest.mark.parametrize("payload,expected", [
+    ({"priority": "high"}, "priority must be an integer"),
+    ({"priority": None}, "priority must be an integer"),
+    # bool 是 int 的子类,True 当优先级是调用方 bug,不能当成 5 静默接受。
+    ({"priority": True}, "priority must be an integer"),
+    ({"labels": "weekly"}, "labels must be an array of strings"),
+    ({"labels": [1, 2]}, "labels must be an array of strings"),
+    ({"metadata": []}, "metadata must be an object"),
+])
+@pytest.mark.asyncio
+async def test_create_task_rejects_malformed_fields(mock_server, api, payload, expected):
+    app = web.Application()
+    app.router.add_post("/api/v1/tasks", api.create_task)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/api/v1/tasks", json={"title": "t", **payload})
+        assert resp.status == 400
+        assert (await resp.json())["error"] == expected
+        mock_server._agent_loop.task_manager.create.assert_not_awaited()
+
+
+@pytest.mark.parametrize("payload,expected", [
+    ({"priority": "high"}, "priority must be an integer"),
+    ({"labels": "weekly"}, "labels must be an array of strings"),
+    ({"metadata": []}, "metadata must be an object"),
+])
+@pytest.mark.asyncio
+async def test_update_task_rejects_malformed_fields(mock_server, api, payload, expected):
+    # PATCH 走的是另一条路径:只修 create 会留下同一个数据损坏入口。
+    app = web.Application()
+    app.router.add_patch("/api/v1/tasks/{id}", api.update_task)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.patch("/api/v1/tasks/t1", json=payload)
+        assert resp.status == 400
+        assert (await resp.json())["error"] == expected
+        mock_server._agent_loop.task_manager.update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_task_only_checks_present_keys(mock_server, api):
+    # PATCH 语义:没传的字段不能因为"缺失"被判非法。
+    from echo_agent.tasks.models import TaskRecord
+
+    mock_server._agent_loop.task_manager.update.return_value = TaskRecord(title="t")
+    app = web.Application()
+    app.router.add_patch("/api/v1/tasks/{id}", api.update_task)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.patch("/api/v1/tasks/t1", json={"title": "renamed"})
+        assert resp.status == 200
+
+
 @pytest.mark.asyncio
 async def test_transition_task(mock_server, api):
     from echo_agent.tasks.models import TaskRecord, TaskStatus

@@ -79,6 +79,38 @@ class TestServerFold:
         assert GatewayServer._normalize_platform(server, "whatever") == "whatever"
 
 
+class TestEveryRealChannelIsKnown:
+    """真实通道必须全在 known_platforms 里 —— 漏一个就切断该通道的已有授权。
+
+    折叠发生在授权校验之前,而两套授权数据都按 platform 存:allowlist 用文档推荐的
+    "feishu:123" 形式,配对用户存在 {platform}_approved.json。所以漏掉一个真实通道
+    不只是路由跑偏,而是让磁盘上已有的批准数据静默失效。
+    """
+
+    def test_no_implemented_channel_folds_to_ws(self):
+        # 直接读注册表,而不是手抄一份名单 —— 手抄的名单正是本次漏掉 8 个通道的原因。
+        from echo_agent.channels.manager import _CHANNEL_REGISTRY
+
+        known = set(GatewayConfig().known_platforms)
+        missing = sorted(name for name in _CHANNEL_REGISTRY if name not in known)
+        assert not missing, (
+            f"这些通道会被折叠为 ws,升级后其已配对用户会被 403 拒绝: {missing}。"
+            f"新增通道时必须同步 GatewayConfig.known_platforms"
+        )
+
+    def test_folding_preserves_platform_scoped_authorization(self):
+        # 回归护栏:折叠后的取值必须还能命中 allowlist 里的 "<platform>:<user>"。
+        from echo_agent.config.schema import GatewayAuthConfig
+        from echo_agent.gateway.ws_session import normalize_platform
+
+        known = GatewayConfig().known_platforms
+        for platform in ("feishu", "dingtalk", "wecom", "whatsapp", "matrix", "email"):
+            folded = normalize_platform(platform, known)
+            assert folded == platform, f"{platform} 被折叠成了 {folded}"
+            cfg = GatewayAuthConfig(mode="allowlist", allowed_users=[f"{platform}:u1"])
+            assert f"{folded}:u1" in set(cfg.allowed_users)
+
+
 class TestOptimisticStreamDefaults:
     """默认值只放能就地重绘的通道。"""
 

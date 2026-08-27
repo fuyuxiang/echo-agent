@@ -3588,10 +3588,27 @@ class GatewayConfig(_Base):
     # for no security gain — the fold already removes the capability confusion, and
     # per-platform rate limits still key off the reported name. Note this is NOT an
     # identity control; impersonation is handled by resolve_client_session_key.
+    #
+    # EVERY channel this repo implements must appear here. The fold runs *before*
+    # the authorization check (server.py, _authenticate_and_check_rate_limit), and
+    # both authorization stores are keyed by platform: allowlist entries use the
+    # documented "feishu:123" form and paired users live in {platform}_approved.json.
+    # So omitting a real channel does not merely misroute it — it silently
+    # invalidates approvals already on disk, and the operator sees a correct-looking
+    # feishu_approved.json while every request 403s. The per-platform rate-limit
+    # bucket (f"{platform}:{chat_id}") collapses into a shared "ws:" bucket too.
+    # test_gateway_platform_normalization pins this list against the channel
+    # registry so a newly added channel cannot drift out of it.
     known_platforms: list[str] = Field(
         default_factory=lambda: [
+            # Transport-level callers: no channel class, but these are the
+            # gateway's own default platform values (WS handshake, POST /message)
+            # and the first-party clients.
             "cli", "desktop", "ws", "api",
-            "telegram", "discord", "slack", "qqbot", "weixin", "wechat",
+            # Every implemented channel, i.e. echo_agent/channels/*.py `name`.
+            # "wechat" is kept as a long-standing alias of the weixin channel.
+            "cron", "dingtalk", "discord", "email", "feishu", "matrix", "qqbot",
+            "slack", "telegram", "webhook", "wechat", "wecom", "weixin", "whatsapp",
         ],
         json_schema_extra={
             "status": "effective", "ref": "gateway/ws_session.py:normalize_platform",

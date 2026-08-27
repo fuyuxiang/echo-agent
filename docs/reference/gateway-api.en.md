@@ -493,9 +493,13 @@ Content-Type: application/json
 }
 ```
 
-Only `title` is required — an empty one returns `400`. `priority` is an integer
-(default `5`), and `metadata` must be an object or the request is rejected with
-`400`. Use `parent_task_id` to nest the task under an existing one.
+Only `title` is required — an empty one returns `400`. `priority` must be an
+integer (default `5`; booleans are rejected), `labels` an array of strings, and
+`metadata` an object — otherwise the request is rejected with `400`. Use
+`parent_task_id` to nest the task under an existing one.
+
+The same field validation applies to `PATCH /api/tasks/{id}`, which checks only
+the fields actually present in the request.
 
 #### Cancel Task
 

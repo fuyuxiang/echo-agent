@@ -15,6 +15,7 @@
 - 技能脚本可通过 `metadata.echo.requires.env` 声明所需的凭据环境变量，`skill_run` 只透传声明过的键。读一遍 SKILL.md 即可确定该技能能接触哪些密钥，不再需要把 token 塞进命令行参数
 - `skill_view` 会在返回内容末尾提示缺失的 pip 依赖与未设置的环境变量（此前依赖缺失要等脚本运行失败才知道）
 - `SkillStore.write_file_bytes()`：技能的 `assets/` 目录终于能装图片和字体
+- `gateway.known_platforms`：客户端自报的 `platform` 会拼进通道名 `gateway:{platform}`，而通道名在别处承载能力判定（`channels.stream_optimistic_channels` 断言该通道可就地重绘）。不在此列表的取值折叠为 `ws` 而非直接拒绝，避免打断已有的第三方接入；留空可关闭折叠。默认列表含全部已实现通道与首方客户端 —— 授权数据按 platform 存储（allowlist 的 `feishu:123` 写法、配对的 `{platform}_approved.json`），漏掉真实通道会让已有批准静默失效
 
 ### Changed
 - 技能清单注入系统提示时增加字符预算（约 6000 字符）。此前 35 个内置技能已占约 1.2k tokens 且无上限，装到几百个会给每一轮请求都加上固定的五位数 token 开销。超预算时先截断描述，仍不够才丢弃条目，并明确告知省略了多少个、指向 `skills_list`——静默省略会让模型笃定某个技能不存在
@@ -25,6 +26,8 @@
 - 技能脚本运行环境从 `env={}` 改为白名单透传（`PATH`/`HOME`/语言/代理/TLS 证书路径 + 技能声明的凭据键）。空环境让 `requires.bins` 成为纯装饰，也让凭据型技能（如 `image-gen`）必然启动失败
 - `skill_run` 的永久批准粒度细化为 `skill_run:<技能>/<脚本>`，此前 `tool:skill_run` 一次批准等于永久批准任意技能的任意脚本
 - 内置 `workflow-chain` 不再使用 `shell=True`：命令按 `shlex` 解析后以参数列表执行，`;`/`&&`/`|` 成为字面参数。需要管道的步骤请显式写 `sh -c '...'`
+- `channels.stream_optimistic_channels` 默认加入 `gateway:desktop`。桌面客户端的渲染层会按累积缓冲重建气泡并处理撤回帧，属于能就地重绘的通道；不放开则带工具的轮次走 `draft_policy=buffer`，整段答案作为单个 delta 放出，表现为完全没有流式
+- 任务接口收紧字段类型校验：`priority` 必须是整数（布尔值不接受）、`labels` 必须是字符串数组、`metadata` 必须是对象，否则返回 400。`TaskRecord` 是普通 dataclass 不做类型收敛，此前非法值会直接落盘并被原样读回，而看板前端把 `priority` 当 number、`labels` 当数组用。`POST` 与 `PATCH` 两条路径同口径，`PATCH` 只校验请求里实际出现的字段
 
 ### Fixed
 - **安全**：配置文件用驼峰键（`networkPolicy`）写的配置项无法被环境变量覆盖。schema 同时接受驼峰与下划线两种写法，但它们是两个不同的字典键，深合并后两者并存而 pydantic 取驼峰值，环境变量被静默丢弃。包内 `default.yaml` 本身就用驼峰，因此 `ECHO_AGENT_EXECUTION__NETWORK_POLICY=deny` 这类收紧设置一直不生效且无任何提示（fail-open）。现在各来源在合并前统一归一到字段名；归一只在读取时的内存中进行，不改写配置文件。受影响的还有向导写入的 `apiKey`/`apiBase`/`defaultModel`/`modelWindows`/`idleTimeoutMinutes`/`dailyResetHour` 等

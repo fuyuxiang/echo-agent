@@ -10,6 +10,34 @@ if TYPE_CHECKING:
     from echo_agent.gateway.server import GatewayServer
 
 
+def _validate_task_fields(body: dict) -> str:
+    """Return an error message for a malformed task field, or "" when clean.
+
+    TaskRecord is a plain dataclass, so nothing downstream coerces or rejects
+    these: an unvalidated value is written straight to storage and served back
+    out. `priority` is typed `number` by the dashboard (web/src/stores/kanban.ts)
+    and `labels` is iterated as a list, so a string there is a contract violation
+    that persists until someone edits the task by hand. Applied to both create
+    and update — validating only create would leave the same corruption
+    reachable through PATCH.
+
+    Only keys actually present are checked, so PATCH semantics stay intact.
+    """
+    if "priority" in body and (
+        isinstance(body["priority"], bool) or not isinstance(body["priority"], int)
+    ):
+        # bool is an int subclass; True as a priority is a client bug, not a 5.
+        return "priority must be an integer"
+    if "labels" in body and (
+        not isinstance(body["labels"], list)
+        or not all(isinstance(x, str) for x in body["labels"])
+    ):
+        return "labels must be an array of strings"
+    if "metadata" in body and not isinstance(body["metadata"], dict):
+        return "metadata must be an object"
+    return ""
+
+
 class TasksAPI:
     def __init__(self, server: GatewayServer):
         self._server = server
@@ -67,8 +95,8 @@ class TasksAPI:
         title = body.get("title", "")
         if not title:
             return web.json_response({"error": "title is required"}, status=400)
-        if not isinstance(body.get("metadata", {}), dict):
-            return web.json_response({"error": "metadata must be an object"}, status=400)
+        if err := _validate_task_fields(body):
+            return web.json_response({"error": err}, status=400)
 
         task = await self._manager().create(
             title=title,
@@ -104,6 +132,9 @@ class TasksAPI:
             body = await request.json()
         except Exception:
             return web.json_response({"error": "invalid JSON body"}, status=400)
+
+        if err := _validate_task_fields(body):
+            return web.json_response({"error": err}, status=400)
 
         allowed = {"title", "description", "priority", "labels", "assignee", "blocked_reason", "review_summary", "metadata"}
         fields = {k: v for k, v in body.items() if k in allowed}

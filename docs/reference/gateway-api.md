@@ -233,7 +233,9 @@ Token Header 名称可通过 `gateway.auth.token_header` 自定义。
 }
 ```
 
-只有 `title` 必填，为空返回 `400`。`priority` 是整数（默认 `5`），`metadata` 必须是对象，否则返回 `400`。`parent_task_id` 用于挂到父任务下。
+只有 `title` 必填，为空返回 `400`。`priority` 必须是整数（默认 `5`，布尔值不接受），`labels` 必须是字符串数组，`metadata` 必须是对象，否则均返回 `400`。`parent_task_id` 用于挂到父任务下。
+
+同样的字段校验也适用于 `PATCH /api/tasks/{id}`，其中只校验请求里实际出现的字段。
 
 ---
 
