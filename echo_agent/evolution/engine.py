@@ -61,7 +61,6 @@ class EvolutionEngine:
         self._storage = storage
         self._provider = provider
         self._skill_store = skill_store
-        self._eval_dataset_loader = eval_dataset_loader
 
         self._store = TrajectoryStore(storage)
         self._recorder = TrajectoryRecorder(

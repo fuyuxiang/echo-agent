@@ -202,7 +202,7 @@ class TestPooledProvider:
 
         pool = CredentialPool(["k1", "k2"])
         cfg = ProviderConfig(name="openai", credential_pool=["k1", "k2"], models=["m"])
-        return _PooledProvider(inner, pool, type(inner), cfg)
+        return _PooledProvider(inner, pool, cfg)
 
     @pytest.mark.asyncio
     async def test_rotates_on_error(self):
@@ -278,7 +278,7 @@ class TestRotationDoesNotCloseAnInUseClient:
 
         pool = CredentialPool(["k1", "k2"])
         cfg = ProviderConfig(name="openai", credential_pool=["k1", "k2"], models=["m"])
-        return _PooledProvider(inner, pool, type(inner), cfg)
+        return _PooledProvider(inner, pool, cfg)
 
     @pytest.mark.asyncio
     async def test_rotation_does_not_close_the_old_client(self):
@@ -369,7 +369,7 @@ class TestRetiredClientsDoNotAccumulate:
         pool = CredentialPool(keys)
         cfg = ProviderConfig(name="openai", credential_pool=keys, models=["m"])
         inner.request_timeout = timeout
-        return _PooledProvider(inner, pool, type(inner), cfg)
+        return _PooledProvider(inner, pool, cfg)
 
     @staticmethod
     def _closed(client) -> bool:

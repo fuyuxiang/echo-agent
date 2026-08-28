@@ -162,7 +162,7 @@ class TestImageGenRegistration:
         inner = OpenAIProvider(api_key="pool-key-1", api_base="https://api.minimax.chat/v1")
         pool = CredentialPool(["pool-key-1", "pool-key-2"])
         pc = ProviderConfig(name="openai", api_base="https://api.minimax.chat/v1")
-        pooled = _PooledProvider(inner, pool, OpenAIProvider, pc)
+        pooled = _PooledProvider(inner, pool, pc)
         wrapped = RateLimitedProvider(pooled, TokenBucketLimiter(tokens_per_minute=60))
 
         tools: list[Tool] = []

@@ -152,7 +152,7 @@ def create_provider(config: ProviderConfig, *, default_model: str = "") -> LLMPr
     provider.max_retries = int(config.max_retries)
 
     if pool:
-        provider = _PooledProvider(provider, pool, cls, config)
+        provider = _PooledProvider(provider, pool, config)
 
     if config.rate_limit_rpm > 0:
         limiter = TokenBucketLimiter(tokens_per_minute=config.rate_limit_rpm)
@@ -187,11 +187,10 @@ class _PooledProvider(LLMProvider):
     # entries are then closed early rather than letting sockets pile up.
     _RETIRED_CLIENT_LIMIT = 8
 
-    def __init__(self, inner: LLMProvider, pool: CredentialPool, cls: type, config: ProviderConfig):
+    def __init__(self, inner: LLMProvider, pool: CredentialPool, config: ProviderConfig):
         super().__init__()
         self._inner = inner
         self._pool = pool
-        self._cls = cls
         self._config = config
         self.generation = inner.generation
         # Old clients waiting to be closed once nobody is using them. Rotation

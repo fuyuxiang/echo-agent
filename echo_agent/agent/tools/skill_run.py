@@ -29,7 +29,7 @@ from typing import Any
 from loguru import logger
 
 from echo_agent.agent.proc_lifecycle import spawn_exec, terminate_tree
-from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
 from echo_agent.dependencies.lazy_deps import INSTALL_TIMEOUT_SECONDS, install_authorized_async
 from echo_agent.skills.env import build_skill_env
 from echo_agent.skills.store import parse_frontmatter, SkillStore

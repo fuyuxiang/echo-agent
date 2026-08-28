@@ -125,10 +125,10 @@ def test_pooled_provider_supports_embed_delegates():
 
     pool = MagicMock()
     inner = _EmbedCapable()
-    pooled = _PooledProvider(inner, pool, _EmbedCapable, MagicMock())
+    pooled = _PooledProvider(inner, pool, MagicMock())
     assert pooled.supports_embed() is True
 
-    pooled_no = _PooledProvider(_EmbedIncapable(), pool, _EmbedIncapable, MagicMock())
+    pooled_no = _PooledProvider(_EmbedIncapable(), pool, MagicMock())
     assert pooled_no.supports_embed() is False
 
 

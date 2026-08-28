@@ -13,7 +13,7 @@ from typing import Any
 
 from loguru import logger
 
-from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
 
 _MAX_REPLAY_CACHE = 500
 _MAX_EXECUTION_LOG = 1000

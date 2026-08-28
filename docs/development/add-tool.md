@@ -51,7 +51,7 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
 
 
 class WeatherTool(Tool):

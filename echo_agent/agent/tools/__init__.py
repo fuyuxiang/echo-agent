@@ -7,7 +7,7 @@ from typing import Any
 
 from loguru import logger
 
-from echo_agent.agent.tools.base import Tool
+from echo_agent.tools.base import Tool
 from echo_agent.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from echo_agent.agent.tools.message import MessageTool
 from echo_agent.agent.tools.web import WebFetchTool, WebSearchTool

@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
 from echo_agent.spill.layout import is_artifact
 
 # 单次返回的字符上限。默认值与 spill.maxInlineChars 无关:这里返回的是模型

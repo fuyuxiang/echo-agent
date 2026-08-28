@@ -5,7 +5,7 @@ import base64
 import re
 import subprocess
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 from loguru import logger
 
@@ -100,10 +100,6 @@ def extract_audio_track(path: Path, *, out_path: Path | None = None) -> Path | N
     if out.exists() and out.stat().st_size > 0:
         return out
     return None
-
-
-class VisionBackend(Protocol):
-    async def caption(self, frame_paths: list[Path]) -> str: ...
 
 
 def _encode_frame(path: Path) -> dict[str, Any]:

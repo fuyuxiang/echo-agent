@@ -9,7 +9,7 @@ from typing import Any
 
 from loguru import logger
 
-from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
 
 DEFAULT_MODEL = "fal-ai/flux/schnell"
 

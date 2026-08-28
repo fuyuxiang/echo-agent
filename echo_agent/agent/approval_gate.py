@@ -13,7 +13,7 @@ from echo_agent.agent.degraded_notice import (
     REASON_APPROVAL_UNAVAILABLE,
     notice_for,
 )
-from echo_agent.agent.tools.base import ToolResult
+from echo_agent.tools.base import ToolResult
 from echo_agent.bus.delivery import DeliveryResult, DeliveryStage
 from echo_agent.bus.events import InboundEvent, OutboundEvent
 from echo_agent.bus.queue import MessageBus

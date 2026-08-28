@@ -20,7 +20,6 @@ class AgentPlanner:
     ):
         self._llm_call = llm_call
         self._default_strategy = default_strategy
-        self._max_tree_depth = max_tree_depth
         self._reflection = ReflectionModule(llm_call) if reflection_enabled else None
         self._strategies: dict[StrategyType, PlanningStrategy] = {
             StrategyType.REACT: ReactStrategy(llm_call),

@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from echo_agent.agent.clarify_manager import ClarifyManager
-from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
 
 CLI_CHANNEL = "gateway:cli"
 

@@ -8,7 +8,7 @@ from urllib.parse import urlencode, urljoin, urlparse
 
 import aiohttp
 
-from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
 # SSRF policy lives in security/net_guard.py so the media path enforces the
 # identical rules (see that module's docstring). Re-exported under the original
 # private names: they are part of this module's de-facto API — browser/actions.py

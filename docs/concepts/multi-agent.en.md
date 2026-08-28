@@ -132,7 +132,6 @@ flowchart LR
 | `multi_agent/runtime.py` | Worker execution runtime |
 | `multi_agent/registry.py` | Worker Profile registry |
 | `multi_agent/audit.py` | Delegation audit log |
-| `multi_agent/error_messages.py` | Error message definitions |
 | `tools/delegate.py` | Delegate tool implementation |
 | `a2a/protocol.py` | A2A protocol implementation |
 | `a2a/client.py` | A2A client |

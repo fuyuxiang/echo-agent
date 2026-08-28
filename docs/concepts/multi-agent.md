@@ -132,7 +132,6 @@ flowchart LR
 | `multi_agent/runtime.py` | Worker 执行运行时 |
 | `multi_agent/registry.py` | Worker Profile 注册表 |
 | `multi_agent/audit.py` | 委派审计日志 |
-| `multi_agent/error_messages.py` | 错误消息定义 |
 | `tools/delegate.py` | delegate 工具实现 |
 | `a2a/protocol.py` | A2A 协议实现 |
 | `a2a/client.py` | A2A 客户端 |

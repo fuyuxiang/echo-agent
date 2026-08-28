@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from echo_agent.agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
 from echo_agent.bus.events import OutboundEvent
 from echo_agent.bus.queue import MessageBus
 

@@ -42,7 +42,6 @@ class WorkerExecutor:
         default_model: str = "",
     ):
         self._provider = provider
-        self._model_router = model_router
         self._default_model = default_model
 
     async def run(
