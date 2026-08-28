@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 from echo_agent.evolution.engine import EvolutionEngine
 
 

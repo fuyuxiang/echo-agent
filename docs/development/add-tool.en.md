@@ -6,7 +6,8 @@ This guide explains how to develop new tools for Echo Agent, giving the Agent ne
 
 ```
 echo_agent/tools/
-├── base.py              # Tool abstract base class, ToolResult, ToolExecutionContext
+├── __init__.py          # Stable public import surface for Tool extensions
+└── base.py              # Internal implementation of the Tool contracts
 
 echo_agent/agent/tools/
 ├── base.py              # Re-export (backward compatibility)
@@ -16,6 +17,11 @@ echo_agent/agent/tools/
 ├── search.py            # Reference: Search tool
 └── your_tool.py         # ← Your new tool
 ```
+
+Third-party plugins and new code should import the Tool contracts from
+`echo_agent.tools`. `echo_agent.tools.base` is the implementation module;
+`echo_agent.agent.tools.base` remains only as a backward-compatibility shim for
+the former path.
 
 ## Tool Base Class
 
@@ -51,7 +57,7 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 
 
 class WeatherTool(Tool):

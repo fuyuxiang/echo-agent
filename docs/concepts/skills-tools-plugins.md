@@ -8,7 +8,7 @@ echo-agent 提供五种能力扩展机制，各自承担不同职责、拥有不
 ## 1. Tool（工具）
 
 Tool 是 Agent Loop 可直接调用的**可执行能力接口**。每个 Tool 以 Python class 形式实现，
-继承自 `echo_agent/tools/base.py` 中的基类。
+继承自公开入口 `echo_agent.tools.Tool`。
 
 ### 核心特征
 

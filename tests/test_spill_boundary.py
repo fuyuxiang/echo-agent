@@ -15,7 +15,7 @@ from echo_agent.agent.pipeline.inference_stage import InferenceStage
 from echo_agent.agent.tools.registry import ToolRegistry
 from echo_agent.spill.policy import SpillPolicy
 from echo_agent.spill.store import SpillStore
-from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 
 SESSION = "sess-a"
 

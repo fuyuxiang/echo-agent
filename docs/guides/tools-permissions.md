@@ -6,7 +6,7 @@ Echo Agent 通过可扩展的工具体系为大模型赋予操作外部世界的
 
 ## 工具基类
 
-所有工具继承自 `echo_agent.tools.base.Tool`，核心属性如下：
+所有工具继承自公开入口 `echo_agent.tools.Tool`，核心属性如下：
 
 | 属性 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
@@ -300,7 +300,7 @@ tools:
 ### 自定义工具
 
 ```python
-from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 
 class MyCustomTool(Tool):
     name = "my_tool"

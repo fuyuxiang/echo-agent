@@ -238,7 +238,7 @@ async def _create_job_through_gate(gate: ApprovalGate, *, channel: str, running:
 
     from echo_agent.agent.tools.cronjob import CronjobTool
     from echo_agent.bus.events import ContentBlock, ContentType, InboundEvent
-    from echo_agent.tools.base import ToolExecutionContext
+    from echo_agent.tools import ToolExecutionContext
 
     event = InboundEvent(
         channel=channel, sender_id="alice", chat_id="c1",

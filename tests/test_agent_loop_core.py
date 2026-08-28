@@ -134,7 +134,7 @@ async def test_tool_cancellation_records_circuit_breaker_failure(tmp_path: Path)
     BaseException handler must still call circuit_breaker.record_failure
     so the breaker eventually trips on a stuck tool. Without this, an
     interrupted tool just stays "untracked" and the breaker stat skews."""
-    from echo_agent.agent.tools.base import Tool, ToolResult
+    from echo_agent.tools import Tool, ToolResult
 
     class _SlowTool(Tool):
         name = "slow_tool"
@@ -178,7 +178,7 @@ async def test_repeated_identical_tool_call_is_short_circuited(tmp_path: Path) -
     keep running. We assert that after the threshold the underlying tool
     isn't invoked again.
     """
-    from echo_agent.agent.tools.base import Tool, ToolResult
+    from echo_agent.tools import Tool, ToolResult
 
     invocations: list[dict] = []
 

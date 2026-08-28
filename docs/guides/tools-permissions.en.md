@@ -6,7 +6,7 @@ Echo Agent extends language model capabilities through an extensible tool system
 
 ## Tool Base Class
 
-All tools inherit from `echo_agent.tools.base.Tool` with these core attributes:
+All tools inherit from the public `echo_agent.tools.Tool` contract with these core attributes:
 
 | Attribute | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -300,7 +300,7 @@ When approval mode is `smart`, EXEC-tier tool calls are pre-screened by an LLM b
 ### Custom Tool
 
 ```python
-from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 
 class MyCustomTool(Tool):
     name = "my_tool"

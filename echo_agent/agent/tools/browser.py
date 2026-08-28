@@ -12,7 +12,7 @@ from loguru import logger
 
 from echo_agent.agent.browser import actions as _actions
 from echo_agent.agent.browser.session import BrowserLaunchError, BrowserSessionManager
-from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 
 _READONLY_ACTIONS = {"snapshot", "screenshot", "get_images", "console", "wait"}
 _KNOWN_ACTIONS = {

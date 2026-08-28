@@ -19,7 +19,7 @@ from echo_agent.memory.reviewer import MemoryReviewer
 from echo_agent.memory.service import MemoryService
 from echo_agent.memory.store import MemoryStore
 from echo_agent.memory.types import MemoryEntry, MemoryType
-from echo_agent.tools.base import ToolExecutionContext
+from echo_agent.tools import ToolExecutionContext
 
 
 def _store(tmp_path: Path) -> MemoryStore:

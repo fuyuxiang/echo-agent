@@ -15,7 +15,7 @@ import pytest
 from echo_agent.agent.tools.read_spill import _MAX_LIMIT, ReadSpillTool
 from echo_agent.spill.policy import SpillPolicy
 from echo_agent.spill.store import SpillStore
-from echo_agent.tools.base import ToolExecutionContext, ToolResult
+from echo_agent.tools import ToolExecutionContext, ToolResult
 
 SESSION = "sess-a"
 

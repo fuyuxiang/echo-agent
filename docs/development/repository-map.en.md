@@ -22,13 +22,17 @@ echo-agent/
 
 Main agent loop, tool execution, planning, multi-agent collaboration.
 
+The stable public API for Tool extension contracts is `echo_agent.tools`.
+`echo_agent/tools/base.py` implements those contracts; `tools/base.py` under the
+Agent package remains only as a compatibility shim for the former import path.
+
 ```
 agent/
 ├── loop.py              # AgentLoop — core reasoning-execution loop
 ├── planning/            # Task planning and decomposition
 ├── multi_agent/         # Multi-agent collaboration (delegate/spawn)
 ├── tools/               # Tool implementations (shell, filesystem, search, etc.)
-│   ├── base.py          # → re-exports from echo_agent/tools/base.py
+│   ├── base.py          # Backward-compatibility shim for the former import path
 │   ├── registry.py      # ToolRegistry — registration, permission checks, audit
 │   ├── shell.py         # ShellTool (exec) — command execution
 │   ├── filesystem.py    # File read/write

@@ -21,7 +21,7 @@ from echo_agent.agent.tools.read_spill import ReadSpillTool
 from echo_agent.agent.tools.search import SearchFilesTool
 from echo_agent.agent.tools.send_file import SendFileTool
 from echo_agent.spill.store import SpillStore
-from echo_agent.tools.base import ToolExecutionContext
+from echo_agent.tools import ToolExecutionContext
 
 SECRET = "TENANT_B_BEARER_TOKEN_zzz999"
 

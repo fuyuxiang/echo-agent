@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from echo_agent.agent.executors.base import ExecRequest, LocalExecutor
-from echo_agent.agent.tools.base import ToolExecutionContext
+from echo_agent.tools import ToolExecutionContext
 from echo_agent.agent.tools.code_exec import CodeExecTool
 from echo_agent.agent.tools.shell import ShellTool
 from echo_agent.config.loader import load_config

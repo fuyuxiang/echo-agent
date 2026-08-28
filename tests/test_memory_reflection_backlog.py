@@ -61,7 +61,7 @@ class TestAddHonestFeedback:
     @pytest.mark.asyncio
     async def test_add_reports_kept_existing_on_guard(self, store):
         """守卫拦截时 _add 不得谎称 saved。"""
-        from echo_agent.agent.tools.base import ToolExecutionContext
+        from echo_agent.tools import ToolExecutionContext
         from echo_agent.agent.tools.memory import MemoryTool
 
         store.add(MemoryEntry(
@@ -82,7 +82,7 @@ class TestAddHonestFeedback:
 
     @pytest.mark.asyncio
     async def test_add_normal_still_says_saved(self, store):
-        from echo_agent.agent.tools.base import ToolExecutionContext
+        from echo_agent.tools import ToolExecutionContext
         from echo_agent.agent.tools.memory import MemoryTool
         from echo_agent.memory.service import MemoryService
 

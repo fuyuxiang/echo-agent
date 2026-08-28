@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from echo_agent.tools.base import ToolResult
+from echo_agent.tools import ToolResult
 from echo_agent.validation.checkers import default_checkers
 from echo_agent.validation.hook import make_post_tool_validation_hook
 from echo_agent.validation.validator import Validator

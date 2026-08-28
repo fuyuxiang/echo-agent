@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from echo_agent.agent.tools.base import ToolExecutionContext
+from echo_agent.tools import ToolExecutionContext
 from echo_agent.agent.tools.cronjob import CronjobTool
 from echo_agent.bus.queue import MessageBus
 from echo_agent.scheduler.delivery import build_scheduled_job_handler, target_from_session_key

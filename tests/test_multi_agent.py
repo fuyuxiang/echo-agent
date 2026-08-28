@@ -186,7 +186,7 @@ class TestDelegateTool:
     @pytest.mark.asyncio
     async def test_depth_limit(self):
         tool = self._make_tool(max_depth=2)
-        from echo_agent.agent.tools.base import ToolExecutionContext
+        from echo_agent.tools import ToolExecutionContext
         ctx = ToolExecutionContext(parent_execution_id="worker:test:2")
         result = await tool.execute({"goal": "test"}, ctx)
         assert not result.success

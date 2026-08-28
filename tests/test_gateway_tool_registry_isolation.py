@@ -50,7 +50,7 @@ def test_execute_time_gate_blocks_when_profile_tightened():
             return []
 
         async def run(self, params, ctx):  # pragma: no cover - should never run
-            from echo_agent.agent.tools.base import ToolResult
+            from echo_agent.tools import ToolResult
             return ToolResult(success=True, output="should not happen")
 
     config = Config(security={"profile": "public_gateway"})

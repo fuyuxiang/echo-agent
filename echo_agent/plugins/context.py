@@ -10,7 +10,7 @@ from loguru import logger
 from echo_agent.plugins.hooks import HookCallback, HookRegistry
 
 if TYPE_CHECKING:
-    from echo_agent.tools.base import Tool
+    from echo_agent.tools import Tool
     from echo_agent.agent.tools.registry import ToolRegistry
     from echo_agent.bus.events import InboundEvent, OutboundEvent
     from echo_agent.bus.queue import MessageBus
@@ -59,7 +59,7 @@ class PluginContext:
 
         The tool goes through the normal ApprovalGate and security flow.
         """
-        from echo_agent.tools.base import Tool as ToolBase
+        from echo_agent.tools import Tool as ToolBase
 
         if not isinstance(tool, ToolBase):
             raise TypeError(

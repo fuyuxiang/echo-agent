@@ -24,7 +24,7 @@ from echo_agent.agent.pipeline.tool_concurrency import (
     partition_concurrent,
 )
 from echo_agent.agent.pipeline.types import InferenceResult, PipelineContext
-from echo_agent.tools.base import ToolExecutionContext, build_idempotency_key
+from echo_agent.tools import ToolExecutionContext, build_idempotency_key
 from echo_agent.agent.tools.circuit_breaker import ToolCircuitBreaker
 from echo_agent.agent.progress_heartbeat import ActivitySnapshot, friendly_activity
 from echo_agent.agent.streaming import channel_matches

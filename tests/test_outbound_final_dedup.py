@@ -34,7 +34,7 @@ from echo_agent.bus.events import ContentBlock, ContentType, OutboundEvent
 from echo_agent.bus.queue import MessageBus
 from echo_agent.channels.base import SendResult
 from echo_agent.channels.manager import ChannelManager
-from echo_agent.tools.base import ToolExecutionContext
+from echo_agent.tools import ToolExecutionContext
 
 TURN = "evt-abc"
 

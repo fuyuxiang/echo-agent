@@ -7,7 +7,7 @@ import pytest
 from echo_agent.agent.browser import actions as act_mod
 from echo_agent.agent.browser.session import BrowserSessionManager
 from echo_agent.agent.tools.browser import BrowserTool
-from echo_agent.tools.base import ToolExecutionContext
+from echo_agent.tools import ToolExecutionContext
 
 from ._fakes import Cfg, FakePage, FakePlaywright, element, make_payload, patch_playwright
 

@@ -6,14 +6,14 @@ import pytest
 
 from echo_agent.agent.tools.tts import TTSTool
 from echo_agent.bus.delivery import DeliveryResult, DeliveryStage
-from echo_agent.tools.base import ToolExecutionContext
+from echo_agent.tools import ToolExecutionContext
 
 
 async def _fake_edge(self, text, voice, output: Path):
     # 模拟合成成功并落盘
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_bytes(b"fake-audio")
-    from echo_agent.agent.tools.base import ToolResult
+    from echo_agent.tools import ToolResult
     return ToolResult(output=f"Audio saved to {output.name}", metadata={"path": str(output)})
 
 

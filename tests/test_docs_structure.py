@@ -226,7 +226,7 @@ def test_documented_tool_names_are_real():
     import pkgutil
 
     import echo_agent.agent.tools as tools_pkg
-    from echo_agent.tools.base import Tool
+    from echo_agent.tools import Tool
 
     real: set[str] = set()
     for module in pkgutil.iter_modules(tools_pkg.__path__):

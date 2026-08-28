@@ -74,7 +74,7 @@ def test_options_parameter_description_matches_the_channel():
 def test_other_tools_schemas_are_unchanged_by_channel():
     # The base hooks must be pure pass-throughs: a tool that does not override
     # them produces the same bytes on every channel.
-    from echo_agent.tools.base import Tool
+    from echo_agent.tools import Tool
 
     class _Plain(Tool):
         name = "plain"

@@ -22,7 +22,7 @@ from echo_agent.agent.approval_gate import (
     ApprovalGate,
 )
 from echo_agent.agent.degraded_notice import notice_for, REASON_APPROVAL_UNAVAILABLE
-from echo_agent.agent.tools.base import ToolExecutionContext
+from echo_agent.tools import ToolExecutionContext
 from echo_agent.agent.tools.code_exec import CodeExecTool
 from echo_agent.agent.tools.registry import ToolRegistry
 from echo_agent.bus.events import ContentBlock, ContentType, InboundEvent
@@ -31,7 +31,7 @@ from echo_agent.channels.base import SendResult
 from echo_agent.config.loader import load_config
 from echo_agent.config.schema import Config
 from echo_agent.permissions.manager import ApprovalManager
-from echo_agent.tools.base import Tool, ToolResult as _TR
+from echo_agent.tools import Tool, ToolResult as _TR
 
 
 class _FakeInference:

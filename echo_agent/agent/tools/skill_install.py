@@ -17,7 +17,7 @@ from typing import Any
 
 from loguru import logger
 
-from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 from echo_agent.dependencies.lazy_deps import (
     INSTALL_TIMEOUT_SECONDS,
     install_authorized_async,

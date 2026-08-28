@@ -38,7 +38,7 @@ from echo_agent.permissions.manager import ApprovalManager
 from echo_agent.scheduler.authorization import grant, verify
 from echo_agent.scheduler.delivery import inbound_event_from_job
 from echo_agent.scheduler.service import ScheduledJob, Scheduler, TriggerKind
-from echo_agent.tools.base import ToolExecutionContext
+from echo_agent.tools import ToolExecutionContext
 
 
 class _FakeInference:

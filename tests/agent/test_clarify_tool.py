@@ -3,7 +3,7 @@ import pytest
 
 from echo_agent.agent.clarify_manager import ClarifyManager
 from echo_agent.agent.tools.clarify import ClarifyTool
-from echo_agent.tools.base import ToolExecutionContext
+from echo_agent.tools import ToolExecutionContext
 
 
 @pytest.mark.asyncio

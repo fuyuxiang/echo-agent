@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from echo_agent.agent.tools.base import ToolExecutionContext
+from echo_agent.tools import ToolExecutionContext
 
 
 def _ctx(**kwargs) -> ToolExecutionContext:
@@ -371,7 +371,7 @@ async def test_cronjob_create_grants_authorization_on_human_approval():
     from echo_agent.agent.approval_gate import APPROVAL_SOURCE_HUMAN
     from echo_agent.agent.tools.cronjob import CronjobTool
     from echo_agent.scheduler.authorization import verify
-    from echo_agent.tools.base import ToolExecutionContext
+    from echo_agent.tools import ToolExecutionContext
 
     captured = {}
     scheduler = MagicMock()
@@ -411,7 +411,7 @@ async def test_cronjob_create_without_human_approval_does_not_grant():
 
     from echo_agent.agent.tools.cronjob import CronjobTool
     from echo_agent.scheduler.authorization import verify
-    from echo_agent.tools.base import ToolExecutionContext
+    from echo_agent.tools import ToolExecutionContext
 
     captured = {}
     scheduler = MagicMock()
@@ -440,7 +440,7 @@ async def test_cronjob_create_rejects_invalid_cron_expression():
 
     from echo_agent.agent.approval_gate import APPROVAL_SOURCE_HUMAN
     from echo_agent.agent.tools.cronjob import CronjobTool
-    from echo_agent.tools.base import ToolExecutionContext
+    from echo_agent.tools import ToolExecutionContext
 
     scheduler = MagicMock()
     tool = CronjobTool(scheduler)

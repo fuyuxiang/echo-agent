@@ -10,7 +10,7 @@ from loguru import logger
 
 from echo_agent.spill.preview import compose
 from echo_agent.spill.store import SpillStore
-from echo_agent.tools.base import ToolResult
+from echo_agent.tools import ToolResult
 
 
 class SpillPolicy:

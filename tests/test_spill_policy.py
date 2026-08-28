@@ -14,7 +14,7 @@ import pytest
 
 from echo_agent.spill.policy import SpillPolicy
 from echo_agent.spill.store import SpillStore
-from echo_agent.tools.base import ToolResult
+from echo_agent.tools import ToolResult
 
 _BIG = "q" * 60000
 

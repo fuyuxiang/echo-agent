@@ -12,7 +12,7 @@ import mimetypes
 from pathlib import Path
 from typing import Any
 
-from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 from echo_agent.bus.events import ContentBlock, ContentType, OutboundEvent
 from echo_agent.security.path_policy import check_read, resolve_path
 

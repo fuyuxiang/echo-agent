@@ -9,8 +9,8 @@ MCP, and A2A to help developers choose the right extension approach.
 ## 1. Tool
 
 A Tool is an **executable capability interface** that the Agent Loop can invoke directly. Each
-Tool is implemented as a Python class inheriting from the base class in
-`echo_agent/tools/base.py`.
+Tool is implemented as a Python class inheriting from the public
+`echo_agent.tools.Tool` contract.
 
 ### Core Characteristics
 

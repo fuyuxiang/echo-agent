@@ -14,7 +14,7 @@ from echo_agent.agent.proc_lifecycle import (
     spawn_shell,
     terminate_tree,
 )
-from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 from echo_agent.security.guards import evaluate_shell_command
 
 

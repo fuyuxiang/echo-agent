@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from echo_agent.agent.tools.base import ToolExecutionContext
+from echo_agent.tools import ToolExecutionContext
 from echo_agent.agent.tools.skills import SkillViewTool
 
 

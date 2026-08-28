@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from echo_agent.agent.tools.base import ToolExecutionContext, ToolResult
+from echo_agent.tools import ToolExecutionContext, ToolResult
 
 # ---------------------------------------------------------------------------
 # Shared helpers

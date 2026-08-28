@@ -11,7 +11,7 @@ from echo_agent.agent.tools import (
     _try_register_image_gen,
     _try_register_tts,
 )
-from echo_agent.agent.tools.base import Tool
+from echo_agent.tools import Tool
 from echo_agent.config.schema import Config, ImageGenConfig, ToolsConfig, TTSConfig
 from echo_agent.models.provider import LLMProvider
 

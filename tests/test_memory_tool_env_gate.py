@@ -5,7 +5,7 @@ import asyncio
 from echo_agent.agent.tools.memory import MemoryTool
 from echo_agent.memory.service import MemoryService
 from echo_agent.memory.store import MemoryStore
-from echo_agent.tools.base import ToolExecutionContext
+from echo_agent.tools import ToolExecutionContext
 
 
 # ENV/global 门禁已从工具下沉到 service;工具经 service.allow_env_writes 控制。

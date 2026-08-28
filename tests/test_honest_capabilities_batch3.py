@@ -207,7 +207,7 @@ async def test_memory_tool_lists_and_resolves_contradictions():
             return True
 
     from echo_agent.memory.service import MemoryService
-    from echo_agent.tools.base import ToolExecutionContext
+    from echo_agent.tools import ToolExecutionContext
 
     det = _Detector()
     tool = MemoryTool(service=MemoryService(_FakeStore([])), contradiction_detector=det)

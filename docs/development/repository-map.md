@@ -22,13 +22,16 @@ echo-agent/
 
 Agent 主循环、工具执行、规划、多 Agent 协作。
 
+Tool 扩展契约的稳定公开入口是 `echo_agent.tools`；`echo_agent/tools/base.py`
+是其实现模块，Agent 目录下的 `tools/base.py` 仅保留为旧导入路径的兼容 shim。
+
 ```
 agent/
 ├── loop.py              # AgentLoop — 核心推理-执行循环
 ├── planning/            # 任务规划与分解
 ├── multi_agent/         # 多 Agent 协作（delegate/spawn）
 ├── tools/               # 工具实现（shell、filesystem、search 等）
-│   ├── base.py          # → 重导出自 echo_agent/tools/base.py
+│   ├── base.py          # 旧导入路径的向后兼容 shim
 │   ├── registry.py      # ToolRegistry — 注册、权限检查、审计
 │   ├── shell.py         # ShellTool (exec) — 命令执行
 │   ├── filesystem.py    # 文件读写

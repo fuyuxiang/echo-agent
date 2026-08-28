@@ -402,7 +402,7 @@ class TestHealthReport:
 
 def _stale_tool(name: str):
     """A minimal Tool standing in for a previously registered MCP adapter."""
-    from echo_agent.tools.base import Tool, ToolResult
+    from echo_agent.tools import Tool, ToolResult
 
     class _Stale(Tool):
         def __init__(self) -> None:

@@ -159,7 +159,7 @@ class TestInferenceStageApprovalDenied:
 
     @pytest.mark.asyncio
     async def test_tool_denied(self):
-        from echo_agent.agent.tools.base import ToolResult
+        from echo_agent.tools import ToolResult
 
         provider = AsyncMock()
         tc = ToolCallRequest(id="call_1", name="exec", arguments={"command": "rm -rf /"})
@@ -196,7 +196,7 @@ class TestInferenceStageOptimisticStreaming:
 
     @pytest.mark.asyncio
     async def test_cli_tool_turn_retracts_draft(self):
-        from echo_agent.agent.tools.base import ToolResult
+        from echo_agent.tools import ToolResult
         tc = ToolCallRequest(id="call_1", name="search", arguments={"q": "beijing"})
         provider = AsyncMock()
         provider.chat_stream_with_retry = AsyncMock(side_effect=[
@@ -237,7 +237,7 @@ class TestInferenceStageOptimisticStreaming:
     @pytest.mark.asyncio
     async def test_send_only_channel_uses_buffer_and_never_retracts(self):
         # webhook 无法撤回已发内容 → 必须走 buffer,且永不调 discard。
-        from echo_agent.agent.tools.base import ToolResult
+        from echo_agent.tools import ToolResult
         tc = ToolCallRequest(id="call_1", name="search", arguments={"q": "x"})
         provider = AsyncMock()
         provider.chat_stream_with_retry = AsyncMock(side_effect=[
@@ -842,7 +842,7 @@ def test_inferenceresult_has_degraded_notices_default():
 async def test_approval_denial_with_notify_collects_notice():
     # When an approval denial carries notify_user + notice, the loop must
     # collect that notice into degraded_notices and bubble it to the result.
-    from echo_agent.agent.tools.base import ToolResult
+    from echo_agent.tools import ToolResult
 
     tc = ToolCallRequest(id="call_1", name="exec", arguments={"command": "rm -rf /"})
     provider = AsyncMock()
@@ -873,7 +873,7 @@ async def test_terminal_approval_denial_does_not_ask_llm_to_rephrase():
     Feeding them back through a second LLM round caused the misleading Weixin
     "reply 1/2/3" instructions, so a terminal denial must end tool inference.
     """
-    from echo_agent.agent.tools.base import ToolResult
+    from echo_agent.tools import ToolResult
 
     tc = ToolCallRequest(id="call_1", name="cronjob", arguments={"action": "add"})
     provider = AsyncMock()
@@ -931,7 +931,7 @@ async def test_repeat_blocked_collects_notice():
 @pytest.mark.asyncio
 async def test_approval_denial_without_notify_collects_nothing():
     # A denial without notify_user must NOT leak a notice (notice path gated).
-    from echo_agent.agent.tools.base import ToolResult
+    from echo_agent.tools import ToolResult
 
     tc = ToolCallRequest(id="call_1", name="exec", arguments={"command": "ls"})
     provider = AsyncMock()

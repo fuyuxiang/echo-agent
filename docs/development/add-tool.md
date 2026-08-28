@@ -6,7 +6,8 @@
 
 ```
 echo_agent/tools/
-├── base.py              # Tool 抽象基类、ToolResult、ToolExecutionContext
+├── __init__.py          # Tool 扩展的稳定公开导入入口
+└── base.py              # Tool 契约的内部实现
 
 echo_agent/agent/tools/
 ├── base.py              # 重导出（向后兼容）
@@ -16,6 +17,9 @@ echo_agent/agent/tools/
 ├── search.py            # 参考：搜索工具
 └── your_tool.py         # ← 你的新工具
 ```
+
+第三方插件和新代码应从 `echo_agent.tools` 导入 Tool 契约。
+`echo_agent.tools.base` 是实现模块；`echo_agent.agent.tools.base` 仅作为旧路径的向后兼容 shim 保留。
 
 ## Tool 基类
 
@@ -51,7 +55,7 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 
 
 class WeatherTool(Tool):

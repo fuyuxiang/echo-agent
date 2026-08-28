@@ -7,7 +7,7 @@ from typing import Any
 
 from loguru import logger
 
-from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 from echo_agent.mcp.client import MCPClient
 from echo_agent.mcp.security import derive_tool_name
 from echo_agent.security.risk_classifier import RiskLevel

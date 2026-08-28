@@ -6,7 +6,7 @@ import base64
 from pathlib import Path
 from typing import Any
 
-from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 from echo_agent.models.provider import LLMProvider
 
 

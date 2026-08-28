@@ -3857,7 +3857,9 @@ class PlanningConfig(_Base):
         default=5,
         json_schema_extra={
             "status": "dead", "disposition": "fix",
-            "reason": "AgentPlanner 接受 max_tree_depth 以兼容现有配置,但不消费该值。"
+            "reason": "AgentPlanner 原先只将 max_tree_depth 存入 _max_tree_depth 且从不读取;"
+                      "该无效属性已删除,但构造参数仍为兼容现有配置而保留,"
+                      "当前不消费该值。"
                       "ToT 策略做的是广度(max_branches 个候选,无递归),LATS 直接委托 "
                       "PlanExecuteStrategy 也无 MCTS 深度,即没有任何'树深度'可限制。"
                       "接线前需先实现深度语义,故标 fix 而非 remove。",

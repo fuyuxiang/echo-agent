@@ -4,6 +4,9 @@
 
 ## [Unreleased]
 
+### Changed
+- Tool 扩展的规范 Python 导入入口统一为 `echo_agent.tools`；旧的 `echo_agent.agent.tools.base` 路径继续作为向后兼容 shim 保留，现有插件行为不变
+
 ### Removed
 - **破坏性**：移除不再使用的桌面客户端专用网关扩展，包括聊天附件上传与 WebSocket 附件、WebSocket 技能管理帧、远程关停 API、进程 ready 标准输出信号，以及仅供该客户端消费的结构化空文本进度事件。通用 HTTP/WS 消息入口、内置 Dashboard、附着式 CLI/TUI、IM 媒体处理和本地文档解析保持不变
 - `desktop` 不再是 `gateway.known_platforms` 的内置平台，`channels.stream_optimistic_channels` 默认仅保留能够原地重绘的 `gateway:cli`

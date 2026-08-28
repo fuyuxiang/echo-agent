@@ -9,7 +9,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 from echo_agent.memory.eligibility import Audience
 from echo_agent.memory.store import MemoryEntry, MemoryType
 from echo_agent.memory.service import ActorContext, MemoryService

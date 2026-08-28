@@ -36,7 +36,7 @@ from echo_agent.bus.events import ContentBlock, ContentType, InboundEvent
 from echo_agent.bus.queue import MessageBus
 from echo_agent.config.schema import Config
 from echo_agent.permissions.manager import ApprovalManager
-from echo_agent.tools.base import ToolExecutionContext
+from echo_agent.tools import ToolExecutionContext
 
 
 class _FakeInference:

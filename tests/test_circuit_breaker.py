@@ -124,23 +124,23 @@ class TestErrorKindClassification:
     """ToolResult 错误分类:只有基础设施故障计入熔断。"""
 
     def test_infra_kinds(self):
-        from echo_agent.tools.base import ToolResult
+        from echo_agent.tools import ToolResult
         for kind in ("timeout", "dependency", "internal"):
             assert ToolResult(success=False, error="x", error_kind=kind).is_infra_failure is True
 
     def test_non_infra_kinds(self):
-        from echo_agent.tools.base import ToolResult
+        from echo_agent.tools import ToolResult
         for kind in ("validation", "business", ""):
             assert ToolResult(success=False, error="x", error_kind=kind).is_infra_failure is False
 
     def test_success_is_never_infra_failure(self):
-        from echo_agent.tools.base import ToolResult
+        from echo_agent.tools import ToolResult
         assert ToolResult(success=True, error_kind="internal").is_infra_failure is False
 
     @pytest.mark.asyncio
     async def test_registry_marks_validation(self):
         from echo_agent.agent.tools.registry import ToolRegistry
-        from echo_agent.tools.base import Tool, ToolResult
+        from echo_agent.tools import Tool, ToolResult
 
         class _T(Tool):
             name = "t1"
@@ -160,7 +160,7 @@ class TestErrorKindClassification:
     async def test_registry_marks_timeout(self):
         import asyncio
         from echo_agent.agent.tools.registry import ToolRegistry
-        from echo_agent.tools.base import Tool, ToolResult
+        from echo_agent.tools import Tool, ToolResult
 
         class _Slow(Tool):
             name = "slow"
@@ -181,7 +181,7 @@ class TestErrorKindClassification:
     @pytest.mark.asyncio
     async def test_registry_marks_internal_exception(self):
         from echo_agent.agent.tools.registry import ToolRegistry
-        from echo_agent.tools.base import Tool
+        from echo_agent.tools import Tool
 
         class _Boom(Tool):
             name = "boom"

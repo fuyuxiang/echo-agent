@@ -60,7 +60,7 @@ def test_static_map_never_weaker_than_declaration() -> None:
     """
     import inspect
 
-    from echo_agent.tools.base import Tool
+    from echo_agent.tools import Tool
 
     checked = 0
     for module_name in (

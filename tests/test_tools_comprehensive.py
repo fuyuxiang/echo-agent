@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from echo_agent.agent.tools.base import (
+from echo_agent.tools import (
     Tool,
     ToolExecutionContext,
     ToolResult,

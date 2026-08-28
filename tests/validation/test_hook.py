@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from echo_agent.tools.base import ToolResult
+from echo_agent.tools import ToolResult
 from echo_agent.validation.checkers import Diagnostic
 from echo_agent.validation.hook import (
     _extract_path,

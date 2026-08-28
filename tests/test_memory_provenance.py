@@ -7,7 +7,7 @@ from echo_agent.agent.tools.memory import MemoryTool
 from echo_agent.memory.service import MemoryService
 from echo_agent.memory.store import MemoryStore
 from echo_agent.memory.types import MemoryEntry, source_priority
-from echo_agent.tools.base import ToolExecutionContext
+from echo_agent.tools import ToolExecutionContext
 
 
 @pytest.fixture

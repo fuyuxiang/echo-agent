@@ -295,7 +295,7 @@ async def test_plugin_registers_tool(tmp_path):
     d.mkdir(parents=True)
     (d / "plugin.yaml").write_text("name: tool-plugin\n")
     (d / "__init__.py").write_text(
-        "from echo_agent.agent.tools.base import Tool, ToolResult\n"
+        "from echo_agent.tools import Tool, ToolResult\n"
         "class MyTool(Tool):\n"
         "    name = 'my_tool'\n"
         "    description = 'test'\n"
@@ -374,7 +374,7 @@ async def test_compat_mode_strips_tool_registered_without_permission(tmp_path, m
     from echo_agent.agent.tools.registry import ToolRegistry
     from echo_agent.bus.queue import MessageBus
     from unittest.mock import MagicMock
-    from echo_agent.agent.tools.base import Tool, ToolResult
+    from echo_agent.tools import Tool, ToolResult
 
     class FakeTool(Tool):
         name = "test_tool"

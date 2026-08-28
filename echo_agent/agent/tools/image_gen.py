@@ -6,7 +6,7 @@ from typing import Any
 
 import aiohttp
 
-from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 
 
 class ImageGenTool(Tool):

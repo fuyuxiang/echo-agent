@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from echo_agent.agent.approval_gate import APPROVAL_SOURCE_HUMAN
-from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 from echo_agent.scheduler.authorization import consent_facts
 from echo_agent.scheduler.authorization import grant as grant_authorization
 from echo_agent.scheduler.authorization import verify as verify_authorization

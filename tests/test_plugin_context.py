@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from echo_agent.plugins.context import PluginContext
 from echo_agent.plugins.hooks import HookRegistry
-from echo_agent.agent.tools.base import Tool, ToolResult
+from echo_agent.tools import Tool, ToolResult
 
 
 class _DummyTool(Tool):

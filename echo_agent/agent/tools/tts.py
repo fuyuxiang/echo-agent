@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 from echo_agent.dependencies.lazy_deps import INSTALL_TIMEOUT_SECONDS
 from echo_agent.scheduler.delivery import target_from_session_key
 

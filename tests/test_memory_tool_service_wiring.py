@@ -14,7 +14,7 @@ from echo_agent.memory.service import MemoryService
 from echo_agent.memory.types import Contradiction, MemoryEntry, MemoryType
 from echo_agent.storage.sqlite import SQLiteBackend
 from echo_agent.agent.tools.memory import MemoryTool
-from echo_agent.tools.base import ToolExecutionContext
+from echo_agent.tools import ToolExecutionContext
 
 
 @pytest_asyncio.fixture

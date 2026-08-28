@@ -480,7 +480,7 @@ class TestFailureClassification:
     async def test_timeout_and_disconnect_are_infra_failures(self, tmp_path):
         """error_kind feeds the circuit breaker; an unmarked failure reads as a
         business outcome and never trips it."""
-        from echo_agent.tools.base import ToolResult
+        from echo_agent.tools import ToolResult
 
         for exc, kind in ((TimeoutError("slow"), "timeout"),
                           (ConnectionError("gone"), "dependency")):

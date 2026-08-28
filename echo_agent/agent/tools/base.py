@@ -1,7 +1,7 @@
-"""Backward-compat shim — the tool contracts moved to ``echo_agent.tools.base``.
+"""Backward-compatibility shim for the former tool-contract import path.
 
 Kept so existing imports (``echo_agent.agent.tools.base``) keep working;
-new code should import from ``echo_agent.tools``.
+extensions and new code should import the public API from ``echo_agent.tools``.
 """
 
 from echo_agent.tools.base import (  # noqa: F401

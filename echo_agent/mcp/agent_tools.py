@@ -22,7 +22,7 @@ from typing import Any
 from loguru import logger
 
 from echo_agent.mcp.security import scan_text
-from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 
 #: Cap on how many entries a `list` action renders inline. Beyond this the
 #: listing is truncated with an explicit notice: a server is free to expose

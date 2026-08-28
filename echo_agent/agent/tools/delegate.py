@@ -19,7 +19,7 @@ from echo_agent.agent.multi_agent.audit import DispatchAuditLog
 from echo_agent.agent.multi_agent.models import WorkerProfile, WorkerResult, WorkerToolOutcome
 from echo_agent.agent.multi_agent.registry import WorkerRegistry
 from echo_agent.agent.multi_agent.runtime import WorkerExecutor
-from echo_agent.tools.base import Tool, ToolExecutionContext, ToolResult
+from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 from echo_agent.models.provider import LLMProvider, ToolCallRequest
 
 
@@ -102,7 +102,7 @@ def build_worker_tool_executor(
                 success=False,
             )
 
-        from echo_agent.tools.base import build_idempotency_key
+        from echo_agent.tools import build_idempotency_key
         trace_id = parent_ctx.trace_id if parent_ctx else uuid.uuid4().hex[:12]
         worker_ctx = ToolExecutionContext(
             execution_id=uuid.uuid4().hex[:12],
