@@ -493,8 +493,6 @@ provider either reports a missing key or allows keyless access.
 | `gateway.media_max_urls_per_message` | `ECHO_AGENT_GATEWAY__MEDIA_MAX_URLS_PER_MESSAGE` | type | 10 |
 | `gateway.media_download_concurrency` | `ECHO_AGENT_GATEWAY__MEDIA_DOWNLOAD_CONCURRENCY` | type | 4 |
 | `gateway.media_allow_private_addresses` | `ECHO_AGENT_GATEWAY__MEDIA_ALLOW_PRIVATE_ADDRESSES` | type | False |
-| `gateway.emit_progress_events` | `ECHO_AGENT_GATEWAY__EMIT_PROGRESS_EVENTS` | type | True |
-| `gateway.progress_debug` | `ECHO_AGENT_GATEWAY__PROGRESS_DEBUG` | type | False |
 | `gateway.hooks_dir` | `ECHO_AGENT_GATEWAY__HOOKS_DIR` | type | '' |
 | `planning.enabled` | `ECHO_AGENT_PLANNING__ENABLED` | type | True |
 | `planning.default_strategy` | `ECHO_AGENT_PLANNING__DEFAULT_STRATEGY` | type | 'auto' |

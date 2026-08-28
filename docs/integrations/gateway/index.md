@@ -37,7 +37,7 @@ GatewayServer
 | `rate_limiter.py` | 基于令牌桶的速率限制 |
 | `server.py` | aiohttp 应用初始化与路由注册 |
 | `health.py` | 健康检查端点 |
-| `ws_session.py` | 会话 WebSocket（供聊天客户端连接） |
+| `ws_session.py` | 会话 WebSocket 的平台与会话键归一化 |
 | `ws_dashboard.py` | 仪表盘 WebSocket（供监控面板连接） |
 
 ## API 模块
@@ -46,11 +46,9 @@ Gateway 在 `gateway/api/` 目录下提供以下 REST API 模块：
 
 - `analytics` — 数据统计与分析
 - `channels` — 通道管理
-- `chat_attachments` — 聊天附件上传与管理
-- `config` — 运行时配置读写
+- `config` — 运行时配置只读查询
 - `cron_api` — 定时任务管理
 - `knowledge` — 知识库操作
-- `lifecycle` — 服务生命周期控制
 - `logs` — 日志查询
 - `memory` — 记忆存储
 - `sessions` — 会话 CRUD
@@ -61,7 +59,7 @@ Gateway 在 `gateway/api/` 目录下提供以下 REST API 模块：
 
 | 端点 | 用途 | 协议 |
 |------|------|------|
-| `/ws/session` | 聊天客户端实时通信 | JSON over WebSocket |
+| `/ws`（可配置） | CLI 与外部集成实时通信 | JSON over WebSocket |
 | `/ws/dashboard` | 监控仪表盘实时数据推送 | JSON over WebSocket |
 
 ## 健康检查

@@ -87,54 +87,21 @@ def test_is_admin_does_not_grant_admin_to_any_string_without_tokens(tmp_path):
     assert auth.is_admin("cli", "boss") is True
 
 
-# ── CSRF / Origin (opt-in via allowed_origins) ──────────────────────────────
-
-def test_csrf_disabled_by_default_allows_cross_site(tmp_path):
-    # is_origin_allowed is the opt-in primitive: with no allowed_origins it
-    # permits everything (used only where a config-gated allowlist is desired).
-    # NOTE: admin endpoints do NOT rely on this — they use the default-on
-    # is_cross_site_browser via _check_csrf (see admin CSRF gate tests below).
-    auth = _auth(tmp_path)
-    assert auth.is_origin_allowed("http://evil.example", "cross-site") is True
-    assert auth.is_origin_allowed("tauri://localhost", "cross-site") is True
-
-
-def test_non_browser_request_allowed_when_enabled(tmp_path):
-    auth = _auth(tmp_path, allowed_origins=["http://trusted.app"])
-    # No Origin, no Sec-Fetch-Site → not a browser → allowed.
-    assert auth.is_origin_allowed("", "") is True
-
-
-def test_same_origin_allowed_when_enabled(tmp_path):
-    auth = _auth(tmp_path, allowed_origins=["http://trusted.app"])
-    assert auth.is_origin_allowed("http://127.0.0.1:58123", "same-origin") is True
-
-
-def test_cross_site_rejected_when_enabled(tmp_path):
-    auth = _auth(tmp_path, allowed_origins=["http://trusted.app"])
-    assert auth.is_origin_allowed("http://evil.example", "cross-site") is False
-
-
-def test_cross_site_allowed_when_allowlisted(tmp_path):
-    auth = _auth(tmp_path, allowed_origins=["http://trusted.app"])
-    assert auth.is_origin_allowed("http://trusted.app", "cross-site") is True
-    assert auth.is_origin_allowed("http://evil.example", "cross-site") is False
-
-
 # ── admin endpoint CSRF gate (default-on, NOT opt-in) ───────────────────────
 #
-# _check_csrf guards the highest-risk endpoints (shutdown / skills / knowledge).
+# _check_csrf guards the highest-risk management endpoints (skills / knowledge).
 # It must use the default-on is_cross_site_browser, so an unauthenticated
 # loopback deployment (no tokens, empty allowlist — the default form) still
-# rejects a malicious page's cross-site POST to /shutdown. Regression guard for
-# the "one channel closed, the other left open" CSRF hole.
+# rejects a malicious page's cross-site POST.
 
 def _csrf_request(headers, *, peer=("127.0.0.1", 5555)):
     from unittest.mock import MagicMock
     from aiohttp.test_utils import make_mocked_request
     transport = MagicMock()
     transport.get_extra_info = lambda key, default=None: peer if key == "peername" else default
-    return make_mocked_request("POST", "/api/v1/shutdown", headers=headers, transport=transport)
+    return make_mocked_request(
+        "POST", "/api/knowledge/rebuild", headers=headers, transport=transport
+    )
 
 
 def test_admin_csrf_rejects_cross_site_under_empty_allowlist():
@@ -147,7 +114,7 @@ def test_admin_csrf_rejects_cross_site_under_empty_allowlist():
     # rejected even though allowed_origins is unset.
     resp = gw._check_csrf(
         _csrf_request({"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"}),
-        action="shutdown",
+        action="knowledge_rebuild",
     )
     assert resp is not None and resp.status == 403
 
@@ -165,9 +132,9 @@ def test_admin_csrf_allows_same_origin_and_native():
             "Sec-Fetch-Site": "same-origin",
             "Host": "127.0.0.1:58123",
         }),
-        action="shutdown",
+        action="knowledge_rebuild",
     ) is None
-    assert gw._check_csrf(_csrf_request({}), action="shutdown") is None
+    assert gw._check_csrf(_csrf_request({}), action="knowledge_rebuild") is None
 
 
 # ── "配了哪种 token" 的口径必须处处一致 ─────────────────────────────────────

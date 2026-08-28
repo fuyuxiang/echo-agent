@@ -39,20 +39,7 @@ from echo_agent.gateway.session_policy import SessionResetPolicy
 from echo_agent.gateway import ws_common
 from echo_agent.gateway.ws_dashboard import DashboardWebSocket
 from echo_agent.gateway.ws_session import normalize_platform, resolve_client_session_key
-from echo_agent.gateway.ws_skill import (
-    handle_skill_disable,
-    handle_skill_enable,
-    handle_skill_list,
-)
 from echo_agent.session.manager import SessionManager
-
-
-def _skill_frame_error(message: str, request_id: str | None) -> dict:
-    """skill.* 分支的错误帧,形状与 ws_skill handler 的 error 帧一致。"""
-    frame = {"type": "error", "message": message}
-    if request_id is not None:
-        frame["request_id"] = request_id
-    return frame
 
 
 class GatewayServer:
@@ -89,7 +76,6 @@ class GatewayServer:
         self._MAX_PENDING_HTTP = 500
         self._running = False
         self._actual_port: int | None = None
-        self._shutdown_event: asyncio.Event | None = None
 
         data_dir = workspace / "data"
         # Pass the bind address to the auth so the Host-header check can derive
@@ -156,13 +142,6 @@ class GatewayServer:
             return self._actual_port
         return self._config.port
 
-    def set_shutdown_event(self, event: asyncio.Event) -> None:
-        self._shutdown_event = event
-
-    def request_shutdown(self) -> None:
-        if self._shutdown_event:
-            self._shutdown_event.set()
-
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
     async def start(self) -> None:
@@ -219,13 +198,6 @@ class GatewayServer:
             atexit.register(clear_runtime_endpoint, self._workspace)
         except Exception as e:
             logger.warning("Failed to write gateway runtime endpoint: {}", e)
-
-        import sys
-        print(
-            f"ECHO_AGENT_READY port={actual_port} ws={self._config.ws_path} health={self._config.api_prefix}/health",
-            flush=True,
-            file=sys.stdout,
-        )
 
         await self.hooks.emit("gateway_start")
         logger.info(
@@ -358,40 +330,6 @@ class GatewayServer:
                 return self._MEDIA_KIND_TO_CONTENT_TYPE[kind]
         return ContentType.FILE
 
-    def _build_ws_content_blocks(
-        self, text: str, attachments: list[Any]
-    ) -> list[ContentBlock]:
-        """Build inbound content blocks for a WS message frame.
-
-        With no attachments this yields a single TEXT block, identical to
-        ``InboundEvent.text_message`` — so the pure-text path is unchanged. Each
-        attachment is an id previously returned by POST /chat/attachments; we map it
-        back to the cached file (rejecting traversal) and append a typed block. The id
-        is resolved to a local path the agent reads directly, so behaviour is the same
-        whether the agent runs locally or remotely (the bytes were uploaded, not the path)."""
-        from echo_agent.gateway.api.chat_attachments import resolve_attachment_path
-
-        blocks = [ContentBlock(type=ContentType.TEXT, text=text)]
-        for item in attachments:
-            if not isinstance(item, dict):
-                continue
-            attachment_id = str(item.get("id") or "")
-            path = resolve_attachment_path(self, attachment_id)
-            if path is None:
-                logger.warning("Chat attachment id not found, skipping: {}", attachment_id)
-                continue
-            name = str(item.get("name") or path.name)
-            mime_type = str(item.get("mime_type") or "")
-            blocks.append(
-                ContentBlock(
-                    type=self._infer_media_content_type(str(path), name, mime_type=mime_type),
-                    url=str(path),
-                    mime_type=mime_type,
-                    metadata={"name": name},
-                )
-            )
-        return blocks
-
     def _request_token(self, request: web.Request) -> str:
         token = self.auth.token_from_headers(request.headers)
         if token:
@@ -423,17 +361,14 @@ class GatewayServer:
         """Reject cross-site browser requests to mutating endpoints.
 
         Defends localhost deployments against CSRF-to-localhost / DNS-rebinding:
-        a malicious web page cannot drive shutdown/skills/knowledge just because
+        a malicious web page cannot drive skills/knowledge just because
         the user's browser can reach 127.0.0.1. Non-browser clients are
         unaffected (they send no Origin/Sec-Fetch-Site).
 
-        Uses the default-on ``is_cross_site_browser`` primitive — same defense
-        as POST /message and the WS handshake. It must NOT use the opt-in
-        ``is_origin_allowed`` (which returns True when ``allowed_origins`` is
-        empty): these admin endpoints are the highest-risk surface and an
-        unauthenticated loopback deployment (no tokens, no allowlist — the
-        default form) would otherwise leave shutdown/skills/knowledge fully
-        exposed to CSRF-to-localhost."""
+        Uses the default-on ``is_cross_site_browser`` primitive — the same
+        defense as POST /message and the WS handshake. These admin endpoints
+        are high-risk, so an unauthenticated loopback deployment must not leave
+        them exposed to CSRF-to-localhost."""
         origin = request.headers.get("Origin", "").strip()
         sec_fetch_site = request.headers.get("Sec-Fetch-Site", "").strip()
         host = request.headers.get("Host", "").strip()
@@ -476,7 +411,7 @@ class GatewayServer:
         runs in ``_check_csrf``, which only ``_require_admin_token`` calls. So
         login, the overview page and the other ``_require_api_token`` reads keep
         working, while every admin surface — sessions, config, memory writes,
-        tasks, cron, knowledge, shutdown — 403s.
+        tasks, cron and knowledge — 403s.
 
         Wildcard entries do not count as configured: they cannot appear in a
         Host header, so ``allowed_hosts: [0.0.0.0]`` is an allowlist that
@@ -490,8 +425,8 @@ class GatewayServer:
             return
         logger.warning(
             "Gateway bound to {} with no usable auth.allowed_hosts entry. Admin "
-            "endpoints (sessions, config, memory writes, tasks, cron, knowledge, "
-            "shutdown) will reject every browser request for lacking a trusted "
+            "endpoints (sessions, config, memory writes, tasks, cron, knowledge) "
+            "will reject every browser request for lacking a trusted "
             "Host; read-only pages and native clients still work. List the domain "
             "or address you browse to (e.g. 'echo.example.com') in "
             "gateway.auth.allowed_hosts — note that a wildcard such as '0.0.0.0' "
@@ -512,8 +447,8 @@ class GatewayServer:
         return web.json_response({"error": "unauthorized"}, status=401)
 
     def _require_admin_token(self, request: web.Request, *, action: str) -> web.Response | None:
-        """Guard for high-risk admin endpoints (shutdown, skill import/install/
-        delete, knowledge upload/delete). Enforces CSRF, then an admin-scoped
+        """Guard for high-risk admin endpoints (skill import/install/delete and
+        knowledge upload/delete). Enforces CSRF, then an admin-scoped
         token. The ``?token=`` query backdoor is NOT honoured here — admin
         tokens must travel in a header so they can't leak via referrer/logs or
         be triggered by a cross-site GET."""
@@ -928,7 +863,6 @@ class GatewayServer:
         user_id = ""
         chat_id = ""
         session_key = ""
-        ws_admin_token = ""
         # Absolute bound on the pre-auth window. Passing the per-frame timeout to
         # each wait_for restarted the clock on every frame, so a peer that kept
         # sending frames it had no right to send (junk, bad JSON, `message`
@@ -978,23 +912,7 @@ class GatewayServer:
                             # 握手接受三个来源:auth 帧内的 token、请求头、URL 的
                             # ?token=。后者是历史入口,对 api 作用域保留。
                             frame_token = str(data.get("token") or "")
-                            header_token = self.auth.token_from_headers(request.headers)
                             token = str(frame_token or self._request_token(request))
-                            # admin 作用域的令牌来源:无条件排除 URL。
-                            #
-                            # ?token= 会被 aiohttp 默认访问日志连同 query string 记下来
-                            # (AppRunner 未关 access_log),也会进反向代理日志、浏览器
-                            # history 与 referrer —— 令牌在日志里的存活期远长于其本身。
-                            # 所以"从日志里捞到令牌的人能否改变 agent 下一轮的能力"才是
-                            # 这里的实际威胁,而不是"持有令牌的人是否已经握过手"。
-                            #
-                            # 早先只在配了 admin_tokens 时才排除,理由是单令牌部署下
-                            # 同一个令牌已经通过 URL 完成握手、再拦一次不增加安全性。
-                            # 那个推理只在"攻击者已持有令牌"的模型下成立,恰好漏掉了
-                            # 日志泄漏这条真实路径,而单令牌回落又正是最常见的部署形态。
-                            # 现在与 HTTP _require_admin_token 完全同口径:admin 令牌
-                            # 必须走请求头或 auth 帧载荷,两者都不进访问日志。
-                            admin_candidate_token = frame_token or header_token
 
                             # Any configured token makes the check mandatory —
                             # admin_tokens alone must not leave the socket open,
@@ -1035,11 +953,6 @@ class GatewayServer:
                             # 让 _handle_outbound 无需任何 metadata 透传即可命中所有出站路径。
                             delivery_key = f"gateway:{platform}:{chat_id}"
                             self._ws_clients[delivery_key] = websocket
-                            # 记下握手令牌,供后续 skill.enable/disable 做 admin
-                            # 作用域判定 —— 之后的帧不再携带令牌,只能在此捕获。
-                            # 存的是 admin_candidate_token(已排除 URL 来源),
-                            # 而不是 token。
-                            ws_admin_token = admin_candidate_token
                             # Lifts the pre-auth deadline. Set here, past every
                             # rejection branch above, so a failed handshake never
                             # buys an unbounded socket.
@@ -1062,9 +975,8 @@ class GatewayServer:
                                 continue
 
                             text = data.get("text", "")
-                            attachments = data.get("attachments") or []
                             is_group = bool(data.get("is_group", False))
-                            if not text and not attachments:
+                            if not text:
                                 continue
 
                             if not self.rate_limiter.acquire(platform, chat_id):
@@ -1078,12 +990,11 @@ class GatewayServer:
                                 session_key=session_key,
                             )
                             try:
-                                content_blocks = self._build_ws_content_blocks(text, attachments)
-                                event = InboundEvent(
+                                event = InboundEvent.text_message(
                                     channel=f"gateway:{platform}",
                                     sender_id=user_id,
                                     chat_id=chat_id,
-                                    content=content_blocks,
+                                    text=text,
                                     session_key_override=session_key,
                                     is_group=is_group,
                                 )
@@ -1139,62 +1050,10 @@ class GatewayServer:
                         if msg_type == "ping":
                             await websocket.send_json({"type": "pong"})
 
-                        if msg_type in ("skill.list", "skill.enable", "skill.disable"):
-                            # Skill 管理是已认证操作;前置 auth 握手未完成则拒收。
-                            if not session_key:
-                                await websocket.send_json({"type": "error", "error": "authenticate first"})
-                                continue
-                            rid = data.get("request_id")
-                            # 与 HTTP api/skills.py 共用 agent 的同一个 store:
-                            # 两条路径必须看到同一份技能集合。skills.enabled=false
-                            # 时 store 为 None,此处如实回错而不是抛 AttributeError。
-                            store = self._agent_loop.skill_store if self._agent_loop else None
-                            if store is None:
-                                await websocket.send_json(_skill_frame_error(
-                                    "skills system is disabled (skills.enabled=false)", rid,
-                                ))
-                                continue
-
-                            # enable/disable 会改变 agent 下一轮能做什么,与 HTTP
-                            # toggle 同属高危写操作 —— 那边要求 admin 令牌,这里
-                            # 不能更松。list 是只读,沿用握手时的 api 作用域。
-                            if msg_type != "skill.list" and not self.auth.authenticate_admin_token(
-                                ws_admin_token,
-                            ):
-                                self.auth.audit(
-                                    f"ws_{msg_type.replace('.', '_')}",
-                                    platform=platform, user_id=user_id,
-                                    ok=False, reason="admin token required",
-                                )
-                                await websocket.send_json(_skill_frame_error(
-                                    "admin token required", rid,
-                                ))
-                                continue
-
-                            if msg_type == "skill.list":
-                                await websocket.send_json(await handle_skill_list(store, rid))
-                                continue
-
-                            handler = (
-                                handle_skill_enable if msg_type == "skill.enable"
-                                else handle_skill_disable
-                            )
-                            result = await handler(store, str(data.get("name", "")), rid)
-                            if result is None:
-                                self.auth.audit(
-                                    f"ws_{msg_type.replace('.', '_')}",
-                                    platform=platform, user_id=user_id, ok=True,
-                                )
-                                response = {"type": "accepted"}
-                                if rid is not None:
-                                    response["request_id"] = rid
-                                await websocket.send_json(response)
-                            else:
-                                await websocket.send_json(result)
                     except Exception as e:
                         # One message failed to process — report it and keep the
                         # connection alive. This is what stops a stray per-message
-                        # error (a bad attachment, a transient audit/session fault)
+                        # error (a transient audit/session fault)
                         # from silently tearing down the whole session.
                         logger.warning("WebSocket message handling failed: {}", e)
                         try:

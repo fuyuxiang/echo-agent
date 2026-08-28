@@ -360,7 +360,7 @@ class ContextBuilder:
                 and not url.startswith(("http://", "https://", "data:"))
                 and Path(url).is_file()
             ):
-                # Local attachment (e.g. desktop chat upload already cached on disk):
+                # Local file already cached by an inbound transport:
                 # skip the download step and extract text straight from the path.
                 # Local images need no resolution here — build_messages turns a local
                 # path into a data URL via _as_image_url at render time.

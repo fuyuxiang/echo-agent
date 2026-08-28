@@ -528,7 +528,6 @@ class AgentLoop:
             episodic=self._episodic,
             narrative_episode_count=config.memory.narrative_episode_count,
             plan_run_store=self._plan_run_store,
-            bus=bus,
             retrieval_cache_get=self._get_retrieval_cache,
             retrieval_on_miss=config.memory.retrieval_on_miss,
             retrieval_miss_timeout=config.memory.retrieval_miss_timeout_seconds,

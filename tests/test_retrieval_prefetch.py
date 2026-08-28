@@ -136,9 +136,6 @@ def _make_context_stage(*, cache, on_miss, on_retrieve=None, hybrid=True,
     config = MagicMock()
     config.session.max_history_messages = 100
     config.memory.enabled = True
-    config.gateway.emit_progress_events = True
-    config.gateway.progress_debug = False
-
     sessions = AsyncMock()
     sessions.save = AsyncMock()
 

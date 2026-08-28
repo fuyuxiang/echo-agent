@@ -61,11 +61,11 @@ class TestValidateProviderConfig:
         validate_provider_config(ProviderConfig(name="openai", models=["m"]))
 
     def test_explicit_api_key_env_satisfies(self, monkeypatch):
-        monkeypatch.setenv("DESKTOP_EPHEMERAL_MODEL_TOKEN", "broker-token")
+        monkeypatch.setenv("HOST_EPHEMERAL_MODEL_TOKEN", "broker-token")
         validate_provider_config(
             ProviderConfig(
                 name="openai",
-                api_key_env="DESKTOP_EPHEMERAL_MODEL_TOKEN",
+                api_key_env="HOST_EPHEMERAL_MODEL_TOKEN",
                 models=["m"],
             )
         )
@@ -105,12 +105,12 @@ class TestCreateProvider:
         assert provider.get_default_model() == "gpt-4"
 
     def test_api_key_is_loaded_from_named_environment_variable(self, monkeypatch):
-        monkeypatch.setenv("DESKTOP_EPHEMERAL_MODEL_TOKEN", "broker-token")
+        monkeypatch.setenv("HOST_EPHEMERAL_MODEL_TOKEN", "broker-token")
         with patch("echo_agent.models.providers.openai_provider.OpenAIProvider._build_client"):
             provider = create_provider(
                 ProviderConfig(
                     name="openai",
-                    api_key_env="DESKTOP_EPHEMERAL_MODEL_TOKEN",
+                    api_key_env="HOST_EPHEMERAL_MODEL_TOKEN",
                     models=["gpt-4"],
                 )
             )

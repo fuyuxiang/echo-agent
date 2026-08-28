@@ -31,8 +31,8 @@ def prepend_interpreter_bin(env: dict[str, str]) -> dict[str, str]:
     """Put the directory of ``sys.executable`` ahead on PATH.
 
     A skill script written as ``python3 scripts/foo.py`` inherits the shell's
-    PATH, not ours. When the service is started by launchd, systemd or a
-    desktop launcher, that PATH usually does NOT contain the venv ``bin`` the
+    PATH, not ours. When the service is started by launchd or systemd, that
+    PATH usually does NOT contain the venv ``bin`` the
     script's deps were installed into — and ``python3`` resolves to the
     system interpreter, which has none of them. The skill crashes on the
     first import.

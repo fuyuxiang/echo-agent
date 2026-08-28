@@ -994,29 +994,6 @@ class TestConfigAPI:
         # 嵌套子模型被递归序列化为原生 dict(旧实现会在此抛 TypeError)
         assert data["models"]["nested"]["timeout"] == 5
 
-    @pytest.mark.asyncio
-    async def test_get_models_not_available(self):
-        api, _, _ = self._make(config=None)
-        resp = await api.get_models(_Request())
-        assert resp.status == 500
-
-    @pytest.mark.asyncio
-    async def test_get_models_success(self):
-        api, config, _ = self._make()
-        provider = MagicMock()
-        provider.name = "openai"
-        provider.type = "openai"
-        provider.default_model = "gpt-4"
-        config.models.providers = [provider]
-        config.models.default_model = "gpt-4"
-        resp = await api.get_models(_Request())
-        assert resp.status == 200
-        data = await _payload(resp)
-        assert data["default_model"] == "gpt-4"
-        assert data["providers"][0]["name"] == "openai"
-        assert data["providers"][0]["type"] == "openai"
-
-
 def test_sanitize_helpers():
     from echo_agent.gateway.api.config import _sanitize
 
@@ -1175,58 +1152,6 @@ class TestChannelsAPI:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LifecycleAPI — shutdown is the highest-impact endpoint; auth MUST hold.
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-class TestLifecycleAPI:
-    def _make(self, *, unauthorized=False, has_event=True):
-        from echo_agent.gateway.api.lifecycle import LifecycleAPI
-
-        server = _unauthorized_server() if unauthorized else _make_server()
-        server._shutdown_event = object() if has_event else None
-        server.request_shutdown = MagicMock()
-        return LifecycleAPI(server), server
-
-    @pytest.mark.asyncio
-    async def test_shutdown_unauthorized(self):
-        # Regression guard: an unauthorized shutdown must be rejected with 401
-        # and must NOT trigger request_shutdown.
-        api, server = self._make(unauthorized=True)
-        resp = await api.shutdown(_Request())
-        assert resp.status == 401
-        server.request_shutdown.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_shutdown_authorized(self):
-        api, server = self._make()
-        resp = await api.shutdown(_Request())
-        assert resp.status == 202
-        server.request_shutdown.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_shutdown_unavailable(self):
-        api, server = self._make(has_event=False)
-        resp = await api.shutdown(_Request())
-        assert resp.status == 503
-        server.request_shutdown.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_health_ok(self):
-        api, server = self._make()
-        server.health.check = AsyncMock(return_value={"status": "ok"})
-        resp = await api.health(_Request())
-        assert resp.status == 200
-
-    @pytest.mark.asyncio
-    async def test_health_unhealthy(self):
-        api, server = self._make()
-        server.health.check = AsyncMock(return_value={"status": "unhealthy"})
-        resp = await api.health(_Request())
-        assert resp.status == 503
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 # Auth regression sweep — every write/destructive handler must reject 401.
 # These pin the `if guard is not None:` fix across all guarded entry points.
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1248,7 +1173,6 @@ class TestLifecycleAPI:
         ("knowledge", "KnowledgeAPI", "rebuild", {}),
         ("knowledge", "KnowledgeAPI", "upload", {}),
         ("knowledge", "KnowledgeAPI", "delete_document", {"match_info": {"doc_id": "d1"}}),
-        ("config", "ConfigAPI", "get_models", {}),
     ],
 )
 async def test_write_endpoints_reject_unauthorized(module, cls_name, method, kwargs):

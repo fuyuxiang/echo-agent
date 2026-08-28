@@ -1,10 +1,4 @@
-"""platform 折叠 + 乐观流式通道白名单。
-
-客户端自报的 platform 会拼进 channel="gateway:{platform}",而通道名在别处承载
-能力判定(channels.stream_optimistic_channels 断言"该通道能就地重绘")。两件事
-必须一起测:折叠让未知取值拿不到首方客户端的能力,白名单让 gateway:desktop 的
-乐观流式有据可依。
-"""
+"""Platform name folding and optimistic-stream channel allowlisting."""
 
 from unittest.mock import MagicMock
 
@@ -15,15 +9,14 @@ from echo_agent.gateway.ws_session import normalize_platform
 class TestNormalizePlatform:
     """未知取值折叠为 ws,而不是原样进入通道名。"""
 
-    KNOWN = ["cli", "desktop", "ws", "api"]
+    KNOWN = ["cli", "ws", "api"]
 
     def test_known_platforms_pass_through(self):
         for name in self.KNOWN:
             assert normalize_platform(name, self.KNOWN) == name
 
     def test_unknown_platform_folds_to_ws(self):
-        # 关键用例:只发客户端自报 desktop 拿不到乐观流式的能力。
-        assert normalize_platform("desktop-ish", self.KNOWN) == "ws"
+        assert normalize_platform("legacy-ui", self.KNOWN) == "ws"
         assert normalize_platform("my-script", self.KNOWN) == "ws"
 
     def test_missing_platform_keeps_legacy_ws_default(self):
@@ -33,7 +26,7 @@ class TestNormalizePlatform:
         assert normalize_platform("   ", self.KNOWN) == "ws"
 
     def test_surrounding_whitespace_does_not_defeat_the_fold(self):
-        assert normalize_platform(" desktop ", self.KNOWN) == "desktop"
+        assert normalize_platform(" cli ", self.KNOWN) == "cli"
 
     def test_empty_known_list_disables_folding(self):
         # 显式留空 = 回到完全自报的旧行为,给需要的部署留退路。
@@ -41,9 +34,9 @@ class TestNormalizePlatform:
         assert normalize_platform("anything", None) == "anything"
 
     def test_fold_is_not_an_identity_control(self):
-        # 折叠只收敛"通道叫什么",不做身份判定 —— 两个客户端都能自报 desktop。
+        # 折叠只收敛"通道叫什么",不做身份判定。
         # 冒充由 resolve_client_session_key 拦,见 test_gateway_ws_session。
-        assert normalize_platform("desktop", self.KNOWN) == "desktop"
+        assert normalize_platform("cli", self.KNOWN) == "cli"
 
 
 class TestServerFold:
@@ -57,8 +50,7 @@ class TestServerFold:
         server._config = GatewayConfig(**overrides)
         return GatewayServer._normalize_platform(server, reported)
 
-    def test_builtin_defaults_recognise_first_party_clients(self):
-        assert self._fold("desktop") == "desktop"
+    def test_builtin_defaults_recognise_attached_cli(self):
         assert self._fold("cli") == "cli"
 
     def test_unknown_folds_under_default_config(self):
@@ -122,12 +114,6 @@ class TestOptimisticStreamDefaults:
         stage._config.channels = ChannelsConfig(**overrides)
         return InferenceStage._can_retract_draft(stage, channel)
 
-    def test_desktop_can_retract_by_default(self):
-        # Electron 端按累计缓冲重建气泡并处理 _stream_reset(见 echo-agent-desktop
-        # 的 pages/Chat/index.tsx、stores/chatStore.ts)。该契约在本仓库无法验证,
-        # 依据是 desktop 属于 gateway.known_platforms 里的首方客户端。
-        assert self._can_retract("gateway:desktop") is True
-
     def test_tui_can_retract_and_plain_cli_cannot(self):
         assert self._can_retract("gateway:cli") is True
         # 纯 cli 直写 stdout,撤回会把草稿留在答案上方。
@@ -143,5 +129,4 @@ class TestOptimisticStreamDefaults:
         assert self._can_retract("gateway:api") is False
 
     def test_empty_list_disables_optimistic_streaming_everywhere(self):
-        assert self._can_retract("gateway:desktop", stream_optimistic_channels=[]) is False
         assert self._can_retract("gateway:cli", stream_optimistic_channels=[]) is False

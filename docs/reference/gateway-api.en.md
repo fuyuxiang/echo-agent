@@ -1,6 +1,6 @@
 # Gateway API Reference
 
-The Echo Agent gateway exposes a RESTful HTTP API for programmatic access to agent capabilities. By default it binds to `127.0.0.1:3007`.
+The Echo Agent gateway exposes a RESTful HTTP API for programmatic access to agent capabilities. By default it binds to `127.0.0.1:58123` with the API prefix `/api/v1`.
 
 ## Authentication
 
@@ -44,36 +44,41 @@ gateway:
 
 | Capability | API Token | Admin Token |
 |-----------|-----------|-------------|
-| Read sessions, memory, knowledge | ✓ | ✓ |
-| Send messages, create tasks | ✓ | ✓ |
-| Modify configuration | — | ✓ |
+| Send messages; read memory, knowledge status, and analytics | ✓ | ✓ |
+| Read configuration; manage sessions and tasks | — | ✓ |
 | Manage cron jobs | — | ✓ |
-| Shutdown agent | — | ✓ |
-| View analytics | ✓ | ✓ |
-| Manage channels | — | ✓ |
+| Manage skills and knowledge documents | — | ✓ |
 
 ### Pairing Flow
 
-When `mode: pairing` is active, new clients must pair before making API calls:
+When `mode: pairing` is active, generate a short-lived code for a platform:
 
 ```
-POST /api/lifecycle/pair
+POST /api/v1/pair
 Content-Type: application/json
 
-{"client_name": "my-dashboard", "client_type": "web"}
+{"platform": "telegram"}
 ```
 
-Response (pending approval):
+Response:
 
 ```json
 {
-  "pairing_id": "pair_8f3a...",
-  "status": "pending",
-  "expires_at": "2026-08-19T12:05:00Z"
+  "code": "A1B2C3D4E5",
+  "ttl_seconds": 300
 }
 ```
 
-The user approves via TUI (`/approve pair_8f3a...`) or CLI. Once approved, the client receives a session token.
+The client then verifies that code for its user identity:
+
+```http
+POST /api/v1/pair/verify
+Content-Type: application/json
+
+{"platform": "telegram", "user_id": "user-123", "code": "A1B2C3D4E5"}
+```
+
+A successful response is `{"status":"paired"}`. Pairing authorizes that platform/user pair; it does not issue a new API token.
 
 !!! tip "Pairing TTL"
     Unapproved pairing requests expire after `pairing_ttl_seconds` (default: 300). Adjust in config if your approval workflow is slower.
@@ -773,29 +778,26 @@ Response:
 
 ---
 
-### `/api/lifecycle`
-
-System health and lifecycle management.
+### Health check
 
 #### Health Check
 
 ```
-GET /api/lifecycle/health
+GET {api_prefix}/health
 ```
 
-No authentication required. Returns:
+The default path is `/api/v1/health`. No authentication is required. Returns:
 
 ```json
 {
   "status": "healthy",
-  "version": "0.3.8",
-  "uptime_seconds": 172800,
-  "components": {
-    "gateway": "healthy",
-    "memory": "healthy",
-    "knowledge": "healthy",
-    "channels": "degraded"
-  }
+  "server_running": true,
+  "active_channels": {"telegram": "active"},
+  "ws_clients": 1,
+  "provider": "ok",
+  "media_cache_mb": 2.4,
+  "active_sessions": 1,
+  "total_sessions": 8
 }
 ```
 
@@ -804,27 +806,6 @@ No authentication required. Returns:
 | `healthy` | All systems operational |
 | `degraded` | Some non-critical components have issues |
 | `unhealthy` | Critical component failure |
-
-#### Shutdown
-
-```
-POST /api/lifecycle/shutdown
-```
-
-Requires admin token. Initiates graceful shutdown:
-
-1. Stops accepting new requests
-2. Completes in-flight operations (30s timeout)
-3. Persists state (memory, checkpoints)
-4. Closes channel connections
-5. Exits process
-
-```json
-{"message": "Shutdown initiated", "timeout_seconds": 30}
-```
-
-!!! danger "Use with caution"
-    If running as a system service, the process manager will restart the agent after shutdown. Use `echo-agent gateway stop` for permanent stops.
 
 ---
 
@@ -864,7 +845,6 @@ gateway:
 ```
 
 !!! note "Auth changes require a restart"
-    `/api/config` is read-only — only `GET /api/config` and `GET /api/config/models` are registered, with no write counterpart. There is no live-reload path for authentication settings.
+    `/api/config` is read-only — only `GET /api/config` is registered, with no write counterpart. There is no live-reload path for authentication settings.
 
     Editing `gateway.auth` (adding a token, extending `allowed_users`) therefore means changing the configuration file and running `echo-agent gateway restart`. Tokens issued before the restart keep working until then; ones added after it take effect only once the process has restarted.
-

@@ -25,8 +25,8 @@ def normalize_platform(reported: str | None, known: list[str] | None) -> str:
     folding entirely, restoring the legacy fully-self-reported behaviour for
     anyone who needs it.
 
-    This is deliberately NOT an identity control — two clients may both report
-    ``desktop``. Impersonation is handled by :func:`resolve_client_session_key`.
+    This is deliberately NOT an identity control — two clients may report the
+    same platform. Impersonation is handled by :func:`resolve_client_session_key`.
     """
     reported = (reported or "").strip()
     if not reported:

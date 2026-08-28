@@ -67,7 +67,7 @@ async def test_no_retriever_fallback_hides_superseded(tmp_path):
     memory, live, old = _store_with_superseded(tmp_path)
     stage = _make_stage(memory, hybrid_retriever=None, timeout=0.8)
     event = InboundEvent.text_message(channel="cli", sender_id="u", chat_id="c1", text="北京")
-    scored = await stage._bounded_retrieve(event, publish_response=False)
+    scored = await stage._bounded_retrieve(event)
     ids = [e.id for e, _ in (scored or [])]
     assert old.id not in ids, "superseded 条目漏进无向量索引兜底召回"
     assert live.id in ids, "live 条目应正常召回"
@@ -86,7 +86,7 @@ async def test_timeout_fallback_hides_superseded(tmp_path):
     retriever.retrieve = _slow_retrieve
     stage = _make_stage(memory, hybrid_retriever=retriever, timeout=0.01)
     event = InboundEvent.text_message(channel="cli", sender_id="u", chat_id="c1", text="北京")
-    scored = await stage._bounded_retrieve(event, publish_response=False)
+    scored = await stage._bounded_retrieve(event)
     ids = [e.id for e, _ in (scored or [])]
     assert old.id not in ids, "superseded 条目漏进超时兜底召回"
     assert live.id in ids, "live 条目应正常召回"

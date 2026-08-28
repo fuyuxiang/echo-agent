@@ -6,7 +6,8 @@ Echo Agent Gateway 提供 HTTP REST API 和 WebSocket 端点，用于外部系�
 
 | 项目 | 值 |
 |------|------|
-| 默认地址 | `http://127.0.0.1:8080` |
+| 默认地址 | `http://127.0.0.1:58123` |
+| 默认 API 前缀 | `/api/v1` |
 | 协议 | HTTP/1.1, WebSocket |
 | 内容类型 | `application/json` |
 | 认证方式 | Token Header / Pairing |
@@ -40,7 +41,7 @@ Token Header 名称可通过 `gateway.auth.token_header` 自定义。
 | Token 类型 | 权限 |
 |-----------|------|
 | `api_tokens` | 读取 + 会话操作 |
-| `admin_tokens` | 全部操作（含配置修改、关停） |
+| `admin_tokens` | 管理读取与写操作；未单独配置时回退到 `api_tokens` |
 
 ### 安全防护
 
@@ -372,24 +373,24 @@ Token Header 名称可通过 `gateway.auth.token_header` 自定义。
 
 ---
 
-### 生命周期
+### 健康检查
 
-#### GET /api/lifecycle/health
+#### GET `{api_prefix}/health`
 
-健康检查端点。无需认证。
+健康检查端点，默认路径为 `/api/v1/health`，无需认证。
 
 **响应**:
 
 ```json
 {
   "status": "healthy",
-  "version": "0.3.8",
-  "uptime_seconds": 86400,
-  "checks": {
-    "database": "ok",
-    "models": "ok",
-    "channels": "degraded"
-  }
+  "server_running": true,
+  "active_channels": {"telegram": "active"},
+  "ws_clients": 1,
+  "provider": "ok",
+  "media_cache_mb": 2.4,
+  "active_sessions": 1,
+  "total_sessions": 8
 }
 ```
 
@@ -398,17 +399,6 @@ Token Header 名称可通过 `gateway.auth.token_header` 自定义。
 | healthy | 200 | 所有组件正常 |
 | degraded | 200 | 部分组件异常但可服务 |
 | unhealthy | 503 | 无法正常服务 |
-
-#### POST /api/lifecycle/shutdown
-
-优雅关停。需要 admin 权限。
-
-```json
-{
-  "timeout": 30,
-  "reason": "Maintenance"
-}
-```
 
 ---
 

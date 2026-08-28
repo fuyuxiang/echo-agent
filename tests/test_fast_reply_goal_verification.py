@@ -31,8 +31,6 @@ def _build_stage(*, cache, on_miss, knowledge=None, episodic=None,
     config = MagicMock()
     config.session.max_history_messages = 100
     config.memory.enabled = True
-    config.gateway.emit_progress_events = True
-    config.gateway.progress_debug = False
     config.knowledge.max_results = 5
 
     sessions = AsyncMock()

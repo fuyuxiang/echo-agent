@@ -17,7 +17,7 @@ from echo_agent.agent.context import (
 )
 from echo_agent.agent.pipeline.response_stage import _is_ephemeral_session
 from echo_agent.agent.pipeline.types import PipelineContext
-from echo_agent.bus.events import InboundEvent, OutboundEvent
+from echo_agent.bus.events import InboundEvent
 from echo_agent.memory.eligibility import Audience
 from echo_agent.session.manager import Session
 
@@ -118,7 +118,6 @@ class ContextStage:
         episodic: Any = None,
         narrative_episode_count: int = 3,
         plan_run_store: Any = None,
-        bus: Any = None,
         retrieval_cache_get: "Callable[[str], Any] | None" = None,
         retrieval_on_miss: str = "degrade",
         retrieval_miss_timeout: float = 0.8,
@@ -148,25 +147,12 @@ class ContextStage:
         self._episodic = episodic
         self._narrative_episode_count = narrative_episode_count
         self._plan_run_store = plan_run_store
-        self._bus = bus
         self._retrieval_cache_get = retrieval_cache_get
         self._retrieval_on_miss = retrieval_on_miss
         self._retrieval_miss_timeout = retrieval_miss_timeout
         self._cache_ttl = cache_ttl
         self._cache_jaccard_min = cache_jaccard_min
         self._cog = cognitive_emitter
-
-    async def _emit_progress(self, event: InboundEvent, metadata: dict[str, Any]) -> None:
-        if not getattr(self._config.gateway, 'emit_progress_events', True):
-            return
-        out = OutboundEvent.text_reply(
-            channel=event.channel, chat_id=event.chat_id, text="", reply_to_id=event.reply_to_id,
-        )
-        out.is_final = False
-        out.message_kind = "progress"
-        out.metadata = {"_progress": True, "_inbound_event_id": event.event_id}
-        out.metadata.update(metadata)
-        await self._bus.publish_outbound(out)
 
     async def _emit_memory_recalled(self, event: InboundEvent, scored: list) -> None:
         """Emit a `memory_recalled` cognitive frame carrying each recalled
@@ -216,7 +202,7 @@ class ContextStage:
         context = self._knowledge.format_results(results)
         return results, context
 
-    async def _bounded_retrieve(self, event: InboundEvent, publish_response: bool) -> list | None:
+    async def _bounded_retrieve(self, event: InboundEvent) -> list | None:
         """Degrade-mode cache miss: sync retrieval under a time budget.
 
         Latency-first CLI still deserves memory on first turns and topic
@@ -238,10 +224,6 @@ class ContextStage:
                     event.text, limit=5, session_key=event.memory_scope,
                     audience=Audience.RETRIEVAL,
                 )
-            if publish_response and self._bus:
-                await self._emit_progress(
-                    event, {"progress_type": "memory_retrieval_skipped"}
-                )
             return None
         try:
             return await asyncio.wait_for(
@@ -256,10 +238,6 @@ class ContextStage:
             logger.debug(
                 "Bounded retrieval timed out after {}s; keyword fallback", timeout
             )
-            if publish_response and self._bus:
-                await self._emit_progress(
-                    event, {"progress_type": "memory_retrieval_degraded"}
-                )
             try:
                 return self._memory.search_scored(
                     event.text, limit=5, session_key=event.memory_scope,
@@ -437,7 +415,7 @@ class ContextStage:
                         audience=Audience.RETRIEVAL,
                     )
             else:
-                scored = await self._bounded_retrieve(event, publish_response)
+                scored = await self._bounded_retrieve(event)
             if scored:
                 scored = filter_recall_by_snapshot(scored, snapshot_ids)
             if scored:
@@ -458,18 +436,6 @@ class ContextStage:
                         "Past episodes:\n"
                         + "\n".join(f"- {r.summary}" for r, _ in ep_items if r.summary)
                     )
-                if (mem_items or ep_items) and publish_response and self._bus:
-                    _debug = getattr(self._config.gateway, 'progress_debug', False)
-                    _mem_meta: dict[str, Any] = {
-                        "progress_type": "memory_retrieved",
-                        "count": len(mem_items) + len(ep_items),
-                    }
-                    if _debug:
-                        _mem_meta["entries"] = [
-                            {"key": r.key, "content_preview": r.content[:100]}
-                            for r, _ in mem_items[:5]
-                        ]
-                    await self._emit_progress(event, _mem_meta)
                 # Cognitive埋点: surface the actual recalled memories (content/
                 # source-grade/score) to the CLI TUI. Pass mem_items (memory
                 # entries only), NOT `scored` which mixes in episodes. The
@@ -486,8 +452,6 @@ class ContextStage:
             # restricted docs. So the cache hit requires knowledge_user_id to
             # match the current sender.
             knowledge_context = None
-            knowledge_results = None
-            knowledge_from_cache = False
             cached_user_ok = (
                 cache_fresh
                 and cached.knowledge_context is not None
@@ -496,7 +460,6 @@ class ContextStage:
             )
             if cached_user_ok:
                 knowledge_context = cached.knowledge_context
-                knowledge_from_cache = True
             else:
                 # Miss (no/stale cache, or knowledge was prefetched for another
                 # user). The scan is CPU-bound, so any inline fetch runs in an
@@ -523,33 +486,13 @@ class ContextStage:
                 )
                 if self._retrieval_on_miss == "sync" or not knowledge_prefetch_active:
                     try:
-                        knowledge_results, knowledge_context = (
+                        _, knowledge_context = (
                             await self._fetch_knowledge(event.text, event.sender_id, channel=event.channel)
                         )
                     except Exception as e:
                         logger.debug("Knowledge retrieval failed: {}", e)
             if knowledge_context:
                 retrieval_parts.append(knowledge_context)
-                if publish_response and self._bus:
-                    _debug = getattr(self._config.gateway, 'progress_debug', False)
-                    _know_meta: dict[str, Any] = {
-                        "progress_type": "knowledge_cited",
-                    }
-                    # On a cache hit we kept only the formatted context, not the
-                    # result objects, so an honest event reports the hit rather
-                    # than a misleading count=0 / empty citations.
-                    if knowledge_from_cache:
-                        _know_meta["from_cache"] = True
-                    else:
-                        _know_meta["count"] = (
-                            len(knowledge_results) if knowledge_results else 0
-                        )
-                        if _debug:
-                            _know_meta["citations"] = [
-                                {"path": getattr(r, 'path', ''), "chunk_preview": getattr(r, 'text', '')[:200], "score": getattr(r, 'score', 0.0)}
-                                for r in (knowledge_results[:5] if knowledge_results else [])
-                            ]
-                    await self._emit_progress(event, _know_meta)
 
         task_type = self._infer_task_type(event.text)
 

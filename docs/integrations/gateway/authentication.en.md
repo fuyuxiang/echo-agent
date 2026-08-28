@@ -109,17 +109,13 @@ gateway:
 ```
 
 !!! warning "Admin operations accept headers only"
-    The HTTP admin endpoints (shutdown, skill import/install/delete, knowledge
-    upload/delete) do not honour a `?token=` query parameter — an admin token must
-    travel in a header, or it ends up in access logs, proxy logs and referrers, where
-    it outlives its own useful life.
+    HTTP management endpoints such as skill import/install/delete and knowledge
+    upload/delete do not honour a `?token=` query parameter. An admin token must
+    travel in a header, or it can end up in access logs, proxy logs, and referrers.
 
-    WebSocket follows the same rule: `?token=` completes the handshake and works for
-    read-only frames, but state-changing frames (for example `skill.enable`) accept a
-    token only from a header or the auth frame. This holds regardless of whether
-    `admin_tokens` is configured — a single-token deployment that sets only
-    `api_tokens` is equally restricted. See the
-    [WebSocket protocol reference](../../reference/websocket-protocol.en.md#token-source-and-scope).
+    The session WebSocket keeps `?token=` as a compatibility source for api tokens,
+    but production clients should still prefer a header or the auth frame. See the
+    [WebSocket protocol reference](../../reference/websocket-protocol.en.md).
 
 ## Loopback Exemption
 

@@ -36,7 +36,7 @@ server {
     }
 
     # WebSocket 代理 — 会话
-    location /ws/session {
+    location /ws {
         proxy_pass http://echo_gateway;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -67,7 +67,7 @@ server {
     }
 
     # 健康检查（可选：限制仅内网访问）
-    location /health {
+    location /api/v1/health {
         proxy_pass http://echo_gateway;
         # allow 10.0.0.0/8;
         # deny all;
@@ -98,7 +98,7 @@ gateway.example.com {
 
     # Caddy 自动处理 WebSocket upgrade，无需额外配置
     # 但可以显式设置超时
-    reverse_proxy /ws/* 127.0.0.1:8090 {
+    reverse_proxy /ws* 127.0.0.1:8090 {
         transport http {
             keepalive 3600s
         }
@@ -186,13 +186,14 @@ gateway:
 
 ## 健康检查端点
 
-`/health` 端点可用于负载均衡器的健康探测：
+`/api/v1/health` 端点可用于负载均衡器的健康探测；若修改了
+`gateway.api_prefix`，这里也要使用相同前缀：
 
 ```nginx
 # nginx upstream 健康检查（需 nginx plus 或第三方模块）
 upstream echo_gateway {
     server 127.0.0.1:8090;
-    # health_check uri=/health interval=10s;
+    # health_check uri=/api/v1/health interval=10s;
 }
 ```
 
@@ -201,7 +202,7 @@ upstream echo_gateway {
 ```yaml
 # Kubernetes Ingress 健康检查注解示例
 annotations:
-  nginx.ingress.kubernetes.io/health-check-path: /health
+  nginx.ingress.kubernetes.io/health-check-path: /api/v1/health
   nginx.ingress.kubernetes.io/health-check-interval: "10"
 ```
 
@@ -250,7 +251,7 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
     
-    location /ws/ {
+    location /ws {
         proxy_pass http://127.0.0.1:8090;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;

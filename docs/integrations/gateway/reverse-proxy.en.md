@@ -36,7 +36,7 @@ server {
     }
 
     # WebSocket proxy — session
-    location /ws/session {
+    location /ws {
         proxy_pass http://echo_gateway;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -67,7 +67,7 @@ server {
     }
 
     # Health check (optional: restrict to internal network)
-    location /health {
+    location /api/v1/health {
         proxy_pass http://echo_gateway;
         # allow 10.0.0.0/8;
         # deny all;
@@ -98,7 +98,7 @@ gateway.example.com {
 
     # Caddy handles WebSocket upgrade automatically — no extra config needed
     # But you can explicitly set timeouts
-    reverse_proxy /ws/* 127.0.0.1:8090 {
+    reverse_proxy /ws* 127.0.0.1:8090 {
         transport http {
             keepalive 3600s
         }
@@ -186,13 +186,14 @@ gateway:
 
 ## Health Check Endpoint
 
-The `/health` endpoint can be used for load balancer health probes:
+The `/api/v1/health` endpoint can be used for load balancer health probes. If
+`gateway.api_prefix` is changed, use the same prefix here:
 
 ```nginx
 # nginx upstream health check (requires nginx plus or third-party module)
 upstream echo_gateway {
     server 127.0.0.1:8090;
-    # health_check uri=/health interval=10s;
+    # health_check uri=/api/v1/health interval=10s;
 }
 ```
 
@@ -201,7 +202,7 @@ For Kubernetes or cloud load balancers:
 ```yaml
 # Kubernetes Ingress health check annotation example
 annotations:
-  nginx.ingress.kubernetes.io/health-check-path: /health
+  nginx.ingress.kubernetes.io/health-check-path: /api/v1/health
   nginx.ingress.kubernetes.io/health-check-interval: "10"
 ```
 
@@ -250,7 +251,7 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
     
-    location /ws/ {
+    location /ws {
         proxy_pass http://127.0.0.1:8090;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;

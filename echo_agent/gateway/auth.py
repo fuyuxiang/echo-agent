@@ -117,40 +117,16 @@ class GatewayAuth:
             return False
         return any(hmac.compare_digest(token, configured) for configured in admin)
 
-    def is_origin_allowed(self, origin: str, sec_fetch_site: str) -> bool:
-        """CSRF defense for browser clients — opt-in via ``allowed_origins``.
-
-        Disabled by default (empty ``allowed_origins``) so it never breaks
-        existing clients: native HTTP callers, the same-origin playground, or a
-        webview desktop client (which sends a cross-site Origin like
-        ``tauri://localhost``). When the operator opts in by configuring
-        ``allowed_origins``, genuine cross-site browser requests are rejected
-        unless their Origin is on the allowlist — this is what blocks
-        CSRF-to-localhost / DNS-rebinding from a malicious public web page.
-        """
-        # Opt-in: no allowlist configured → CSRF enforcement off (no behavior change).
-        if not self._allowed_origins:
-            return True
-        # No browser headers at all → not a browser-driven request → allow.
-        if not origin and not sec_fetch_site:
-            return True
-        # Same-origin / same-site / direct navigation are safe.
-        if sec_fetch_site in ("same-origin", "same-site", "none"):
-            return True
-        # Cross-site (or unknown): only an explicitly allowlisted Origin may proceed.
-        return bool(origin) and origin in self._allowed_origins
-
     def is_cross_site_browser(
         self, origin: str, sec_fetch_site: str, host: str = "",
     ) -> bool:
         """Whether the request is an *explicit cross-site browser* request.
 
         Default-on CSRF primitive for the main channels (WS handshake and
-        POST /message). Unlike ``is_origin_allowed`` (opt-in, off when
-        ``allowed_origins`` is empty), this stays on even with an empty
-        allowlist — that is what closes the loopback WebSocket hole where a
-        malicious page drives the local agent. Native clients (cli/curl/SDK)
-        send neither header, so they are never flagged.
+        POST /message). It stays active even with an empty ``allowed_origins``
+        list — that is what closes the loopback WebSocket hole where a malicious
+        page drives the local agent. Native clients (cli/curl/SDK) send neither
+        header, so they are never flagged.
 
         ``host`` is the request's Host header. Pass it whenever it is available:
         it is what lets ``same-site`` be checked rather than trusted, and it is
@@ -183,7 +159,7 @@ class GatewayAuth:
         # to compare, fall through to the allowlist rather than assume.
         if sec_fetch_site == "same-site" and host and self._origin_matches_host(origin, host):
             return False
-        # Explicitly allowlisted Origin is trusted (webview / desktop escape hatch).
+        # Explicitly allowlisted Origin is trusted (for example a dev frontend).
         if origin and origin in self._allowed_origins:
             return False
         # Everything else that carries a cross-site Origin or Sec-Fetch-Site.

@@ -41,10 +41,6 @@ class MediaCache:
         # flight at once.
         self._slots = asyncio.Semaphore(max(1, concurrency))
 
-    @property
-    def cache_dir(self) -> Path:
-        return self._cache_dir
-
     async def download(
         self,
         url: str,

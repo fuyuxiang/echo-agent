@@ -1,16 +1,8 @@
-"""Tests for desktop collaboration features:
-- Dynamic port + ready signal (Requirement 3)
-- Lifecycle API / shutdown route (Requirement 4)
-- Gateway streaming channel matching with prefix (Requirement 1 / P2 fix)
-- Progress events emit_progress_events toggle (Requirement 2)
-- Health degraded with StubProvider (Requirement 5)
-"""
+"""Gateway runtime, streaming, and health regression tests."""
 
 from __future__ import annotations
 
-import asyncio
-import io
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -46,10 +38,10 @@ def _make_gateway(port=19999, agent_loop=None):
     return gw, bus, config
 
 
-# ── Requirement 3: Dynamic port + ready signal ───────────────────────────────
+# ── Dynamic port binding ─────────────────────────────────────────────────────
 
 
-class TestDynamicPortAndReadySignal:
+class TestDynamicPort:
 
     @pytest.mark.asyncio
     async def test_actual_port_defaults_to_config(self):
@@ -57,33 +49,9 @@ class TestDynamicPortAndReadySignal:
         assert gw.actual_port == 8080
 
     @pytest.mark.asyncio
-    async def test_start_prints_ready_signal(self):
-        gw, _, _ = _make_gateway(port=0)
-        captured = io.StringIO()
-
-        with patch("sys.stdout", captured):
-            await gw.start()
-
-        try:
-            output = captured.getvalue()
-            assert "ECHO_AGENT_READY port=" in output
-            assert "ws=" in output
-            assert "health=" in output
-
-            port_str = output.split("port=")[1].split(" ")[0]
-            actual = int(port_str)
-            assert actual > 0
-            assert gw.actual_port == actual
-        finally:
-            await gw.stop()
-
-    @pytest.mark.asyncio
     async def test_start_with_port_zero_binds_random(self):
         gw, _, _ = _make_gateway(port=0)
-        captured = io.StringIO()
-
-        with patch("sys.stdout", captured):
-            await gw.start()
+        await gw.start()
 
         try:
             assert gw.actual_port != 0
@@ -92,53 +60,33 @@ class TestDynamicPortAndReadySignal:
             await gw.stop()
 
 
-# ── Requirement 4: Lifecycle API / shutdown ──────────────────────────────────
+# ── Removed standalone-client surface stays absent ───────────────────────────
 
 
-class TestLifecycleAPI:
+class TestRemovedClientSurface:
 
-    @pytest.mark.asyncio
-    async def test_shutdown_with_event_returns_202(self):
-        from echo_agent.gateway.api.lifecycle import LifecycleAPI
+    def test_removed_routes_are_not_registered(self):
+        from aiohttp import web
 
-        gw, _, _ = _make_gateway()
-        shutdown_event = asyncio.Event()
-        gw.set_shutdown_event(shutdown_event)
+        gw, _, config = _make_gateway()
+        gw._app = web.Application()
+        gw._setup_routes()
+        routes = {route.resource.canonical for route in gw._app.router.routes()}
 
-        api = LifecycleAPI(gw)
-        request = MagicMock()
-        request.headers = {}
+        prefix = config.api_prefix
+        assert f"{prefix}/chat/attachments" not in routes
+        assert f"{prefix}/config/models" not in routes
+        assert f"{prefix}/shutdown" not in routes
 
-        response = await api.shutdown(request)
-        assert response.status == 202
-        assert shutdown_event.is_set()
+    def test_removed_config_contract_is_not_exposed(self):
+        from echo_agent.config.schema import GatewayConfig
 
-    @pytest.mark.asyncio
-    async def test_shutdown_without_event_returns_503(self):
-        from echo_agent.gateway.api.lifecycle import LifecycleAPI
-
-        gw, _, _ = _make_gateway()
-
-        api = LifecycleAPI(gw)
-        request = MagicMock()
-        request.headers = {}
-
-        response = await api.shutdown(request)
-        assert response.status == 503
-
-    def test_request_shutdown_noop_without_event(self):
-        gw, _, _ = _make_gateway()
-        gw.request_shutdown()
-
-    def test_request_shutdown_sets_event(self):
-        gw, _, _ = _make_gateway()
-        event = asyncio.Event()
-        gw.set_shutdown_event(event)
-        gw.request_shutdown()
-        assert event.is_set()
+        assert "desktop" not in GatewayConfig().known_platforms
+        assert "emit_progress_events" not in GatewayConfig.model_fields
+        assert "progress_debug" not in GatewayConfig.model_fields
 
 
-# ── Requirement 1 + P2: Stream channel prefix matching ───────────────────────
+# ── Stream channel prefix matching ───────────────────────────────────────────
 
 
 class TestStreamChannelMatching:
@@ -249,7 +197,7 @@ class TestOptimisticStreamChannels:
         assert fn(stage, "gateway:cli") is False
 
 
-# ── Requirement 5: Health degraded with StubProvider ─────────────────────────
+# ── Health degradation with StubProvider ─────────────────────────────────────
 
 
 class TestHealthDegraded:
@@ -309,19 +257,3 @@ class TestHealthDegraded:
         result = await provider.check()
         assert result["status"] == "degraded"
         assert result["provider"] == "stub"
-
-
-# ── Requirement 2: Progress events config toggle ─────────────────────────────
-
-
-class TestProgressEventsToggle:
-
-    def test_emit_progress_events_default_true(self):
-        from echo_agent.config.schema import GatewayConfig
-        config = GatewayConfig()
-        assert config.emit_progress_events is True
-
-    def test_progress_debug_default_false(self):
-        from echo_agent.config.schema import GatewayConfig
-        config = GatewayConfig()
-        assert config.progress_debug is False

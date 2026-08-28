@@ -272,24 +272,6 @@ class InferenceStage:
         if ctx.activity is not None and not out.metadata.get("_drop"):
             ctx.activity.mark_visible_feedback()
 
-    async def _emit_tool_event(self, ctx: PipelineContext, metadata: dict[str, Any]) -> None:
-        if not ctx.publish_response:
-            return
-        if not getattr(self._config.gateway, 'emit_progress_events', True):
-            return
-        event = ctx.event
-        out = OutboundEvent.text_reply(
-            channel=event.channel, chat_id=event.chat_id, text="", reply_to_id=event.reply_to_id,
-        )
-        out.is_final = False
-        out.message_kind = "progress"
-        out.metadata = {"_progress": True, "_inbound_event_id": event.event_id}
-        out.metadata.update(metadata)
-        await self._bus.publish_outbound(out)
-        # See _emit_progress: a dropped event is not visible feedback.
-        if ctx.activity is not None and not out.metadata.get("_drop"):
-            ctx.activity.mark_visible_feedback()
-
     async def _emit_tool_call(
         self, event, name, params, status, result_summary,
         *, tool_call_id: str = "", result_meta: dict | None = None,
@@ -1217,17 +1199,8 @@ class InferenceStage:
 
             import time as _time
             _tool_start_ts = _time.monotonic()
-            _debug_progress = getattr(self._config.gateway, 'progress_debug', False)
-            _tool_start_meta: dict[str, Any] = {
-                "progress_type": "tool_call",
-                "tool": tool_call.name,
-                "status": "started",
-            }
-            if _debug_progress:
-                _tool_start_meta["args"] = str(tool_call.arguments)[:500]
             if ctx.activity is not None:
                 ctx.activity.enter_tool(tool_call.name)
-            await self._emit_tool_event(ctx, _tool_start_meta)
             # Emit a "running" frame before execution so the cli TUI can flip
             # this tool line into an in-progress state; the terminal frame below
             # shares tool_call_id to pair with it.
@@ -1249,15 +1222,6 @@ class InferenceStage:
                     result = self._respill(tool_call.name, d.exec_ctx, result)
 
                 _tool_duration_ms = int((_time.monotonic() - _tool_start_ts) * 1000)
-                _tool_result_meta: dict[str, Any] = {
-                    "progress_type": "tool_result",
-                    "tool": tool_call.name,
-                    "duration_ms": _tool_duration_ms,
-                    "status": "done" if result.success else "error",
-                }
-                if _debug_progress:
-                    _tool_result_meta["result_preview"] = result.text[:500]
-                await self._emit_tool_event(ctx, _tool_result_meta)
                 await self._emit_tool_call(
                     ctx.event, tool_call.name, tool_call.arguments,
                     "ok" if result.success else "err", result.text,

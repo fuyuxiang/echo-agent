@@ -406,11 +406,10 @@ class AppRuntime:
     the storage close — from running.
     """
 
-    def __init__(self, ctx: BootstrapResult, shutdown_event: asyncio.Event | None = None):
+    def __init__(self, ctx: BootstrapResult):
         self._ctx = ctx
         self._gateway: Any = None
         self._started = False
-        self._shutdown_event = shutdown_event
         self._instance_lock: Any = None
 
     @property
@@ -464,8 +463,6 @@ class AppRuntime:
                 agent_loop=ctx.agent,
                 a2a_config=ctx.config.a2a,
             )
-            if self._shutdown_event:
-                self._gateway.set_shutdown_event(self._shutdown_event)
             # Say so when the SPA is absent. A supervised gateway skips the
             # on-demand build by design, so without this line the only clue is
             # the stripped-down page itself.
@@ -546,7 +543,7 @@ async def run(config_path: str | None = None, workspace: str | None = None, forc
     logger.info("Echo Agent starting — workspace: {}", ctx.workspace)
 
     install_signal_handler(shutdown)
-    runtime = AppRuntime(ctx, shutdown_event=shutdown)
+    runtime = AppRuntime(ctx)
     watchdog = build_loop_watchdog(ctx)
     try:
         if not await runtime.start():
@@ -736,7 +733,7 @@ async def run_gateway(
         ctx.config.gateway.port = port
 
     install_signal_handler(shutdown)
-    runtime = AppRuntime(ctx, shutdown_event=shutdown)
+    runtime = AppRuntime(ctx)
     watchdog = build_loop_watchdog(ctx)
 
     try:

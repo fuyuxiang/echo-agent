@@ -37,7 +37,7 @@ GatewayServer
 | `rate_limiter.py` | Token-bucket rate limiting |
 | `server.py` | aiohttp app initialization and route registration |
 | `health.py` | Health check endpoint |
-| `ws_session.py` | Session WebSocket (for chat clients) |
+| `ws_session.py` | Platform and session-key normalization for the session WebSocket |
 | `ws_dashboard.py` | Dashboard WebSocket (for monitoring panels) |
 
 ## API Modules
@@ -46,11 +46,9 @@ Gateway exposes the following REST API modules under `gateway/api/`:
 
 - `analytics` — Statistics and analytics
 - `channels` — Channel management
-- `chat_attachments` — Chat attachment upload and management
-- `config` — Runtime configuration read/write
+- `config` — Read-only runtime configuration query
 - `cron_api` — Scheduled task management
 - `knowledge` — Knowledge base operations
-- `lifecycle` — Service lifecycle control
 - `logs` — Log queries
 - `memory` — Memory storage
 - `sessions` — Session CRUD
@@ -61,7 +59,7 @@ Gateway exposes the following REST API modules under `gateway/api/`:
 
 | Endpoint | Purpose | Protocol |
 |----------|---------|----------|
-| `/ws/session` | Real-time communication for chat clients | JSON over WebSocket |
+| `/ws` (configurable) | Real-time communication for CLI and external integrations | JSON over WebSocket |
 | `/ws/dashboard` | Real-time data push for monitoring dashboards | JSON over WebSocket |
 
 ## Health Check

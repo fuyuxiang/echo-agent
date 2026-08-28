@@ -1,6 +1,6 @@
-"""Management API routes for the desktop client.
+"""Management API routes for the built-in Dashboard and operators.
 
-All routes are registered under the gateway's api_prefix (default /api).
+All routes are registered under the gateway's api_prefix (default /api/v1).
 Authentication reuses the existing GatewayAuth token check.
 """
 
@@ -19,9 +19,7 @@ def register_management_routes(app: web.Application, prefix: str, server: Gatewa
     from echo_agent.gateway.api.skills import SkillsAPI
     from echo_agent.gateway.api.channels import ChannelsAPI
     from echo_agent.gateway.api.knowledge import KnowledgeAPI
-    from echo_agent.gateway.api.chat_attachments import ChatAttachmentAPI
     from echo_agent.gateway.api.config import ConfigAPI
-    from echo_agent.gateway.api.lifecycle import LifecycleAPI
     from echo_agent.gateway.api.tasks import TasksAPI
     from echo_agent.gateway.api.sessions import SessionsAPI
     from echo_agent.gateway.api.cron_api import CronAPI
@@ -32,9 +30,7 @@ def register_management_routes(app: web.Application, prefix: str, server: Gatewa
     skills_api = SkillsAPI(server)
     channels_api = ChannelsAPI(server)
     knowledge_api = KnowledgeAPI(server)
-    chat_attachment_api = ChatAttachmentAPI(server)
     config_api = ConfigAPI(server)
-    lifecycle_api = LifecycleAPI(server)
     tasks_api = TasksAPI(server)
     sessions_api = SessionsAPI(server)
     cron_api = CronAPI(server)
@@ -69,12 +65,7 @@ def register_management_routes(app: web.Application, prefix: str, server: Gatewa
     # and every nested delete answered 405. {path:.+} accepts both forms.
     app.router.add_delete(f"{prefix}/knowledge/documents/{{path:.+}}", knowledge_api.delete_document)
 
-    app.router.add_post(f"{prefix}/chat/attachments", chat_attachment_api.upload)
-
     app.router.add_get(f"{prefix}/config", config_api.get_config)
-    app.router.add_get(f"{prefix}/config/models", config_api.get_models)
-
-    app.router.add_post(f"{prefix}/shutdown", lifecycle_api.shutdown)
 
     app.router.add_get(f"{prefix}/tasks", tasks_api.list_tasks)
     app.router.add_post(f"{prefix}/tasks", tasks_api.create_task)

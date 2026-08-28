@@ -922,27 +922,8 @@ class ChannelsConfig(_Base):
     # screen above the answer. IM channels are excluded too: editing is possible
     # but each edit burns API budget. Empty list = buffer everywhere, i.e. the
     # pre-existing conservative behaviour.
-    #
-    # gateway:desktop is the Electron client (repo echo-agent-desktop). It also
-    # qualifies: its renderer rebuilds the bubble from an accumulated buffer and
-    # acts on the reset frame (pages/Chat/index.tsx reads metadata._stream_reset,
-    # stores/chatStore.ts drops the turn's text). That contract lives in the other
-    # repo and CANNOT be verified from here — it is trusted because "desktop" is a
-    # known platform in gateway.known_platforms, i.e. a first-party client, not
-    # because a client happened to send platform="desktop". Any self-reported
-    # platform outside that list is folded to gateway:ws before reaching here, so
-    # an arbitrary caller cannot opt itself into retractable drafts.
-    #
-    # Leaving a redraw-capable channel out of this list is not a safe no-op: on a
-    # turn carrying tools draft_policy="buffer" makes chat_stream_with_retry hold
-    # every delta and release the whole answer as one on_delta call, which reaches
-    # the client as a single full-text frame — the UI looks like it is not
-    # streaming at all. The desktop client writes this key into its managed yaml
-    # itself, but only when the model config is applied (config-writer.ts); the
-    # first agent process of a fresh install starts before that, so the default
-    # here is what it actually gets on a first conversation.
     stream_optimistic_channels: list[str] = Field(
-        default_factory=lambda: ["gateway:cli", "gateway:desktop"],
+        default_factory=lambda: ["gateway:cli"],
         json_schema_extra={
             "status": "effective", "ref": "agent/pipeline/inference_stage.py:659",
             "desc_zh": "允许乐观流式(工具前草稿先发后撤回)的通道列表;仅限能就地重绘的通道",
@@ -3422,8 +3403,8 @@ class GatewayAuthConfig(_Base):
         default_factory=list,
         json_schema_extra={
             "status": "effective", "ref": "gateway/auth.py:23",
-            "desc_zh": "高危管理接口(关停/技能导入安装删除/知识库上传删除)专用令牌；为空时回退到 api_tokens",
-            "desc_en": "Tokens required for high-risk admin endpoints (shutdown, skills import/install/delete, knowledge upload/delete); falls back to api_tokens when empty",
+            "desc_zh": "高危管理接口(技能导入安装删除/知识库上传删除)专用令牌；为空时回退到 api_tokens",
+            "desc_en": "Tokens required for high-risk admin endpoints (skills import/install/delete and knowledge upload/delete); falls back to api_tokens when empty",
         },
     )
     allowed_origins: list[str] = Field(
@@ -3603,8 +3584,8 @@ class GatewayConfig(_Base):
         default_factory=lambda: [
             # Transport-level callers: no channel class, but these are the
             # gateway's own default platform values (WS handshake, POST /message)
-            # and the first-party clients.
-            "cli", "desktop", "ws", "api",
+            # and the attached CLI.
+            "cli", "ws", "api",
             # Every implemented channel, i.e. echo_agent/channels/*.py `name`.
             # "wechat" is kept as a long-standing alias of the weixin channel.
             "cron", "dingtalk", "discord", "email", "feishu", "matrix", "qqbot",
@@ -3701,22 +3682,6 @@ class GatewayConfig(_Base):
                 "since an internal CDN may legitimately need it. Blocked by default; "
                 "the http/https scheme restriction applies either way"
             ),
-        },
-    )
-    emit_progress_events: bool = Field(
-        default=True,
-        json_schema_extra={
-            "status": "effective", "ref": "agent/pipeline/context_stage.py:82",
-            "desc_zh": "是否向网关客户端推送进度事件",
-            "desc_en": "Emit progress events to gateway clients",
-        },
-    )
-    progress_debug: bool = Field(
-        default=False,
-        json_schema_extra={
-            "status": "effective", "ref": "agent/pipeline/context_stage.py:177",
-            "desc_zh": "是否输出进度事件调试信息",
-            "desc_en": "Emit progress-event debug information",
         },
     )
     hooks_dir: str = Field(

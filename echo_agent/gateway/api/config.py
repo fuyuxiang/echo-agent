@@ -87,9 +87,9 @@ class ConfigAPI:
                 continue
             if hasattr(section, "model_dump"):
                 # pydantic 模型:mode="json" 递归把子模型/枚举/datetime 转成原生
-                # 可 JSON 类型。刻意不带 by_alias —— 保持 snake_case 字段名,既与
-                # get_models 端点一致,又让下面按 snake_case 的 _SENSITIVE_KEYS 脱敏
-                # 生效(camelCase 别名会绕过脱敏导致密钥泄漏)。
+                # 可 JSON 类型。刻意不带 by_alias —— 保持 snake_case 字段名，确保
+                # 下面按 snake_case 的 _SENSITIVE_KEYS 脱敏生效（camelCase 别名会
+                # 绕过脱敏导致密钥泄漏）。
                 data[field_name] = section.model_dump(mode="json")
             elif hasattr(section, "to_dict"):
                 data[field_name] = section.to_dict()
@@ -97,26 +97,3 @@ class ConfigAPI:
                 data[field_name] = str(section)
 
         return web.json_response(_sanitize(data))
-
-    async def get_models(self, request: web.Request) -> web.Response:
-        guard = self._guard(request, "config_models")
-        if guard is not None:
-            return guard
-
-        config = self._get_config()
-        if config is None:
-            return web.json_response({"error": "config not available"}, status=500)
-
-        models_cfg = config.models
-        providers = []
-        for pc in models_cfg.providers:
-            providers.append({
-                "name": pc.name,
-                "type": pc.type if hasattr(pc, "type") else "",
-                "default_model": pc.default_model if hasattr(pc, "default_model") else "",
-            })
-
-        return web.json_response({
-            "default_model": models_cfg.default_model,
-            "providers": providers,
-        })
