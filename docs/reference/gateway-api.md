@@ -113,6 +113,14 @@ Token Header 名称可通过 `gateway.auth.token_header` 自定义。
 }
 ```
 
+#### GET /api/v1/sessions/{key}/turns
+
+查询会话的持久化回合状态（需管理权限）。`limit` 范围为 `1`–`100`，默认 `20`。返回值中的 `status` 可为 `accepted`、`running`、`waiting_approval`、`waiting_clarification`、`completed`、`incomplete`、`failed` 或 `interrupted`。
+
+#### GET /api/v1/turns/{event_id}
+
+按入站事件 ID 查询单个回合。记录包含当前工具、回复文本、终止原因及开始/完成时间；状态账本不可用时返回 `503`。
+
 ---
 
 ### 记忆管理

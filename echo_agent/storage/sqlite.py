@@ -193,6 +193,22 @@ _MIGRATIONS: list[tuple[int, str]] = [
     (27, "ALTER TABLE tasks ADD COLUMN lease_until_ms INTEGER"),
     (28, "ALTER TABLE tasks ADD COLUMN attempt_id TEXT NOT NULL DEFAULT ''"),
     (29, "ALTER TABLE tasks ADD COLUMN version INTEGER NOT NULL DEFAULT 0"),
+    (30, """CREATE TABLE IF NOT EXISTS turn_runs (
+        event_id TEXT PRIMARY KEY,
+        session_key TEXT NOT NULL,
+        context_key TEXT NOT NULL DEFAULT '',
+        trace_id TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'accepted',
+        current_tool TEXT NOT NULL DEFAULT '',
+        response_text TEXT NOT NULL DEFAULT '',
+        error TEXT NOT NULL DEFAULT '',
+        metadata TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        started_at TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL DEFAULT ''
+    )"""),
+    (31, "CREATE INDEX IF NOT EXISTS idx_turn_runs_session ON turn_runs(session_key, created_at DESC)"),
 ]
 
 

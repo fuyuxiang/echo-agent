@@ -20,6 +20,10 @@ class PipelineContext:
     trace_id: str
     publish_response: bool
 
+    # Reset-bounded identity for prompt-bearing/task state. session.key remains
+    # the stable history/locking/delivery identity.
+    context_key: str = ""
+
     system_prompt: str = ""
     messages: list[dict[str, Any]] = field(default_factory=list)
     tool_defs: list[dict[str, Any]] = field(default_factory=list)
@@ -47,3 +51,5 @@ class InferenceResult:
     # task must then be written back as FAILED, not SUCCESS. Chat turns ignore
     # this — it only gates the task-outcome safety net in AgentLoop.
     task_incomplete: bool = False
+    output_truncated: bool = False
+    termination_reason: str = ""

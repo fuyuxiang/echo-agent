@@ -69,6 +69,7 @@ class ApprovalGate:
         registry: Any = None,
         router: Any = None,
         cognitive_emitter: Any = None,
+        turn_run_store: Any = None,
     ):
         self._config = config
         self._approval = approval
@@ -78,6 +79,7 @@ class ApprovalGate:
         self._allowlist = allowlist or ApprovalAllowlist()
         self._router = router
         self._cog = cognitive_emitter
+        self._turn_runs = turn_run_store
         # The registry lets the gate read a tool's *declared* risk_level (e.g.
         # MCP tools classify destructiveHint → EXEC at adapter construction).
         # Without it, dynamic tools fall through to the WRITE default and skip
@@ -406,10 +408,26 @@ class ApprovalGate:
                 metadata={"approval_request_id": approval_req.id},
             ))
 
-        decided = await self._approval.wait_for_decision(
-            approval_req.id,
-            timeout_seconds=self._config.permissions.approval.wait_timeout_seconds,
-        )
+        if self._turn_runs is not None and event is not None:
+            try:
+                await self._turn_runs.mark_activity(
+                    event.event_id, status="waiting_approval", current_tool=tool_name,
+                )
+            except Exception as e:
+                logger.debug("Approval wait ledger write failed: {}", e)
+        try:
+            decided = await self._approval.wait_for_decision(
+                approval_req.id,
+                timeout_seconds=self._config.permissions.approval.wait_timeout_seconds,
+            )
+        finally:
+            if self._turn_runs is not None and event is not None:
+                try:
+                    await self._turn_runs.mark_activity(
+                        event.event_id, status="running", current_tool="",
+                    )
+                except Exception as e:
+                    logger.debug("Approval resume ledger write failed: {}", e)
         if decided and decided.status == ApprovalStatus.APPROVED:
             level = self._parse_approval_level(decided.reason)
             self._record_approval(session_key, pattern_key, level)

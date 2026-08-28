@@ -125,6 +125,90 @@ class GatewayServer:
             return normalize_platform(reported, None)
         return normalize_platform(reported, known + list(self._config.platforms or {}))
 
+    async def _reset_session_if_needed(
+        self, session_key: str, *, force: bool = False,
+    ) -> tuple[Any, bool]:
+        """Run the one authoritative reset path under the agent session lock."""
+        session = await self.session_manager.get_or_create(session_key)
+        if not force and not self.session_policy.should_reset(session):
+            return session, False
+
+        # Approval/clarification waits hold the turn lock. An explicit reset is
+        # itself the operator's request to abandon that turn, so wake only those
+        # waits before trying to acquire the lock. Automatic idle/daily resets
+        # do not pre-empt a genuinely active turn.
+        if force and self._agent_loop is not None:
+            unblock = getattr(self._agent_loop, "unblock_session_for_reset", None)
+            if callable(unblock):
+                unblock(session_key)
+
+        async def _clear_process_state() -> None:
+            if self._agent_loop is None:
+                return
+            reset_state = getattr(self._agent_loop, "reset_session_state", None)
+            if callable(reset_state):
+                result = reset_state(session_key)
+                if hasattr(result, "__await__"):
+                    await result
+
+        acquire = getattr(self.session_manager, "acquire", None)
+        if acquire is None:
+            # Compatibility for minimal embedders/test doubles. Production's
+            # SessionManager always provides the lock.
+            await self.session_policy.reset(session, self.session_manager)
+            await _clear_process_state()
+        else:
+            lock = await acquire(session_key)
+            async with lock:
+                session = await self.session_manager.get_or_create(session_key)
+                if not force and not self.session_policy.should_reset(session):
+                    return session, False
+                await self.session_policy.reset(session, self.session_manager)
+                # History epoch and every process-local prompt cache change as
+                # one critical section. Otherwise another accepted turn can
+                # populate the new epoch in the gap and then have it erased by
+                # this reset's late cleanup.
+                await _clear_process_state()
+        await self.hooks.emit("session_reset", session_key=session_key)
+        return session, True
+
+    async def _accept_turn(self, event: InboundEvent, session: Any) -> None:
+        # Approval/clarification replies are control traffic for an already
+        # running primary turn. Recording them as independent turns makes a
+        # reconnect's "latest" lookup report the tiny /approve acknowledgement
+        # as completed while the real task is still running.
+        command = event.text.strip().split(maxsplit=1)[0].lower() if event.text.strip() else ""
+        if event.is_control or command in {"/approve", "/deny", "/approvals", "/clarify"}:
+            return
+        turn_runs = getattr(self._agent_loop, "turn_runs", None)
+        if turn_runs is None:
+            return
+        from echo_agent.session.context_epoch import conversation_context_key
+
+        try:
+            result = turn_runs.accept(
+                event.event_id,
+                event.session_key,
+                context_key=conversation_context_key(event.session_key, session),
+                metadata={"channel": event.channel, "chat_id": event.chat_id},
+            )
+            if hasattr(result, "__await__"):
+                await result
+        except Exception as e:
+            # Status observability must never become a message-ingestion outage.
+            logger.warning("Turn acceptance ledger write failed: {}", e)
+
+    async def _reject_turn(self, event_id: str, reason: str) -> None:
+        turn_runs = getattr(self._agent_loop, "turn_runs", None)
+        if turn_runs is None:
+            return
+        try:
+            result = turn_runs.mark_terminal(event_id, "failed", error=reason)
+            if hasattr(result, "__await__"):
+                await result
+        except Exception as e:
+            logger.warning("Turn rejection ledger write failed: {}", e)
+
     @property
     def is_running(self) -> bool:
         return self._running
@@ -613,11 +697,7 @@ class GatewayServer:
                 "message", platform=platform, user_id=user_id, ok=False, reason=sk_err,
             )
             return web.json_response({"error": "forbidden session_key"}, status=403)
-        session = await self.session_manager.get_or_create(session_key)
-
-        if self.session_policy.should_reset(session):
-            await self.session_policy.reset(session, self.session_manager)
-            await self.hooks.emit("session_reset", session_key=session_key)
+        session, _ = await self._reset_session_if_needed(session_key)
 
         tokens = set_session_vars(
             platform=platform,
@@ -664,9 +744,11 @@ class GatewayServer:
                 future = asyncio.get_running_loop().create_future()
                 self._pending_http[event.event_id] = future
 
+            await self._accept_turn(event, session)
             accepted = await self._bus.publish_inbound(event)
             if not accepted:
                 self._pending_http.pop(event.event_id, None)
+                await self._reject_turn(event.event_id, "server overloaded")
                 return web.json_response({"error": "server overloaded"}, status=503)
             await self.hooks.emit(
                 "message_received",
@@ -723,9 +805,7 @@ class GatewayServer:
         if guard is not None:
             return guard
         key = request.match_info["key"]
-        session = await self.session_manager.get_or_create(key)
-        await self.session_policy.reset(session, self.session_manager)
-        await self.hooks.emit("session_reset", session_key=key)
+        await self._reset_session_if_needed(key, force=True)
         return web.json_response({"status": "reset", "session_key": key})
 
     async def _handle_pair_generate(self, request: web.Request) -> web.Response:
@@ -958,9 +1038,7 @@ class GatewayServer:
                             # buys an unbounded socket.
                             auth_deadline.mark_authenticated()
 
-                            session = await self.session_manager.get_or_create(session_key)
-                            if self.session_policy.should_reset(session):
-                                await self.session_policy.reset(session, self.session_manager)
+                            session, _ = await self._reset_session_if_needed(session_key)
 
                             await websocket.send_json({"type": "auth_ok", "session_key": session_key})
                             self.auth.audit("ws_auth", platform=platform, user_id=user_id, ok=True)
@@ -1000,7 +1078,9 @@ class GatewayServer:
                                 )
                                 event.metadata["gateway"] = True
                                 event.metadata["platform"] = platform
+                                await self._accept_turn(event, session)
                                 if not await self._bus.publish_inbound(event):
+                                    await self._reject_turn(event.event_id, "server overloaded")
                                     await websocket.send_json({"type": "error", "error": "server overloaded"})
                                     continue
                                 await websocket.send_json({

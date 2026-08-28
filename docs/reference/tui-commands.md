@@ -12,9 +12,10 @@ Echo Agent 的交互式终端 UI（TUI）支持斜杠命令，用于会话管理
 | `/clear` | 清空当前会话显示区域 | `Ctrl+L` |
 | `/copy` | 复制最近一条 Agent 回复到剪贴板 | `Ctrl+Shift+C` |
 | `/details` | 显示当前消息的详细元数据（token 用量、延迟等） | — |
-| `/save` | 将当前会话导出为 Markdown 文件 | — |
+| `/save` | 将当前会话导出为 Markdown / text / JSON | — |
 | `/theme` | 切换 UI 主题（dark/light/auto） | — |
 | `/reconnect` | 重新连接 WebSocket（断线后使用） | — |
+| `/status` | 查询服务端持久化的回合执行状态 | — |
 | `/quit` | 退出 TUI 客户端 | `Ctrl+C` / `Ctrl+D` |
 
 ### /help
@@ -59,14 +60,16 @@ Echo Agent 的交互式终端 UI（TUI）支持斜杠命令，用于会话管理
 ### /save
 
 ```
-/save [path]
+/save [--format md|txt|json] [path]
 ```
 
 | 参数 | 类型 | 默认 | 说明 |
 |------|------|------|------|
-| `path` | string | `./session_<id>_<timestamp>.md` | 导出文件路径 |
+| `path` | string | `<workspace>/transcripts/echo-<timestamp>.<ext>` | 导出文件路径 |
 
-导出格式为带时间戳的 Markdown，包含用户消息和 Agent 回复。
+- `md`（默认）：当前屏幕中的用户消息与 Agent 回复。
+- `txt`：同样的纯文本对话。
+- `json`：本次 CLI 运行期的完整审计事件，包括被 `/details` 隐藏的工具/认知帧与 `/status` 终态；`/clear` 不会删除这份审计缓冲。凭据字段、Bearer token、URL 密钥参数和命令行密钥 flag 会脱敏。
 
 ### /theme
 
@@ -91,6 +94,14 @@ Echo Agent 的交互式终端 UI（TUI）支持斜杠命令，用于会话管理
 ```
 
 手动触发 WebSocket 重连。TUI 内置自动重连机制（指数退避），通常无需手动调用。适用于网络切换后连接未自动恢复的情况。
+
+### /status
+
+```
+/status [event_id]
+```
+
+不带 ID 时查询当前会话最新的主回合；带 ID 时精确查询某一回合。结果来自网关持久化账本，不依赖 TUI 是否在线，可区分“正在执行”、“等待审批/补充信息”、“已完成”、“输出截断而未完成”、“失败”和“已中断”。重连后 TUI 会自动查询一次。
 
 ### /quit
 

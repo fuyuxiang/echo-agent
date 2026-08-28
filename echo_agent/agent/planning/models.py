@@ -52,6 +52,12 @@ class Plan:
             if all(s.status in (StepStatus.COMPLETED, StepStatus.SKIPPED) for s in self.steps):
                 self.is_complete = True
 
+    def mark_step_running(self, index: int) -> None:
+        if 0 <= index < len(self.steps):
+            self.steps[index].status = StepStatus.RUNNING
+            self.current_step = index
+            self.is_complete = False
+
     def mark_step_failed(self, index: int, error: str) -> None:
         if 0 <= index < len(self.steps):
             self.steps[index].status = StepStatus.FAILED

@@ -232,6 +232,11 @@ class AgentLoop:
         # 阶段 B(start 内 _resolve_embed_and_index)需要 storage 才能定案 backend
         # 并构造 VectorIndex/依赖它的消费者,故在此固化引用。
         self._storage = storage
+        self._turn_runs = None
+        if storage is not None:
+            from echo_agent.agent.turn_run_store import TurnRunStore
+
+            self._turn_runs = TurnRunStore(storage)
         try:
             provider_default_model = provider.get_default_model()
         except Exception as e:
@@ -369,6 +374,7 @@ class AgentLoop:
             registry=self.tools,
             router=router,
             cognitive_emitter=self.cognitive_emitter,
+            turn_run_store=self._turn_runs,
             allowlist=ApprovalAllowlist(
                 store_path=self.workspace / "data" / "approval_allowlist.json",
             ),
@@ -564,6 +570,7 @@ class AgentLoop:
             memory_store=self.memory,
             clarify_manager=self.clarify,
             interrupt_manager=self.interrupt,
+            turn_run_store=self._turn_runs,
         )
         # Retrieval prefetcher: after each reply ResponseStage fires this on the
         # DISCARDABLE tier to warm the next turn's cache. Needs _hybrid_retriever
@@ -801,6 +808,80 @@ class AgentLoop:
     def workflow_engine(self) -> Any:
         """WorkflowEngine for DAG advance on task completion; None when unwired."""
         return self._workflow_engine
+
+    @property
+    def turn_runs(self) -> Any:
+        """Durable per-event lifecycle ledger; None without persistent storage."""
+        return self._turn_runs
+
+    def unblock_session_for_reset(self, session_key: str) -> None:
+        """Release human-input waits before an explicit reset takes the lock.
+
+        Clarification and approval tools intentionally wait while holding the
+        per-session turn lock. A manual reset that waited for that same lock
+        before cancelling them could deadlock until their long timeout. This
+        narrow pre-reset hook only wakes those waits; cache/history mutation
+        still happens later under the lock.
+        """
+        self.clarify.cancel_session(session_key)
+        self.approval.cancel_session(session_key, reason="session reset")
+
+    async def _mark_turn_running(
+        self, event_id: str, session_key: str, *, context_key: str, trace_id: str,
+    ) -> None:
+        turn_runs = getattr(self, "_turn_runs", None)
+        if turn_runs is None:
+            return
+        try:
+            await turn_runs.mark_running(
+                event_id, session_key, context_key=context_key, trace_id=trace_id,
+            )
+        except Exception as e:
+            logger.warning("Turn running ledger write failed for {}: {}", event_id, e)
+
+    async def _mark_turn_terminal(
+        self, event_id: str, status: str, *, response_text: str = "", error: str = "",
+    ) -> None:
+        """Best-effort observability write; never turn it into a task failure."""
+        turn_runs = getattr(self, "_turn_runs", None)
+        if turn_runs is None:
+            return
+        try:
+            await turn_runs.mark_terminal(
+                event_id, status, response_text=response_text, error=error,
+            )
+        except Exception as e:
+            logger.warning("Turn terminal ledger write failed for {}: {}", event_id, e)
+
+    async def reset_session_state(self, session_key: str) -> None:
+        """Clear every reset-bounded, prompt-bearing process-local state.
+
+        Durable user/environment memories intentionally survive. Persisted
+        episodes and plans are isolated by the incremented conversation epoch,
+        so no destructive database purge is needed here.
+        """
+        from echo_agent.session.context_epoch import belongs_to_session
+
+        async with self._state_lock:
+            for cache in (
+                self._working_memories,
+                self._memory_snapshots,
+                self._memory_snapshot_ids,
+                self._retrieval_cache,
+            ):
+                for key in list(cache):
+                    if belongs_to_session(key, session_key):
+                        cache.pop(key, None)
+            for key in list(self._memory_snapshot_meta):
+                if belongs_to_session(key, session_key):
+                    self._memory_snapshot_meta.pop(key, None)
+        self.compressor.on_session_reset(session_key)
+        self._response_stage.on_session_reset(session_key)
+        # Reset happens under the session lock in GatewayServer, so no normal
+        # turn can be executing here. These are defensive cleanup for abandoned
+        # prompts/control state from a disconnected client.
+        self.unblock_session_for_reset(session_key)
+        self.interrupt.clear(session_key)
 
     @property
     def log_buffer(self) -> Any:
@@ -1488,6 +1569,9 @@ class AgentLoop:
                 out.metadata = dict(event.metadata)
                 out.metadata["_inbound_event_id"] = event.event_id
                 await self.bus.publish_outbound(out)
+                await self._mark_turn_terminal(
+                    event.event_id, "completed", response_text=response_text,
+                )
                 return
         # Clarify answers, like approval decisions, are handled BEFORE acquiring
         # the session lock — the blocked agent holds that lock while parked in
@@ -1505,6 +1589,9 @@ class AgentLoop:
                 out.metadata = dict(event.metadata)
                 out.metadata["_inbound_event_id"] = event.event_id
                 await self.bus.publish_outbound(out)
+                await self._mark_turn_terminal(
+                    event.event_id, "completed", response_text=response_text,
+                )
                 return
         # Session-interrupt escape valve, handled BEFORE the session lock for the
         # same reason as clarify answers: the agent blocked in wait_for_answer
@@ -1582,12 +1669,28 @@ class AgentLoop:
                 if not delivered:
                     await self._record_cron_outcome(event, "error", "delivery failed")
                     await self._record_task_outcome(event, "error", "delivery failed")
+                    await self._mark_turn_terminal(
+                        event.event_id, "failed", response_text=response_text,
+                        error="delivery failed",
+                    )
                 elif getattr(result, "task_incomplete", False):
                     await self._record_cron_outcome(event, "completed")
                     await self._record_task_outcome(event, "incomplete")
+                    terminal = (
+                        "interrupted"
+                        if result.termination_reason == "interrupted"
+                        else "incomplete"
+                    )
+                    await self._mark_turn_terminal(
+                        event.event_id, terminal, response_text=response_text,
+                        error=result.termination_reason,
+                    )
                 else:
                     await self._record_cron_outcome(event, "completed")
                     await self._record_task_outcome(event, "completed")
+                    await self._mark_turn_terminal(
+                        event.event_id, "completed", response_text=response_text,
+                    )
             except Exception as e:
                 logger.error("Processing failed for event {}: {}", event.event_id, e)
                 self.tracer.end_span(span, error=str(e))
@@ -1599,6 +1702,9 @@ class AgentLoop:
                 await self.bus.publish_outbound(error_out)
                 await self._record_cron_outcome(event, "error", str(e))
                 await self._record_task_outcome(event, "error", str(e))
+                await self._mark_turn_terminal(
+                    event.event_id, "failed", error=str(e),
+                )
             finally:
                 # Deregister the turn so a finished turn leaves no residue for
                 # the next one to trip over (mirrors request() above).
@@ -1624,11 +1730,19 @@ class AgentLoop:
             else:
                 event.memory_scope = event.session_key
         session = await self.sessions.get_or_create(event.session_key)
-        if event.session_key not in self._working_memories:
+        from echo_agent.session.context_epoch import conversation_context_key
+
+        context_key = conversation_context_key(event.session_key, session)
+        if context_key not in self._working_memories:
             from echo_agent.memory.tiers import WorkingMemory
-            await self._lru_put(self._working_memories, event.session_key, WorkingMemory(
+            await self._lru_put(self._working_memories, context_key, WorkingMemory(
                 max_entries=self.config.memory.max_working_memory
             ))
+        if not event.is_control:
+            await self._mark_turn_running(
+                event.event_id, event.session_key,
+                context_key=context_key, trace_id=trace_id,
+            )
         command_response = await self._handle_approval_command(event)
         if command_response is not None:
             session.add_message("user", event.text)
@@ -1715,6 +1829,8 @@ class AgentLoop:
             outbound_sent=result.outbound_sent,
             degraded_notices=result.degraded_notices,
             task_incomplete=result.task_incomplete,
+            output_truncated=result.output_truncated,
+            termination_reason=result.termination_reason,
         )
 
     async def _handle_approval_command(self, event: InboundEvent) -> str | None:
@@ -1992,5 +2108,20 @@ class AgentLoop:
         # to the message history.
         session_lock = await self.sessions.acquire(event.session_key)
         async with session_lock:
-            result = await self._process_event(event, uuid.uuid4().hex[:12], publish_response=False)
+            try:
+                result = await self._process_event(
+                    event, uuid.uuid4().hex[:12], publish_response=False,
+                )
+                status = "incomplete" if result.task_incomplete else "completed"
+                if result.termination_reason == "interrupted":
+                    status = "interrupted"
+                await self._mark_turn_terminal(
+                    event.event_id, status, response_text=result.response_text,
+                    error=result.termination_reason,
+                )
+            except Exception as e:
+                await self._mark_turn_terminal(
+                    event.event_id, "failed", error=str(e),
+                )
+                raise
         return result.response_text or ""

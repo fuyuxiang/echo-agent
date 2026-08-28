@@ -28,6 +28,8 @@ class ProcessResult:
     outbound_sent: bool = False
     degraded_notices: list[str] = field(default_factory=list)
     task_incomplete: bool = False
+    output_truncated: bool = False
+    termination_reason: str = ""
 
 
 def channel_matches(channel: str, patterns: list[str]) -> bool:

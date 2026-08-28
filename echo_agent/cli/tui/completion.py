@@ -30,9 +30,13 @@ COMMANDS: tuple[SlashCommand, ...] = (
         "/details", "[思考|工具|状态 展开|折叠|精简|隐藏]",
         "查看或调整过程信息的显示程度", "local", True,
     ),
-    SlashCommand("/save", "[路径]", "保存对话为 Markdown（默认存到 transcripts/）", "local", True),
+    SlashCommand(
+        "/save", "[--format md|txt|json] [路径]",
+        "保存对话（默认 Markdown，存到 transcripts/）", "local", True,
+    ),
     SlashCommand("/theme", "[light|dark]", "切换或查看亮/暗主题", "local", True),
     SlashCommand("/reconnect", "", "断线后重新连接网关", "local", False),
+    SlashCommand("/status", "[event_id]", "查询服务端权威回合状态", "local", True),
     SlashCommand("/quit", "", "退出", "local", False),
 )
 

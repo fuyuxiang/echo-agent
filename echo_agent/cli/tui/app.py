@@ -99,6 +99,10 @@ class EchoTUI(App):
         # injected by run_client. None in unit tests / when unsupported. Invoked
         # by the /reconnect command and the auto-retry path.
         self._reconnect = reconnect_coro
+        # Async server-side turn lookup, installed by attach_client. Kept out of
+        # the constructor signature so embedders with older EchoTUI factories stay
+        # source-compatible.
+        self._turn_status = None
         self._session_key = session_key
         # Connection state gates input: after a silent ws drop, submitting would
         # send into a dead socket and silently lose the message. False disables
@@ -329,6 +333,11 @@ class EchoTUI(App):
         # Streaming (append_token) stays plain text since partial markdown
         # is broken and re-parsing every token would flicker.
         r.set_markdown(text)
+        self._tv.record_reply(
+            inbound_id,
+            text,
+            turn_seq=self._event_turn_seq.get(inbound_id, 0),
+        )
         # Track for reconnection dedup.
         if inbound_id:
             self._tv._last_reply_event_id = inbound_id
@@ -422,6 +431,10 @@ class EchoTUI(App):
         self._unlock_prompt(focus=True)
 
     def on_cognitive(self, ev: CogEvent) -> None:
+        # Audit first: detail preferences only govern rendering. A hidden tool
+        # or trace frame is still operational evidence and belongs in JSON
+        # exports used to diagnose interrupted/stalled turns.
+        self._tv.record_cognitive(ev)
         if ev.cog_type == "heartbeat":
             # The beat now only refines the docked line's stage label; it mounts
             # nothing. The server note itself is dropped — it is monotonous and
@@ -695,6 +708,7 @@ class EchoTUI(App):
         self._tv.add_notice("[$text-muted]（补显示断连期间的回复）[/]")
         r = self._tv.start_reply()
         r.set_markdown(text)
+        self._tv.record_reply(event_id, text)
         if event_id:
             self._tv._last_reply_event_id = event_id
         try:
@@ -862,7 +876,7 @@ class EchoTUI(App):
     # Local commands that stay reachable while a clarify is pending: escape
     # hatches and read-only helpers. Anything that would answer or mutate the
     # conversation is excluded, so ordinary answers still reach the clarify.
-    _CLARIFY_SAFE_COMMANDS = frozenset({"/help", "/quit", "/reconnect"})
+    _CLARIFY_SAFE_COMMANDS = frozenset({"/help", "/quit", "/reconnect", "/status"})
 
     async def _run_local_command(self, text: str, *, during_clarify: bool) -> bool:
         """Execute a client-local command. Returns True if ``text`` was handled.
@@ -905,6 +919,9 @@ class EchoTUI(App):
             return True
         if name == "/reconnect":
             await self._do_reconnect()
+            return True
+        if name == "/status":
+            await self._do_status(arg)
             return True
         return False
 
@@ -952,8 +969,52 @@ class EchoTUI(App):
             ok = False
         if ok:
             self.notify_reconnected()
+            await self._do_status("", quiet_unavailable=True)
         else:
             self._tv.add_error("重连失败。请确认网关仍在运行后重试 /reconnect。")
+
+    async def _do_status(self, event_id: str = "", *, quiet_unavailable: bool = False) -> None:
+        """Query the durable server-side lifecycle record for a turn."""
+        if self._turn_status is None:
+            if not quiet_unavailable:
+                self._tv.add_error("当前连接不支持回合状态查询。")
+            return
+        try:
+            turn = await self._turn_status(event_id)
+        except Exception:
+            turn = {}
+        if not turn:
+            if not quiet_unavailable:
+                self._tv.add_error("未找到可查询的回合状态。")
+            return
+        status = str(turn.get("status", "unknown"))
+        labels = {
+            "accepted": "已接收",
+            "running": "正在执行",
+            "waiting_approval": "等待审批",
+            "waiting_clarification": "等待补充信息",
+            "completed": "已完成",
+            "incomplete": "未完成",
+            "failed": "失败",
+            "interrupted": "已中断",
+        }
+        detail = labels.get(status, status)
+        tool = str(turn.get("current_tool", ""))
+        if tool:
+            detail += f" · 当前工具 {tool}"
+        eid = str(turn.get("event_id", ""))
+        self._tv.add_notice(
+            f"[$text-muted]回合 {eid or '-'}：{detail}[/]"
+        )
+        self._tv.record_turn_status(turn)
+        if status in {"accepted", "running", "waiting_approval", "waiting_clarification"}:
+            self._activity_call("start")
+        elif status == "completed":
+            self._activity_call("settle", "done")
+        elif status in {"incomplete", "interrupted"}:
+            self._activity_call("settle", "interrupted")
+        elif status == "failed":
+            self._activity_call("settle", "error")
 
     def _do_copy(self, whole: bool) -> None:
         """Copy the last reply (default) or the whole transcript (/copy all) to
@@ -969,54 +1030,96 @@ class EchoTUI(App):
         self.notify(f"已复制{scope}（{len(text)} 字）到剪贴板", timeout=3)
 
     def _do_save(self, arg: str) -> None:
-        """/save [路径] — write the whole conversation to a Markdown file.
+        """/save [--format md|txt|json] [路径] — persist the transcript.
         Unlike /copy this persists to disk (OSC 52 clipboard is flaky and caps
         out on long transcripts). With no arg it writes an auto-named file under
         self._save_dir (<workspace>/transcripts); an arg is taken as a target:
         a directory (or trailing-slash path) keeps the auto name inside it, any
-        other value is used as the filename verbatim (``.md`` appended if
-        missing). Relative args resolve against the default save dir so a bare
+        other value is used as the filename (the selected extension is appended
+        if missing). Relative args resolve against the default save dir so a bare
         ``/save notes`` lands with the rest, not wherever the gateway was
         launched."""
         from datetime import datetime
         from pathlib import Path
+        import shlex
+
+        fmt = "md"
+        try:
+            tokens = shlex.split(arg)
+        except ValueError as e:
+            self.notify(f"路径解析失败: {e}", severity="error", timeout=4)
+            return
+        path_parts: list[str] = []
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            if token == "--format":
+                if index + 1 >= len(tokens):
+                    self.notify("--format 需要 md、txt 或 json", severity="error", timeout=4)
+                    return
+                fmt = tokens[index + 1].lower()
+                index += 2
+                continue
+            if token.startswith("--format="):
+                fmt = token.split("=", 1)[1].lower()
+                index += 1
+                continue
+            path_parts.append(token)
+            index += 1
+        if fmt not in {"md", "txt", "json"}:
+            self.notify(f"不支持的导出格式: {fmt}", severity="error", timeout=4)
+            return
+        path_arg = " ".join(path_parts)
 
         # export_text is empty exactly when there is no real conversation (no
         # user turns / non-status agent replies), which is the same content
         # selection export_markdown uses — so this can never report "saved" for a
         # file that turns out to hold only the metadata header.
-        if not self._tv.export_text().strip():
+        has_content = (
+            self._tv.has_audit_conversation()
+            if fmt == "json"
+            else bool(self._tv.export_text().strip())
+        )
+        if not has_content:
             self.notify("暂无可保存的对话", severity="warning", timeout=3)
             return
-        md = self._tv.export_markdown(
-            session_key=self._session_key,
-            when=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        )
+        exported_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if fmt == "json":
+            content = self._tv.export_json(
+                session_key=self._session_key, when=exported_at,
+            )
+        elif fmt == "txt":
+            content = self._tv.export_text().rstrip() + "\n"
+        else:
+            content = self._tv.export_markdown(
+                session_key=self._session_key, when=exported_at,
+            )
 
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        auto_name = f"echo-{stamp}.md"
+        suffix = {"md": ".md", "txt": ".txt", "json": ".json"}[fmt]
+        auto_name = f"echo-{stamp}{suffix}"
         base = self._save_dir
-        if not arg:
+        if not path_arg:
             target = base / auto_name
         else:
-            raw = Path(arg).expanduser()
+            raw = Path(path_arg).expanduser()
             # A trailing slash or an existing directory means "put the
             # auto-named file in here"; otherwise treat arg as the filename.
-            is_dir = arg.endswith("/") or raw.is_dir()
+            is_dir = path_arg.endswith("/") or raw.is_dir()
             if is_dir:
                 target = (raw if raw.is_absolute() else base / raw) / auto_name
             else:
-                if raw.suffix.lower() != ".md":
-                    raw = raw.with_name(raw.name + ".md")
+                if raw.suffix.lower() != suffix:
+                    raw = raw.with_name(raw.name + suffix)
                 target = raw if raw.is_absolute() else base / raw
 
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(md, encoding="utf-8")
+            target.write_text(content, encoding="utf-8")
         except OSError as e:
             self.notify(f"保存失败: {e}", severity="error", timeout=5)
             return
-        self.notify(f"已保存对话到 {target}（{len(md)} 字）", timeout=4)
+        self.notify(f"已保存对话到 {target}（{len(content)} 字）", timeout=4)
 
     def _do_theme(self, arg: str) -> None:
         """/theme — switch or report the active palette. `light`/`dark` set it;

@@ -244,3 +244,38 @@ async def test_non_admin_request_rejected():
         assert resp.status == 403
         data = await resp.json()
         assert data["error"] == "admin authorization required"
+
+
+@pytest.mark.asyncio
+async def test_turn_status_endpoints_use_durable_store(mock_server, api):
+    store = MagicMock()
+    store.get = AsyncMock(return_value={"event_id": "e1", "status": "incomplete"})
+    store.list_session = AsyncMock(return_value=[
+        {"event_id": "e1", "status": "incomplete"},
+    ])
+    mock_server._agent_loop = MagicMock(turn_runs=store)
+
+    app = web.Application()
+    app.router.add_get("/api/v1/turns/{event_id}", api.get_turn)
+    app.router.add_get("/api/v1/sessions/{key}/turns", api.list_turns)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/api/v1/turns/e1")
+        assert resp.status == 200
+        assert (await resp.json())["turn"]["status"] == "incomplete"
+
+        resp = await client.get("/api/v1/sessions/cli%3Alocal/turns?limit=1")
+        assert resp.status == 200
+        assert (await resp.json())["turns"][0]["event_id"] == "e1"
+    store.get.assert_awaited_once_with("e1")
+    store.list_session.assert_awaited_once_with("cli:local", limit=1)
+
+
+@pytest.mark.asyncio
+async def test_turn_status_limit_is_bounded(mock_server, api):
+    mock_server._agent_loop = MagicMock(turn_runs=MagicMock())
+    app = web.Application()
+    app.router.add_get("/api/v1/sessions/{key}/turns", api.list_turns)
+    async with TestClient(TestServer(app)) as client:
+        for value in ("0", "101", "oops"):
+            resp = await client.get(f"/api/v1/sessions/s/turns?limit={value}")
+            assert resp.status == 400

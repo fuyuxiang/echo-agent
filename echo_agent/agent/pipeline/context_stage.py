@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import re
 import time
 from collections import OrderedDict
 from typing import Any, TYPE_CHECKING
@@ -53,6 +54,11 @@ _REPLY_SNIPPET_MAX = 500  # 被引用原文注入上限，过长截断，避免�
 # (≤12 字符)时才续跑旧计划——一条新的完整问题即使包含"继续"一词,也应视为
 # 新任务走 create_plan。宁可漏续(用户可再说一次"继续"),不可错续。
 _RESUME_MARKERS = ("继续", "接着做", "接着来", "继续做", "continue", "resume", "go on")
+_DEICTIC_RE = re.compile(
+    r"(上述|上面|前面|刚才|刚刚|这些|该项|照这个|按这个|"
+    r"逐项|继续|接着|\babove\b|\bprevious\b|\bthose\b|\bcontinue\b|\bresume\b)",
+    re.IGNORECASE,
+)
 
 
 def wants_resume(text: str) -> bool:
@@ -62,6 +68,80 @@ def wants_resume(text: str) -> bool:
         return False
     lowered = stripped.lower()
     return any(lowered.startswith(m) for m in _RESUME_MARKERS)
+
+
+def _message_text(message: dict[str, Any]) -> str:
+    content = message.get("content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(part.get("text", ""))
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    return str(content or "")
+
+
+def contextual_retrieval_query(text: str, history: list[dict[str, Any]]) -> str:
+    """Resolve deictic search terms from the immediate conversation.
+
+    Queries like "apply the above changes" are nearly content-free on their
+    own. Sending that text directly to long-term retrieval lets an unrelated
+    old checklist become the strongest lexical match. For such turns only,
+    append the recent human-visible exchange to the retrieval query; ordinary
+    self-contained requests keep their historical behaviour and cost.
+    """
+    current = (text or "").strip()
+    if not current or not _DEICTIC_RE.search(current):
+        return current
+    recent: list[str] = []
+    for message in reversed(history):
+        role = message.get("role")
+        if role not in {"user", "assistant"} or message.get("tool_calls"):
+            continue
+        body = _message_text(message).strip()
+        if body:
+            recent.append(f"{role}: {body[-800:]}")
+        if len(recent) >= 4:
+            break
+    if not recent:
+        return current
+    recent.reverse()
+    return f"{' '.join(recent)} current user: {current}"[-2400:]
+
+
+def planning_context(history: list[dict[str, Any]], retrieval: str) -> str:
+    """Build planner context with conversation/recalled-data provenance.
+
+    A configured PLAN_EXECUTE strategy runs a separate model call that does not
+    otherwise see chat history. Passing only retrieval made it capable of
+    resolving "the above" against old memory and injecting that stale plan into
+    the real inference turn.
+    """
+    recent: list[str] = []
+    for message in reversed(history):
+        role = message.get("role")
+        if role not in {"user", "assistant"} or message.get("tool_calls"):
+            continue
+        body = _message_text(message).strip()
+        if body:
+            recent.append(f"{role}: {body[-1000:]}")
+        if len(recent) >= 4:
+            break
+    recent.reverse()
+    parts: list[str] = []
+    if recent:
+        parts.append(
+            "Recent conversation (authoritative for references such as "
+            "'above' and 'continue'):\n" + "\n".join(recent)
+        )
+    if retrieval:
+        parts.append(
+            "Recalled background (may be stale; never redefine the active task):\n"
+            + retrieval[:2000]
+        )
+    return "\n\n".join(parts)
 
 
 def build_user_message_with_reply(event: InboundEvent) -> str:
@@ -202,7 +282,9 @@ class ContextStage:
         context = self._knowledge.format_results(results)
         return results, context
 
-    async def _bounded_retrieve(self, event: InboundEvent) -> list | None:
+    async def _bounded_retrieve(
+        self, event: InboundEvent, context_key: str = "", query: str = "",
+    ) -> list | None:
         """Degrade-mode cache miss: sync retrieval under a time budget.
 
         Latency-first CLI still deserves memory on first turns and topic
@@ -221,16 +303,16 @@ class ContextStage:
                 # audience=RETRIEVAL:兜底召回本就是"该显示的召回",与 Hybrid
                 # 主路径对齐,过滤 superseded/archived/unresolved,不漏进 prompt。
                 return self._memory.search_scored(
-                    event.text, limit=5, session_key=event.memory_scope,
+                    query or event.text, limit=5, session_key=event.memory_scope,
                     audience=Audience.RETRIEVAL,
                 )
             return None
         try:
             return await asyncio.wait_for(
                 self._hybrid_retriever.retrieve(
-                    event.text, limit=8,
+                    query or event.text, limit=8,
                     memory_scope=event.memory_scope,
-                    episode_session_key=event.session_key,
+                    episode_session_key=context_key or event.session_key,
                 ),
                 timeout=timeout,
             )
@@ -240,7 +322,7 @@ class ContextStage:
             )
             try:
                 return self._memory.search_scored(
-                    event.text, limit=5, session_key=event.memory_scope,
+                    query or event.text, limit=5, session_key=event.memory_scope,
                     audience=Audience.RETRIEVAL,
                 )
             except Exception as e:
@@ -260,10 +342,13 @@ class ContextStage:
         stream_publisher: Any,
         intro_text: str,
     ) -> PipelineContext:
+        from echo_agent.session.context_epoch import conversation_context_key
+
+        context_key = conversation_context_key(event.session_key, session)
         ephemeral = _is_ephemeral_session(event.session_key, event.channel)
         working_ctx = ""
-        if event.session_key in self._working_memories:
-            working_ctx = self._working_memories[event.session_key].get_context()
+        if context_key in self._working_memories:
+            working_ctx = self._working_memories[context_key].get_context()
 
         snapshot_ids: frozenset[str] = frozenset()
         if not self._memory_enabled:
@@ -271,15 +356,15 @@ class ContextStage:
             memory_ctx = working_ctx
         elif self._snapshot_enabled and not ephemeral:
             cur_ver = self._scope_version_fn(event.memory_scope) if self._scope_version_fn else 0
-            meta = self._memory_snapshot_meta.get(event.session_key)
+            meta = self._memory_snapshot_meta.get(context_key)
             snapshot_valid = (
-                event.session_key in self._memory_snapshots
+                context_key in self._memory_snapshots
                 and meta is not None
                 and meta == (event.memory_scope, cur_ver)
             )
             if snapshot_valid:
-                snapshot = self._memory_snapshots[event.session_key]
-                snapshot_ids = self._memory_snapshot_ids.get(event.session_key, frozenset())
+                snapshot = self._memory_snapshots[context_key]
+                snapshot_ids = self._memory_snapshot_ids.get(context_key, frozenset())
             else:
                 # R3 叙事层:async 上下文预取最近 N 条 episode.summary 传入,规避
                 # get_snapshot_with_ids 转 async 牵动全部调用点。叙事随快照一起
@@ -288,7 +373,7 @@ class ContextStage:
                 if self._episodic is not None and self._narrative_episode_count > 0:
                     try:
                         episodes = await self._episodic.get_session_episodes(
-                            event.session_key, self._narrative_episode_count
+                            context_key, self._narrative_episode_count
                         )
                         narrative_summaries = [e.summary for e in episodes if e.summary]
                     except Exception as e:
@@ -303,7 +388,7 @@ class ContextStage:
                     # (不得回退到无界直写 dict)。记录构建时 (scope, version),
                     # 该 scope 被写后 bump 版本即令此快照失效。
                     await self._put_snapshot(
-                        event.session_key, snapshot, snapshot_ids,
+                        context_key, snapshot, snapshot_ids,
                         event.memory_scope, cur_ver,
                     )
             memory_ctx = build_memory_context(
@@ -336,7 +421,7 @@ class ContextStage:
 
         history = session.get_history(self._config.session.max_history_messages)
         if self._compressor.should_compress(history):
-            self._compressor._session_key = event.session_key
+            self._compressor._session_key = context_key
             history_copy = copy.deepcopy(history)
             result = await self._compressor.compress(history_copy, focus_topic=event.text)
             history = result.messages
@@ -349,6 +434,12 @@ class ContextStage:
                 session.messages = session.messages[:session.last_consolidated] + result.messages
                 await self._sessions.save(session)
 
+        # Resolve an explicit reply quote before retrieval as well as inference:
+        # "apply this" is otherwise as content-free to BM25/vector search as an
+        # unquoted "above", even though the channel supplied the exact referent.
+        user_message = build_user_message_with_reply(event)
+        retrieval_query = contextual_retrieval_query(user_message, history)
+
         media_items = event.media_items
         resolved_media = (
             await self._context_builder.resolve_inbound_media(media_items, event.channel)
@@ -359,7 +450,6 @@ class ContextStage:
         media_refs = self._build_media_refs(resolved_media) if resolved_media else None
         # 引用回复：把被引用消息原文作为前缀注入写入历史的文本，供模型消歧。
         # 只影响历史副本，event.text 保持原样（上游检索/压缩仍用原始问题）。
-        user_message = build_user_message_with_reply(event)
         if media_refs:
             session.add_message("user", user_message, media_refs=media_refs)
         else:
@@ -373,7 +463,7 @@ class ContextStage:
         # below share one freshness decision. Knowledge lives outside the
         # memory.enabled block, so the lookup must sit above it.
         cached = (
-            self._retrieval_cache_get(event.session_key)
+            self._retrieval_cache_get(context_key)
             if self._retrieval_cache_get is not None
             else None
         )
@@ -383,7 +473,7 @@ class ContextStage:
             and getattr(cached, "scope", "") == event.memory_scope
             and getattr(cached, "scope_version", 0) == cur_ver
             and is_fresh(
-                cached, event.text, now=time.time(),
+                cached, retrieval_query, now=time.time(),
                 ttl=self._cache_ttl, jaccard_min=self._cache_jaccard_min,
             )
         )
@@ -405,17 +495,19 @@ class ContextStage:
                     # no separate "recent N" fetch here, which would otherwise
                     # miss high-relevance episodes outside the recency window.
                     scored = await self._hybrid_retriever.retrieve(
-                        event.text, limit=8,
+                        retrieval_query, limit=8,
                         memory_scope=event.memory_scope,
-                        episode_session_key=event.session_key,
+                        episode_session_key=context_key,
                     )
                 else:
                     scored = self._memory.search_scored(
-                        event.text, limit=5, session_key=event.memory_scope,
+                        retrieval_query, limit=5, session_key=event.memory_scope,
                         audience=Audience.RETRIEVAL,
                     )
             else:
-                scored = await self._bounded_retrieve(event)
+                scored = await self._bounded_retrieve(
+                    event, context_key, retrieval_query,
+                )
             if scored:
                 scored = filter_recall_by_snapshot(scored, snapshot_ids)
             if scored:
@@ -487,7 +579,9 @@ class ContextStage:
                 if self._retrieval_on_miss == "sync" or not knowledge_prefetch_active:
                     try:
                         _, knowledge_context = (
-                            await self._fetch_knowledge(event.text, event.sender_id, channel=event.channel)
+                            await self._fetch_knowledge(
+                                retrieval_query, event.sender_id, channel=event.channel,
+                            )
                         )
                     except Exception as e:
                         logger.debug("Knowledge retrieval failed: {}", e)
@@ -527,7 +621,7 @@ class ContextStage:
             if self._plan_run_store is not None and wants_resume(event.text):
                 try:
                     resumable = await self._plan_run_store.get_resumable(
-                        event.session_key
+                        context_key
                     )
                 except Exception as e:
                     logger.debug("Resumable plan lookup failed: {}", e)
@@ -546,15 +640,15 @@ class ContextStage:
                         messages[-1]["content"] = f"{last_content}\n\n{resume_note}"
                     logger.info(
                         "Resuming plan run {} for session {}",
-                        plan_run_id, event.session_key,
+                        plan_run_id, context_key,
                     )
         if self._planner and tool_defs and execution_plan is None:
             try:
-                token_est = len(event.text) // 4
+                token_est = len(user_message) // 4
                 execution_plan = await self._planner.create_plan(
-                    query=event.text,
+                    query=user_message,
                     tools=tool_defs,
-                    context=retrieval,
+                    context=planning_context(history, retrieval),
                     token_estimate=token_est,
                 )
                 # A single-step plan ("reason and act iteratively") carries no
@@ -573,7 +667,7 @@ class ContextStage:
                     if self._plan_run_store is not None:
                         try:
                             plan_run_id = await self._plan_run_store.create(
-                                event.session_key, trace_id, execution_plan
+                                context_key, trace_id, execution_plan
                             )
                         except Exception as e:
                             logger.debug("Plan run persistence failed: {}", e)
@@ -585,6 +679,7 @@ class ContextStage:
             session=session,
             trace_id=trace_id,
             publish_response=publish_response,
+            context_key=context_key,
             system_prompt=system_prompt,
             messages=messages,
             tool_defs=tool_defs,

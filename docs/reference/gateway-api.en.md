@@ -254,6 +254,20 @@ DELETE /api/sessions/{session_id}
 !!! warning "Irreversible"
     Deleting a session removes all messages and associated context. Memory entries created during the session are preserved.
 
+#### Durable Turn Status
+
+```
+GET /api/v1/sessions/{key}/turns?limit=20
+GET /api/v1/turns/{event_id}
+```
+
+These admin-scoped endpoints expose the authoritative lifecycle ledger used by
+CLI reconnect reconciliation. States are `accepted`, `running`,
+`waiting_approval`, `waiting_clarification`, `completed`, `incomplete`,
+`failed`, or `interrupted`. A record also carries its current tool, response,
+termination reason, context epoch, and timestamps. The list limit must be
+between 1 and 100; a runtime without durable storage returns `503`.
+
 ---
 
 ### `/api/memory`

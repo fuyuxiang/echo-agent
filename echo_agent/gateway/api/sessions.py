@@ -84,3 +84,35 @@ class SessionsAPI:
             "total": len(visible),
             "returned": len(messages),
         })
+
+    def _turn_store(self):
+        agent = self._server._agent_loop
+        return getattr(agent, "turn_runs", None) if agent is not None else None
+
+    async def get_turn(self, request: web.Request) -> web.Response:
+        guard = self._guard(request, "turn_status")
+        if guard is not None:
+            return guard
+        store = self._turn_store()
+        if store is None:
+            return web.json_response({"error": "turn status unavailable"}, status=503)
+        turn = await store.get(request.match_info["event_id"])
+        if turn is None:
+            return web.json_response({"error": "not found"}, status=404)
+        return web.json_response({"turn": turn})
+
+    async def list_turns(self, request: web.Request) -> web.Response:
+        guard = self._guard(request, "turn_status")
+        if guard is not None:
+            return guard
+        store = self._turn_store()
+        if store is None:
+            return web.json_response({"error": "turn status unavailable"}, status=503)
+        try:
+            limit = int(request.query.get("limit", "20"))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "invalid limit parameter"}, status=400)
+        if not 1 <= limit <= 100:
+            return web.json_response({"error": "limit must be between 1 and 100"}, status=400)
+        turns = await store.list_session(request.match_info["key"], limit=limit)
+        return web.json_response({"turns": turns, "total": len(turns)})

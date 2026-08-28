@@ -230,6 +230,40 @@ async def fetch_last_assistant_reply(
     return ""
 
 
+async def fetch_turn_status(
+    session: aiohttp.ClientSession,
+    *,
+    host: str,
+    port: int,
+    api_prefix: str,
+    session_key: str,
+    token: str,
+    event_id: str = "",
+) -> dict:
+    """Fetch one durable server-side turn record; empty dict on any failure."""
+    from urllib.parse import quote
+
+    prefix = api_prefix if api_prefix.startswith("/") else "/" + api_prefix
+    if event_id:
+        suffix = f"/turns/{quote(event_id, safe='')}"
+    else:
+        suffix = f"/sessions/{quote(session_key, safe='')}/turns?limit=1"
+    url = f"http://{host}:{port}{prefix.rstrip('/')}{suffix}"
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    try:
+        async with session.get(url, headers=headers) as resp:
+            if resp.status != 200:
+                return {}
+            body = await resp.json()
+    except (aiohttp.ClientError, OSError, ValueError):
+        return {}
+    if event_id:
+        turn = body.get("turn")
+        return turn if isinstance(turn, dict) else {}
+    turns = body.get("turns") or []
+    return turns[0] if turns and isinstance(turns[0], dict) else {}
+
+
 async def run_client(
     *, host: str, port: int, ws_path: str, user_id: str, token: str,
     save_dir=None, api_prefix: str = "/api/v1"
@@ -321,27 +355,41 @@ async def run_client(
                 await old_ws.close()
             except Exception:
                 pass
-            # Recover any final reply the gateway produced while we were down.
-            # The gateway drops live pushes to a closed socket and never replays,
-            # so a reply that landed during the outage is only in history — pull
-            # the latest assistant message and let the TUI show it if it differs
-            # from what is already on screen (dedup lives in the sink).
+            # Recover from the authoritative turn ledger first. It carries both
+            # terminal state and event correlation; old gateways fall back to the
+            # text-only history endpoint below.
             try:
-                missed = await fetch_last_assistant_reply(
+                latest = await fetch_turn_status(
                     session, host=host, port=port, api_prefix=api_prefix,
                     session_key=session_key, token=token,
                 )
-                if missed:
-                    app.replay_missed_reply(missed)
+                if latest.get("response_text"):
+                    app.replay_missed_reply(
+                        str(latest["response_text"]), str(latest.get("event_id", "")),
+                    )
+                elif not latest:
+                    missed = await fetch_last_assistant_reply(
+                        session, host=host, port=port, api_prefix=api_prefix,
+                        session_key=session_key, token=token,
+                    )
+                    if missed:
+                        app.replay_missed_reply(missed)
             except Exception:
                 pass
             return True
+
+        async def turn_status_coro(event_id: str = "") -> dict:
+            return await fetch_turn_status(
+                session, host=host, port=port, api_prefix=api_prefix,
+                session_key=session_key, token=token, event_id=event_id,
+            )
 
         app = EchoTUI(
             send_coro=send_coro, session_key=session_key,
             interrupt_coro=interrupt_coro, reconnect_coro=reconnect_coro,
             save_dir=save_dir,
         )
+        app._turn_status = turn_status_coro
         bridge = WSBridge(app)
 
         conn["pump_task"] = asyncio.create_task(pump())

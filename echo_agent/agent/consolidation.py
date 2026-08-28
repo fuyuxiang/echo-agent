@@ -41,18 +41,25 @@ class ConsolidationWorker:
         *,
         tier: Any = None,
         memory_scope: str = "",
+        conversation_key: str = "",
     ) -> None:
+        pending_key = conversation_key or session_key
         async with self._lock:
-            if session_key in self._pending:
+            if pending_key in self._pending:
                 return
-            self._pending.add(session_key)
+            self._pending.add(pending_key)
         if tier is not None:
             # DURABLE point: pass a zero-arg factory (not a bare coroutine) so the
             # scheduler can re-invoke it on retry, and tag the tier so it is
             # queued — never dropped — under saturation.
-            spawn_fn(lambda: self._run(session_key, on_complete, memory_scope), tier=tier)
+            spawn_fn(
+                lambda: self._run(
+                    session_key, on_complete, memory_scope, pending_key,
+                ),
+                tier=tier,
+            )
         else:
-            spawn_fn(self._run(session_key, on_complete, memory_scope))
+            spawn_fn(self._run(session_key, on_complete, memory_scope, pending_key))
 
     def is_pending(self, session_key: str) -> bool:
         return session_key in self._pending
@@ -62,7 +69,9 @@ class ConsolidationWorker:
         session_key: str,
         on_complete: Callable[[str], Coroutine[Any, Any, None]] | None = None,
         memory_scope: str = "",
+        conversation_key: str = "",
     ) -> None:
+        conversation_key = conversation_key or session_key
         try:
             # Phase 1 (locked, fast): snapshot the unconsolidated chunk.
             # The session lock must NOT be held across the LLM calls below —
@@ -110,9 +119,20 @@ class ConsolidationWorker:
             # fact extraction via service.promote (same-key merge, no dup), and
             # reflection consuming unresolved rows (resolved-once, re-entrant).
             if self._sleep_consolidation:
+                # A reset may have happened while the summarizer was running.
+                # Never promote the old conversation into the new epoch.
+                from echo_agent.session.context_epoch import conversation_context_key
+
+                current = await self._sessions.get_or_create(session_key)
+                if conversation_context_key(session_key, current) != conversation_key:
+                    logger.info(
+                        "Discarding stale consolidation for {} after session reset",
+                        session_key,
+                    )
+                    return
                 try:
                     stats = await self._consolidator.sleep_consolidate(
-                        session_key, trimmed, chunk_already_consolidated=chunk_ok,
+                        conversation_key, trimmed, chunk_already_consolidated=chunk_ok,
                         memory_scope=memory_scope, range_start=start,
                     )
                     if any(v > 0 for v in stats.values()):
@@ -154,7 +174,7 @@ class ConsolidationWorker:
             raise
         finally:
             async with self._lock:
-                self._pending.discard(session_key)
+                self._pending.discard(conversation_key or session_key)
 
     @staticmethod
     def _snapshot_still_valid(session: Any, start: int, chunk: list[dict], boundary: int) -> bool:

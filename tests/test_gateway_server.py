@@ -126,6 +126,57 @@ async def test_pending_http_capacity_limit() -> None:
 
 
 @pytest.mark.asyncio
+async def test_session_reset_clears_process_state_inside_session_lock() -> None:
+    gw, _ = _make_gateway()
+    entered = False
+
+    class _Lock:
+        async def __aenter__(self):
+            nonlocal entered
+            entered = True
+
+        async def __aexit__(self, *_args):
+            nonlocal entered
+            entered = False
+
+    gw.session_policy = MagicMock()
+    gw.session_policy.should_reset.return_value = True
+    gw.session_policy.reset = AsyncMock()
+    gw.session_manager.acquire = AsyncMock(return_value=_Lock())
+
+    async def _reset_state(_key):
+        assert entered, "new-epoch caches must be cleared before releasing the session lock"
+
+    gw._agent_loop.reset_session_state = AsyncMock(side_effect=_reset_state)
+    _session, reset = await gw._reset_session_if_needed("cli:local")
+    assert reset is True
+    gw._agent_loop.reset_session_state.assert_awaited_once_with("cli:local")
+
+
+@pytest.mark.asyncio
+async def test_manual_reset_unblocks_human_wait_before_lock() -> None:
+    gw, _ = _make_gateway()
+    calls: list[str] = []
+
+    class _Lock:
+        async def __aenter__(self):
+            calls.append("lock")
+
+        async def __aexit__(self, *_args):
+            pass
+
+    gw.session_policy.reset = AsyncMock()
+    gw.session_manager.acquire = AsyncMock(return_value=_Lock())
+    gw._agent_loop.unblock_session_for_reset = MagicMock(
+        side_effect=lambda _key: calls.append("unblock")
+    )
+    gw._agent_loop.reset_session_state = AsyncMock()
+
+    await gw._reset_session_if_needed("cli:local", force=True)
+    assert calls[:2] == ["unblock", "lock"]
+
+
+@pytest.mark.asyncio
 async def test_handle_message_preserves_gateway_media_url_image_type(tmp_path: Path) -> None:
     gw, bus = _make_gateway()
     cached_image = tmp_path / "cached.png"

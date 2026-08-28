@@ -134,6 +134,49 @@ class TestInferenceStageTextOnly:
         assert result.task_incomplete is False  # clean finish → task may be SUCCESS
 
 
+class TestInferenceStagePlanProgress:
+    @pytest.mark.asyncio
+    async def test_tool_hint_marks_real_step_progress(self):
+        from echo_agent.agent.planning.models import (
+            Plan, PlanStep, StepStatus, StrategyType,
+        )
+
+        call = ToolCallRequest(id="call-1", name="exec", arguments={"command": "true"})
+        provider = AsyncMock()
+        provider.chat_stream_with_retry = AsyncMock(side_effect=[
+            LLMResponse(content="", tool_calls=[call], finish_reason="tool_calls"),
+            LLMResponse(content="done", finish_reason="stop"),
+        ])
+        tools = MagicMock()
+        tools.execute = AsyncMock(return_value=MagicMock(
+            success=True, text="ok", error=None, metadata={}, is_infra_failure=False,
+        ))
+        tools.has = MagicMock(return_value=False)
+        tools.get = MagicMock(return_value=None)
+        tools.apply_spill = MagicMock(side_effect=lambda _name, _ctx, result: result)
+
+        stage, _ = _make_stage(provider=provider, tools=tools)
+        plan_store = MagicMock()
+        plan_store.update = AsyncMock()
+        stage._plan_run_store = plan_store
+        ctx = _make_ctx(tool_defs=[{"function": {"name": "exec"}}])
+        ctx.execution_plan = Plan(
+            strategy=StrategyType.PLAN_EXECUTE,
+            goal="run check",
+            steps=[PlanStep(index=0, description="run check", tool_hint="exec")],
+        )
+        ctx.plan_run_id = "run-1"
+
+        result = await stage.run(ctx)
+
+        assert result.task_incomplete is False
+        assert ctx.execution_plan.steps[0].status == StepStatus.COMPLETED
+        assert ctx.execution_plan.steps[0].result == "ok"
+        statuses = [call.kwargs.get("status") for call in plan_store.update.await_args_list]
+        assert "running" in statuses
+        assert statuses[-1] == "complete"
+
+
 class TestInferenceStageError:
     """Model returns finish_reason='error' — fallback text."""
 
@@ -623,6 +666,9 @@ class TestInferenceStageLengthTruncation:
 
         assert result.response_text == "部分答案..."
         assert notice_for(REASON_OUTPUT_TRUNCATED) in result.degraded_notices
+        assert result.output_truncated is True
+        assert result.task_incomplete is True
+        assert result.termination_reason == "output_truncated"
         # No retry: the partial answer is delivered as-is.
         assert provider.chat_stream_with_retry.call_count == 1
 
@@ -639,6 +685,8 @@ class TestInferenceStageLengthTruncation:
         result = await stage.run(ctx)
 
         assert result.response_text == "简短结论"
+        assert result.output_truncated is False
+        assert result.task_incomplete is False
         assert provider.chat_stream_with_retry.call_count == 2
         # The retry call must strip tools so the whole budget goes to text.
         retry_kwargs = provider.chat_stream_with_retry.call_args_list[1].kwargs
@@ -659,6 +707,8 @@ class TestInferenceStageLengthTruncation:
         # Retried once, then gave up — exactly 2 calls, truncation notice attached.
         assert provider.chat_stream_with_retry.call_count == 2
         assert notice_for(REASON_OUTPUT_TRUNCATED) in result.degraded_notices
+        assert result.output_truncated is True
+        assert result.task_incomplete is True
 
     @pytest.mark.asyncio
     async def test_empty_truncation_on_last_iteration_skips_retry(self):

@@ -10,6 +10,8 @@ beat arrived while tool lines kept appending below it, so "还在处理" rendere
 
 from __future__ import annotations
 
+import json
+
 from rich.markup import escape
 from textual.containers import VerticalScroll
 
@@ -20,6 +22,7 @@ from echo_agent.cli.tui.blocks import (
     CognitiveBlock,
     ToolCallBlock,
     UserTurn,
+    redact_for_export,
 )
 from echo_agent.cli.tui.details import DetailPrefs, parse_env
 from echo_agent.cli.tui.glyphs import GLYPHS, cog_glyph
@@ -64,6 +67,13 @@ class TranscriptView(VerticalScroll):
         # Set by /clear to signal that the next replay should not dedup
         # (the on-screen text is gone, so text comparison would be wrong).
         self._cleared_since_last_reply = False
+        # A screen clear must not destroy the forensic record.  Markdown/plain
+        # exports deliberately mirror what is visible; JSON is the durable
+        # machine-readable turn trace and therefore lives independently of the
+        # widget tree.
+        self._audit_events: list[dict] = []
+        self._audit_cog_index: dict[str, int] = {}
+        self._audit_tool_index: dict[str, int] = {}
         # Which trace sections are visible/expanded. Read from the environment at
         # construction so a user's shell default applies to the very first turn,
         # then mutated in place by /details.
@@ -159,7 +169,79 @@ class TranscriptView(VerticalScroll):
                 del self._thinking_blocks[tid]
         w = UserTurn(text)
         self._place(w)
+        self._audit_events.append({
+            "type": "user",
+            "turn_seq": self._turn_seq,
+            "text": text,
+        })
         return w
+
+    def record_reply(self, event_id: str, text: str, *, turn_seq: int = 0) -> None:
+        """Append an authoritative assistant frame to the audit trace."""
+        if not text:
+            return
+        self._audit_events.append({
+            "type": "assistant",
+            "turn_seq": turn_seq or self._turn_seq,
+            "event_id": event_id,
+            "text": text,
+        })
+
+    def record_cognitive(self, ev: CogEvent) -> None:
+        """Record cognitive/tool metadata even when ``/details`` hides it.
+
+        Tool running/done frames are folded into one record. Other correlated
+        cognitive snapshots update in place, preventing streamed thinking from
+        making the export grow quadratically.
+        """
+        base = {
+            "type": "cognitive",
+            "turn_seq": self._turn_seq,
+            "cog_type": ev.cog_type,
+            "cog_event_id": ev.cog_event_id,
+            "inbound_event_id": ev.inbound_event_id,
+            "summary": redact_for_export(ev.summary),
+            "data": redact_for_export(ev.data),
+        }
+        if ev.cog_type == "tool_call":
+            tcid = str(ev.data.get("tool_call_id", ev.cog_event_id))
+            base["tool_call_id"] = tcid
+            index = self._audit_tool_index.get(tcid)
+            if index is None:
+                self._audit_tool_index[tcid] = len(self._audit_events)
+                self._audit_events.append(base)
+            else:
+                previous = self._audit_events[index]
+                old_data = dict(previous.get("data") or {})
+                new_data = dict(base.get("data") or {})
+                if not new_data.get("params") and old_data.get("params"):
+                    new_data["params"] = old_data["params"]
+                old_data.update(new_data)
+                base["data"] = old_data
+                previous.update(base)
+            return
+
+        key = ev.cog_event_id
+        index = self._audit_cog_index.get(key) if key else None
+        if index is None:
+            if key:
+                self._audit_cog_index[key] = len(self._audit_events)
+            self._audit_events.append(base)
+        else:
+            self._audit_events[index].update(base)
+
+    def record_turn_status(self, turn: dict) -> None:
+        """Add the gateway's authoritative lifecycle state to the audit trace."""
+        self._audit_events.append({
+            "type": "turn_status",
+            "turn_seq": self._turn_seq,
+            "event_id": str(turn.get("event_id", "")),
+            "status": str(turn.get("status", "")),
+            "current_tool": str(turn.get("current_tool", "")),
+            "termination_reason": str(turn.get("error", "")),
+            "created_at": turn.get("created_at"),
+            "updated_at": turn.get("updated_at"),
+        })
 
     def start_reply(self, turn_seq: int = 0) -> AgentReply:
         w = AgentReply()
@@ -446,3 +528,22 @@ class TranscriptView(VerticalScroll):
                 lines.append(body)
                 lines.append("")
         return "\n".join(lines).rstrip() + "\n"
+
+    def export_json(self, *, session_key: str = "", when: str = "") -> str:
+        """Export the complete local audit trace, including hidden tool/status
+        metadata. Sensitive values are redacted when events enter the trace, so
+        the in-memory audit buffer itself does not retain raw credentials."""
+        document = {
+            "schema_version": 1,
+            "session_key": session_key,
+            "exported_at": when,
+            "events": self._audit_events,
+        }
+        return json.dumps(document, ensure_ascii=False, indent=2) + "\n"
+
+    def has_audit_conversation(self) -> bool:
+        """Whether JSON export has at least one real conversation event."""
+        return any(
+            event.get("type") in {"user", "assistant"}
+            for event in self._audit_events
+        )

@@ -254,6 +254,11 @@ _HEADER_FLAG_RE = re.compile(
     r"(-H\s+['\"]?(?:Authorization|X-Api-Key)['\"]?\s*:\s*)\S+",
     re.IGNORECASE,
 )
+_CLI_SECRET_FLAG_RE = re.compile(
+    r"((?:--?)(?:api[-_]?key|token|password|passwd|secret|access[-_]?token)"
+    r"(?:=|\s+))([^\s'\"]+)",
+    re.IGNORECASE,
+)
 
 
 def _mask_sensitive_strings(text: str) -> str:
@@ -261,7 +266,45 @@ def _mask_sensitive_strings(text: str) -> str:
     text = _BEARER_RE.sub(lambda m: m.group(1) + "••••", text)
     text = _URL_SECRET_RE.sub(lambda m: m.group(1) + "••••", text)
     text = _HEADER_FLAG_RE.sub(lambda m: m.group(1) + "••••", text)
+    text = _CLI_SECRET_FLAG_RE.sub(lambda m: m.group(1) + "••••", text)
     return text
+
+
+def redact_for_export(value, *, key: str = ""):
+    """Return a JSON-serialisable, recursively redacted copy of *value*.
+
+    Audit exports need the original structure (unlike ``format_params``, which
+    intentionally flattens values for a narrow terminal row), but must never
+    turn a tool call into a credential dump.  Keep ordinary scalar types, mask
+    values under secret-looking keys, and also scrub bearer tokens / credential
+    query parameters embedded in otherwise innocent strings.
+    """
+    if _is_secret_key(key):
+        return _mask(str(value))
+    if isinstance(value, dict):
+        return {
+            str(k): redact_for_export(v, key=str(k))
+            for k, v in value.items()
+        }
+    if isinstance(value, (list, tuple, set)):
+        items = list(value)
+        redacted: list = []
+        previous_secret_flag = False
+        for item in items:
+            if previous_secret_flag:
+                redacted.append(_mask(str(item)))
+                previous_secret_flag = False
+                continue
+            redacted.append(redact_for_export(item, key=key))
+            if isinstance(item, str):
+                flag = item.lstrip("-").replace("-", "_")
+                previous_secret_flag = _is_secret_key(flag)
+        return redacted
+    if isinstance(value, str):
+        return _mask_sensitive_strings(value)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return _mask_sensitive_strings(str(value))
 
 
 def _redact_value(key: str, value, *, value_width: int = 60) -> str:

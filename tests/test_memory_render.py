@@ -33,3 +33,7 @@ def test_render_char_limit():
     entries = [_e(f"k{i}", "x" * 100) for i in range(50)]
     out = render_memory_md(entries, max_chars=200)
     assert len(out) <= 220 and "…(truncated)" in out
+    # Truncation occurs between entries, never halfway through a fact. The old
+    # renderer ended with an arbitrary prefix of the next 100-character value.
+    assert not out.rstrip().endswith("x")
+    assert "complete entries omitted" in out

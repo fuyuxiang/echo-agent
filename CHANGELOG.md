@@ -4,8 +4,17 @@
 
 ## [Unreleased]
 
+### Added
+- 网关增加持久化回合状态账本，附着式 CLI 可用 `/status [event_id]` 查询 `running` / `waiting_approval` / `waiting_clarification` / `completed` / `incomplete` / `failed` / `interrupted` 等权威状态；断线重连优先用该账本恢复回复与终态
+- TUI `/save` 正式支持 `--format md|txt|json`；JSON 导出保留本地完整回合、隐藏工具和状态事件，递归脱敏凭据字段与命令行密钥参数
+
 ### Changed
 - Tool 扩展的规范 Python 导入入口统一为 `echo_agent.tools`；旧的 `echo_agent.agent.tools.base` 路径继续作为向后兼容 shim 保留，现有插件行为不变
+
+### Fixed
+- 修复会话 reset 只清消消息历史、但保留 working memory / 快照 / episode / 未完成计划的跨任务串扰；每次 reset 现在切换持久化 conversation epoch，并在同一会话锁内清理进程内上下文
+- 修复“逐项执行上述优化”类指代请求可被旧记忆/旧清单劫持的问题：指代检索和独立 planner 现以紧邻对话为权威上下文，长期记忆仅作可能过期的背景；后台 consolidation 不再把一次性任务进度/完成状态提取为持久事实，已有的模型推断型任务状态也不再进入 Agent 快照、检索或记忆工具
+- 修复 LLM `finish_reason=length` 仍被当作干净完成的语义错误：有部分正文时仍会展示，但回合与计划标记为 `incomplete` / 可恢复，且不再触发反思重跑覆盖现场
 
 ### Removed
 - **破坏性**：移除不再使用的桌面客户端专用网关扩展，包括聊天附件上传与 WebSocket 附件、WebSocket 技能管理帧、远程关停 API、进程 ready 标准输出信号，以及仅供该客户端消费的结构化空文本进度事件。通用 HTTP/WS 消息入口、内置 Dashboard、附着式 CLI/TUI、IM 媒体处理和本地文档解析保持不变

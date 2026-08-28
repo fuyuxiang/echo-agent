@@ -7,6 +7,7 @@ from typing import Any, Awaitable, Callable
 
 from loguru import logger
 
+from echo_agent.memory.eligibility import is_transient_task_state
 from echo_agent.memory.render import render_memory_md
 from echo_agent.memory.store import MemoryStore
 
@@ -158,7 +159,7 @@ class MemoryConsolidator:
         Returns stats dict.
         """
         stats = {"episodes": 0, "promoted": 0, "contradictions": 0, "resolved": 0, "archived": 0, "forgotten": 0,
-                 "fact_extract_errors": 0, "reflection_errors": 0}
+                 "fact_extract_errors": 0, "reflection_errors": 0, "transient_facts_filtered": 0}
         promoted: list = []
 
         # Step 1: Create episode
@@ -182,15 +183,32 @@ class MemoryConsolidator:
                     try:
                         response = await self._llm_call(
                             messages=[
-                                {"role": "system", "content": "Extract durable facts from this episode summary and call save_facts. Return an empty list when nothing is worth keeping."},
+                                {"role": "system", "content": (
+                                    "Extract durable facts from this episode summary and call save_facts. "
+                                    "Keep stable user preferences/identity and stable project conventions, "
+                                    "configuration truths, or domain knowledge. Never save an active/current "
+                                    "task, checklist, execution progress, completion status, assistant action, "
+                                    "one-off diagnostic result, or an instruction that only applied to this "
+                                    "conversation. Return an empty list when nothing is worth keeping."
+                                )},
                                 {"role": "user", "content": episode.summary},
                             ],
                             tools=self._extract_facts_tool,
                             tool_choice={"type": "function", "function": {"name": "save_facts"}},
                         )
                         facts = self._parse_extracted_facts(response)
-                        if facts:
-                            promoted = await self._semantic_manager.promote_from_episodic(episode, facts, memory_scope=memory_scope)
+                        durable_facts = [
+                            fact for fact in facts
+                            if not is_transient_task_state(fact, assumed_source="consolidated")
+                        ]
+                        stats["transient_facts_filtered"] += len(facts) - len(durable_facts)
+                        if len(durable_facts) != len(facts):
+                            logger.info(
+                                "Filtered {} transient task-state fact(s) before promotion",
+                                len(facts) - len(durable_facts),
+                            )
+                        if durable_facts:
+                            promoted = await self._semantic_manager.promote_from_episodic(episode, durable_facts, memory_scope=memory_scope)
                             stats["promoted"] = len(promoted)
                     except Exception as e:
                         # Single-step degradation: keep the rest of the sleep

@@ -28,6 +28,8 @@ class ProcessResult:
     outbound_sent: bool = False
     degraded_notices: list[str] = field(default_factory=list)
     task_incomplete: bool = False
+    output_truncated: bool = False
+    termination_reason: str = ""
 
 
 # Channels whose traffic is synthetic (evaluation/benchmark/test harnesses) and
@@ -134,7 +136,7 @@ class ResponseStage:
         # WorkingMemory had a reader (context_stage) but no writer, so the
         # injection was always blank. Skip ephemeral eval/test traffic.
         if self._memory_enabled:
-            self._update_working_memory(session.key, event, response_text)
+            self._update_working_memory(ctx.context_key or session.key, event, response_text)
 
         # Flush pending memory embeddings. DURABLE: a dropped flush silently
         # loses embeddings, so pass a zero-arg factory (retry-capable) and tag
@@ -155,7 +157,7 @@ class ResponseStage:
             if consolidator.should_consolidate(session.message_count, session.last_consolidated):
                 scope = event.memory_scope
                 async def _on_consolidated(session_key: str) -> None:
-                    await self._clear_memory_snapshot(session_key)
+                    await self._clear_memory_snapshot(ctx.context_key or session_key)
                     # consolidation 重写了该 scope 的长期记忆分片,bump 版本使
                     # 共享该 scope 但挂在其他 session_key 上的快照/检索缓存读时失效,
                     # 而非仅清本 consolidating session 的快照。
@@ -167,6 +169,7 @@ class ResponseStage:
                     on_complete=_on_consolidated,
                     tier=Tier.DURABLE,
                     memory_scope=event.memory_scope,
+                    conversation_key=ctx.context_key or session.key,
                 )
 
         # Background skill/memory reviews.
@@ -194,12 +197,13 @@ class ResponseStage:
             # skip dispatch while a review for this session is still running.
             # Both the check and the add happen here under the turn's session
             # lock, so concurrent turns for the same session cannot both pass.
-            if session.key not in self._memory_review_inflight:
-                self._memory_review_inflight.add(session.key)
+            review_key = ctx.context_key or session.key
+            if review_key not in self._memory_review_inflight:
+                self._memory_review_inflight.add(review_key)
                 from echo_agent.agent.background import Tier
                 self._spawn_fn(
-                    lambda: self._background_memory_review(
-                        ctx.messages, event.session_key, event.memory_scope,
+                    lambda: self._memory_review_factory(
+                        ctx.messages, event.session_key, event.memory_scope, review_key,
                     ),
                     tier=Tier.DURABLE,
                 )
@@ -223,7 +227,8 @@ class ResponseStage:
             from echo_agent.agent.background import Tier
             self._spawn_fn(
                 self._prefetcher.prefetch(
-                    event.session_key, event.text, event.sender_id, event.memory_scope,
+                    ctx.context_key or event.session_key,
+                    event.text, event.sender_id, event.memory_scope,
                     # 预取用当前 scope 版本盖戳:写后版本一致仍可命中,该 scope
                     # 被写 bump 版本后版本不符即自然失效(缓存条目不会陈旧命中)。
                     # 无注入函数时回退 0(未发生写时读侧 cur_ver 亦为 0 视为命中)。
@@ -241,6 +246,8 @@ class ResponseStage:
             outbound_sent=outbound_sent,
             degraded_notices=list(result.degraded_notices),
             task_incomplete=result.task_incomplete,
+            output_truncated=result.output_truncated,
+            termination_reason=result.termination_reason,
         )
 
     def _update_working_memory(self, session_key: str, event: Any, response_text: str) -> None:
@@ -275,6 +282,14 @@ class ResponseStage:
         except Exception as e:
             logger.debug("Working memory update failed: {}", e)
 
+    def on_session_reset(self, session_key: str) -> None:
+        """Forget process-local review bookkeeping for all session epochs."""
+        from echo_agent.session.context_epoch import belongs_to_session
+
+        for key in list(self._memory_review_inflight):
+            if belongs_to_session(key, session_key):
+                self._memory_review_inflight.discard(key)
+
     async def _background_skill_review(
         self, messages: list[dict[str, Any]], session_key: str = "", channel: str = "",
     ) -> None:
@@ -297,7 +312,10 @@ class ResponseStage:
         except Exception as e:
             logger.warning("Background skill review failed: {}", e)
 
-    async def _background_memory_review(self, messages: list[dict[str, Any]], session_key: str, memory_scope: str = "") -> None:
+    async def _background_memory_review(
+        self, messages: list[dict[str, Any]], session_key: str,
+        memory_scope: str = "", context_key: str = "",
+    ) -> None:
         from echo_agent.memory.reviewer import MemoryReviewer
         # R1 Task8:优先用 loop 注入的单例 service;缺省(旧构造/测试)才就近兜底。
         service = self._memory_service
@@ -337,14 +355,36 @@ class ResponseStage:
             actions = await reviewer.review(messages)
             if actions:
                 logger.info("Background memory review: {}", "; ".join(actions))
-                await self._clear_memory_snapshot(session_key)
+                await self._clear_memory_snapshot(context_key or session_key)
             # Success: clear the memory-review nudge counters and persist. Done
             # here (not at the inference-stage trigger) so a failed/retried
             # review never loses the pending batch. Re-acquire under the session
             # lock so this does not race the next turn's own metadata write.
             await self._reset_memory_nudge_counters(session_key)
         finally:
-            self._memory_review_inflight.discard(session_key)
+            self._memory_review_inflight.discard(context_key or session_key)
+
+    def _memory_review_factory(
+        self, messages: list[dict[str, Any]], session_key: str,
+        memory_scope: str, context_key: str,
+    ):
+        """Create a retryable review awaitable without breaking old overrides.
+
+        `_background_memory_review` is a long-standing extension/test seam with
+        three positional arguments. The epoch key is additive; call it by name
+        when supported and fall back to the legacy signature for an override
+        that has not adopted the optional keyword yet.
+        """
+        try:
+            return self._background_memory_review(
+                messages, session_key, memory_scope, context_key=context_key,
+            )
+        except TypeError as e:
+            if "context_key" not in str(e):
+                raise
+            return self._background_memory_review(
+                messages, session_key, memory_scope,
+            )
 
     async def _reset_memory_nudge_counters(self, session_key: str) -> None:
         """Zero the memory-review nudge counters for ``session_key`` and persist.

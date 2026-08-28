@@ -73,6 +73,10 @@ class _LoopResult:
     # only a canned apology; the TASK did not complete — a dispatched board task
     # must be written back as FAILED, not SUCCESS.
     errored: bool = False
+    # Provider ended with finish_reason="length" and the bounded recovery did
+    # not produce a clean replacement. Partial text is deliverable, but the task
+    # and plan remain incomplete/resumable.
+    output_truncated: bool = False
     should_review_skills: bool = False
     should_review_memory: bool = False
     skill_iters: int = 0
@@ -110,6 +114,7 @@ class _Decision:
     read_only: bool = False
     approved: bool = True
     paths: list = field(default_factory=list)
+    plan_step_index: int | None = None
 
 
 class InferenceStage:
@@ -141,6 +146,7 @@ class InferenceStage:
         memory_store: Any = None,
         clarify_manager: Any = None,
         interrupt_manager: Any = None,
+        turn_run_store: Any = None,
     ):
         self._config = config
         self._bus = bus
@@ -166,6 +172,7 @@ class InferenceStage:
         self._memory_store = memory_store
         self._clarify = clarify_manager
         self._interrupt = interrupt_manager
+        self._turn_runs = turn_run_store
         # Read-only tool concurrency config (Task 2 added the fields, marked
         # effective). getattr fallbacks because some test configs are MagicMock.
         _tc = getattr(getattr(config, "agent", None), "tool_concurrency", None)
@@ -284,6 +291,21 @@ class InferenceStage:
         result_meta carries producer-supplied counts (line/hit/entry totals)
         computed on the full result before truncation — the client turns them
         into Chinese words and must never recount the truncated result_text."""
+        # The durable ledger is independent of cognitive-frame visibility.
+        turn_runs = getattr(self, "_turn_runs", None)
+        if turn_runs is not None:
+            try:
+                await turn_runs.mark_activity(
+                    event.event_id,
+                    status=(
+                        "waiting_clarification"
+                        if status == "running" and name == "clarify"
+                        else "running"
+                    ),
+                    current_tool=name if status == "running" else "",
+                )
+            except Exception as e:
+                logger.debug("Turn activity write failed for {}: {}", event.event_id, e)
         # Gate before slicing params: IM channels skip the comprehension too.
         if self._cog is None or not self._cog.active(event):
             return
@@ -469,6 +491,7 @@ class InferenceStage:
         # 推理会违背用户意图，也会覆盖掉已生成的停止文案。
         if (
             not loop_result.interrupted
+            and not loop_result.output_truncated
             and self._planner is not None
             and ctx.execution_plan is not None
             and len(ctx.execution_plan.steps) > 1
@@ -510,6 +533,7 @@ class InferenceStage:
                     forced_convergence=second.forced_convergence,
                     interrupted=second.interrupted,
                     errored=second.errored,
+                    output_truncated=second.output_truncated,
                     should_review_skills=loop_result.should_review_skills or second.should_review_skills,
                     should_review_memory=loop_result.should_review_memory or second.should_review_memory,
                     skill_iters=second.skill_iters,
@@ -539,12 +563,10 @@ class InferenceStage:
         session.metadata["_nudge_turns_memory"] = _memory_turns
 
         # Persist plan execution state so progress is queryable and an
-        # interrupted long task can be resumed. Honest status semantics: the
-        # only execution feedback we have is turn-granular (the reflect loop
-        # above), so the RUN status records the turn outcome — step statuses
-        # are NOT batch-faked to COMPLETED anymore. A step only ever flips
-        # status when something actually marks it (today: nothing does, so
-        # steps stay pending; the run-level status carries the truth).
+        # interrupted long task can be resumed. Honest status semantics: steps
+        # with an explicit tool_hint advance only when that matching tool really
+        # starts/finishes; uncorrelated prose steps stay pending. The run status
+        # records whether the whole turn converged cleanly.
         if (
             self._plan_run_store is not None
             and ctx.plan_run_id
@@ -552,6 +574,11 @@ class InferenceStage:
         ):
             try:
                 plan = ctx.execution_plan
+                from echo_agent.agent.planning.models import StepStatus
+
+                plan_failed = any(
+                    step.status == StepStatus.FAILED for step in plan.steps
+                )
                 # forced_convergence means the loop hit its iteration ceiling
                 # and squeezed out a conclusion — the ANSWER exists but the
                 # TASK is unfinished. Treat it like exhaustion: keep the run
@@ -561,6 +588,8 @@ class InferenceStage:
                     or loop_result.budget_halted
                     or loop_result.forced_convergence
                     or loop_result.interrupted
+                    or loop_result.output_truncated
+                    or plan_failed
                 )
                 if task_incomplete:
                     status = "exhausted"
@@ -571,6 +600,15 @@ class InferenceStage:
                 await self._plan_run_store.update(ctx.plan_run_id, plan, status=status)
             except Exception as e:
                 logger.debug("Plan run update failed: {}", e)
+
+        plan_failed = False
+        if ctx.execution_plan is not None:
+            from echo_agent.agent.planning.models import StepStatus
+
+            plan_failed = any(
+                step.status == StepStatus.FAILED
+                for step in ctx.execution_plan.steps
+            )
 
         return InferenceResult(
             response_text=loop_result.response_text,
@@ -587,6 +625,18 @@ class InferenceStage:
                 or loop_result.forced_convergence
                 or loop_result.interrupted
                 or loop_result.errored
+                or loop_result.output_truncated
+                or plan_failed
+            ),
+            output_truncated=loop_result.output_truncated,
+            termination_reason=(
+                "interrupted" if loop_result.interrupted else
+                "output_truncated" if loop_result.output_truncated else
+                "provider_error" if loop_result.errored else
+                "forced_convergence" if loop_result.forced_convergence else
+                "budget_halted" if loop_result.budget_halted else
+                "loop_exhausted" if loop_result.loop_exhausted else
+                "plan_step_failed" if plan_failed else ""
             ),
         )
 
@@ -618,6 +668,7 @@ class InferenceStage:
         forced_convergence = False
         interrupted = False
         errored = False
+        output_truncated = False
 
         # Read nudge counters from session (do NOT write back — run() owns that)
         _skill_iters = session.metadata.get("_nudge_tool_iters_skill", 0)
@@ -825,6 +876,7 @@ class InferenceStage:
                     if forcing_final:
                         counters.degraded_notices.append(notice_for(REASON_LOOP_EXHAUSTED))
                     loop_exhausted = False
+                    output_truncated = True
                     break
                 if not truncation_retried and iteration + 1 < self._max_iterations:
                     # Nothing recoverable — retry once without tools, asking
@@ -847,6 +899,7 @@ class InferenceStage:
                 # in) — give up with the truncation notice.
                 counters.degraded_notices.append(notice_for(REASON_OUTPUT_TRUNCATED))
                 loop_exhausted = False
+                output_truncated = True
                 break
 
             if response.content:
@@ -882,7 +935,13 @@ class InferenceStage:
                     if response_text:
                         counters.degraded_notices.append(notice_for(REASON_LOOP_EXHAUSTED))
                 elif ctx.execution_plan and not ctx.execution_plan.is_complete:
-                    ctx.execution_plan.is_complete = True
+                    from echo_agent.agent.planning.models import StepStatus
+
+                    if not any(
+                        step.status == StepStatus.FAILED
+                        for step in ctx.execution_plan.steps
+                    ):
+                        ctx.execution_plan.is_complete = True
                 if ctx.activity is not None:
                     ctx.activity.set_generating()
                 loop_exhausted = False
@@ -941,6 +1000,7 @@ class InferenceStage:
             forced_convergence=forced_convergence,
             interrupted=interrupted,
             errored=errored,
+            output_truncated=output_truncated,
             should_review_skills=counters.should_review_skills,
             should_review_memory=counters.should_review_memory,
             skill_iters=counters.skill_iters,
@@ -1004,6 +1064,14 @@ class InferenceStage:
         # ---- Phase A: serial decision (approval / repeat / pre-hook) ----
         for tool_index, tool_call in enumerate(response.tool_calls):
             d = _Decision(tool_call=tool_call, index=tool_index, verdict="RUN")
+            if ctx.execution_plan is not None:
+                for step in ctx.execution_plan.steps:
+                    hint = (step.tool_hint or "").strip().lower()
+                    if hint and tool_call.name.lower() in {
+                        part.strip() for part in hint.replace("/", ",").split(",")
+                    } and step.status.value in {"pending", "failed"}:
+                        d.plan_step_index = step.index
+                        break
 
             # Emit "Using tool" BEFORE approval so BLOCKED tools (denied /
             # repeat-guarded / hook-cancelled) still surface this progress,
@@ -1110,6 +1178,8 @@ class InferenceStage:
             except Exception:
                 d.read_only = False
             d.paths = extract_paths(tool_call.arguments)
+            if d.plan_step_index is not None:
+                ctx.execution_plan.mark_step_running(d.plan_step_index)
             decisions.append(d)
 
         # ---- Phase B: split RUN decisions into concurrent / serial groups ----
@@ -1270,6 +1340,10 @@ class InferenceStage:
                                     tool_call_id=tool_call.id, name=tool_call.name)
                 self._tracer.end_span(tool_span, metadata=d.blocked_meta)
                 counters.total_tool_calls += 1
+                if d.plan_step_index is not None and ctx.execution_plan is not None:
+                    ctx.execution_plan.mark_step_failed(
+                        d.plan_step_index, d.blocked_message[:500],
+                    )
                 continue
 
             res = results.get(d.index)
@@ -1302,6 +1376,8 @@ class InferenceStage:
                 except Exception as e:
                     logger.debug("Failed to record circuit-breaker failure for {}: {}", tool_call.name, e)
                 counters.total_tool_calls += 1
+                if d.plan_step_index is not None and ctx.execution_plan is not None:
+                    ctx.execution_plan.mark_step_failed(d.plan_step_index, err_text)
                 if isinstance(res, asyncio.CancelledError):
                     raise res
                 if d.index in conc_idx:
@@ -1340,6 +1416,16 @@ class InferenceStage:
             elif result.is_infra_failure:
                 self._circuit_breaker.record_failure(tool_call.name)
 
+            if d.plan_step_index is not None and ctx.execution_plan is not None:
+                if result.success:
+                    ctx.execution_plan.mark_step_complete(
+                        d.plan_step_index, result_text[:500],
+                    )
+                else:
+                    ctx.execution_plan.mark_step_failed(
+                        d.plan_step_index, (result.error or result_text)[:500],
+                    )
+
             if (self._nudge_interval > 0 and counters.skill_iters >= self._nudge_interval
                     and self._tools.has("skill_manage")):
                 counters.should_review_skills = True
@@ -1350,6 +1436,14 @@ class InferenceStage:
                 # Counter NOT reset here — see run(): it is zeroed only after the
                 # background review succeeds, so a failed review re-triggers next
                 # turn instead of dropping this batch permanently.
+
+        if self._plan_run_store is not None and ctx.plan_run_id and ctx.execution_plan is not None:
+            try:
+                await self._plan_run_store.update(
+                    ctx.plan_run_id, ctx.execution_plan, status="running",
+                )
+            except Exception as e:
+                logger.debug("Plan step progress persistence failed: {}", e)
 
         return any(d.terminal for d in decisions)
 

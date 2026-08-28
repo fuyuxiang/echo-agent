@@ -13,6 +13,7 @@ The Echo Agent TUI (Terminal User Interface) is an interactive chat session laun
 | `/save` | Local | `/save [path]` | Export conversation to a file |
 | `/theme` | Local | `/theme [name]` | Switch or list available UI themes |
 | `/reconnect` | Local | `/reconnect` | Re-establish connection to the gateway |
+| `/status` | Local | `/status [event_id]` | Query the durable server-side turn state |
 | `/quit` | Local | `/quit` | Exit the TUI session |
 | `/approve` | Server | `/approve [id]` | Approve a pending tool execution |
 | `/deny` | Server | `/deny [id] [reason]` | Deny a pending tool execution |
@@ -79,7 +80,7 @@ Tools:      filesystem(read), shell(ls)
 
 ### /save
 
-Export the conversation to a file. Defaults to `conversation_<timestamp>.md` in the current directory.
+Export the conversation to a file. Defaults to `echo-<timestamp>.md` under the configured transcript directory (`<workspace>/transcripts` for the CLI).
 
 ```
 /save                           # default path
@@ -92,6 +93,11 @@ Export the conversation to a file. Defaults to `conversation_<timestamp>.md` in 
 | `--format md` | Markdown (default) |
 | `--format json` | Full JSON with metadata, tokens, tool calls |
 | `--format txt` | Plain text, no formatting |
+
+JSON is an audit export: it includes cognitive/tool frames even when hidden by
+`/details`, plus authoritative turn-status observations. It survives a local
+`/clear`. Credential-shaped fields, bearer tokens, secret URL parameters, and
+command-line secret flags are redacted before entering the audit buffer.
 
 ### /theme
 
@@ -117,7 +123,21 @@ Re-establish the WebSocket connection to the gateway. Useful after network inter
 /reconnect
 ```
 
-The TUI will attempt reconnection with exponential backoff (1s, 2s, 4s, up to 30s max). Session state is preserved on the server side.
+The TUI makes a fresh connection using the same session key. On success it reconciles the latest durable turn and replays a missed final reply when necessary.
+
+### /status
+
+Query the gateway's durable lifecycle record rather than inferring completion
+from whether the terminal is still animating.
+
+```
+/status                 # latest primary turn in this session
+/status 6f8c2a1d        # a specific inbound event id
+```
+
+States distinguish accepted/running work, approval or clarification waits,
+clean completion, incomplete (including output truncation), failure, and user
+interruption. The TUI also performs this reconciliation after reconnecting.
 
 ### /quit
 
@@ -216,6 +236,6 @@ The agent responds with an explanation without advancing the task.
     For pasting code blocks or multi-paragraph prompts, use `Shift+Enter` to insert newlines. The message is sent only when you press `Enter` on a line that isn't preceded by `Shift`.
 
 !!! note "No /undo or /retry"
-    The catalog has thirteen commands and neither re-runs a turn. Local commands are `/help`, `/clear`, `/copy`, `/details`, `/save`, `/theme`, `/reconnect` and `/quit`; server commands are `/approve`, `/deny`, `/approvals` and `/clarify`.
+    The catalog has thirteen commands and none re-runs a turn. Local commands are `/help`, `/clear`, `/copy`, `/details`, `/save`, `/theme`, `/reconnect`, `/status` and `/quit`; server commands are `/approve`, `/deny`, `/approvals` and `/clarify`.
 
     To redo a turn, send a corrected message — the previous exchange stays in history, so the agent sees both. `/clear` only wipes the screen; the session and its history are untouched.

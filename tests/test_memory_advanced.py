@@ -726,6 +726,49 @@ class TestMemoryConsolidator:
         assert "archived" in stats
 
     @pytest.mark.asyncio
+    async def test_sleep_consolidate_filters_task_state_before_promotion(self, tmp_path: Path):
+        store = MemoryStore(memory_dir=tmp_path / "mem")
+
+        async def mock_llm(**kwargs):
+            if kwargs.get("tools"):
+                return _FakeLLMResponse(tool_calls=[_FakeToolCall("1", "save_facts", {
+                    "facts": [
+                        {
+                            "type": "user",
+                            "key": "release_status",
+                            "content": "Implementation is completed; next step is deployment.",
+                        },
+                        {
+                            "type": "user",
+                            "key": "repository_path",
+                            "content": "/srv/echo-agent",
+                        },
+                    ]
+                })])
+            return _FakeLLMResponse(content="episode summary")
+
+        episode = Episode(id="ep1", session_key="sess1", summary="episode summary")
+        episodic = MagicMock()
+        episodic.create_episode = AsyncMock(return_value=episode)
+        semantic = MagicMock()
+        semantic.promote_from_episodic = AsyncMock(return_value=[])
+        consolidator = MemoryConsolidator(store, mock_llm)
+        consolidator.set_episodic_manager(episodic)
+        consolidator.set_semantic_manager(semantic)
+
+        stats = await consolidator.sleep_consolidate(
+            "sess1", [{"role": "user", "content": "finish the release"}]
+        )
+
+        assert stats["transient_facts_filtered"] == 1
+        promoted_facts = semantic.promote_from_episodic.await_args.args[1]
+        assert promoted_facts == [{
+            "type": "user",
+            "key": "repository_path",
+            "content": "/srv/echo-agent",
+        }]
+
+    @pytest.mark.asyncio
     async def test_consolidate_chunk_success(self, tmp_path: Path):
         # R3: consolidate_chunk no longer rewrites MEMORY.md via an LLM chain.
         # A non-empty chunk yields the True episode-gate signal, and MEMORY.md is
