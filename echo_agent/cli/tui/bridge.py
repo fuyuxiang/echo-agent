@@ -3,11 +3,12 @@ access) so routing is unit-testable with a fake sink."""
 
 from __future__ import annotations
 
+from echo_agent.cli.renderer_base import RenderSink
 from echo_agent.cli.tui.protocol import parse_cog_frame, CogDedup
 
 
 class WSBridge:
-    def __init__(self, sink) -> None:
+    def __init__(self, sink: RenderSink) -> None:
         self._sink = sink
         self._dedup = CogDedup()
 
