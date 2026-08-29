@@ -116,13 +116,13 @@ class BedrockProvider(LLMProvider):
             final = await stream_anthropic_messages(
                 client, params, on_delta, on_reasoning
             )
+            # Shared parser keeps block extraction and usage (incl. prompt-cache
+            # tokens) consistent with the native Anthropic provider. Inside the
+            # try so an unreadable response becomes an error LLMResponse.
+            return parse_anthropic_message(final)
         except Exception as e:
             logger.error("Bedrock Claude stream error: {}", e)
             return LLMResponse(content=f"Error: {e}", finish_reason="error")
-
-        # Shared parser keeps block extraction and usage (incl. prompt-cache
-        # tokens) consistent with the native Anthropic provider.
-        return parse_anthropic_message(final)
 
     async def _chat_stream_converse(
         self, model: str, messages: list[dict[str, Any]],
@@ -226,11 +226,10 @@ class BedrockProvider(LLMProvider):
 
         try:
             resp = await client.messages.create(**params)
+            return parse_anthropic_message(resp)
         except Exception as e:
             logger.error("Bedrock Claude error: {}", e)
             return LLMResponse(content=f"Error: {e}", finish_reason="error")
-
-        return parse_anthropic_message(resp)
 
     def _build_anthropic_bedrock(self) -> Any:
         try:
@@ -269,11 +268,10 @@ class BedrockProvider(LLMProvider):
         try:
             import asyncio
             resp = await asyncio.get_running_loop().run_in_executor(None, lambda: client.converse(**params))
+            return self._parse_converse_response(resp, model)
         except Exception as e:
             logger.error("Bedrock Converse error: {}", e)
             return LLMResponse(content=f"Error: {e}", finish_reason="error")
-
-        return self._parse_converse_response(resp, model)
 
     def _build_boto3_client(self) -> Any:
         try:
