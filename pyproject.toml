@@ -41,12 +41,16 @@ dependencies = [
     "fastembed>=0.6",  # >=0.6 for rerank.cross_encoder.TextCrossEncoder
     "questionary>=2.0",
     "httpx>=0.23",
-    # rich>=13: this declares an existing fact rather than adding a new install.
-    # rich already arrives with `[tui]` (textual depends on rich>=14.2), but the
-    # cli/render package needs rich.markup.escape for the *inline* renderer,
-    # which must work without the tui extra. The floor is 13 because
-    # rich.markup.escape is long-stable API and needs nothing newer.
-    "rich>=13",
+    # rich>=13.5: this declares an existing fact rather than adding a new
+    # install. rich already arrives with `[tui]` (textual depends on
+    # rich>=14.2), but the cli/render package needs rich.markup.escape for the
+    # *inline* renderer, which must work without the tui extra.
+    # The floor is a *behaviour* fix, not an API change — the signature has been
+    # stable far longer. 13.5.0 is where escape() started compensating for a
+    # trailing backslash; before it, a diff line ending in `\` (C macros, shell
+    # continuations, Windows paths) escapes to markup whose closing `[/]` gets
+    # swallowed by that backslash and rendered as literal text.
+    "rich>=13.5",
 ]
 
 [project.urls]

@@ -17,6 +17,7 @@
 - A2A 文档改为准确描述当前仅接线入站服务；低层 `A2AClient` 尚未通过 `net_guard`，不会被暴露为模型可调用的出站委派能力
 - 已废弃的 `echo-agent service` 兼容别名计划在 **v0.5.0** 移除；请迁移到 `echo-agent gateway <action>`
 - Dashboard 的 12 个页面改为路由级懒加载；首屏 JS 从审计基线 871 KiB 降至约 345 KiB（gzip 约 109 KiB）
+- `rich>=13.5` 成为必选依赖。此前它只是 `[tui]` extra 的传递依赖（随 `textual` 装入），而 CLI 的终端渲染代码在不装 `[tui]` 时同样需要它做 markup 转义；最小安装 `pip install echo-agent` 现在会多装 rich。下限取 13.5 是因为更早的版本 `rich.markup.escape` 不补偿结尾反斜杠，会让以 `\` 结尾的 diff 行（C 宏、shell 续行、Windows 路径）吃掉闭合标签
 
 ### Fixed
 - 修复会话 reset 只清消消息历史、但保留 working memory / 快照 / episode / 未完成计划的跨任务串扰；每次 reset 现在切换持久化 conversation epoch，并在同一会话锁内清理进程内上下文

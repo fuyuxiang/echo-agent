@@ -62,8 +62,8 @@ Echo Agent 的平台支持、依赖要求和版本兼容信息。
 | `uvicorn` | 0.24 | ASGI 服务器 |
 | `starlette` | 0.27 | Web 框架（Gateway） |
 | `loguru` | 0.7 | 日志系统 |
-| `rich` | 13.0 | TUI 终端渲染 |
-| `textual` | 0.40 | TUI 框架 |
+| `rich` | 13.5 | 终端富文本渲染（markup 转义），TUI 与 inline 输出共用 |
+| `textual` | 8.2 | TUI 框架（`[tui]` 可选依赖） |
 | `aiosqlite` | 0.19 | 异步 SQLite |
 | `click` | 8.1 | CLI 框架 |
 
