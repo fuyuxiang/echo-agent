@@ -41,6 +41,12 @@ dependencies = [
     "fastembed>=0.6",  # >=0.6 for rerank.cross_encoder.TextCrossEncoder
     "questionary>=2.0",
     "httpx>=0.23",
+    # rich>=13: this declares an existing fact rather than adding a new install.
+    # rich already arrives with `[tui]` (textual depends on rich>=14.2), but the
+    # cli/render package needs rich.markup.escape for the *inline* renderer,
+    # which must work without the tui extra. The floor is 13 because
+    # rich.markup.escape is long-stable API and needs nothing newer.
+    "rich>=13",
 ]
 
 [project.urls]
