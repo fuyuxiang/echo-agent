@@ -1,7 +1,7 @@
 """Text helpers shared by the Textual transcript and the inline renderer.
 
 Moved verbatim out of cli/tui/blocks.py so the inline renderer can reuse them
-without importing Textual. blocks.py re-exports both names, so existing
+without importing Textual. blocks.py re-exports all three names, so existing
 importers keep working.
 """
 

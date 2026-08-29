@@ -15,9 +15,16 @@ from textual.widgets import Static
 
 # Re-exported for importers that still reach for these through blocks.py; the
 # definitions now live in cli/render/text.py so the inline renderer can share
-# them without pulling in Textual.
-from echo_agent.cli.render.text import (  # noqa: F401
-    _LEGACY_SUMMARY_GLYPHS, clip as _clip, strip_legacy_glyph,
+# them without pulling in Textual. _LEGACY_SUMMARY_GLYPHS has no caller left in
+# this module, so it carries the `X as X` re-export form that tells ruff it is
+# deliberately public. A blanket lint-suppression comment on the group would
+# silence F401 too, but it applies to every name inside the parentheses -- that
+# would also disable the unused-import check on _clip and strip_legacy_glyph,
+# which do have callers here and should still be flagged if the last one goes.
+from echo_agent.cli.render.text import (
+    _LEGACY_SUMMARY_GLYPHS as _LEGACY_SUMMARY_GLYPHS,
+    clip as _clip,
+    strip_legacy_glyph,
 )
 from echo_agent.cli.tui.glyphs import GLYPHS, cog_glyph
 from echo_agent.cli.tui.protocol import CogEvent
