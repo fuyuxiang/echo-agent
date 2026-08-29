@@ -22,7 +22,20 @@ The `security.profile` configuration controls the overall security posture:
 |---------|----------|-------------|
 | `personal_cli` | Single user, local | Most permissive, trusts local operator |
 | `daemon` | Background service | Reduced permissions, unattended scenarios |
-| `public_gateway` | Multi-tenant gateway | Most restrictive, assumes untrusted input |
+| `public_gateway` | Externally exposed gateway | Most restrictive, assumes untrusted input; does not create tenant isolation |
+
+### Multi-client vs. multi-tenant boundaries { #multi-client-tenant-boundary }
+
+Echo Agent can process multiple channels, clients, and sessions concurrently. That is not the same property as a security-reviewed multi-tenant platform:
+
+| Mechanism | What it provides | What it does not provide |
+|-----------|------------------|--------------------------|
+| Session keys / locks | Model-context and concurrency boundaries | Caller authentication or resource authorization |
+| `api_tokens` / `admin_tokens` | Request authentication and read/admin scopes | Turning every token into a global user identity or partitioning every instance resource |
+| `security.profile: public_gateway` | Additional denials for high-risk tools and capabilities | Tenant partitions for the database, sessions, tasks, or workspace |
+
+!!! danger "Authentication is not tenant isolation"
+    Multiple ordinary tokens are trusted callers of the same Echo Agent instance by default. Do not treat "one token per person" as a hard isolation boundary. Some resources apply finer owner/scope checks, but that does not imply that every Gateway resource has the same boundary. For mutually untrusted users or organizations, run a separate process per tenant and separate its workspace, data directory, credentials, and network entry point.
 
 ## 2. Tool Profiles (tools.profile — 4 levels)
 
@@ -41,6 +54,8 @@ Tools are exposed in layers; higher profiles include all tools from lower ones:
 | `messaging` | image_generate, memory, text_to_speech, vision_analyze | Multimedia interaction |
 | `coding` | edit_file, knowledge_index, patch, task, workflow, write_file | File read/write |
 | `full` | cronjob, exec, execute_code, process, skill_install, skill_manage | Process execution + skill management |
+
+`agents_list` is a reserved policy name with no current tool implementation, so it is not callable even though it appears in the `minimal` policy set.
 
 !!! warning "High-Risk Tools"
     `exec`, `execute_code`, and `process` carry the `process.exec` capability and can run arbitrary commands. They are only exposed at `full` profile and are further gated by shell guards and the approval gate.

@@ -42,6 +42,8 @@ def clear_session_vars(tokens: list[Token]) -> None:
         try:
             token.var.reset(token)
         except ValueError:
+            # A token already reset (or originating in another copied context)
+            # cannot affect the current context and is safe to ignore at cleanup.
             pass
 
 

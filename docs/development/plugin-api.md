@@ -1,6 +1,6 @@
 # Plugin API
 
-Echo Agent 的插件系统允许第三方扩展 Agent 的能力，包括添加工具、注册生命周期钩子、提供新命令。
+Echo Agent 的插件系统允许第三方扩展 Agent 的能力，包括添加工具和注册生命周期钩子。`provides.commands` 是为未来扩展保留的清单字段，当前运行时不注册插件命令。
 
 ## 插件结构
 
@@ -50,8 +50,9 @@ depends_on: []
 
 # 需要的权限
 permissions:
-  - network    # 网络访问
-  - filesystem # 文件系统访问（受限）
+  - tool.register # 允许注册工具
+  - hook.register # 允许注册钩子
+  - network       # 声明性网络访问元数据
 ```
 
 ## PluginManifest 字段
@@ -67,7 +68,7 @@ permissions:
 | `requires_env` | list[str] | 否 | 必需环境变量 |
 | `provides.tools` | list[str] | 否 | 提供的工具列表 |
 | `provides.hooks` | list[str] | 否 | 注册的钩子列表 |
-| `provides.commands` | list[str] | 否 | 提供的命令 |
+| `provides.commands` | list[str] | 否 | 保留字段；当前运行时不注册命令 |
 | `kind` | str | 否 | 类型：integration / extension / theme |
 | `config_key` | str | 否 | 配置命名空间 |
 | `depends_on` | list[str] | 否 | 依赖的其他插件 |
@@ -176,7 +177,7 @@ Echo Agent 启动时自动发现所有注册了 `echo_agent.plugins` entry point
 
 ## 插件入口模块
 
-`__init__.py` 是插件的 Python 入口，导出工具和钩子：
+`__init__.py` 是插件的 Python 入口。运行时只解析 `activate(context)` 和可选的 `deactivate(context)`；工具与钩子必须在 `activate` 中显式注册：
 
 ```python
 """my_plugin — Weather integration for Echo Agent."""
@@ -184,23 +185,18 @@ Echo Agent 启动时自动发现所有注册了 `echo_agent.plugins` entry point
 from my_plugin.tools import WeatherLookupTool, WeatherForecastTool
 from my_plugin.hooks import on_agent_start, pre_tool_call, post_tool_call
 
-# 插件加载时自动注册
-TOOLS = [WeatherLookupTool, WeatherForecastTool]
-HOOKS = {
-    "on_agent_start": on_agent_start,
-    "pre_tool_call": pre_tool_call,
-    "post_tool_call": post_tool_call,
-}
-
-
 async def activate(context):
     """插件激活回调。"""
-    pass
+    context.register_tools([WeatherLookupTool(), WeatherForecastTool()])
+    context.register_hook("on_agent_start", on_agent_start)
+    context.register_hook("pre_tool_call", pre_tool_call)
+    context.register_hook("post_tool_call", post_tool_call)
 
 
 async def deactivate(context):
     """插件停用回调。"""
-    pass
+    # 关闭插件自己拥有的非工具资源；注册项由 PluginManager 回收。
+    ...
 ```
 
 ## 插件状态生命周期
@@ -219,14 +215,14 @@ discovered → loaded → activated → (running)
 | `failed` | 加载或激活失败 |
 | `disabled` | 被用户手动停用 |
 
-## 沙箱与权限
+## 信任模型与权限声明
 
-插件在受限环境中运行：
+Python 插件作为受信任代码在 Echo Agent 进程内运行，当前机制不是 OS 级沙箱：
 
-- **网络访问** — 需要 `network` 权限声明
-- **文件系统** — 需要 `filesystem` 权限，且受路径限制
-- **工具调用** — 插件注册的工具遵循与内置工具相同的审批流程
-- **资源限制** — 执行超时、内存限制由沙箱控制
+- **注册权限** — `tool.register` 和 `hook.register` 在插件注册能力时强制检查
+- **声明性权限** — `network`、`subprocess` 与 `filesystem.*` 记录插件意图，不会阻止进程内 Python 代码直接访问这些资源
+- **工具审批** — 插件注册的工具遵循与内置工具相同的审批流程
+- **隔离不受信任代码** — 在独立进程或容器中运行，并通过 MCP 接入
 
 ## 开发流程
 

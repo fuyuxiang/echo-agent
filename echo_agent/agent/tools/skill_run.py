@@ -28,7 +28,7 @@ from typing import Any
 
 from loguru import logger
 
-from echo_agent.agent.proc_lifecycle import spawn_exec, terminate_tree
+from echo_agent.agent.proc_lifecycle import communicate_owned, spawn_exec
 from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 from echo_agent.dependencies.lazy_deps import INSTALL_TIMEOUT_SECONDS, install_authorized_async
 from echo_agent.skills.env import build_skill_env
@@ -169,15 +169,9 @@ class SkillRunTool(Tool):
             env=env,
         )
         try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout,
-            )
+            stdout, stderr = await communicate_owned(proc, timeout=timeout)
         except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
-            # Both paths must reap the whole tree. The original code killed only
-            # the direct child on timeout and ignored CancelledError entirely, so
-            # an outer cancel (the registry's wait_for) left work running with no
-            # handle left to stop it.
-            await terminate_tree(proc)
+            # communicate_owned has already converged the whole process tree.
             if isinstance(exc, asyncio.CancelledError):
                 raise
             return ToolResult(

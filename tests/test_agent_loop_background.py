@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -69,6 +70,101 @@ async def test_stop_drains_scheduler_tasks(make_loop):
     # stop() -> aclose() cancelled/flushed everything; nothing left running.
     assert loop._bg_scheduler.stats()["running"] == 0
     assert len(loop._bg_scheduler._tasks) == 0
+
+
+@pytest.mark.asyncio
+async def test_stop_duck_closes_every_registered_lifecycle_tool(make_loop):
+    loop = make_loop()
+    closable = MagicMock()
+    closable.name = "lifecycle_probe"
+    closable.aclose = AsyncMock()
+    loop.tools.register(closable)
+
+    await loop.stop()
+
+    closable.aclose.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_stop_preserves_plugin_hook_and_tool_ownership_order(make_loop):
+    loop = make_loop()
+    order: list[str] = []
+
+    host_tool = MagicMock()
+    host_tool.name = "host_lifecycle_probe"
+    host_tool.aclose = AsyncMock(side_effect=lambda: order.append("host-close"))
+    plugin_tool = MagicMock()
+    plugin_tool.name = "plugin_lifecycle_probe"
+    plugin_tool.aclose = AsyncMock(side_effect=lambda: order.append("plugin-close"))
+    loop.tools.register(host_tool)
+    loop.tools.register(plugin_tool)
+
+    async def dispatch(hook_name: str):
+        assert hook_name == "on_agent_stop"
+        order.append("hook")
+
+    async def shutdown():
+        # PluginManager/deactivate owns its registered tool and closes it once.
+        await plugin_tool.aclose()
+        order.append("plugin-shutdown")
+
+    manager = MagicMock()
+    manager.hooks.dispatch = AsyncMock(side_effect=dispatch)
+    manager.shutdown = AsyncMock(side_effect=shutdown)
+    manager.owns_tool.side_effect = lambda tool: tool is plugin_tool
+    loop._plugin_manager = manager
+
+    await loop.stop()
+
+    assert order == ["hook", "host-close", "plugin-close", "plugin-shutdown"]
+    host_tool.aclose.assert_awaited_once_with()
+    plugin_tool.aclose.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_stop_closes_host_replacement_and_original_plugin_tool_once(make_loop):
+    loop = make_loop()
+    events: list[str] = []
+
+    original = MagicMock()
+    original.name = "replaceable_lifecycle_probe"
+    original.aclose = AsyncMock(side_effect=lambda: events.append("original-close"))
+    replacement = MagicMock()
+    replacement.name = original.name
+    replacement.aclose = AsyncMock(
+        side_effect=lambda: events.append("replacement-close")
+    )
+    loop.tools.register(original)
+    loop.tools.register(replacement, replace=True)
+
+    async def shutdown():
+        await original.aclose()
+
+    manager = MagicMock()
+    manager.hooks.dispatch = AsyncMock()
+    manager.shutdown = AsyncMock(side_effect=shutdown)
+    manager.owns_tool.side_effect = lambda tool: tool is original
+    loop._plugin_manager = manager
+
+    await loop.stop()
+
+    assert events == ["replacement-close", "original-close"]
+    replacement.aclose.assert_awaited_once_with()
+    original.aclose.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_stop_shuts_down_telemetry_best_effort(make_loop):
+    loop = make_loop()
+    telemetry = MagicMock()
+    telemetry.shutdown.side_effect = RuntimeError("exporter already stopped")
+    loop._telemetry = telemetry
+
+    # A telemetry exporter failure must not abort the agent's remaining teardown.
+    await loop.stop()
+
+    telemetry.shutdown.assert_called_once_with()
+    assert loop._bg_scheduler.stats()["running"] == 0
 
 
 

@@ -84,6 +84,8 @@ def _load_disk_cache() -> tuple[dict, float]:
         if isinstance(data, dict) and data:
             return data, mtime
     except (OSError, ValueError):
+        # Missing/corrupt advisory cache data falls back to a network refresh and
+        # must never prevent model discovery.
         pass
     return {}, 0.0
 
@@ -104,6 +106,8 @@ def _save_disk_cache(data: dict) -> None:
             try:
                 os.unlink(tmp)
             except OSError:
+                # The cache write still raises its original failure; temporary
+                # cleanup must not mask it or damage the previous cache file.
                 pass
             raise
     except OSError as e:

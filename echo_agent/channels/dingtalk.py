@@ -51,6 +51,8 @@ class DingTalkChannel(BaseChannel):
             try:
                 await self._poll_task
             except asyncio.CancelledError:
+                # stop() initiated the poll cancellation; awaiting it prevents a
+                # background task from retaining the HTTP session.
                 pass
         if self._session:
             await self._session.close()

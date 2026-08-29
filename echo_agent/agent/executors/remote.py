@@ -10,20 +10,31 @@ from pathlib import Path
 from loguru import logger
 
 from echo_agent.agent.executors.base import BaseExecutor, ExecRequest, ExecResponse
-from echo_agent.agent.proc_lifecycle import spawn_exec, terminate_tree
+from echo_agent.agent.proc_lifecycle import communicate_owned, spawn_exec
 from echo_agent.security.guards import command_uses_network
 
 
 class ContainerExecutor(BaseExecutor):
-    """Execute commands inside a Docker container."""
+    """Execute commands inside a Docker container.
+
+    Each invocation owns and reaps the local ``docker`` CLI process tree. A
+    process deliberately daemonized *inside* the container is owned by the
+    Docker daemon, not that local PGID; executor teardown's ``docker rm -f`` is
+    the lifecycle backstop for those container-internal processes.
+    """
 
     name = "container"
+    _CONTROL_TIMEOUT_SECONDS = 30.0
 
     def __init__(self, image: str = "", network_policy: str = "restricted", workspace: str = ""):
         self._image = image
         self._network_policy = network_policy
         self._workspace = Path(workspace).resolve() if workspace else None
         self._container_id: str | None = None
+        # `docker create --name` can commit in the daemon before its CLI reply
+        # reaches us. Keep the requested name separately so cancellation in that
+        # window can remove by name without exposing it as an executable id.
+        self._setup_cleanup_target: str | None = None
 
     async def setup(self) -> None:
         if not self._image:
@@ -32,30 +43,95 @@ class ContainerExecutor(BaseExecutor):
             mount_args: list[str] = []
             if self._workspace:
                 mount_args = ["-v", f"{self._workspace}:/workspace", "-w", "/workspace"]
-            proc = await asyncio.create_subprocess_exec(
-                "docker", "create", "--rm",
+            container_name = f"echo-agent-{uuid.uuid4().hex[:8]}"
+            self._setup_cleanup_target = container_name
+            return_code, stdout, stderr = await self._run_docker_control(
+                "create", "--rm",
                 "--network", "none" if self._network_policy == "deny" else "bridge",
-                "--name", f"echo-agent-{uuid.uuid4().hex[:8]}",
+                "--name", container_name,
                 *mount_args,
                 self._image, "sleep", "infinity",
+            )
+            if return_code != 0:
+                # The daemon definitively rejected create. Do not `rm` the
+                # reserved random name: an extremely unlikely name collision
+                # would otherwise delete the pre-existing container we do not own.
+                self._setup_cleanup_target = None
+                raise RuntimeError(f"docker create failed: {stderr.decode()}")
+            self._container_id = stdout.decode().strip()
+            if not self._container_id:
+                raise RuntimeError("docker create returned an empty container id")
+            return_code, _, stderr = await self._run_docker_control(
+                "start", self._container_id,
+            )
+            if return_code != 0:
+                raise RuntimeError(f"docker start failed: {stderr.decode()}")
+            self._setup_cleanup_target = None
+            logger.info("Container {} started from {}", self._container_id[:12], self._image)
+        except asyncio.CancelledError:
+            # A create may have committed before this task was cancelled. Remove
+            # that container before propagating cancellation so setup is atomic
+            # from the executor's perspective.
+            await self.teardown()
+            raise
+        except FileNotFoundError as e:
+            # No CLI process was spawned. If this happened at `start`, the
+            # successfully returned id still drives teardown; if it happened at
+            # `create`, there is nothing that belongs to us to remove by name.
+            self._setup_cleanup_target = None
+            await self.teardown()
+            raise RuntimeError(
+                "Docker not found — install Docker to use container execution"
+            ) from e
+        except Exception:
+            await self.teardown()
+            raise
+
+    async def teardown(self) -> None:
+        cleanup_target = self._container_id or self._setup_cleanup_target
+        if not cleanup_target:
+            return
+        try:
+            return_code, _, stderr = await self._run_docker_control(
+                "rm", "-f", cleanup_target,
+            )
+            if return_code != 0:
+                logger.warning(
+                    "Failed to remove container {}: {}",
+                    cleanup_target[:12], stderr.decode(errors="replace"),
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Failed to remove container {}: {}", cleanup_target[:12], e)
+        finally:
+            # Never retain a stale id after teardown. In particular, execute()
+            # must not attempt `docker exec` against a container whose removal
+            # was requested but whose CLI response failed or timed out.
+            self._container_id = None
+            self._setup_cleanup_target = None
+
+    async def _run_docker_control(self, *args: str) -> tuple[int, bytes, bytes]:
+        """Run and reap a bounded Docker lifecycle command."""
+        try:
+            proc = await spawn_exec(
+                "docker", *args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await proc.communicate()
-            if proc.returncode != 0:
-                raise RuntimeError(f"docker create failed: {stderr.decode()}")
-            self._container_id = stdout.decode().strip()
-            await asyncio.create_subprocess_exec("docker", "start", self._container_id)
-            logger.info("Container {} started from {}", self._container_id[:12], self._image)
-        except FileNotFoundError:
-            raise RuntimeError("Docker not found — install Docker to use container execution")
-
-    async def teardown(self) -> None:
-        if self._container_id:
-            try:
-                await asyncio.create_subprocess_exec("docker", "rm", "-f", self._container_id)
-            except Exception as e:
-                logger.warning("Failed to remove container: {}", e)
+            stdout, stderr = await communicate_owned(
+                proc, timeout=self._CONTROL_TIMEOUT_SECONDS,
+            )
+            return proc.returncode or 0, stdout, stderr
+        except asyncio.CancelledError:
+            raise
+        except asyncio.TimeoutError as e:
+            action = args[0] if args else "command"
+            raise RuntimeError(
+                f"docker {action} timed out after {self._CONTROL_TIMEOUT_SECONDS:g}s"
+            ) from e
+        except Exception:
+            raise
 
     async def execute(self, request: ExecRequest) -> ExecResponse:
         if not self._container_id:
@@ -76,7 +152,6 @@ class ContainerExecutor(BaseExecutor):
             cmd.extend(["-w", cwd])
         cmd.extend([self._container_id, "sh", "-c", request.command])
 
-        proc = None
         try:
             proc = await spawn_exec(
                 *cmd,
@@ -84,8 +159,9 @@ class ContainerExecutor(BaseExecutor):
                 stderr=asyncio.subprocess.PIPE,
                 stdin=asyncio.subprocess.PIPE if request.stdin else None,
             )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(request.stdin.encode() if request.stdin else None),
+            stdout, stderr = await communicate_owned(
+                proc,
+                request.stdin.encode() if request.stdin else None,
                 timeout=request.timeout,
             )
             return ExecResponse(
@@ -95,15 +171,11 @@ class ContainerExecutor(BaseExecutor):
                 return_code=proc.returncode or 0,
                 executor=self.name,
             )
+        except asyncio.CancelledError:
+            raise
         except asyncio.TimeoutError:
-            if proc is not None:
-                await terminate_tree(proc)
             return ExecResponse(success=False, stderr=f"Timeout after {request.timeout}s", return_code=-1, executor=self.name)
         except Exception as e:
-            if proc is not None:
-                # Sweep regardless of the leader's returncode: an exited leader
-                # can still have left grandchildren in its group.
-                await terminate_tree(proc)
             return ExecResponse(success=False, stderr=str(e), return_code=-1, executor=self.name)
 
     def _container_cwd(self, cwd: str) -> str:
@@ -119,7 +191,13 @@ class ContainerExecutor(BaseExecutor):
 
 
 class RemoteExecutor(BaseExecutor):
-    """Execute commands on a remote host via SSH with proper input sanitization."""
+    """Execute commands on a remote host via SSH with proper input sanitization.
+
+    The lifecycle owner can reclaim the local ``ssh`` client and any local
+    descendants only. A remote command that deliberately daemonizes and closes
+    the SSH transport is no longer in that process group; stopping it requires a
+    remote PID/service protocol and is outside this executor's guarantee.
+    """
 
     name = "remote"
 
@@ -177,7 +255,6 @@ class RemoteExecutor(BaseExecutor):
         ssh_cmd = self._build_ssh_base()
         ssh_cmd.append(self._build_remote_command(request))
 
-        proc = None
         try:
             proc = await spawn_exec(
                 *ssh_cmd,
@@ -185,8 +262,9 @@ class RemoteExecutor(BaseExecutor):
                 stderr=asyncio.subprocess.PIPE,
                 stdin=asyncio.subprocess.PIPE if request.stdin else None,
             )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(request.stdin.encode() if request.stdin else None),
+            stdout, stderr = await communicate_owned(
+                proc,
+                request.stdin.encode() if request.stdin else None,
                 timeout=request.timeout,
             )
             return ExecResponse(
@@ -196,13 +274,9 @@ class RemoteExecutor(BaseExecutor):
                 return_code=proc.returncode or 0,
                 executor=self.name,
             )
+        except asyncio.CancelledError:
+            raise
         except asyncio.TimeoutError:
-            if proc is not None:
-                await terminate_tree(proc)
             return ExecResponse(success=False, stderr=f"Timeout after {request.timeout}s", return_code=-1, executor=self.name)
         except Exception as e:
-            if proc is not None:
-                # Sweep regardless of the leader's returncode: an exited leader
-                # can still have left grandchildren in its group.
-                await terminate_tree(proc)
             return ExecResponse(success=False, stderr=str(e), return_code=-1, executor=self.name)

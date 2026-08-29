@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import echo_agent.scheduler.service as scheduler_service
 from echo_agent.scheduler.service import (
     ScheduledJob,
     Scheduler,
@@ -18,6 +19,33 @@ from echo_agent.scheduler.service import (
 
 
 # ── P0-4: atomic write ───────────────────────────────────────────────────────
+
+
+def test_release_lock_closes_descriptor_when_unlock_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unlock syscall failure must not leak the scheduler lock descriptor."""
+
+    class FailingFcntl:
+        LOCK_UN = 1
+
+        @staticmethod
+        def flock(_fd, _operation) -> None:
+            raise OSError("unlock failed")
+
+    class LockFile:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(scheduler_service, "fcntl", FailingFcntl())
+    scheduler = Scheduler(store_path=tmp_path / "tasks.json")
+    lock_file = LockFile()
+
+    scheduler._release_lock(lock_file)
+
+    assert lock_file.closed is True
 
 
 def test_save_uses_atomic_replace(tmp_path: Path) -> None:

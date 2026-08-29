@@ -26,6 +26,7 @@ _SENSITIVE_FLAG_RE = re.compile(
     r"^--?(?:[\w-]*(?:key|token|secret|password|passwd|pwd|credential|auth)[\w-]*)$",
     re.IGNORECASE,
 )
+_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 def _mask_sensitive(params: dict[str, Any]) -> dict[str, Any]:
@@ -129,8 +130,40 @@ class ToolRegistry:
     def _resolve(self, name: str) -> str:
         return self._ALIASES.get(name, name)
 
-    def register(self, tool: Tool) -> None:
-        self._tools[tool.name] = tool
+    def register(self, tool: Tool, *, replace: bool = False) -> None:
+        """Register a tool without silently shadowing an existing capability.
+
+        Alias names are reserved even when their canonical target is not yet
+        present. Registering (for example) a tool literally named ``bash``
+        would advertise one schema while execution resolves to ``exec`` -- an
+        ambiguity that is both unsafe and almost impossible to diagnose.
+
+        Exact-object re-registration is an idempotent no-op. This preserves the
+        legitimate startup/lifecycle pattern where the same constructed tool is
+        offered twice. Replacing a different implementation is explicit so a
+        trusted lifecycle owner can deliberately hot-swap one; plugin-facing
+        registration never opts in, and therefore cannot shadow built-ins.
+        """
+        raw_name = getattr(tool, "name", "")
+        if not isinstance(raw_name, str) or not _TOOL_NAME_RE.fullmatch(raw_name):
+            raise ValueError(
+                "Tool name must be a 1-64 character string containing only "
+                "letters, digits, '_' or '-'"
+            )
+        name = raw_name
+        if name in self._ALIASES:
+            target = self._ALIASES[name]
+            raise ValueError(
+                f"Tool name '{name}' is reserved as an alias for '{target}'"
+            )
+        existing = self._tools.get(name)
+        if existing is tool:
+            return
+        if existing is not None and not replace:
+            raise ValueError(
+                f"Tool '{name}' is already registered; explicit replace=True is required"
+            )
+        self._tools[name] = tool
 
     def unregister(self, name: str) -> None:
         self._tools.pop(name, None)

@@ -3,10 +3,11 @@
 A2AProtocol used a plain unbounded dict for tasks, so completed tasks lived
 forever and a long-running server leaked memory without limit. This store
 keeps terminal tasks (completed/failed/canceled) around for a TTL window so
-tasks/get can still fetch a recent result, then reclaims them. Active tasks
-are never expired and never evicted for capacity — dropping a task mid-flight
-would strand the caller. No persistence: on restart the store is empty, which
-matches the existing in-memory semantics.
+tasks/get can still fetch a recent result, then reclaims them. Active tasks are
+immune to the normal result TTL and capacity eviction, but a generous active
+backstop requests cancellation through the protocol so stuck work cannot live
+forever. No persistence: on restart the store is empty, which matches the
+existing in-memory semantics.
 """
 from __future__ import annotations
 
@@ -25,6 +26,21 @@ from echo_agent.a2a.models import A2ATask, TaskState
 # in-flight tasks out from under their caller.
 TERMINAL_STATES = frozenset({TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELED})
 _TERMINAL_STATES = TERMINAL_STATES  # backward-compatible alias
+DEFAULT_TASK_OWNER = "anonymous"
+
+
+def _owned_storage_key(owner: str, task_id: str) -> str:
+    """Return a collision-free internal key for an owner/task-id pair.
+
+    The anonymous form stays unchanged for the long-standing dict-like public
+    API and its embedders. Authenticated principals use a NUL-prefixed,
+    length-delimited key. Protocol task IDs reject control characters, so an
+    untrusted custom ID cannot manufacture one of these internal keys.
+    """
+    owner = owner or DEFAULT_TASK_OWNER
+    if owner == DEFAULT_TASK_OWNER:
+        return task_id
+    return f"\0a2a:{len(owner)}:{owner}:{task_id}"
 
 
 class TaskStore:
@@ -113,6 +129,47 @@ class TaskStore:
         return task.state in _TERMINAL_STATES
 
     # --- dict-like protocol ---------------------------------------------------
+
+    @staticmethod
+    def storage_key(owner: str, task_id: str) -> str:
+        """Expose the authoritative owner-aware key to protocol side tables."""
+        return _owned_storage_key(owner, task_id)
+
+    def contains_owned(self, owner: str, task_id: str) -> bool:
+        return _owned_storage_key(owner, task_id) in self
+
+    def get_owned(self, owner: str, task_id: str, default: Any = None) -> Any:
+        return self.get(_owned_storage_key(owner, task_id), default)
+
+    def set_owned(self, owner: str, task: A2ATask) -> None:
+        task.owner = owner or DEFAULT_TASK_OWNER
+        self[_owned_storage_key(task.owner, task.id)] = task
+
+    def has_active_capacity(self) -> bool:
+        """Whether admitting one more active task preserves ``max_tasks``.
+
+        Terminal rows are evictable result-cache entries and do not consume an
+        execution slot: inserting a new task will evict the oldest one if the
+        total table is already at capacity. Active rows cannot be evicted safely,
+        so their count is the hard admission bound enforced by A2AProtocol.
+        """
+        self._purge_expired()
+        active_count = sum(
+            task_id not in self._expire_at for task_id in self._tasks
+        )
+        return active_count < self._max
+
+    def active_storage_keys(self) -> set[str]:
+        """Snapshot store records that currently represent active work."""
+        self._purge_expired()
+        return {
+            task_id for task_id in self._tasks
+            if task_id not in self._expire_at
+        }
+
+    @property
+    def max_tasks(self) -> int:
+        return self._max
 
     def __setitem__(self, key: str, task: A2ATask) -> None:
         # Purge before inserting. Expiry used to run only on the read paths, so a

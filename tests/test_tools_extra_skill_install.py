@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -60,11 +61,22 @@ class TestRunHelper:
     async def test_run_timeout(self):
         proc = _fake_proc()
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)), \
-             patch("asyncio.wait_for", _timeout_wait_for()):
+             patch("asyncio.wait_for", _timeout_wait_for()), \
+             patch("echo_agent.agent.proc_lifecycle.terminate_tree", AsyncMock()) as terminate:
             code, out, err = await _run(["sleep", "100"], timeout=1)
         assert code == -1
         assert "timed out" in err
-        proc.kill.assert_called_once()
+        terminate.assert_awaited_once_with(proc, grace=5.0)
+
+    @pytest.mark.asyncio
+    async def test_run_cancellation_reaps_tree_and_propagates(self):
+        proc = _fake_proc()
+        proc.communicate.side_effect = asyncio.CancelledError
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)), \
+             patch("echo_agent.agent.proc_lifecycle.terminate_tree", AsyncMock()) as terminate:
+            with pytest.raises(asyncio.CancelledError):
+                await _run(["git", "clone", "somewhere"])
+        terminate.assert_awaited_once_with(proc, grace=5.0)
 
 
 class TestFetchGit:

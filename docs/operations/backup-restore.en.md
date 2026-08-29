@@ -36,7 +36,7 @@ echo-agent gateway start
 !!! warning
     Always stop the Gateway before backing up SQLite databases to avoid corruption.
 
-## Restore
+## Restore { #restore-sqlite-backup }
 
 ```bash
 echo-agent gateway stop

@@ -109,20 +109,23 @@ sequenceDiagram
 
 ## 7. A2A 协议集成
 
-除内部 Worker 委派外，Echo Agent 还支持通过 A2A（Agent-to-Agent）协议与外部 Agent 协作：
+内部 Worker 委派与 A2A 是两条独立路径。当前 A2A 生产接线是入站服务：外部 Agent
+发现 Echo Agent，并向它提交文本任务。
 
 ```mermaid
 flowchart LR
-    EA[Echo Agent] -->|A2A JSON-RPC| EXT1[外部 Agent A]
-    EA -->|A2A JSON-RPC| EXT2[外部 Agent B]
-    EXT1 -.->|Agent Card 发现| EA
-    EXT2 -.->|Agent Card 发现| EA
+    EXT1[外部 Agent A] -->|A2A JSON-RPC| EA[Echo Agent]
+    EXT2[外部 Agent B] -->|A2A JSON-RPC| EA
+    EXT1 -.->|GET Agent Card| EA
+    EXT2 -.->|GET Agent Card| EA
 ```
 
 - **Agent Card**：描述 Agent 能力的元数据，用于服务发现
-- **JSON-RPC**：标准化的任务委派协议
-- **agents_list 工具**：列出已知的可协作 Agent
-- **agents_route 工具**：根据任务类型路由到合适的 Agent
+- **JSON-RPC**：通过 `tasks/send`、`tasks/get` 和 `tasks/cancel` 管理入站任务
+- **身份隔离**：认证 token 派生 principal，任务和会话按 principal 分区
+
+内部 `delegate` 工具只调用本地 Worker 运行时，不会路由到外部 A2A Agent。代码库中的
+低层 `A2AClient` 辅助类没有生产调用方，也未经 `net_guard`，不应接收不可信 URL。
 
 ## 8. 内部模块结构
 
@@ -134,7 +137,7 @@ flowchart LR
 | `multi_agent/audit.py` | 委派审计日志 |
 | `tools/delegate.py` | delegate 工具实现 |
 | `a2a/protocol.py` | A2A 协议实现 |
-| `a2a/client.py` | A2A 客户端 |
+| `a2a/client.py` | 未接入生产运行时的低层客户端辅助类 |
 
 ## 委派限额
 

@@ -131,6 +131,8 @@ class TelegramChannel(BaseChannel):
             try:
                 await self._poll_task
             except asyncio.CancelledError:
+                # stop() deliberately cancels and awaits the polling loop before
+                # releasing its HTTP session.
                 pass
         if self._session:
             await self._session.close()

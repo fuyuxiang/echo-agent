@@ -378,6 +378,8 @@ class ContradictionDetector:
                     description=f"Temporal conflict on '{a_prefix}': content differs across time boundary.",
                 )
         except (TypeError, ValueError):
+            # Missing/malformed timestamps cannot establish a temporal conflict;
+            # other contradiction detectors remain available to the caller.
             pass
         return None
 

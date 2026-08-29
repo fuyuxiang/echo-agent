@@ -113,4 +113,6 @@ def clear_runtime_endpoint(workspace: Path) -> None:
     try:
         endpoint_path(workspace).unlink()
     except OSError:
+        # Shutdown cleanup is idempotent: missing/unremovable advisory endpoint
+        # metadata must not obscure successful gateway teardown.
         pass

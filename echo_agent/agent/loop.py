@@ -25,7 +25,13 @@ from echo_agent.agent.pipeline.inference_stage import InferenceStage
 from echo_agent.agent.pipeline.response_stage import ResponseStage, _is_ephemeral_session
 from echo_agent.agent.tools.circuit_breaker import ToolCircuitBreaker
 from echo_agent.agent.tools.registry import ToolRegistry
-from echo_agent.bus.events import EventType, InboundEvent, OutboundEvent
+from echo_agent.agent.turn_run_store import DuplicateTurnClaim
+from echo_agent.bus.events import (
+    EventType,
+    InboundEvent,
+    OutboundEvent,
+    stamp_turn_outcome,
+)
 from echo_agent.bus.queue import MessageBus
 from echo_agent.config.schema import Config
 from echo_agent.cost.budget import CostTracker
@@ -237,6 +243,9 @@ class AgentLoop:
             from echo_agent.agent.turn_run_store import TurnRunStore
 
             self._turn_runs = TurnRunStore(storage)
+            set_turn_run_store = getattr(self.bus, "set_turn_run_store", None)
+            if callable(set_turn_run_store):
+                set_turn_run_store(self._turn_runs)
         try:
             provider_default_model = provider.get_default_model()
         except Exception as e:
@@ -827,17 +836,31 @@ class AgentLoop:
         self.approval.cancel_session(session_key, reason="session reset")
 
     async def _mark_turn_running(
-        self, event_id: str, session_key: str, *, context_key: str, trace_id: str,
-    ) -> None:
+        self,
+        event_id: str,
+        session_key: str,
+        *,
+        context_key: str,
+        trace_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> bool:
         turn_runs = getattr(self, "_turn_runs", None)
         if turn_runs is None:
-            return
+            return True
         try:
-            await turn_runs.mark_running(
-                event_id, session_key, context_key=context_key, trace_id=trace_id,
+            return await turn_runs.mark_running(
+                event_id,
+                session_key,
+                context_key=context_key,
+                trace_id=trace_id,
+                metadata=metadata,
             )
         except Exception as e:
             logger.warning("Turn running ledger write failed for {}: {}", event_id, e)
+            # Preserve the ledger's best-effort availability contract. Built-in
+            # SQLite returns an authoritative bool; a storage outage must not
+            # silently drop every otherwise valid inbound message.
+            return True
 
     async def _mark_turn_terminal(
         self, event_id: str, status: str, *, response_text: str = "", error: str = "",
@@ -852,6 +875,15 @@ class AgentLoop:
             )
         except Exception as e:
             logger.warning("Turn terminal ledger write failed for {}: {}", event_id, e)
+
+    async def _on_inbound_rejected(self, event: InboundEvent, reason: str) -> None:
+        """Converge ledger/task state when the bus refuses an accepted event."""
+        if event.is_control:
+            return
+        status = "interrupted" if reason == "shutdown" else "failed"
+        await self._record_cron_outcome(event, "error", reason)
+        await self._record_task_outcome(event, "error", reason)
+        await self._mark_turn_terminal(event.event_id, status, error=reason)
 
     async def reset_session_state(self, session_key: str) -> None:
         """Clear every reset-bounded, prompt-bearing process-local state.
@@ -882,6 +914,11 @@ class AgentLoop:
         # prompts/control state from a disconnected client.
         self.unblock_session_for_reset(session_key)
         self.interrupt.clear(session_key)
+        # Tool approvals are scoped to the durable session identity rather than
+        # the conversation epoch.  Explicitly clear the session map here so a
+        # reset cannot inherit SESSION / SESSION_ALL grants.  ALWAYS grants stay
+        # effective because ApprovalAllowlist retains them in its permanent set.
+        self.approval_gate.clear_session(session_key)
 
     @property
     def log_buffer(self) -> Any:
@@ -1193,6 +1230,22 @@ class AgentLoop:
             )
 
     async def start(self) -> None:
+        # Rejections happen outside the normal inbound handler (session limiter,
+        # shutdown deadline), so subscribe a dedicated lifecycle sink before the
+        # bus can leave any already-accepted event without a terminal record.
+        self.bus.subscribe_inbound_rejected(self._on_inbound_rejected)
+        # Reconcile before any expensive initialization and, critically, before
+        # subscribing to inbound traffic.  Every non-terminal row at this point
+        # belongs to a process instance that can no longer finish it.
+        if self._turn_runs is not None:
+            try:
+                reconciled = await self._turn_runs.reconcile_orphaned()
+                if reconciled:
+                    logger.info("Reconciled {} orphaned agent turn(s) at startup", reconciled)
+            except Exception as e:
+                # The ledger is observability/reconnect state.  A storage failure
+                # here must be visible but must not make the whole agent unavailable.
+                logger.warning("Turn-run startup reconciliation failed: {}", e)
         await self._resolve_embed_and_index(self._storage)
         if self._embed_fn is not None:
             # Off the critical path: warm the model in the background so startup
@@ -1277,13 +1330,42 @@ class AgentLoop:
     async def stop(self) -> None:
         self._running = False
         self.bus.unsubscribe_inbound(self._on_inbound)
+        self.bus.unsubscribe_inbound_rejected(self._on_inbound_rejected)
         if self.evolution is not None:
             try:
                 await self.evolution.stop()
             except Exception as e:
                 logger.debug("Evolution engine stop raised: {}", e)
+        plugin_owns_tool = None
         if self._plugin_manager:
+            # The stop hook is the plugin's last notification while every tool
+            # and shared dependency is still alive. Plugin-registered tools are
+            # owned and closed by PluginManager (whether or not the plugin has a
+            # deactivate hook), so exclude them from the registry-wide close
+            # below to avoid double-closing non-idempotent third-party resources.
             await self._plugin_manager.hooks.dispatch("on_agent_stop")
+            plugin_owns_tool = getattr(self._plugin_manager, "owns_tool", None)
+        # Tools may own work that depends on plugins, MCP clients, credentials,
+        # or other tools. Close every duck-typed lifecycle owner in reverse
+        # registration order (LIFO) before dismantling those dependencies. This
+        # covers SpawnTool as well as ProcessTool and future host-owned tools
+        # without another hard-coded shutdown branch.
+        for name in reversed(self.tools.tool_names):
+            tool = self.tools.get(name)
+            if (
+                tool is not None
+                and callable(plugin_owns_tool)
+                and plugin_owns_tool(tool) is True
+            ):
+                continue
+            close = getattr(tool, "aclose", None)
+            if not callable(close):
+                continue
+            try:
+                await close()
+            except Exception as e:
+                logger.debug("{} aclose raised (ignored): {}", name, e)
+        if self._plugin_manager:
             await self._plugin_manager.shutdown()
         if self.mcp_manager:
             await self.mcp_manager.stop_all()
@@ -1292,14 +1374,6 @@ class AgentLoop:
             await _browser_manager.close_all()
         except Exception as e:
             logger.debug("browser manager close_all raised (ignored): {}", e)
-        # Terminate any background processes started via ProcessTool so they do
-        # not outlive the agent (orphaned children would keep running).
-        proc_tool = self.tools.get("process")
-        if proc_tool is not None and hasattr(proc_tool, "aclose"):
-            try:
-                await proc_tool.aclose()
-            except Exception as e:
-                logger.debug("ProcessTool aclose raised (ignored): {}", e)
         # spill 清扫循环不属于调度器,自己收。它绝大多数时间停在 sleep 上,
         # cancel 即刻生效;正在 to_thread 里扫的那一轮会跑完(线程不可中断),
         # 故这里等它,不 fire-and-forget。
@@ -1334,6 +1408,15 @@ class AgentLoop:
                 self._reranker.close()
             except Exception as e:
                 logger.debug("Local reranker close raised (ignored): {}", e)
+        # Export the final telemetry batch only after every task/tool that can
+        # create spans has stopped. TelemetryManager.shutdown is synchronous and
+        # idempotent, but keep this boundary best-effort for embedded/custom
+        # managers so it cannot prevent the rest of process shutdown.
+        if self._telemetry is not None:
+            try:
+                self._telemetry.shutdown()
+            except Exception as e:
+                logger.debug("Telemetry shutdown raised (ignored): {}", e)
         logger.info("Agent loop stopped")
 
     def _spawn_background(self, coro: Any, *, tier: Any = None) -> None:
@@ -1657,6 +1740,19 @@ class AgentLoop:
                     )
                     out.metadata = dict(event.metadata)
                     out.metadata["_inbound_event_id"] = event.event_id
+                    if getattr(result, "task_incomplete", False):
+                        outcome = (
+                            "interrupted"
+                            if result.termination_reason == "interrupted"
+                            else "incomplete"
+                        )
+                        stamp_turn_outcome(
+                            out.metadata,
+                            outcome,
+                            error=result.termination_reason,
+                        )
+                    else:
+                        stamp_turn_outcome(out.metadata, "completed")
                     delivery = await self.bus.publish_outbound(out)
                     delivered = delivery.ok
                 self.tracer.end_span(span, metadata={"response_len": len(response_text or "")})
@@ -1691,6 +1787,24 @@ class AgentLoop:
                     await self._mark_turn_terminal(
                         event.event_id, "completed", response_text=response_text,
                     )
+            except DuplicateTurnClaim:
+                # The first claimant owns execution, response delivery and the
+                # terminal ledger transition. A duplicate must touch none of
+                # those or it could contradict the authoritative run.
+                logger.info("Duplicate inbound event {} skipped", event.event_id)
+                self.tracer.end_span(span, metadata={"duplicate": True})
+            except asyncio.CancelledError:
+                # A bus hard-stop or outer task cancellation is still a terminal
+                # lifecycle event.  CancelledError is a BaseException, so the
+                # generic handler cannot persist it and the ledger would otherwise
+                # remain accepted/running forever.
+                self.tracer.end_span(span, error="cancelled")
+                await self._record_cron_outcome(event, "error", "cancelled")
+                await self._record_task_outcome(event, "error", "cancelled")
+                await self._mark_turn_terminal(
+                    event.event_id, "interrupted", error="cancelled",
+                )
+                raise
             except Exception as e:
                 logger.error("Processing failed for event {}: {}", event.event_id, e)
                 self.tracer.end_span(span, error=str(e))
@@ -1699,6 +1813,11 @@ class AgentLoop:
                 )
                 error_out.metadata = dict(event.metadata)
                 error_out.metadata["_inbound_event_id"] = event.event_id
+                stamp_turn_outcome(
+                    error_out.metadata,
+                    "failed",
+                    error="agent processing failed",
+                )
                 await self.bus.publish_outbound(error_out)
                 await self._record_cron_outcome(event, "error", str(e))
                 await self._record_task_outcome(event, "error", str(e))
@@ -1739,10 +1858,15 @@ class AgentLoop:
                 max_entries=self.config.memory.max_working_memory
             ))
         if not event.is_control:
-            await self._mark_turn_running(
+            from echo_agent.bus.idempotency import idempotency_ledger_metadata
+
+            claimed = await self._mark_turn_running(
                 event.event_id, event.session_key,
                 context_key=context_key, trace_id=trace_id,
+                metadata=idempotency_ledger_metadata(event.metadata),
             )
+            if not claimed:
+                raise DuplicateTurnClaim(event.event_id)
         command_response = await self._handle_approval_command(event)
         if command_response is not None:
             session.add_message("user", event.text)

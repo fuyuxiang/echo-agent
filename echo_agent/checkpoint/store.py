@@ -7,7 +7,7 @@ import hashlib
 import os
 from pathlib import Path
 
-from echo_agent.agent.proc_lifecycle import spawn_exec, terminate_tree
+from echo_agent.agent.proc_lifecycle import communicate_owned, spawn_exec
 
 # Upper bound for a single git invocation. Snapshot commands are local and
 # normally finish in well under a second, but git can block indefinitely on an
@@ -75,14 +75,9 @@ class ShadowGitStore:
         the child (and any grandchildren) running.
         """
         try:
-            return await asyncio.wait_for(proc.communicate(), timeout=_GIT_TIMEOUT)
+            return await communicate_owned(proc, timeout=_GIT_TIMEOUT)
         except (asyncio.TimeoutError, TimeoutError):
-            await terminate_tree(proc)
             raise RuntimeError(f"git {label} timed out after {_GIT_TIMEOUT}s") from None
-        except asyncio.CancelledError:
-            # Caller went away (shutdown, client disconnect): don't strand git.
-            await terminate_tree(proc)
-            raise
 
     async def _run_git(
         self, args: list[str], workspace: Path | None = None, check: bool = True,

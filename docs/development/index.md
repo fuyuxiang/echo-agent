@@ -12,7 +12,7 @@
 | [新增 Tool](add-tool.md) | 为 Agent 添加新工具 |
 | [新增 Channel](add-channel.md) | 开发新的消息通道适配器 |
 | [Skill 开发](skill-authoring.md) | 编写 SKILL.md 格式的技能 |
-| [Plugin API](plugin-api.md) | 插件清单、生命周期钩子、沙箱 |
+| [Plugin API](plugin-api.md) | 插件清单、生命周期钩子、manifest 权限准入 |
 | [Dashboard 前端开发](dashboard-development.md) | React SPA 架构、组件开发、测试 |
 | [测试与评估](testing-evaluation.md) | pytest、评估框架、覆盖率门禁 |
 | [文档贡献指南](documentation.md) | 文档站架构、i18n、本地预览 |

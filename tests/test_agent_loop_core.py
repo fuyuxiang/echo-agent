@@ -172,6 +172,28 @@ async def test_tool_cancellation_records_circuit_breaker_failure(tmp_path: Path)
 
 
 @pytest.mark.asyncio
+async def test_on_inbound_cancellation_persists_interrupted_terminal(tmp_path: Path) -> None:
+    agent, _, _ = _make_agent_loop(tmp_path)
+    agent._running = True
+    agent._process_event = AsyncMock(side_effect=asyncio.CancelledError())
+    agent._mark_turn_terminal = AsyncMock()
+    agent._record_cron_outcome = AsyncMock()
+    agent._record_task_outcome = AsyncMock()
+    event = InboundEvent.text_message(
+        channel="test", sender_id="u1", chat_id="c1", text="cancel me",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent._on_inbound(event)
+
+    agent._mark_turn_terminal.assert_awaited_once_with(
+        event.event_id, "interrupted", error="cancelled",
+    )
+    agent._record_cron_outcome.assert_awaited_once_with(event, "error", "cancelled")
+    agent._record_task_outcome.assert_awaited_once_with(event, "error", "cancelled")
+
+
+@pytest.mark.asyncio
 async def test_repeated_identical_tool_call_is_short_circuited(tmp_path: Path) -> None:
     """The 4th identical tool call must be blocked WITHOUT actually invoking
     the tool. Old code only renamed the displayed message and let the tool
@@ -273,6 +295,11 @@ async def test_on_inbound_error_sends_error_reply(tmp_path: Path) -> None:
     # exception string leaked to the user); see loop._on_inbound except block.
     from echo_agent.agent.degraded_notice import GENERIC_FALLBACK_TEXT
     assert error_msg == GENERIC_FALLBACK_TEXT
+    assert published[-1].metadata["_turn_status"] == "failed"
+    assert published[-1].metadata["_error"] is True
+    assert published[-1].metadata["_http_status"] == 500
+    assert published[-1].metadata["_error_reason"] == "agent processing failed"
+    assert "test crash" not in str(published[-1].metadata)
 
 
 @pytest.mark.asyncio

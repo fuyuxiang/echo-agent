@@ -584,6 +584,8 @@ class WeixinChannel(BaseChannel):
             try:
                 await asyncio.wait_for(asyncio.shield(self._poll_task), timeout=5)
             except (asyncio.CancelledError, asyncio.TimeoutError):
+                # Cancellation is requested above; a timeout only bounds shutdown
+                # of an uncooperative long poll before sessions are closed.
                 pass
         self._poll_task = None
         if self._msg_tasks:
@@ -737,6 +739,8 @@ class WeixinChannel(BaseChannel):
                 await self._do_send_typing(chat_id, _TYPING_START)
                 await asyncio.sleep(_TYPING_REFRESH_INTERVAL)
         except asyncio.CancelledError:
+            # Cancellation is the protocol for leaving the refresh loop; finally
+            # still sends the explicit typing-stop frame under a shield.
             pass
         finally:
             # Shield the stop send: this runs during cancellation, and a *second*
@@ -815,6 +819,8 @@ class WeixinChannel(BaseChannel):
                 try:
                     os.unlink(path)
                 except OSError:
+                    # This is a per-send temporary download; cleanup failure must
+                    # not replace the already determined delivery result.
                     pass
 
     async def _materialize_source(self, source: str) -> tuple[str, bool]:
@@ -975,11 +981,15 @@ class WeixinChannel(BaseChannel):
                 try:
                     os.unlink(silk_path)
                 except OSError:
+                    # Encoded voice output is disposable cleanup after delivery;
+                    # preserve the send/fallback result if deletion fails.
                     pass
             if cleanup and path and os.path.exists(path):
                 try:
                     os.unlink(path)
                 except OSError:
+                    # The materialized source is temporary and cleanup is
+                    # best-effort after the delivery outcome is final.
                     pass
 
     # ── Poll loop ────────────────────────────────────────────────────────────

@@ -3,6 +3,10 @@
 User scope writes ``~/.config/systemd/user/echo-agent.service`` and drives
 ``systemctl --user``. System scope keeps the legacy behaviour: unit under
 ``/etc/systemd/system`` managed via sudo.
+
+Only each local, one-shot ``systemctl``/``journalctl`` CLI tree is reclaimed.
+The gateway service belongs to systemd's unit lifecycle outside that PGID, so
+stopping it still requires the corresponding systemctl action.
 """
 
 from __future__ import annotations
@@ -10,10 +14,10 @@ from __future__ import annotations
 import getpass
 import os
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
+from echo_agent.agent.proc_lifecycle import run_owned
 from echo_agent.cli.service.base import SERVICE_NAME, gateway_argv, run
 from echo_agent.cli.service.templates import render_systemd_unit
 
@@ -86,7 +90,7 @@ class SystemdUserBackend:
         return self.service_path().exists()
 
     def is_running(self) -> bool:
-        result = subprocess.run(
+        result = run_owned(
             ["systemctl", "--user", "is-active", "--quiet", SERVICE_NAME],
         )
         return result.returncode == 0
@@ -134,6 +138,8 @@ class SystemdUserBackend:
         try:
             run(cmd, check=False)
         except KeyboardInterrupt:
+            # Ctrl-C cleanly leaves the interactive journal follower without
+            # changing the user-scoped service.
             pass
 
 
@@ -207,7 +213,7 @@ class SystemdSystemBackend:
         return self.service_path().exists()
 
     def is_running(self) -> bool:
-        result = subprocess.run(["systemctl", "is-active", "--quiet", SERVICE_NAME])
+        result = run_owned(["systemctl", "is-active", "--quiet", SERVICE_NAME])
         return result.returncode == 0
 
     def is_current(self, workspace: str | None = None, config: str | None = None) -> bool:
@@ -249,6 +255,8 @@ class SystemdSystemBackend:
         try:
             self._sudo(cmd, check=False)
         except KeyboardInterrupt:
+            # Ctrl-C cleanly leaves the interactive journal follower without
+            # changing the system-scoped service.
             pass
 
 
@@ -258,7 +266,7 @@ def systemd_available() -> bool:
     if not shutil.which("systemctl"):
         return False
     # WSL and containers often ship systemctl without a running systemd.
-    result = subprocess.run(
+    result = run_owned(
         ["systemctl", "is-system-running"],
         capture_output=True, text=True,
     )

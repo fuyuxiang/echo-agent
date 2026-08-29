@@ -21,6 +21,29 @@ class EventType(str, Enum):
     SYSTEM = "system"
 
 
+def stamp_turn_outcome(
+    metadata: dict[str, Any], status: str, *, error: str = "",
+) -> None:
+    """Attach a transport-neutral final turn outcome to outbound metadata.
+
+    Synchronous Gateway/Webhook transports see the final frame before the loop
+    writes its terminal ledger row. These fields let them cache and return the
+    same status atomically with delivery instead of reporting every final frame
+    as a successful HTTP 200/completed result.
+    """
+    if status not in {"completed", "incomplete", "failed", "interrupted"}:
+        raise ValueError(f"invalid turn outcome: {status}")
+    metadata["_turn_status"] = status
+    if status == "completed":
+        metadata.pop("_error", None)
+        metadata.pop("_error_reason", None)
+        metadata.pop("_http_status", None)
+        return
+    metadata["_error"] = True
+    metadata["_error_reason"] = error or f"turn {status}"
+    metadata["_http_status"] = 500 if status == "failed" else 409
+
+
 class ContentType(str, Enum):
     TEXT = "text"
     IMAGE = "image"

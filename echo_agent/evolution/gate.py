@@ -148,10 +148,14 @@ class PromotionGate:
         try:
             fcntl.flock(fd, fcntl.LOCK_UN)
         except OSError:
+            # Closing this process-owned descriptor below also releases its flock;
+            # an explicit unlock failure therefore cannot leave the lock held.
             pass
         try:
             os.close(fd)
         except OSError:
+            # Release is idempotent and the descriptor may already have been
+            # closed by an earlier teardown path.
             pass
 
     async def _evaluate_locked(self, candidate: SkillCandidate) -> PromotionDecision:

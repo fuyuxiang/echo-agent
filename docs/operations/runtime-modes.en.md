@@ -45,6 +45,9 @@ Gateway mode provides:
 - Background service management
 - A2A protocol endpoint
 
+!!! warning "Multi-client is not multi-tenant"
+    Gateway authentication provides request admission and read/admin scopes, but ordinary API tokens are not a universal user identity for every stored resource. Dashboard and several APIs expose instance-wide state. Mutually untrusted users should use separate instances and data directories; see the [security model](../concepts/security-model.md#multi-client-tenant-boundary).
+
 ## CLI Client Mode
 
 ```bash

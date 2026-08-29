@@ -101,7 +101,7 @@ Gateway 支持三种认证模式：
 | 模式 | 说明 | 适用场景 |
 |------|------|---------|
 | `open` | 无认证，任何本地请求可访问 | 仅本地开发 |
-| `allowlist` | 基于 Token 白名单 | 多用户共享 |
+| `allowlist` | 基于 Token 白名单 | 受信任客户端共享（非租户级隔离） |
 | `pairing` | 配对码认证 | 首次设备接入 |
 
 ```yaml
@@ -122,6 +122,9 @@ gateway:
     allowed_hosts:
       - "localhost"
 ```
+
+!!! warning "多客户端不等于多租户"
+    `api_tokens` 与 `admin_tokens` 区分请求是否可读/可管理，但普通 Token 不是所有资源通用的用户主体。Dashboard 和多个 API 展示的是整个实例的状态。互不信任的用户应使用独立实例与数据目录，详见[安全模型](../concepts/security-model.md#multi-client-tenant-boundary)。
 
 !!! warning "网络绑定"
     默认绑定 `127.0.0.1`，仅接受本地连接。如需远程访问，请先完成 [安全加固](security-hardening.md) 再修改绑定地址。

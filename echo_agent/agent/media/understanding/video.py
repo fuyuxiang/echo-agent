@@ -3,13 +3,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import re
-import subprocess
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
 from echo_agent.agent.media.understanding.base import UnderstandResult
+from echo_agent.agent.proc_lifecycle import run_owned
 
 # Matches the "Duration: HH:MM:SS.ss" line ffmpeg prints to stderr for any input.
 _DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
@@ -34,7 +34,7 @@ def _probe_duration(exe: str, path: Path) -> float | None:
     raises: any failure returns None so callers can fall back (fail-open).
     """
     try:
-        proc = subprocess.run(
+        proc = run_owned(
             [exe, "-i", str(path)],
             capture_output=True, timeout=60, check=False,
         )
@@ -76,7 +76,7 @@ def extract_frames(path: Path, count: int, *, out_dir: Path | None = None) -> li
             "-vsync", "0",
             pattern,
         ]
-        subprocess.run(cmd, capture_output=True, timeout=120, check=False)
+        run_owned(cmd, capture_output=True, timeout=120, check=False)
     except Exception as e:  # fail-open
         logger.warning("frame extraction failed (fail-open): {}", e)
         return []
@@ -93,7 +93,7 @@ def extract_audio_track(path: Path, *, out_path: Path | None = None) -> Path | N
         exe = _get_ffmpeg_exe()
         cmd = [exe, "-y", "-i", str(path), "-vn", "-acodec", "pcm_s16le",
                "-ar", "16000", "-ac", "1", str(out)]
-        subprocess.run(cmd, capture_output=True, timeout=120, check=False)
+        run_owned(cmd, capture_output=True, timeout=120, check=False)
     except Exception as e:  # fail-open
         logger.warning("audio track extraction failed (fail-open): {}", e)
         return None
@@ -226,4 +226,6 @@ class VideoUnderstander:
                 try:
                     f.unlink(missing_ok=True)
                 except Exception:
+                    # Temporary-file cleanup is best-effort and must not replace
+                    # the already computed understanding result with an error.
                     pass

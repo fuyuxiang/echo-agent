@@ -43,6 +43,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from echo_agent.agent.proc_lifecycle import run_owned
+
 logger = logging.getLogger(__name__)
 
 # Single source of truth for how long one install may run. The blocking
@@ -317,7 +319,7 @@ def _venv_pip_install(
     uv_bin = shutil.which("uv")
     if uv_bin:
         try:
-            r = subprocess.run(
+            r = run_owned(
                 [uv_bin, "pip", "install", *specs],
                 capture_output=True, text=True, timeout=timeout, env=uv_env,
             )
@@ -330,7 +332,7 @@ def _venv_pip_install(
     # Tier 2: python -m pip (with ensurepip bootstrap if needed)
     pip_cmd = [sys.executable, "-m", "pip"]
     try:
-        probe = subprocess.run(
+        probe = run_owned(
             pip_cmd + ["--version"],
             capture_output=True, text=True, timeout=15,
         )
@@ -338,7 +340,7 @@ def _venv_pip_install(
             raise FileNotFoundError("pip not in venv")
     except (subprocess.TimeoutExpired, FileNotFoundError):
         try:
-            subprocess.run(
+            run_owned(
                 [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
                 capture_output=True, text=True, timeout=120, check=True,
             )
@@ -347,7 +349,7 @@ def _venv_pip_install(
                                   f"pip not available and ensurepip failed: {e}")
 
     try:
-        r = subprocess.run(
+        r = run_owned(
             pip_cmd + ["install", *specs],
             capture_output=True, text=True, timeout=timeout,
         )
@@ -538,7 +540,7 @@ async def ensure_async(feature: str, *, prompt: bool = False) -> None:
     """Async-safe :func:`ensure`. Runs the blocking pip install in a worker
     thread so a slow/offline install cannot freeze the event loop.
 
-    ``ensure`` calls ``subprocess.run(..., timeout=300)`` synchronously; invoked
+    ``ensure`` calls ``run_owned(..., timeout=300)`` synchronously; invoked
     directly from a coroutine on the loop thread it blocks every other task
     (message intake, heartbeats) for up to 300s — long enough for the loop
     watchdog to declare a freeze and kill the process. Offline environments hit

@@ -765,5 +765,7 @@ class MCPOAuthClient:
             try:
                 os.unlink(tmp_name)
             except OSError:
+                # The credential write still raises its original failure; missing
+                # or undeletable temporary cleanup must not mask that cause.
                 pass
             raise

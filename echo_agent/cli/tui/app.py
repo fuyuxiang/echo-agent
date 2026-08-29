@@ -217,6 +217,8 @@ class EchoTUI(App):
                 welcome=self._brand.welcome,
             ))
         except Exception:
+            # The banner is presentation-only and may race an early mount; the
+            # transcript and input remain fully functional without it.
             pass
 
     def check_action(self, action: str, parameters):
@@ -279,6 +281,8 @@ class EchoTUI(App):
         try:
             getattr(self._activity, method)(*args)
         except Exception:
+            # Progress is decorative and may be called before/after widget mount;
+            # answer-frame handling must continue independently.
             pass
 
     # --- WSBridge sink ---
@@ -323,6 +327,8 @@ class EchoTUI(App):
                 try:
                     r.remove()
                 except Exception:
+                    # The control reply is already removed from correlation maps;
+                    # a detached Textual widget is equivalent to successful removal.
                     pass
             self._event_turn_seq.pop(inbound_id, None)
             return
@@ -357,6 +363,8 @@ class EchoTUI(App):
             try:
                 cancelled = self._activity.stop_requested
             except Exception:
+                # If the optional activity widget is unavailable, the safe default
+                # is the ordinary completed-turn cleanup path.
                 pass
             # Settle the docked progress line into "完成 · <用时>". It used to be
             # hidden here, which removed the only moving thing on screen and left
@@ -374,6 +382,8 @@ class EchoTUI(App):
                 try:
                     self._tv.end_turn_cleanup()
                 except Exception:
+                    # This only retires decorative rows after the cancelled turn is
+                    # already terminal; transcript state remains authoritative.
                     pass
             # A pending clarify/approval is deliberately LEFT ALONE here.
             #
@@ -544,6 +554,8 @@ class EchoTUI(App):
         try:
             self.query_one(StatusBar).stop_turn_timer()
         except Exception:
+            # The error frame is already recorded; an unmounted status bar cannot
+            # be allowed to interrupt terminal-state cleanup.
             pass
         # The turn died server-side, so the progress line and any tool line still
         # rendered as running are now lying about what is happening. Retire
@@ -554,6 +566,8 @@ class EchoTUI(App):
         try:
             self._tv.end_turn_cleanup()
         except Exception:
+            # Tool/progress row retirement is presentation-only after the gateway
+            # has already declared the turn terminal.
             pass
         # Drop stream correlation for the dead turn(s): only on_user_reply_final
         # pops from _replies, so a turn ended by an error/interrupt left its entry
@@ -597,12 +611,16 @@ class EchoTUI(App):
         try:
             self.query_one(StatusBar).set_connection(False)
         except Exception:
+            # During early mount/late teardown the status bar may not exist; the
+            # internal `_connected` flag above remains authoritative.
             pass
         # One notice per drop (not on every re-entry), so a flapping link doesn't
         # spam the transcript.
         try:
             self._tv.add_error("连接已断开。输入 /reconnect 重连（Ctrl+D 退出）。")
         except Exception:
+            # A transcript notice is best-effort during widget teardown; connection
+            # gating and reconnect behavior do not depend on rendering it.
             pass
         # No further frames can arrive on this socket, so a live progress line or
         # a running tool line would sit there implying live progress. Settle them
@@ -630,6 +648,8 @@ class EchoTUI(App):
         try:
             self._tv.end_turn_cleanup()
         except Exception:
+            # The disconnected state is already committed; stale decorative rows
+            # are harmless if the transcript is itself being torn down.
             pass
         # The gateway synthesizes /__clarify_cancel__ on ws teardown, so a prompt
         # pending at the drop is already dead server-side. Retire it to match —
@@ -714,6 +734,8 @@ class EchoTUI(App):
         try:
             self._tv.add_notice("[$success]● 已重新连接[/]")
         except Exception:
+            # Successful socket replacement is authoritative; this notice is only
+            # cosmetic and can race a screen teardown.
             pass
 
     def on_key(self, event) -> None:
@@ -749,6 +771,8 @@ class EchoTUI(App):
         try:
             self.query_one(PromptInput).disabled = True
         except Exception:
+            # Prompt locking is best-effort before mount; action guards still
+            # reject unrelated bindings while a decision is pending.
             pass
 
     def _unlock_prompt(self, *, focus: bool = True) -> None:
@@ -761,6 +785,8 @@ class EchoTUI(App):
             if focus:
                 pi.focus()
         except Exception:
+            # The prompt may be absent during screen teardown; pending-state
+            # bookkeeping remains authoritative even when focus cannot change.
             pass
 
     def _refocus_prompt(self) -> None:
@@ -773,6 +799,8 @@ class EchoTUI(App):
         try:
             self.query_one(PromptInput).focus()
         except Exception:
+            # Focus restoration is cosmetic and legitimately fails for an
+            # unmounted or still-disabled prompt.
             pass
 
     def _enter_clarify_free_input(self, char: str = "") -> None:
@@ -951,6 +979,8 @@ class EchoTUI(App):
             if not self._activity.is_active:
                 self._activity_call("reset")
         except Exception:
+            # `/clear` has already removed transcript state; a missing activity
+            # widget needs no additional reset.
             pass
 
     async def _do_reconnect(self) -> None:

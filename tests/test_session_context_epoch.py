@@ -14,6 +14,7 @@ from echo_agent.session.context_epoch import (
     conversation_context_key,
 )
 from echo_agent.session.manager import Session
+from echo_agent.permissions.allowlist import ApprovalAllowlist, ApprovalLevel
 
 
 def test_context_epoch_uses_persisted_reset_count():
@@ -23,6 +24,42 @@ def test_context_epoch_uses_persisted_reset_count():
     assert conversation_context_key(session.key, session) == "cli:local::epoch:3"
     assert belongs_to_session("cli:local::epoch:2", "cli:local")
     assert not belongs_to_session("cli:local-extra::epoch:2", "cli:local")
+
+
+def test_reserved_session_syntax_is_structurally_framed_without_collision():
+    """Internal callers remain safe even if they bypass Gateway validation."""
+    victim = conversation_context_key("cli:alice", 3)
+    forged_identity = "cli:alice::epoch:3"
+    attacker = conversation_context_key(forged_identity, 0)
+
+    assert victim == "cli:alice::epoch:3"  # ordinary-key compatibility
+    assert attacker != victim
+    assert belongs_to_session(attacker, forged_identity)
+    assert not belongs_to_session(attacker, "cli:alice")
+
+
+def test_context_key_mapping_is_injective_for_reserved_and_ordinary_keys():
+    pairs = [
+        (session_key, epoch)
+        for session_key in (
+            "",
+            "cli:alice",
+            "cli:alice::epoch:1",
+            "::context:v1:reserved",
+            "用户:甲",
+        )
+        for epoch in range(4)
+    ]
+    encoded = [conversation_context_key(key, epoch) for key, epoch in pairs]
+    assert len(encoded) == len(set(encoded))
+
+
+@pytest.mark.parametrize(
+    "not_an_epoch",
+    ["cli:local::epoch:", "cli:local::epoch:01", "cli:local::epoch:-1", "cli:local::epoch:x"],
+)
+def test_belongs_to_session_rejects_noncanonical_epoch_suffix(not_an_epoch):
+    assert not belongs_to_session(not_an_epoch, "cli:local")
 
 
 def test_deictic_query_is_bound_to_immediate_conversation():
@@ -64,6 +101,11 @@ async def test_reset_clears_only_reset_bounded_process_state():
     loop._response_stage = MagicMock()
     loop.clarify = MagicMock()
     loop.approval = MagicMock()
+    allowlist = ApprovalAllowlist()
+    allowlist.approve("cli:local", "exec:*", ApprovalLevel.SESSION_ALL)
+    allowlist.approve("cli:local", "exec:git", ApprovalLevel.ALWAYS)
+    loop.approval_gate = MagicMock()
+    loop.approval_gate.clear_session.side_effect = allowlist.clear_session
     loop.interrupt = MagicMock()
 
     await loop.reset_session_state("cli:local")
@@ -77,3 +119,6 @@ async def test_reset_clears_only_reset_bounded_process_state():
     loop.compressor.on_session_reset.assert_called_once_with("cli:local")
     loop.clarify.cancel_session.assert_called_once_with("cli:local")
     loop.approval.cancel_session.assert_called_once()
+    loop.approval_gate.clear_session.assert_called_once_with("cli:local")
+    assert not allowlist.is_approved("cli:local", "exec:rm")
+    assert allowlist.is_approved("cli:local", "exec:git")

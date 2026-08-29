@@ -253,6 +253,8 @@ class TrajectoryRecorder:
         try:
             logger.debug("Recorder on_error hook: args={} kwargs={}", args, kwargs)
         except Exception:
+            # Logging must never turn the recorder's defensive error hook into a
+            # second plugin failure (for example from hostile object __str__).
             pass
         return None
 

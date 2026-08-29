@@ -14,7 +14,7 @@ import tempfile
 
 from loguru import logger
 
-from echo_agent.agent.proc_lifecycle import subprocess_kwargs, terminate_tree
+from echo_agent.agent.proc_lifecycle import communicate_owned, spawn_exec
 
 _PCM_RATE = 24000  # Weixin voice sample rate
 _BYTES_PER_SAMPLE = 2  # s16le → 2 bytes/sample, mono
@@ -44,22 +44,16 @@ def _resolve_ffmpeg() -> str:
 
 async def _ffmpeg_to_pcm(src_path: str, pcm_path: str) -> None:
     ffmpeg = _resolve_ffmpeg()
-    proc = await asyncio.create_subprocess_exec(
+    proc = await spawn_exec(
         ffmpeg, "-i", src_path,
         "-f", "s16le", "-acodec", "pcm_s16le",
         "-ar", str(_PCM_RATE), "-ac", "1", "-y", pcm_path,
         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-        **subprocess_kwargs(),
     )
     try:
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=_FFMPEG_TIMEOUT)
+        _, stderr = await communicate_owned(proc, timeout=_FFMPEG_TIMEOUT)
     except (asyncio.TimeoutError, TimeoutError):
-        await terminate_tree(proc)
         raise RuntimeError(f"ffmpeg timed out after {_FFMPEG_TIMEOUT}s") from None
-    except asyncio.CancelledError:
-        # Caller went away (shutdown, send aborted): don't leave ffmpeg running.
-        await terminate_tree(proc)
-        raise
     if proc.returncode != 0:
         raise RuntimeError(
             f"ffmpeg failed (rc={proc.returncode}): {stderr.decode(errors='ignore')[:300]}"

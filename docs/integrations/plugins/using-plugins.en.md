@@ -16,8 +16,8 @@ plugins:
   allow: []            # allowlist (empty = allow all)
   deny: []             # blocklist
   extraDirs: []        # additional plugin directories
-  trustedPlugins: []   # bypass sandbox checks
-  permissionMode: compat  # strict | compat | legacy
+  trustedPlugins: []   # bypass manifest registration-permission checks
+  permissionMode: compat  # strict | compat
   config:
     my-plugin:
       apiKey: "..."
@@ -63,3 +63,6 @@ plugins:
 ```
 
 A non-empty `allow` restricts loading to the listed plugins. When a plugin appears in both lists, **`deny` wins** — filtering checks the blocklist first and skips the plugin without consulting the allowlist.
+
+!!! danger "Python plugins are trusted in-process code"
+    Plugins run in the same Python process as Echo Agent. The permission mechanism enforces `tool.register` and `hook.register` when a plugin registers capabilities; `network`, `subprocess`, and `filesystem.*` are advisory manifest metadata, not an OS-level sandbox. Install only trusted plugins. Run untrusted code in a separate process or container and expose it through MCP. `trustedPlugins` only bypasses registration-permission checks; it does not add or remove code isolation.

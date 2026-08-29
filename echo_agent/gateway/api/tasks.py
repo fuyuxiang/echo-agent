@@ -190,6 +190,8 @@ class TasksAPI:
                 event.metadata["_interrupt_target_event_id"] = target_event_id
             await bus.publish_inbound(event)
         except Exception:
+            # The task transition is already durable; this advisory interrupt may
+            # race bus shutdown and must not roll that transition back.
             pass
 
     async def transition_task(self, request: web.Request) -> web.Response:
@@ -255,6 +257,8 @@ class TasksAPI:
             try:
                 await engine.on_task_complete(task.id)
             except Exception:
+                # Workflow advancement is recoverable and must not invalidate the
+                # task status that was already persisted by this request.
                 pass
         return web.json_response({"task": task.to_dict()})
 

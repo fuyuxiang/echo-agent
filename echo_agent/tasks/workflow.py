@@ -147,6 +147,8 @@ class WorkflowEngine:
                 try:
                     await self._tasks.cancel(tid)
                 except ValueError:
+                    # A step may have become terminal between the status read and
+                    # cancel; the workflow itself is already marked cancelled.
                     pass
         await self._save(wf)
         return wf

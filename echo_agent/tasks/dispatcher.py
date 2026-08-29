@@ -108,6 +108,7 @@ class TaskDispatcher:
                 try:
                     await t
                 except asyncio.CancelledError:
+                    # stop() initiated and now reaps both private dispatcher loops.
                     pass
         self._tick_task = None
         self._renew_task = None

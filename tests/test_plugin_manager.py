@@ -1,9 +1,43 @@
 """Tests for PluginManager — full lifecycle."""
 
+import asyncio
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from echo_agent.agent.tools.registry import ToolRegistry
+from echo_agent.bus.queue import MessageBus
+from echo_agent.plugins.errors import PluginPermissionError
+from echo_agent.plugins.manifest import PluginManifest, PluginRecord
 from echo_agent.plugins.manager import PluginManager
+from echo_agent.tools import Tool, ToolResult
+
+
+class _ClosablePluginTool(Tool):
+    description = "plugin lifecycle probe"
+    parameters = {"type": "object", "properties": {}}
+
+    def __init__(self, name: str, events: list[str]) -> None:
+        self.name = name
+        self._events = events
+
+    async def execute(self, params, ctx=None):
+        return ToolResult(success=True)
+
+    async def aclose(self) -> None:
+        self._events.append(f"close:{self.name}")
+
+
+def _lifecycle_manager(tmp_path) -> tuple[PluginManager, ToolRegistry]:
+    registry = ToolRegistry()
+    manager = PluginManager(
+        config=_make_config(),
+        workspace=tmp_path,
+        bus=MessageBus(),
+        tool_registry=registry,
+        provider=None,
+    )
+    return manager, registry
 
 
 def _make_config(*, enabled=True, allow=None, deny=None, extra_dirs=None, plugin_config=None):
@@ -249,6 +283,124 @@ async def test_deactivate_exception(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_shutdown_closes_tool_without_deactivate_exactly_once(tmp_path, monkeypatch):
+    events: list[str] = []
+    tool = _ClosablePluginTool("owned_tool", events)
+    record = PluginRecord(manifest=PluginManifest(name="owner"), source="test")
+    manager, registry = _lifecycle_manager(tmp_path)
+
+    def activate(ctx):
+        ctx.register_tool(tool)
+
+    monkeypatch.setattr(
+        "echo_agent.plugins.manager.load_plugin_module",
+        lambda _record: {"activate": activate, "deactivate": None},
+    )
+    await manager._load_and_activate(record)
+
+    await manager.shutdown()
+    await manager.shutdown()
+
+    assert events == ["close:owned_tool"]
+    assert registry.get("owned_tool") is None
+
+
+@pytest.mark.asyncio
+async def test_shutdown_closes_tool_when_deactivate_raises(tmp_path, monkeypatch):
+    events: list[str] = []
+    tool = _ClosablePluginTool("fragile_tool", events)
+    record = PluginRecord(manifest=PluginManifest(name="fragile"), source="test")
+    manager, registry = _lifecycle_manager(tmp_path)
+
+    def activate(ctx):
+        ctx.register_tool(tool)
+
+    async def deactivate(_ctx):
+        events.append("deactivate:fragile")
+        raise RuntimeError("deactivate boom")
+
+    monkeypatch.setattr(
+        "echo_agent.plugins.manager.load_plugin_module",
+        lambda _record: {"activate": activate, "deactivate": deactivate},
+    )
+    await manager._load_and_activate(record)
+    await manager.shutdown()
+
+    assert events == ["deactivate:fragile", "close:fragile_tool"]
+    assert registry.get("fragile_tool") is None
+
+
+@pytest.mark.asyncio
+async def test_shutdown_unwinds_plugins_in_reverse_dependency_order(tmp_path, monkeypatch):
+    events: list[str] = []
+    base = PluginRecord(manifest=PluginManifest(name="base"), source="test")
+    dependent = PluginRecord(
+        manifest=PluginManifest(name="dependent", depends_on=["base"]),
+        source="test",
+    )
+    manager, _registry = _lifecycle_manager(tmp_path)
+    tools = {
+        "base": _ClosablePluginTool("base_tool", events),
+        "dependent": _ClosablePluginTool("dependent_tool", events),
+    }
+
+    def interface(record):
+        name = record.manifest.name
+
+        def activate(ctx):
+            ctx.register_tool(tools[name])
+
+        async def deactivate(_ctx):
+            events.append(f"deactivate:{name}")
+
+        return {"activate": activate, "deactivate": deactivate}
+
+    monkeypatch.setattr("echo_agent.plugins.manager.load_plugin_module", interface)
+    # Same dependency-first order produced by discover_and_load/topological_sort.
+    manager._plugins = [base, dependent]
+    await manager._load_and_activate(base)
+    await manager._load_and_activate(dependent)
+
+    await manager.shutdown()
+
+    assert events == [
+        "deactivate:dependent",
+        "close:dependent_tool",
+        "deactivate:base",
+        "close:base_tool",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_closes_captured_tool_without_removing_replacement(tmp_path, monkeypatch):
+    events: list[str] = []
+    original = _ClosablePluginTool("replaceable", events)
+    replacement = _ClosablePluginTool("replaceable", events)
+    record = PluginRecord(manifest=PluginManifest(name="owner"), source="test")
+    manager, registry = _lifecycle_manager(tmp_path)
+
+    monkeypatch.setattr(
+        "echo_agent.plugins.manager.load_plugin_module",
+        lambda _record: {
+            "activate": lambda ctx: ctx.register_tool(original),
+            "deactivate": None,
+        },
+    )
+    await manager._load_and_activate(record)
+    assert manager.owns_tool(original) is True
+    assert manager.owned_tool_identities == frozenset({id(original)})
+    registry.register(replacement, replace=True)
+    assert manager.owns_tool(replacement) is False
+
+    await manager.shutdown()
+
+    assert events == ["close:replaceable"]
+    assert registry.get("replaceable") is replacement
+    assert manager.owns_tool(original) is False
+    assert manager.owned_tool_identities == frozenset()
+
+
+@pytest.mark.asyncio
 async def test_config_key_passthrough(tmp_path):
     d = tmp_path / "plugins" / "cfg-plugin"
     d.mkdir(parents=True)
@@ -366,32 +518,23 @@ def test_strict_mode_rejects_before_activate(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_compat_mode_strips_tool_registered_without_permission(tmp_path, monkeypatch):
-    """compat 模式下，插件注册了没有权限的工具，事后裁剪应调用 unregister。"""
+async def test_compat_mode_blocks_tool_registered_without_permission(tmp_path, monkeypatch):
+    """compat denies visibility without failing the otherwise usable plugin."""
     from echo_agent.config.schema import Config
-    from echo_agent.plugins.manager import PluginManager
     from echo_agent.plugins.manifest import PluginManifest, PluginRecord, PluginProvides
-    from echo_agent.agent.tools.registry import ToolRegistry
-    from echo_agent.bus.queue import MessageBus
-    from unittest.mock import MagicMock
-    from echo_agent.tools import Tool, ToolResult
 
-    class FakeTool(Tool):
-        name = "test_tool"
-        description = "test"
-        parameters = {"type": "object", "properties": {}}
-
-        async def execute(self, params, ctx=None):
-            return ToolResult(success=True)
-
-    fake_tool = FakeTool()
+    events: list[str] = []
+    fake_tool = _ClosablePluginTool("test_tool", events)
+    visible_during_activation: list[bool] = []
+    tool_registry = ToolRegistry()
 
     def fake_activate(ctx):
         ctx.register_tool(fake_tool)
+        visible_during_activation.append(tool_registry.get("test_tool") is not None)
 
     # 插件声明了 hook.register 权限，但 provides.tools=["test_tool"]，没有 tool.register
     # => check_tool_register() 会因缺少 tool.register 权限返回 False
-    # => tool_ok=False，事后裁剪触发
+    # => PluginContext 在写入全局 registry 前阻断，并由 manager 回收实例
     manifest = PluginManifest(
         name="compat-strip-plugin",
         permissions=["hook.register"],
@@ -401,8 +544,6 @@ async def test_compat_mode_strips_tool_registered_without_permission(tmp_path, m
 
     cfg = Config()
     cfg.plugins.permission_mode = "compat"
-
-    tool_registry = MagicMock(spec=ToolRegistry)
 
     mgr = PluginManager(
         config=cfg,
@@ -419,4 +560,280 @@ async def test_compat_mode_strips_tool_registered_without_permission(tmp_path, m
     await mgr._load_and_activate(record)
 
     assert record.status == "activated"
-    tool_registry.unregister.assert_called_once_with("test_tool")
+    assert visible_during_activation == [False]
+    assert tool_registry.get("test_tool") is None
+    assert record.tools_registered == []
+    assert events == ["close:test_tool"]
+
+
+@pytest.mark.asyncio
+async def test_activation_failure_rolls_back_every_context_resource(
+    tmp_path, monkeypatch,
+):
+    events: list[str] = []
+    tool = _ClosablePluginTool("partial_tool", events)
+    record = PluginRecord(manifest=PluginManifest(name="partial"), source="test")
+    manager, registry = _lifecycle_manager(tmp_path)
+
+    async def inbound_handler(_event):
+        return None
+
+    async def hook_callback(*_args, **_kwargs):
+        return None
+
+    def activate(ctx):
+        ctx.register_tool(tool)
+        ctx.register_hook("on_agent_start", hook_callback)
+        ctx.subscribe_inbound(inbound_handler)
+        raise RuntimeError("partial activation")
+
+    monkeypatch.setattr(
+        "echo_agent.plugins.manager.load_plugin_module",
+        lambda _record: {"activate": activate, "deactivate": None},
+    )
+
+    await manager._load_and_activate(record)
+
+    assert record.status == "failed"
+    assert events == ["close:partial_tool"]
+    assert registry.get("partial_tool") is None
+    assert manager.hooks.has_hooks("on_agent_start") is False
+    assert inbound_handler not in manager._bus._inbound_subscribers
+    assert "partial" not in manager._contexts
+
+
+@pytest.mark.asyncio
+async def test_shutdown_unsubscribes_plugin_inbound_handler(tmp_path, monkeypatch):
+    record = PluginRecord(manifest=PluginManifest(name="observer"), source="test")
+    manager, _registry = _lifecycle_manager(tmp_path)
+
+    async def inbound_handler(_event):
+        return None
+
+    monkeypatch.setattr(
+        "echo_agent.plugins.manager.load_plugin_module",
+        lambda _record: {
+            "activate": lambda ctx: ctx.subscribe_inbound(inbound_handler),
+            "deactivate": None,
+        },
+    )
+
+    await manager._load_and_activate(record)
+    assert inbound_handler in manager._bus._inbound_subscribers
+
+    await manager.shutdown()
+
+    assert inbound_handler not in manager._bus._inbound_subscribers
+
+
+@pytest.mark.asyncio
+async def test_cancelled_activation_finishes_rollback_before_propagating(
+    tmp_path, monkeypatch,
+):
+    events: list[str] = []
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    class SlowCloseTool(_ClosablePluginTool):
+        async def aclose(self) -> None:
+            close_started.set()
+            await release_close.wait()
+            await super().aclose()
+
+    tool = SlowCloseTool("cancelled_tool", events)
+    record = PluginRecord(manifest=PluginManifest(name="cancelled"), source="test")
+    manager, registry = _lifecycle_manager(tmp_path)
+    entered = asyncio.Event()
+
+    async def inbound_handler(_event):
+        return None
+
+    async def hook_callback(*_args, **_kwargs):
+        return None
+
+    async def activate(ctx):
+        ctx.register_tool(tool)
+        ctx.register_hook("on_agent_start", hook_callback)
+        ctx.subscribe_inbound(inbound_handler)
+        entered.set()
+        await asyncio.Future()
+
+    monkeypatch.setattr(
+        "echo_agent.plugins.manager.load_plugin_module",
+        lambda _record: {"activate": activate, "deactivate": None},
+    )
+
+    activation = asyncio.create_task(manager._load_and_activate(record))
+    await entered.wait()
+    activation.cancel()
+    await close_started.wait()
+    activation.cancel()
+    await asyncio.sleep(0)
+    assert activation.done() is False
+    release_close.set()
+    with pytest.raises(asyncio.CancelledError):
+        await activation
+
+    assert record.status == "failed"
+    assert events == ["close:cancelled_tool"]
+    assert registry.get("cancelled_tool") is None
+    assert manager.hooks.has_hooks("on_agent_start") is False
+    assert inbound_handler not in manager._bus._inbound_subscribers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+async def test_strict_mode_checks_actual_undeclared_registrations(
+    tmp_path, monkeypatch, asynchronous,
+):
+    events: list[str] = []
+    tool = _ClosablePluginTool("undeclared_tool", events)
+    record = PluginRecord(
+        manifest=PluginManifest(name="undeclared", permissions=[]),
+        source="test",
+    )
+    config = _make_config()
+    config.plugins.permission_mode = "strict"
+    registry = ToolRegistry()
+    manager = PluginManager(
+        config=config,
+        workspace=tmp_path,
+        bus=MessageBus(),
+        tool_registry=registry,
+    )
+    activated = False
+    visible_during_activation: list[bool] = []
+
+    async def hook_callback(*_args, **_kwargs):
+        return None
+
+    def register_resources(ctx):
+        nonlocal activated
+        activated = True
+        try:
+            ctx.register_tool(tool)
+        except PluginPermissionError:
+            pass
+        visible_during_activation.append(registry.get("undeclared_tool") is not None)
+        try:
+            ctx.register_hook("on_agent_start", hook_callback)
+        except PluginPermissionError:
+            pass
+        visible_during_activation.append(manager.hooks.has_hooks("on_agent_start"))
+
+    async def async_activate(ctx):
+        register_resources(ctx)
+
+    activate = async_activate if asynchronous else register_resources
+
+    monkeypatch.setattr(
+        "echo_agent.plugins.manager.load_plugin_module",
+        lambda _record: {"activate": activate, "deactivate": None},
+    )
+
+    await manager._load_and_activate(record)
+
+    assert activated is True
+    assert record.status == "failed"
+    assert "actual registrations" in record.error
+    assert visible_during_activation == [False, False]
+    assert events == ["close:undeclared_tool"]
+    assert registry.get("undeclared_tool") is None
+    assert manager.hooks.has_hooks("on_agent_start") is False
+
+
+@pytest.mark.asyncio
+async def test_unknown_permission_rejected_before_import(tmp_path, monkeypatch):
+    record = PluginRecord(
+        manifest=PluginManifest(name="typo", permissions=["filesystem"]),
+        source="test",
+    )
+    manager, _registry = _lifecycle_manager(tmp_path)
+    loader = MagicMock()
+    monkeypatch.setattr("echo_agent.plugins.manager.load_plugin_module", loader)
+
+    await manager._load_and_activate(record)
+
+    assert record.status == "failed"
+    assert record.error == "unknown permissions: filesystem"
+    loader.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_missing_dependency_is_not_activated(tmp_path, monkeypatch):
+    record = PluginRecord(
+        manifest=PluginManifest(name="orphan", depends_on=["missing"]),
+        source="test",
+    )
+    manager, _registry = _lifecycle_manager(tmp_path)
+    loader = MagicMock()
+    monkeypatch.setattr(
+        "echo_agent.plugins.manager.discover_all", lambda **_kwargs: [record],
+    )
+    monkeypatch.setattr("echo_agent.plugins.manager.load_plugin_module", loader)
+
+    await manager.discover_and_load()
+
+    assert record.status == "failed"
+    assert "missing dependencies" in record.error
+    loader.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dependency_cycle_is_not_activated(tmp_path, monkeypatch):
+    first = PluginRecord(
+        manifest=PluginManifest(name="first", depends_on=["second"]),
+        source="test",
+    )
+    second = PluginRecord(
+        manifest=PluginManifest(name="second", depends_on=["first"]),
+        source="test",
+    )
+    manager, _registry = _lifecycle_manager(tmp_path)
+    loader = MagicMock()
+    monkeypatch.setattr(
+        "echo_agent.plugins.manager.discover_all",
+        lambda **_kwargs: [first, second],
+    )
+    monkeypatch.setattr("echo_agent.plugins.manager.load_plugin_module", loader)
+
+    await manager.discover_and_load()
+
+    assert first.status == second.status == "failed"
+    assert "dependency cycle" in first.error
+    assert "dependency cycle" in second.error
+    loader.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dependent_skipped_when_base_activation_fails(tmp_path, monkeypatch):
+    base = PluginRecord(manifest=PluginManifest(name="base"), source="test")
+    dependent = PluginRecord(
+        manifest=PluginManifest(name="dependent", depends_on=["base"]),
+        source="test",
+    )
+    manager, _registry = _lifecycle_manager(tmp_path)
+    activation_attempts: list[str] = []
+
+    def interface(record):
+        name = record.manifest.name
+
+        def activate(_ctx):
+            activation_attempts.append(name)
+            if name == "base":
+                raise RuntimeError("base failed")
+
+        return {"activate": activate, "deactivate": None}
+
+    monkeypatch.setattr(
+        "echo_agent.plugins.manager.discover_all",
+        lambda **_kwargs: [dependent, base],
+    )
+    monkeypatch.setattr("echo_agent.plugins.manager.load_plugin_module", interface)
+
+    await manager.discover_and_load()
+
+    assert activation_attempts == ["base"]
+    assert base.status == "failed"
+    assert dependent.status == "failed"
+    assert dependent.error == "dependencies not activated: base"

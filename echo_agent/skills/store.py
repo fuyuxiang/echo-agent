@@ -232,6 +232,8 @@ class SkillStore:
             if isinstance(fm_name, str) and fm_name:
                 names.add(fm_name)
         except (OSError, UnicodeDecodeError):
+            # Directory-name resolution still works when optional frontmatter is
+            # unreadable; metadata loading reports its own diagnostics later.
             pass
         return names
 
@@ -607,5 +609,7 @@ class SkillStore:
             try:
                 os.unlink(tmp)
             except OSError:
+                # Preserve the original skill write failure; atomic replace keeps
+                # the prior canonical skill file intact.
                 pass
             raise

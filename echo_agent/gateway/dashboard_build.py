@@ -29,7 +29,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable
 
-# base.py only imports stdlib (its echo_home is deferred), so this does not
+from echo_agent.agent.proc_lifecycle import run_owned, spawn_popen, terminate_tree_sync
+
+# base.py has no gateway imports (its echo_home is deferred), so this does not
 # create a gateway -> cli import cycle.
 from echo_agent.cli.service.base import GATEWAY_ENV_FLAG
 
@@ -45,6 +47,8 @@ PNPM_FALLBACK_MAJOR = "10"
 _SOURCE_EXTENSIONS = (".ts", ".tsx", ".js", ".jsx", ".css", ".html", ".vue")
 _META_FILES = ("package.json", "pnpm-lock.yaml", "vite.config.ts", "vite.config.js")
 _SKIP_DIRS = frozenset({"node_modules", "dist"})
+_STREAM_WAIT_POLL_SECONDS = 5.0
+_STREAM_TERMINATE_GRACE_SECONDS = 3.0
 
 
 class BuildReason(str, Enum):
@@ -138,7 +142,7 @@ def _sleep(seconds: float) -> None:
 
 def _node_major(node: Path) -> int:
     try:
-        out = subprocess.run(
+        out = run_owned(
             [str(node), "--version"], capture_output=True, text=True, timeout=15,
         ).stdout.strip().lstrip("v")
     except (OSError, subprocess.SubprocessError):
@@ -209,7 +213,7 @@ def _run_streamed(
     lock = threading.Lock()
 
     try:
-        proc = subprocess.Popen(
+        proc = spawn_popen(
             cmd, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding="utf-8", errors="replace", bufsize=1, env=env,
         )
@@ -227,27 +231,41 @@ def _run_streamed(
                 last = time.monotonic()
 
     thread = threading.Thread(target=reader, daemon=True)
-    thread.start()
 
     killed = False
-    while True:
-        try:
-            rc = proc.wait(timeout=5)
-            break
-        except subprocess.TimeoutExpired:
-            with lock:
-                idle = time.monotonic() - last
-            if idle > idle_timeout:
-                killed = True
-                proc.terminate()
-                try:
-                    rc = proc.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    rc = proc.wait()
+    thread_started = False
+    try:
+        thread.start()
+        thread_started = True
+        while True:
+            try:
+                rc = proc.wait(timeout=_STREAM_WAIT_POLL_SECONDS)
                 break
+            except subprocess.TimeoutExpired:
+                with lock:
+                    idle = time.monotonic() - last
+                if idle > idle_timeout:
+                    killed = True
+                    # The unconditional finally below owns termination. A
+                    # non-zero synthetic status is sufficient for the caller;
+                    # the exact signal returncode is not part of this API.
+                    rc = 1
+                    break
+    finally:
+        # This is a one-shot build/probe command. Reap unconditionally, even
+        # after a successful leader exit: pnpm/node launchers can close stdout
+        # and leave a backgrounded descendant in the recorded process group.
+        # The sync helper is idempotent, so timeout/KeyboardInterrupt paths use
+        # this same single ownership boundary.
+        terminate_tree_sync(proc, grace=_STREAM_TERMINATE_GRACE_SECONDS)
+        if thread_started:
+            thread.join(timeout=2)
+            if thread.is_alive():
+                # terminate_tree_sync already swept the group. A still-live
+                # reader now indicates an exotic pipe implementation; keep the
+                # join bounded rather than hiding shutdown forever.
+                thread.join(timeout=2)
 
-    thread.join(timeout=2)
     output = "".join(chunks)
     if killed:
         output += f"\n(no output for {idle_timeout:.0f}s — terminated)"
@@ -514,6 +532,8 @@ def build_dashboard(
     try:
         shutil.rmtree(backup)
     except OSError:
+        # The new bundle is already atomically installed; this stale backup is
+        # harmless and a later successful build will replace/remove it.
         pass
 
     return BuildOutcome(

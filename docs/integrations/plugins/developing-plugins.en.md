@@ -28,7 +28,9 @@ provides:
 kind: integration
 config_key: my_plugin
 depends_on: []
-permissions: []
+permissions:
+  - tool.register
+  - hook.register
 ```
 
 ## Entry Point
@@ -39,10 +41,10 @@ from echo_agent.plugins import PluginContext
 async def activate(ctx: PluginContext):
     """Called when plugin loads."""
     # Register tools
-    ctx.tool_registry.register(MyTool(ctx.plugin_config))
+    ctx.register_tool(MyTool(ctx.plugin_config))
     
     # Register hooks
-    ctx.hook_registry.register("pre_tool_call", my_hook)
+    ctx.register_hook("pre_tool_call", my_hook)
 
 async def deactivate(ctx: PluginContext):
     """Called on shutdown."""
@@ -55,18 +57,21 @@ Available via `ctx`:
 
 - `ctx.config` — Global Echo Agent config
 - `ctx.workspace` — Workspace path
-- `ctx.bus` — MessageBus for event pub/sub
-- `ctx.tool_registry` — Register/unregister tools
-- `ctx.hook_registry` — Register lifecycle hooks
+- `ctx.publish_outbound(...)` — Publish outbound events
+- `ctx.subscribe_inbound(...)` — Subscribe to inbound events; automatically removed on deactivation
+- `ctx.register_tool(...)` — Register a tool; PluginManager reclaims it on deactivation
+- `ctx.register_hook(...)` — Register a lifecycle hook
 - `ctx.plugin_config` — Plugin-specific config from `plugins.config.{config_key}`
 
 ## Permission Modes
 
 | Mode | Behavior |
 |------|----------|
-| `strict` | Reject if plugin declares over-permission |
-| `compat` | Warn but allow |
-| `legacy` | Allow all (not recommended) |
+| `strict` | Reject tool/hook registration without the matching declaration |
+| `compat` | Give declaration-free legacy plugins default tool/hook registration permissions; explicit declarations are still checked |
+
+!!! warning "Permission declarations are not process isolation"
+    Python plugins are trusted in-process code. Only `tool.register` and `hook.register` are enforced at registration; `network`, `subprocess`, and `filesystem.*` are advisory metadata.
 
 ## Distribution
 

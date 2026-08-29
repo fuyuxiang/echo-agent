@@ -37,7 +37,10 @@ DEFAULT_LEGACY_PERMISSIONS = frozenset({
 
 
 class PluginSandbox:
-    """Enforces declared permissions for a plugin."""
+    """Evaluate manifest permissions for registration admission.
+
+    This helper is not a code-execution or operating-system security boundary.
+    """
 
     def __init__(
         self,

@@ -30,6 +30,7 @@ import math
 from pathlib import Path
 from typing import Any, Callable
 
+from echo_agent.agent.proc_lifecycle import run_owned
 from echo_agent.cli.colors import (
     Colors,
     color,
@@ -1574,7 +1575,7 @@ def _print_linger_hint_if_needed() -> None:
     if not user:
         return
     try:
-        out = subprocess.run(
+        out = run_owned(
             ["loginctl", "show-user", user], capture_output=True, text=True, timeout=5,
         ).stdout
     except (OSError, subprocess.SubprocessError):

@@ -195,8 +195,10 @@ class FeishuChannel(BaseChannel):
                         media.append({"type": "image", "url": local_path})
                     else:
                         logger.warning("Feishu image download failed, skipping: {}", image_key[:30])
-            except json.JSONDecodeError:
-                pass
+            except json.JSONDecodeError as e:
+                # Do not log the malformed message body: it may contain private
+                # content. The message id and parser reason are sufficient.
+                logger.debug("Feishu image metadata is invalid for message {}: {}", msg_id, e)
 
         if not text and not media:
             return

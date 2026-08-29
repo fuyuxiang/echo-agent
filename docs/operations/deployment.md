@@ -243,5 +243,4 @@ volumes:
 | Docker (ports) | 取决于映射 | 注意 `0.0.0.0` 映射 |
 | 反向代理 | 代理层控制 | 需配置访问控制 |
 
-!!! danger "切勿将未认证的 Gateway 暴露到公网"
-    Gateway 默认绑定 localhost。如果修改为 `0.0.0.0` 并暴露到公网，必须启用 `allowlist` 或 `pairing` 认证模式，并配置防火墙规则。详见 [安全加固](security-hardening.md)。
+--8<-- "docs/includes/warning-public-gateway.md"

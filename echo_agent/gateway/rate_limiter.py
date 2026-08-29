@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections import defaultdict
+from collections import OrderedDict
 from dataclasses import dataclass, field
 
 
@@ -18,12 +18,11 @@ class _Bucket:
 
 class RateLimiter:
 
-    def __init__(self, default_rpm: int = 30):
+    def __init__(self, default_rpm: int = 30, max_buckets: int = 10000):
         self._default_rpm = default_rpm
         self._platform_limits: dict[str, int] = {}
-        self._buckets: dict[str, _Bucket] = defaultdict(
-            lambda: self._make_bucket(self._default_rpm),
-        )
+        self._buckets: OrderedDict[str, _Bucket] = OrderedDict()
+        self._max_buckets = max(1, int(max_buckets))
 
     def configure(self, platform: str, rpm: int) -> None:
         self._platform_limits[platform] = rpm
@@ -52,10 +51,18 @@ class RateLimiter:
         return stats
 
     def _get_bucket(self, key: str, platform: str) -> _Bucket:
-        if key not in self._buckets:
+        bucket = self._buckets.get(key)
+        if bucket is None:
             rpm = self._platform_limits.get(platform, self._default_rpm)
-            self._buckets[key] = self._make_bucket(rpm)
-        return self._buckets[key]
+            bucket = self._make_bucket(rpm)
+            self._buckets[key] = bucket
+        # Rejected/flooding callers are active too.  Keeping every access at the
+        # MRU end prevents capacity pressure from gifting such a caller a fresh
+        # full bucket while inactive identities are still resident.
+        self._buckets.move_to_end(key)
+        while len(self._buckets) > self._max_buckets:
+            self._buckets.popitem(last=False)
+        return bucket
 
     def _make_bucket(self, rpm: int) -> _Bucket:
         capacity = float(rpm)

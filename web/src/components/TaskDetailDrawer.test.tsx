@@ -4,6 +4,7 @@ import { TaskDetailDrawer } from "./TaskDetailDrawer";
 import { ConfirmProvider } from "./ConfirmDialog";
 import * as api from "../lib/api";
 import { useKanbanStore, type TaskCard } from "../stores/kanban";
+import { useCapabilitiesStore } from "../stores/capabilities";
 
 function task(overrides: Partial<TaskCard> = {}): TaskCard {
   return {
@@ -48,6 +49,14 @@ function renderDrawer(t: TaskCard, onClose = vi.fn()) {
 
 beforeEach(() => {
   useKanbanStore.setState({ tasks: [task()] });
+  // TaskDetailDrawer only consumes the already-resolved admin bit. Leaving it
+  // unknown starts an unrelated capabilities request whose two store writes
+  // can land after a synchronous assertion and trigger React act warnings.
+  useCapabilitiesStore.setState({
+    admin: true,
+    authRequired: true,
+    inflight: null,
+  });
 });
 
 afterEach(() => {

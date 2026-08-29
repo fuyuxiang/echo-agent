@@ -12,7 +12,7 @@ Echo Agent 项目中使用的核心概念与术语定义。
 
 ### A2A（Agent-to-Agent）
 
-Agent 间通信协议，允许多个 Echo Agent 实例相互协作、委派任务。
+Agent 间基于 JSON-RPC 的任务协议。Echo Agent 当前实现入站服务：外部 peer 可向本实例委派文本任务，但本实例尚无生产可用的出站 A2A 委派入口。
 
 ### Approval（审批）
 

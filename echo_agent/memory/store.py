@@ -36,10 +36,13 @@ msvcrt = None
 try:
     import fcntl
 except ImportError:
+    # Windows has no fcntl; defer to msvcrt below.
     fcntl = None
     try:
         import msvcrt
     except ImportError:
+        # Non-Unix/non-Windows runtimes have no advisory lock backend; retaining
+        # None makes that unsupported capability explicit to later probes.
         pass
 
 _STOP_WORDS = frozenset({
@@ -210,6 +213,8 @@ def _atomic_write_text(path: Path, content: str) -> None:
         try:
             os.unlink(tmp_path)
         except OSError:
+            # Preserve the original atomic-write/cancellation failure; temporary
+            # cleanup cannot make the canonical memory file partially visible.
             pass
         raise
 
@@ -587,6 +592,8 @@ class MemoryStore:
                     fd.seek(0)
                     msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
                 except (OSError, IOError):
+                    # Closing the descriptor immediately below also releases any
+                    # Windows byte-range lock owned by this process.
                     pass
             fd.close()
 
@@ -1638,6 +1645,8 @@ class MemoryStore:
                     "to review when convenient.)_"
                 )
         except Exception:
+            # This conflict-count hint is optional snapshot decoration; all actual
+            # memory entries collected above remain valid without it.
             pass
 
         return "\n\n".join(parts), frozenset(collected)

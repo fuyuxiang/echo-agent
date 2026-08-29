@@ -1,6 +1,6 @@
 # 插件系统使用指南
 
-插件（Plugin）是 Echo Agent 的能力扩展机制，通过插件可以注册新工具、监听生命周期事件、添加自定义命令。
+插件（Plugin）是 Echo Agent 的能力扩展机制，通过插件可以注册新工具并监听生命周期事件。
 
 ## 插件能做什么
 
@@ -8,7 +8,7 @@
 |------|------|
 | 注册工具 | 在 ToolRegistry 中注册新工具，Agent 可直接调用 |
 | 监听钩子 | 响应系统生命周期事件（启动、消息到达、回复前等） |
-| 添加命令 | 注册自定义斜杠命令 |
+| 命令清单 | `provides.commands` 为保留字段；当前运行时不注册插件命令 |
 
 ## 插件发现机制
 
@@ -44,8 +44,8 @@ plugins:
   extra_dirs: ["./my-plugins"]
   allow: ["my-plugin"]           # 白名单，留空表示放行全部
   deny: ["unwanted-plugin"]      # 黑名单
-  trusted_plugins: []            # 跳过沙箱校验
-  permission_mode: compat        # strict | compat | legacy
+  trusted_plugins: []            # 跳过 manifest 注册权限预检
+  permission_mode: compat        # strict | compat
 ```
 
 | 字段 | 类型 | 说明 |
@@ -54,11 +54,14 @@ plugins:
 | `extra_dirs` | list | 额外的插件搜索目录 |
 | `allow` | list | 白名单；非空时只加载列表内的插件，留空表示放行全部 |
 | `deny` | list | 黑名单，命中即禁用 |
-| `trusted_plugins` | list | 跳过沙箱校验的插件 |
-| `permission_mode` | str | 权限模式：`strict` / `compat` / `legacy` |
+| `trusted_plugins` | list | 跳过 manifest 注册权限预检的插件；不提供进程隔离 |
+| `permission_mode` | str | 注册权限模式：`strict` / `compat` |
 
 !!! warning "deny 优先于 allow"
     两个列表同时命中同一个插件时，**`deny` 生效** —— 过滤先查黑名单，命中即跳过，不再看白名单。
+
+!!! danger "Python 插件是受信任的进程内代码"
+    插件与 Echo Agent 在同一 Python 进程中运行。当前权限机制只在注册时强制检查 `tool.register` 和 `hook.register`；`network`、`subprocess` 与 `filesystem.*` 是 manifest 声明元数据，不是 OS 级沙箱。只安装受信任插件；不受信任的代码应放到独立进程或容器中，再通过 MCP 接入。`trusted_plugins` 只跳过注册权限预检，不会增加或取消代码隔离。
 
 ## 环境变量检查
 
@@ -112,7 +115,7 @@ Agent: [调用 db-query 插件注册的 sql_query 工具]
 
 ### 多个插件注册同名工具？
 
-后加载的插件会覆盖先前注册的同名工具，并输出警告日志。建议为工具名称添加插件前缀以避免冲突。
+注册表会拒绝重名工具和内置工具的保留别名：原工具保持不变，冲突插件激活失败。建议为工具名称添加插件前缀以避免冲突。
 
 ## 下一步
 

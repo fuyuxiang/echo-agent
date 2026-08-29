@@ -34,6 +34,8 @@ class TokenCounter:
                 logger.debug("Using tiktoken for {}/{}", self._provider, self._model)
                 return
             except ImportError:
+                # tiktoken is optional; the deterministic character heuristic at
+                # the end of initialization remains available.
                 pass
         if self._provider in ("anthropic", "bedrock"):
             try:
@@ -42,6 +44,8 @@ class TokenCounter:
                 logger.debug("Using anthropic SDK tokenizer for {}", self._model)
                 return
             except ImportError:
+                # The Anthropic SDK is optional; use the provider-independent
+                # fallback estimator when it is not installed.
                 pass
         logger.debug("Using fallback tokenizer for {}/{}", self._provider, self._model)
 

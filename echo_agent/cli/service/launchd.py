@@ -3,14 +3,18 @@
 stop() uses ``launchctl bootout`` — removes the agent from the current boot
 session without persisting a disable, so KeepAlive crash-recovery still works
 and the next ``start`` re-bootstraps cleanly.
+
+Each one-shot ``launchctl`` client is locally process-group owned and reaped.
+The LaunchAgent itself is spawned and owned by launchd, outside that local
+client PGID, so sweeping the CLI never substitutes for bootout/uninstall.
 """
 
 from __future__ import annotations
 
 import os
-import subprocess
 from pathlib import Path
 
+from echo_agent.agent.proc_lifecycle import run_owned
 from echo_agent.cli.service.base import gateway_argv, log_file, run
 from echo_agent.cli.service.templates import LAUNCHD_LABEL, render_launchd_plist
 
@@ -74,7 +78,7 @@ class LaunchdBackend:
         if not plist_path.exists():
             print("LaunchAgent is not installed.")
             return
-        subprocess.run(
+        run_owned(
             ["launchctl", "bootout", self._domain_target()],
             capture_output=True,
         )
@@ -88,7 +92,7 @@ class LaunchdBackend:
             raise SystemExit(1)
         # bootstrap is idempotent-ish: already-loaded returns EALREADY (37);
         # treat that as loaded and kickstart.
-        result = subprocess.run(
+        result = run_owned(
             ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist_path)],
             capture_output=True, text=True,
         )
@@ -101,7 +105,7 @@ class LaunchdBackend:
         print(f"  Logs: {log_file()}")
 
     def stop(self) -> None:
-        result = subprocess.run(
+        result = run_owned(
             ["launchctl", "bootout", self._domain_target()],
             capture_output=True, text=True,
         )
@@ -121,7 +125,7 @@ class LaunchdBackend:
         return self.service_path().exists()
 
     def is_running(self) -> bool:
-        result = subprocess.run(
+        result = run_owned(
             ["launchctl", "print", self._domain_target()],
             capture_output=True,
         )
@@ -168,4 +172,6 @@ class LaunchdBackend:
         try:
             run(cmd, check=False)
         except KeyboardInterrupt:
+            # Ctrl-C only stops an interactive `tail -f`; it is a clean return to
+            # the service-management CLI and does not alter the service.
             pass

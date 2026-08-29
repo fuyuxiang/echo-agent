@@ -482,7 +482,7 @@ class TestWebhookChannel:
         event.reply_to_id = "evt-1"
         result = await ch.send(event)
         assert result.success is True
-        assert future.result() == "response"
+        assert future.result().payload["response"] == "response"
 
     @pytest.mark.asyncio
     async def test_send_async_mode(self):
@@ -509,7 +509,7 @@ class TestWebhookChannel:
         event.metadata = {"_inbound_event_id": "evt-42"}
         result = await ch.send(event)
         assert result.success is True
-        assert future.result() == "done"
+        assert future.result().payload["response"] == "done"
 
     @pytest.mark.asyncio
     async def test_send_falls_back_to_reply_to_id(self):
@@ -524,7 +524,7 @@ class TestWebhookChannel:
         event.reply_to_id = "evt-7"
         result = await ch.send(event)
         assert result.success is True
-        assert future.result() == "ok"
+        assert future.result().payload["response"] == "ok"
 
     @pytest.mark.asyncio
     async def test_send_no_match_does_not_error(self):

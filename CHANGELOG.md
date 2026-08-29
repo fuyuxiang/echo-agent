@@ -7,12 +7,32 @@
 ### Added
 - 网关增加持久化回合状态账本，附着式 CLI 可用 `/status [event_id]` 查询 `running` / `waiting_approval` / `waiting_clarification` / `completed` / `incomplete` / `failed` / `interrupted` 等权威状态；断线重连优先用该账本恢复回复与终态
 - TUI `/save` 正式支持 `--format md|txt|json`；JSON 导出保留本地完整回合、隐藏工具和状态事件，递归脱敏凭据字段与命令行密钥参数
+- Gateway HTTP/WS 与 Webhook 支持有界的 `Idempotency-Key` / `X-Idempotency-Key` 去重；同一作用域与请求内容的重试复用原事件和响应，不同内容复用同一 key 返回冲突
+- Dashboard 构建增加首屏与单 chunk 体积预算门禁，防止路由代码再次意外回流到首屏 bundle
 
 ### Changed
 - Tool 扩展的规范 Python 导入入口统一为 `echo_agent.tools`；旧的 `echo_agent.agent.tools.base` 路径继续作为向后兼容 shim 保留，现有插件行为不变
+- **安全/兼容性**：A2A 任务、在途执行句柄与会话按认证 token 派生的 principal 隔离；不同 token 可复用相同自定义 task id，但不能查询或取消彼此任务。依赖“任一 token 可访问全实例 A2A 任务”的集成需调整
+- A2A 活跃容量按真实未结束 worker 计算；即使 worker 吞掉取消或其任务记录已被超时回收，也不会绕过全局容量上限
+- A2A 文档改为准确描述当前仅接线入站服务；低层 `A2AClient` 尚未通过 `net_guard`，不会被暴露为模型可调用的出站委派能力
+- 已废弃的 `echo-agent service` 兼容别名计划在 **v0.5.0** 移除；请迁移到 `echo-agent gateway <action>`
+- Dashboard 的 12 个页面改为路由级懒加载；首屏 JS 从审计基线 871 KiB 降至约 345 KiB（gzip 约 109 KiB）
 
 ### Fixed
 - 修复会话 reset 只清消消息历史、但保留 working memory / 快照 / episode / 未完成计划的跨任务串扰；每次 reset 现在切换持久化 conversation epoch，并在同一会话锁内清理进程内上下文
+- **安全**：会话 context epoch 改为无碰撞结构编码，Gateway 拒绝客户端注入保留语法；reset 同时清除 session/session-all 工具批准，但保留用户明确设置的 always 批准
+- **安全**：ToolRegistry 不再允许插件静默覆盖内置/既有工具或占用别名；工具名执行统一格式校验，可信热替换必须显式声明
+- 修复关停顺序和总线 drain：停止接收并收敛排队/在途回合后才拆 Agent；重启遗留、取消、总线限流和关停拒绝都会把 `turn_runs` 收敛到终态，同一 event id 只有一个原子执行 claimant
+- 修复 `spawn_task` worker 和所有本地一次性子进程的生命周期泄漏；异步/同步执行在成功、非零退出、超时、取消与任意异常下均回收整个本地进程组；`ProcessTool` 和 MCP Stdio 继续作为显式长驻 owner
+- 插件激活改为可回滚的完整生命周期：工具、hook 和入站订阅在激活失败/取消时撤回，反向依赖顺序关闭并按实例精确释放；未知权限、缺失/循环/失败依赖均 fail closed，`tool.register` / `hook.register` 在资源对宿主可见前完成准入判定
+- Gateway 限流 bucket 改为有界 LRU，避免长期运行时按 chat id 无界增长
+- Gateway/Webhook 键等令增加独立持久 tombstone，不受每会话 500 条回合结果裁剪影响；跨进程重试可重放结果/检出参数冲突，存储不可用或未过期记录达容量上限时 fail closed
+- SQLite 读写共享连接租约与串行事务边界，迁移、锁竞争、提交失败、重复取消与 rollback 失败均会在释放租约前收敛或丢弃不安全连接；MCP Streamable HTTP 修复跨 chunk UTF-8、鉴权/会话失效传播、重连与关闭资源泄漏
+- OpenTelemetry provider/exporter 由 Agent 显式持有并幂等关闭，部分初始化失败会回收后台线程并降级；健康检查生命周期及关键 span/metric 路径已补齐故障测试
+- `agent.maxIterations`、`multiAgent.maxIterations`、worker profile 迭代数及观测性周期配置不再接受非正数
+- 源码/editable 运行时版本从权威 `pyproject.toml` 读取，wheel 仍从发行元数据读取，避免旧 editable metadata 把 0.3.8 错报为 0.3.6
+- 清理审计命中的全部静默异常处理点：预期吞咽均注明安全理由，需诊断处使用脱敏 debug 日志；另修复 scheduler 解锁失败时跳过关闭文件描述符的问题
+- Dashboard WebSocket/异步查询测试不再产生 React `act()` 时序告警；文档站的公网 Gateway 安全片段已真正嵌入部署页，SQLite 恢复链接改用稳定锚点并可在 strict 模式构建
 - 修复“逐项执行上述优化”类指代请求可被旧记忆/旧清单劫持的问题：指代检索和独立 planner 现以紧邻对话为权威上下文，长期记忆仅作可能过期的背景；后台 consolidation 不再把一次性任务进度/完成状态提取为持久事实，已有的模型推断型任务状态也不再进入 Agent 快照、检索或记忆工具
 - 修复 LLM `finish_reason=length` 仍被当作干净完成的语义错误：有部分正文时仍会展示，但回合与计划标记为 `incomplete` / 可恢复，且不再触发反思重跑覆盖现场
 

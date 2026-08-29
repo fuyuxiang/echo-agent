@@ -9,14 +9,20 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
 import signal
+import subprocess
+import sys
 
 import pytest
 
+import echo_agent.agent.proc_lifecycle as proc_lifecycle
 from echo_agent.agent.proc_lifecycle import (
     _POSIX,
+    communicate_owned,
     process_group_alive,
     record_process_group,
+    run_owned,
     spawn_shell,
     subprocess_kwargs,
     terminate_tree,
@@ -44,6 +50,26 @@ async def _spawn_backgrounder() -> tuple[object, int]:
     return proc, grandchild
 
 
+async def _assert_pid_gone(pid: int) -> None:
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        await asyncio.sleep(0.05)
+    pytest.fail(f"owned subprocess {pid} survived cleanup")
+
+
+def _assert_pid_gone_sync(pid: int) -> None:
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        proc_lifecycle.time.sleep(0.05)
+    pytest.fail(f"owned synchronous subprocess {pid} survived cleanup")
+
+
 def test_subprocess_kwargs_starts_new_session_on_posix():
     kwargs = subprocess_kwargs()
     if _POSIX:
@@ -68,6 +94,233 @@ async def test_terminate_tree_is_noop_on_exited_child():
     # Second reap over an already-exited child must not raise.
     await terminate_tree(proc)
     assert proc.returncode == rc
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not _POSIX, reason="process groups are POSIX-only")
+async def test_communicate_owned_sweeps_background_group_after_success():
+    """A successful launcher exit is not the one-shot command's tree terminal."""
+    proc = await spawn_shell(
+        _BACKGROUND_CMD,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    grandchild = 0
+    try:
+        stdout, stderr = await communicate_owned(proc, timeout=5, grace=1)
+        grandchild = int(stdout.strip())
+        assert stderr == b""
+        assert proc.returncode == 0
+        assert process_group_alive(proc) is False
+        await _assert_pid_gone(grandchild)
+    finally:
+        await terminate_tree(proc, grace=0.2)
+        if grandchild:
+            _force_kill(grandchild)
+
+
+@pytest.mark.asyncio
+async def test_communicate_owned_preserves_nonzero_status():
+    proc = await spawn_shell(
+        "printf failure >&2; exit 7",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await communicate_owned(proc, timeout=5)
+    assert stdout == b""
+    assert stderr == b"failure"
+    assert proc.returncode == 7
+
+
+@pytest.mark.asyncio
+async def test_communicate_owned_timeout_reaps_before_propagating():
+    proc = await spawn_shell("sleep 90")
+    with pytest.raises(asyncio.TimeoutError):
+        await communicate_owned(proc, timeout=0.05, grace=0.5)
+    assert proc.returncode is not None
+    assert process_group_alive(proc) is False
+
+
+@pytest.mark.asyncio
+async def test_communicate_owned_cancel_reaps_before_propagating():
+    proc = await spawn_shell("sleep 90")
+    task = asyncio.create_task(communicate_owned(proc, grace=0.5))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert proc.returncode is not None
+    assert process_group_alive(proc) is False
+
+
+@pytest.mark.asyncio
+async def test_communicate_owned_preserves_arbitrary_communication_error():
+    proc = await spawn_shell("sleep 90")
+    original = OSError("pipe broke")
+
+    async def broken_communicate(_input=None):
+        raise original
+
+    proc.communicate = broken_communicate  # type: ignore[method-assign]
+    with pytest.raises(OSError, match="pipe broke") as caught:
+        await communicate_owned(proc, grace=0.5)
+    assert caught.value is original
+    assert proc.returncode is not None
+    assert process_group_alive(proc) is False
+
+
+@pytest.mark.asyncio
+async def test_communicate_owned_delays_new_cancellation_until_cleanup_finishes(
+    monkeypatch,
+):
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    class FinishedProcess:
+        async def communicate(self, _input=None):
+            return b"out", b""
+
+    async def blocked_cleanup(_proc, *, grace):
+        assert grace == 0.5
+        cleanup_started.set()
+        await release_cleanup.wait()
+
+    monkeypatch.setattr(proc_lifecycle, "terminate_tree", blocked_cleanup)
+    task = asyncio.create_task(
+        communicate_owned(FinishedProcess(), grace=0.5)
+    )
+    await asyncio.wait_for(cleanup_started.wait(), timeout=1)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done(), "cancellation escaped before owned cleanup converged"
+    release_cleanup.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+def test_run_owned_preserves_completed_process_text_and_input_semantics():
+    completed = run_owned(
+        [sys.executable, "-c", "import sys; print(sys.stdin.read().upper())"],
+        input="hello",
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert isinstance(completed, subprocess.CompletedProcess)
+    assert completed.returncode == 0
+    assert completed.stdout == "HELLO\n"
+    assert completed.stderr == ""
+
+
+def test_run_owned_returns_nonzero_completed_process_without_check():
+    completed = run_owned(
+        [sys.executable, "-c", "import sys; print('bad'); sys.exit(7)"],
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 7
+    assert completed.stdout == "bad\n"
+
+
+def test_run_owned_validates_capture_and_stdin_like_subprocess_run():
+    with pytest.raises(ValueError, match="stdin and input"):
+        run_owned([sys.executable, "-c", "pass"], input=b"", stdin=subprocess.PIPE)
+    with pytest.raises(ValueError, match="capture_output"):
+        run_owned(
+            [sys.executable, "-c", "pass"],
+            capture_output=True,
+            stdout=subprocess.PIPE,
+        )
+
+
+@pytest.mark.skipif(not _POSIX, reason="process groups are POSIX-only")
+def test_run_owned_sweeps_background_group_after_success():
+    completed = run_owned(
+        ["/bin/sh", "-c", _BACKGROUND_CMD],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        cleanup_grace=0.5,
+    )
+    child_pid = int(completed.stdout.strip())
+    try:
+        assert completed.returncode == 0
+        _assert_pid_gone_sync(child_pid)
+    finally:
+        _force_kill(child_pid)
+
+
+@pytest.mark.skipif(not _POSIX, reason="process groups are POSIX-only")
+def test_run_owned_check_error_preserves_output_after_tree_cleanup():
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        run_owned(
+            ["/bin/sh", "-c", f"{_BACKGROUND_CMD}; exit 7"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5,
+            cleanup_grace=0.5,
+        )
+    child_pid = int(caught.value.stdout.strip())
+    try:
+        assert caught.value.returncode == 7
+        _assert_pid_gone_sync(child_pid)
+    finally:
+        _force_kill(child_pid)
+
+
+@pytest.mark.skipif(not _POSIX, reason="process groups are POSIX-only")
+def test_run_owned_timeout_reaps_background_group_before_propagating(tmp_path):
+    pid_file = tmp_path / "child.pid"
+    command = (
+        "sleep 90 >/dev/null 2>&1 & "
+        f"echo $! > {shlex.quote(str(pid_file))}; wait"
+    )
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_owned(
+            ["/bin/sh", "-c", command],
+            capture_output=True,
+            timeout=0.1,
+            cleanup_grace=0.5,
+        )
+    child_pid = int(pid_file.read_text(encoding="utf-8").strip())
+    try:
+        _assert_pid_gone_sync(child_pid)
+    finally:
+        _force_kill(child_pid)
+
+
+def test_run_owned_preserves_baseexception_after_cleanup(monkeypatch):
+    class Sentinel(BaseException):
+        pass
+
+    original = Sentinel("interrupted")
+
+    class FakeProcess:
+        args = ["fake"]
+        returncode = None
+        stdin = stdout = stderr = None
+
+        def communicate(self, _input, *, timeout):
+            raise original
+
+        def poll(self):
+            return self.returncode
+
+    proc = FakeProcess()
+    cleaned: list[tuple[object, float]] = []
+
+    monkeypatch.setattr(proc_lifecycle, "spawn_popen", lambda *a, **kw: proc)
+
+    def cleanup(owned, *, grace):
+        cleaned.append((owned, grace))
+        proc.returncode = -signal.SIGTERM
+
+    monkeypatch.setattr(proc_lifecycle, "terminate_tree_sync", cleanup)
+    with pytest.raises(Sentinel) as caught:
+        run_owned(["fake"], cleanup_grace=0.25)
+    assert caught.value is original
+    assert cleaned == [(proc, 0.25)]
 
 
 @pytest.mark.asyncio

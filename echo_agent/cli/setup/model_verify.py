@@ -211,6 +211,8 @@ def verify_model(dialect: str, api_key: str, api_base: str, model: str) -> Verif
             try:
                 await provider.aclose()
             except Exception:
+                # Verification has a final verdict already; teardown of a
+                # duck-typed probe provider is explicitly best-effort.
                 pass
 
     try:

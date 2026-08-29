@@ -32,6 +32,8 @@ For public-facing deployments, always use a reverse proxy with TLS:
 - [Nginx configuration](../integrations/gateway/reverse-proxy.md)
 - [Caddy configuration](../integrations/gateway/reverse-proxy.md)
 
+--8<-- "docs/includes/warning-public-gateway.en.md"
+
 ## Resource Requirements
 
 | Scale | RAM | CPU | Disk |

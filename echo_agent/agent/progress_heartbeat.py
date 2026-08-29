@@ -148,8 +148,11 @@ class ProgressHeartbeat:
             task.cancel()
             try:
                 await task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            except asyncio.CancelledError:
+                # stop() requested this cancellation and reaps it here.
                 pass
+            except Exception as e:
+                logger.debug("heartbeat task ended during stop: {}", e)
 
     async def _run(self) -> None:
         try:
@@ -231,7 +234,9 @@ class ProgressHeartbeat:
                         self._event, "heartbeat",
                         {"stage": activity.phase, "note": text}, text,
                     )
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as e:  # noqa: BLE001
+                    # Cognitive events are optional telemetry; the heartbeat was
+                    # already delivered and must remain successful if this sink fails.
+                    logger.debug("cognitive heartbeat emission failed: {}", e)
         except Exception as e:  # noqa: BLE001
             logger.debug("heartbeat publish failed: {}", e)

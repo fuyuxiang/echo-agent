@@ -21,6 +21,16 @@ from aiohttp import web
 from loguru import logger
 
 from echo_agent.bus.events import InboundEvent, OutboundEvent, ContentBlock, ContentType
+from echo_agent.bus.idempotency import (
+    BoundedIdempotencyStore,
+    IDEMPOTENCY_FINGERPRINT_METADATA,
+    IDEMPOTENCY_NAMESPACE_METADATA,
+    canonical_operation_fingerprint,
+    deterministic_event_id,
+    durable_fingerprint_conflicts,
+    idempotency_ledger_metadata,
+    normalize_idempotency_key,
+)
 from echo_agent.bus.queue import MessageBus
 from echo_agent.channels.base import SendResult
 from echo_agent.channels.manager import ChannelManager
@@ -74,6 +84,9 @@ class GatewayServer:
         self._ws_clients: dict[str, web.WebSocketResponse] = {}
         self._pending_http: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._MAX_PENDING_HTTP = 500
+        self._message_idempotency = BoundedIdempotencyStore(
+            max_entries=4096, ttl_seconds=3600.0,
+        )
         self._running = False
         self._actual_port: int | None = None
 
@@ -186,11 +199,16 @@ class GatewayServer:
         from echo_agent.session.context_epoch import conversation_context_key
 
         try:
+            ledger_metadata = {
+                "channel": event.channel,
+                "chat_id": event.chat_id,
+                **idempotency_ledger_metadata(event.metadata),
+            }
             result = turn_runs.accept(
                 event.event_id,
                 event.session_key,
                 context_key=conversation_context_key(event.session_key, session),
-                metadata={"channel": event.channel, "chat_id": event.chat_id},
+                metadata=ledger_metadata,
             )
             if hasattr(result, "__await__"):
                 await result
@@ -385,7 +403,7 @@ class GatewayServer:
             a2a = A2AServer(
                 self._agent_loop,
                 card,
-                auth_fn=lambda req: self._require_api_token(req, action="a2a:rpc"),
+                auth_fn=lambda req: self._require_a2a_principal(req, action="a2a:rpc"),
                 task_ttl_seconds=self._a2a_config.task_ttl_seconds,
                 max_tasks=self._a2a_config.max_tasks,
                 active_task_ttl_seconds=self._a2a_config.active_task_ttl_seconds,
@@ -419,6 +437,21 @@ class GatewayServer:
         if token:
             return token
         return request.query.get("token", "").strip()
+
+    @staticmethod
+    def _idempotency_key(request: web.Request, body: dict[str, Any]) -> str:
+        header_key = normalize_idempotency_key(
+            request.headers.get("Idempotency-Key")
+            or request.headers.get("X-Idempotency-Key")
+        )
+        body_key = normalize_idempotency_key(body.get("idempotency_key"))
+        if header_key and body_key and header_key != body_key:
+            raise ValueError("conflicting idempotency keys")
+        return header_key or body_key
+
+    @staticmethod
+    def _idempotency_fingerprint(body: dict[str, Any]) -> str:
+        return canonical_operation_fingerprint(body)
 
     @staticmethod
     def _is_loopback_peer(request: web.Request) -> bool:
@@ -530,6 +563,22 @@ class GatewayServer:
         self.auth.audit(action, ok=False, reason="invalid api token")
         return web.json_response({"error": "unauthorized"}, status=401)
 
+    def _require_a2a_principal(
+        self, request: web.Request, *, action: str,
+    ) -> str | web.Response:
+        """Authenticate A2A and return the caller identity, not just a bool."""
+        from echo_agent.a2a.task_store import DEFAULT_TASK_OWNER
+
+        if not self._tokens_configured():
+            return DEFAULT_TASK_OWNER
+        token = self._request_token(request)
+        principal = self.auth.principal_for_token(token)
+        if principal is not None:
+            self.auth.audit(action, ok=True)
+            return principal
+        self.auth.audit(action, ok=False, reason="invalid api token")
+        return web.json_response({"error": "unauthorized"}, status=401)
+
     def _require_admin_token(self, request: web.Request, *, action: str) -> web.Response | None:
         """Guard for high-risk admin endpoints (skill import/install/delete and
         knowledge upload/delete). Enforces CSRF, then an admin-scoped
@@ -583,18 +632,28 @@ class GatewayServer:
                 if file_path.is_file() and str(file_path).startswith(str(dashboard_dir.resolve())):
                     return web.FileResponse(file_path)
             except (OSError, ValueError):
+                # Invalid/unresolvable asset paths deliberately fall through to
+                # the SPA index without exposing filesystem error details.
                 pass
         # SPA fallback — serve index.html for all unmatched paths
         return web.FileResponse(dashboard_dir / "index.html")
 
     def _authenticate_and_check_rate_limit(
-        self, platform: str, user_id: str, chat_id: str, *, trusted: bool = False,
+        self,
+        platform: str,
+        user_id: str,
+        chat_id: str,
+        *,
+        trusted: bool = False,
+        consume_rate_limit: bool = True,
     ) -> str | None:
         """统一的认证和限流检查。
 
         Args:
             trusted: 来自 loopback socket 的可信请求，跳过用户白名单闸门
                 （仍受限流约束）。必须由真实 peer 推导，见 _is_loopback_peer。
+            consume_rate_limit: 是否立即消耗限流令牌。HTTP 幂等请求
+                先只做认证，已存在的 claim 直接复用结果，仅新请求消耗令牌。
 
         Returns:
             str: 错误信息（如果被拒绝）
@@ -605,7 +664,7 @@ class GatewayServer:
         if not (self.auth.is_authorized(platform, user_id) or trusted):
             self.auth.audit("message", platform=platform, user_id=user_id, ok=False, reason="user unauthorized")
             return "unauthorized"
-        if not self.rate_limiter.acquire(platform, chat_id):
+        if consume_rate_limit and not self.rate_limiter.acquire(platform, chat_id):
             return "rate limited"
         return None
 
@@ -622,6 +681,108 @@ class GatewayServer:
             "edit_message_id": event.edit_message_id,
             "metadata": event.metadata,
         }
+
+    @staticmethod
+    def _http_final_response(
+        event_id: str,
+        session_key: str,
+        reply: dict[str, Any],
+    ) -> tuple[int, dict[str, Any]]:
+        """Map a final outbound frame to truthful synchronous HTTP semantics."""
+        metadata = reply.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        if metadata.get("_error"):
+            raw_status = metadata.get("_http_status", 500)
+            try:
+                status = int(raw_status)
+            except (TypeError, ValueError):
+                status = 500
+            if status < 400 or status > 599:
+                status = 500
+            reason = str(metadata.get("_error_reason") or "agent processing failed")
+            turn_status = str(metadata.get("_turn_status") or "failed")
+            if turn_status not in {"failed", "incomplete", "interrupted"}:
+                turn_status = "failed"
+            return status, {
+                "status": turn_status,
+                "event_id": event_id,
+                "session_key": session_key,
+                "error": reason,
+                "reply": reply,
+            }
+        return 200, {
+            "status": "completed",
+            "event_id": event_id,
+            "session_key": session_key,
+            "reply": reply,
+        }
+
+    @staticmethod
+    def _http_turn_run_response(
+        row: dict[str, Any], event_id: str, session_key: str,
+    ) -> tuple[int, dict[str, Any], bool]:
+        """Represent an event already known by the durable turn ledger.
+
+        The final boolean says whether the status is terminal and therefore
+        safe to cache. Live rows are returned truthfully but not retained in the
+        in-memory response cache, so the next retry can observe their progress.
+        """
+        status = str(row.get("status") or "accepted")
+        base = {
+            "status": status,
+            "event_id": event_id,
+            "session_key": session_key,
+        }
+        if status == "completed":
+            response_text = str(row.get("response_text") or "")
+            return 200, {
+                **base,
+                "reply": {
+                    "text": response_text,
+                    "is_final": True,
+                    "message_kind": "final",
+                    "metadata": {"_inbound_event_id": event_id},
+                },
+            }, True
+        if status in {"failed", "incomplete", "interrupted"}:
+            http_status = 500 if status == "failed" else 409
+            payload = {
+                **base,
+                "error": str(row.get("error") or f"turn {status}"),
+            }
+            response_text = str(row.get("response_text") or "")
+            if response_text:
+                payload["response_text"] = response_text
+            return http_status, payload, True
+        return 200, base, False
+
+    @staticmethod
+    def _ws_turn_run_payload(
+        row: dict[str, Any], event_id: str,
+    ) -> tuple[dict[str, Any], bool]:
+        """Represent a durable replay in the Gateway WebSocket wire format."""
+        status = str(row.get("status") or "accepted")
+        if status == "completed":
+            return {
+                "type": "message",
+                "event_id": event_id,
+                "text": str(row.get("response_text") or ""),
+                "is_final": True,
+                "message_kind": "final",
+                "metadata": {"_inbound_event_id": event_id},
+            }, True
+        if status in {"failed", "incomplete", "interrupted"}:
+            return {
+                "type": "error",
+                "event_id": event_id,
+                "status": status,
+                "error": str(row.get("error") or f"turn {status}"),
+            }, True
+        return {
+            "type": "accepted",
+            "event_id": event_id,
+            "status": status,
+        }, False
 
     async def _handle_playground(self, request: web.Request) -> web.Response:
         path = self._playground_path()
@@ -644,6 +805,12 @@ class GatewayServer:
             body = await request.json()
         except json.JSONDecodeError:
             return web.json_response({"error": "invalid JSON"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+        try:
+            idempotency_key = self._idempotency_key(request, body)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
 
         # Folded before anything keys off it: platform reaches channel names,
         # session keys, rate-limit buckets and audit records, and those must all
@@ -672,13 +839,15 @@ class GatewayServer:
             )
 
         rejection = self._authenticate_and_check_rate_limit(
-            platform, user_id, chat_id, trusted=self._is_loopback_peer(request),
+            platform,
+            user_id,
+            chat_id,
+            trusted=self._is_loopback_peer(request),
+            consume_rate_limit=False,
         )
         if rejection == "unauthorized":
             await self.hooks.emit("auth_failed", platform=platform, user_id=user_id)
             return web.json_response({"error": "unauthorized"}, status=403)
-        if rejection == "rate limited":
-            return web.json_response({"error": "rate limited"}, status=429)
         self.auth.audit("message", platform=platform, user_id=user_id, ok=True)
 
         # Gate B（身份收口，对齐 WS 握手）：仅靠 loopback 豁免放行的客户端
@@ -697,16 +866,231 @@ class GatewayServer:
                 "message", platform=platform, user_id=user_id, ok=False, reason=sk_err,
             )
             return web.json_response({"error": "forbidden session_key"}, status=403)
-        session, _ = await self._reset_session_if_needed(session_key)
 
-        tokens = set_session_vars(
-            platform=platform,
-            chat_id=chat_id,
-            user_id=user_id,
-            session_key=session_key,
-        )
+        claim = None
+        event_id = ""
+        operation_fingerprint = ""
+        durable_claimed = False
+        if idempotency_key:
+            principal = "anonymous"
+            if self._tokens_configured():
+                principal = self.auth.principal_for_token(
+                    self._request_token(request)
+                ) or "invalid"
+            scope = f"http\0{principal}\0{session_key}"
+            event_id = deterministic_event_id(
+                "gateway-message", scope, idempotency_key,
+            )
+            operation_fingerprint = self._idempotency_fingerprint({
+                "platform": platform,
+                "user_id": user_id,
+                "chat_id": chat_id,
+                "text": text,
+                "media_urls": media_urls,
+                "is_group": is_group,
+                "session_key": session_key,
+            })
+            claim = await self._message_idempotency.claim(
+                namespace="gateway-message",
+                scope=scope,
+                key=idempotency_key,
+                fingerprint=operation_fingerprint,
+                event_id=event_id,
+                context={
+                    "session_key": session_key,
+                    "wait": wait,
+                    "transport": "http",
+                },
+            )
+            if claim.outcome == "conflict":
+                return web.json_response(
+                    {"error": "idempotency key was already used for a different request"},
+                    status=409,
+                )
+            if claim.outcome == "full":
+                return web.json_response(
+                    {"error": "idempotency store is full"}, status=503,
+                )
+            if claim.outcome == "duplicate" and claim.entry is not None:
+                cached = (
+                    claim.entry.response if wait else claim.entry.admission
+                )
+                if cached is not None:
+                    return web.json_response(cached.payload, status=cached.status)
+                # A duplicate that races the admitting request must observe that
+                # request's real admission result. Returning a speculative 200 here
+                # could claim success just before the original is rejected by rate
+                # limiting, pending-capacity checks, or the inbound bus.
+                try:
+                    waiter = (
+                        self._message_idempotency.wait(
+                            claim.entry, timeout=timeout_seconds,
+                        )
+                        if wait
+                        else self._message_idempotency.wait_admitted(
+                            claim.entry, timeout=timeout_seconds,
+                        )
+                    )
+                    cached = await waiter
+                    return web.json_response(cached.payload, status=cached.status)
+                except asyncio.TimeoutError:
+                    return web.json_response(
+                        {
+                            "error": "timeout",
+                            "event_id": event_id,
+                            "session_key": session_key,
+                        },
+                        status=504,
+                    )
 
+            try:
+                durable_claim = await self._bus.claim_durable_idempotency(
+                    event_id,
+                    namespace="gateway-message",
+                    fingerprint=operation_fingerprint,
+                    session_key=session_key,
+                )
+            except Exception as e:
+                logger.error("Durable idempotency claim failed: {}", e)
+                if claim.entry is not None:
+                    await self._message_idempotency.abort(claim.entry)
+                return web.json_response(
+                    {"error": "durable idempotency storage unavailable"},
+                    status=503,
+                )
+            durable_outcome = durable_claim.get("outcome")
+            durable_record = durable_claim.get("row")
+            if durable_outcome == "full":
+                if claim.entry is not None:
+                    await self._message_idempotency.abort(claim.entry)
+                return web.json_response(
+                    {"error": "durable idempotency store is full"}, status=503,
+                )
+            if durable_outcome == "conflict":
+                if claim.entry is not None:
+                    await self._message_idempotency.abort(claim.entry)
+                return web.json_response(
+                    {"error": "idempotency key was already used for a different request"},
+                    status=409,
+                )
+            if durable_outcome == "duplicate" and isinstance(durable_record, dict):
+                response_status, response_payload, terminal = (
+                    self._http_turn_run_response(
+                        durable_record, event_id, session_key,
+                    )
+                )
+                if terminal:
+                    await self._message_idempotency.complete(
+                        claim.entry,
+                        status=response_status,
+                        payload=response_payload,
+                    )
+                else:
+                    await self._message_idempotency.abort(
+                        claim.entry,
+                        status=response_status,
+                        payload=response_payload,
+                    )
+                return web.json_response(response_payload, status=response_status)
+            if durable_outcome != "new":
+                if claim.entry is not None:
+                    await self._message_idempotency.abort(claim.entry)
+                return web.json_response(
+                    {"error": "durable idempotency storage unavailable"},
+                    status=503,
+                )
+            durable_claimed = True
+
+            # The process-local replay record may have expired or disappeared
+            # across restart while the durable turn ledger still knows this
+            # deterministic event ID. Never republish such a turn and then call
+            # the duplicate-claim skip an HTTP "accepted" response.
+            try:
+                durable_row = await self._bus.get_turn_run(event_id)
+            except Exception:
+                await self._bus.release_durable_idempotency(event_id)
+                durable_claimed = False
+                if claim.entry is not None:
+                    await self._message_idempotency.abort(claim.entry)
+                raise
+            if durable_row is not None and claim.entry is not None:
+                if durable_fingerprint_conflicts(
+                    durable_row,
+                    namespace="gateway-message",
+                    fingerprint=operation_fingerprint,
+                ):
+                    await self._bus.release_durable_idempotency(event_id)
+                    durable_claimed = False
+                    await self._message_idempotency.abort(
+                        claim.entry,
+                        status=409,
+                        payload={
+                            "error": "idempotency key was already used for a different request",
+                        },
+                    )
+                    return web.json_response(
+                        {
+                            "error": "idempotency key was already used for a different request",
+                        },
+                        status=409,
+                    )
+                try:
+                    await self._bus.sync_durable_idempotency(durable_row)
+                except Exception as e:
+                    logger.error("Durable idempotency sync failed: {}", e)
+                    await self._message_idempotency.abort(claim.entry)
+                    return web.json_response(
+                        {"error": "durable idempotency storage unavailable"},
+                        status=503,
+                    )
+                response_status, response_payload, terminal = (
+                    self._http_turn_run_response(
+                        durable_row, event_id, session_key,
+                    )
+                )
+                if terminal:
+                    await self._message_idempotency.complete(
+                        claim.entry,
+                        status=response_status,
+                        payload=response_payload,
+                    )
+                else:
+                    # Wake concurrent duplicates with the same live snapshot,
+                    # then remove it so a later retry re-reads durable progress.
+                    await self._message_idempotency.abort(
+                        claim.entry,
+                        status=response_status,
+                        payload=response_payload,
+                    )
+                return web.json_response(
+                    response_payload, status=response_status,
+                )
+
+        published = False
+        publish_outcome_unknown = False
+        pending_event_id = ""
+        tokens = None
         try:
+            if not self.rate_limiter.acquire(platform, chat_id):
+                if durable_claimed:
+                    await self._bus.release_durable_idempotency(event_id)
+                    durable_claimed = False
+                if claim is not None and claim.entry is not None:
+                    await self._message_idempotency.abort(
+                        claim.entry,
+                        status=429,
+                        payload={"error": "rate limited"},
+                    )
+                return web.json_response({"error": "rate limited"}, status=429)
+
+            session, _ = await self._reset_session_if_needed(session_key)
+            tokens = set_session_vars(
+                platform=platform,
+                chat_id=chat_id,
+                user_id=user_id,
+                session_key=session_key,
+            )
+
             content_blocks = [ContentBlock(type=ContentType.TEXT, text=text)]
             if media_urls:
                 paths = await asyncio.gather(
@@ -737,19 +1121,78 @@ class GatewayServer:
                     "user_id": user_id,
                 },
             )
+            if event_id:
+                event.event_id = event_id
+            if operation_fingerprint:
+                event.metadata[IDEMPOTENCY_NAMESPACE_METADATA] = "gateway-message"
+                event.metadata[IDEMPOTENCY_FINGERPRINT_METADATA] = (
+                    operation_fingerprint
+                )
             future: asyncio.Future[dict[str, Any]] | None = None
             if wait:
                 if len(self._pending_http) >= self._MAX_PENDING_HTTP:
+                    if durable_claimed:
+                        await self._bus.release_durable_idempotency(event_id)
+                        durable_claimed = False
+                    if claim is not None and claim.entry is not None:
+                        await self._message_idempotency.abort(
+                            claim.entry,
+                            payload={"error": "too many pending requests"},
+                        )
                     return web.json_response({"error": "too many pending requests"}, status=503)
                 future = asyncio.get_running_loop().create_future()
                 self._pending_http[event.event_id] = future
+                pending_event_id = event.event_id
 
             await self._accept_turn(event, session)
-            accepted = await self._bus.publish_inbound(event)
+            try:
+                accepted = await self._bus.publish_inbound(event)
+            except BaseException:
+                # Cancellation can race queue admission: the event may already
+                # be enqueued even though publish_inbound did not return. The
+                # same uncertainty applies to an unexpected transport/bus
+                # exception after invocation. Keep the claim until a final reply
+                # or its stale-outcome TTL; the deterministic event ID plus the
+                # durable atomic turn claim is the second line of defence.
+                publish_outcome_unknown = True
+                raise
             if not accepted:
-                self._pending_http.pop(event.event_id, None)
-                await self._reject_turn(event.event_id, "server overloaded")
+                # `False` is the one definitive no-admission result promised by
+                # MessageBus. Release only our still-accepted ledger row; the
+                # SQL guard refuses to touch a running/terminal racing owner.
+                await self._bus.release_turn_acceptance(
+                    event.event_id, event.session_key,
+                )
+                if durable_claimed:
+                    await self._bus.release_durable_idempotency(event.event_id)
+                    durable_claimed = False
+                if claim is not None and claim.entry is not None:
+                    await self._message_idempotency.abort(
+                        claim.entry,
+                        payload={"error": "server overloaded"},
+                    )
                 return web.json_response({"error": "server overloaded"}, status=503)
+
+            published = True
+            if durable_claimed:
+                await asyncio.shield(
+                    self._bus.mark_durable_idempotency_admitted(event.event_id)
+                )
+                durable_claimed = False
+            admission_payload = {
+                "status": "accepted",
+                "event_id": event.event_id,
+                "session_key": session_key,
+            }
+            if claim is not None and claim.entry is not None:
+                if future:
+                    await asyncio.shield(self._message_idempotency.mark_admitted(
+                        claim.entry, status=200, payload=admission_payload,
+                    ))
+                else:
+                    await asyncio.shield(self._message_idempotency.complete(
+                        claim.entry, status=200, payload=admission_payload,
+                    ))
             await self.hooks.emit(
                 "message_received",
                 platform=platform, user_id=user_id, chat_id=chat_id,
@@ -767,24 +1210,47 @@ class GatewayServer:
                         },
                         status=504,
                     )
-                finally:
-                    self._pending_http.pop(event.event_id, None)
-                return web.json_response(
-                    {
-                        "status": "completed",
-                        "event_id": event.event_id,
-                        "session_key": session_key,
-                        "reply": payload,
-                    }
+                response_status, response_payload = self._http_final_response(
+                    event.event_id, session_key, payload,
                 )
+                if claim is not None and claim.entry is not None:
+                    await self._message_idempotency.complete(
+                        claim.entry, status=response_status, payload=response_payload,
+                    )
+                return web.json_response(response_payload, status=response_status)
 
-            return web.json_response({
-                "status": "accepted",
-                "event_id": event.event_id,
-                "session_key": session_key,
-            })
+            return web.json_response(admission_payload)
+        except asyncio.CancelledError:
+            if (
+                not published
+                and not publish_outcome_unknown
+                and claim is not None
+                and claim.entry is not None
+            ):
+                await asyncio.shield(
+                    self._message_idempotency.abort(claim.entry)
+                )
+            if not published and not publish_outcome_unknown and durable_claimed:
+                await asyncio.shield(
+                    self._bus.release_durable_idempotency(event_id)
+                )
+            raise
+        except Exception:
+            if (
+                not published
+                and not publish_outcome_unknown
+                and claim is not None
+                and claim.entry is not None
+            ):
+                await self._message_idempotency.abort(claim.entry)
+            if not published and not publish_outcome_unknown and durable_claimed:
+                await self._bus.release_durable_idempotency(event_id)
+            raise
         finally:
-            clear_session_vars(tokens)
+            if pending_event_id:
+                self._pending_http.pop(pending_event_id, None)
+            if tokens is not None:
+                clear_session_vars(tokens)
 
     async def _handle_health(self, request: web.Request) -> web.Response:
         status = await self.health.check()
@@ -943,6 +1409,7 @@ class GatewayServer:
         user_id = ""
         chat_id = ""
         session_key = ""
+        principal = "anonymous"
         # Absolute bound on the pre-auth window. Passing the per-frame timeout to
         # each wait_for restarted the clock on every frame, so a peer that kept
         # sending frames it had no right to send (junk, bad JSON, `message`
@@ -1002,6 +1469,8 @@ class GatewayServer:
                                 await websocket.send_json({"type": "error", "error": "unauthorized"})
                                 await websocket.close()
                                 return websocket
+                            if self._tokens_configured():
+                                principal = self.auth.principal_for_token(token) or "invalid"
 
                             trusted = self._is_loopback_peer(request)
                             normally_ok = self.auth.is_authorized(platform, user_id)
@@ -1057,10 +1526,198 @@ class GatewayServer:
                             if not text:
                                 continue
 
+                            try:
+                                idempotency_key = normalize_idempotency_key(
+                                    data.get("idempotency_key")
+                                )
+                            except ValueError as e:
+                                await websocket.send_json({
+                                    "type": "error", "error": str(e),
+                                })
+                                continue
+
+                            claim = None
+                            event_id = ""
+                            operation_fingerprint = ""
+                            durable_claimed = False
+                            if idempotency_key:
+                                scope = f"ws\0{principal}\0{session_key}"
+                                event_id = deterministic_event_id(
+                                    "gateway-message", scope, idempotency_key,
+                                )
+                                operation_fingerprint = self._idempotency_fingerprint({
+                                    "text": text,
+                                    "is_group": is_group,
+                                    "platform": platform,
+                                    "user_id": user_id,
+                                    "chat_id": chat_id,
+                                })
+                                claim = await self._message_idempotency.claim(
+                                    namespace="gateway-message",
+                                    scope=scope,
+                                    key=idempotency_key,
+                                    fingerprint=operation_fingerprint,
+                                    event_id=event_id,
+                                    context={
+                                        "session_key": session_key,
+                                        "wait": False,
+                                        "transport": "ws",
+                                    },
+                                )
+                                if claim.outcome == "conflict":
+                                    await websocket.send_json({
+                                        "type": "error",
+                                        "error": "idempotency key was already used for a different request",
+                                    })
+                                    continue
+                                if claim.outcome == "full":
+                                    await websocket.send_json({
+                                        "type": "error", "error": "idempotency store is full",
+                                    })
+                                    continue
+                                if claim.outcome == "duplicate" and claim.entry is not None:
+                                    cached = claim.entry.admission
+                                    if cached is None:
+                                        try:
+                                            cached = await self._message_idempotency.wait_admitted(
+                                                claim.entry, timeout=30,
+                                            )
+                                        except asyncio.TimeoutError:
+                                            await websocket.send_json({
+                                                "type": "error",
+                                                "error": "idempotency outcome pending",
+                                                "event_id": event_id,
+                                            })
+                                            continue
+                                    await websocket.send_json(cached.payload)
+                                    continue
+
+                                try:
+                                    durable_claim = (
+                                        await self._bus.claim_durable_idempotency(
+                                            event_id,
+                                            namespace="gateway-message",
+                                            fingerprint=operation_fingerprint,
+                                            session_key=session_key,
+                                        )
+                                    )
+                                except Exception as e:
+                                    logger.error(
+                                        "Durable WS idempotency claim failed: {}", e,
+                                    )
+                                    await self._message_idempotency.abort(claim.entry)
+                                    await websocket.send_json({
+                                        "type": "error",
+                                        "error": "durable idempotency storage unavailable",
+                                    })
+                                    continue
+                                durable_outcome = durable_claim.get("outcome")
+                                durable_record = durable_claim.get("row")
+                                if durable_outcome == "full":
+                                    await self._message_idempotency.abort(claim.entry)
+                                    await websocket.send_json({
+                                        "type": "error",
+                                        "error": "durable idempotency store is full",
+                                    })
+                                    continue
+                                if durable_outcome == "conflict":
+                                    await self._message_idempotency.abort(claim.entry)
+                                    await websocket.send_json({
+                                        "type": "error",
+                                        "error": "idempotency key was already used for a different request",
+                                    })
+                                    continue
+                                if (
+                                    durable_outcome == "duplicate"
+                                    and isinstance(durable_record, dict)
+                                ):
+                                    payload, terminal = self._ws_turn_run_payload(
+                                        durable_record, event_id,
+                                    )
+                                    if terminal:
+                                        await self._message_idempotency.complete(
+                                            claim.entry, status=200, payload=payload,
+                                        )
+                                    else:
+                                        await self._message_idempotency.abort(
+                                            claim.entry, status=200, payload=payload,
+                                        )
+                                    await websocket.send_json(payload)
+                                    continue
+                                if durable_outcome != "new":
+                                    await self._message_idempotency.abort(claim.entry)
+                                    await websocket.send_json({
+                                        "type": "error",
+                                        "error": "durable idempotency storage unavailable",
+                                    })
+                                    continue
+                                durable_claimed = True
+
+                                try:
+                                    durable_row = await self._bus.get_turn_run(event_id)
+                                except Exception as e:
+                                    logger.error("Durable WS turn lookup failed: {}", e)
+                                    await self._bus.release_durable_idempotency(event_id)
+                                    durable_claimed = False
+                                    await self._message_idempotency.abort(claim.entry)
+                                    await websocket.send_json({
+                                        "type": "error",
+                                        "error": "durable idempotency storage unavailable",
+                                    })
+                                    continue
+                                if durable_row is not None and claim.entry is not None:
+                                    if durable_fingerprint_conflicts(
+                                        durable_row,
+                                        namespace="gateway-message",
+                                        fingerprint=operation_fingerprint,
+                                    ):
+                                        await self._bus.release_durable_idempotency(
+                                            event_id
+                                        )
+                                        durable_claimed = False
+                                        payload = {
+                                            "type": "error",
+                                            "error": "idempotency key was already used for a different request",
+                                        }
+                                        await self._message_idempotency.abort(
+                                            claim.entry, status=409, payload=payload,
+                                        )
+                                        await websocket.send_json(payload)
+                                        continue
+                                    await self._bus.sync_durable_idempotency(
+                                        durable_row
+                                    )
+                                    payload, terminal = self._ws_turn_run_payload(
+                                        durable_row, event_id,
+                                    )
+                                    if terminal:
+                                        await self._message_idempotency.complete(
+                                            claim.entry, status=200, payload=payload,
+                                        )
+                                    else:
+                                        await self._message_idempotency.abort(
+                                            claim.entry, status=200, payload=payload,
+                                        )
+                                    await websocket.send_json(payload)
+                                    continue
+
                             if not self.rate_limiter.acquire(platform, chat_id):
+                                if durable_claimed:
+                                    await self._bus.release_durable_idempotency(
+                                        event_id
+                                    )
+                                    durable_claimed = False
+                                if claim is not None and claim.entry is not None:
+                                    await self._message_idempotency.abort(
+                                        claim.entry,
+                                        status=429,
+                                        payload={"type": "error", "error": "rate limited"},
+                                    )
                                 await websocket.send_json({"type": "error", "error": "rate limited"})
                                 continue
 
+                            published = False
+                            publish_outcome_unknown = False
                             tokens = set_session_vars(
                                 platform=platform,
                                 chat_id=chat_id,
@@ -1076,18 +1733,91 @@ class GatewayServer:
                                     session_key_override=session_key,
                                     is_group=is_group,
                                 )
+                                if event_id:
+                                    event.event_id = event_id
                                 event.metadata["gateway"] = True
                                 event.metadata["platform"] = platform
+                                if operation_fingerprint:
+                                    event.metadata[IDEMPOTENCY_NAMESPACE_METADATA] = (
+                                        "gateway-message"
+                                    )
+                                    event.metadata[IDEMPOTENCY_FINGERPRINT_METADATA] = (
+                                        operation_fingerprint
+                                    )
                                 await self._accept_turn(event, session)
-                                if not await self._bus.publish_inbound(event):
-                                    await self._reject_turn(event.event_id, "server overloaded")
-                                    await websocket.send_json({"type": "error", "error": "server overloaded"})
+                                try:
+                                    accepted = await self._bus.publish_inbound(event)
+                                except BaseException:
+                                    # Invocation can be cancelled or fail after
+                                    # queue admission. Keep the claim outcome
+                                    # unknown rather than allowing a duplicate.
+                                    publish_outcome_unknown = True
+                                    raise
+                                if not accepted:
+                                    await self._bus.release_turn_acceptance(
+                                        event.event_id, event.session_key,
+                                    )
+                                    if durable_claimed:
+                                        await self._bus.release_durable_idempotency(
+                                            event.event_id
+                                        )
+                                        durable_claimed = False
+                                    if claim is not None and claim.entry is not None:
+                                        await self._message_idempotency.abort(
+                                            claim.entry,
+                                            payload={
+                                                "type": "error",
+                                                "error": "server overloaded",
+                                            },
+                                        )
+                                    await websocket.send_json({
+                                        "type": "error", "error": "server overloaded",
+                                    })
                                     continue
-                                await websocket.send_json({
+                                published = True
+                                if durable_claimed:
+                                    await asyncio.shield(
+                                        self._bus.mark_durable_idempotency_admitted(
+                                            event.event_id
+                                        )
+                                    )
+                                    durable_claimed = False
+                                accepted_payload = {
                                     "type": "accepted",
                                     "event_id": event.event_id,
-                                })
+                                }
+                                if claim is not None and claim.entry is not None:
+                                    # Persist admission before writing the socket.
+                                    # A disconnect during send_json can then retry
+                                    # immediately and replay the real ACK.
+                                    await asyncio.shield(
+                                        self._message_idempotency.complete(
+                                            claim.entry,
+                                            status=200,
+                                            payload=accepted_payload,
+                                        )
+                                    )
+                                await websocket.send_json(accepted_payload)
                             finally:
+                                if (
+                                    not published
+                                    and not publish_outcome_unknown
+                                    and claim is not None
+                                    and claim.entry is not None
+                                ):
+                                    await asyncio.shield(
+                                        self._message_idempotency.abort(claim.entry)
+                                    )
+                                if (
+                                    not published
+                                    and not publish_outcome_unknown
+                                    and durable_claimed
+                                ):
+                                    await asyncio.shield(
+                                        self._bus.release_durable_idempotency(
+                                            event_id
+                                        )
+                                    )
                                 clear_session_vars(tokens)
 
                         if msg_type == "interrupt":
@@ -1212,6 +1942,7 @@ class GatewayServer:
         _, platform = event.channel.split(":", 1)
         session_key = f"gateway:{platform}:{event.chat_id}"
         payload = self._build_outbound_payload(event)
+        is_final = event.is_final or event.message_kind == "final"
 
         # An HTTP waiter is a real delivery target: the caller is blocked on this
         # reply and will receive it, whether or not a WebSocket is also attached.
@@ -1219,19 +1950,49 @@ class GatewayServer:
         correlation_id = str(event.metadata.get("_inbound_event_id") or event.reply_to_id or "")
         if correlation_id:
             future = self._pending_http.get(correlation_id)
-            if future is not None and not future.done() and event.is_final:
+            if future is not None and not future.done() and is_final:
                 try:
                     future.set_result(payload)
                     answered_http_waiter = True
                 except asyncio.InvalidStateError:
+                    # The HTTP waiter timed out/cancelled between the done check
+                    # and set_result; its lifecycle owner has already settled it.
                     pass
                 self._pending_http.pop(correlation_id, None)
+            if is_final:
+                idempotency_context = (
+                    await self._message_idempotency.context_for_event(correlation_id)
+                )
+                if idempotency_context.get("transport") == "ws":
+                    # Usually the WS admission ACK already completed this entry.
+                    # If publish admission became outcome-unknown (cancellation
+                    # or transport failure), a later final frame is authoritative
+                    # and must settle the pending retry instead of leaving it to
+                    # time out until the stale-entry backstop.
+                    await self._message_idempotency.complete_event(
+                        correlation_id, status=200, payload=payload,
+                    )
+                elif idempotency_context.get("transport") == "http":
+                    # A normal non-wait request already cached its admission
+                    # ACK, so complete_event is a no-op. More importantly, if
+                    # cancellation struck after queue admission but before that
+                    # ACK was persisted, the final frame now settles the key
+                    # instead of leaving every immediate retry pending to TTL.
+                    response_status, response_payload = self._http_final_response(
+                        correlation_id,
+                        idempotency_context.get("session_key", session_key),
+                        payload,
+                    )
+                    await self._message_idempotency.complete_event(
+                        correlation_id,
+                        status=response_status,
+                        payload=response_payload,
+                    )
 
         delivered = await self.broadcast_to_ws(session_key, payload)
         if delivered or answered_http_waiter:
             return SendResult(success=True)
 
-        is_final = event.is_final or event.message_kind == "final"
         if not is_final:
             # Interim stream frames are level-triggered progress: the final still
             # carries the full text, so a dropped one is not a delivery failure.

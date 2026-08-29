@@ -364,6 +364,8 @@ class InferenceStage:
             try:
                 memory_count = len(memory_store.list_all())
             except Exception:
+                # This value is display-only telemetry; keep its zero fallback
+                # when an optional memory backend cannot enumerate records.
                 pass
         # Summaries carry TEXT ONLY, no leading glyph: the client owns the line
         # marker (cli/tui/glyphs.py) and prefixes its own, so an emoji here

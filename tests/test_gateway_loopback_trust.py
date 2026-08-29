@@ -454,6 +454,22 @@ async def test_http_message_loopback_with_cli_key_accepted() -> None:
 
 
 @pytest.mark.asyncio
+async def test_http_message_rejects_reserved_epoch_injection() -> None:
+    gw, session_manager = _allowlist_gateway()
+    resp = await gw._handle_message(_msg_request(
+        {
+            "platform": "cli",
+            "user_id": "local",
+            "text": "hi",
+            "session_key": "cli:victim::epoch:3",
+        },
+        peer=("127.0.0.1", 5555),
+    ))
+    assert resp.status == 403
+    assert session_manager.get_or_create.await_count == 0
+
+
+@pytest.mark.asyncio
 async def test_http_message_open_mode_fallback_unchanged(tmp_path) -> None:
     # open 模式 normally_ok=True → allow_fallback=True，
     # 无 session_key 仍走 gateway:{platform}:{chat_id}，行为不变（不误伤）。
@@ -464,4 +480,3 @@ async def test_http_message_open_mode_fallback_unchanged(tmp_path) -> None:
     ))
     assert resp.status == 200
     gw.session_manager.get_or_create.assert_awaited_once_with("gateway:api:u1")
-

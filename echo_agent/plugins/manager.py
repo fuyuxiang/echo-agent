@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
@@ -9,6 +10,7 @@ from typing import Any, TYPE_CHECKING
 from loguru import logger
 
 from echo_agent.plugins.context import PluginContext
+from echo_agent.plugins.errors import PluginPermissionError
 from echo_agent.plugins.hooks import HookRegistry
 from echo_agent.plugins.loader import (
     discover_all,
@@ -16,7 +18,7 @@ from echo_agent.plugins.loader import (
     topological_sort,
 )
 from echo_agent.plugins.manifest import PluginRecord, check_required_env
-from echo_agent.plugins.sandbox import PluginSandbox
+from echo_agent.plugins.sandbox import PluginSandbox, VALID_PERMISSIONS
 
 if TYPE_CHECKING:
     from echo_agent.agent.tools.registry import ToolRegistry
@@ -46,6 +48,8 @@ class PluginManager:
         self._plugins: list[PluginRecord] = []
         self._contexts: dict[str, PluginContext] = {}
         self._deactivators: dict[str, Any] = {}
+        self._owned_tools: dict[str, list[Any]] = {}
+        self._shutdown_lock = asyncio.Lock()
 
     @property
     def hooks(self) -> HookRegistry:
@@ -54,6 +58,23 @@ class PluginManager:
     @property
     def plugins(self) -> list[PluginRecord]:
         return list(self._plugins)
+
+    @property
+    def owned_tool_identities(self) -> frozenset[int]:
+        """Read-only identity snapshot of tools currently owned by plugins."""
+        return frozenset(
+            id(tool)
+            for tools in self._owned_tools.values()
+            for tool in tools
+        )
+
+    def owns_tool(self, tool: Any) -> bool:
+        """Return whether this manager owns this exact object, never just its name."""
+        return any(
+            owned is tool
+            for tools in self._owned_tools.values()
+            for owned in tools
+        )
 
     async def discover_and_load(self) -> None:
         """Discover, filter, sort, and activate all plugins."""
@@ -73,13 +94,27 @@ class PluginManager:
 
         records = self._filter_plugins(records, plugins_cfg)
         records = topological_sort(records)
+        self._plugins = records
 
         logger.info("Discovered {} plugin(s), loading...", len(records))
 
+        records_by_name = {record.manifest.name: record for record in records}
         for record in records:
+            if record.status == "failed":
+                continue
+            unavailable = [
+                dependency
+                for dependency in record.manifest.depends_on
+                if records_by_name[dependency].status != "activated"
+            ]
+            if unavailable:
+                record.status = "failed"
+                record.error = (
+                    "dependencies not activated: " + ", ".join(sorted(unavailable))
+                )
+                logger.warning("Plugin '{}' skipped: {}", record.manifest.name, record.error)
+                continue
             await self._load_and_activate(record)
-
-        self._plugins = records
 
         loaded = [r for r in records if r.status == "activated"]
         failed = [r for r in records if r.status == "failed"]
@@ -119,6 +154,15 @@ class PluginManager:
         """Load module and call activate() for a single plugin."""
         name = record.manifest.name
 
+        unknown_permissions = sorted(
+            set(record.manifest.permissions) - VALID_PERMISSIONS
+        )
+        if unknown_permissions:
+            record.status = "failed"
+            record.error = f"unknown permissions: {', '.join(unknown_permissions)}"
+            logger.warning("Plugin '{}' skipped: {}", name, record.error)
+            return
+
         missing_env = check_required_env(record.manifest)
         if missing_env:
             record.status = "failed"
@@ -147,27 +191,20 @@ class PluginManager:
         mode = getattr(self._config.plugins, "permission_mode", "compat")
         sandbox = PluginSandbox(name, record.manifest, trusted=is_trusted, mode=mode)
 
-        ctx = PluginContext(
-            plugin_name=name,
-            config=self._config,
-            workspace=self._workspace,
-            bus=self._bus,
-            tool_registry=self._tool_registry,
-            hook_registry=self._hooks,
-            provider=self._provider,
-            plugin_config=plugin_config,
+        # Declared provides allow strict mode to reject before executing plugin
+        # code.  They are only a hint, never the authority: actual registrations
+        # are checked again below so omitting/falsifying provides cannot bypass
+        # tool.register or hook.register.
+        tool_ok = (
+            sandbox.check_tool_register() if record.manifest.provides.tools else None
         )
-
-        # activate 前权限预检：strict 模式下越权拒绝加载（不调 activate）；
-        # compat 模式越权仅 warning 并继续，靠事后核验裁剪；legacy 插件按默认权限集放行。
-        # 权限判定在 sandbox 内不随时间变化，只调一次并缓存，事后核验复用，
-        # 避免重复 append violations 与重复打印 warning。
-        tool_ok = sandbox.check_tool_register() if record.manifest.provides.tools else True
-        hook_ok = sandbox.check_hook_register() if record.manifest.provides.hooks else True
+        hook_ok = (
+            sandbox.check_hook_register() if record.manifest.provides.hooks else None
+        )
         denied: list[str] = []
-        if record.manifest.provides.tools and not tool_ok:
+        if tool_ok is False:
             denied.append("tool.register")
-        if record.manifest.provides.hooks and not hook_ok:
+        if hook_ok is False:
             denied.append("hook.register")
 
         if denied and mode == "strict":
@@ -178,56 +215,278 @@ class PluginManager:
             )
             return
 
+        def allow_tool_registration() -> bool:
+            nonlocal tool_ok
+            if tool_ok is None:
+                tool_ok = sandbox.check_tool_register()
+            return tool_ok
+
+        def allow_hook_registration() -> bool:
+            nonlocal hook_ok
+            if hook_ok is None:
+                hook_ok = sandbox.check_hook_register()
+            return hook_ok
+
+        ctx = PluginContext(
+            plugin_name=name,
+            config=self._config,
+            workspace=self._workspace,
+            bus=self._bus,
+            tool_registry=self._tool_registry,
+            hook_registry=self._hooks,
+            provider=self._provider,
+            plugin_config=plugin_config,
+            tool_registration_allowed=allow_tool_registration,
+            hook_registration_allowed=allow_hook_registration,
+            registration_mode=mode,
+        )
+
         activate_fn = interface["activate"]
         deactivate_fn = interface.get("deactivate")
 
         try:
-            if inspect.iscoroutinefunction(activate_fn):
-                await activate_fn(ctx)
-            else:
-                activate_fn(ctx)
+            result = activate_fn(ctx)
+            if inspect.isawaitable(result):
+                await result
+        except asyncio.CancelledError as cancellation:
+            record.status = "failed"
+            record.error = "activate() cancelled"
+            # Activation may already have published tools/hooks/subscriptions.
+            # Roll them back to completion before preserving cancellation.
+            try:
+                await self._release_context_resources_shielded(name, ctx)
+            except asyncio.CancelledError:
+                # A repeated cancel is remembered by the shield helper, but the
+                # original cancellation remains the public activation outcome.
+                pass
+            raise cancellation
+        except PluginPermissionError as e:
+            record.status = "failed"
+            record.error = str(e)
+            logger.warning("Plugin '{}' activation denied: {}", name, e)
+            await self._release_context_resources_shielded(name, ctx)
+            return
         except Exception as e:
             record.status = "failed"
             record.error = f"activate() raised: {e}"
             logger.warning("Plugin '{}' activation failed: {}", name, e)
-            self._hooks.unregister_plugin(name)
+            await self._release_context_resources_shielded(name, ctx)
             return
 
-        if ctx.registered_tools and not tool_ok:
-            logger.warning("Plugin '{}' registered tools without permission — unregistering", name)
-            for tool_name in ctx.registered_tools:
-                self._tool_registry.unregister(tool_name)
-            ctx._registered_tools.clear()
+        actual_denied = sorted(ctx.denied_registrations)
 
-        if ctx.registered_hooks and not hook_ok:
-            logger.warning("Plugin '{}' registered hooks without permission — unregistering", name)
-            self._hooks.unregister_plugin(name)
-            ctx._registered_hooks.clear()
+        if actual_denied and mode == "strict":
+            record.status = "failed"
+            record.error = f"permission denied for actual registrations: {', '.join(actual_denied)}"
+            logger.warning("Plugin '{}' activation rolled back: {}", name, record.error)
+            await self._release_context_resources_shielded(name, ctx)
+            return
+
+        if actual_denied:
+            logger.warning(
+                "Plugin '{}' attempted registrations without permission: {}",
+                name,
+                ", ".join(actual_denied),
+            )
+            denied_tools = ctx.denied_tool_instances
+            cleanup_cancellation: asyncio.CancelledError | None = None
+            try:
+                await self._await_cleanup_shielded(
+                    self._close_tools(name, denied_tools)
+                )
+            except asyncio.CancelledError as cancellation:
+                cleanup_cancellation = cancellation
+            finally:
+                # The shield waits until every close attempt is terminal before
+                # propagating cancellation, so these objects must not be offered
+                # to the subsequent full rollback a second time.
+                ctx._denied_tool_instances.clear()
+                ctx._denied_registrations.clear()
+            if cleanup_cancellation is not None:
+                # Activation was cancelled during compatibility cleanup. Roll
+                # back admitted resources as well before handing cancellation
+                # to the caller.
+                try:
+                    await self._release_context_resources_shielded(name, ctx)
+                except asyncio.CancelledError:
+                    # Cleanup has already converged; preserve the earlier
+                    # cancellation object as the public activation outcome.
+                    pass
+                raise cleanup_cancellation
 
         record.status = "activated"
         record.tools_registered = ctx.registered_tools
         record.hooks_registered = ctx.registered_hooks
         self._contexts[name] = ctx
+        self._owned_tools[name] = ctx.registered_tool_instances
 
         if deactivate_fn is not None:
             self._deactivators[name] = deactivate_fn
 
     async def shutdown(self) -> None:
-        """Call deactivate() on all activated plugins."""
-        for name, deactivate_fn in self._deactivators.items():
-            ctx = self._contexts.get(name)
-            if ctx is None:
-                continue
-            try:
-                if inspect.iscoroutinefunction(deactivate_fn):
-                    await deactivate_fn(ctx)
-                else:
-                    deactivate_fn(ctx)
-            except Exception as e:
-                logger.warning("Plugin '{}' deactivate() raised: {}", name, e)
+        """Deactivate plugins and close their tools in reverse dependency order.
 
-        self._deactivators.clear()
-        self._contexts.clear()
+        ``discover_and_load`` stores records in dependency-first topological
+        order.  Dependents therefore unwind first.  A plugin's deactivate hook
+        runs while its own tools and every dependency are still usable; its
+        tools are then closed by the manager even when the hook is absent or
+        fails.  Ownership is consumed before callbacks run, making repeated or
+        concurrent shutdown calls idempotent for non-idempotent third-party
+        tools.
+        """
+        async with self._shutdown_lock:
+            ordered_names = [
+                record.manifest.name
+                for record in reversed(self._plugins)
+                if record.manifest.name in self._contexts
+            ]
+            # Direct _load_and_activate() callers (including embedders/tests)
+            # have contexts without a discover_and_load() record list. Preserve
+            # their activation order and still unwind it LIFO.
+            ordered_names.extend(
+                name for name in reversed(self._contexts)
+                if name not in ordered_names
+            )
+
+            cancellation: asyncio.CancelledError | None = None
+            for name in ordered_names:
+                # Pop ownership up front. If a callback re-enters shutdown, or
+                # the caller retries after a failure, this plugin cannot be
+                # deactivated/closed twice.
+                ctx = self._contexts.pop(name, None)
+                deactivate_fn = self._deactivators.pop(name, None)
+                tools = self._owned_tools.pop(name, [])
+                if ctx is None:
+                    continue
+
+                if deactivate_fn is not None:
+                    try:
+                        result = deactivate_fn(ctx)
+                        if inspect.isawaitable(result):
+                            await result
+                    except asyncio.CancelledError as e:
+                        # Finish releasing owned resources, then preserve the
+                        # caller's cancellation at the public boundary.
+                        cancellation = cancellation or e
+                    except Exception as e:
+                        logger.warning("Plugin '{}' deactivate() raised: {}", name, e)
+
+                try:
+                    await self._release_context_resources_shielded(
+                        name, ctx, tools=tools,
+                    )
+                except asyncio.CancelledError as e:  # pragma: no cover - defensive
+                    cancellation = cancellation or e
+
+            # Drop any stale bookkeeping left by a partially constructed plugin
+            # manager. There is no lifecycle owner behind those entries now.
+            self._deactivators.clear()
+            self._contexts.clear()
+            self._owned_tools.clear()
+            if cancellation is not None:
+                raise cancellation
+
+    async def _release_context_resources(
+        self,
+        plugin_name: str,
+        ctx: PluginContext,
+        *,
+        tools: list[Any] | None = None,
+    ) -> None:
+        """Withdraw every resource registered through a PluginContext."""
+        for handler in reversed(ctx.registered_inbound_handlers):
+            try:
+                self._bus.unsubscribe_inbound(handler)
+            except Exception as e:
+                logger.warning(
+                    "Plugin '{}' inbound unsubscribe raised: {}", plugin_name, e,
+                )
+        ctx._registered_inbound_handlers.clear()
+        try:
+            self._hooks.unregister_plugin(plugin_name)
+        except Exception as e:  # pragma: no cover - built-in registry is total
+            logger.warning("Plugin '{}' hook unregister raised: {}", plugin_name, e)
+        finally:
+            ctx._registered_hooks.clear()
+            try:
+                await self._close_tools(
+                    plugin_name,
+                    ctx.owned_tool_instances if tools is None else tools,
+                )
+            finally:
+                ctx._registered_tools.clear()
+                ctx._registered_tool_instances.clear()
+                ctx._denied_tool_instances.clear()
+                ctx._denied_registrations.clear()
+
+    async def _release_context_resources_shielded(
+        self,
+        plugin_name: str,
+        ctx: PluginContext,
+        *,
+        tools: list[Any] | None = None,
+    ) -> None:
+        """Finish activation rollback even if its owner is cancelled again."""
+        await self._await_cleanup_shielded(
+            self._release_context_resources(plugin_name, ctx, tools=tools)
+        )
+
+    @staticmethod
+    async def _await_cleanup_shielded(cleanup_awaitable: Any) -> None:
+        """Converge one cleanup task before surfacing repeated cancellation."""
+        cleanup = asyncio.ensure_future(cleanup_awaitable)
+        repeated_cancellation: asyncio.CancelledError | None = None
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError as e:
+                # shield keeps cleanup alive. Keep waiting through any number
+                # of cancel() calls, then propagate the newest cancellation.
+                repeated_cancellation = e
+            except BaseException:
+                # The cleanup task owns this exception; retrieve it below so it
+                # is observed exactly once with its original traceback.
+                break
+        cleanup.result()
+        if repeated_cancellation is not None:
+            raise repeated_cancellation
+
+    async def _close_tools(self, plugin_name: str, tools: list[Any]) -> None:
+        """Best-effort close and unregister exact plugin-owned tool instances."""
+        seen: set[int] = set()
+        cancellation: asyncio.CancelledError | None = None
+        for tool in reversed(tools):
+            identity = id(tool)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            tool_name = str(getattr(tool, "name", ""))
+            close = getattr(tool, "aclose", None)
+            if callable(close):
+                try:
+                    result = close()
+                    if inspect.isawaitable(result):
+                        await result
+                except asyncio.CancelledError as e:
+                    cancellation = cancellation or e
+                except Exception as e:
+                    logger.warning(
+                        "Plugin '{}' tool '{}' aclose() raised: {}",
+                        plugin_name, tool_name or type(tool).__name__, e,
+                    )
+            # Do not unregister a replacement installed by another lifecycle
+            # owner after activation. The captured instance is still closed.
+            if tool_name:
+                try:
+                    if self._tool_registry.get(tool_name) is tool:
+                        self._tool_registry.unregister(tool_name)
+                except Exception as e:  # pragma: no cover - defensive adapter seam
+                    logger.warning(
+                        "Plugin '{}' tool '{}' unregister raised: {}",
+                        plugin_name, tool_name, e,
+                    )
+        if cancellation is not None:
+            raise cancellation
 
     def get_plugin_info(self, name: str) -> PluginRecord | None:
         """Get a plugin record by name."""

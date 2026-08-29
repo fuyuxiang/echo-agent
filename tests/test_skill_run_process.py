@@ -111,7 +111,8 @@ class TestProcessGroupReaping:
 
     Killing only the direct child left those running detached — the previous
     hand-rolled _terminate did exactly that. skill_run now goes through
-    proc_lifecycle.spawn_exec/terminate_tree like every other exec tool, so the
+    proc_lifecycle.spawn_exec/communicate_owned like every other one-shot exec
+    tool, so the
     whole process group is swept.
     """
 
@@ -181,7 +182,9 @@ class TestProcessGroupReaping:
             if isinstance(node, ast.Call)
         }
         assert "spawn_exec" in called, "skill_run must spawn via proc_lifecycle"
-        assert "terminate_tree" in called, "skill_run must reap via proc_lifecycle"
+        assert "communicate_owned" in called, (
+            "skill_run must communicate and reap via proc_lifecycle"
+        )
         assert not any("create_subprocess" in c for c in called), (
             "skill_run must not spawn subprocesses directly; use proc_lifecycle"
         )

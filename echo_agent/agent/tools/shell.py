@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from echo_agent.agent.executors.base import BaseExecutor, ExecRequest, prepend_interpreter_bin
-from echo_agent.agent.proc_lifecycle import spawn_shell, terminate_tree
+from echo_agent.agent.proc_lifecycle import communicate_owned, spawn_shell
 from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 from echo_agent.security.guards import evaluate_shell_command
 from echo_agent.security.path_policy import check_cwd
@@ -119,7 +119,6 @@ class ShellTool(Tool):
         if policy_violation:
             return ToolResult(success=False, error=policy_violation)
 
-        proc = None
         try:
             try:
                 cwd = self._resolve_cwd(cwd)
@@ -145,7 +144,7 @@ class ShellTool(Tool):
                     cwd=cwd,
                     env={**prepend_interpreter_bin(dict(os.environ)), "WORKSPACE": self._workspace},
                 )
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+                stdout, stderr = await communicate_owned(proc, timeout=timeout)
                 output = stdout.decode(errors="replace")
                 err_output = stderr.decode(errors="replace")
                 return_code = proc.returncode or 0
@@ -167,16 +166,13 @@ class ShellTool(Tool):
                 error=err_output if return_code != 0 else "",
                 metadata={"return_code": return_code, "executor": executor_name},
             )
+        except asyncio.CancelledError:
+            # communicate_owned converges process-tree cleanup before exposing
+            # cancellation to the registry / bus shutdown path.
+            raise
         except asyncio.TimeoutError:
-            if proc is not None:
-                await terminate_tree(proc)
             return ToolResult(success=False, error=f"Command timed out after {timeout}s")
         except Exception as e:
-            if proc is not None:
-                # Not gated on `returncode is None`: an exited leader can still
-                # have left backgrounded grandchildren in its group, and this
-                # tool holds the only handle to them.
-                await terminate_tree(proc)
             return ToolResult(success=False, error=str(e))
 
     def execution_mode(self, params: dict[str, Any]) -> str:

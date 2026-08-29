@@ -95,6 +95,7 @@ class EmailChannel(BaseChannel):
             try:
                 await self._poll_task
             except asyncio.CancelledError:
+                # stop() deliberately cancelled and now reaps the polling task.
                 pass
 
     async def send(self, event: OutboundEvent) -> SendResult | None:
@@ -259,8 +260,10 @@ class EmailChannel(BaseChannel):
             if conn is not None:
                 try:
                     conn.logout()
-                except Exception:
-                    pass
+                except Exception as e:
+                    # Logout is best-effort after the fetch connection has
+                    # already stopped being used; retain diagnostics at debug.
+                    logger.debug("IMAP logout during cleanup failed: {}", e)
         return results
 
     @staticmethod

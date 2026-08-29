@@ -175,6 +175,29 @@ class TestDelegateExecute:
 
 class TestSpawnTool:
     @pytest.mark.asyncio
+    async def test_aclose_cancels_and_joins_owned_workers(self):
+        tool = SpawnTool(provider=MagicMock(), bus=None)
+        started = asyncio.Event()
+
+        async def block(*args, **kwargs):
+            started.set()
+            await asyncio.Event().wait()
+
+        tool._execute_worker = AsyncMock(side_effect=block)
+        await tool.execute({"task": "keep working"}, _ctx())
+        await asyncio.wait_for(started.wait(), timeout=1)
+        owned = list(tool._tasks.values())
+
+        await tool.aclose()
+
+        assert tool._tasks == {}
+        assert owned and all(task.done() for task in owned)
+        assert all(task.cancelled() for task in owned)
+        rejected = await tool.execute({"task": "too late"}, _ctx())
+        assert rejected.success is False
+        assert "shutting down" in rejected.error
+
+    @pytest.mark.asyncio
     async def test_spawn_returns_task_id(self):
         provider = MagicMock()
         # _run_background awaits chat_with_retry; make it return quickly.

@@ -50,6 +50,8 @@ class CLIChannel(BaseChannel):
             try:
                 await self._task
             except asyncio.CancelledError:
+                # stop() deliberately cancelled the input reader and has now
+                # observed its terminal state.
                 pass
 
     async def send(self, event: OutboundEvent) -> SendResult | None:
@@ -111,6 +113,8 @@ class CLIChannel(BaseChannel):
                 try:
                     loop.remove_reader(sys.stdin.fileno())
                 except (AttributeError, NotImplementedError, RuntimeError, ValueError):
+                    # Reader removal is best-effort during loop/stdio teardown;
+                    # the read coroutine has already exited at this point.
                     pass
             return
 

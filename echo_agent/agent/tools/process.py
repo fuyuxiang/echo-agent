@@ -275,6 +275,8 @@ class ProcessTool(Tool):
                     try:
                         await task
                     except (asyncio.CancelledError, Exception):
+                        # Collectors were explicitly cancelled after their child
+                        # was reaped; their terminal exception has no consumer.
                         pass
         self._processes.clear()
 

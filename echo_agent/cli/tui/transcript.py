@@ -133,6 +133,8 @@ class TranscriptView(VerticalScroll):
             try:
                 w.remove()
             except Exception:
+                # clear() has already dropped this widget from retained indexes;
+                # detached/tearing-down Textual children need no further action.
                 pass
         self._tool_blocks.clear()
         self._thinking_blocks.clear()
@@ -303,6 +305,8 @@ class TranscriptView(VerticalScroll):
         try:
             block.remove()
         except Exception:
+            # All transcript indexes were cleared first; failure to detach an
+            # already-disposed widget cannot leave a live correlation reference.
             pass
 
     @property
@@ -417,6 +421,8 @@ class TranscriptView(VerticalScroll):
                 try:
                     w.repaint()
                 except Exception:
+                    # A single detached reply must not prevent the remaining live
+                    # replies from adopting the new theme.
                     pass
 
     def last_memory_block(self) -> CognitiveBlock | None:

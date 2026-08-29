@@ -407,6 +407,8 @@ class ModelRouter:
                     try:
                         os.unlink(tmp)
                     except OSError:
+                        # Preserve the original health-state write failure; the
+                        # canonical file remains protected by atomic replace.
                         pass
                     raise
             except Exception as e:
@@ -426,6 +428,8 @@ class ModelRouter:
                 try:
                     cooldown_until = datetime.fromisoformat(info["cooldown_until"])
                 except (ValueError, TypeError):
+                    # A malformed persisted deadline is treated as absent; status
+                    # recovery below remains conservative rather than failing load.
                     pass
             status = HealthStatus(info.get("status", "healthy"))
             if status == HealthStatus.COOLDOWN and cooldown_until:

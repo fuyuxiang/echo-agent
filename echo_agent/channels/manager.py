@@ -641,6 +641,8 @@ class ChannelManager:
             try:
                 await self._cleanup_task
             except asyncio.CancelledError:
+                # stop_all() owns this cancellation and waits so TTL cleanup
+                # cannot race channel teardown.
                 pass
             self._cleanup_task = None
         for name, channel in self._channels.items():

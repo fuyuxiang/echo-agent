@@ -12,7 +12,7 @@ Welcome to Echo Agent development! This section covers everything from environme
 | [Adding a Tool](add-tool.en.md) | Add new tools for the Agent |
 | [Adding a Channel](add-channel.en.md) | Develop a new messaging channel adapter |
 | [Skill Authoring](skill-authoring.en.md) | Write skills in the SKILL.md format |
-| [Plugin API](plugin-api.en.md) | Plugin manifest, lifecycle hooks, sandbox |
+| [Plugin API](plugin-api.en.md) | Plugin manifest, lifecycle hooks, permission admission |
 | [Dashboard Development](dashboard-development.en.md) | React SPA architecture, components, testing |
 | [Testing & Evaluation](testing-evaluation.en.md) | pytest, evaluation framework, coverage gates |
 | [Documentation Guide](documentation.en.md) | Docs site architecture, i18n, local preview |

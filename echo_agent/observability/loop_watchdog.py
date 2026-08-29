@@ -128,6 +128,8 @@ class LoopWatchdog:
             try:
                 await self._hb_task
             except (asyncio.CancelledError, Exception):
+                # stop() initiated heartbeat cancellation; the monitor thread is
+                # independently stopped and joined immediately afterwards.
                 pass
             self._hb_task = None
         if self._thread is not None:
@@ -137,6 +139,8 @@ class LoopWatchdog:
             try:
                 self._dump_fh.close()
             except OSError:
+                # Diagnostic dump closure is best-effort after the watchdog thread
+                # has stopped and no writer can use the handle again.
                 pass
             self._dump_fh = None
 
@@ -147,6 +151,7 @@ class LoopWatchdog:
                 self._last_beat = self._clock()
                 await asyncio.sleep(self._hb_interval)
         except asyncio.CancelledError:
+            # stop() uses cancellation as the heartbeat coroutine's normal exit.
             pass
 
     def _monitor(self) -> None:

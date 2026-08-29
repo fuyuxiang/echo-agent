@@ -145,6 +145,31 @@ class TestGatewayRateLimiter:
         # Different chat_id should have its own bucket
         assert rl.acquire("p", "chat_b") is True
 
+    def test_bucket_keyspace_is_lru_bounded(self):
+        rl = RateLimiter(default_rpm=2, max_buckets=3)
+        for chat_id in ("a", "b", "c"):
+            assert rl.acquire("p", chat_id)
+
+        # Touch "a" so "b", not merely the oldest-created bucket, is evicted.
+        assert rl.acquire("p", "a")
+        assert rl.acquire("p", "d")
+
+        assert list(rl._buckets) == ["p:c", "p:a", "p:d"]
+        assert len(rl.get_stats()) == 3
+
+    def test_rejected_bucket_stays_recent_under_eviction_pressure(self):
+        rl = RateLimiter(default_rpm=1, max_buckets=2)
+        assert rl.acquire("p", "flooder")
+        assert not rl.acquire("p", "flooder")
+        assert rl.acquire("p", "idle")
+
+        # A rejected retry is still activity and must protect the depleted
+        # bucket from eviction (otherwise it would immediately regain a burst).
+        assert not rl.acquire("p", "flooder")
+        assert rl.acquire("p", "new")
+        assert list(rl._buckets) == ["p:flooder", "p:new"]
+        assert not rl.acquire("p", "flooder")
+
     @pytest.mark.asyncio
     async def test_wait_eventually_acquires(self):
         rl = RateLimiter(default_rpm=60)
@@ -413,4 +438,3 @@ class TestGatewayAuthPairingLockout:
         for _ in range(4):
             auth.verify_pairing("telegram", "user1", "WRONGCODE2")
         assert auth._is_locked_out("telegram") is False
-

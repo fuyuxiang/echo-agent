@@ -56,6 +56,7 @@ class SlackChannel(BaseChannel):
             try:
                 await self._ws_task
             except asyncio.CancelledError:
+                # stop() initiated and now reaps the websocket-loop cancellation.
                 pass
         if self._ws and not self._ws.closed:
             await self._ws.close()

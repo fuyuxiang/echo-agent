@@ -67,6 +67,8 @@ class DiscordChannel(BaseChannel):
             try:
                 await self._ws_task
             except asyncio.CancelledError:
+                # stop() requested the websocket-loop cancellation and merely
+                # reaps its expected terminal state here.
                 pass
         if self._ws and not self._ws.closed:
             await self._ws.close()
@@ -152,6 +154,8 @@ class DiscordChannel(BaseChannel):
                             break
                     await asyncio.sleep(8)
             except asyncio.CancelledError:
+                # Cancellation is the normal stop_typing/channel-shutdown signal
+                # for this private refresh loop.
                 pass
 
         self._typing_tasks[chat_id] = asyncio.create_task(_typing_loop())
@@ -389,6 +393,8 @@ class DiscordChannel(BaseChannel):
                 await self._send_ws({"op": 1, "d": self._seq})
                 await asyncio.sleep(self._heartbeat_interval)
         except asyncio.CancelledError:
+            # Websocket teardown cancels the private heartbeat loop; the parent
+            # reconnect/stop path owns any resulting connection transition.
             pass
 
     async def _send_ws(self, data: dict[str, Any]) -> None:

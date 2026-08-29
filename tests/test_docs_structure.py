@@ -606,3 +606,36 @@ def test_readme_channel_count_matches_registry():
                 line = text[: match.start()].count("\n") + 1
                 failures.append(f"{readme.name}:{line} 写了 {match.group(1)}，实际 {expected}")
     assert not failures, "README 的通道数量与注册表不符:\n" + "\n".join(failures)
+
+
+def test_audit_sensitive_capability_boundaries_are_not_overclaimed():
+    """Pin documentation boundaries where vocabulary previously implied wiring.
+
+    A low-level helper or manifest field is not evidence that a capability is
+    production-wired or security-isolated.
+    """
+    plugin_pages = [
+        DOCS_DIR / "development/plugin-api.md",
+        DOCS_DIR / "development/plugin-api.en.md",
+        DOCS_DIR / "integrations/plugins/using-plugins.md",
+        DOCS_DIR / "integrations/plugins/using-plugins.en.md",
+        DOCS_DIR / "development/repository-map.md",
+        DOCS_DIR / "development/repository-map.en.md",
+    ]
+    former_false_claims = (
+        "插件在受限环境中运行",
+        "Plugins run in a restricted environment",
+        "插件沙箱隔离",
+        "Plugin sandbox isolation",
+        "跳过沙箱校验",
+        "bypass sandbox checks",
+        "后加载的插件会覆盖",
+    )
+    corpus = "\n".join(path.read_text(encoding="utf-8") for path in plugin_pages)
+    assert not [claim for claim in former_false_claims if claim in corpus]
+    assert "受信任的进程内代码" in corpus
+    assert "trusted in-process code" in corpus
+
+    readmes = README_ZH.read_text(encoding="utf-8") + README_EN.read_text(encoding="utf-8")
+    assert "当前 Agent 运行时不提供 A2A 出站委派入口" in readmes
+    assert "no outbound A2A delegation entry point" in readmes

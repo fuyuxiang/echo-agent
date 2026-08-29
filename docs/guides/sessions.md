@@ -1,6 +1,9 @@
 # 会话管理
 
-Echo Agent 的会话系统为每个对话提供隔离的上下文环境，支持多通道、多用户的并发交互。
+Echo Agent 的会话系统为每个对话键提供独立的模型上下文，支持多通道、多会话并发交互。
+
+!!! warning "会话隔离不是访问控制"
+    会话键防止一个对话的 working context 误混入另一个对话，但它不证明“谁有权读这个会话”。Dashboard 会话页与 `session_search` 本来就可以跨会话查看/搜索实例状态。互不信任的用户不应只靠会话键或每人一枚 API Token 共享实例；详见[安全模型](../concepts/security-model.md#multi-client-tenant-boundary)。
 
 ## 会话键组成
 
@@ -107,7 +110,7 @@ session:
 
 ## 多通道会话隔离
 
-Session Manager 确保不同通道间的会话完全隔离：
+Session Manager 按不同会话键维护独立的消息历史与模型上下文：
 
 ```yaml
 # 同一用户在不同通道的独立会话

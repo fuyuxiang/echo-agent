@@ -434,6 +434,7 @@ echo-agent deps refresh
 
 !!! warning "已废弃"
     `service` 命令已废弃，功能已迁移至 `gateway` 命令。请使用 `echo-agent gateway` 代替。
+    该兼容别名将在 **v0.5.0** 移除。
 
 ```bash
 # 旧用法（已废弃）

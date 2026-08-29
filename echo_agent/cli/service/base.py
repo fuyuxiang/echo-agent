@@ -7,10 +7,11 @@ service manager owns backgrounding, restart-on-crash, and log capture.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 from typing import Protocol
+
+from echo_agent.agent.proc_lifecycle import run_owned
 
 SERVICE_NAME = "echo-agent"
 GATEWAY_ENV_FLAG = "_ECHO_AGENT_GATEWAY"
@@ -81,7 +82,12 @@ def parse_systemd_execstart(unit_text: str) -> tuple[str | None, str | None]:
 
 
 def run(cmd: list[str], check: bool = True) -> int:
-    result = subprocess.run(cmd)
+    """Run a one-shot local service-manager CLI and reclaim its local tree.
+
+    A gateway started by launchctl/systemd is reparented to that manager and is
+    deliberately not part of this local command's process group.
+    """
+    result = run_owned(cmd)
     if check and result.returncode != 0:
         sys.exit(result.returncode)
     return result.returncode

@@ -210,7 +210,8 @@ async def test_incomplete_turn_still_recorded_when_delivery_ok():
     loop, cron_calls, task_calls = _build_loop(
         delivery=DeliveryResult(DeliveryStage.DELIVERED, "cron"),
         result=ProcessResult(
-            response_text="hi", outbound_sent=False, task_incomplete=True
+            response_text="hi", outbound_sent=False, task_incomplete=True,
+            termination_reason="budget_halted",
         ),
     )
 
@@ -218,6 +219,30 @@ async def test_incomplete_turn_still_recorded_when_delivery_ok():
 
     assert cron_calls[-1][0] == "completed"
     assert task_calls[-1][0] == "incomplete"
+    assert loop.bus.sent[-1].metadata["_turn_status"] == "incomplete"
+    assert loop.bus.sent[-1].metadata["_error"] is True
+    assert loop.bus.sent[-1].metadata["_error_reason"] == "budget_halted"
+    assert loop.bus.sent[-1].metadata["_http_status"] == 409
+
+
+@pytest.mark.asyncio
+async def test_interrupted_turn_final_frame_matches_terminal_status():
+    loop, cron_calls, task_calls = _build_loop(
+        delivery=DeliveryResult(DeliveryStage.DELIVERED, "cron"),
+        result=ProcessResult(
+            response_text="stopped",
+            outbound_sent=False,
+            task_incomplete=True,
+            termination_reason="interrupted",
+        ),
+    )
+
+    await loop._on_inbound(_cron_event())
+
+    assert cron_calls[-1][0] == "completed"
+    assert task_calls[-1][0] == "incomplete"
+    assert loop.bus.sent[-1].metadata["_turn_status"] == "interrupted"
+    assert loop.bus.sent[-1].metadata["_http_status"] == 409
 
 
 @pytest.mark.asyncio

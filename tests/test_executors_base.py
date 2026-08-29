@@ -4,6 +4,9 @@
 以及 sandbox 的隔离目录复制与路径解析。类 Unix 环境下运行。"""
 from __future__ import annotations
 
+import asyncio
+import os
+import signal
 import sys
 from pathlib import Path
 
@@ -20,6 +23,16 @@ from echo_agent.agent.executors.base import (
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="shell 子进程语义按类 Unix 假设编写"
 )
+
+
+async def _assert_pid_gone(pid: int) -> None:
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        await asyncio.sleep(0.05)
+    pytest.fail(f"background process {pid} survived executor completion")
 
 
 # ---------------------------------------------------------------------------
@@ -131,14 +144,40 @@ async def test_local_executor_exec_failure_captured_as_stderr(tmp_path: Path, mo
     async def _boom(*a, **k):
         raise OSError("spawn failed")
 
-    monkeypatch.setattr(
-        "echo_agent.agent.executors.base.asyncio.create_subprocess_shell", _boom
-    )
+    monkeypatch.setattr("echo_agent.agent.executors.base.spawn_shell", _boom)
     resp = await ex.execute(ExecRequest(command="echo hi"))
     assert resp.success is False
     assert resp.return_code == -1
     assert "spawn failed" in resp.stderr
     await ex.teardown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("executor_kind", ["local", "sandbox"])
+async def test_one_shot_executor_success_reaps_detached_background_work(
+    tmp_path: Path, executor_kind: str,
+):
+    if executor_kind == "local":
+        ex = LocalExecutor(workspace=str(tmp_path))
+    else:
+        ex = SandboxExecutor(sandbox_root=str(tmp_path / "sandbox-root"))
+    child_pid = 0
+    await ex.setup()
+    try:
+        response = await ex.execute(ExecRequest(
+            command="sleep 90 >/dev/null 2>&1 & echo $!",
+            timeout=5,
+        ))
+        assert response.success, response.stderr
+        child_pid = int(response.stdout.strip())
+        await _assert_pid_gone(child_pid)
+    finally:
+        await ex.teardown()
+        if child_pid:
+            try:
+                os.kill(child_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
 
 # ---------------------------------------------------------------------------

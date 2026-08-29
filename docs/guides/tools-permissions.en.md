@@ -39,8 +39,8 @@ Runtime readiness checks:
 | `session_search` | Search conversation history | `session.read` |
 | `skills_list` | List installed skills | `skill.read` |
 | `skill_view` | View skill details | `skill.read` |
-| `agents_list` | List sub-agents | `agent.read` |
-| `agents_route` | Route to sub-agent | `agent.dispatch` |
+| `agents_list` | Reserved name; not currently implemented/callable | — |
+| `agents_route` | Reserved name; not currently implemented/callable | — |
 | `web_fetch` | Fetch web page content | `network.outbound` |
 | `web_search` | Web search | `network.outbound` |
 | `vision_analyze` | Image analysis | `media.read` |

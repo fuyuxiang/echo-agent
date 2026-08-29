@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from typing import Callable, Protocol, runtime_checkable
 
 from aiohttp import web
@@ -10,8 +11,13 @@ from loguru import logger
 
 from echo_agent.a2a.models import AgentCard, A2ATask, A2AMessage, TaskState
 from echo_agent.a2a.protocol import A2AProtocol
+from echo_agent.a2a.task_store import DEFAULT_TASK_OWNER
 
-AuthFn = Callable[[web.Request], web.Response | None]
+# Returning a principal is the authorization success result. ``None`` remains a
+# backward-compatible single-owner success for embedders whose callback only
+# implemented allow/deny; production Gateway auth returns a distinct principal
+# for every configured token.
+AuthFn = Callable[[web.Request], str | web.StreamResponse | None]
 
 
 @runtime_checkable
@@ -55,10 +61,16 @@ class A2AServer:
         return web.json_response(self._card.to_dict())
 
     async def _handle_rpc(self, request: web.Request) -> web.Response:
+        principal = DEFAULT_TASK_OWNER
         if self._auth_fn:
-            denied = self._auth_fn(request)
-            if denied is not None:
-                return denied
+            decision = self._auth_fn(request)
+            if isinstance(decision, web.StreamResponse):
+                return decision
+            if decision is not None:
+                if not isinstance(decision, str) or not decision.strip():
+                    logger.error("A2A auth callback returned an invalid principal")
+                    return web.json_response({"error": "unauthorized"}, status=401)
+                principal = decision.strip()
         try:
             body = await request.json()
         except json.JSONDecodeError:
@@ -66,7 +78,7 @@ class A2AServer:
                 {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}},
                 status=400,
             )
-        result = await self._protocol.handle(body)
+        result = await self._protocol.handle(body, principal=principal)
         return web.json_response(result)
 
     async def _process_task(self, task: A2ATask) -> A2ATask:
@@ -76,7 +88,13 @@ class A2AServer:
         non-text parts (files, data, images) we do NOT silently drop them —
         the agent core has no channel to receive attachments — so we tell the
         caller plainly rather than pretending they were handled."""
-        user_msg = next((m for m in task.messages if m.role == "user"), None)
+        # A task ID may be continued with another tasks/send. Process the newly
+        # appended user turn, not the first user message forever; replaying the
+        # oldest text silently ignored every continuation while still appending
+        # agent answers to the task history.
+        user_msg = next(
+            (m for m in reversed(task.messages) if m.role == "user"), None,
+        )
         user_text = user_msg.text_content if user_msg else ""
         dropped = (
             [p.get("type", "unknown") for p in user_msg.parts if p.get("type") != "text"]
@@ -93,8 +111,17 @@ class A2AServer:
             return task
 
         try:
+            # Keep both memory and session history owner-scoped. Task IDs are
+            # caller-controlled and intentionally reusable across principals,
+            # so ``a2a:{task.id}`` alone would recreate the same horizontal leak
+            # below the now-owner-aware TaskStore.
+            session_id = task.id
+            if task.owner != DEFAULT_TASK_OWNER:
+                session_id = hashlib.sha256(
+                    f"{task.owner}\0{task.id}".encode("utf-8")
+                ).hexdigest()[:32]
             response_text = await self._loop.process_direct(
-                user_text, session_key=f"a2a:{task.id}", channel="a2a",
+                user_text, session_key=f"a2a:{session_id}", channel="a2a",
             )
             if dropped:
                 # Text was processed; flag the ignored parts so the caller knows
@@ -108,6 +135,6 @@ class A2AServer:
         except Exception as e:
             logger.error("A2A task processing failed: {}", e)
             task.state = TaskState.FAILED
-            task.messages.append(A2AMessage.text("agent", f"Error: {e}"))
+            task.messages.append(A2AMessage.text("agent", "Error: task processing failed"))
 
         return task

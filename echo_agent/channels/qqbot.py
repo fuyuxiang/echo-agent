@@ -162,6 +162,8 @@ class QQBotChannel(BaseChannel):
             try:
                 await self._ws_task
             except asyncio.CancelledError:
+                # stop() requested this websocket-loop cancellation and reaps it
+                # before closing the shared HTTP session.
                 pass
         if self._msg_tasks:
             tasks = list(self._msg_tasks)
@@ -686,6 +688,8 @@ class QQBotChannel(BaseChannel):
                 await self._send_ws({"op": 1, "d": self._seq})
                 await asyncio.sleep(self._heartbeat_interval)
         except asyncio.CancelledError:
+            # Cancellation is the expected heartbeat shutdown signal; the
+            # websocket owner handles the surrounding reconnect/stop state.
             pass
 
     async def _send_ws(self, data: dict[str, Any]) -> None:

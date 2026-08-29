@@ -369,6 +369,8 @@ class Scheduler:
             try:
                 os.unlink(tmp)
             except OSError:
+                # Preserve the original persistence failure; atomic replace keeps
+                # the prior scheduler store usable.
                 pass
             raise
 
@@ -408,6 +410,7 @@ class Scheduler:
             try:
                 await self._timer_task
             except asyncio.CancelledError:
+                # stop() deliberately cancelled and now reaps the timer loop.
                 pass
         for task in list(self._tick_tasks):
             task.cancel()
@@ -440,6 +443,8 @@ class Scheduler:
                     queue.task_done()
                     queue.put_nowait(None)
                 except (asyncio.QueueEmpty, asyncio.QueueFull):
+                    # A concurrent drain changed the bounded queue again; shutdown
+                    # will time out and cancel the drain if no sentinel landed.
                     pass
             try:
                 await asyncio.wait_for(
@@ -452,6 +457,7 @@ class Scheduler:
             try:
                 await task
             except asyncio.CancelledError:
+                # This is the bounded-drain timeout fallback requested just above.
                 pass
             except Exception as e:  # pragma: no cover - drain swallows its own
                 logger.debug("Cron event drain ended with {}", e)
@@ -714,6 +720,12 @@ class Scheduler:
             return
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        except (IOError, OSError):
+            # Closing a process-owned descriptor releases its flock even when the
+            # explicit unlock syscall fails.
+            pass
+        try:
             lock_fd.close()
         except (IOError, OSError):
+            # Release is idempotent and a prior teardown may have closed it.
             pass

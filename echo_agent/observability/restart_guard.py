@@ -65,4 +65,6 @@ class RestartGuard:
                 encoding="utf-8",
             )
         except OSError:
+            # This runs immediately before a watchdog hard exit; persistence is
+            # advisory and must never prevent the safety exit itself.
             pass

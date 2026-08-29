@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -129,9 +130,14 @@ class TestContainerExecutor:
     async def test_setup_creates_and_starts(self):
         ex = ContainerExecutor(image="python:3", network_policy="deny")
         create_proc = _fake_proc(returncode=0, stdout=b"container-abc\n", stderr=b"")
-        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=create_proc)):
+        start_proc = _fake_proc(returncode=0, stdout=b"container-abc\n", stderr=b"")
+        mock_exec = AsyncMock(side_effect=[create_proc, start_proc])
+        with patch("asyncio.create_subprocess_exec", mock_exec):
             await ex.setup()
         assert ex._container_id == "container-abc"
+        create_proc.communicate.assert_awaited_once_with()
+        start_proc.communicate.assert_awaited_once_with()
+        assert mock_exec.await_count == 2
 
     @pytest.mark.asyncio
     async def test_setup_docker_not_found(self):
@@ -147,6 +153,71 @@ class TestContainerExecutor:
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=fail_proc)):
             with pytest.raises(RuntimeError, match="docker create failed"):
                 await ex.setup()
+
+    @pytest.mark.asyncio
+    async def test_setup_control_command_timeout_reaps_cli_process(self):
+        ex = ContainerExecutor(image="python:3")
+        proc = _fake_proc(returncode=0)
+        terminate = AsyncMock()
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)), \
+             patch("asyncio.wait_for", _timeout_wait_for()), \
+             patch("echo_agent.agent.proc_lifecycle.terminate_tree", terminate):
+            with pytest.raises(RuntimeError, match="docker create timed out"):
+                await ex.setup()
+        assert terminate.await_count == 2  # timed-out create, then bounded rm attempt
+
+    @pytest.mark.asyncio
+    async def test_setup_cancel_during_create_removes_by_reserved_name(self):
+        ex = ContainerExecutor(image="python:3")
+        create_started = asyncio.Event()
+
+        async def blocked_create():
+            create_started.set()
+            await asyncio.Event().wait()
+
+        create_proc = _fake_proc(returncode=None)
+        create_proc.communicate = AsyncMock(side_effect=blocked_create)
+        remove_proc = _fake_proc(returncode=0, stdout=b"", stderr=b"")
+        mock_exec = AsyncMock(side_effect=[create_proc, remove_proc])
+        terminate = AsyncMock()
+        with patch("asyncio.create_subprocess_exec", mock_exec), \
+             patch("echo_agent.agent.proc_lifecycle.terminate_tree", terminate):
+            task = asyncio.create_task(ex.setup())
+            await asyncio.wait_for(create_started.wait(), timeout=1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        create_args = mock_exec.await_args_list[0].args
+        name_index = create_args.index("--name") + 1
+        reserved_name = create_args[name_index]
+        assert reserved_name.startswith("echo-agent-")
+        assert mock_exec.await_args_list[1].args[:4] == (
+            "docker", "rm", "-f", reserved_name,
+        )
+        assert terminate.await_args_list == [
+            call(create_proc, grace=5.0),
+            call(remove_proc, grace=5.0),
+        ]
+        remove_proc.communicate.assert_awaited_once_with()
+        assert ex._container_id is None
+        assert ex._setup_cleanup_target is None
+
+    @pytest.mark.asyncio
+    async def test_setup_start_failure_removes_created_container(self):
+        ex = ContainerExecutor(image="python:3")
+        create_proc = _fake_proc(returncode=0, stdout=b"container-abc\n", stderr=b"")
+        start_proc = _fake_proc(returncode=1, stdout=b"", stderr=b"start failed")
+        remove_proc = _fake_proc(returncode=0, stdout=b"container-abc\n", stderr=b"")
+        mock_exec = AsyncMock(side_effect=[create_proc, start_proc, remove_proc])
+
+        with patch("asyncio.create_subprocess_exec", mock_exec):
+            with pytest.raises(RuntimeError, match="docker start failed"):
+                await ex.setup()
+
+        assert mock_exec.await_count == 3
+        remove_proc.communicate.assert_awaited_once_with()
+        assert ex._container_id is None
 
     @pytest.mark.asyncio
     async def test_execute_runs_in_container(self):
@@ -177,6 +248,27 @@ class TestContainerExecutor:
         with patch("asyncio.create_subprocess_exec", mock_exec):
             await ex.teardown()
         mock_exec.assert_awaited()
+        proc = mock_exec.return_value
+        proc.communicate.assert_awaited_once_with()
+        assert ex._container_id is None
+
+    @pytest.mark.asyncio
+    async def test_teardown_failure_still_clears_container_id(self):
+        ex = ContainerExecutor(image="python:3")
+        ex._container_id = "cid123"
+        fail_proc = _fake_proc(returncode=1, stdout=b"", stderr=b"daemon error")
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=fail_proc)):
+            await ex.teardown()
+        assert ex._container_id is None
+
+    @pytest.mark.asyncio
+    async def test_teardown_cancellation_still_clears_container_id(self):
+        ex = ContainerExecutor(image="python:3")
+        ex._container_id = "cid123"
+        ex._run_docker_control = AsyncMock(side_effect=asyncio.CancelledError())
+        with pytest.raises(asyncio.CancelledError):
+            await ex.teardown()
+        assert ex._container_id is None
 
     def test_container_cwd_no_workspace(self):
         ex = ContainerExecutor(image="python:3")

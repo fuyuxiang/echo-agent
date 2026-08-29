@@ -132,6 +132,8 @@ class MediaCache:
                 total_size -= size
                 removed += 1
             except OSError:
+                # Cache eviction is best-effort per file; keep scanning older
+                # candidates even when one file is concurrently removed or locked.
                 pass
 
         if removed:

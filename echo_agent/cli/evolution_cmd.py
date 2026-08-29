@@ -127,8 +127,8 @@ async def _run_once(config_path: str | None, workspace: str | None) -> int:
             print(_format_run(run))
             return 0
         finally:
-            await ctx.agent.stop()
             await ctx.bus.stop()
+            await ctx.agent.stop()
     finally:
         await ctx.storage.close()
 
@@ -224,8 +224,8 @@ async def _promote_candidate(candidate_id: str, config_path: str | None, workspa
             }, ensure_ascii=False, indent=2))
             return 0 if decision.promoted else 1
         finally:
-            await ctx.agent.stop()
             await ctx.bus.stop()
+            await ctx.agent.stop()
     finally:
         await ctx.storage.close()
 

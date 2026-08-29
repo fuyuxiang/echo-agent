@@ -222,29 +222,75 @@ def _resolve_plugin_interface(plugin_name: str, target: Any) -> dict[str, Any]:
 
 
 def topological_sort(records: list[PluginRecord]) -> list[PluginRecord]:
-    """Sort plugins by depends_on relationships. Cycles are broken with a warning."""
+    """Sort dependencies first and fail closed on invalid dependency graphs.
+
+    Every record is retained in the result for status reporting, but a plugin
+    with a missing dependency, a dependency cycle, or a dependency invalidated
+    by either condition is marked ``failed`` and must not be activated.
+    """
     name_to_record = {r.manifest.name: r for r in records}
-    visited: set[str] = set()
+    state: dict[str, int] = {}
     result: list[PluginRecord] = []
-    in_progress: set[str] = set()
+    stack: list[str] = []
+    cycle_nodes: set[str] = set()
 
     def visit(name: str) -> None:
-        if name in visited:
+        current_state = state.get(name, 0)
+        if current_state == 2:
             return
-        if name in in_progress:
-            logger.warning("Circular plugin dependency detected involving '{}'", name)
+        if current_state == 1:
+            cycle_start = stack.index(name)
+            cycle_nodes.update(stack[cycle_start:])
             return
-        in_progress.add(name)
+        state[name] = 1
+        stack.append(name)
         record = name_to_record.get(name)
         if record:
             for dep in record.manifest.depends_on:
                 if dep in name_to_record:
                     visit(dep)
-            visited.add(name)
-            in_progress.discard(name)
+            state[name] = 2
+            stack.pop()
             result.append(record)
 
     for r in records:
         visit(r.manifest.name)
+
+    for record in records:
+        missing = [dep for dep in record.manifest.depends_on if dep not in name_to_record]
+        if missing:
+            record.status = "failed"
+            record.error = f"missing dependencies: {', '.join(sorted(missing))}"
+            logger.warning("Plugin '{}' {}", record.manifest.name, record.error)
+
+    if cycle_nodes:
+        cycle_description = ", ".join(sorted(cycle_nodes))
+        logger.warning("Circular plugin dependency detected: {}", cycle_description)
+        for name in cycle_nodes:
+            record = name_to_record[name]
+            record.status = "failed"
+            record.error = f"dependency cycle: {cycle_description}"
+
+    # Propagate structural failures to their dependents before activation. A
+    # fixed-point loop covers chains (A missing <- B <- C) without relying on
+    # input ordering.
+    changed = True
+    while changed:
+        changed = False
+        for record in records:
+            if record.status == "failed":
+                continue
+            failed_dependencies = [
+                dep
+                for dep in record.manifest.depends_on
+                if name_to_record[dep].status == "failed"
+            ]
+            if failed_dependencies:
+                record.status = "failed"
+                record.error = (
+                    "unavailable dependencies: "
+                    + ", ".join(sorted(failed_dependencies))
+                )
+                changed = True
 
     return result

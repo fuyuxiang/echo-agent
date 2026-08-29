@@ -56,7 +56,7 @@
 | **工具审批** | 三档策略 `manual` / `smart` / `off`，无人值守通道默认拒绝高风险调用 | [工具与权限](guides/tools-permissions.md) |
 | **多模型支持** | OpenAI、Anthropic、Gemini、Bedrock、OpenRouter，以及 DeepSeek、Qwen、Kimi、GLM、Ollama 等 OpenAI 兼容端点 | [Provider 总览](guides/models/providers.md) |
 | **14 通道适配器** | CLI、Cron、钉钉、Discord、Email、飞书、Matrix、QQ Bot、Slack、Telegram、Webhook、企业微信、微信、WhatsApp | [通道配置](integrations/channels/index.md) |
-| **跨进程互操作** | A2A JSON-RPC + MCP 客户端（含 OAuth），支持动态工具注册 | [MCP](integrations/mcp.md) · [A2A](integrations/a2a.md) |
+| **跨进程互操作** | A2A JSON-RPC 入站服务 + MCP 客户端（含 OAuth），支持动态工具注册 | [MCP](integrations/mcp.md) · [A2A](integrations/a2a.md) |
 | **插件体系** | 通过 entry-point 注册外部插件 | [使用插件](integrations/plugins/using-plugins.md) |
 | **Dashboard** | 内置 Web 管理面板，查看对话、费用与运行状态 | [Dashboard](guides/dashboard.md) |
 | **定时任务** | 内置 Cron 调度器，按计划触发 Agent 执行 | [定时任务](guides/scheduled-jobs.md) |

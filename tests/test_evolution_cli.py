@@ -237,6 +237,16 @@ async def test_run_action_prints_run_summary(capsys):
     run = EvolutionRun(id="run_done", candidates_promoted=2, candidates_rejected=1)
     engine = _make_engine(run_evolution_result=run)
     ctx = _make_ctx(engine)
+    stop_order: list[str] = []
+
+    async def stop_bus():
+        stop_order.append("bus")
+
+    async def stop_agent():
+        stop_order.append("agent")
+
+    ctx.bus.stop.side_effect = stop_bus
+    ctx.agent.stop.side_effect = stop_agent
     with _patch_bootstrap(ctx):
         await evolution_cmd._run_once(None, None)
     out = capsys.readouterr().out
@@ -247,6 +257,7 @@ async def test_run_action_prints_run_summary(capsys):
     ctx.bus.stop.assert_awaited_once()
     ctx.agent.start.assert_awaited_once()
     ctx.agent.stop.assert_awaited_once()
+    assert stop_order == ["bus", "agent"]
 
 
 # ── _list_candidates ─────────────────────────────────────────────────────────
@@ -389,6 +400,16 @@ async def test_promote_runs_gate_and_prints_decision(capsys):
     )
     engine = _make_engine(candidate_lookup={"cand_p": cand}, decision=decision)
     ctx = _make_ctx(engine)
+    stop_order: list[str] = []
+
+    async def stop_bus():
+        stop_order.append("bus")
+
+    async def stop_agent():
+        stop_order.append("agent")
+
+    ctx.bus.stop.side_effect = stop_bus
+    ctx.agent.stop.side_effect = stop_agent
     with _patch_bootstrap(ctx):
         await evolution_cmd._promote_candidate("cand_p", None, None)
     out = capsys.readouterr().out
@@ -400,6 +421,7 @@ async def test_promote_runs_gate_and_prints_decision(capsys):
     assert cand.rejected_reason == ""
     engine.store.update_candidate.assert_awaited()
     engine._gate.evaluate.assert_awaited_once()
+    assert stop_order == ["bus", "agent"]
 
 
 # ── _rollback ────────────────────────────────────────────────────────────────

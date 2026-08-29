@@ -19,5 +19,9 @@ class PluginActivationError(PluginError):
     """Raised when a plugin's activate() function fails."""
 
 
+class PluginPermissionError(PluginError):
+    """Raised before a plugin can publish an undeclared runtime resource."""
+
+
 class PluginManifestError(PluginError):
     """Raised when a plugin manifest is invalid or missing required fields."""

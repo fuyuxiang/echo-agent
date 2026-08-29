@@ -103,8 +103,9 @@ class StorageBackend(ABC):
     async def delete_vector(self, vec_id: str) -> None:
         pass
 
-    async def execute_sql(self, sql: str, params: tuple = ()) -> None:
-        pass
+    async def execute_sql(self, sql: str, params: tuple = ()) -> int | None:
+        """Execute a statement and return affected rows when supported."""
+        return None
 
     async def fetch_sql(self, sql: str, params: tuple = ()) -> list[dict[str, Any]]:
         return []

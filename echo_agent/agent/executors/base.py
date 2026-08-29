@@ -20,9 +20,8 @@ from pathlib import Path
 from loguru import logger
 
 from echo_agent.agent.proc_lifecycle import (
-    record_process_group,
-    subprocess_kwargs,
-    terminate_tree,
+    communicate_owned,
+    spawn_shell,
 )
 from echo_agent.security.guards import command_uses_network
 
@@ -127,23 +126,18 @@ class LocalExecutor(BaseExecutor):
         env.update(request.env)
         start = datetime.now()
 
-        proc = None
         try:
-            proc = await asyncio.create_subprocess_shell(
+            proc = await spawn_shell(
                 request.command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 stdin=asyncio.subprocess.PIPE if request.stdin else None,
                 cwd=cwd,
                 env=env,
-                **subprocess_kwargs(),
             )
-            # Record the PGID while the leader is alive: a command that
-            # backgrounds work outlives its shell, and after the leader is
-            # reaped its group is no longer discoverable.
-            record_process_group(proc, own_session=True)
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(request.stdin.encode() if request.stdin else None),
+            stdout, stderr = await communicate_owned(
+                proc,
+                request.stdin.encode() if request.stdin else None,
                 timeout=request.timeout,
             )
             duration = int((datetime.now() - start).total_seconds() * 1000)
@@ -155,15 +149,11 @@ class LocalExecutor(BaseExecutor):
                 duration_ms=duration,
                 executor=self.name,
             )
+        except asyncio.CancelledError:
+            raise
         except asyncio.TimeoutError:
-            if proc is not None:
-                await terminate_tree(proc)
             return ExecResponse(success=False, stderr=f"Timeout after {request.timeout}s", return_code=-1, executor=self.name)
         except Exception as e:
-            if proc is not None:
-                # Sweep unconditionally: an exited leader can still have left
-                # backgrounded grandchildren in the group.
-                await terminate_tree(proc)
             return ExecResponse(success=False, stderr=str(e), return_code=-1, executor=self.name)
 
 
@@ -231,20 +221,18 @@ class SandboxExecutor(BaseExecutor):
         env["PATH"] = prepend_interpreter_bin(dict(os.environ))["PATH"]
 
         start = datetime.now()
-        proc = None
         try:
-            proc = await asyncio.create_subprocess_shell(
+            proc = await spawn_shell(
                 request.command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 stdin=asyncio.subprocess.PIPE if request.stdin else None,
                 cwd=cwd,
                 env=env,
-                **subprocess_kwargs(),
             )
-            record_process_group(proc, own_session=True)
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(request.stdin.encode() if request.stdin else None),
+            stdout, stderr = await communicate_owned(
+                proc,
+                request.stdin.encode() if request.stdin else None,
                 timeout=request.timeout,
             )
             duration = int((datetime.now() - start).total_seconds() * 1000)
@@ -256,13 +244,11 @@ class SandboxExecutor(BaseExecutor):
                 duration_ms=duration,
                 executor=self.name,
             )
+        except asyncio.CancelledError:
+            raise
         except asyncio.TimeoutError:
-            if proc is not None:
-                await terminate_tree(proc)
             return ExecResponse(success=False, stderr=f"Timeout after {request.timeout}s", return_code=-1, executor=self.name)
         except Exception as e:
-            if proc is not None:
-                await terminate_tree(proc)
             return ExecResponse(success=False, stderr=str(e), return_code=-1, executor=self.name)
 
     def _resolve_cwd(self, requested_cwd: str) -> Path:

@@ -13,6 +13,8 @@ import sys
 from echo_agent.cli.service.base import GATEWAY_ENV_FLAG, ServiceBackend
 
 ACTIONS = ("install", "uninstall", "start", "stop", "restart", "status", "logs")
+SERVICE_ALIAS_REMOVAL_VERSION = "0.5.0"
+
 
 def _fallback_hints() -> str:
     """Guidance for platforms with no supported service manager.
@@ -105,6 +107,8 @@ def _status_without_service() -> None:
         if endpoint and endpoint.get("port"):
             host, port = endpoint.get("host", host), int(endpoint["port"])
     except Exception:
+        # Status remains useful with the conservative loopback/default-port
+        # values when optional config or endpoint discovery is unavailable.
         pass
     if not port:
         # port=0 with no endpoint file — the gateway isn't running (a live one
@@ -209,7 +213,8 @@ def run_action(action: str, workspace: str | None = None) -> int:
     """
     print(
         "`echo-agent service` is deprecated; use `echo-agent gateway "
-        f"{action}` instead (system-scope on Linux: add --system).",
+        f"{action}` instead (system-scope on Linux: add --system). "
+        f"It will be removed in v{SERVICE_ALIAS_REMOVAL_VERSION}.",
         file=sys.stderr,
     )
     return run_service_action(

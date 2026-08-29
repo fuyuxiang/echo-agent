@@ -104,6 +104,8 @@ def _fallback_check(feature: str) -> None:
             else:
                 _channel_friendly_exit(feature, detail)
     except ImportError:
+        # The decorator is also imported in minimal/source-tree environments
+        # where the optional dependency registry itself is unavailable.
         pass
 
 

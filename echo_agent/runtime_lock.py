@@ -74,11 +74,15 @@ class InstanceLock:
                     fd.seek(0)  # type: ignore[union-attr]
                     msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)  # type: ignore[union-attr]
                 except OSError:
+                    # Closing the descriptor in finally is the OS-level release
+                    # backstop when Windows' explicit unlock fails.
                     pass
         finally:
             try:
                 fd.close()  # type: ignore[union-attr]
             except OSError:
+                # The handle is already detached from this idempotent owner;
+                # there is no further safe recovery action during shutdown.
                 pass
 
 

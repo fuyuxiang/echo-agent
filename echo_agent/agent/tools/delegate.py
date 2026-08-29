@@ -360,6 +360,8 @@ class DelegateTool(Tool):
                 try:
                     return int(parts[2]) + 1
                 except ValueError:
+                    # Malformed legacy worker IDs have no trustworthy depth;
+                    # use the bounded first-child fallback below.
                     pass
             return 1
         return 0
@@ -452,11 +454,18 @@ class SpawnTool(Tool):
             default_model=default_model,
         )
         self._tasks: dict[str, asyncio.Task] = {}
+        self._closing = False
 
     def execution_mode(self, params: dict[str, Any]) -> str:
         return "side_effect"
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
+        if self._closing:
+            return ToolResult(
+                success=False,
+                error="background task runner is shutting down",
+                error_kind="business",
+            )
         task_desc = params["task"]
         extra = params.get("context", "")
         task_id = f"bg_{uuid.uuid4().hex[:8]}"
@@ -467,6 +476,19 @@ class SpawnTool(Tool):
             output=f"Background task '{task_id}' started. The result will be delivered when the worker finishes.",
             metadata={"task_id": task_id},
         )
+
+    async def aclose(self) -> None:
+        """Cancel and join every owned worker before its dependencies close."""
+        self._closing = True
+        tasks = list(self._tasks.values())
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        # Done callbacks normally remove entries in _run_background.finally;
+        # clear defensively for tasks cancelled before their coroutine starts.
+        self._tasks.clear()
 
     def _worker_tools(self) -> tuple[set[str], list[dict[str, Any]]]:
         """Resolve the tool set and schemas the background worker may use."""

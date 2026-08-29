@@ -17,6 +17,7 @@ from typing import Any
 
 from loguru import logger
 
+from echo_agent.agent.proc_lifecycle import communicate_owned, spawn_exec
 from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 from echo_agent.dependencies.lazy_deps import (
     INSTALL_TIMEOUT_SECONDS,
@@ -53,18 +54,19 @@ _SAFE_BREW_FORMULA = re.compile(r"^[a-z0-9][a-z0-9+._@-]*(\/[a-z0-9][a-z0-9+._@-
 
 
 async def _run(cmd: list[str], cwd: str | None = None, timeout: int = _TIMEOUT) -> tuple[int, str, str]:
-    proc = await asyncio.create_subprocess_exec(
+    proc = await spawn_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
+        stdout, stderr = await communicate_owned(proc, timeout=timeout)
+    except (asyncio.TimeoutError, TimeoutError):
         return -1, "", f"Command timed out after {timeout}s"
+    except asyncio.CancelledError:
+        # Cleanup converged before communicate_owned propagated cancellation.
+        raise
     return proc.returncode or 0, stdout.decode(errors="replace"), stderr.decode(errors="replace")
 
 

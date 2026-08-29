@@ -27,6 +27,27 @@ def test_non_whitelisted_prefix_rejected():
     assert "prefix" in err
 
 
+@pytest.mark.parametrize(
+    "requested",
+    ["cli:alice::epoch:0", "cli:alice::epoch:3", " cli:alice::epoch:3 "],
+)
+def test_reserved_epoch_syntax_rejected(requested):
+    key, err = resolve_client_session_key(
+        requested, platform="cli", chat_id="alice",
+    )
+    assert key is None
+    assert "reserved" in err
+
+
+@pytest.mark.parametrize("requested", [1, [], {}])
+def test_non_string_session_key_rejected(requested):
+    key, err = resolve_client_session_key(  # type: ignore[arg-type]
+        requested, platform="cli", chat_id="alice",
+    )
+    assert key is None
+    assert "string" in err
+
+
 def test_blank_string_after_strip_falls_back():
     key, err = resolve_client_session_key("   ", platform="cli", chat_id="bob")
     assert err == ""
@@ -77,6 +98,18 @@ async def test_ws_auth_rejects_impersonation(gateway_ws_url):
             await ws.send_json({
                 "type": "auth", "platform": "cli",
                 "user_id": "alice", "session_key": "gateway:wechat:victim",
+            })
+            msg = await ws.receive_json()
+            assert msg["type"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_ws_auth_rejects_reserved_epoch_injection(gateway_ws_url):
+    async with aiohttp.ClientSession() as s:
+        async with s.ws_connect(gateway_ws_url) as ws:
+            await ws.send_json({
+                "type": "auth", "platform": "cli",
+                "user_id": "alice", "session_key": "cli:victim::epoch:3",
             })
             msg = await ws.receive_json()
             assert msg["type"] == "error"
@@ -283,4 +316,3 @@ async def test_legacy_client_still_receives_outbound_reply(gateway_with_echo_age
                     break
             reply = next(m for m in msgs if m["type"] == "message")
             assert reply["text"] == "echo:hi"
-

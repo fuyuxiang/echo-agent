@@ -143,7 +143,7 @@ config/
 
 ### Plugins — `echo_agent/plugins/`
 
-Plugin discovery, loading, sandbox, lifecycle hooks.
+Plugin discovery, loading, manifest permission admission, and lifecycle hooks.
 
 ```
 plugins/
@@ -151,7 +151,7 @@ plugins/
 ├── loader.py            # Plugin discovery and loading
 ├── manager.py           # PluginManager — activate/deactivate
 ├── hooks.py             # HookRegistry — lifecycle hook dispatch
-├── sandbox.py           # Plugin sandbox isolation
+├── sandbox.py           # Manifest permission declarations/admission (not process isolation)
 ├── context.py           # Plugin execution context
 └── errors.py            # Plugin error types
 ```

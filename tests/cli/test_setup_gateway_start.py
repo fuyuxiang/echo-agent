@@ -361,14 +361,13 @@ class TestLingerHint:
 
     @staticmethod
     def _linux(monkeypatch, loginctl_stdout):
-        import subprocess
         import sys
 
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.setattr(os_mod, "geteuid", lambda: 1000, raising=False)
         monkeypatch.setattr(os_mod, "getlogin", lambda: "bob", raising=False)
         monkeypatch.setattr(
-            subprocess, "run",
+            wiz, "run_owned",
             lambda *a, **kw: SimpleNamespace(stdout=loginctl_stdout, returncode=0),
         )
 
@@ -393,7 +392,6 @@ class TestLingerHint:
 
     def test_silent_when_loginctl_is_missing(self, monkeypatch, capsys):
         """容器里常没有 loginctl —— 探不到就闭嘴，不是报错。"""
-        import subprocess
         import sys
 
         monkeypatch.setattr(sys, "platform", "linux")
@@ -403,7 +401,7 @@ class TestLingerHint:
         def _missing(*a, **kw):
             raise FileNotFoundError("loginctl")
 
-        monkeypatch.setattr(subprocess, "run", _missing)
+        monkeypatch.setattr(wiz, "run_owned", _missing)
         wiz._print_linger_hint_if_needed()
         assert capsys.readouterr().out == ""
 

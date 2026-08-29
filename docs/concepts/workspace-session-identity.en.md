@@ -1,6 +1,9 @@
 # Workspace, Session & Identity
 
-echo-agent achieves multi-tenant isolation through the **Session** mechanism: each channel + chat combination owns an independent conversation history and state.
+echo-agent uses **Session** to isolate conversational context and concurrency scopes: each channel + chat combination owns an independent history and state, preventing ordinary context bleed.
+
+!!! warning "A Session is not a tenant authorization boundary"
+    A session key is routing and state scope, not an unforgeable security principal; session separation does not provide multi-tenant isolation. If mutually untrusted users require an authorization boundary, run separate instances, workspaces, databases, and credentials. See [Multi-client vs. multi-tenant boundaries](security-model.en.md#multi-client-tenant-boundary).
 
 ## Core Concepts
 
@@ -8,7 +11,7 @@ echo-agent achieves multi-tenant isolation through the **Session** mechanism: ea
 |---------|-------------|
 | Session key | Unique session identifier in the format `channel:chat_id` |
 | SessionManager | Lifecycle manager responsible for creation, caching, expiry, and archival |
-| Scoped session | In group chats with `per_user` policy, appends `:sender_id` for user-level isolation |
+| Scoped session | In group chats with `per_user` policy, appends `:sender_id` to isolate per-user conversation context (not authorization) |
 | Memory scope | Independent of session_key; determines long-term memory ownership |
 
 ## Session Key Composition
@@ -45,7 +48,7 @@ stateDiagram-v2
 - **Expired** — inactive beyond `expiry_hours=72`, can be reactivated
 - **Archived** — inactive beyond `archive_hours=168`, removed from active storage
 
-## Scoping & Isolation
+## Conversation Scoping & Isolation
 
 ```mermaid
 graph TD

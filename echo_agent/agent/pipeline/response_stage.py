@@ -8,6 +8,7 @@ from typing import Any, TYPE_CHECKING
 from loguru import logger
 
 from echo_agent.agent.pipeline.types import InferenceResult, PipelineContext
+from echo_agent.bus.events import stamp_turn_outcome
 from echo_agent.utils.text import strip_thinking
 
 if TYPE_CHECKING:
@@ -211,6 +212,19 @@ class ResponseStage:
         # Finalize streaming
         outbound_sent = False
         if ctx.publish_response and ctx.stream_publisher:
+            if result.task_incomplete:
+                status = (
+                    "interrupted"
+                    if result.termination_reason == "interrupted"
+                    else "incomplete"
+                )
+                stamp_turn_outcome(
+                    event.metadata,
+                    status,
+                    error=result.termination_reason,
+                )
+            else:
+                stamp_turn_outcome(event.metadata, "completed")
             # finalize now returns a DeliveryResult. Only a real delivery (or
             # accepted) receipt suppresses the plain final republish; NO_HANDLER
             # (streaming path not taken) and FAILED both fall through to it.

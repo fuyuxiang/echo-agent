@@ -5,6 +5,8 @@
 按需构建（参照 hermes-agent），失败时机与失败后果对齐。
 """
 import os
+import signal
+import sys
 import time
 from pathlib import Path
 
@@ -70,6 +72,103 @@ def test_find_web_dir_returns_none_for_wheel_install(monkeypatch, tmp_path):
     """wheel 安装没有 web/ 源码树，按需构建对其必须是 no-op。"""
     monkeypatch.setattr(dashboard_build, "_repo_root", lambda: tmp_path)
     assert find_web_dir() is None
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process-tree assertion is POSIX-only")
+def test_streamed_idle_timeout_reaps_node_process_tree(tmp_path, monkeypatch):
+    marker = tmp_path / "child-ticks"
+    pid_file = tmp_path / "child.pid"
+    child_code = (
+        "import os,time\n"
+        f"open({str(pid_file)!r},'w').write(str(os.getpid()))\n"
+        f"p={str(marker)!r}\n"
+        "for _ in range(600):\n"
+        " f=open(p,'a'); f.write('x'); f.close(); time.sleep(.05)\n"
+    )
+    parent_code = (
+        "import subprocess,sys,time\n"
+        f"subprocess.Popen([sys.executable,'-c',{child_code!r}])\n"
+        "print('child started', flush=True)\n"
+        "time.sleep(30)\n"
+    )
+    monkeypatch.setattr(dashboard_build, "_STREAM_WAIT_POLL_SECONDS", 0.05)
+    monkeypatch.setattr(dashboard_build, "_STREAM_TERMINATE_GRACE_SECONDS", 0.5)
+
+    try:
+        rc, output = dashboard_build._run_streamed(
+            [sys.executable, "-c", parent_code], cwd=tmp_path, idle_timeout=0.3,
+        )
+        assert rc != 0
+        assert "terminated" in output
+        assert marker.exists() and pid_file.exists()
+        size_after_return = marker.stat().st_size
+        time.sleep(0.3)
+        assert marker.stat().st_size == size_after_return
+    finally:
+        if pid_file.exists():
+            try:
+                os.kill(int(pid_file.read_text()), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, ValueError):
+                pass
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process-tree assertion is POSIX-only")
+def test_streamed_success_reaps_detached_background_work(tmp_path, monkeypatch):
+    """A successful pnpm-style launcher must not leave its worker behind."""
+    parent_code = (
+        "import subprocess\n"
+        "child = subprocess.Popen(\n"
+        "    ['sleep', '90'],\n"
+        "    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,\n"
+        ")\n"
+        "print(child.pid, flush=True)\n"
+    )
+    monkeypatch.setattr(dashboard_build, "_STREAM_TERMINATE_GRACE_SECONDS", 0.5)
+    child_pid = 0
+    try:
+        rc, output = dashboard_build._run_streamed(
+            [sys.executable, "-c", parent_code], cwd=tmp_path, idle_timeout=5,
+        )
+        assert rc == 0
+        child_pid = int(output.strip())
+        for _ in range(50):
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail(
+                f"background process {child_pid} survived dashboard build completion"
+            )
+    finally:
+        if child_pid:
+            try:
+                os.kill(child_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def test_streamed_keyboard_interrupt_reaps_owned_group(tmp_path, monkeypatch):
+    class InterruptingProcess:
+        stdout: list[str] = []
+        returncode = None
+
+        def wait(self, timeout=None):
+            raise KeyboardInterrupt
+
+    proc = InterruptingProcess()
+    reaped = []
+    monkeypatch.setattr(dashboard_build, "spawn_popen", lambda *a, **kw: proc)
+    monkeypatch.setattr(
+        dashboard_build, "terminate_tree_sync",
+        lambda target, *, grace: reaped.append((target, grace)),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        dashboard_build._run_streamed(["pnpm", "build"], cwd=tmp_path)
+
+    assert reaped == [(proc, dashboard_build._STREAM_TERMINATE_GRACE_SECONDS)]
 
 
 def test_node_missing_asks_before_downloading(web, monkeypatch):

@@ -103,6 +103,19 @@ class GatewayAuth:
         allowed = [*self._api_tokens, *self._admin_tokens]
         return any(hmac.compare_digest(token, configured) for configured in allowed)
 
+    def principal_for_token(self, token: str) -> str | None:
+        """Return an opaque, stable principal for a valid API/admin token.
+
+        A boolean authentication result is insufficient for owner-scoped
+        resources such as A2A tasks.  The raw token must not become an owner ID
+        either: it would leak through diagnostics and session keys.  A full
+        SHA-256 fingerprint is stable for the process/config lifetime and does
+        not disclose the credential itself.
+        """
+        if not self.authenticate_token(token):
+            return None
+        return "gateway-token:" + hashlib.sha256(token.encode("utf-8")).hexdigest()
+
     def authenticate_admin_token(self, token: str) -> bool:
         """Authorize a high-risk admin endpoint.
 

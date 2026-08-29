@@ -1,29 +1,38 @@
 # Session Management
 
-Echo Agent's session system provides isolated context environments for each conversation, supporting concurrent multi-channel, multi-user interactions.
+Echo Agent's session system gives each conversation key an independent model context and supports concurrent channels and sessions.
+
+!!! warning "Session isolation is not access control"
+    A session key prevents one conversation's working context from being mixed into another. It does not prove who may read that session. The Dashboard Sessions page and `session_search` intentionally inspect state across sessions. Mutually untrusted users should not share an instance based only on separate session keys or one API token each; see the [security model](../concepts/security-model.md#multi-client-tenant-boundary).
 
 ## Session Key Composition
 
-Sessions are uniquely identified by a composite key consisting of four dimensions:
+The base key consists of a channel and the platform's chat identifier, in the form `{channel}:{chat_id}` (`InboundEvent.session_key`):
 
-| Dimension | Description |
-|-----------|-------------|
-| `channel` | Channel identifier (e.g., slack, wechat, api) |
-| `user` | User identifier |
-| `chat` | Chat/group identifier |
-| `thread` | Thread/topic identifier |
+| Part | Source | Description |
+|------|--------|-------------|
+| `channel` | `event.channel` | Registered channel name, such as `slack`, `weixin`, or `telegram` |
+| `chat_id` | `event.chat_id` | Platform conversation identifier for either a direct or group chat |
 
-```yaml
-# Example: a complete session key
-channel: slack
-user: U12345
-chat: C67890
-thread: T11111
+```text
+slack:C67890
 ```
 
-!!! note "Isolation Model"
-    Messages from the same user across different channels, groups, or threads are fully isolated.
-    Each unique (channel, user, chat, thread) combination maps to an independent session.
+When an internal event carries `session_key_override`, that validated override is used instead of composing the base key.
+
+### Per-user context inside a group
+
+For group chats, `scoped_session_key(scope)` can additionally include the sender:
+
+| `scope` | Direct chat | Group chat |
+|---------|-------------|------------|
+| `shared` | `slack:D1` | `slack:C67890` (one context for the group) |
+| `per_user` | `slack:D1` | `slack:C67890:U12345` (one context per sender) |
+
+`per_user` appends the sender only for a group chat with a non-empty `sender_id`. The operation is idempotent, so an existing sender suffix is not duplicated.
+
+!!! note "Context isolation model"
+    Conversations with different resulting keys do not share live message context. Whether group members share a context is controlled by `scope`; the key is a context boundary, not an authorization credential.
 
 ## Session Lifecycle
 
@@ -102,7 +111,7 @@ session:
 
 ## Multi-Channel Session Isolation
 
-The Session Manager ensures complete isolation between sessions across channels:
+The Session Manager maintains independent message histories and model context for distinct session keys:
 
 ```yaml
 # Same user with independent sessions across channels
@@ -130,8 +139,9 @@ The Session Manager ensures complete isolation between sessions across channels:
 - Supports session resumption when connections are restored
 
 ```yaml
-websocket:
-  session_timeout: 300  # Session retention after WebSocket disconnect (seconds)
+gateway:
+  session_policy:
+    idle_timeout_minutes: 1440  # Default: 24 hours
 ```
 
 ## Session Search

@@ -117,20 +117,24 @@ Agent Loop → mcp_tool_name → MCP Client → [stdio/HTTP] → External MCP Se
 
 ## 5. A2A（Agent-to-Agent）
 
-A2A 是**Agent 间任务委派协议**，允许 Agent 将子任务路由给其他专业 Agent 处理。
+A2A 是**Agent 间任务协议**。当前生产运行时实现的是入站端：外部 Agent 可发现
+Echo Agent，并把文本任务委派给它。
 
 ### 核心特征
 
-- **协议基础**：Agent Card + JSON-RPC（`echo_agent/a2a/protocol.py`、`client.py`）
-- **任务路由**：model 通过 `agents_list` 发现可用 Agent，通过 `agents_route` 委派任务
-- **多 Agent 协作**：支持复杂任务的分解、并行处理与结果聚合
-- **审计追踪**：所有跨 Agent 调用均记录 audit trail
+- **协议基础**：Agent Card + JSON-RPC（`echo_agent/a2a/protocol.py`、`server.py`）
+- **入站任务**：外部 peer 通过 `tasks/send`、`tasks/get` 和 `tasks/cancel` 调用 Echo Agent
+- **身份隔离**：Bearer token 派生不透明 principal，任务和会话按 principal 隔离
+- **有界保留**：任务存储同时受 TTL 和数量上限约束
 
 ### 工作模式
 
 ```
-Model 判断需委派 → agents_list 发现 → agents_route 路由 → Remote Agent 处理 → Result 回传
+外部 Agent 发现 Agent Card → 调用 Echo Agent JSON-RPC 端点 → Agent Loop 处理 → 任务状态/结果返回
 ```
+
+代码库保留了低层 `A2AClient` 辅助类，但它没有生产调用方，也未经共享
+`net_guard` 的逐跳 SSRF 防护；当前不存在可供 model 调用的 A2A 出站委派工具。
 
 ### 与 MCP 的区别
 
@@ -147,14 +151,14 @@ Model 判断需委派 → agents_list 发现 → agents_route 路由 → Remote 
 
 | 维度 | Tool | Skill | Plugin | MCP | A2A |
 |------|------|-------|--------|-----|-----|
-| **本质** | 可调用函数 | 知识包 | 代码扩展 | 协议客户端 | 协议对等体 |
+| **本质** | 可调用函数 | 知识包 | 代码扩展 | 协议客户端 | 入站任务协议 |
 | **接口形式** | Python class | SKILL.md | plugin.yaml | stdio/HTTP | Agent Card |
-| **调用方** | Model / Loop | 上下文注入 | Loop hooks | Model（作为 tool） | Model（委派） |
-| **安全机制** | Policy + Guards | Injection scan | Trust boundary | mcp.call cap | Audit trail |
-| **热重载** | 否 | 是 | 否 | 是（reconnect） | 是（discovery） |
+| **调用方** | Model / Loop | 上下文注入 | Loop hooks | Model（作为 tool） | 外部 A2A peer |
+| **安全机制** | Policy + Guards | Injection scan | Trust boundary | mcp.call cap | Bearer principal + owner 隔离 |
+| **热重载** | 否 | 是 | 否 | 是（reconnect） | 否 |
 | **自动演化** | 否 | 是（evolution） | 否 | 否 | 否 |
 | **实现语言** | Python | Markdown | Python | 任意 | 任意 |
-| **注册位置** | tools/ | skills/ | plugins/ | mcp config | a2a config |
+| **注册位置** | tools/ | skills/ | plugins/ | mcp config | a2a/ + gateway |
 
 ---
 
@@ -194,8 +198,8 @@ graph TB
     end
 
     subgraph A2A["A2A Layer"]
-        A1[A2A Client]
-        A2[Remote Agent]
+        A1[External A2A Peer]
+        A2[A2A Server]
     end
 
     MODEL -->|tool_use| LOOP
@@ -205,8 +209,8 @@ graph TB
     Plugins -->|hook events| LOOP
     LOOP -->|mcp.call| M1
     M1 -->|stdio/HTTP| M2
-    LOOP -->|agents_route| A1
     A1 -->|JSON-RPC| A2
+    A2 -->|process task| LOOP
     S1 -->|load| S2
     S2 -->|enrich prompt| MODEL
 ```
@@ -277,9 +281,11 @@ flowchart LR
 
 ### 何时用 A2A
 
-- 任务需要专业 Agent 处理（如代码审查、翻译）
-- 需要并行分发子任务给多个 Agent
-- 跨团队 / 跨系统的 Agent 协作场景
+- 需要让外部 Agent 或编排器向 Echo Agent 提交文本任务
+- 外部系统需要标准的任务状态查询和取消接口
+- 需要按 API token 隔离多个调用主体的任务与会话
+
+如果需要 Echo Agent 主动委派给外部 Agent，当前版本尚无生产可用的出站入口。
 
 ---
 

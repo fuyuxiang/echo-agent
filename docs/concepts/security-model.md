@@ -22,7 +22,20 @@ flowchart LR
 |------|------|------|
 | `personal_cli` | 单用户本地运行 | 最宽松，信任本地操作者 |
 | `daemon` | 后台服务 | 缩减权限，无人值守场景 |
-| `public_gateway` | 多租户网关 | 最严格，假定不可信输入 |
+| `public_gateway` | 对外暴露的网关 | 最严格，假定输入不可信；不代表多租户隔离 |
+
+### 多客户端与多租户的边界 { #multi-client-tenant-boundary }
+
+Echo Agent 可以并发处理多个通道、客户端和会话，但这不等于一个经过安全认证的多租户平台：
+
+| 机制 | 它提供什么 | 它不提供什么 |
+|------|--------------|------------------|
+| 会话键 / 会话锁 | 模型上下文与并发处理边界 | 调用方身份认证或资源访问授权 |
+| `api_tokens` / `admin_tokens` | 请求认证与普通/管理两级 scope | 将每个 Token 自动变成全局用户身份、隔离所有实例资源 |
+| `security.profile: public_gateway` | 追加高风险工具与能力的拒绝规则 | 数据库、会话、任务和工作区的租户级分区 |
+
+!!! danger "认证不等于租户隔离"
+    多个普通 Token 默认属于同一 Echo Agent 实例的受信任调用方，不要把“每人发一枚 Token”当作强隔离。某些资源有更细的 owner/scope 校验，但不能由此推导整个 Gateway 都有相同边界。需要容纳互不信任的用户或组织时，应为每个租户运行独立进程，并分离工作区、数据目录、凭据和网络入口。
 
 ## 2. 工具档位 tools.profile（4 级）
 
@@ -41,6 +54,8 @@ graph LR
 | `messaging` | image_generate, memory, text_to_speech, vision_analyze | 多媒体交互 |
 | `coding` | edit_file, knowledge_index, patch, task, workflow, write_file | 文件读写 |
 | `full` | cronjob, exec, execute_code, process, skill_install, skill_manage | 进程执行 + 技能管理 |
+
+`agents_list` 是保留的策略名称，当前没有工具实现，因此即使出现在 `minimal` 策略集中也不可调用。
 
 !!! warning "高危工具"
     `exec`、`execute_code`、`process` 具备 `process.exec` 能力，可执行任意命令。仅在 `full` 档位暴露，且受 Shell 守卫和审批门双重约束。

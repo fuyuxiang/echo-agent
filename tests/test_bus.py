@@ -431,3 +431,42 @@ class TestMessageBusLifecycle:
         assert bus.pending_inbound == 1
         await bus.publish_inbound(make_inbound())
         assert bus.pending_inbound == 2
+
+    @pytest.mark.asyncio
+    async def test_stop_waits_for_admitted_publisher_then_drains_it(self):
+        class GateQueue(asyncio.Queue):
+            def __init__(self) -> None:
+                super().__init__()
+                self.put_entered = asyncio.Event()
+                self.release_put = asyncio.Event()
+
+            async def put(self, item) -> None:
+                self.put_entered.set()
+                await self.release_put.wait()
+                await super().put(item)
+
+        bus = MessageBus()
+        queue = GateQueue()
+        bus._inbound_queue = queue
+        handled: list[str] = []
+
+        async def handler(event):
+            handled.append(event.event_id)
+
+        bus.subscribe_inbound(handler)
+        await bus.start()
+        event = make_inbound()
+        publish_task = asyncio.create_task(bus.publish_inbound(event))
+        await queue.put_entered.wait()
+
+        stop_task = asyncio.create_task(bus.stop())
+        await asyncio.sleep(0)
+        assert not stop_task.done()
+        assert not bus._accepting
+
+        queue.release_put.set()
+        assert await publish_task is True
+        await stop_task
+
+        assert handled == [event.event_id]
+        assert bus.pending_inbound == 0

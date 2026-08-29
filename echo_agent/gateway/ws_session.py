@@ -3,6 +3,8 @@ ownership check in a single, unit-testable place."""
 
 from __future__ import annotations
 
+from echo_agent.session.context_epoch import has_reserved_context_syntax
+
 # What a client gets when it reports a platform the gateway does not know. "ws"
 # is the pre-existing default for a WS handshake that omits `platform`, so an
 # unknown value lands on the same conservative channel as "didn't say".
@@ -58,6 +60,8 @@ def resolve_client_session_key(
     self-report ``platform=wechat, user_id=victim`` and land on another user's
     ``gateway:wechat:victim`` session."""
     fallback = f"gateway:{platform}:{chat_id}"
+    if requested is not None and not isinstance(requested, str):
+        return None, "session_key must be a string"
     if requested is not None:
         requested = requested.strip()
     if not requested:
@@ -66,4 +70,6 @@ def resolve_client_session_key(
         return None, "session_key required for loopback-only client"
     if not any(requested.startswith(p) for p in allowed_prefixes):
         return None, f"session_key prefix not allowed: {requested!r}"
+    if has_reserved_context_syntax(requested):
+        return None, "session_key contains reserved context syntax"
     return requested, ""

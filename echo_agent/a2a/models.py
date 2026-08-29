@@ -10,7 +10,7 @@ from typing import Any
 
 
 def _pkg_version() -> str:
-    """已安装包版本;源码树运行时回退 0.0.0+unknown。"""
+    """权威运行时版本：wheel 取元数据，源码树取 pyproject。"""
     from echo_agent import __version__
     return __version__
 
@@ -58,6 +58,11 @@ class Artifact:
 @dataclass
 class A2ATask:
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
+    # Authorization identity that owns this task.  It is deliberately an
+    # internal field: returning it from ``to_dict`` would disclose a stable
+    # credential fingerprint to peers, while omitting it used to leave the
+    # server with no fact on which to authorize tasks/get or tasks/cancel.
+    owner: str = field(default="anonymous", repr=False, compare=False)
     state: TaskState = TaskState.SUBMITTED
     messages: list[A2AMessage] = field(default_factory=list)
     artifacts: list[Artifact] = field(default_factory=list)
@@ -89,7 +94,7 @@ class AgentCard:
     name: str = "echo-agent"
     description: str = "A modular AI agent framework"
     url: str = ""
-    # 默认取已安装包版本(源码树为 0.0.0+unknown);实例化处仍可显式覆盖。
+    # 默认取权威运行时版本；实例化处仍可显式覆盖。
     version: str = field(default_factory=lambda: _pkg_version())
     capabilities: list[str] = field(default_factory=lambda: ["chat", "tool_use"])
     skills: list[str] = field(default_factory=list)

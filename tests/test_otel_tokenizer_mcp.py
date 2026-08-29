@@ -446,7 +446,8 @@ class TestSSEFraming:
 
     def test_parse_event_invalid_json(self):
         from echo_agent.mcp.transport import _parse_sse_event
-        assert _parse_sse_event("data: not-json") is None
+        with pytest.raises(ValueError, match="not valid JSON"):
+            _parse_sse_event("data: not-json")
 
     def test_parse_event_tolerates_missing_and_extra_space(self):
         """Spec: a ``data:`` value drops exactly one optional leading space."""

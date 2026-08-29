@@ -142,7 +142,7 @@ config/
 
 ### 插件 — `echo_agent/plugins/`
 
-插件发现、加载、沙箱、生命周期钩子。
+插件发现、加载、manifest 权限预检、生命周期钩子。
 
 ```
 plugins/
@@ -150,7 +150,7 @@ plugins/
 ├── loader.py            # 插件发现与加载
 ├── manager.py           # PluginManager — 激活/停用
 ├── hooks.py             # HookRegistry — 生命周期钩子分发
-├── sandbox.py           # 插件沙箱隔离
+├── sandbox.py           # manifest 权限声明与注册准入（非进程隔离）
 ├── context.py           # 插件执行上下文
 └── errors.py            # 插件错误类型
 ```

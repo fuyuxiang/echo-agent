@@ -354,6 +354,8 @@ async def run_client(
             try:
                 await old_ws.close()
             except Exception:
+                # The replacement socket and its pump are already installed; a
+                # stale socket's close failure must not undo a valid reconnect.
                 pass
             # Recover from the authoritative turn ledger first. It carries both
             # terminal state and event correlation; old gateways fall back to the
@@ -375,6 +377,8 @@ async def run_client(
                     if missed:
                         app.replay_missed_reply(missed)
             except Exception:
+                # Ledger/history replay is opportunistic after reconnect; the live
+                # replacement socket remains authoritative when old servers lack it.
                 pass
             return True
 

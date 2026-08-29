@@ -82,6 +82,8 @@ class MCPClient:
             try:
                 await self._reader_task
             except (asyncio.CancelledError, Exception):
+                # disconnect() initiated cancellation; any concurrent reader
+                # failure is superseded by failing every pending request below.
                 pass
             self._reader_task = None
         try:

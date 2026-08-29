@@ -298,6 +298,8 @@ class ApprovalManager:
             try:
                 os.unlink(tmp_path)
             except OSError:
+                # Preserve the original approval-state write failure; atomic
+                # replace keeps the previous canonical state intact.
                 pass
             raise
 

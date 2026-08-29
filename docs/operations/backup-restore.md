@@ -165,7 +165,7 @@ echo-agent status
 
     这意味着 `checkpoint restore` 不恢复会话与记忆。数据层的恢复走下一节的 SQLite 备份，配置文件也需从备份中单独恢复。
 
-### 从 SQLite 备份恢复
+### 从 SQLite 备份恢复 { #restore-sqlite-backup }
 
 ```bash
 # 停止服务

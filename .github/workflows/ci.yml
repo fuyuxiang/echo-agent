@@ -284,11 +284,18 @@ jobs:
           "$SMOKE_VENV/bin/python" - <<'PY'
           from importlib.metadata import version
           from importlib.resources import files
+          from echo_agent import __version__
 
           dashboard = files("echo_agent").joinpath("_bundled/dashboard/index.html")
           if not dashboard.is_file():
               raise SystemExit(f"installed wheel is missing Dashboard: {dashboard}")
-          print(f"installed echo-agent {version('echo-agent')} with Dashboard")
+          installed_version = version("echo-agent")
+          if __version__ != installed_version:
+              raise SystemExit(
+                  f"echo_agent.__version__={__version__!r} does not match "
+                  f"installed metadata {installed_version!r}"
+              )
+          print(f"installed echo-agent {installed_version} with Dashboard")
           PY
           "$SMOKE_VENV/bin/echo-agent" --help >/dev/null
 

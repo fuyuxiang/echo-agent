@@ -86,6 +86,16 @@ class ApprovalGate:
         # approval entirely.
         self._registry = registry
 
+    def clear_session(self, session_key: str) -> None:
+        """Drop reset-bounded grants while retaining permanent approvals.
+
+        The allowlist owns the persistence distinction: ``SESSION`` and
+        ``SESSION_ALL`` entries live only in its per-session map, whereas
+        ``ALWAYS`` entries also live in the permanent set.  Routing reset through
+        this public hook keeps AgentLoop from reaching into gate internals.
+        """
+        self._allowlist.clear_session(session_key)
+
     async def check(
         self,
         tool_name: str,

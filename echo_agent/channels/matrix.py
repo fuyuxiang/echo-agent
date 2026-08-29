@@ -88,6 +88,7 @@ class MatrixChannel(BaseChannel):
             try:
                 await self._sync_task
             except asyncio.CancelledError:
+                # stop() deliberately cancels and reaps the Matrix sync loop.
                 pass
         if self._session:
             await self._session.close()
@@ -330,6 +331,8 @@ class MatrixChannel(BaseChannel):
                 else:
                     logger.warning("Matrix sync failed ({})", resp.status)
         except asyncio.TimeoutError:
+            # A Matrix long-poll timeout is an expected empty sync cycle; the
+            # caller immediately issues the next request while still running.
             pass
         except Exception as e:
             logger.error("Matrix sync error: {}", e)

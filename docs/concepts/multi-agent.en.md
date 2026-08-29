@@ -109,20 +109,25 @@ sequenceDiagram
 
 ## 7. A2A Protocol Integration
 
-Beyond internal Worker delegation, Echo Agent also supports collaboration with external Agents via the A2A (Agent-to-Agent) protocol:
+Internal Worker delegation and A2A are separate paths. The current production A2A integration
+is an inbound service: external agents discover Echo Agent and submit text tasks to it.
 
 ```mermaid
 flowchart LR
-    EA[Echo Agent] -->|A2A JSON-RPC| EXT1[External Agent A]
-    EA -->|A2A JSON-RPC| EXT2[External Agent B]
-    EXT1 -.->|Agent Card discovery| EA
-    EXT2 -.->|Agent Card discovery| EA
+    EXT1[External Agent A] -->|A2A JSON-RPC| EA[Echo Agent]
+    EXT2[External Agent B] -->|A2A JSON-RPC| EA
+    EXT1 -.->|GET Agent Card| EA
+    EXT2 -.->|GET Agent Card| EA
 ```
 
 - **Agent Card**: Metadata describing Agent capabilities, used for service discovery
-- **JSON-RPC**: Standardized task delegation protocol
-- **agents_list tool**: Lists known collaborating Agents
-- **agents_route tool**: Routes tasks to appropriate Agents based on task type
+- **JSON-RPC**: Manages inbound tasks through `tasks/send`, `tasks/get`, and `tasks/cancel`
+- **Identity isolation**: Authenticated tokens yield principals; tasks and sessions are
+  principal-scoped
+
+The internal `delegate` tool invokes only the local Worker runtime; it does not route to external
+A2A agents. The repository's low-level `A2AClient` helper has no production caller and does not
+use `net_guard`, so it must not receive untrusted URLs.
 
 ## 8. Internal Module Structure
 
@@ -134,7 +139,7 @@ flowchart LR
 | `multi_agent/audit.py` | Delegation audit log |
 | `tools/delegate.py` | Delegate tool implementation |
 | `a2a/protocol.py` | A2A protocol implementation |
-| `a2a/client.py` | A2A client |
+| `a2a/client.py` | Low-level client helper not wired into the production runtime |
 
 ## Delegation limits
 

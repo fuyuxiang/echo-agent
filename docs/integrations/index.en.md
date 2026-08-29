@@ -11,7 +11,7 @@ Echo Agent integrates with external systems through a multi-layer extension arch
 │ Channels │ Gateway  │  Skills  │    Plugins     │
 │  (14)    │ HTTP/WS  │  (35)    │  plugin.yaml   │
 ├──────────┴──────────┴──────────┴────────────────┤
-│       MCP (Tool Extension) │ A2A (Multi-Agent)  │
+│       MCP (Tool Extension) │ A2A (Inbound Tasks) │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -24,7 +24,7 @@ Echo Agent integrates with external systems through a multi-layer extension arch
 | [Skills](skills/using-skills.md) | 35 built-in skills organized by category | Usage & catalog |
 | [Plugins](plugins/using-plugins.md) | Extension mechanism based on plugin.yaml | Usage & development |
 | [MCP](mcp.md) | Model Context Protocol client for external tool servers | Configuration & usage |
-| [A2A](a2a.md) | Agent-to-Agent protocol for multi-agent task delegation | Protocol & integration |
+| [A2A](a2a.md) | Inbound Agent-to-Agent protocol for text tasks delegated to Echo Agent by external peers | Protocol & integration |
 
 ## Quick Start
 
@@ -57,6 +57,7 @@ tools:
 ### Enable A2A Protocol
 
 The `a2a` fields are flat — there is no `agent_card` subsection:
+Enabling it exposes the inbound `/a2a` endpoint; it does not register an outbound delegation tool.
 
 ```yaml
 a2a:
@@ -70,4 +71,4 @@ a2a:
 - **Unified Message Bus** — All channels communicate through `MessageBus`, fully decoupled
 - **Self-describing Capabilities** — Each channel declares its capabilities (edit, reactions, files); routing adapts accordingly
 - **Progressive Enablement** — All integrations are off by default; enable as needed. CLI mode works with zero config
-- **Security First** — Independent auth at each layer: channel allowlists, Gateway tokens, plugin permission sandboxes
+- **Explicit Security Boundaries** — Channel allowlists and Gateway tokens authenticate ingress. Plugin permission declarations govern registration admission only; Python plugins are trusted in-process code, not OS-sandboxed programs

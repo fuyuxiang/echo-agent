@@ -116,6 +116,20 @@ def test_subscribe_inbound(ctx, mock_deps):
 
     ctx.subscribe_inbound(handler)
     bus.subscribe_inbound.assert_called_once_with(handler)
+    assert ctx.registered_inbound_handlers == [handler]
+
+    handlers = ctx.registered_inbound_handlers
+    handlers.clear()
+    assert ctx.registered_inbound_handlers == [handler]
+
+    ctx.unsubscribe_inbound(handler)
+    bus.unsubscribe_inbound.assert_called_once_with(handler)
+    assert ctx.registered_inbound_handlers == []
+
+    # Explicit release is idempotent and must not ask the bus to remove a
+    # subscription the context no longer owns.
+    ctx.unsubscribe_inbound(handler)
+    bus.unsubscribe_inbound.assert_called_once_with(handler)
 
 
 def test_llm_provider_with_value(mock_deps, tmp_path):

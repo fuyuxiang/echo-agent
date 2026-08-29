@@ -39,7 +39,7 @@ def test_gateway_argv_appends_resolved_workspace(tmp_path: Path):
 
 def test_run_exits_on_nonzero_when_check():
     proc = MagicMock(returncode=3)
-    with patch(f"{_PKG}.base.subprocess.run", return_value=proc):
+    with patch(f"{_PKG}.base.run_owned", return_value=proc):
         with pytest.raises(SystemExit) as exc:
             base.run(["false"], check=True)
     assert exc.value.code == 3
@@ -47,7 +47,7 @@ def test_run_exits_on_nonzero_when_check():
 
 def test_run_no_exit_when_check_false():
     proc = MagicMock(returncode=3)
-    with patch(f"{_PKG}.base.subprocess.run", return_value=proc):
+    with patch(f"{_PKG}.base.run_owned", return_value=proc):
         assert base.run(["false"], check=False) == 3
 
 
@@ -260,9 +260,19 @@ def test_run_action_prints_deprecation_and_forwards(monkeypatch, capsys):
     monkeypatch.delenv(base.GATEWAY_ENV_FLAG, raising=False)
     with patch(f"{_PKG}.run_service_action") as forward:
         service.run_action("install", workspace="/srv/agent")
-    assert "deprecated" in capsys.readouterr().err
+    warning = capsys.readouterr().err
+    assert "deprecated" in warning
+    assert f"removed in v{service.SERVICE_ALIAS_REMOVAL_VERSION}" in warning
     forward.assert_called_once()
     assert forward.call_args.kwargs["workspace"] == "/srv/agent"
+
+
+def test_service_help_names_removal_version():
+    from echo_agent.__main__ import _build_parser
+
+    help_text = _build_parser().format_help()
+
+    assert f"removed in v{service.SERVICE_ALIAS_REMOVAL_VERSION}" in help_text
 
 
 # ── LaunchdBackend ───────────────────────────────────────────────────────────
@@ -339,7 +349,7 @@ def test_launchd_start_requires_install(launchd, capsys):
 def test_launchd_start_tolerates_already_bootstrapped(launchd):
     launchd.install()
     boot = MagicMock(returncode=37, stderr="")
-    with patch(f"{_PKG}.launchd.subprocess.run", return_value=boot), \
+    with patch(f"{_PKG}.launchd.run_owned", return_value=boot), \
          patch(f"{_PKG}.launchd.run") as kick:
         launchd.start()
     kick.assert_called_once()
@@ -348,7 +358,7 @@ def test_launchd_start_tolerates_already_bootstrapped(launchd):
 
 def test_launchd_stop_uses_bootout(launchd, capsys):
     ok = MagicMock(returncode=0, stderr="")
-    with patch(f"{_PKG}.launchd.subprocess.run", return_value=ok) as sp:
+    with patch(f"{_PKG}.launchd.run_owned", return_value=ok) as sp:
         launchd.stop()
     assert sp.call_args.args[0][:2] == ["launchctl", "bootout"]
     assert "stopped" in capsys.readouterr().out
@@ -356,7 +366,7 @@ def test_launchd_stop_uses_bootout(launchd, capsys):
 
 def test_launchd_uninstall_removes_plist(launchd, capsys):
     launchd.install()
-    with patch(f"{_PKG}.launchd.subprocess.run", return_value=MagicMock(returncode=0)):
+    with patch(f"{_PKG}.launchd.run_owned", return_value=MagicMock(returncode=0)):
         launchd.uninstall()
     assert not launchd.service_path().exists()
     assert "uninstalled" in capsys.readouterr().out

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from echo_agent.agent.executors.base import BaseExecutor, ExecRequest
-from echo_agent.agent.proc_lifecycle import spawn_shell, terminate_tree
+from echo_agent.agent.proc_lifecycle import communicate_owned, spawn_shell
 from echo_agent.tools import Tool, ToolExecutionContext, ToolResult
 from echo_agent.security.guards import evaluate_code_execution
 
@@ -118,11 +118,9 @@ class CodeExecTool(Tool):
                     stdin=asyncio.subprocess.PIPE,
                     cwd=str(self._workspace),
                 )
-                try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(code.encode()), timeout=timeout)
-                except asyncio.TimeoutError:
-                    await terminate_tree(proc)
-                    return ToolResult(success=False, error=f"Execution timed out after {timeout}s")
+                stdout, stderr = await communicate_owned(
+                    proc, code.encode(), timeout=timeout,
+                )
                 out = stdout.decode(errors="replace")
                 err = stderr.decode(errors="replace")
                 exit_code = proc.returncode or 0

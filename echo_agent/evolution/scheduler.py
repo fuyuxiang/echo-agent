@@ -73,6 +73,7 @@ class EvolutionScheduler:
             try:
                 await self._task
             except asyncio.CancelledError:
+                # stop() requested and now reaps the scheduler-loop cancellation.
                 pass
             except Exception as e:
                 logger.debug("EvolutionScheduler stop raised: {}", e)

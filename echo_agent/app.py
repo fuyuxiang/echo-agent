@@ -361,6 +361,8 @@ def install_signal_handler(shutdown: asyncio.Event) -> None:
         try:
             loop.add_signal_handler(sig, shutdown.set)
         except NotImplementedError:
+            # Proactor/event loops without signal support rely on their normal
+            # KeyboardInterrupt shutdown path instead.
             pass
 
 
@@ -494,17 +496,23 @@ class AppRuntime:
             return
         self._started = False
         ctx = self._ctx
-        if self._gateway:
-            await self._stop_step("gateway", self._gateway.stop())
-            self._gateway = None
         await self._stop_step("health", ctx.health.stop())
         if ctx.scheduler:
             await self._stop_step("scheduler", ctx.scheduler.stop())
         if ctx.task_dispatcher:
             await self._stop_step("task_dispatcher", ctx.task_dispatcher.stop())
+        # Stop admission and drain/cancel every queued/in-flight turn while all
+        # three sides of the delivery path are still alive: AgentLoop produces
+        # the terminal event, ChannelManager transports it, and Gateway resolves
+        # HTTP waiters / live WebSockets.  Tearing down either transport first
+        # made the drain report a misleading ACCEPTED/NO_HANDLER result and left
+        # an already-accepted caller with no reply.
+        await self._stop_step("bus", ctx.bus.stop())
+        if self._gateway:
+            await self._stop_step("gateway", self._gateway.stop())
+            self._gateway = None
         await self._stop_step("channels", ctx.channels.stop_all())
         await self._stop_step("agent", ctx.agent.stop())
-        await self._stop_step("bus", ctx.bus.stop())
         await self._stop_step("storage", ctx.storage.close())
         if self._instance_lock is not None:
             try:

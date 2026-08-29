@@ -1,19 +1,40 @@
+import { lazy, Suspense, type ReactNode } from "react";
 import { BrowserRouter, Routes, Route } from "react-router";
+import { useTranslation } from "react-i18next";
 import { Layout } from "./components/Layout";
 import { Toaster } from "./components/Toaster";
 import { ConfirmProvider } from "./components/ConfirmDialog";
-import { Login } from "./pages/Login";
-import { Overview } from "./pages/Overview";
-import { Kanban } from "./pages/Kanban";
-import { Sessions } from "./pages/Sessions";
-import { Memory } from "./pages/Memory";
-import { Skills } from "./pages/Skills";
-import { Knowledge } from "./pages/Knowledge";
-import { Channels } from "./pages/Channels";
-import { Cron } from "./pages/Cron";
-import { Logs } from "./pages/Logs";
-import { Config } from "./pages/Config";
-import { Analytics } from "./pages/Analytics";
+
+// Keep the authenticated shell eager, but load each page only when its route
+// is visited. A named-export adapter keeps the page modules' public API intact
+// while still giving React.lazy the default export shape it requires.
+const Login = lazy(() => import("./pages/Login").then((m) => ({ default: m.Login })));
+const Overview = lazy(() => import("./pages/Overview").then((m) => ({ default: m.Overview })));
+const Kanban = lazy(() => import("./pages/Kanban").then((m) => ({ default: m.Kanban })));
+const Sessions = lazy(() => import("./pages/Sessions").then((m) => ({ default: m.Sessions })));
+const Memory = lazy(() => import("./pages/Memory").then((m) => ({ default: m.Memory })));
+const Skills = lazy(() => import("./pages/Skills").then((m) => ({ default: m.Skills })));
+const Knowledge = lazy(() => import("./pages/Knowledge").then((m) => ({ default: m.Knowledge })));
+const Channels = lazy(() => import("./pages/Channels").then((m) => ({ default: m.Channels })));
+const Cron = lazy(() => import("./pages/Cron").then((m) => ({ default: m.Cron })));
+const Logs = lazy(() => import("./pages/Logs").then((m) => ({ default: m.Logs })));
+const Config = lazy(() => import("./pages/Config").then((m) => ({ default: m.Config })));
+const Analytics = lazy(() => import("./pages/Analytics").then((m) => ({ default: m.Analytics })));
+
+function RouteLoading() {
+  const { t } = useTranslation("common");
+  return (
+    <div role="status" aria-live="polite" className="text-gray-400 text-sm p-4">
+      {t("loading")}
+    </div>
+  );
+}
+
+/** A boundary per route keeps the already-rendered Sidebar/Layout visible
+ * while the next page chunk is fetched. */
+function LazyRoute({ children }: { children: ReactNode }) {
+  return <Suspense fallback={<RouteLoading />}>{children}</Suspense>;
+}
 
 export function App() {
   return (
@@ -21,19 +42,19 @@ export function App() {
       <ConfirmProvider>
         <Toaster />
         <Routes>
-          <Route path="/login" element={<Login />} />
+          <Route path="/login" element={<LazyRoute><Login /></LazyRoute>} />
           <Route element={<Layout />}>
-            <Route index element={<Overview />} />
-            <Route path="sessions" element={<Sessions />} />
-            <Route path="memory" element={<Memory />} />
-            <Route path="skills" element={<Skills />} />
-            <Route path="knowledge" element={<Knowledge />} />
-            <Route path="channels" element={<Channels />} />
-            <Route path="cron" element={<Cron />} />
-            <Route path="kanban" element={<Kanban />} />
-            <Route path="logs" element={<Logs />} />
-            <Route path="config" element={<Config />} />
-            <Route path="analytics" element={<Analytics />} />
+            <Route index element={<LazyRoute><Overview /></LazyRoute>} />
+            <Route path="sessions" element={<LazyRoute><Sessions /></LazyRoute>} />
+            <Route path="memory" element={<LazyRoute><Memory /></LazyRoute>} />
+            <Route path="skills" element={<LazyRoute><Skills /></LazyRoute>} />
+            <Route path="knowledge" element={<LazyRoute><Knowledge /></LazyRoute>} />
+            <Route path="channels" element={<LazyRoute><Channels /></LazyRoute>} />
+            <Route path="cron" element={<LazyRoute><Cron /></LazyRoute>} />
+            <Route path="kanban" element={<LazyRoute><Kanban /></LazyRoute>} />
+            <Route path="logs" element={<LazyRoute><Logs /></LazyRoute>} />
+            <Route path="config" element={<LazyRoute><Config /></LazyRoute>} />
+            <Route path="analytics" element={<LazyRoute><Analytics /></LazyRoute>} />
           </Route>
         </Routes>
       </ConfirmProvider>

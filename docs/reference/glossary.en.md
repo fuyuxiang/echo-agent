@@ -10,7 +10,7 @@
 
 **Agent Runtime** — Echo Agent 的核心执行环境，管理 Agent 生命周期。
 
-**A2A (Agent-to-Agent)** — Agent 间任务委派协议，基于 JSON-RPC。
+**A2A (Agent-to-Agent)** — A JSON-RPC task protocol. Echo Agent currently exposes an inbound service for external peers; it does not yet provide a production outbound A2A delegation entry point.
 
 **Approval** — 工具执行前的用户确认机制。
 

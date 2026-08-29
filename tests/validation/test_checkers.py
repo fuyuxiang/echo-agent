@@ -93,16 +93,21 @@ class _HangingProc:
     def __init__(self) -> None:
         self.killed = False
         self.waited = False
+        self.returncode = None
 
     async def communicate(self):
         await asyncio.Future()  # never resolves → outer wait_for must cancel it
         raise AssertionError("communicate should have been cancelled")  # pragma: no cover
+
+    def terminate(self) -> None:
+        self.killed = True
 
     def kill(self) -> None:
         self.killed = True
 
     async def wait(self) -> int:
         self.waited = True
+        self.returncode = -15
         return -9
 
 
@@ -135,6 +140,10 @@ class _StubProc:
 
     def __init__(self, stdout: bytes) -> None:
         self._stdout = stdout
+        # ``asyncio.subprocess.Process.communicate`` has set returncode by the
+        # time it completes; model that lifecycle contract so the shared
+        # one-shot cleanup helper can take its already-exited fast path.
+        self.returncode = 0
 
     async def communicate(self):
         return self._stdout, b""

@@ -33,6 +33,10 @@ class TraceSpan:
     ended_at: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
     error: str = ""
+    # Runtime-only handle. Keeping it out of ``to_dict`` prevents exporter
+    # implementation details from leaking into persisted trace JSON while
+    # avoiding an undeclared attribute being attached dynamically.
+    _otel_span: Any = field(default=None, repr=False, compare=False)
 
     @property
     def duration_ms(self) -> int:
@@ -132,6 +136,8 @@ class TraceLogger:
         try:
             self._trace_order.remove(trace_id)
         except ValueError:
+            # A first write has no earlier position to remove; append below records
+            # it as the newest trace.
             pass
         self._trace_order.append(trace_id)
 
@@ -196,18 +202,22 @@ class HealthChecker:
             self._recovery_handlers[name] = recovery_fn
 
     async def start(self) -> None:
+        if self._task is not None and not self._task.done():
+            return
         self._running = True
         self._task = asyncio.create_task(self._check_loop())
         logger.info("Health checker started")
 
     async def stop(self) -> None:
         self._running = False
-        if self._task:
-            self._task.cancel()
+        task, self._task = self._task, None
+        if task:
+            task.cancel()
             try:
-                await self._task
+                await task
             except asyncio.CancelledError:
-                pass
+                # Expected acknowledgement from the owned background task.
+                return
 
     async def check_all(self) -> dict[str, HealthStatus]:
         for name, check_fn in self._checks.items():

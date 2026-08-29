@@ -193,7 +193,7 @@ echo-agent gateway logs | grep -i "memory.*save\|memory.*store"
 
 ### 修复
 
-数据库损坏时从 SQLite 备份恢复，参见[备份与恢复](backup-restore.md#从-sqlite-备份恢复)。`echo-agent checkpoint` 是工作区文件的影子 Git 快照，其排除范围包含数据库与记忆目录，无法用于恢复数据库。
+数据库损坏时从 SQLite 备份恢复，参见[备份与恢复](backup-restore.md#restore-sqlite-backup)。`echo-agent checkpoint` 是工作区文件的影子 Git 快照，其排除范围包含数据库与记忆目录，无法用于恢复数据库。
 
 检索召回不足时，调整记忆检索与知识库的相关配置：
 

@@ -6,6 +6,12 @@ repo_url: https://github.com/fuyuxiang/echo-agent
 repo_name: fuyuxiang/echo-agent
 copyright: Copyright &copy; 2024-2026 Echo Agent contributors
 
+# Reusable snippets are source fragments, not standalone documentation pages.
+# They stay readable by pymdownx.snippets below but must not be emitted or
+# reported as pages missing from the navigation.
+exclude_docs: |
+  includes/
+
 theme:
   name: material
   language: zh
@@ -143,7 +149,8 @@ markdown_extensions:
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite
-  - pymdownx.snippets
+  - pymdownx.snippets:
+      check_paths: true
   - pymdownx.mark
   - pymdownx.keys
   - tables

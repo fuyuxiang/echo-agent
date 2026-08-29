@@ -81,6 +81,8 @@ def _prune_empty_dirs(root: Path) -> None:
         try:
             d.rmdir()
         except OSError:
+            # Non-empty or concurrently removed session directories are expected;
+            # pruning is opportunistic after file cleanup.
             pass
 
 

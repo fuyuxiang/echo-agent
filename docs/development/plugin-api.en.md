@@ -1,6 +1,6 @@
 # Plugin API
 
-Echo Agent's plugin system allows third-party extensions to expand the Agent's capabilities, including adding tools, registering lifecycle hooks, and providing new commands.
+Echo Agent's plugin system allows third-party extensions to add tools and register lifecycle hooks. `provides.commands` is reserved for a future extension; the current runtime does not register plugin commands.
 
 ## Plugin Structure
 
@@ -50,8 +50,9 @@ depends_on: []
 
 # Required permissions
 permissions:
-  - network    # Network access
-  - filesystem # Filesystem access (restricted)
+  - tool.register # Allow tool registration
+  - hook.register # Allow hook registration
+  - network       # Advisory network-access metadata
 ```
 
 ## PluginManifest Fields
@@ -67,7 +68,7 @@ permissions:
 | `requires_env` | list[str] | No | Required environment variables |
 | `provides.tools` | list[str] | No | List of provided tools |
 | `provides.hooks` | list[str] | No | List of registered hooks |
-| `provides.commands` | list[str] | No | Provided commands |
+| `provides.commands` | list[str] | No | Reserved; commands are not registered by the current runtime |
 | `kind` | str | No | Type: integration / extension / theme |
 | `config_key` | str | No | Configuration namespace |
 | `depends_on` | list[str] | No | Other plugins this depends on |
@@ -176,7 +177,7 @@ In the project working directory:
 
 ## Plugin Entry Module
 
-`__init__.py` is the Python entry point, exporting tools and hooks:
+`__init__.py` is the Python entry point. The runtime resolves only `activate(context)` and optional `deactivate(context)`; tools and hooks must be registered explicitly inside `activate`:
 
 ```python
 """my_plugin — Weather integration for Echo Agent."""
@@ -184,23 +185,18 @@ In the project working directory:
 from my_plugin.tools import WeatherLookupTool, WeatherForecastTool
 from my_plugin.hooks import on_agent_start, pre_tool_call, post_tool_call
 
-# Auto-registered when plugin loads
-TOOLS = [WeatherLookupTool, WeatherForecastTool]
-HOOKS = {
-    "on_agent_start": on_agent_start,
-    "pre_tool_call": pre_tool_call,
-    "post_tool_call": post_tool_call,
-}
-
-
 async def activate(context):
     """Plugin activation callback."""
-    pass
+    context.register_tools([WeatherLookupTool(), WeatherForecastTool()])
+    context.register_hook("on_agent_start", on_agent_start)
+    context.register_hook("pre_tool_call", pre_tool_call)
+    context.register_hook("post_tool_call", post_tool_call)
 
 
 async def deactivate(context):
     """Plugin deactivation callback."""
-    pass
+    # Close non-tool resources owned by the plugin; PluginManager removes registrations.
+    ...
 ```
 
 ## Plugin State Lifecycle
@@ -219,14 +215,14 @@ discovered → loaded → activated → (running)
 | `failed` | Loading or activation failed |
 | `disabled` | Manually disabled by user |
 
-## Sandbox and Permissions
+## Trust Model and Permission Declarations
 
-Plugins run in a restricted environment:
+Python plugins run as trusted code inside the Echo Agent process. The current mechanism is not an OS-level sandbox:
 
-- **Network access** — Requires `network` permission declaration
-- **Filesystem** — Requires `filesystem` permission, path-restricted
-- **Tool calls** — Plugin-registered tools follow the same approval flow as built-in tools
-- **Resource limits** — Execution timeout and memory limits controlled by sandbox
+- **Registration permissions** — `tool.register` and `hook.register` are enforced when a plugin registers capabilities
+- **Advisory permissions** — `network`, `subprocess`, and `filesystem.*` document intent but do not prevent in-process Python code from accessing those resources directly
+- **Tool approval** — Plugin-registered tools follow the same approval flow as built-in tools
+- **Untrusted-code isolation** — Run it in a separate process or container and expose it through MCP
 
 ## Development Workflow
 

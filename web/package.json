@@ -6,7 +6,8 @@
   "packageManager": "pnpm@10.34.5",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && pnpm check:bundle",
+    "check:bundle": "node scripts/check-bundle-size.mjs",
     "preview": "vite preview",
     "test": "vitest"
   },

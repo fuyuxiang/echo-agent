@@ -176,7 +176,7 @@ echo-agent gateway uninstall  # 取消注册
 | **模型路由** | 主推理、上下文压缩、向量嵌入、风险审批可独立配置 provider 与模型 | [路由与 Fallback](https://fuyuxiang.github.io/echo-agent/guides/models/routing-fallback/) |
 | **工具审批** | 三档策略 `manual` / `smart` / `off`，无人值守通道默认拒绝高风险调用 | [工具与权限](https://fuyuxiang.github.io/echo-agent/guides/tools-permissions/) |
 | **多模型支持** | OpenAI、Anthropic、Gemini、Bedrock、OpenRouter，以及 DeepSeek、Qwen、Kimi、GLM、Ollama 等 OpenAI 兼容端点 | [Provider 总览](https://fuyuxiang.github.io/echo-agent/guides/models/providers/) |
-| **跨进程互操作** | A2A JSON-RPC + MCP 客户端（含 OAuth），支持动态工具注册 | [MCP](https://fuyuxiang.github.io/echo-agent/integrations/mcp/) · [A2A](https://fuyuxiang.github.io/echo-agent/integrations/a2a/) |
+| **跨进程互操作** | A2A JSON-RPC 入站任务端点 + MCP 客户端（含 OAuth 与动态工具注册）；当前 Agent 运行时不提供 A2A 出站委派入口 | [MCP](https://fuyuxiang.github.io/echo-agent/integrations/mcp/) · [A2A](https://fuyuxiang.github.io/echo-agent/integrations/a2a/) |
 | **插件体系** | 通过 entry-point 注册外部插件 | [使用插件](https://fuyuxiang.github.io/echo-agent/integrations/plugins/using-plugins/) |
 | **Dashboard** | 内置 Web 管理面板，查看对话、费用与运行状态 | [Dashboard](https://fuyuxiang.github.io/echo-agent/guides/dashboard/) |
 | **定时任务** | 内置 Cron 调度器，按计划触发 Agent 执行 | [定时任务](https://fuyuxiang.github.io/echo-agent/guides/scheduled-jobs/) |

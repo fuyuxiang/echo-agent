@@ -130,6 +130,32 @@ class TestProcessTaskNormal:
         assert "Here is your answer" in last_msg.text_content
 
     @pytest.mark.asyncio
+    async def test_same_task_continuation_processes_latest_user_message(self):
+        card = _make_agent_card()
+        processor = _make_processor(response_text="answer")
+        server = A2AServer(agent_loop=processor, agent_card=card)
+
+        def send(request_id: int, text: str) -> dict:
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "tasks/send",
+                "params": {
+                    "id": "continued-task",
+                    "message": A2AMessage.text("user", text).to_dict(),
+                },
+            }
+
+        first = await server._protocol.handle(send(1, "first question"))
+        second = await server._protocol.handle(send(2, "follow-up question"))
+
+        assert first["result"]["state"] == "completed"
+        assert second["result"]["state"] == "completed"
+        assert [call.args[0] for call in processor.process_direct.await_args_list] == [
+            "first question", "follow-up question",
+        ]
+
+    @pytest.mark.asyncio
     async def test_processing_exception_fails(self):
         card = _make_agent_card()
         processor = AsyncMock()

@@ -18,6 +18,7 @@ Streamable HTTP transport is the only HTTP path.
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import re
 from abc import ABC, abstractmethod
@@ -228,6 +229,8 @@ class StdioTransport(MCPTransport):
             try:
                 await self._stderr_task
             except (asyncio.CancelledError, Exception):
+                # close() cancelled this diagnostic drain; the process-group
+                # shutdown below is authoritative even if the reader also failed.
                 pass
         self._stderr_task = None
 
@@ -331,6 +334,14 @@ class StreamableHttpTransport(MCPTransport):
         self._protocol_version = version
 
     async def connect(self, timeout: float = 60) -> None:
+        if self._connected:
+            return
+        # A previous auth/session failure marks the transport disconnected but
+        # can leave its ClientSession allocated until the supervisor rebuilds
+        # it. Reconnecting the same instance must not leak that pool.
+        if self._session is not None:
+            await self._session.close()
+            self._session = None
         # `sock_connect` bounds establishing the TCP connection; `total` is left
         # unset on purpose. Using ClientTimeout(total=connect_timeout) meant the
         # 60s connect budget also capped every tools/call, so a server config of
@@ -342,6 +353,7 @@ class StreamableHttpTransport(MCPTransport):
         )
         self._connected = True
         self._session_expired = False
+        self._auth_failed = False
         logger.debug("Streamable HTTP transport connected to {}", self._url)
 
     def _request_headers(self, *, for_get: bool = False) -> dict[str, str]:
@@ -368,12 +380,12 @@ class StreamableHttpTransport(MCPTransport):
         self._call_timeout = timeout
 
     async def send(self, message: dict[str, Any]) -> None:
-        if not self._session:
-            raise ConnectionError("Transport not connected")
         if self._session_expired:
             raise ConnectionError(
                 "MCP session was invalidated by the server and must be re-initialised"
             )
+        if not self._connected or self._session is None:
+            raise ConnectionError("Transport not connected")
 
         request_timeout = (
             aiohttp.ClientTimeout(total=self._call_timeout) if self._call_timeout else None
@@ -385,8 +397,15 @@ class StreamableHttpTransport(MCPTransport):
         if request_timeout is not None:
             kwargs["timeout"] = request_timeout
 
-        resp_cm = self._session.post(self._url, **kwargs)
-        resp = await resp_cm.__aenter__()
+        try:
+            resp_cm = self._session.post(self._url, **kwargs)
+            resp = await resp_cm.__aenter__()
+        except (aiohttp.ClientError, OSError, asyncio.TimeoutError):
+            # A failed POST is connection state, not merely one failed call.
+            # Leaving this True made the supervisor keep advertising tools from
+            # a dead server while every later request failed independently.
+            self._connected = False
+            raise
         release_required = True
         try:
             await self._capture_session_id(resp)
@@ -412,21 +431,38 @@ class StreamableHttpTransport(MCPTransport):
                 return
 
             if "application/json" in content_type:
-                await self._queue_json_body(resp)
+                try:
+                    await self._queue_json_body(resp)
+                except (ValueError, TypeError, UnicodeError, aiohttp.ClientPayloadError) as e:
+                    raise ConnectionError(
+                        "MCP server returned a malformed JSON response"
+                    ) from e
                 return
 
             # Unknown content type: try JSON before giving up, since some
             # servers answer with a bare or mislabelled body.
             try:
                 await self._queue_json_body(resp)
-            except Exception:
-                text = await resp.text()
-                logger.warning(
-                    "Unexpected response type '{}': {}", content_type, text[:200],
-                )
+            except Exception as e:
+                try:
+                    text = (await resp.text())[:200]
+                except Exception:
+                    text = "<unreadable body>"
+                raise ConnectionError(
+                    f"Unexpected MCP response type '{content_type}': {text}"
+                ) from e
+        except (aiohttp.ClientError, OSError, asyncio.TimeoutError):
+            # Includes MCPUnauthorizedError/ConnectionError raised by status or
+            # framing validation. The manager's supervisor owns reconnection.
+            self._connected = False
+            raise
         finally:
             if release_required:
-                await resp_cm.__aexit__(None, None, None)
+                try:
+                    await resp_cm.__aexit__(None, None, None)
+                except (aiohttp.ClientError, OSError, asyncio.TimeoutError):
+                    self._connected = False
+                    raise
 
     async def _capture_session_id(self, resp: Any) -> None:
         # Header names are case-insensitive in aiohttp's CIMultiDict, so this
@@ -496,6 +532,8 @@ class StreamableHttpTransport(MCPTransport):
                     await self._response_queue.put(entry)
         elif isinstance(data, dict):
             await self._response_queue.put(data)
+        else:
+            raise ValueError("MCP JSON response must be an object or batch")
 
     async def open_notification_stream(self) -> None:
         """Open the long-lived GET stream for server→client messages.
@@ -506,6 +544,8 @@ class StreamableHttpTransport(MCPTransport):
         the GET with 405, which is not an error — it just means this server has
         nothing to push.
         """
+        if not self._connected or self._session is None:
+            raise ConnectionError("Transport not connected")
         if self._listen_task and not self._listen_task.done():
             return
         self._listen_task = asyncio.create_task(self._listen_get_stream())
@@ -513,6 +553,7 @@ class StreamableHttpTransport(MCPTransport):
     async def _listen_get_stream(self) -> None:
         if not self._session:
             return
+        unsupported = False
         try:
             async with self._session.get(
                 self._url,
@@ -521,14 +562,16 @@ class StreamableHttpTransport(MCPTransport):
                 timeout=aiohttp.ClientTimeout(sock_connect=30),
             ) as resp:
                 if resp.status == 405:
+                    unsupported = True
                     logger.debug(
                         "MCP server {} does not offer a GET notification stream", self._url,
                     )
                     return
                 if resp.status >= 400:
-                    logger.warning(
-                        "MCP notification stream rejected with HTTP {}", resp.status,
-                    )
+                    # Reuse POST status semantics so a revoked credential or
+                    # expired session on the GET stream reaches the supervisor
+                    # instead of being reduced to an unactionable log line.
+                    await self._check_status(resp, {"method": "notifications/get"})
                     return
                 await self._capture_session_id(resp)
                 await self._read_sse_response(resp)
@@ -537,6 +580,14 @@ class StreamableHttpTransport(MCPTransport):
         except Exception as e:
             if self._connected:
                 logger.debug("MCP notification stream ended: {}", e)
+        finally:
+            # A supported GET is the only path for unsolicited server messages.
+            # EOF or a stream exception must trigger the manager's reconnect;
+            # otherwise tools/list_changed notifications disappear forever while
+            # the transport continues to report itself healthy. HTTP 405 is the
+            # explicit protocol signal that this server offers no GET stream.
+            if not unsupported and self._connected:
+                self._connected = False
 
     async def _consume_sse_response(self, resp_cm: Any, resp: Any) -> None:
         try:
@@ -546,11 +597,13 @@ class StreamableHttpTransport(MCPTransport):
         except Exception as e:
             if self._connected:
                 logger.warning("Streamable HTTP SSE consume failed: {}", e)
+            self._connected = False
         finally:
             try:
                 await resp_cm.__aexit__(None, None, None)
             except Exception as e:
                 logger.debug("Failed to close streamable HTTP response: {}", e)
+                self._connected = False
 
     async def _read_sse_response(self, resp: Any) -> None:
         """Parse an SSE byte stream into JSON-RPC messages.
@@ -564,8 +617,12 @@ class StreamableHttpTransport(MCPTransport):
         and every call over SSE timed out.
         """
         buffer = ""
+        # UTF-8 code points may straddle arbitrary HTTP chunks, hence the
+        # incremental decoder. Invalid UTF-8 is a protocol failure: replacement
+        # decoding could silently turn it into a different JSON document.
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="strict")
         async for chunk in resp.content.iter_any():
-            buffer += chunk.decode("utf-8", errors="replace")
+            buffer += decoder.decode(chunk)
 
             while True:
                 event_text, remainder = _split_sse_event(buffer)
@@ -576,19 +633,23 @@ class StreamableHttpTransport(MCPTransport):
                 if message is not None:
                     await self._response_queue.put(message)
 
-            if len(buffer) > _MAX_SSE_BUFFER_BYTES:
+            undecoded = decoder.getstate()[0]
+            if len(buffer.encode("utf-8", errors="replace")) + len(undecoded) > _MAX_SSE_BUFFER_BYTES:
                 raise ConnectionError(
                     "MCP SSE stream exceeded the buffer limit without a complete event"
                 )
 
         # Stream ended. A trailing event without its terminating blank line is
         # still a complete event per spec.
+        buffer += decoder.decode(b"", final=True)
         if buffer.strip():
             message = _parse_sse_event(buffer)
             if message is not None:
                 await self._response_queue.put(message)
 
     async def receive(self) -> dict[str, Any]:
+        if not self._connected and self._response_queue.empty():
+            raise ConnectionError("Transport not connected")
         return await self._response_queue.get()
 
     async def close(self) -> None:
@@ -599,6 +660,8 @@ class StreamableHttpTransport(MCPTransport):
             try:
                 await self._listen_task
             except (asyncio.CancelledError, Exception):
+                # close() initiated the notification-listener cancellation and
+                # drains all child SSE tasks immediately afterwards.
                 pass
         self._listen_task = None
 
@@ -611,9 +674,10 @@ class StreamableHttpTransport(MCPTransport):
 
         # Tell the server the session is over so it can release state, instead of
         # leaving it to time out. Best effort: we are shutting down either way.
-        if self._session and self._session_id and not self._session_expired:
+        session, self._session = self._session, None
+        if session and self._session_id and not self._session_expired:
             try:
-                async with self._session.delete(
+                async with session.delete(
                     self._url,
                     headers=self._request_headers(),
                     timeout=aiohttp.ClientTimeout(total=5),
@@ -623,9 +687,11 @@ class StreamableHttpTransport(MCPTransport):
                 logger.debug("Failed to terminate MCP session: {}", e)
 
         self._session_id = None
-        if self._session:
-            await self._session.close()
-            self._session = None
+        if session:
+            try:
+                await session.close()
+            except Exception as e:
+                logger.debug("Failed to close MCP HTTP session: {}", e)
         logger.debug("Streamable HTTP transport closed")
 
 
@@ -680,7 +746,10 @@ def _parse_sse_event(event_text: str) -> dict[str, Any] | None:
         return None
     try:
         parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.warning("Non-JSON SSE data: {}", raw[:200])
-        return None
-    return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError as e:
+        # Do not echo raw server data: it may contain credentials or private
+        # tool output. The owning stream marks this protocol failure down.
+        raise ValueError("MCP SSE data is not valid JSON") from e
+    if not isinstance(parsed, dict):
+        raise ValueError("MCP SSE event must contain one JSON-RPC object")
+    return parsed

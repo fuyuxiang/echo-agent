@@ -127,23 +127,27 @@ Agent Loop → mcp_tool_name → MCP Client → [stdio/HTTP] → External MCP Se
 
 ## 5. A2A (Agent-to-Agent)
 
-A2A is a **task delegation protocol between Agents**, enabling an Agent to route subtasks to
-other specialized Agents for processing.
+A2A is an **inter-agent task protocol**. The production runtime currently implements the
+inbound side: external agents can discover Echo Agent and delegate text tasks to it.
 
 ### Core Characteristics
 
-- **Protocol foundation**: Agent Card + JSON-RPC (`echo_agent/a2a/protocol.py`, `client.py`)
-- **Task routing**: The model discovers available Agents via `agents_list` and delegates tasks
-  via `agents_route`
-- **Multi-Agent collaboration**: Supports task decomposition, parallel processing, and result
-  aggregation
-- **Audit trail**: All cross-Agent invocations are recorded for audit purposes
+- **Protocol foundation**: Agent Card + JSON-RPC (`echo_agent/a2a/protocol.py`, `server.py`)
+- **Inbound tasks**: External peers call Echo Agent through `tasks/send`, `tasks/get`, and
+  `tasks/cancel`
+- **Identity isolation**: Bearer tokens yield opaque principals; tasks and sessions are
+  principal-scoped
+- **Bounded retention**: Task storage is constrained by both a TTL and a count limit
 
 ### How It Works
 
 ```
-Model decides to delegate → agents_list discovery → agents_route routing → Remote Agent processes → Result returned
+External agent discovers Agent Card → calls Echo Agent JSON-RPC endpoint → Agent Loop processes → task state/result returned
 ```
+
+The repository retains a low-level `A2AClient` helper, but it has no production caller and does
+not use the shared `net_guard` redirect-by-redirect SSRF protection. There is currently no
+model-callable outbound A2A delegation tool.
 
 ### Difference from MCP
 
@@ -160,14 +164,14 @@ Model decides to delegate → agents_list discovery → agents_route routing →
 
 | Aspect | Tool | Skill | Plugin | MCP | A2A |
 |--------|------|-------|--------|-----|-----|
-| **Nature** | Callable function | Knowledge package | Code extension | Protocol client | Protocol peer |
+| **Nature** | Callable function | Knowledge package | Code extension | Protocol client | Inbound task protocol |
 | **Interface** | Python class | SKILL.md | plugin.yaml | stdio/HTTP | Agent Card |
-| **Called by** | Model / Loop | Context injection | Loop hooks | Model (as tool) | Model (delegate) |
-| **Security** | Policy + Guards | Injection scan | Trust boundary | mcp.call cap | Audit trail |
-| **Hot reload** | No | Yes | No | Yes (reconnect) | Yes (discovery) |
+| **Called by** | Model / Loop | Context injection | Loop hooks | Model (as tool) | External A2A peer |
+| **Security** | Policy + Guards | Injection scan | Trust boundary | mcp.call cap | Bearer principal + owner isolation |
+| **Hot reload** | No | Yes | No | Yes (reconnect) | No |
 | **Auto-evolve** | No | Yes (evolution) | No | No | No |
 | **Language** | Python | Markdown | Python | Any | Any |
-| **Location** | tools/ | skills/ | plugins/ | mcp config | a2a config |
+| **Location** | tools/ | skills/ | plugins/ | mcp config | a2a/ + gateway |
 
 ---
 
@@ -207,8 +211,8 @@ graph TB
     end
 
     subgraph A2A["A2A Layer"]
-        A1[A2A Client]
-        A2[Remote Agent]
+        A1[External A2A Peer]
+        A2[A2A Server]
     end
 
     MODEL -->|tool_use| LOOP
@@ -218,8 +222,8 @@ graph TB
     Plugins -->|hook events| LOOP
     LOOP -->|mcp.call| M1
     M1 -->|stdio/HTTP| M2
-    LOOP -->|agents_route| A1
     A1 -->|JSON-RPC| A2
+    A2 -->|process task| LOOP
     S1 -->|load| S2
     S2 -->|enrich prompt| MODEL
 ```
@@ -291,9 +295,12 @@ flowchart LR
 
 ### When to Use A2A
 
-- A task requires a specialized Agent (e.g., code review, translation)
-- You need to distribute subtasks to multiple Agents in parallel
-- Cross-team or cross-system Agent collaboration scenarios
+- An external agent or orchestrator needs to submit text tasks to Echo Agent
+- An external system needs standard task status and cancellation methods
+- Multiple API-token principals need isolated tasks and sessions
+
+If Echo Agent itself must delegate to external agents, this version has no production outbound
+entry point.
 
 ---
 

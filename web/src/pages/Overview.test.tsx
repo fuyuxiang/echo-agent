@@ -86,7 +86,13 @@ describe("Overview 页", () => {
     const spy = mockApi();
     renderOverview();
 
-    await vi.waitFor(() => expect(spy).toHaveBeenCalledWith("/health"));
+    // Flush the immediately-resolved initial requests inside act. RTL waitFor
+    // cannot drive its polling timer while this test intentionally owns fake
+    // timers, and Vitest's waitFor is not wrapped in React.act.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(spy).toHaveBeenCalledTimes(4);
     const before = spy.mock.calls.length;
 
     await act(async () => {

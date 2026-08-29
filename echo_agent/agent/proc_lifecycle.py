@@ -18,6 +18,11 @@ implementation:
   has *already* exited — a shell that backgrounds a job (`sleep 300 &`) exits
   immediately while its grandchild keeps running, so "leader is gone" says
   nothing about whether the tree is gone.
+- `communicate_owned()` / `run_owned()` are the async and blocking completion
+  primitives for one-shot commands. They preserve the operation's
+  result/exception but unconditionally sweep the recorded group, including
+  after a successful/non-zero leader exit. Async cleanup is shielded to
+  convergence so cancellation cannot abandon the only tree handle.
 - `process_group_alive()` answers "is anything still running in this tree?" so
   callers that keep bookkeeping per child (ProcessTool) can tell a genuinely
   finished process from one whose leader merely exited first.
@@ -35,6 +40,8 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import subprocess
+import time
 from typing import Any
 
 from loguru import logger
@@ -81,6 +88,15 @@ async def spawn_exec(program: str, *args: Any, **kwargs: Any) -> Any:
     """`create_subprocess_exec` in its own process group, PGID recorded."""
     proc = await asyncio.create_subprocess_exec(
         program, *args, **{**subprocess_kwargs(), **kwargs}
+    )
+    record_process_group(proc, own_session=_POSIX)
+    return proc
+
+
+def spawn_popen(*popenargs: Any, **kwargs: Any) -> Any:
+    """Synchronous ``Popen`` counterpart with the same group contract."""
+    proc = subprocess.Popen(
+        *popenargs, **{**subprocess_kwargs(), **kwargs},
     )
     record_process_group(proc, own_session=_POSIX)
     return proc
@@ -164,6 +180,218 @@ async def terminate_tree(proc: Any, *, grace: float = 5.0) -> None:
     await _sweep_group(proc, grace=grace)
 
 
+async def _shield_cleanup_to_completion(
+    proc: Any, *, grace: float,
+) -> tuple[asyncio.CancelledError | None, BaseException | None]:
+    """Run tree cleanup to completion despite cancellation of its caller.
+
+    ``asyncio.shield`` alone is not sufficient: it keeps the cleanup task alive,
+    but immediately raises ``CancelledError`` in the owner, which can then lose
+    the task reference and return while descendants are still running. Keep the
+    reference and await it again until it has genuinely settled. The first
+    cancellation is returned to the caller so public cancellation semantics are
+    preserved after cleanup.
+    """
+    cleanup = asyncio.create_task(terminate_tree(proc, grace=grace))
+    delayed_cancel: asyncio.CancelledError | None = None
+    while not cleanup.done():
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError as e:
+            # A second Ctrl-C / shutdown cancellation must not punch through the
+            # final lifecycle boundary. Remember it, then keep owning cleanup.
+            delayed_cancel = delayed_cancel or e
+        except BaseException:
+            # Read and return the exact cleanup exception via task.result below.
+            break
+
+    try:
+        cleanup.result()
+    except BaseException as e:
+        return delayed_cancel, e
+    return delayed_cancel, None
+
+
+async def communicate_owned(
+    proc: Any,
+    input: bytes | None = None,
+    *,
+    timeout: float | None = None,
+    grace: float = 5.0,
+) -> tuple[bytes, bytes]:
+    """Communicate with a one-shot child, then reclaim its entire process tree.
+
+    This is deliberately stronger than ``Process.communicate``: a launcher may
+    exit successfully while a backgrounded descendant closes stdio and keeps
+    running. Every one-shot caller must therefore sweep the recorded PGID on
+    *all* exits — success, non-zero status, timeout, cancellation, or an arbitrary
+    pipe/protocol failure. Long-lived owners such as ProcessTool and MCP stdio
+    must not use this helper; they retain the process until their own stop/close.
+
+    The operation's original result or exception wins over a cleanup failure.
+    If communication succeeded but cleanup itself fails, that cleanup error is
+    raised because the one-shot ownership contract was not fulfilled.
+    """
+    result: tuple[bytes, bytes] | None = None
+    operation_error: BaseException | None = None
+    operation_traceback = None
+    try:
+        # Preserve ``Process.communicate``'s no-argument contract for callers
+        # without stdin.  Besides matching asyncio itself, this matters for
+        # process doubles and alternate implementations whose method does not
+        # accept an explicit ``None`` positional argument.
+        communication = proc.communicate() if input is None else proc.communicate(input)
+        if timeout is None:
+            result = await communication
+        else:
+            result = await asyncio.wait_for(communication, timeout=timeout)
+    except BaseException as e:
+        operation_error = e
+        operation_traceback = e.__traceback__
+
+    delayed_cancel, cleanup_error = await _shield_cleanup_to_completion(
+        proc, grace=grace,
+    )
+
+    if operation_error is not None:
+        if cleanup_error is not None:
+            logger.warning(
+                "subprocess cleanup failed while preserving {}: {}",
+                type(operation_error).__name__, cleanup_error,
+            )
+        raise operation_error.with_traceback(operation_traceback)
+    if delayed_cancel is not None:
+        if cleanup_error is not None:
+            logger.warning(
+                "subprocess cleanup failed while cancellation was delayed: {}",
+                cleanup_error,
+            )
+        raise delayed_cancel
+    if cleanup_error is not None:
+        raise cleanup_error
+    # ``result`` is assigned on the only path that reaches here.
+    assert result is not None
+    return result
+
+
+def run_owned(
+    *popenargs: Any,
+    input: Any = None,
+    capture_output: bool = False,
+    timeout: float | None = None,
+    check: bool = False,
+    cleanup_grace: float = 5.0,
+    **kwargs: Any,
+) -> subprocess.CompletedProcess[Any]:
+    """Tree-owning counterpart to :func:`subprocess.run`.
+
+    The public behaviour matches the stdlib API used by this project:
+    ``input``/``stdin`` validation, ``capture_output``, text or byte streams,
+    timeout propagation, ``check=True`` and ``CompletedProcess`` results. The
+    difference is lifecycle ownership: ``Popen`` starts a new session and its
+    recorded process group is swept after every terminal path, including a
+    successful or non-zero launcher exit, timeout, and arbitrary ``BaseException``.
+
+    This helper owns only the *local* process tree. A service started through
+    launchctl/systemctl, a container workload started through Docker, or a
+    command daemonized on an SSH peer is owned by that external manager and is
+    intentionally outside the local PGID.
+    """
+    if input is not None:
+        if kwargs.get("stdin") is not None:
+            raise ValueError("stdin and input arguments may not both be used.")
+        kwargs["stdin"] = subprocess.PIPE
+
+    if capture_output:
+        if kwargs.get("stdout") is not None or kwargs.get("stderr") is not None:
+            raise ValueError(
+                "stdout and stderr arguments may not be used with capture_output."
+            )
+        kwargs["stdout"] = subprocess.PIPE
+        kwargs["stderr"] = subprocess.PIPE
+
+    proc = spawn_popen(*popenargs, **kwargs)
+    stdout: Any = None
+    stderr: Any = None
+    operation_error: BaseException | None = None
+    operation_traceback = None
+    try:
+        stdout, stderr = proc.communicate(input, timeout=timeout)
+    except BaseException as e:
+        operation_error = e
+        operation_traceback = e.__traceback__
+
+    cleanup_error: BaseException | None = None
+    try:
+        terminate_tree_sync(proc, grace=cleanup_grace)
+        # subprocess.run completes the second communicate on Windows so the
+        # TimeoutExpired instance contains accumulated pipe output. POSIX puts
+        # partial output on the exception before raising already.
+        if isinstance(operation_error, subprocess.TimeoutExpired) and not _POSIX:
+            try:
+                operation_error.stdout, operation_error.stderr = proc.communicate()
+            except BaseException as e:  # original timeout remains authoritative
+                logger.debug("post-timeout pipe collection failed: {}", e)
+    except BaseException as e:
+        cleanup_error = e
+    finally:
+        pipe_error = _close_process_pipes_sync(proc)
+        cleanup_error = cleanup_error or pipe_error
+
+    if operation_error is not None:
+        if cleanup_error is not None:
+            logger.warning(
+                "synchronous subprocess cleanup failed while preserving {}: {}",
+                type(operation_error).__name__, cleanup_error,
+            )
+        raise operation_error.with_traceback(operation_traceback)
+    if cleanup_error is not None:
+        raise cleanup_error
+
+    return_code = proc.poll()
+    if check and return_code:
+        raise subprocess.CalledProcessError(
+            return_code, proc.args, output=stdout, stderr=stderr,
+        )
+    return subprocess.CompletedProcess(proc.args, return_code, stdout, stderr)
+
+
+def _close_process_pipes_sync(proc: Any) -> BaseException | None:
+    """Close Popen streams like its context manager, returning the first error."""
+    first_error: BaseException | None = None
+    for name in ("stdout", "stderr", "stdin"):
+        stream = getattr(proc, name, None)
+        if stream is None:
+            continue
+        try:
+            stream.close()
+        except BaseException as e:  # preserve the operation error, if any
+            first_error = first_error or e
+    return first_error
+
+
+def terminate_tree_sync(proc: Any, *, grace: float = 5.0) -> None:
+    """Synchronous process-group termination for blocking CLI workflows.
+
+    Mirrors :func:`terminate_tree`: TERM the isolated group, escalate to KILL,
+    reap the direct child, then sweep descendants that outlived their leader.
+    """
+    if getattr(proc, "returncode", None) is None:
+        _signal_group(proc, signal.SIGTERM)
+        try:
+            proc.wait(timeout=max(0.0, grace))
+        except subprocess.TimeoutExpired:
+            _signal_group(proc, signal.SIGKILL)
+            try:
+                proc.wait()
+            except Exception as e:  # pragma: no cover - defensive
+                logger.debug(
+                    "sync wait() after SIGKILL failed for pid {}: {}",
+                    getattr(proc, "pid", None), e,
+                )
+    _sweep_group_sync(proc, grace=grace)
+
+
 async def _sweep_group(proc: Any, *, grace: float) -> None:
     """Drive the leftover group to empty: SIGTERM, poll, then SIGKILL.
 
@@ -183,6 +411,19 @@ async def _sweep_group(proc: Any, *, grace: float) -> None:
         logger.warning("process group {} still has members after SIGKILL", pgid)
 
 
+def _sweep_group_sync(proc: Any, *, grace: float) -> None:
+    """Blocking counterpart to :func:`_sweep_group`."""
+    pgid = _trusted_pgid(proc)
+    if pgid is None or not _group_has_members(pgid):
+        return
+    _killpg(pgid, signal.SIGTERM)
+    if _wait_group_empty_sync(pgid, timeout=grace):
+        return
+    _killpg(pgid, signal.SIGKILL)
+    if not _wait_group_empty_sync(pgid, timeout=grace):
+        logger.warning("process group {} still has members after sync SIGKILL", pgid)
+
+
 async def _wait_group_empty(pgid: int, *, timeout: float) -> bool:
     """Poll until the group is empty; True if it emptied within `timeout`."""
     deadline = asyncio.get_running_loop().time() + max(0.0, timeout)
@@ -192,6 +433,16 @@ async def _wait_group_empty(pgid: int, *, timeout: float) -> bool:
         if asyncio.get_running_loop().time() >= deadline:
             return False
         await asyncio.sleep(_GROUP_POLL_INTERVAL)
+
+
+def _wait_group_empty_sync(pgid: int, *, timeout: float) -> bool:
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        if not _group_has_members(pgid):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_GROUP_POLL_INTERVAL)
 
 
 def _trusted_pgid(proc: Any) -> int | None:
@@ -247,6 +498,8 @@ def _killpg(pgid: int, sig: int) -> None:
     try:
         os.killpg(pgid, sig)
     except ProcessLookupError:
+        # The process group exited between the liveness probe and signal; that
+        # is already the desired postcondition for termination.
         pass
     except Exception as e:  # pragma: no cover - defensive
         logger.debug("killpg({}, {}) failed: {}", pgid, sig, e)
@@ -270,6 +523,8 @@ def _signal_group(proc: Any, sig: int) -> None:
         else:
             proc.terminate()
     except ProcessLookupError:
+        # The child exited between inspection and signaling, so no cleanup work
+        # remains and termination can safely be treated as successful.
         pass
     except Exception as e:  # pragma: no cover - defensive
         logger.debug("single-process signal for pid {} failed: {}", getattr(proc, "pid", None), e)

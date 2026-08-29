@@ -33,6 +33,8 @@ class AgentPlanner:
             try:
                 return StrategyType(self._default_strategy)
             except ValueError:
+                # A stale/unknown configured strategy deliberately falls through
+                # to the same conservative automatic selection used by "auto".
                 pass
         # Complexity must come from the task, not the installation: tool_count
         # is a property of which tools are registered (typically dozens), and

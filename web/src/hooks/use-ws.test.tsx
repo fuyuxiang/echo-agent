@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { StrictMode } from "react";
-import { render, cleanup } from "@testing-library/react";
+import { act, render, cleanup } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { useWsSubscribe } from "./use-ws";
 import { dashboardWS } from "../lib/ws";
 import { useAuthStore } from "../stores/auth";
+import { useCapabilitiesStore } from "../stores/capabilities";
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
@@ -51,6 +52,14 @@ beforeEach(() => {
   FakeWebSocket.instances = [];
   (globalThis as any).WebSocket = FakeWebSocket;
   useAuthStore.setState({ token: "t1" });
+  // This suite exercises WebSocket timing, not the asynchronous capabilities
+  // probe. Pin its already-known result so a background HTTP rejection cannot
+  // update the mounted Probe after the assertion has finished.
+  useCapabilitiesStore.setState({
+    admin: true,
+    authRequired: true,
+    inflight: null,
+  });
 });
 
 afterEach(() => {
@@ -71,8 +80,10 @@ describe("useWsSubscribe", () => {
       </StrictMode>,
     );
     expect(FakeWebSocket.instances).toHaveLength(1);
-    FakeWebSocket.instances[0].handshake();
-    FakeWebSocket.instances[0].emit("task_updated", { id: "a" });
+    act(() => {
+      FakeWebSocket.instances[0].handshake();
+      FakeWebSocket.instances[0].emit("task_updated", { id: "a" });
+    });
     expect(onEvent).toHaveBeenCalledTimes(1);
   });
 
@@ -147,8 +158,10 @@ describe("useWsSubscribe", () => {
     );
     const socket = FakeWebSocket.instances[0];
     socket.readyState = FakeWebSocket.OPEN;
-    socket.onopen?.();
-    socket.onmessage?.({ data: JSON.stringify({ type: "auth_error", message: "invalid token" }) });
+    act(() => {
+      socket.onopen?.();
+      socket.onmessage?.({ data: JSON.stringify({ type: "auth_error", message: "invalid token" }) });
+    });
     expect(useAuthStore.getState().token).toBeNull();
   });
 

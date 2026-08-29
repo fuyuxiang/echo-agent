@@ -17,6 +17,7 @@ import subprocess
 import sys
 from typing import Any
 
+from echo_agent.agent.proc_lifecycle import run_owned
 from echo_agent.cli.i18n import en as _en
 from echo_agent.cli.i18n import zh as _zh
 
@@ -46,7 +47,7 @@ def _from_macos_defaults() -> str | None:
     if sys.platform != "darwin":
         return None
     try:
-        result = subprocess.run(
+        result = run_owned(
             ["defaults", "read", "-g", "AppleLocale"],
             capture_output=True, text=True, timeout=2,
         )

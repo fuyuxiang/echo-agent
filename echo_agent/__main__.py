@@ -98,8 +98,8 @@ def _run_eval(args) -> int:
             return 0 if report.passed_cases == report.total_cases else 1
         finally:
             from echo_agent.app import AppRuntime
-            await AppRuntime._stop_step("agent", ctx.agent.stop())
             await AppRuntime._stop_step("bus", ctx.bus.stop())
+            await AppRuntime._stop_step("agent", ctx.agent.stop())
             await AppRuntime._stop_step("storage", ctx.storage.close())
 
     return asyncio.run(run())
@@ -145,7 +145,7 @@ def _setup_section_names() -> str:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="echo-agent", description="Echo Agent — modular AI agent framework")
     from echo_agent import __version__
-    # __version__ 取自已安装包元数据;源码树直接运行会显示 0.0.0+unknown。
+    # 安装包取 wheel 元数据；源码树直接运行时取 pyproject.toml。
     parser.add_argument("--version", action="version", version=f"echo-agent {__version__}")
     subparsers = parser.add_subparsers(dest="command")
 
@@ -251,8 +251,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # service — deprecated alias for `gateway <action>` (kept for install.sh
     # and existing user scripts; maps to the legacy Linux system-scope unit)
+    from echo_agent.cli.service import SERVICE_ALIAS_REMOVAL_VERSION
     svc_parser = subparsers.add_parser(
-        "service", help="[deprecated] Use `echo-agent gateway <action>` instead"
+        "service",
+        help=(
+            "[deprecated] Use `echo-agent gateway <action>` instead; "
+            f"removed in v{SERVICE_ALIAS_REMOVAL_VERSION}"
+        ),
     )
     svc_parser.add_argument("action", choices=["install", "uninstall", "start", "stop", "restart", "status", "logs"], help="Service action")
     svc_parser.add_argument("-w", "--workspace", help="Workspace directory (used by install)")
@@ -400,6 +405,8 @@ def _dispatch() -> None:
         try:
             asyncio.run(run_gateway(config_path=args.config or args.top_config, host=args.host, port=args.port, workspace=args.workspace or args.top_workspace, force=args.force))
         except KeyboardInterrupt:
+            # Ctrl-C is the normal foreground-gateway shutdown path; run_gateway
+            # has already unwound its async resources before asyncio.run returns.
             pass
         return
 
@@ -596,6 +603,8 @@ def _dispatch() -> None:
     try:
         asyncio.run(run(config_path=config_path, workspace=workspace, force=getattr(args, "force", False)))
     except KeyboardInterrupt:
+        # Treat an operator's Ctrl-C as a clean CLI exit after asyncio.run has
+        # cancelled and awaited the application's shutdown tasks.
         pass
 
 

@@ -275,7 +275,7 @@ def test_venv_pip_install_empty_specs():
 def test_venv_pip_install_uv_success(monkeypatch):
     monkeypatch.setattr(ld.shutil, "which", lambda name: "/usr/bin/uv")
     proc = MagicMock(returncode=0, stdout="installed", stderr="")
-    with patch.object(ld.subprocess, "run", return_value=proc) as run:
+    with patch.object(ld, "run_owned", return_value=proc) as run:
         r = ld._venv_pip_install(("openpyxl>=3.1",))
     assert r.success is True
     # uv path should be the first call
@@ -290,7 +290,7 @@ def test_venv_pip_install_falls_back_to_pip(monkeypatch):
             return MagicMock(returncode=0, stdout="pip 24", stderr="")
         return MagicMock(returncode=0, stdout="done", stderr="")
 
-    with patch.object(ld.subprocess, "run", side_effect=fake_run):
+    with patch.object(ld, "run_owned", side_effect=fake_run):
         r = ld._venv_pip_install(("openpyxl>=3.1",))
     assert r.success is True
 
@@ -303,7 +303,7 @@ def test_venv_pip_install_pip_failure(monkeypatch):
             return MagicMock(returncode=0, stdout="pip", stderr="")
         return MagicMock(returncode=1, stdout="", stderr="resolution impossible")
 
-    with patch.object(ld.subprocess, "run", side_effect=fake_run):
+    with patch.object(ld, "run_owned", side_effect=fake_run):
         r = ld._venv_pip_install(("openpyxl>=3.1",))
     assert r.success is False
     assert "resolution impossible" in r.stderr
@@ -317,7 +317,7 @@ def test_venv_pip_install_timeout(monkeypatch):
             return MagicMock(returncode=0, stdout="pip", stderr="")
         raise ld.subprocess.TimeoutExpired(cmd, 1)
 
-    with patch.object(ld.subprocess, "run", side_effect=fake_run):
+    with patch.object(ld, "run_owned", side_effect=fake_run):
         r = ld._venv_pip_install(("openpyxl>=3.1",))
     assert r.success is False
     assert "timed out" in r.stderr

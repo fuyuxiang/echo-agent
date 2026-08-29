@@ -28,7 +28,9 @@ provides:
 kind: integration
 config_key: my_plugin
 depends_on: []
-permissions: []
+permissions:
+  - tool.register
+  - hook.register
 ```
 
 ## 入口模块
@@ -39,10 +41,10 @@ from echo_agent.plugins import PluginContext
 async def activate(ctx: PluginContext):
     """插件加载时调用。"""
     # 注册工具
-    ctx.tool_registry.register(MyTool(ctx.plugin_config))
+    ctx.register_tool(MyTool(ctx.plugin_config))
     
     # 注册钩子
-    ctx.hook_registry.register("pre_tool_call", my_hook)
+    ctx.register_hook("pre_tool_call", my_hook)
 
 async def deactivate(ctx: PluginContext):
     """关闭时调用。"""
@@ -57,23 +59,26 @@ async def deactivate(ctx: PluginContext):
 |------|------|
 | `ctx.config` | 全局 Echo Agent 配置 |
 | `ctx.workspace` | 工作区路径 |
-| `ctx.bus` | MessageBus 事件总线 |
-| `ctx.tool_registry` | 工具注册/注销 |
-| `ctx.hook_registry` | 生命周期钩子注册 |
+| `ctx.publish_outbound(...)` | 发布出站事件 |
+| `ctx.subscribe_inbound(...)` | 订阅入站事件，停用时自动解除 |
+| `ctx.register_tool(...)` | 注册工具，停用时由 PluginManager 回收 |
+| `ctx.register_hook(...)` | 注册生命周期钩子 |
 | `ctx.plugin_config` | 本 Plugin 配置（来自 `plugins.config.{config_key}`） |
 
 ## 权限模式
 
 ```yaml
 plugins:
-  permissionMode: strict  # strict | compat | legacy
+  permissionMode: strict  # strict | compat
 ```
 
 | 模式 | 行为 |
 |------|------|
-| `strict` | Plugin 声明越权时拒绝加载 |
-| `compat` | 警告但允许 |
-| `legacy` | 全部允许（不推荐） |
+| `strict` | 缺少 `tool.register` / `hook.register` 声明时拒绝对应注册 |
+| `compat` | 未声明任何权限的旧插件默认获得工具/钩子注册权限；显式声明时仍按声明检查 |
+
+!!! warning "权限声明不是进程隔离"
+    Python 插件是受信任的进程内代码。只有 `tool.register` 与 `hook.register` 在注册时强制执行；`network`、`subprocess` 和 `filesystem.*` 只是声明性元数据。
 
 ## 分发方式
 

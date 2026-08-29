@@ -1,12 +1,12 @@
 # A2A (Agent-to-Agent)
 
-Echo Agent supports the A2A protocol for inter-agent task delegation.
+Echo Agent exposes an inbound A2A service so external agents can discover it and delegate text tasks to it.
 
 ---
 
 ## Overview
 
-A2A enables agents to discover each other and delegate tasks via a standardized JSON-RPC protocol. Echo Agent can act as both A2A server (receiving tasks) and client (sending tasks to other agents).
+A2A uses Agent Cards and JSON-RPC to exchange tasks. The production runtime currently wires only the server side (receiving tasks). There is no CLI command, Agent tool, or peer configuration that delegates tasks outbound to another agent.
 
 ## Agent Card
 
@@ -46,9 +46,22 @@ submitted → working → completed | failed | canceled | input-required
 
 A2A is enabled when Gateway is running. Configuration via `a2a` config section.
 
+## Identity and task isolation
+
+When Gateway has multiple API tokens, each token yields an opaque principal. Task storage, lookup, cancellation, in-flight run handles, and Agent sessions are all principal-scoped:
+
+- Different tokens may use the same custom task ID without overwriting each other.
+- A lookup or cancellation by token B for token A's task returns the same `Task not found` error as an ID that does not exist, so ownership is not disclosed.
+- Authenticated requests use an internal `a2a:{opaque_hash}` session key containing neither the token nor its fingerprint. Single-principal, no-token deployments retain the compatible `a2a:{task_id}` form.
+
+## Outbound client status
+
+The package retains a low-level `A2AClient` Python helper, but it currently has no production caller and does not pass through the shared `net_guard` redirect-by-redirect SSRF validation and DNS pinning. It is therefore not a model-callable outbound delegation capability and must not be given model-generated or otherwise untrusted URLs.
+
 ## Limitations
 
 - No streaming (`tasks/sendSubscribe` not implemented)
 - No push notifications
 - Only text parts processed
-- Session key format: `a2a:{task_id}`
+- No production outbound A2A delegation entry point
+- Task retention is bounded by a TTL (3600 seconds by default) and count limit (1000 by default)

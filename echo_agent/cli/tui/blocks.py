@@ -157,6 +157,8 @@ class ExpandableBlock(Static):
         try:
             self.app.query_one("PromptInput").focus()
         except Exception:
+            # Click toggling succeeded; focus restoration is optional when the
+            # prompt is not mounted (notably in isolated widget tests).
             pass
 
     def key_enter(self) -> None:
@@ -580,6 +582,8 @@ class AgentReply(Static):
             if theme is not None and theme.primary:
                 return theme.primary
         except Exception:
+            # Pure-widget tests have no attached app/theme, so use the stable
+            # fallback colour returned below.
             pass
         return "#8899ff"
 
@@ -619,6 +623,8 @@ class AgentReply(Static):
                     "muted": (theme.variables or {}).get("text-muted", ""),
                 }
         except Exception:
+            # With no live Textual theme (for example unit tests), the empty
+            # palette below intentionally delegates to Rich defaults.
             pass
         return {}
 

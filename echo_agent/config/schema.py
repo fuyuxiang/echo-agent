@@ -2684,7 +2684,7 @@ class WorkerProfileConfig(_Base):
         },
     )
     max_iterations: int = Field(
-        default=12,
+        default=12, ge=1,
         json_schema_extra={
             "status": "effective", "ref": "agent/multi_agent/registry.py:28",
             "desc_zh": "子代理单任务最大迭代数",
@@ -2735,7 +2735,7 @@ class MultiAgentConfig(_Base):
         },
     )
     max_iterations: int = Field(
-        default=12,
+        default=12, ge=1,
         json_schema_extra={
             "status": "effective", "ref": "agent/loop.py:444",
             "desc_zh": "子代理默认最大迭代数",
@@ -3144,7 +3144,7 @@ class ObservabilityConfig(_Base):
         },
     )
     health_check_interval_seconds: int = Field(
-        default=60,
+        default=60, ge=1,
         json_schema_extra={
             "status": "effective", "ref": "app.py:198",
             "desc_zh": "健康检查间隔(秒)",
@@ -3176,7 +3176,7 @@ class ObservabilityConfig(_Base):
         },
     )
     otel_export_interval_ms: int = Field(
-        default=5000,
+        default=5000, ge=1,
         json_schema_extra={
             "status": "effective", "ref": "observability/telemetry.py:87",
             "desc_zh": "OpenTelemetry 指标导出间隔(毫秒)",
@@ -4333,7 +4333,7 @@ class AgentBehaviorConfig(_Base):
     """
 
     max_iterations: int = Field(
-        default=40,
+        default=40, ge=1,
         json_schema_extra={
             "status": "effective", "ref": "agent/loop.py:236",
             "desc_zh": "agent 主循环最大迭代数",

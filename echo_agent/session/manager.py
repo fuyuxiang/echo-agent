@@ -437,6 +437,8 @@ class SessionManager:
                 try:
                     os.unlink(tmp)
                 except OSError:
+                    # Preserve the original save/cancellation failure; atomic
+                    # replace prevents exposing a partial session file.
                     pass
                 raise
 

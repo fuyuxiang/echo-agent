@@ -1,6 +1,9 @@
 # 工作区、会话与身份
 
-echo-agent 通过 **Session** 机制实现多租户隔离：每个 channel + chat 组合拥有独立的对话历史与状态，互不干扰。
+echo-agent 通过 **Session** 机制隔离对话上下文与并发作用域：每个 channel + chat 组合拥有独立的对话历史与状态，避免普通的上下文串扰。
+
+!!! warning "Session 不是租户授权边界"
+    Session key 是路由与状态作用域，不是不可伪造的安全主体；会话隔离不等于多租户隔离。若需要在不相信的用户之间建立权限边界，请使用独立实例、工作区、数据库与凭据。详见[多客户端与多租户边界](security-model.md#multi-client-tenant-boundary)。
 
 ## 核心概念
 
@@ -8,7 +11,7 @@ echo-agent 通过 **Session** 机制实现多租户隔离：每个 channel + cha
 |------|------|
 | Session key | 会话唯一标识，格式为 `channel:chat_id` |
 | SessionManager | 会话生命周期管理器，负责创建、缓存、过期与归档 |
-| Scoped session | 群聊中按 `per_user` 策略追加 `:sender_id`，实现用户级隔离 |
+| Scoped session | 群聊中按 `per_user` 策略追加 `:sender_id`，隔离用户级对话上下文（不构成授权边界） |
 | Memory scope | 独立于 session_key 的记忆作用域，决定长期记忆的归属 |
 
 ## Session Key 组成
@@ -45,7 +48,7 @@ stateDiagram-v2
 - **Expired** — 超过 `expiry_hours=72` 未活跃，可被重新激活
 - **Archived** — 超过 `archive_hours=168`，从活跃存储移除
 
-## 作用域隔离
+## 上下文作用域隔离
 
 ```mermaid
 graph TD

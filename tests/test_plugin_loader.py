@@ -110,7 +110,10 @@ def test_topological_sort_circular():
     a = PluginRecord(manifest=PluginManifest(name="a", depends_on=["b"]), source="user")
     b = PluginRecord(manifest=PluginManifest(name="b", depends_on=["a"]), source="user")
     result = topological_sort([a, b])
-    assert len(result) >= 1
+    assert {record.manifest.name for record in result} == {"a", "b"}
+    assert a.status == b.status == "failed"
+    assert "dependency cycle" in a.error
+    assert "dependency cycle" in b.error
 
 
 def test_topological_sort_no_deps():
@@ -268,8 +271,32 @@ def test_resolve_plugin_interface_unexpected_type():
 
 
 def test_topological_sort_missing_dep():
-    """Dependencies not in the record set should be silently skipped."""
+    """Dependencies not in the record set fail closed but remain reportable."""
     a = PluginRecord(manifest=PluginManifest(name="a", depends_on=["missing"]), source="user")
     result = topological_sort([a])
     assert len(result) == 1
     assert result[0].manifest.name == "a"
+    assert result[0].status == "failed"
+    assert result[0].error == "missing dependencies: missing"
+
+
+def test_topological_sort_propagates_invalid_dependency_chain():
+    base = PluginRecord(
+        manifest=PluginManifest(name="base", depends_on=["missing"]),
+        source="user",
+    )
+    middle = PluginRecord(
+        manifest=PluginManifest(name="middle", depends_on=["base"]),
+        source="user",
+    )
+    leaf = PluginRecord(
+        manifest=PluginManifest(name="leaf", depends_on=["middle"]),
+        source="user",
+    )
+
+    result = topological_sort([leaf, middle, base])
+
+    assert [record.manifest.name for record in result] == ["base", "middle", "leaf"]
+    assert all(record.status == "failed" for record in result)
+    assert middle.error == "unavailable dependencies: base"
+    assert leaf.error == "unavailable dependencies: middle"

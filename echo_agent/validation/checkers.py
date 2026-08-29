@@ -14,6 +14,8 @@ from typing import Protocol, runtime_checkable
 
 from loguru import logger
 
+from echo_agent.agent.proc_lifecycle import communicate_owned, spawn_exec
+
 
 @dataclass
 class Diagnostic:
@@ -28,18 +30,6 @@ class Diagnostic:
 class Checker(Protocol):
     def can_check(self, path: Path) -> bool: ...
     async def check(self, path: Path) -> list[Diagnostic]: ...
-
-
-async def _reap(proc: asyncio.subprocess.Process) -> None:
-    """Terminate and collect a subprocess so a cancelled check leaves no orphan."""
-    try:
-        proc.kill()
-    except ProcessLookupError:
-        return  # already exited — nothing to reap
-    try:
-        await proc.wait()
-    except ProcessLookupError:
-        pass
 
 
 class PyCompileChecker:
@@ -89,7 +79,7 @@ class RuffChecker:
         if self._ruff is None:
             return []
         try:
-            proc = await asyncio.create_subprocess_exec(
+            proc = await spawn_exec(
                 self._ruff, "check", "--output-format=json", "--force-exclude", str(path),
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
@@ -99,14 +89,10 @@ class RuffChecker:
         # Spawn succeeded: any early exit (esp. CancelledError from an outer
         # wait_for timeout) must reap the child so it can't become an orphan.
         try:
-            out, _err = await proc.communicate()
-        except Exception as e:  # communicate failed → fail-open, but still reap
+            out, _err = await communicate_owned(proc)
+        except Exception as e:  # communicate failed → fail-open after cleanup
             logger.debug("RuffChecker communicate failed (fail-open): {}", e)
-            await _reap(proc)
             return []
-        except BaseException:  # includes CancelledError → reap, then propagate
-            await _reap(proc)
-            raise
         text = out.decode("utf-8", "replace").strip()
         if not text:
             return []
