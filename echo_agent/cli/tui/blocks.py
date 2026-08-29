@@ -27,9 +27,13 @@ from echo_agent.cli.render.text import (
 )
 
 # Same arrangement for the tool-line vocabulary, now in cli/render/tool.py.
-# _TOOL_VERB and _OBJECT_KEY have no caller left here and _fmt_duration_ms is
-# only a local alias for the renamed fmt_duration_ms, so all three carry an
-# explicit re-export form; the three functions below are still called here.
+# _TOOL_VERB and _OBJECT_KEY have no caller left here, so they carry the
+# `X as X` self-alias form that marks them as a deliberate re-export. Only that
+# same-name form counts as one: a renaming alias such as `fmt_duration_ms as
+# _fmt_duration_ms` does not suppress F401 on its own. _fmt_duration_ms passes
+# the unused-import check only because it still has a real call site further
+# down -- remove that call and this import has to go with it. humanize_tool,
+# pick_object and summarize_result are likewise still called here.
 from echo_agent.cli.render.tool import (
     _OBJECT_KEY as _OBJECT_KEY,
     _TOOL_VERB as _TOOL_VERB,
