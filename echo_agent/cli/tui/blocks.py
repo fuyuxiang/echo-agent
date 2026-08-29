@@ -54,6 +54,12 @@ from echo_agent.cli.render.redact import (
     format_params,
     redact_for_export as redact_for_export,
 )
+# Diff colouring, now in cli/render/diff.py with an injectable palette so the
+# inline renderer can emit ANSI from the same line-classification rules. Both
+# names still have call sites in ToolCallBlock.render_detail below, so they are
+# imported plainly -- the self-alias form is only needed for names this module
+# no longer uses itself.
+from echo_agent.cli.render.diff import _DIFF_TOOLS, colorize_diff
 from echo_agent.cli.tui.glyphs import GLYPHS, cog_glyph
 from echo_agent.cli.tui.protocol import CogEvent
 from echo_agent.cli.tui.turn_layout import TRACE_DEPTH, rail_prefix
@@ -172,33 +178,6 @@ class ExpandableBlock(Static):
 
     def key_space(self) -> None:
         self.toggle()
-
-
-
-# Tools whose result text is a unified-style diff worth coloring line by line.
-_DIFF_TOOLS = {"edit_file", "patch", "write_file"}
-
-
-def colorize_diff(text: str, max_lines: int = 40) -> str:
-    """Color a unified-diff-ish blob: +added lines green, -removed lines red,
-    @@ hunk headers muted. Each line is escaped before the color tag is added so
-    diff content can never inject markup. Returns Rich markup, capped so a huge
-    diff can't flood the transcript."""
-    out: list[str] = []
-    lines = text.splitlines()
-    for raw in lines[:max_lines]:
-        line = escape(raw)
-        if raw.startswith("+") and not raw.startswith("+++"):
-            out.append(f"[$success]{line}[/]")
-        elif raw.startswith("-") and not raw.startswith("---"):
-            out.append(f"[$error]{line}[/]")
-        elif raw.startswith("@@") or raw.startswith("+++") or raw.startswith("---"):
-            out.append(f"[$text-muted]{line}[/]")
-        else:
-            out.append(line)
-    if len(lines) > max_lines:
-        out.append(f"[$text-muted]… (还有 {len(lines) - max_lines} 行)[/]")
-    return "\n".join(out)
 
 
 # Block-letter ECHO logo. A 3-stop gradient (primary → accent → secondary) is
