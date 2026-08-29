@@ -13,6 +13,12 @@ from rich.text import Text
 from rich.theme import Theme as RichTheme
 from textual.widgets import Static
 
+# Re-exported for importers that still reach for these through blocks.py; the
+# definitions now live in cli/render/text.py so the inline renderer can share
+# them without pulling in Textual.
+from echo_agent.cli.render.text import (  # noqa: F401
+    _LEGACY_SUMMARY_GLYPHS, clip as _clip, strip_legacy_glyph,
+)
 from echo_agent.cli.tui.glyphs import GLYPHS, cog_glyph
 from echo_agent.cli.tui.protocol import CogEvent
 from echo_agent.cli.tui.turn_layout import TRACE_DEPTH, rail_prefix
@@ -47,21 +53,6 @@ _OBJECT_KEY = {
 def humanize_tool(name: str) -> str:
     """Tool id -> Chinese verb. Unknown tools fall back to the raw id."""
     return _TOOL_VERB.get(name, name)
-
-
-# Glyphs older gateways prefixed onto their cognitive summary text. The client
-# now owns the line marker (glyphs.py), so a summary arriving with one of these
-# would render two markers side by side. Stripped on read rather than trusted,
-# because the gateway and the cli are versioned independently.
-_LEGACY_SUMMARY_GLYPHS = ("🧠", "✍", "💭", "🔧", "⚠️", "⚠", "💰", "⏳", "🧬", "•")
-
-
-def strip_legacy_glyph(summary: str) -> str:
-    text = str(summary).lstrip()
-    for glyph in _LEGACY_SUMMARY_GLYPHS:
-        if text.startswith(glyph):
-            return text[len(glyph):].lstrip()
-    return text
 
 
 class ExpandableBlock(Static):
@@ -193,11 +184,6 @@ def colorize_diff(text: str, max_lines: int = 40) -> str:
     if len(lines) > max_lines:
         out.append(f"[$text-muted]… (还有 {len(lines) - max_lines} 行)[/]")
     return "\n".join(out)
-
-
-def _clip(s: str, n: int) -> str:
-    s = " ".join(str(s).split())
-    return s if len(s) <= n else s[: n - 1] + "…"
 
 
 def _fmt_duration_ms(ms: int | None) -> str:
