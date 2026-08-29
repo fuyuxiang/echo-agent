@@ -96,7 +96,28 @@ ASCII = GlyphSet(
     cognitive={k: "-" for k in _NARROW_COG},
 )
 
-_SETS = {"narrow": NARROW, "emoji": EMOJI, "ascii": ASCII}
+# Claude Code's vocabulary: one filled circle for anything that acts (a tool
+# call, the agent's own voice) and a hook for the lines that report back. There
+# is no rail and no ├─/└─ tree — the inline renderer indents from fixed
+# constants (render/geometry.py), which is what removes the width-compensation
+# arithmetic the rail needed (see turn_layout.py for that history). rail/branch
+# are deliberately blank rather than omitted: GlyphSet requires them, and a
+# blank prefix is the correct value for a renderer that does not draw rails.
+CLAUDE = GlyphSet(
+    name="claude",
+    reply="⏺", user="❯", tool="⏺",
+    ok="✓", fail="✗", pending="…", unfinished="–",
+    collapsed="▸", expanded="▾",
+    rail="", branch="", branch_last="⎿ ",
+    sep="·",
+    cognitive={
+        "memory_recalled": "⏺", "memory_written": "⏺", "thinking": "✻",
+        "tool_call": "⏺", "approval_request": "✦", "cost_update": "⏺",
+        "heartbeat": "·", "evolution": "✦",
+    },
+)
+
+_SETS = {"narrow": NARROW, "emoji": EMOJI, "ascii": ASCII, "claude": CLAUDE}
 
 
 def resolve_glyphs(env: Mapping[str, str] | None = None) -> GlyphSet:
