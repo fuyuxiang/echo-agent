@@ -1,5 +1,6 @@
 import pytest
 
+from echo_agent.cli import palette
 from echo_agent.cli.render import ansi as A
 
 
@@ -45,3 +46,27 @@ def test_supports_color_follows_override():
         assert A.supports_color() is False
     finally:
         A.set_color_override(None)
+
+
+def _escape(hex_value: str) -> str:
+    red, green, blue = (int(hex_value[i:i + 2], 16) for i in (1, 3, 5))
+    return f"\033[38;2;{red};{green};{blue}m"
+
+
+def test_reset_palette_cache_forces_reresolution(monkeypatch):
+    # /theme flips light/dark at runtime; without the hook the cache would keep
+    # serving the palette resolved at first paint.
+    monkeypatch.setenv("ECHO_TUI_THEME", "dark")
+    try:
+        A.reset_palette_cache()
+        assert A.fg("primary") == _escape(palette.DARK_PALETTE["primary"])
+
+        monkeypatch.setenv("ECHO_TUI_THEME", "light")
+        # Still the dark escape: the cache is doing its job.
+        assert A.fg("primary") == _escape(palette.DARK_PALETTE["primary"])
+
+        A.reset_palette_cache()
+        assert A.fg("primary") == _escape(palette.LIGHT_PALETTE["primary"])
+    finally:
+        # Leave no cached palette behind for tests that follow.
+        A.reset_palette_cache()

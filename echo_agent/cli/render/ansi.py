@@ -9,7 +9,9 @@ emits no escapes at all.
 
 from __future__ import annotations
 
-from echo_agent.cli.colors import color_enabled, set_color_override  # noqa: F401
+from echo_agent.cli.colors import (
+    color_enabled, set_color_override as set_color_override,
+)
 from echo_agent.cli.palette import active_palette
 
 RESET = "\033[0m"
@@ -27,6 +29,19 @@ def _palette() -> dict[str, str]:
     if _PALETTE is None:
         _PALETTE = active_palette()
     return _PALETTE
+
+
+def reset_palette_cache() -> None:
+    """Drop the cached palette so the next fg() re-resolves it.
+
+    /theme switches the light/dark palette at runtime, and the cache would
+    otherwise keep serving the palette resolved at first paint. Exposed as a
+    function rather than letting callers assign to the module global: the
+    private name is not a contract, and a hook is where a future validation or
+    invalidation-logging step belongs.
+    """
+    global _PALETTE
+    _PALETTE = None
 
 
 def supports_color() -> bool:
