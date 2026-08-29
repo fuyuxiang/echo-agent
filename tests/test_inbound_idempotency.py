@@ -18,7 +18,7 @@ from echo_agent.bus.idempotency import (
     canonical_operation_fingerprint,
     deterministic_event_id,
 )
-from echo_agent.bus.events import OutboundEvent
+from echo_agent.bus.events import OutboundEvent, stamp_turn_outcome
 from echo_agent.channels.webhook import WebhookChannel
 from echo_agent.storage.sqlite import SQLiteBackend
 
@@ -520,22 +520,22 @@ async def test_webhook_final_outcome_sets_truthful_wait_and_cache_status() -> No
         is_final=True,
         message_kind="final",
     )
-    final.metadata.update({
-        "_inbound_event_id": "event-incomplete",
-        "_turn_status": "incomplete",
-        "_error": True,
-        "_error_reason": "budget_halted",
-        "_http_status": 409,
-    })
+    final.metadata["_inbound_event_id"] = "event-incomplete"
+    # Stamp through the real producer rather than hand-writing the keys, so this
+    # test cannot drift from the outcome contract it is meant to pin.
+    stamp_turn_outcome(final.metadata, "incomplete", error="budget_halted")
 
     await channel.send(final)
 
     result = waiter.result()
-    assert result.status == 409
+    # The answer exists, so the caller gets 200 with the status in the body;
+    # 409 stays reserved for idempotency-key conflicts.
+    assert result.status == 200
     assert result.payload["status"] == "incomplete"
     assert result.payload["error"] == "budget_halted"
+    assert result.payload["response"] == "partial answer"
     cached = await channel._idempotency.wait(claim.entry)
-    assert cached.status == 409
+    assert cached.status == 200
     assert cached.payload == result.payload
 
 
@@ -723,6 +723,12 @@ def test_gateway_generic_error_final_is_not_reported_completed(tmp_path) -> None
 
 
 def test_gateway_incomplete_final_preserves_turn_status(tmp_path) -> None:
+    """An unfinished turn that still answered is a 200 carrying its status.
+
+    409 is reserved for idempotency-key conflicts. Reusing it here would leave a
+    client unable to tell "your key was reused with different content" (never
+    retry) from "here is the answer, the task just did not finish" (retryable).
+    """
     gateway, _publish = _gateway(tmp_path)
     status, payload = gateway._http_final_response(
         "event-id",
@@ -731,15 +737,15 @@ def test_gateway_incomplete_final_preserves_turn_status(tmp_path) -> None:
             "text": "partial",
             "metadata": {
                 "_turn_status": "incomplete",
-                "_error": True,
                 "_error_reason": "budget_halted",
-                "_http_status": 409,
+                "_http_status": 200,
             },
         },
     )
-    assert status == 409
+    assert status == 200
     assert payload["status"] == "incomplete"
     assert payload["error"] == "budget_halted"
+    assert payload["reply"]["text"] == "partial"
 
 
 @pytest.mark.asyncio
@@ -1160,3 +1166,196 @@ async def test_gateway_ws_definite_rejection_releases_ledger_for_retry(
     finally:
         await gateway.stop()
         await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_webhook_releases_tombstone_when_durable_sync_fails(tmp_path) -> None:
+    """A failed replay sync must not pin the key at `pending` for its whole TTL.
+
+    The tombstone is claimed before the turn row is synced. When that sync failed
+    the claim was left behind, so every later retry replayed "pending" even
+    though the turn had already completed — the answer became unreachable until
+    the 1h TTL expired.
+    """
+    backend = SQLiteBackend(tmp_path / "webhook-sync-release.db")
+    await backend.initialize()
+    try:
+        store = TurnRunStore(backend)
+        event_id = deterministic_event_id("webhook", "sender\0chat", "sync-key")
+        await store.accept(event_id, "webhook:chat")
+        assert await store.mark_running(
+            event_id, "webhook:chat", context_key="ctx", trace_id="trace",
+        )
+        await store.mark_terminal(
+            event_id, "completed", response_text="real answer",
+        )
+
+        channel, publish = _webhook()
+        channel.bus.claim_durable_idempotency = store.claim_idempotency
+        channel.bus.release_durable_idempotency = store.release_idempotency
+        channel.bus.get_turn_run = store.get
+        channel.bus.sync_durable_idempotency = AsyncMock(
+            side_effect=RuntimeError("storage flapped")
+        )
+
+        body = {"sender_id": "sender", "chat_id": "chat", "text": "work"}
+        headers = {"Idempotency-Key": "sync-key"}
+        failed = await channel._handle_webhook(_Request(body, headers=headers))
+        assert failed.status == 503
+
+        # The tombstone must be gone, not stranded at `pending`.
+        assert await store.get_idempotency(event_id) is None
+
+        # A retry now reaches the real durable result instead of "pending".
+        channel.bus.sync_durable_idempotency = store.sync_idempotency_from_turn
+        retry = await channel._handle_webhook(_Request(body, headers=headers))
+        assert retry.status == 200
+        assert _response_json(retry)["status"] == "completed"
+        assert _response_json(retry)["response"] == "real answer"
+        publish.assert_not_awaited()
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_releases_tombstone_when_durable_sync_fails(tmp_path) -> None:
+    """Gateway HTTP mirrors the webhook release-on-sync-failure contract."""
+    backend = SQLiteBackend(tmp_path / "gateway-sync-release.db")
+    await backend.initialize()
+    try:
+        store = TurnRunStore(backend)
+        event_id = deterministic_event_id(
+            "gateway-message", "http\0anonymous\0gateway:api:chat", "sync-key",
+        )
+        await store.accept(event_id, "gateway:api:chat")
+        assert await store.mark_running(
+            event_id, "gateway:api:chat", context_key="ctx", trace_id="trace",
+        )
+        await store.mark_terminal(
+            event_id, "completed", response_text="real answer",
+        )
+
+        gateway, publish = _gateway(tmp_path)
+        gateway._bus.set_turn_run_store(store)
+        original_sync = gateway._bus.sync_durable_idempotency
+        gateway._bus.sync_durable_idempotency = AsyncMock(
+            side_effect=RuntimeError("storage flapped")
+        )
+
+        body = {
+            "platform": "api", "user_id": "user", "chat_id": "chat",
+            "text": "work",
+        }
+        headers = {"Idempotency-Key": "sync-key"}
+        failed = await gateway._handle_message(_Request(body, headers=headers))
+        assert failed.status == 503
+        assert await store.get_idempotency(event_id) is None
+
+        gateway._bus.sync_durable_idempotency = original_sync
+        retry = await gateway._handle_message(_Request(body, headers=headers))
+        assert retry.status == 200
+        assert _response_json(retry)["status"] == "completed"
+        assert _response_json(retry)["reply"]["text"] == "real answer"
+        publish.assert_not_awaited()
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_release_failure_preserves_the_definite_response(tmp_path) -> None:
+    """A failing release must not replace a definite 503 with an opaque 500."""
+    backend = SQLiteBackend(tmp_path / "release-raises.db")
+    await backend.initialize()
+    try:
+        store = TurnRunStore(backend)
+        event_id = deterministic_event_id("webhook", "sender\0chat", "sync-key")
+        await store.accept(event_id, "webhook:chat")
+        assert await store.mark_running(
+            event_id, "webhook:chat", context_key="ctx", trace_id="trace",
+        )
+
+        channel, _publish = _webhook()
+        channel.bus.claim_durable_idempotency = store.claim_idempotency
+        channel.bus.get_turn_run = store.get
+        channel.bus.sync_durable_idempotency = AsyncMock(
+            side_effect=RuntimeError("storage flapped")
+        )
+        channel.bus.release_durable_idempotency = AsyncMock(
+            side_effect=RuntimeError("release also failed")
+        )
+
+        response = await channel._handle_webhook(_Request(
+            {"sender_id": "sender", "chat_id": "chat", "text": "work"},
+            headers={"Idempotency-Key": "sync-key"},
+        ))
+        assert response.status == 503
+    finally:
+        await backend.close()
+
+
+def test_unfinished_turn_that_answered_is_not_an_error_frame() -> None:
+    """`_error` drives user-visible failure signals, so it means "no answer".
+
+    A turn that hit the iteration ceiling or a length cap still carries the
+    model's conclusion. Flagging it would show the user a failure reaction (❌)
+    on a reply that actually succeeded.
+    """
+    for status in ("incomplete", "interrupted"):
+        metadata: dict = {}
+        stamp_turn_outcome(metadata, status, error="forced_convergence")
+        assert metadata["_turn_status"] == status
+        assert "_error" not in metadata
+        assert metadata["_http_status"] == 200
+        # The reason survives for diagnostics without being an error signal.
+        assert metadata["_error_reason"] == "forced_convergence"
+
+    faulted: dict = {}
+    stamp_turn_outcome(faulted, "failed", error="provider exploded")
+    assert faulted["_error"] is True
+    assert faulted["_http_status"] == 500
+
+    completed: dict = {"_error": True, "_error_reason": "stale"}
+    stamp_turn_outcome(completed, "completed")
+    assert "_error" not in completed
+    assert "_error_reason" not in completed
+    assert completed["_http_status"] == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("outcome", "expected_emoji"),
+    [("completed", "\U0001f44d"), ("incomplete", "\U0001f44d"), ("failed", "❌")],
+)
+async def test_reaction_reflects_whether_the_turn_answered(
+    outcome: str, expected_emoji: str,
+) -> None:
+    """An unfinished turn that answered must not be reacted to as a failure."""
+    from echo_agent.channels.manager import ChannelManager
+
+    manager = ChannelManager.__new__(ChannelManager)
+    manager._channels = {}
+    manager._state_lock = asyncio.Lock()
+    manager._inbound_msg_ids = {"turn-1": ("chat", "msg-1", 0.0)}
+    manager._heartbeat_msg_ids = {}
+    manager._delivered_milestone = {}
+
+    reactions: list[str] = []
+    channel = SimpleNamespace(
+        config=SimpleNamespace(reactions_enabled=True),
+        stop_typing=AsyncMock(),
+        remove_reaction=AsyncMock(),
+        send_reaction=AsyncMock(
+            side_effect=lambda _chat, _msg, emoji: reactions.append(emoji)
+        ),
+    )
+    manager._channels["telegram"] = channel
+
+    event = OutboundEvent.text_reply(
+        channel="telegram", chat_id="chat", text="answer",
+    )
+    event.metadata["_inbound_event_id"] = "turn-1"
+    stamp_turn_outcome(event.metadata, outcome, error="forced_convergence")
+
+    await manager._on_outbound_final(event)
+
+    assert reactions == [expected_emoji]

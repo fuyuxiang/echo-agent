@@ -220,9 +220,13 @@ async def test_incomplete_turn_still_recorded_when_delivery_ok():
     assert cron_calls[-1][0] == "completed"
     assert task_calls[-1][0] == "incomplete"
     assert loop.bus.sent[-1].metadata["_turn_status"] == "incomplete"
-    assert loop.bus.sent[-1].metadata["_error"] is True
+    # The turn answered, it just did not finish the task. `_error` drives
+    # user-visible failure signals (the channel reaction emoji), so an
+    # unfinished-but-answered turn must NOT set it; the reason is retained for
+    # diagnostics and the status stays 200 because a reply exists.
+    assert "_error" not in loop.bus.sent[-1].metadata
     assert loop.bus.sent[-1].metadata["_error_reason"] == "budget_halted"
-    assert loop.bus.sent[-1].metadata["_http_status"] == 409
+    assert loop.bus.sent[-1].metadata["_http_status"] == 200
 
 
 @pytest.mark.asyncio
@@ -242,7 +246,10 @@ async def test_interrupted_turn_final_frame_matches_terminal_status():
     assert cron_calls[-1][0] == "completed"
     assert task_calls[-1][0] == "incomplete"
     assert loop.bus.sent[-1].metadata["_turn_status"] == "interrupted"
-    assert loop.bus.sent[-1].metadata["_http_status"] == 409
+    # "stopped" reached the user, so this is not an error frame — see the
+    # incomplete case above.
+    assert "_error" not in loop.bus.sent[-1].metadata
+    assert loop.bus.sent[-1].metadata["_http_status"] == 200
 
 
 @pytest.mark.asyncio

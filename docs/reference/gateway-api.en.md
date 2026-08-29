@@ -114,10 +114,79 @@ All errors return a consistent JSON structure:
 | 401 | `UNAUTHORIZED` | Missing or invalid token |
 | 403 | `FORBIDDEN` | Token lacks required permission |
 | 404 | `NOT_FOUND` | Resource does not exist |
-| 409 | `CONFLICT` | Resource state conflict |
+| 409 | `CONFLICT` | Resource state conflict (idempotency key reused with different content) |
 | 429 | `RATE_LIMITED` | Too many requests |
 | 500 | `INTERNAL_ERROR` | Unexpected server error |
 | 503 | `UNAVAILABLE` | Agent is shutting down or not ready |
+
+### Idempotent retries
+
+Message-submitting entry points accept an idempotency key, so a retry after a
+timeout or a dropped connection cannot cause the same message to be processed
+twice.
+
+| Entry point | How to pass the key |
+|-------------|---------------------|
+| `POST {api_prefix}/message` | `Idempotency-Key` or `X-Idempotency-Key` header |
+| Webhook channel | Either header above, or an `idempotency_key` body field |
+| WebSocket `message` frame | An `idempotency_key` field in the frame |
+
+Keys must be non-empty, at most **200** characters, and free of control
+characters. Supplying both a header and a body key with different values
+returns 400.
+
+```bash
+curl -X POST http://127.0.0.1:58123/api/v1/message \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: order-2026-0829-001" \
+  -d '{"platform":"api","user_id":"u1","chat_id":"c1","text":"build the report"}'
+```
+
+Same key with the same content replays the original event and response without
+publishing again:
+
+```json
+{"status": "accepted", "event_id": "38919935...", "session_key": "gateway:api:c1"}
+```
+
+Same key with **different** content is rejected, and no new event is created:
+
+```json
+{"error": "idempotency key was already used for a different request"}
+```
+
+!!! warning "409 means key conflict, nothing else"
+    409 is reserved for "this key was already used for different content". Do
+    **not** retry it — use a new key, or restore the original content. An
+    unfinished turn (`incomplete` / `interrupted`) returns 200 instead, with the
+    nuance carried by the body's `status` field, and those requests are
+    retryable.
+
+A key's scope includes the caller's identity, so keys from different tokens
+never collide:
+
+| Entry point | Scope |
+|-------------|-------|
+| HTTP | token-derived principal + `session_key` |
+| WebSocket | same, taken from the handshake identity |
+| Webhook | `sender_id` + `chat_id` |
+
+| Parameter | Value |
+|-----------|-------|
+| Record lifetime | 3600 seconds (1 hour) |
+| In-process cache entries | 4096 (Gateway) / 2048 (Webhook) |
+| Persisted record ceiling | 100000 |
+
+Records are also written to SQLite, so **a retry that crosses a process restart
+is still deduplicated and can replay the stored result**, independent of
+per-session turn pruning. If storage is unavailable, or the unexpired-record
+ceiling is reached, these endpoints **fail closed** with 503 rather than
+admitting a request that might execute twice.
+
+With `wait=false` (the default) the cached value is the delivery
+acknowledgement; with `wait=true` it is the turn's final result. A retry that
+races a still-running first request waits for that same result instead of
+starting new work, and returns 504 on timeout.
 
 ### Pagination
 

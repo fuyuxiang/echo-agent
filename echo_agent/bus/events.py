@@ -21,6 +21,52 @@ class EventType(str, Enum):
     SYSTEM = "system"
 
 
+TERMINAL_TURN_OUTCOMES = frozenset(
+    {"completed", "incomplete", "failed", "interrupted"}
+)
+
+# Outcomes that produced no usable answer. Only these are *errors*: a turn that
+# hit the iteration ceiling or a length cap still carries the model's
+# conclusion, so presenting it as a failure would be untrue to the user.
+FAULTED_TURN_OUTCOMES = frozenset({"failed"})
+
+# HTTP status per outcome. `incomplete`/`interrupted` deliberately stay 200: the
+# body's `status` field carries the nuance, and 409 is already spoken for by
+# idempotency-key conflicts — overloading it would leave a client unable to tell
+# "your key was reused with different content" (never retry) from "here is the
+# answer, the task just did not finish" (retryable).
+_TURN_OUTCOME_HTTP_STATUS: dict[str, int] = {
+    "completed": 200,
+    "incomplete": 200,
+    "interrupted": 200,
+    "failed": 500,
+}
+
+
+def turn_outcome_http_status(status: str) -> int:
+    """HTTP status for a terminal turn outcome, defaulting to 500 if unknown."""
+    return _TURN_OUTCOME_HTTP_STATUS.get(status, 500)
+
+
+def final_frame_http_status(metadata: dict[str, Any], turn_status: str) -> int:
+    """Resolve a final frame's HTTP status, honouring an explicit override.
+
+    Producers that reject a turn before it runs (bus rate limiting) set a
+    truthful ``_http_status`` such as 429 that the outcome table cannot express.
+    An out-of-range or non-numeric value is ignored rather than trusted, so a
+    malformed override cannot produce an invalid response status.
+    """
+    raw = metadata.get("_http_status")
+    if raw is not None:
+        try:
+            explicit = int(raw)
+        except (TypeError, ValueError):
+            explicit = 0
+        if 200 <= explicit <= 599:
+            return explicit
+    return turn_outcome_http_status(turn_status)
+
+
 def stamp_turn_outcome(
     metadata: dict[str, Any], status: str, *, error: str = "",
 ) -> None:
@@ -30,18 +76,27 @@ def stamp_turn_outcome(
     writes its terminal ledger row. These fields let them cache and return the
     same status atomically with delivery instead of reporting every final frame
     as a successful HTTP 200/completed result.
+
+    ``_error`` means "this turn produced no answer" — it drives user-visible
+    failure signals such as the channel reaction emoji. An unfinished turn that
+    still answered (forced convergence, truncated output, an interrupt after
+    partial work) is NOT flagged: ``_turn_status`` carries that nuance for
+    callers who need it, without telling the user their answer failed.
     """
-    if status not in {"completed", "incomplete", "failed", "interrupted"}:
+    if status not in TERMINAL_TURN_OUTCOMES:
         raise ValueError(f"invalid turn outcome: {status}")
     metadata["_turn_status"] = status
-    if status == "completed":
+    metadata["_http_status"] = turn_outcome_http_status(status)
+    if status not in FAULTED_TURN_OUTCOMES:
         metadata.pop("_error", None)
-        metadata.pop("_error_reason", None)
-        metadata.pop("_http_status", None)
+        if status == "completed":
+            metadata.pop("_error_reason", None)
+        elif error:
+            # Retained for diagnostics/observability; not an error signal.
+            metadata["_error_reason"] = error
         return
     metadata["_error"] = True
     metadata["_error_reason"] = error or f"turn {status}"
-    metadata["_http_status"] = 500 if status == "failed" else 409
 
 
 class ContentType(str, Enum):

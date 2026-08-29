@@ -448,10 +448,73 @@ Token Header 名称可通过 `gateway.auth.token_header` 自定义。
 | 401 | UNAUTHORIZED | 未认证或 Token 无效 |
 | 403 | FORBIDDEN | 权限不足 |
 | 404 | NOT_FOUND | 资源不存在 |
-| 409 | CONFLICT | 资源冲突 |
+| 409 | CONFLICT | 资源冲突（幂等键被改内容复用） |
 | 429 | RATE_LIMITED | 请求频率超限 |
 | 500 | INTERNAL_ERROR | 服务器内部错误 |
 | 503 | UNAVAILABLE | 服务不可用 |
+
+---
+
+## 幂等重试
+
+投递消息的接口支持幂等键，用于在网络抖动、超时重连后安全重试，而不会让同一条消息被处理两次。
+
+### 携带幂等键
+
+| 入口 | 传递方式 |
+|------|---------|
+| `POST {api_prefix}/message` | `Idempotency-Key` 或 `X-Idempotency-Key` 请求头 |
+| Webhook 通道 | 同上两个请求头，或请求体的 `idempotency_key` 字段 |
+| WebSocket `message` 帧 | 帧内的 `idempotency_key` 字段 |
+
+键的约束：非空字符串，最长 **200** 字符，不含控制字符。同时提供请求头和请求体且两者不一致时返回 400。
+
+```bash
+curl -X POST http://127.0.0.1:58123/api/v1/message \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: order-2026-0829-001" \
+  -d '{"platform":"api","user_id":"u1","chat_id":"c1","text":"生成周报"}'
+```
+
+### 重试语义
+
+相同键 + 相同请求内容 → 复用首次的事件与响应，**不会重复投递**：
+
+```json
+{"status": "accepted", "event_id": "38919935...", "session_key": "gateway:api:c1"}
+```
+
+相同键 + **不同**请求内容 → 409，请求被拒绝，不产生新事件：
+
+```json
+{"error": "idempotency key was already used for a different request"}
+```
+
+!!! warning "409 只表示键冲突"
+    409 专用于「同一个键被用于不同内容」这一种情况，客户端**不应重试**——应换新键或修回原内容。
+    任务未完成（`incomplete` / `interrupted`）返回的是 200，语义由响应体的 `status` 字段承载，这类请求是可以重试的。
+
+### 作用域与有效期
+
+键的作用域包含调用方身份，不同 token 之间互不干扰：
+
+| 入口 | 作用域组成 |
+|------|-----------|
+| HTTP | token 派生的 principal + `session_key` |
+| WebSocket | 同上（按连接握手身份） |
+| Webhook | `sender_id` + `chat_id` |
+
+| 参数 | 值 |
+|------|-----|
+| 记录有效期 | 3600 秒（1 小时） |
+| 进程内缓存条数 | Gateway 4096 / Webhook 2048 |
+| 持久化记录上限 | 100000 条 |
+
+记录同时写入 SQLite，因此**跨进程重启的重试仍可去重并重放结果**，不受单会话回合裁剪影响。存储不可用、或未过期记录已达容量上限时，接口 **fail closed** 返回 503 而不是放行可能重复执行的请求。
+
+### 与 `wait` 的配合
+
+`wait=false`（默认）时缓存的是投递回执（`accepted`）；`wait=true` 时缓存的是回合最终结果。若首个请求仍在处理中，并发的重试会等待同一结果而非重复触发，超时返回 504。
 
 ---
 

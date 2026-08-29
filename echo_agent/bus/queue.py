@@ -334,6 +334,24 @@ class MessageBus:
             # session lock, so they're cheap and safe to dispatch unbounded.
             self._schedule_inbound(event)
 
+            # Backpressure lives here, in the dispatcher, and nowhere else. The
+            # bounded queue only pushes back while it is FULL, so the dispatcher
+            # must stop draining once every concurrency slot is busy — otherwise
+            # it converts a bounded queue into unbounded parked tasks and
+            # publish_inbound accepts without limit.
+            #
+            # Waiting *after* scheduling is deliberate: the event is already
+            # tracked, so a stop() during this wait cannot lose it. The task we
+            # just spawned re-acquires the same semaphore, so this wait only
+            # paces the loop and cannot deadlock against it.
+            if not event.is_control:
+                await self._wait_for_capacity()
+
+    async def _wait_for_capacity(self) -> None:
+        """Block the dispatcher while every concurrency slot is occupied."""
+        await self._concurrency_sem.acquire()
+        self._concurrency_sem.release()
+
     def _schedule_inbound(self, event: InboundEvent) -> None:
         """Transfer one dequeued event into lifecycle-tracked work."""
         if event.is_control:
@@ -353,9 +371,14 @@ class MessageBus:
             )
             rate_limit_reply.metadata = dict(event.metadata)
             rate_limit_reply.metadata["_inbound_event_id"] = event.event_id
+            # Set directly rather than via stamp_turn_outcome: this is an
+            # admission rejection, not a turn outcome. No turn ran, so it is a
+            # genuine error, and 429 is the truthful status rather than the
+            # outcome table's 500.
             rate_limit_reply.metadata["_error"] = True
             rate_limit_reply.metadata["_error_reason"] = "rate limited"
             rate_limit_reply.metadata["_http_status"] = 429
+            rate_limit_reply.metadata["_turn_status"] = "failed"
             # Send the reply off-loop: a slow outbound handler must not stall
             # inbound dispatch for every other session.
             self._track_inbound(asyncio.create_task(

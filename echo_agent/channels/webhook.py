@@ -21,7 +21,13 @@ from echo_agent.bus.idempotency import (
     durable_fingerprint_conflicts,
     normalize_idempotency_key,
 )
-from echo_agent.bus.events import OutboundEvent
+from echo_agent.bus.events import (
+    FAULTED_TURN_OUTCOMES,
+    OutboundEvent,
+    TERMINAL_TURN_OUTCOMES,
+    final_frame_http_status,
+    turn_outcome_http_status,
+)
 from echo_agent.bus.queue import MessageBus
 from echo_agent.channels.base import BaseChannel, SendResult
 from echo_agent.config.schema import WebhookChannelConfig
@@ -85,28 +91,28 @@ class WebhookChannel(BaseChannel):
     def _final_response(
         event_id: str, text: str, metadata: dict,
     ) -> CachedResponse:
-        if metadata.get("_error"):
-            raw_status = metadata.get("_http_status", 500)
-            try:
-                status = int(raw_status)
-            except (TypeError, ValueError):
-                status = 500
-            if status < 400 or status > 599:
-                status = 500
-            turn_status = str(metadata.get("_turn_status") or "failed")
-            if turn_status not in {"failed", "incomplete", "interrupted"}:
-                turn_status = "failed"
-            return CachedResponse(status=status, payload={
+        turn_status = str(metadata.get("_turn_status") or "")
+        if turn_status not in TERMINAL_TURN_OUTCOMES:
+            # Pre-contract or third-party frame: fall back to the legacy reading.
+            turn_status = "failed" if metadata.get("_error") else "completed"
+        if turn_status == "completed":
+            return CachedResponse(
+                status=200,
+                payload={"response": text, "event_id": event_id},
+            )
+        default_reason = (
+            "agent processing failed"
+            if turn_status in FAULTED_TURN_OUTCOMES
+            else f"turn {turn_status}"
+        )
+        return CachedResponse(
+            status=final_frame_http_status(metadata, turn_status),
+            payload={
                 "status": turn_status,
-                "error": str(
-                    metadata.get("_error_reason") or "agent processing failed"
-                ),
+                "error": str(metadata.get("_error_reason") or default_reason),
                 "response": text,
                 "event_id": event_id,
-            })
-        return CachedResponse(
-            status=200,
-            payload={"response": text, "event_id": event_id},
+            },
         )
 
     def _verify_signature(self, body: bytes, signature: str) -> bool:
@@ -127,22 +133,44 @@ class WebhookChannel(BaseChannel):
             result = await result
         return result if isinstance(result, dict) else None
 
+    async def _release_durable_claim(self, event_id: str) -> None:
+        """Best-effort release of a tombstone this request can no longer own.
+
+        Never raises: every caller is already returning a definite failure to
+        the client, and a release error must not replace that with an opaque
+        500. An unreleased tombstone still expires with its TTL.
+        """
+        release = getattr(self.bus, "release_durable_idempotency", None)
+        if not callable(release):
+            return
+        try:
+            result = release(event_id)
+            if inspect.isawaitable(result):
+                await result
+        except Exception as e:
+            logger.error(
+                "Releasing durable webhook idempotency claim {} failed: {}",
+                event_id, e,
+            )
+
     @staticmethod
     def _turn_run_response(
         row: dict, event_id: str,
     ) -> tuple[int, dict, bool]:
         status = str(row.get("status") or "accepted")
         payload = {"status": status, "event_id": event_id}
+        if status not in TERMINAL_TURN_OUTCOMES:
+            return 200, payload, False
+        response_text = str(row.get("response_text") or "")
         if status == "completed":
-            payload["response"] = str(row.get("response_text") or "")
+            payload["response"] = response_text
             return 200, payload, True
-        if status in {"failed", "incomplete", "interrupted"}:
-            payload["error"] = str(row.get("error") or f"turn {status}")
-            response_text = str(row.get("response_text") or "")
-            if response_text:
-                payload["response"] = response_text
-            return (500 if status == "failed" else 409), payload, True
-        return 200, payload, False
+        payload["error"] = str(row.get("error") or f"turn {status}")
+        if response_text:
+            payload["response"] = response_text
+        # Same mapping as the live final frame, so a replay cannot answer with a
+        # different status code than the original request received.
+        return turn_outcome_http_status(status), payload, True
 
     async def _handle_webhook(self, request: web.Request) -> web.Response:
         body = await request.read()
@@ -307,11 +335,7 @@ class WebhookChannel(BaseChannel):
             try:
                 durable_row = await self._get_turn_run(event.event_id)
             except Exception:
-                release = getattr(self.bus, "release_durable_idempotency", None)
-                if callable(release):
-                    result = release(event.event_id)
-                    if inspect.isawaitable(result):
-                        await result
+                await self._release_durable_claim(event.event_id)
                 durable_claimed = False
                 if claim.entry is not None:
                     await self._idempotency.abort(claim.entry)
@@ -322,7 +346,7 @@ class WebhookChannel(BaseChannel):
                     namespace="webhook",
                     fingerprint=operation_fingerprint,
                 ):
-                    await self.bus.release_durable_idempotency(event.event_id)
+                    await self._release_durable_claim(event.event_id)
                     durable_claimed = False
                     payload = {
                         "error": "idempotency key was already used for a different request",
@@ -335,6 +359,13 @@ class WebhookChannel(BaseChannel):
                     await self.bus.sync_durable_idempotency(durable_row)
                 except Exception as e:
                     logger.error("Durable webhook idempotency sync failed: {}", e)
+                    # Release the tombstone we just claimed. Leaving it behind
+                    # pinned this key at `pending` for the whole TTL, so every
+                    # retry replayed "pending" even though the turn had already
+                    # completed. The DELETE is guarded to pending/accepted rows,
+                    # so it cannot erase a racing owner's terminal result.
+                    await self._release_durable_claim(event.event_id)
+                    durable_claimed = False
                     await self._idempotency.abort(claim.entry)
                     return web.json_response(
                         {"error": "durable idempotency storage unavailable"},
@@ -367,7 +398,7 @@ class WebhookChannel(BaseChannel):
             if wait:
                 if len(self._pending_responses) >= self.config.max_pending:
                     if durable_claimed:
-                        await self.bus.release_durable_idempotency(event.event_id)
+                        await self._release_durable_claim(event.event_id)
                         durable_claimed = False
                     if claim is not None and claim.entry is not None:
                         await self._idempotency.abort(
@@ -391,7 +422,7 @@ class WebhookChannel(BaseChannel):
                 raise
             if not accepted:
                 if durable_claimed:
-                    await self.bus.release_durable_idempotency(event.event_id)
+                    await self._release_durable_claim(event.event_id)
                     durable_claimed = False
                 if claim is not None and claim.entry is not None:
                     await self._idempotency.abort(
@@ -448,14 +479,14 @@ class WebhookChannel(BaseChannel):
                 await asyncio.shield(self._idempotency.abort(claim.entry))
             if not published and not publish_outcome_unknown and durable_claimed:
                 await asyncio.shield(
-                    self.bus.release_durable_idempotency(event.event_id)
+                    self._release_durable_claim(event.event_id)
                 )
             raise
         except Exception:
             if not published and claim is not None and claim.entry is not None:
                 await self._idempotency.abort(claim.entry)
             if not published and durable_claimed:
-                await self.bus.release_durable_idempotency(event.event_id)
+                await self._release_durable_claim(event.event_id)
             raise
         finally:
             if pending_event_id:

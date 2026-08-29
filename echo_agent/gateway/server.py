@@ -20,7 +20,16 @@ import aiohttp
 from aiohttp import web
 from loguru import logger
 
-from echo_agent.bus.events import InboundEvent, OutboundEvent, ContentBlock, ContentType
+from echo_agent.bus.events import (
+    ContentBlock,
+    ContentType,
+    FAULTED_TURN_OUTCOMES,
+    InboundEvent,
+    OutboundEvent,
+    TERMINAL_TURN_OUTCOMES,
+    final_frame_http_status,
+    turn_outcome_http_status,
+)
 from echo_agent.bus.idempotency import (
     BoundedIdempotencyStore,
     IDEMPOTENCY_FINGERPRINT_METADATA,
@@ -682,6 +691,20 @@ class GatewayServer:
             "metadata": event.metadata,
         }
 
+    async def _release_durable_claim(self, event_id: str) -> None:
+        """Best-effort release of a tombstone this request can no longer own.
+
+        Never raises: callers are already returning a definite failure, and a
+        release error must not replace it with an opaque 500. An unreleased
+        tombstone still expires with its TTL.
+        """
+        try:
+            await self._bus.release_durable_idempotency(event_id)
+        except Exception as e:
+            logger.error(
+                "Releasing durable idempotency claim {} failed: {}", event_id, e,
+            )
+
     @staticmethod
     def _http_final_response(
         event_id: str,
@@ -691,31 +714,28 @@ class GatewayServer:
         """Map a final outbound frame to truthful synchronous HTTP semantics."""
         metadata = reply.get("metadata")
         metadata = metadata if isinstance(metadata, dict) else {}
-        if metadata.get("_error"):
-            raw_status = metadata.get("_http_status", 500)
-            try:
-                status = int(raw_status)
-            except (TypeError, ValueError):
-                status = 500
-            if status < 400 or status > 599:
-                status = 500
-            reason = str(metadata.get("_error_reason") or "agent processing failed")
-            turn_status = str(metadata.get("_turn_status") or "failed")
-            if turn_status not in {"failed", "incomplete", "interrupted"}:
-                turn_status = "failed"
-            return status, {
-                "status": turn_status,
-                "event_id": event_id,
-                "session_key": session_key,
-                "error": reason,
-                "reply": reply,
-            }
-        return 200, {
-            "status": "completed",
+        turn_status = str(metadata.get("_turn_status") or "")
+        if turn_status not in TERMINAL_TURN_OUTCOMES:
+            # An un-stamped frame predates the outcome contract (or came from a
+            # third-party producer): fall back to the legacy _error reading.
+            turn_status = "failed" if metadata.get("_error") else "completed"
+        status = final_frame_http_status(metadata, turn_status)
+        payload: dict[str, Any] = {
+            "status": turn_status,
             "event_id": event_id,
             "session_key": session_key,
             "reply": reply,
         }
+        if turn_status != "completed":
+            default_reason = (
+                "agent processing failed"
+                if turn_status in FAULTED_TURN_OUTCOMES
+                else f"turn {turn_status}"
+            )
+            payload["error"] = str(
+                metadata.get("_error_reason") or default_reason
+            )
+        return status, payload
 
     @staticmethod
     def _http_turn_run_response(
@@ -733,9 +753,14 @@ class GatewayServer:
             "event_id": event_id,
             "session_key": session_key,
         }
+        if status not in TERMINAL_TURN_OUTCOMES:
+            return 200, base, False
+        response_text = str(row.get("response_text") or "")
+        # Replay must use the same status mapping as the live final frame, or the
+        # same turn would answer 200 once and something else on retry.
+        http_status = turn_outcome_http_status(status)
         if status == "completed":
-            response_text = str(row.get("response_text") or "")
-            return 200, {
+            return http_status, {
                 **base,
                 "reply": {
                     "text": response_text,
@@ -744,17 +769,13 @@ class GatewayServer:
                     "metadata": {"_inbound_event_id": event_id},
                 },
             }, True
-        if status in {"failed", "incomplete", "interrupted"}:
-            http_status = 500 if status == "failed" else 409
-            payload = {
-                **base,
-                "error": str(row.get("error") or f"turn {status}"),
-            }
-            response_text = str(row.get("response_text") or "")
-            if response_text:
-                payload["response_text"] = response_text
-            return http_status, payload, True
-        return 200, base, False
+        payload = {
+            **base,
+            "error": str(row.get("error") or f"turn {status}"),
+        }
+        if response_text:
+            payload["response_text"] = response_text
+        return http_status, payload, True
 
     @staticmethod
     def _ws_turn_run_payload(
@@ -762,27 +783,35 @@ class GatewayServer:
     ) -> tuple[dict[str, Any], bool]:
         """Represent a durable replay in the Gateway WebSocket wire format."""
         status = str(row.get("status") or "accepted")
-        if status == "completed":
+        if status not in TERMINAL_TURN_OUTCOMES:
             return {
-                "type": "message",
+                "type": "accepted",
                 "event_id": event_id,
-                "text": str(row.get("response_text") or ""),
-                "is_final": True,
-                "message_kind": "final",
-                "metadata": {"_inbound_event_id": event_id},
-            }, True
-        if status in {"failed", "incomplete", "interrupted"}:
+                "status": status,
+            }, False
+        response_text = str(row.get("response_text") or "")
+        # An unfinished turn that still answered replays as the message it is,
+        # tagged with its status. Sending `type: error` would have discarded the
+        # answer text and told an attached client the turn produced nothing.
+        if status in FAULTED_TURN_OUTCOMES and not response_text:
             return {
                 "type": "error",
                 "event_id": event_id,
                 "status": status,
                 "error": str(row.get("error") or f"turn {status}"),
             }, True
-        return {
-            "type": "accepted",
+        frame: dict[str, Any] = {
+            "type": "message",
             "event_id": event_id,
             "status": status,
-        }, False
+            "text": response_text,
+            "is_final": True,
+            "message_kind": "final",
+            "metadata": {"_inbound_event_id": event_id},
+        }
+        if status != "completed":
+            frame["error"] = str(row.get("error") or f"turn {status}")
+        return frame, True
 
     async def _handle_playground(self, request: web.Request) -> web.Response:
         path = self._playground_path()
@@ -1019,7 +1048,7 @@ class GatewayServer:
                     namespace="gateway-message",
                     fingerprint=operation_fingerprint,
                 ):
-                    await self._bus.release_durable_idempotency(event_id)
+                    await self._release_durable_claim(event_id)
                     durable_claimed = False
                     await self._message_idempotency.abort(
                         claim.entry,
@@ -1038,6 +1067,12 @@ class GatewayServer:
                     await self._bus.sync_durable_idempotency(durable_row)
                 except Exception as e:
                     logger.error("Durable idempotency sync failed: {}", e)
+                    # Release the tombstone claimed just above. Without this it
+                    # stayed `pending` for the full TTL and every retry replayed
+                    # "pending" even after the turn had completed. The guarded
+                    # DELETE cannot remove a racing owner's terminal row.
+                    await self._release_durable_claim(event_id)
+                    durable_claimed = False
                     await self._message_idempotency.abort(claim.entry)
                     return web.json_response(
                         {"error": "durable idempotency storage unavailable"},
@@ -1073,7 +1108,7 @@ class GatewayServer:
         try:
             if not self.rate_limiter.acquire(platform, chat_id):
                 if durable_claimed:
-                    await self._bus.release_durable_idempotency(event_id)
+                    await self._release_durable_claim(event_id)
                     durable_claimed = False
                 if claim is not None and claim.entry is not None:
                     await self._message_idempotency.abort(
@@ -1132,7 +1167,7 @@ class GatewayServer:
             if wait:
                 if len(self._pending_http) >= self._MAX_PENDING_HTTP:
                     if durable_claimed:
-                        await self._bus.release_durable_idempotency(event_id)
+                        await self._release_durable_claim(event_id)
                         durable_claimed = False
                     if claim is not None and claim.entry is not None:
                         await self._message_idempotency.abort(
@@ -1164,7 +1199,7 @@ class GatewayServer:
                     event.event_id, event.session_key,
                 )
                 if durable_claimed:
-                    await self._bus.release_durable_idempotency(event.event_id)
+                    await self._release_durable_claim(event.event_id)
                     durable_claimed = False
                 if claim is not None and claim.entry is not None:
                     await self._message_idempotency.abort(
@@ -1232,7 +1267,7 @@ class GatewayServer:
                 )
             if not published and not publish_outcome_unknown and durable_claimed:
                 await asyncio.shield(
-                    self._bus.release_durable_idempotency(event_id)
+                    self._release_durable_claim(event_id)
                 )
             raise
         except Exception:
@@ -1244,7 +1279,7 @@ class GatewayServer:
             ):
                 await self._message_idempotency.abort(claim.entry)
             if not published and not publish_outcome_unknown and durable_claimed:
-                await self._bus.release_durable_idempotency(event_id)
+                await self._release_durable_claim(event_id)
             raise
         finally:
             if pending_event_id:
@@ -1657,7 +1692,7 @@ class GatewayServer:
                                     durable_row = await self._bus.get_turn_run(event_id)
                                 except Exception as e:
                                     logger.error("Durable WS turn lookup failed: {}", e)
-                                    await self._bus.release_durable_idempotency(event_id)
+                                    await self._release_durable_claim(event_id)
                                     durable_claimed = False
                                     await self._message_idempotency.abort(claim.entry)
                                     await websocket.send_json({
@@ -1671,9 +1706,7 @@ class GatewayServer:
                                         namespace="gateway-message",
                                         fingerprint=operation_fingerprint,
                                     ):
-                                        await self._bus.release_durable_idempotency(
-                                            event_id
-                                        )
+                                        await self._release_durable_claim(event_id)
                                         durable_claimed = False
                                         payload = {
                                             "type": "error",
@@ -1684,9 +1717,29 @@ class GatewayServer:
                                         )
                                         await websocket.send_json(payload)
                                         continue
-                                    await self._bus.sync_durable_idempotency(
-                                        durable_row
-                                    )
+                                    try:
+                                        await self._bus.sync_durable_idempotency(
+                                            durable_row
+                                        )
+                                    except Exception as e:
+                                        # Mirrors the HTTP path: release the
+                                        # tombstone instead of pinning this key
+                                        # at `pending` for its whole TTL. This
+                                        # was also unguarded, so a storage error
+                                        # escaped into the socket read loop.
+                                        logger.error(
+                                            "Durable WS idempotency sync failed: {}", e,
+                                        )
+                                        await self._release_durable_claim(event_id)
+                                        durable_claimed = False
+                                        await self._message_idempotency.abort(
+                                            claim.entry
+                                        )
+                                        await websocket.send_json({
+                                            "type": "error",
+                                            "error": "durable idempotency storage unavailable",
+                                        })
+                                        continue
                                     payload, terminal = self._ws_turn_run_payload(
                                         durable_row, event_id,
                                     )
@@ -1703,9 +1756,7 @@ class GatewayServer:
 
                             if not self.rate_limiter.acquire(platform, chat_id):
                                 if durable_claimed:
-                                    await self._bus.release_durable_idempotency(
-                                        event_id
-                                    )
+                                    await self._release_durable_claim(event_id)
                                     durable_claimed = False
                                 if claim is not None and claim.entry is not None:
                                     await self._message_idempotency.abort(
@@ -1758,7 +1809,7 @@ class GatewayServer:
                                         event.event_id, event.session_key,
                                     )
                                     if durable_claimed:
-                                        await self._bus.release_durable_idempotency(
+                                        await self._release_durable_claim(
                                             event.event_id
                                         )
                                         durable_claimed = False
@@ -1814,9 +1865,7 @@ class GatewayServer:
                                     and durable_claimed
                                 ):
                                     await asyncio.shield(
-                                        self._bus.release_durable_idempotency(
-                                            event_id
-                                        )
+                                        self._release_durable_claim(event_id)
                                     )
                                 clear_session_vars(tokens)
 

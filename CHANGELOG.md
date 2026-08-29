@@ -7,7 +7,7 @@
 ### Added
 - 网关增加持久化回合状态账本，附着式 CLI 可用 `/status [event_id]` 查询 `running` / `waiting_approval` / `waiting_clarification` / `completed` / `incomplete` / `failed` / `interrupted` 等权威状态；断线重连优先用该账本恢复回复与终态
 - TUI `/save` 正式支持 `--format md|txt|json`；JSON 导出保留本地完整回合、隐藏工具和状态事件，递归脱敏凭据字段与命令行密钥参数
-- Gateway HTTP/WS 与 Webhook 支持有界的 `Idempotency-Key` / `X-Idempotency-Key` 去重；同一作用域与请求内容的重试复用原事件和响应，不同内容复用同一 key 返回冲突
+- Gateway HTTP/WS 与 Webhook 支持有界的 `Idempotency-Key` / `X-Idempotency-Key` 去重；同一作用域与请求内容的重试复用原事件和响应，不同内容复用同一 key 返回冲突。键约束、作用域、有效期与 fail-closed 行为见《Gateway API 参考》的「幂等重试」一节
 - Dashboard 构建增加首屏与单 chunk 体积预算门禁，防止路由代码再次意外回流到首屏 bundle
 
 ### Changed
@@ -27,6 +27,10 @@
 - 插件激活改为可回滚的完整生命周期：工具、hook 和入站订阅在激活失败/取消时撤回，反向依赖顺序关闭并按实例精确释放；未知权限、缺失/循环/失败依赖均 fail closed，`tool.register` / `hook.register` 在资源对宿主可见前完成准入判定
 - Gateway 限流 bucket 改为有界 LRU，避免长期运行时按 chat id 无界增长
 - Gateway/Webhook 键等令增加独立持久 tombstone，不受每会话 500 条回合结果裁剪影响；跨进程重试可重放结果/检出参数冲突，存储不可用或未过期记录达容量上限时 fail closed
+- 修复回放同步失败会把幂等键永久卡在 `pending` 的问题：tombstone 申领后若同步回合结果失败，此前不释放该记录，导致整个 1 小时 TTL 内每次重试都收到 `pending`，即使回合早已完成、答案已可用；WS 路径该处原先连异常保护都没有，存储抖动会把异常抛进 socket 读循环。释放动作统一收口且自身永不抛错，不会把确定的 503 变成不透明的 500
+- 修复入站背压失效：并发槽占满时分发器仍持续抽干有界队列，把 `bus.maxQueueSize` 变成无界的挂起任务，`publish_inbound` 永不回压（实测 `maxQueueSize=50` 下 5000 条请求全部被接收）。现在分发器在槽位饱和时暂停取件，同时保持关停收敛语义，控制命令（中断 / clarify-cancel）仍可在满槽下插队
+- 修复未完成但已给出答案的回合被当作错误：达到工具调用上限（forced convergence）、输出截断或部分完成后被中断的回合，此前会在 Telegram/Discord/Slack/Matrix 上收到 ❌ 失败表情，并让 `wait=true` 的调用方拿到 409。`_error` 语义收紧为「本回合没有产出答案」，这类回合改回成功表情与 200，未完成语义由响应体 `status` 字段承载
+- 修复 409 语义重载：409 此前同时表示「幂等键被改内容复用」和「任务未完成」，客户端无法判断该不该重试。409 现在专属于键冲突；实时帧与持久回放共用同一份状态映射，同一回合不会首次 200、重试却是另一个状态码。WS 回放的未完成回合改为 `type: message` 并带 `status`，不再发 `type: error` 丢弃答案文本
 - SQLite 读写共享连接租约与串行事务边界，迁移、锁竞争、提交失败、重复取消与 rollback 失败均会在释放租约前收敛或丢弃不安全连接；MCP Streamable HTTP 修复跨 chunk UTF-8、鉴权/会话失效传播、重连与关闭资源泄漏
 - OpenTelemetry provider/exporter 由 Agent 显式持有并幂等关闭，部分初始化失败会回收后台线程并降级；健康检查生命周期及关键 span/metric 路径已补齐故障测试
 - `agent.maxIterations`、`multiAgent.maxIterations`、worker profile 迭代数及观测性周期配置不再接受非正数

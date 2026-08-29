@@ -135,9 +135,6 @@ class TaskStore:
         """Expose the authoritative owner-aware key to protocol side tables."""
         return _owned_storage_key(owner, task_id)
 
-    def contains_owned(self, owner: str, task_id: str) -> bool:
-        return _owned_storage_key(owner, task_id) in self
-
     def get_owned(self, owner: str, task_id: str, default: Any = None) -> Any:
         return self.get(_owned_storage_key(owner, task_id), default)
 
@@ -145,22 +142,16 @@ class TaskStore:
         task.owner = owner or DEFAULT_TASK_OWNER
         self[_owned_storage_key(task.owner, task.id)] = task
 
-    def has_active_capacity(self) -> bool:
-        """Whether admitting one more active task preserves ``max_tasks``.
-
-        Terminal rows are evictable result-cache entries and do not consume an
-        execution slot: inserting a new task will evict the oldest one if the
-        total table is already at capacity. Active rows cannot be evicted safely,
-        so their count is the hard admission bound enforced by A2AProtocol.
-        """
-        self._purge_expired()
-        active_count = sum(
-            task_id not in self._expire_at for task_id in self._tasks
-        )
-        return active_count < self._max
-
     def active_storage_keys(self) -> set[str]:
-        """Snapshot store records that currently represent active work."""
+        """Snapshot store records that currently represent active work.
+
+        Admission control belongs to ``A2AProtocol._has_active_capacity``, which
+        unions this snapshot with its live ``_runs`` handles. A store-only count
+        would undercount: a worker that swallowed its cancellation still holds
+        resources after the active-TTL backstop reclaimed its record. Do not add
+        a capacity predicate here — two competing bounds is how the weaker one
+        gets used by mistake.
+        """
         self._purge_expired()
         return {
             task_id for task_id in self._tasks
