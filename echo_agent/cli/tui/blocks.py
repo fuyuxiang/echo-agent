@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 
 from rich.markdown import Markdown
@@ -26,6 +25,19 @@ from echo_agent.cli.render.text import (
     clip as _clip,
     strip_legacy_glyph,
 )
+
+# Same arrangement for the tool-line vocabulary, now in cli/render/tool.py.
+# _TOOL_VERB and _OBJECT_KEY have no caller left here and _fmt_duration_ms is
+# only a local alias for the renamed fmt_duration_ms, so all three carry an
+# explicit re-export form; the three functions below are still called here.
+from echo_agent.cli.render.tool import (
+    _OBJECT_KEY as _OBJECT_KEY,
+    _TOOL_VERB as _TOOL_VERB,
+    fmt_duration_ms as _fmt_duration_ms,
+    humanize_tool,
+    pick_object,
+    summarize_result,
+)
 from echo_agent.cli.tui.glyphs import GLYPHS, cog_glyph
 from echo_agent.cli.tui.protocol import CogEvent
 from echo_agent.cli.tui.turn_layout import TRACE_DEPTH, rail_prefix
@@ -40,26 +52,6 @@ def _markup_safe(s: str) -> str:
     belt-and-suspenders guard that costs nothing for display-only summaries.
     """
     return s.replace("[", "⟨").replace("]", "⟩")
-
-_TOOL_VERB = {
-    "read_file": "读取", "write_file": "写入", "edit_file": "编辑",
-    "patch": "打补丁", "list_dir": "列出", "search_files": "搜索",
-    "session_search": "检索会话", "knowledge_search": "查知识库",
-    "exec": "执行", "process": "运行进程", "web_fetch": "抓取网页",
-    "web_search": "联网搜索", "memory": "记忆", "todo": "更新待办",
-}
-
-# 每个工具用哪个参数当"操作对象"。缺省走兜底：第一个字符串参数。
-_OBJECT_KEY = {
-    "read_file": "path", "write_file": "path", "edit_file": "path",
-    "patch": "path", "list_dir": "path", "exec": "command",
-    "process": "command", "web_fetch": "url", "web_search": "query",
-}
-
-
-def humanize_tool(name: str) -> str:
-    """Tool id -> Chinese verb. Unknown tools fall back to the raw id."""
-    return _TOOL_VERB.get(name, name)
 
 
 class ExpandableBlock(Static):
@@ -193,28 +185,6 @@ def colorize_diff(text: str, max_lines: int = 40) -> str:
     return "\n".join(out)
 
 
-def _fmt_duration_ms(ms: int | None) -> str:
-    """Human duration for a tool line, or "" when it isn't worth a column.
-
-    Anything under a second is dropped: on a transcript where most calls are
-    instant reads, "0.1s" on every line is noise that hides the one call that
-    actually took half a minute.
-    """
-    if ms is None:
-        return ""
-    try:
-        value = float(ms)
-    except (TypeError, ValueError):
-        return ""
-    if value < 1000:
-        return ""
-    seconds = value / 1000
-    if seconds < 60:
-        return f"{seconds:.1f}s"
-    minutes, rest = divmod(int(seconds), 60)
-    return f"{minutes}m {rest}s"
-
-
 # Parameter names whose value must never be shown verbatim. The approval panel
 # and the tool detail view render whatever the model passed, and that routinely
 # includes credentials — which then sit in the transcript and get written to disk
@@ -335,42 +305,6 @@ def format_params(params: dict, *, value_width: int = 60) -> list[str]:
         shown = _redact_value(key, value, value_width=value_width)
         lines.append(f"{key}={shown}")
     return lines
-
-
-def pick_object(name: str, params: dict) -> str:
-    """The primary argument shown as the tool's operand."""
-    params = params or {}
-    if name == "search_files":
-        pat = params.get("pattern")
-        return f'"{pat}"' if pat else ""
-    key = _OBJECT_KEY.get(name)
-    val = params.get(key) if key else None
-    if val is None:
-        # Fallback: first string-valued argument.
-        val = next((v for v in params.values() if isinstance(v, str)), "")
-    if name in ("read_file", "write_file", "edit_file", "patch") and val:
-        val = os.path.basename(str(val))
-    return _clip(val, 48) if val else ""
-
-
-def summarize_result(
-    name: str, result_meta: dict | None, result_text: str, success: bool
-) -> str:
-    """Turn the producer-supplied count (result_meta) into Chinese words;
-    fall back to a text preview. Never recount on the truncated result_text."""
-    if not success:
-        return "失败"
-    meta = result_meta or {}
-    if name == "read_file" and "total_lines" in meta:
-        return f"{meta['total_lines']} 行"
-    if name == "search_files" and "count" in meta:
-        return f"找到 {meta['count']} 处"
-    if name == "list_dir" and "count" in meta:
-        return f"{meta['count']} 个"
-    if name in ("exec", "process"):
-        return "完成"
-    preview = _clip(result_text or "", 40)
-    return preview or "完成"
 
 
 # Block-letter ECHO logo. A 3-stop gradient (primary → accent → secondary) is
