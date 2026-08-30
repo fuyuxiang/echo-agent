@@ -11,6 +11,7 @@ from echo_agent.models.provider import (
     LLMResponse,
     StreamDeltaCallback,
     StreamReasoningCallback,
+    describe_unparseable_response,
 )
 from echo_agent.models.providers.format_utils import (
     anthropic_response_to_llm_fields,
@@ -65,6 +66,15 @@ def parse_anthropic_message(resp: Any) -> LLMResponse:
     live in one place — they had drifted, with the Bedrock copies dropping the
     cache_read/cache_creation tokens.
     """
+    # A misconfigured apiBase reaches this with whatever the endpoint served:
+    # the SDK returns response.text as a plain str on a 200 that is not JSON,
+    # and iterating resp.content on that raised a bare AttributeError with the
+    # actual body thrown away. See describe_unparseable_response.
+    unparseable = describe_unparseable_response(resp, "content")
+    if unparseable:
+        logger.error("Anthropic response not parseable: {}", unparseable)
+        return LLMResponse(content=f"Error: {unparseable}", finish_reason="error")
+
     blocks = []
     thinking_parts: list[str] = []
     thinking_blocks: list[dict[str, Any]] = []
@@ -180,12 +190,14 @@ class AnthropicProvider(LLMProvider):
     ) -> LLMResponse:
         target_model = model or self._default_model
         params = self._build_params(target_model, messages, tools, tool_choice, **kwargs)
+        # Parse inside the boundary so a response we cannot read is reported as
+        # an error LLMResponse rather than raising out of chat().
         try:
             resp = await self._client.messages.create(**params)
+            return self._parse_response(resp)
         except Exception as e:
             logger.error("Anthropic API error: {}", e)
             return LLMResponse(content=f"Error: {e}", finish_reason="error")
-        return self._parse_response(resp)
 
     async def chat_stream(
         self,
@@ -203,10 +215,10 @@ class AnthropicProvider(LLMProvider):
             final = await stream_anthropic_messages(
                 self._client, params, on_delta, on_reasoning,
             )
+            return self._parse_response(final)
         except Exception as e:
             logger.error("Anthropic stream error: {}", e)
             return LLMResponse(content=f"Error: {e}", finish_reason="error")
-        return self._parse_response(final)
 
     def get_default_model(self) -> str:
         return self._default_model

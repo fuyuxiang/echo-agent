@@ -43,6 +43,58 @@ async def _invoke_stream_callback(callback: StreamDeltaCallback | None, delta: s
         await result
 
 
+# How much of an unparseable response body to keep in the error text. Enough to
+# recognize a gateway index page or a login redirect, short enough for one line.
+RAW_BODY_EXCERPT = 200
+
+# Substring that marks a response the provider could not parse at all. Kept as a
+# named constant because two other layers key off it: LLMProvider's permanent/
+# transient classifier (retrying an endpoint that answers with the wrong shape
+# never helps) and the setup wizard's unreachable/error split.
+UNPARSEABLE_MARKER = "unparseable response"
+
+
+def describe_unparseable_response(resp: Any, attr: str) -> str | None:
+    """Diagnostic text when *resp* cannot be parsed as a model response.
+
+    The OpenAI/Anthropic SDKs do not raise on a 200 carrying a non-JSON
+    content-type. With ``_strict_response_validation`` off (the default, and
+    what we use) they fall back to returning ``response.text`` — a plain
+    ``str``. That happens whenever ``apiBase`` points at a path the endpoint
+    does not serve: the SDK only concatenates, never infers ``/v1``, so a bare
+    domain requests ``https://host/chat/completions`` and lands on the gateway
+    index, an SPA fallback or a portal login page, all of which answer 200 +
+    text/html.
+
+    Reaching into ``.choices`` on that ``str`` raised ``'str' object has no
+    attribute 'choices'`` — a config mistake wearing the costume of an internal
+    bug, with the real response body discarded. Returns None when *resp* looks
+    like a genuine response object (the caller parses it as usual), otherwise a
+    message naming the likely cause and quoting what actually came back.
+    """
+    if resp is None:
+        return f"{UNPARSEABLE_MARKER}: endpoint returned nothing"
+    if isinstance(resp, (str, bytes)):
+        raw = resp.decode("utf-8", "replace") if isinstance(resp, bytes) else resp
+        return (
+            f"{UNPARSEABLE_MARKER}: endpoint answered with raw text, not a completion "
+            "— check the provider apiBase, which usually needs the /v1 path suffix "
+            f"(body[:{RAW_BODY_EXCERPT}]={_excerpt(raw)})"
+        )
+    if not hasattr(resp, attr):
+        return (
+            f"{UNPARSEABLE_MARKER}: {type(resp).__name__} has no {attr!r} field "
+            "— check the provider apiBase and that the configured dialect matches "
+            f"the endpoint (repr[:{RAW_BODY_EXCERPT}]={_excerpt(repr(resp))})"
+        )
+    return None
+
+
+def _excerpt(text: str) -> str:
+    """Single-line, length-capped quote of a raw response body."""
+    return repr(" ".join(text.split())[:RAW_BODY_EXCERPT])
+
+
 @dataclass
 class ToolCallRequest:
     id: str
@@ -189,6 +241,13 @@ class LLMProvider(ABC):
     def _classify_error_text(self, error_text: str) -> str:
         """Classify an error message as 'transient', 'permanent' or 'unknown'."""
         lower = error_text.lower()
+        # Checked before the keyword scans below, not after: an unparseable
+        # response quotes the raw body, and a gateway index page is free to
+        # contain the word "connection" or "timeout". Matching those would
+        # label a fixed misconfiguration transient and retry it three times.
+        # An endpoint answering in the wrong shape will keep doing so.
+        if UNPARSEABLE_MARKER in lower:
+            return "permanent"
         if self._PERMANENT_CODE_RE.search(lower) or any(m in lower for m in self._PERMANENT_WORDS):
             return "permanent"
         if self._TRANSIENT_CODE_RE.search(lower) or any(m in lower for m in self._TRANSIENT_WORDS):

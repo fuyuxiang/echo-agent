@@ -14,6 +14,7 @@ from echo_agent.models.provider import (
     StreamReasoningCallback,
     ToolCallRequest,
     _invoke_stream_callback,
+    describe_unparseable_response,
 )
 
 
@@ -56,12 +57,16 @@ class OpenAIProvider(LLMProvider):
         **kwargs: Any,
     ) -> LLMResponse:
         params = self._build_params(messages, tools, model, tool_choice, **kwargs)
+        # Parsing sits INSIDE the boundary. It used to be one line below the
+        # try, so a response the SDK returned but we could not read raised out
+        # of chat() and was caught by chat_with_retry's blanket handler, which
+        # logged nothing and reported the bare AttributeError text to the user.
         try:
             resp = await self._client.chat.completions.create(**params)
+            return self._parse_response(resp)
         except Exception as e:
             logger.error("OpenAI API error: {}", e)
             return LLMResponse(content=f"Error: {e}", finish_reason="error")
-        return self._parse_response(resp)
 
     async def embed(self, text: str, model: str | None = None) -> list[float] | None:
         try:
@@ -119,6 +124,16 @@ class OpenAIProvider(LLMProvider):
             else:
                 logger.warning("OpenAI stream init failed, falling back to non-streaming: {}", e)
                 return await self.chat(messages, tools, model, tool_choice, **kwargs)
+
+        # Same non-JSON-200 hazard as the unary path: the SDK hands back a plain
+        # str instead of an async iterator, and `async for` over it reports
+        # "'str' object is not async iterable" — accurate and useless. Retrying
+        # without streaming would just hit the same wrong path, so report the
+        # cause here instead of spending a second request on it.
+        unparseable = describe_unparseable_response(stream, "__aiter__")
+        if unparseable:
+            logger.error("OpenAI stream not parseable: {}", unparseable)
+            return LLMResponse(content=f"Error: {unparseable}", finish_reason="error")
 
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
@@ -229,6 +244,15 @@ class OpenAIProvider(LLMProvider):
         return cleaned
 
     def _parse_response(self, resp: Any) -> LLMResponse:
+        # Gate before touching attributes: on a 200 with a non-JSON body the SDK
+        # hands back a plain str, and reaching for .choices on it produced an
+        # AttributeError that hid both the cause (usually an apiBase missing its
+        # /v1 suffix) and the response body. Report both instead.
+        unparseable = describe_unparseable_response(resp, "choices")
+        if unparseable:
+            logger.error("OpenAI response not parseable: {}", unparseable)
+            return LLMResponse(content=f"Error: {unparseable}", finish_reason="error")
+
         choice = resp.choices[0] if resp.choices else None
         if not choice:
             return LLMResponse(content="No response from model", finish_reason="error")

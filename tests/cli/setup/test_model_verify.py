@@ -166,3 +166,37 @@ def test_classify_error_detail():
     assert mv._classify_error_detail("Connection refused") == "unreachable"
     assert mv._classify_error_detail("getaddrinfo failed") == "unreachable"
     assert mv._classify_error_detail("") == "error"
+
+
+def test_unparseable_response_is_an_error_not_unreachable():
+    # The host answered — it just answered with a gateway index page. Reporting
+    # "network unreachable" would hide the actionable apiBase hint, and the
+    # quoted HTML body is free to contain words like "connection".
+    detail = (
+        "Error: unparseable response: endpoint answered with raw text, not a "
+        "completion — check the provider apiBase, which usually needs the /v1 "
+        "path suffix (body[:200]='<html>gateway connection portal</html>')"
+    )
+    assert mv._classify_error_detail(detail) == "error"
+    assert mv.looks_like_api_base_problem(detail)
+
+
+def test_looks_like_api_base_problem_ignores_ordinary_failures():
+    assert not mv.looks_like_api_base_problem("Error: 401 Unauthorized")
+    assert not mv.looks_like_api_base_problem("")
+
+
+def test_verify_model_non_json_200_reports_api_base_suspicion():
+    # End-to-end at the verify layer: the provider now returns an error
+    # LLMResponse naming the cause instead of leaking an AttributeError.
+    fake_provider = _fake_provider_returning(
+        "Error: unparseable response: endpoint answered with raw text, not a completion "
+        "— check the provider apiBase, which usually needs the /v1 path suffix "
+        "(body[:200]='<html>gateway</html>')",
+        "error",
+    )
+    with patch(f"{_T}.create_provider", return_value=fake_provider):
+        res = mv.verify_model("openai", "sk-x", "http://gw.example.com", "some-model")
+    assert res.status == "error"
+    assert mv.looks_like_api_base_problem(res.detail)
+    assert "choices" not in res.detail

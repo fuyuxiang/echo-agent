@@ -12,6 +12,7 @@ import httpx
 
 from echo_agent.cli.setup.providers import ProviderCatalogEntry
 from echo_agent.config.schema import ProviderConfig
+from echo_agent.models.provider import UNPARSEABLE_MARKER
 from echo_agent.models.providers import create_provider
 
 DEFAULT_TIMEOUT = 8.0
@@ -162,6 +163,17 @@ _UNREACHABLE_HINTS = ("timed out", "timeout", "connect", "connection", "network"
                       "unreachable", "dns", "getaddrinfo")
 
 
+def looks_like_api_base_problem(detail: str) -> bool:
+    """True when a failure detail points at a malformed ``apiBase``.
+
+    The endpoint answered — it just answered with something that is not a
+    completion, which in practice means the request hit a path the host does
+    not serve (a bare domain missing its ``/v1`` suffix landing on a gateway
+    index or login page). The wizard uses this to add a path-check hint.
+    """
+    return UNPARSEABLE_MARKER in (detail or "").lower()
+
+
 def _classify_error_detail(content: str) -> str:
     """Classify an error LLMResponse's content into "unreachable" or "error".
 
@@ -170,6 +182,12 @@ def _classify_error_detail(content: str) -> str:
     "unreachable", everything else (auth, quota, bad request) to "error".
     """
     text = (content or "").lower()
+    # Tested before the connectivity hints: an unparseable-response detail
+    # quotes the raw body, and a gateway index page may well contain the word
+    # "connection". Calling that "unreachable" would tell the user the network
+    # is down and skip the actionable apiBase hint — the host in fact replied.
+    if looks_like_api_base_problem(text):
+        return "error"
     if any(hint in text for hint in _UNREACHABLE_HINTS):
         return "unreachable"
     return "error"

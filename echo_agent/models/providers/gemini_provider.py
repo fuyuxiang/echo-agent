@@ -168,10 +168,10 @@ class GeminiProvider(LLMProvider):
                 if text:
                     await _invoke_stream_callback(on_delta, text)
             resp = _GeminiAggregate(chunks)
+            return self._parse_response(resp, target)
         except Exception as e:
             logger.error("Gemini stream error: {}", e)
             return LLMResponse(content=f"Error: {e}", finish_reason="error")
-        return self._parse_response(resp, target)
 
     async def _do_chat(
         self, model_name: str, messages: list[dict[str, Any]],

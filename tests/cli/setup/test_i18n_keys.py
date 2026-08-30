@@ -9,6 +9,7 @@ _KEYS = [
     "model.fetching", "model.verifying", "model.verify_ok", "model.verify_unreachable",
     "model.verify_error", "model.verify_action", "model.verify_retry_key",
     "model.verify_change_model", "model.verify_skip",
+    "model.api_base_hint", "model.verify_api_base_hint",
     "summary.gateway_off",
 ]
 

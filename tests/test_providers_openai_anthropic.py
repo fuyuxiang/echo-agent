@@ -100,6 +100,56 @@ class TestOpenAIChat:
         out = provider._parse_response(resp)
         assert out.finish_reason == "error"
 
+    @pytest.mark.asyncio
+    async def test_non_json_200_does_not_leak_attributeerror(self):
+        # The exact reported failure: apiBase without /v1 hits the gateway index,
+        # which answers 200 + text/html. With _strict_response_validation off the
+        # SDK returns response.text — a plain str — and reaching for .choices on
+        # it used to raise "'str' object has no attribute 'choices'" out of
+        # chat(), destroying the response body along the way.
+        provider = _openai_provider()
+        provider._client.chat.completions.create = AsyncMock(
+            return_value="<html>gateway</html>"
+        )
+        out = await provider.chat(messages=[{"role": "user", "content": "hi"}])
+        assert out.finish_reason == "error"
+        assert "choices" not in out.content
+        assert "apiBase" in out.content
+        assert "/v1" in out.content
+        # The body that actually came back must survive for diagnosis.
+        assert "gateway" in out.content
+
+    @pytest.mark.asyncio
+    async def test_non_json_200_is_not_retried(self):
+        # An endpoint answering in the wrong shape will answer the same way
+        # again, so the failure must classify as permanent rather than burn
+        # three attempts and 6s of backoff on a fixed misconfiguration.
+        provider = _openai_provider()
+        create = AsyncMock(return_value="<html>connection timeout</html>")
+        provider._client.chat.completions.create = create
+        out = await provider.chat_with_retry(messages=[{"role": "user", "content": "hi"}])
+        assert out.finish_reason == "error"
+        assert create.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_unparseable_stream_reports_cause(self):
+        # Same hazard on the streaming path: `async for` over a str reports
+        # "not async iterable", which names the symptom and not the cause.
+        provider = _openai_provider()
+        provider._client.chat.completions.create = AsyncMock(
+            return_value="<html>gateway</html>"
+        )
+        out = await provider.chat_stream(messages=[{"role": "user", "content": "hi"}])
+        assert out.finish_reason == "error"
+        assert "apiBase" in out.content
+
+    def test_parse_response_rejects_object_without_choices(self):
+        provider = _openai_provider()
+        out = provider._parse_response(object())
+        assert out.finish_reason == "error"
+        assert "choices" in out.content  # names the missing field
+        assert "apiBase" in out.content
+
     def test_parse_response_tool_calls(self):
         provider = _openai_provider()
         tc = MagicMock()
@@ -330,6 +380,19 @@ class TestAnthropicChat:
         out = await provider.chat(messages=[{"role": "user", "content": "hi"}])
         assert out.finish_reason == "error"
         assert "ant boom" in out.content
+
+    @pytest.mark.asyncio
+    async def test_non_json_200_does_not_leak_attributeerror(self):
+        # A custom Anthropic-dialect apiBase reaches the same SDK fallback as the
+        # OpenAI path: 200 + text/html yields a plain str, and iterating
+        # resp.content on it raised a bare AttributeError with the body dropped.
+        provider = _anthropic_provider()
+        provider._client.messages.create = AsyncMock(return_value="<html>portal</html>")
+        out = await provider.chat(messages=[{"role": "user", "content": "hi"}])
+        assert out.finish_reason == "error"
+        assert "content" not in out.content.split("has no")[0]
+        assert "apiBase" in out.content
+        assert "portal" in out.content
 
     def test_parse_response_tool_use(self):
         provider = _anthropic_provider()

@@ -63,6 +63,7 @@ from echo_agent.cli.setup.model_verify import (
     VerifyResult,
     list_model_windows,
     list_models,
+    looks_like_api_base_problem,
     verify_model,
 )
 from echo_agent.cli.setup.providers import find as find_provider, grouped_catalog
@@ -190,6 +191,12 @@ def setup_model(config: dict) -> None:
 
     api_base = entry.api_base
     if entry.needs_api_base:
+        # Custom / OpenAI-compatible entries carry models_endpoint="", so the
+        # live listing below is skipped and there is no early signal that the
+        # URL is wrong. The SDK only concatenates paths — it never infers /v1 —
+        # so a bare domain silently requests /chat/completions and lands on the
+        # gateway index. Show the expected shape before that can happen.
+        ui.note(t("model.api_base_hint"), "info")
         api_base = ui.text(t("model.api_base"), default=existing.get("apiBase", "") or api_base)
 
     api_key = ""
@@ -280,6 +287,11 @@ def _handle_verify(result: "VerifyResult", entry, api_key, api_base, model):
         return model, api_key
     # error: offer retry-key / change-model / skip
     ui.note(t("model.verify_error", detail=result.detail), "error")
+    # The endpoint replied with something that was not a completion. Re-entering
+    # the API key (the default action) cannot fix that, so name the real suspect
+    # — and echo the base URL, since the wizard is where it was just typed.
+    if looks_like_api_base_problem(result.detail):
+        ui.note(t("model.verify_api_base_hint", api_base=api_base or "(unset)"), "warning")
     action = ui.select(t("model.verify_action"), [
         ("retry", t("model.verify_retry_key"), ""),
         ("change", t("model.verify_change_model"), ""),
