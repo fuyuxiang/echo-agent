@@ -111,6 +111,37 @@ def test_tools_select_writes_enabled_true():
     assert cfg["skills"]["enabled"] is True
 
 
+def test_first_run_preselects_schema_default_enabled_skills():
+    """An absent raw block must mean SkillsConfig's default, not false.
+
+    A brand-new config has neither ``skills.enabled`` nor ``skills_dir``. The
+    wizard used the latter as an implicit signal, rendered Skills unchecked,
+    and then persisted ``enabled: false`` even though the schema default is
+    true. Capture the actual preselection and accept it unchanged, matching a
+    user who presses Enter on the first-run checklist.
+    """
+    cfg = {"tools": {}}
+    captured: dict[str, list[str]] = {}
+
+    def _accept_defaults(_message, _choices, preselected=None):
+        captured["preselected"] = list(preselected or [])
+        return list(preselected or [])
+
+    patches = _noop_prompts()
+    for p in patches:
+        p.start()
+    try:
+        with patch(f"{_S}.ui.multiselect", side_effect=_accept_defaults):
+            setup_mod.setup_tools(cfg)
+    finally:
+        for p in patches:
+            p.stop()
+
+    skill_idx = str(setup_mod.TOOL_OPTIONS.index("skills"))
+    assert skill_idx in captured["preselected"]
+    assert cfg["skills"]["enabled"] is True
+
+
 # ── Task 3: doctor / health probes are real and structured ────────────────────
 
 def test_health_returns_structured_results():

@@ -661,6 +661,29 @@ def test_browser_reachable_once_allowed_hosts_listed():
     assert wiz._browser_unreachable_reason(cfg) == ""
 
 
+def test_exposed_dashboard_without_allowed_origin_warns_compatibility():
+    cfg = _exposed_config(api_tokens=["t"], allowed_hosts=["echo.example.com"])
+    assert wiz._browser_origin_compat_reason(cfg) == "0.0.0.0"
+
+
+def test_exposed_dashboard_with_allowed_origin_has_no_compat_warning():
+    cfg = _exposed_config(api_tokens=["t"], allowed_hosts=["echo.example.com"])
+    cfg["gateway"]["auth"]["allowed_origins"] = ["https://echo.example.com"]
+    assert wiz._browser_origin_compat_reason(cfg) == ""
+
+
+def test_origin_compat_warning_honours_camelcase_and_normalization():
+    cfg = _exposed_config(apiTokens=["t"], allowedHosts=["echo.example.com"])
+    cfg["gateway"]["auth"]["allowedOrigins"] = ["https://Echo.Example.com:443/"]
+    assert wiz._browser_origin_compat_reason(cfg) == ""
+
+
+def test_missing_host_uses_stronger_warning_only():
+    cfg = _exposed_config(api_tokens=["t"])
+    assert wiz._browser_unreachable_reason(cfg) == "0.0.0.0"
+    assert wiz._browser_origin_compat_reason(cfg) == ""
+
+
 def test_browser_unreachable_honours_camelcase_allowed_hosts():
     """配置支持驼峰别名；只认下划线会把已配 allowedHosts 的部署误报为不可达。"""
     cfg = _exposed_config(apiTokens=["t"], allowedHosts=["echo.example.com"])
@@ -791,6 +814,7 @@ def test_wildcard_bind_never_prefills_the_bind_address(gateway_wizard):
     result = gateway_wizard(texts=["0.0.0.0", "58123", None], lan="192.168.1.5")
 
     assert result.auth["allowed_hosts"] == ["192.168.1.5"]
+    assert result.auth["allowed_origins"] == ["http://192.168.1.5:58123"]
     assert wiz._browser_unreachable_reason({"gateway": result.gateway}) == ""
 
 
@@ -799,6 +823,7 @@ def test_wildcard_bind_without_detectable_lan_warns_instead_of_writing_junk(gate
     result = gateway_wizard(texts=["0.0.0.0", "58123", None], lan="")
 
     assert "allowed_hosts" not in result.auth
+    assert "allowed_origins" not in result.auth
     assert wiz._browser_unreachable_reason({"gateway": result.gateway}) == "0.0.0.0"
     assert "allowed_hosts" in result.out
 
@@ -814,6 +839,44 @@ def test_user_entered_hosts_are_normalized_and_wildcards_dropped(gateway_wizard)
     )
 
     assert result.auth["allowed_hosts"] == ["echo.example.com", "192.168.1.5"]
+    assert result.auth["allowed_origins"] == [
+        "http://echo.example.com:58123",
+        "http://192.168.1.5:58123",
+    ]
+
+
+def test_reverse_proxy_origin_can_replace_direct_http_suggestion(gateway_wizard):
+    result = gateway_wizard(
+        texts=[
+            "0.0.0.0",
+            "58123",
+            "Echo.Example.com",
+            "https://Echo.Example.com:443/",
+        ],
+    )
+
+    assert result.auth["allowed_hosts"] == ["echo.example.com"]
+    assert result.auth["allowed_origins"] == ["https://echo.example.com"]
+
+
+def test_saved_origin_allows_browser_without_fetch_metadata(gateway_wizard, tmp_path):
+    """Close the exact production failure: reads worked, writes and WS 403'd."""
+    from echo_agent.config.schema import GatewayAuthConfig
+    from echo_agent.gateway.auth import GatewayAuth
+
+    result = gateway_wizard(
+        texts=["0.0.0.0", "58123", "123.56.188.16"],
+    )
+    auth = GatewayAuth(
+        GatewayAuthConfig.model_validate(result.auth),
+        tmp_path,
+        bound_host=result.gateway["host"],
+    )
+
+    assert auth.is_cross_site_browser(
+        "http://123.56.188.16:58123", "", "123.56.188.16:58123",
+    ) is False
+    assert auth.is_host_allowed("123.56.188.16:58123") is True
 
 
 def test_saved_allowed_hosts_actually_match_real_host_headers(gateway_wizard, tmp_path):

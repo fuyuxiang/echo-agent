@@ -18,6 +18,8 @@ from echo_agent.gateway.host_rules import (
     is_loopback_bind,
     normalize_host,
     normalize_host_entries,
+    normalize_origin,
+    normalize_origin_entries,
 )
 
 
@@ -38,7 +40,11 @@ class GatewayAuth:
         self._admins = set(config.admin_users)
         self._api_tokens = list(config.api_tokens)
         self._admin_tokens = list(config.admin_tokens)
-        self._allowed_origins = set(config.allowed_origins)
+        # Origin entries are pasted from browser address bars just like Host
+        # entries. Normalize both the configured and request sides so a
+        # harmless spelling difference (case, default port, trailing slash)
+        # cannot turn a valid allowlist into a silent deny-all rule.
+        self._allowed_origins = set(normalize_origin_entries(config.allowed_origins))
         self.token_header = config.token_header
         self._pairing_ttl = config.pairing_ttl_seconds
         # allowed_hosts is a configured escape hatch; empty defers to a default
@@ -173,7 +179,7 @@ class GatewayAuth:
         if sec_fetch_site == "same-site" and host and self._origin_matches_host(origin, host):
             return False
         # Explicitly allowlisted Origin is trusted (for example a dev frontend).
-        if origin and origin in self._allowed_origins:
+        if origin and normalize_origin(origin) in self._allowed_origins:
             return False
         # Everything else that carries a cross-site Origin or Sec-Fetch-Site.
         return True

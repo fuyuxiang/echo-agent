@@ -262,6 +262,21 @@ def test_cross_site_browser_allowlisted_origin_passes(tmp_path) -> None:
     assert auth.is_cross_site_browser("https://evil.example", "cross-site") is True
 
 
+def test_allowlisted_origin_is_normalized_on_both_sides(tmp_path) -> None:
+    """Pasted URL spelling must not create a silent deny-all allowlist."""
+    from echo_agent.config.schema import GatewayAuthConfig
+    auth = GatewayAuth(
+        GatewayAuthConfig(
+            mode="open",
+            allowed_origins=["https://Dashboard.Example:443/"],
+        ),
+        tmp_path,
+    )
+    assert auth.is_cross_site_browser(
+        "https://dashboard.example", "", "dashboard.example",
+    ) is False
+
+
 # ── same-site 不再被无条件信任 ────────────────────────────────────────────────
 # same-site 只说明发起方与本站共享可注册域，仍可能是不同子域、不同端口，或
 # localhost 上的另一个程序 —— 正是这个闸门要防的 CSRF-to-localhost / DNS

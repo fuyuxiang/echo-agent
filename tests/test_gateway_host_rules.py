@@ -25,6 +25,8 @@ from echo_agent.gateway.host_rules import (
     is_wildcard_bind,
     normalize_host,
     normalize_host_entries,
+    normalize_origin,
+    normalize_origin_entries,
 )
 
 
@@ -137,3 +139,31 @@ class TestNormalizeHostEntries:
         result = normalize_host_entries(["b.com", "a.com", "b.com"])
         assert result == ["b.com", "a.com"]
         assert isinstance(result, list)
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("https://Example.COM:443/", "https://example.com"),
+        ("http://Example.COM:80", "http://example.com"),
+        ("http://Example.COM:58123/", "http://example.com:58123"),
+        ("http://[::1]:58123/", "http://[::1]:58123"),
+        ("tauri://LocalHost/", "tauri://localhost"),
+        ("null", "null"),
+        ("https://example.com/dashboard", ""),
+        ("https://user@example.com", ""),
+        ("https://example.com?next=evil", ""),
+        ("not-an-origin", ""),
+    ],
+)
+def test_normalize_origin_keeps_only_exact_origins(raw, expected):
+    assert normalize_origin(raw) == expected
+
+
+def test_normalize_origin_entries_deduplicates_and_drops_invalid_values():
+    assert normalize_origin_entries([
+        "https://Example.com:443/",
+        "https://example.com",
+        "https://example.com/path",
+        42,
+    ]) == ["https://example.com"]

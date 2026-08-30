@@ -242,6 +242,11 @@ MESSAGES = {
         "(403 cross-site request forbidden); read-only pages and native clients still "
         "work. Enter the domain or IP you actually browse to (the proxy domain if you "
         "are behind a reverse proxy) — a wildcard (0.0.0.0 / ::) does not count.",
+        "allowed_origins": "Allowed Dashboard origins (full scheme + domain/IP + port, comma-separated; "
+        "for a reverse proxy, replace the suggestion with its external HTTPS URL)",
+        "allowed_origins_set": "allowed_origins set to: {origins}",
+        "allowed_origins_empty_warn": "No allowed_origins configured: browsers/webviews without Fetch Metadata "
+        "cannot connect the Dashboard WebSocket and admin writes return 403.",
         "stale_allowed_hosts_warn": "The current allowed_hosts ({hosts}) does not include a local address, but the "
         "bind address is back on loopback. An explicit allowed_hosts replaces the "
         "local-access default, so the dashboard's admin pages will reject "
@@ -398,6 +403,10 @@ MESSAGES = {
         "browser_unreachable_fix": "List the domain or IP you browse to under gateway.auth.allowed_hosts "
         "(the proxy domain if behind a reverse proxy; a wildcard such as 0.0.0.0 / :: "
         "does not count), then rerun `echo-agent setup gateway`.",
+        "browser_origin_compat": "The gateway will start on {host}, but gateway.auth.allowed_origins is empty. "
+        "Browsers/webviews without Fetch Metadata can read the Dashboard, while WebSocket and admin writes return 403.",
+        "browser_origin_compat_fix": "List the complete Dashboard Origin (scheme + domain/IP + port) under "
+        "gateway.auth.allowed_origins, or rerun `echo-agent setup gateway`.",
     },
     "attach": {
         "auth_failed": "Authentication failed: {error}",

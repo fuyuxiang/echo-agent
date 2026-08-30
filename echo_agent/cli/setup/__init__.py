@@ -57,6 +57,7 @@ from echo_agent.gateway.host_rules import (
     is_loopback_bind,
     is_wildcard_bind,
     normalize_host_entries,
+    normalize_origin_entries,
 )
 from echo_agent.cli.setup import providers as provider_catalog
 from echo_agent.cli.setup.model_verify import (
@@ -517,9 +518,11 @@ def setup_tools(config: dict) -> None:
     if mcp_on:
         pre_selected.append(TOOL_OPTIONS.index("mcp"))
     skills_block = config.get("skills", {}) or {}
-    skills_on = skills_block.get("enabled") if "enabled" in skills_block else bool(
-        skills_block.get("skills_dir") or skills_block.get("skillsDir")
-    )
+    # SkillsConfig.enabled defaults to True. The old fallback inferred the
+    # switch from whether a skills_dir happened to be present in the raw YAML;
+    # a first-run config has neither field, so the wizard rendered Skills
+    # unchecked and then persisted enabled=False, overriding the schema default.
+    skills_on = skills_block.get("enabled", True)
     if skills_on:
         pre_selected.append(TOOL_OPTIONS.index("skills"))
     if (config.get("plugins", {}) or {}).get("enabled", True):
@@ -840,6 +843,41 @@ def _ask_allowed_hosts(auth: dict, bind_host: str) -> None:
         print_warning(t("gateway.allowed_hosts_empty_warn", host=bind_host))
 
 
+def _direct_http_origin(host: str, port: int) -> str:
+    """The Origin used when the dashboard reaches the gateway directly."""
+    suffix = "" if port == 80 else f":{port}"
+    return f"http://{host}{suffix}"
+
+
+def _ask_allowed_origins(auth: dict, port: int) -> None:
+    """Persist browser Origins for a network-exposed dashboard.
+
+    Fetch Metadata headers are not available in every browser/webview. In that
+    case an Origin-bearing request must use the explicit allowlist, otherwise
+    reads work while WebSocket and admin writes fail with a misleading
+    ``cross-site request forbidden``. The Host values entered immediately
+    before this prompt are safe direct-HTTP suggestions; reverse-proxy users
+    can replace them with their externally visible HTTPS origins.
+    """
+    existing = normalize_origin_entries(
+        auth.get("allowed_origins") or auth.get("allowedOrigins") or []
+    )
+    hosts = normalize_host_entries(
+        auth.get("allowed_hosts") or auth.get("allowedHosts") or []
+    )
+    suggested = existing or [_direct_http_origin(host, port) for host in hosts]
+    raw = ui.text(t("gateway.allowed_origins"), default=", ".join(suggested))
+    origins = normalize_origin_entries(str(raw).replace("\n", ",").split(","))
+
+    auth.pop("allowedOrigins", None)
+    if origins:
+        auth["allowed_origins"] = origins
+        print_info(t("gateway.allowed_origins_set", origins=", ".join(origins)))
+    else:
+        auth.pop("allowed_origins", None)
+        print_warning(t("gateway.allowed_origins_empty_warn"))
+
+
 def _reconcile_loopback_allowed_hosts(auth: dict) -> None:
     """Offer to clear a stale allowlist left over from a non-loopback bind.
 
@@ -945,6 +983,7 @@ def setup_gateway(config: dict) -> None:
         _reconcile_loopback_allowed_hosts(auth)
     else:
         _ask_allowed_hosts(auth, final_host)
+        _ask_allowed_origins(auth, gw["port"])
 
     print_success(t("gateway.saved", host=gw["host"], port=gw["port"], mode=t(f"gateway.auth_{auth_keys[a_idx]}")))
 
@@ -1729,6 +1768,29 @@ def _browser_unreachable_reason(config: dict) -> str:
     return _bind_label(host)
 
 
+def _browser_origin_compat_reason(config: dict) -> str:
+    """The exposed bind whose trusted Host lacks an explicit browser Origin.
+
+    This is a compatibility warning rather than an unconditional outage:
+    browsers that send ``Sec-Fetch-Site: same-origin`` pass without the list,
+    while browsers/webviews that omit Fetch Metadata need the exact Origin.
+    """
+    gw = config.get("gateway", {})
+    if not isinstance(gw, dict) or not gw.get("enabled"):
+        return ""
+    host = str(gw.get("host", "127.0.0.1")).strip()
+    if is_loopback_bind(host):
+        return ""
+    auth = gw.get("auth", {})
+    if not isinstance(auth, dict):
+        return ""
+    if not normalize_host_entries(auth.get("allowed_hosts") or auth.get("allowedHosts") or []):
+        return ""  # the stronger Host warning applies first
+    if normalize_origin_entries(auth.get("allowed_origins") or auth.get("allowedOrigins") or []):
+        return ""
+    return _bind_label(host)
+
+
 def _offer_gateway_start(
     config: dict, config_path: Any, workspace: Any = None, *, section_only: bool = False
 ) -> None:
@@ -1766,6 +1828,12 @@ def _offer_gateway_start(
         print()
         print_warning(t("startup.browser_unreachable", host=unreachable_host))
         print_info(t("startup.browser_unreachable_fix"))
+
+    origin_compat_host = _browser_origin_compat_reason(config)
+    if origin_compat_host:
+        print()
+        print_warning(t("startup.browser_origin_compat", host=origin_compat_host))
+        print_info(t("startup.browser_origin_compat_fix"))
 
     ws = _as_str(workspace)
     rt = probe_gateway(config=_probe_config(config), config_path=_as_str(config_path),

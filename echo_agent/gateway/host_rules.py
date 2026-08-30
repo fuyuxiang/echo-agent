@@ -26,6 +26,7 @@ only a raw, possibly hand-edited YAML dict, long before any server exists.
 from __future__ import annotations
 
 import ipaddress
+from urllib.parse import urlsplit
 
 WILDCARD_HOSTS = frozenset({"0.0.0.0", "::", "[::]", ""})
 """Bind-only wildcards, i.e. "every interface".
@@ -125,4 +126,62 @@ def normalize_host_entries(entries: object) -> list[str]:
         if not normalized or normalized in WILDCARD_HOSTS:
             continue
         seen.setdefault(normalized, None)
+    return list(seen)
+
+
+def normalize_origin(origin: str) -> str:
+    """Return a browser Origin in the exact form used for allowlist matching.
+
+    Browsers serialize origins without a trailing slash and normally omit a
+    scheme's default port. Operators, however, commonly paste a full address
+    bar URL (``https://Example.com:443/``). Keeping those spellings verbatim
+    creates an allowlist that looks configured but can never match. Only an
+    origin is accepted here: paths, credentials, queries and fragments are not
+    valid trust boundaries and are rejected rather than silently discarded.
+
+    ``null`` is preserved as an explicit opt-in for sandboxed documents and
+    webviews. It remains unsafe to add casually, but an operator who writes it
+    deliberately must not have it transformed into another value.
+    """
+    origin = (origin or "").strip()
+    if not origin:
+        return ""
+    if origin.lower() == "null":
+        return "null"
+    try:
+        parsed = urlsplit(origin)
+        port = parsed.port
+    except ValueError:
+        return ""
+    if (
+        not parsed.scheme
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+    ):
+        return ""
+
+    scheme = parsed.scheme.lower()
+    host = normalize_host(parsed.hostname)
+    if not host:
+        return ""
+    default_port = 443 if scheme == "https" else 80 if scheme == "http" else None
+    authority = host if port is None or port == default_port else f"{host}:{port}"
+    return f"{scheme}://{authority}"
+
+
+def normalize_origin_entries(entries: object) -> list[str]:
+    """Normalize and deduplicate configured browser Origin entries."""
+    if isinstance(entries, str) or not isinstance(entries, (list, tuple, set, frozenset)):
+        entries = [entries] if entries else []
+    seen: dict[str, None] = {}
+    for raw in entries:
+        if not isinstance(raw, str):
+            continue
+        normalized = normalize_origin(raw)
+        if normalized:
+            seen.setdefault(normalized, None)
     return list(seen)

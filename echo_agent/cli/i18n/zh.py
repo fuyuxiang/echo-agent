@@ -239,6 +239,9 @@ MESSAGES = {
         "（会话、配置、记忆写入、任务、定时、知识库）都会被拒（403 cross-site "
         "request forbidden）；只读页面与本地客户端仍可用。请填入你在地址栏实际"
         "访问的域名或 IP（反代场景填代理域名）；通配符（0.0.0.0 / ::）不算有效值。",
+        "allowed_origins": "Dashboard 允许的 Origin（完整协议 + 域名/IP + 端口，多个用逗号分隔；反代请改为外部 HTTPS 地址）",
+        "allowed_origins_set": "已设置 allowed_origins：{origins}",
+        "allowed_origins_empty_warn": "未配置 allowed_origins：不发送 Fetch Metadata 的浏览器/WebView 会无法连接 Dashboard WebSocket，管理写操作也会返回 403。",
         "stale_allowed_hosts_warn": "当前 allowed_hosts（{hosts}）不含本机地址，而绑定地址已改回本机回环。"
         "显式 allowed_hosts 会覆盖默认的本机放行规则，Dashboard 的管理页面"
         "将拒绝 127.0.0.1 / localhost 访问。",
@@ -388,6 +391,10 @@ MESSAGES = {
         "browser_unreachable_fix": "在 gateway.auth.allowed_hosts 中填入你在地址栏访问的域名或 IP"
         "（反代场景填代理域名；通配符 0.0.0.0 / :: 无效），"
         "然后重新执行 echo-agent setup gateway。",
+        "browser_origin_compat": "网关会在 {host} 上启动，但未配置 gateway.auth.allowed_origins。"
+        "不发送 Fetch Metadata 的浏览器/WebView 只能读取 Dashboard，WebSocket 和管理写操作会被 403 拒绝。",
+        "browser_origin_compat_fix": "在 gateway.auth.allowed_origins 中填入完整的 Dashboard Origin"
+        "（协议 + 域名/IP + 端口），或重新执行 echo-agent setup gateway。",
     },
     "attach": {
         "auth_failed": "认证失败：{error}",

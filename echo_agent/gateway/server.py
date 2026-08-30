@@ -49,7 +49,11 @@ from echo_agent.gateway.auth import GatewayAuth
 from echo_agent.gateway.editor import ProgressiveEditor
 from echo_agent.gateway.health import GatewayHealthProvider
 from echo_agent.gateway.hooks import HookRegistry
-from echo_agent.gateway.host_rules import is_loopback_bind, normalize_host_entries
+from echo_agent.gateway.host_rules import (
+    is_loopback_bind,
+    normalize_host_entries,
+    normalize_origin_entries,
+)
 from echo_agent.gateway.media import MediaCache
 from echo_agent.gateway.rate_limiter import RateLimiter
 from echo_agent.gateway.router import DeliveryRouter
@@ -112,6 +116,7 @@ class GatewayServer:
         # the gateway via DNS could claim to come from a non-existent domain.
         self.auth = GatewayAuth(config.auth, data_dir, bound_host=config.host)
         self._warn_host_allowlist_if_unset()
+        self._warn_origin_allowlist_if_unset()
         self.media_cache = MediaCache(
             cache_dir=workspace / config.media_cache_dir,
             max_size_mb=config.media_cache_max_mb,
@@ -608,6 +613,32 @@ class GatewayServer:
             "or address you browse to (e.g. 'echo.example.com') in "
             "gateway.auth.allowed_hosts — note that a wildcard such as '0.0.0.0' "
             "is not a usable entry.",
+            bound or "(empty = all interfaces)",
+        )
+
+    def _warn_origin_allowlist_if_unset(self) -> None:
+        """Warn about browser compatibility when an exposed origin is absent.
+
+        Modern browsers mark a direct dashboard request ``same-origin`` via
+        Fetch Metadata. Some browsers and embedded webviews omit that header;
+        they need the exact Origin allowlisted or WS/admin writes are rejected.
+        Only warn after Host trust is configured, otherwise the stronger Host
+        warning already explains why every browser admin request is blocked.
+        """
+        bound = (self._config.host or "").strip()
+        if is_loopback_bind(bound):
+            return
+        if not normalize_host_entries(self._config.auth.allowed_hosts):
+            return
+        if normalize_origin_entries(self._config.auth.allowed_origins):
+            return
+        logger.warning(
+            "Gateway bound to {} with auth.allowed_hosts configured but no "
+            "auth.allowed_origins. Browsers/webviews that omit Fetch Metadata "
+            "will load read-only dashboard pages, but Dashboard WebSocket and "
+            "admin writes will be rejected as cross-site. List the exact "
+            "browser origin (scheme, host and port) in "
+            "gateway.auth.allowed_origins.",
             bound or "(empty = all interfaces)",
         )
 
