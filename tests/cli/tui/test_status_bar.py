@@ -112,10 +112,9 @@ def test_responsive_tiers_drop_segments_when_narrow():
 
     bar._tier = lambda: "mid"             # type: ignore[method-assign]
     mid = bar._compose_text()
-    assert "$0.0420" in mid               # cost shows at mid
-    assert "🧠" not in mid and "18.2K" not in mid
+    assert "🧠 47" in mid            # memory remains visible at mid
+    assert "$0.0420" not in mid and "18.2K" not in mid
 
     bar._tier = lambda: "wide"            # type: ignore[method-assign]
     wide = bar._compose_text()
     assert "18.2K" in wide and "🧠" in wide and "$0.0420" in wide
-

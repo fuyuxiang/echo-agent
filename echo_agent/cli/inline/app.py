@@ -41,6 +41,7 @@ from echo_agent.cli.render.redact import (
     redact_for_export,
 )
 from echo_agent.cli.render.status import (
+    SPINNER_FRAMES,
     context_gauge,
     context_percent,
     fmt_duration,
@@ -187,6 +188,7 @@ class InlineApp:
         self._visible_controls: set[str] = set()
         self._activity_task: asyncio.Task | None = None
         self._activity_label = ""
+        self._activity_frame = 0
         self._turn_started = 0.0
         self._turn_elapsed = 0.0
         self._turn_outcome = ""
@@ -245,6 +247,7 @@ class InlineApp:
             self._turn_elapsed = 0.0
             self._turn_outcome = ""
             self._turn_tool_ids.clear()
+            self._activity_frame = 0
         # A pipe cannot repaint a transient status row.  Emit one start marker
         # per turn, then keep later stage refinements in memory only.
         if was_active and not self._printer.is_tty:
@@ -253,7 +256,14 @@ class InlineApp:
         if self._activity_task is not None and not self._activity_task.done():
             self._invalidate_toolbar()
             return
-        self._printer.spinner_start(self._activity_text())
+        # Once PromptSession is mounted it must be the sole owner of transient
+        # terminal rows. Sending the ANSI spinner through patch_stdout makes
+        # prompt-toolkit suspend and redraw the whole prompt/status area on
+        # every 100 ms frame, which presents as a flashing bottom toolbar.
+        # The dynamic prompt callback below renders the same spinner without
+        # leaving prompt-toolkit's differential renderer.
+        if self._prompt_session is None:
+            self._printer.spinner_start(self._activity_text())
         self._invalidate_toolbar()
         if not self._printer.is_tty:
             return
@@ -271,7 +281,11 @@ class InlineApp:
         try:
             while True:
                 await asyncio.sleep(0.1)
-                self._printer.spinner_update(self._activity_text())
+                self._activity_frame = (self._activity_frame + 1) % len(SPINNER_FRAMES)
+                if self._prompt_session is not None:
+                    self._invalidate_toolbar()
+                else:
+                    self._printer.spinner_update(self._activity_text())
         except asyncio.CancelledError:
             # Normal spinner shutdown; it owns no resources beyond this task.
             pass
@@ -735,7 +749,7 @@ class InlineApp:
                     try:
                         default, self._prompt_default = self._prompt_default, ""
                         text = await session.prompt_async(
-                            [("class:prompt", f"{self._brand.prompt} ")],
+                            self._prompt,
                             bottom_toolbar=self._toolbar,
                             # Re-resolve once per submitted prompt so /theme
                             # changes both transcript ANSI and this status row.
@@ -774,7 +788,30 @@ class InlineApp:
             "status.info": row(palette["secondary"], bold=True),
             "status.warn": row(palette["warning"], bold=True),
             "status.memory": row(palette["secondary"], bold=True),
+            "activity.spinner": f"bold {palette['accent']}",
+            "activity.text": palette["text-muted"],
         }
+
+    def _prompt(self) -> list[tuple[str, str]]:
+        """Dynamic prompt with the live activity row rendered in-band.
+
+        prompt-toolkit splits text before the final newline into a row above
+        the editable buffer. Keeping the spinner here means animation is a
+        normal differential render instead of external ANSI output routed
+        through ``patch_stdout``.
+        """
+        fragments: list[tuple[str, str]] = []
+        if self._turn_started and self._activity_label:
+            frame = SPINNER_FRAMES[self._activity_frame % len(SPINNER_FRAMES)]
+            fragments.extend(
+                [
+                    ("class:activity.spinner", frame),
+                    ("class:activity.text", f" {self._activity_text()}"),
+                    ("", "\n"),
+                ]
+            )
+        fragments.append(("class:prompt", f"{self._brand.prompt} "))
+        return fragments
 
     def _toolbar(self) -> list[tuple[str, str]]:
         """Responsive Claude-style session telemetry for prompt-toolkit.
@@ -865,6 +902,12 @@ class InlineApp:
             except (TypeError, ValueError):
                 cost = 0.0
             segments.append([("class:status.base", f"${cost:.4f}")])
+
+        # Memory is operationally more useful than cost and is compact enough
+        # for the mid layout. Previously it was gated behind >=105 columns,
+        # making a normal 80/100-column terminal look as if memory telemetry had
+        # been removed entirely.
+        if mid:
             try:
                 memory = max(0, int(self._status.get("memory_count", 0) or 0))
             except (TypeError, ValueError):

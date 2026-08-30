@@ -70,7 +70,7 @@ class StatusBar(Static):
         heavier segments (context gauge, cost, memory) instead of letting the
         single-line bar overflow and clip mid-field.
           wide  (>=80): connection + model + context + timer + cost + memory
-          mid   (>=50): connection + model + timer + cost
+          mid   (>=50): connection + model + timer + memory
           narrow(< 50): connection + model + timer"""
         try:
             width = self.size.width or self.app.size.width
@@ -118,12 +118,13 @@ class StatusBar(Static):
         else:
             segments.append("[$text-muted]⏱ 0s[/]")
 
-        # 4. Cost (wide + mid)
-        if tier in ("wide", "mid"):
+        # 4. Cost (wide only)
+        if tier == "wide":
             segments.append(f"${self._cost:.4f}")
 
-        # 5. Memory count (wide only)
-        if tier == "wide":
+        # 5. Memory count (wide + mid). Prefer this compact, actionable session
+        # signal over cost when only one secondary field fits.
+        if tier in ("wide", "mid"):
             segments.append(f"[$secondary]🧠 {self._memory_count}[/]")
 
         return " │ ".join(segments)

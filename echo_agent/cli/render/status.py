@@ -9,6 +9,13 @@ between the two views.
 from __future__ import annotations
 
 
+# Shared by terminal renderers that need a compact braille activity indicator.
+# Keeping the frames renderer-neutral lets prompt-toolkit own the interactive
+# animation while the plain-output fallback can retain its existing ANSI
+# implementation without the two drifting visually.
+SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
 def fmt_tokens(value: int | float | str | None) -> str:
     """Compact a token count without raising on optional telemetry."""
     try:

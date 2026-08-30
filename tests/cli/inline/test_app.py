@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import os
@@ -350,6 +351,26 @@ def test_initial_status_is_visible_before_first_model_round(monkeypatch):
     assert "0/1.0M" in text
 
 
+def test_mid_toolbar_keeps_memory_visible(monkeypatch):
+    app, _ = _app()
+    monkeypatch.setattr(
+        "echo_agent.cli.inline.app.shutil.get_terminal_size",
+        lambda fallback: os.terminal_size((100, 24)),
+    )
+    app._status.update({
+        "model": "gpt-5.5",
+        "context_max": 128_000,
+        "memory_count": 47,
+        "total_cost": 0.0042,
+    })
+    text = "".join(value for _style, value in app._toolbar())
+    assert "●已连接" in text
+    assert "⚡ gpt-5.5" in text
+    assert "上下文 0%" in text
+    assert "🧠 47" in text
+    assert "$0.0042" not in text
+
+
 def test_narrow_toolbar_prioritizes_connection_and_activity(monkeypatch):
     app, _ = _app()
     monkeypatch.setattr(
@@ -366,6 +387,41 @@ def test_narrow_toolbar_prioritizes_connection_and_activity(monkeypatch):
     # would produce two competing "正在读取" rows.
     assert "正在读取" not in text
     assert "上下文" not in text and "🧠" not in text and "$" not in text
+
+
+@pytest.mark.asyncio
+async def test_interactive_activity_uses_prompt_renderer_without_ansi_writes():
+    class TTYBuffer(io.StringIO):
+        def isatty(self):
+            return True
+
+    class PromptApp:
+        def __init__(self):
+            self.invalidations = 0
+
+        def invalidate(self):
+            self.invalidations += 1
+
+    class PromptSession:
+        def __init__(self):
+            self.app = PromptApp()
+
+    stream = TTYBuffer()
+    app = InlineApp(session_key="cli:test", stream=stream)
+    session = PromptSession()
+    app._prompt_session = session
+
+    app._start_activity("正在思考")
+    first = "".join(value for _style, value in app._prompt())
+    await asyncio.sleep(0.12)
+    second = "".join(value for _style, value in app._prompt())
+    app._pause_activity()
+
+    assert "正在思考" in first
+    assert "\n" in first
+    assert first != second
+    assert stream.getvalue() == ""
+    assert session.app.invalidations >= 2
 
 
 @pytest.mark.parametrize(

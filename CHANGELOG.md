@@ -20,6 +20,7 @@
 - `rich>=13.5` 成为必选依赖。此前它只是 `[tui]` extra 的传递依赖（随 `textual` 装入），而 CLI 的终端渲染代码在不装 `[tui]` 时同样需要它做 markup 转义；最小安装 `pip install echo-agent` 现在会多装 rich。下限取 13.5 是因为更早的版本 `rich.markup.escape` 不补偿结尾反斜杠，会让以 `\` 结尾的 diff 行（C 宏、shell 续行、Windows 路径）吃掉闭合标签
 
 ### Fixed
+- 修复 inline CLI 动画通过 `patch_stdout` 反复撤下并重绘输入区、导致底部状态栏随 spinner 闪烁；交互动画现由 prompt-toolkit 统一差量渲染，中等宽度的 inline/TUI 状态栏同时恢复显示记忆数
 - 修复会话 reset 只清消消息历史、但保留 working memory / 快照 / episode / 未完成计划的跨任务串扰；每次 reset 现在切换持久化 conversation epoch，并在同一会话锁内清理进程内上下文
 - **安全**：会话 context epoch 改为无碰撞结构编码，Gateway 拒绝客户端注入保留语法；reset 同时清除 session/session-all 工具批准，但保留用户明确设置的 always 批准
 - **安全**：ToolRegistry 不再允许插件静默覆盖内置/既有工具或占用别名；工具名执行统一格式校验，可信热替换必须显式声明

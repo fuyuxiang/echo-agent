@@ -29,13 +29,13 @@ from echo_agent.cli.render.geometry import (
     child_prefix, cont_prefix, head_prefix,
 )
 from echo_agent.cli.render.redact import mask_sensitive_strings
+from echo_agent.cli.render.status import SPINNER_FRAMES
 from echo_agent.cli.render.text import clip
 from echo_agent.cli.render.tool import (
     fmt_duration_ms, humanize_tool, pick_object, summarize_result,
 )
 from echo_agent.cli.tui.glyphs import CLAUDE, GlyphSet
 
-_SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _CLEAR_LINE = "\r\033[2K"
 
 
@@ -289,7 +289,7 @@ class InlinePrinter:
         self._paint_spinner(label)
 
     def _paint_spinner(self, label: str) -> None:
-        frame = _SPINNER_FRAMES[self._spinner_frame % len(_SPINNER_FRAMES)]
+        frame = SPINNER_FRAMES[self._spinner_frame % len(SPINNER_FRAMES)]
         self._spinner_live = True
         self._write(
             f"{_CLEAR_LINE}{A.paint(frame, A.fg('accent'))} "

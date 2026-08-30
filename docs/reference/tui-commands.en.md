@@ -88,11 +88,12 @@ read-only calls; failures always remain visible.
 The inline prompt keeps a responsive session bar underneath the input. Wide
 terminals show connection/session, model, context occupancy, whole-turn elapsed
 time, cumulative cost, and memory count. Medium widths retain model and context
-percentage; very narrow terminals keep only connection and timing so the bar
-never wraps into the input. The default model and context
+percentage plus memory count; very narrow terminals keep only connection and
+timing so the bar never wraps into the input. The default model and context
 limit are seeded from configuration on first paint, then replaced by server
 telemetry after actual routing. The spinner owns “what is happening now”; the
-bar owns time and controls, avoiding duplicate adjacent status sentences.
+spinner, prompt, and bar are updated by one terminal renderer, while the bar
+owns time and controls, avoiding duplicate adjacent status sentences.
 Terminal outcomes distinguish completed, failed, interrupted, and disconnected
 turns. Approval and clarification waits remain part of whole-turn elapsed time;
 `/clear` also clears the settled summary, and `/theme` updates both transcript
