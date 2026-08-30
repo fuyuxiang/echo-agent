@@ -17,6 +17,11 @@ is noise.
 from __future__ import annotations
 
 import sys
+from shutil import get_terminal_size
+
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.table import Table
 
 from echo_agent.cli.render import ansi as A
 from echo_agent.cli.render.geometry import (
@@ -68,6 +73,22 @@ class InlinePrinter:
             # user has already lost the display either way.
             pass
 
+    def set_stream(self, stream) -> None:
+        """Switch to the stream active for the interactive prompt.
+
+        ``prompt_toolkit.patch_stdout`` installs its proxy only while the input
+        loop is running.  Delaying this binding keeps asynchronous gateway
+        output above the editable prompt instead of painting through it.
+        """
+        self.spinner_clear()
+        self._out = stream
+
+    def note_external_line(self) -> None:
+        """Tell the spacing model that the prompt already wrote a user line."""
+        self.spinner_clear()
+        self._at_blank = False
+        self._wrote_anything = True
+
     def _line(self, text: str) -> None:
         self.spinner_clear()
         self._write(text + "\n")
@@ -76,18 +97,36 @@ class InlinePrinter:
 
     def blank(self) -> None:
         """Open one blank line, collapsing repeats and suppressing a leading one."""
+        # A spinner is a transient row, not transcript content.  It still has
+        # to be erased when blank() is the first permanent output operation.
+        self.spinner_clear()
         if self._at_blank or not self._wrote_anything:
             return
-        self.spinner_clear()
         self._write("\n")
         self._at_blank = True
 
     def plain(self, text: str) -> None:
         self._line(text)
 
-    def head(self, text: str, *, style: str = "") -> None:
-        glyph = A.paint(self._g.reply, style) if style else self._g.reply
-        self._line(f"{head_prefix()}{glyph} {text}")
+    def head(self, text: str, *, style: str = "", glyph: str = "") -> None:
+        """A main line: the glyph that acts, then what it did.
+
+        ``glyph`` overrides the set's default marker so a cognitive frame can
+        print its own (✻ for thinking, ✦ for an approval request). It stays a
+        parameter here rather than letting callers assemble the row with
+        ``plain()``: the column a main line starts at is geometry's to decide
+        (render/geometry.py exists so prefixes come from constants, not from
+        each call site), and ``plain()`` means "print this verbatim", which
+        would make main lines indistinguishable from body text to anything
+        downstream that sorts output by line kind.
+
+        rstrip'ed because an empty ``text`` would otherwise leave the marker
+        with a trailing space — invisible on screen, but it shows up in
+        captured output and in exports.
+        """
+        mark = glyph or self._g.reply
+        painted = A.paint(mark, style) if style else mark
+        self._line(f"{head_prefix()}{painted} {text}".rstrip())
 
     def child(self, text: str, *, dim: bool = True) -> None:
         body = A.paint(text, A.fg("text-muted")) if dim else text
@@ -96,6 +135,56 @@ class InlinePrinter:
 
     def cont(self, text: str) -> None:
         self._line(f"{cont_prefix()}{A.paint(text, A.fg('text-muted'))}")
+
+    def reply(self, text: str) -> None:
+        """Render one authoritative assistant reply, with Markdown support.
+
+        A two-column Rich grid gives wrapped paragraphs the same fixed hanging
+        indent as Claude Code: the actor glyph appears once and all reply text
+        starts in the next column.  Non-TTY output is deliberately colourless
+        and contains no cursor-control sequences.
+        """
+        body = str(text or "").strip()
+        if not body:
+            return
+        self.spinner_clear()
+        width = max(24, get_terminal_size((100, 24)).columns)
+        colour = self.is_tty and A.supports_color()
+        console = Console(
+            file=self._out,
+            force_terminal=colour,
+            no_color=not colour,
+            color_system="truecolor" if colour else None,
+            width=width,
+            soft_wrap=False,
+            highlight=False,
+        )
+        table = Table.grid(padding=(0, 1), expand=False)
+        table.add_column(no_wrap=True)
+        table.add_column()
+        table.add_row(
+            A.paint(self._g.reply, A.fg("accent")),
+            Markdown(body),
+        )
+        console.print(table)
+        self._at_blank = False
+        self._wrote_anything = True
+
+    def notice(self, text: str, *, glyph: str = "·") -> None:
+        self.head(text, glyph=glyph, style=A.fg("text-muted"))
+
+    def error(self, text: str) -> None:
+        self.head(text, glyph=self._g.fail, style=A.fg("error"))
+
+    def clear_screen(self) -> None:
+        """Clear only for an explicit /clear; never rewrite normal history."""
+        self.spinner_clear()
+        if self.is_tty:
+            self._write("\033[2J\033[H")
+        else:
+            self._write("\n")
+        self._at_blank = True
+        self._wrote_anything = False
 
     def tool_line(
         self,

@@ -266,11 +266,21 @@ async def fetch_turn_status(
 
 async def run_client(
     *, host: str, port: int, ws_path: str, user_id: str, token: str,
-    save_dir=None, api_prefix: str = "/api/v1"
+    save_dir=None, api_prefix: str = "/api/v1", renderer: str = "tui",
 ) -> int:
-    _require_textual()
-    from echo_agent.cli.tui.app import EchoTUI
     from echo_agent.cli.tui.bridge import WSBridge
+
+    if renderer == "tui":
+        _require_textual()
+        from echo_agent.cli.tui.app import EchoTUI
+
+        app_factory = EchoTUI
+    elif renderer == "inline":
+        from echo_agent.cli.inline.app import InlineApp
+
+        app_factory = InlineApp
+    else:
+        raise ValueError(f"unknown cli renderer: {renderer}")
 
     url = build_ws_url(host, port, ws_path)
     async with aiohttp.ClientSession() as session:
@@ -388,7 +398,7 @@ async def run_client(
                 session_key=session_key, token=token, event_id=event_id,
             )
 
-        app = EchoTUI(
+        app = app_factory(
             send_coro=send_coro, session_key=session_key,
             interrupt_coro=interrupt_coro, reconnect_coro=reconnect_coro,
             save_dir=save_dir,
@@ -506,12 +516,13 @@ def run_cli_attach(
     *, host: str, port: int, ws_path: str, user_id: str, token: str,
     api_prefix: str = "/api/v1", save_dir: Any = None,
     config_path: str | None = None, workspace: str | None = None,
+    renderer: str = "tui",
 ) -> int:
     try:
         return asyncio.run(run_client(
             host=host, port=port, ws_path=ws_path,
             user_id=user_id, token=token, save_dir=save_dir,
-            api_prefix=api_prefix,
+            api_prefix=api_prefix, renderer=renderer,
         ))
     except MissingTUIDependencyError as e:
         # The gateway may be perfectly healthy — this is purely a missing

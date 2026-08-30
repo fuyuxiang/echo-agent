@@ -54,7 +54,9 @@ Gateway mode provides:
 echo-agent cli
 ```
 
-Attaches to a running local Gateway as a thin TUI client. Requires Gateway to be running.
+Attaches to a running local Gateway as a thin client. Native terminal
+scrollback is the default; use `echo-agent cli --tui` for the full-screen UI.
+The Gateway must already be running.
 
 !!! tip
     Use `echo-agent status` to check if Gateway is running and which channels are active.

@@ -44,6 +44,7 @@ def test_cli_subcommand_routes_to_run_cli_attach():
     assert kwargs["port"] == 9001
     assert kwargs["user_id"] == "alice"
     assert kwargs["token"] == "t"
+    assert kwargs["renderer"] == "inline"
     ex.assert_called_once_with(0)
 
 
@@ -53,6 +54,15 @@ def test_existing_commands_unaffected():
     ns = parser.parse_args(["cli", "--port", "9001"])
     assert ns.command == "cli"
     assert ns.port == 9001
+
+
+def test_cli_renderer_defaults_inline_and_tui_is_opt_in():
+    parser = m._build_parser()
+    assert parser.parse_args(["cli"]).renderer == "inline"
+    assert parser.parse_args(["cli", "--inline"]).renderer == "inline"
+    assert parser.parse_args(["cli", "--tui"]).renderer == "tui"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["cli", "--inline", "--tui"])
 
 
 def test_resolve_defaults_falls_back_on_load_failure(monkeypatch):

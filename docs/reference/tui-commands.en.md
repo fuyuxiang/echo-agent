@@ -1,24 +1,26 @@
-# TUI Commands Reference
+# Terminal Interaction Commands
 
-The Echo Agent TUI (Terminal User Interface) is an interactive chat session launched via `echo-agent cli` or by connecting to a running gateway. Commands are prefixed with `/` and split into two categories: **local** commands processed entirely by the client, and **server-side** commands forwarded to the agent runtime.
+`echo-agent cli` defaults to the native-scrollback inline renderer;
+`echo-agent cli --tui` selects the full-screen Textual renderer. Both share the
+commands and WebSocket behavior below. Command names are case-insensitive.
 
 ## Command Summary
 
 | Command | Type | Syntax | Description |
 |---------|------|--------|-------------|
-| `/help` | Local | `/help` | Display available commands and key bindings |
-| `/clear` | Local | `/clear` | Clear the terminal screen |
-| `/copy` | Local | `/copy [n]` | Copy the last (or nth) assistant response to clipboard |
-| `/details` | Local | `/details [n]` | Show metadata for the last (or nth) message |
-| `/save` | Local | `/save [path]` | Export conversation to a file |
-| `/theme` | Local | `/theme [name]` | Switch or list available UI themes |
+| `/help` | Local | `/help` | Display available commands |
+| `/clear` | Local | `/clear` | Clear the display, not history or audit data |
+| `/copy` | Local | `/copy [all]` | Copy the last response or whole conversation |
+| `/details` | Local | `/details [section state]` | Control process detail |
+| `/save` | Local | `/save [--format md\|txt\|json] [path]` | Export conversation or audit data |
+| `/theme` | Local | `/theme [light\|dark]` | Report or switch the palette |
 | `/reconnect` | Local | `/reconnect` | Re-establish connection to the gateway |
 | `/status` | Local | `/status [event_id]` | Query the durable server-side turn state |
-| `/quit` | Local | `/quit` | Exit the TUI session |
-| `/approve` | Server | `/approve [id]` | Approve a pending tool execution |
-| `/deny` | Server | `/deny [id] [reason]` | Deny a pending tool execution |
+| `/quit` | Local | `/quit` | Exit the client |
+| `/approve` | Server | `/approve <id> [session\|always]` | Approve a pending tool execution |
+| `/deny` | Server | `/deny <id> [reason]` | Deny a pending tool execution |
 | `/approvals` | Server | `/approvals` | List all pending approval requests |
-| `/clarify` | Server | `/clarify [question]` | Ask the agent to clarify its last action |
+| `/clarify` | Server | `/clarify <id> <answer>` | Answer an agent clarification request |
 
 ---
 
@@ -26,17 +28,16 @@ The Echo Agent TUI (Terminal User Interface) is an interactive chat session laun
 
 ### /help
 
-Display the command reference and active key bindings.
+Display every local and server-side command. The inline prompt also completes
+command names after typing `/`.
 
 ```
 /help
 ```
 
-Output includes all available commands, their syntax, and the current key binding map.
-
 ### /clear
 
-Clear the scrollback buffer and reset the display.
+Clear the current display and renderer-only indexes.
 
 ```
 /clear
@@ -47,34 +48,34 @@ Clear the scrollback buffer and reset the display.
 
 ### /copy
 
-Copy an assistant response to the system clipboard.
+Copy the last assistant response or the entire conversation.
 
 ```
-/copy        # copy the most recent response
-/copy 3      # copy the 3rd response in the conversation
+/copy        # most recent response
+/copy all    # full conversation
 ```
 
-The copied content is plain text with markdown formatting stripped. On Linux, this requires `xclip` or `xsel`; on macOS and Windows it works natively.
+The inline renderer tries the platform clipboard first (`pbcopy`, `wl-copy`,
+`xclip`, or `clip`) and can fall back to capped OSC 52 on a TTY. Failure is
+reported explicitly instead of claiming success.
 
 ### /details
 
-Show metadata for a message: token counts, model used, latency, estimated cost, and tool calls.
+Report or change how much process information is shown.
 
 ```
-/details         # last message
-/details 5       # message at position 5
+/details
+/details thinking expanded
+/details tools lean
 ```
 
-Example output:
+The defaults favor a quiet transcript while keeping failures visible:
 
 ```
-── Message #12 ──────────────────────────────
-Role:       assistant
-Model:      claude-sonnet-4-20250514
-Tokens:     prompt=1842  completion=637
-Latency:    2.3s (first token: 0.4s)
-Cost:       $0.0089
-Tools:      filesystem(read), shell(ls)
+── Process detail ──────────────────────────
+Thinking:   collapsed
+Tools:      lean
+Activity:   hidden
 ────────────────────────────────────────────
 ```
 
@@ -101,19 +102,15 @@ command-line secret flags are redacted before entering the audit buffer.
 
 ### /theme
 
-Switch the TUI color theme or list available themes.
+Report or switch the light/dark palette.
 
 ```
-/theme              # list available themes
-/theme dark         # switch to dark theme
-/theme light        # switch to light theme
-/theme monokai      # switch to monokai theme
+/theme              # report current theme
+/theme dark
+/theme light
 ```
 
-Available built-in themes: `dark`, `light`, `monokai`, `solarized`, `nord`.
-
-!!! tip
-    Set a permanent default in your config file under `ui.locale` (only `locale` is exposed; theme is not persisted across restarts).
+Set `ECHO_TUI_THEME=light|dark` for a persistent shell preference.
 
 ### /reconnect
 
@@ -141,13 +138,15 @@ interruption. The TUI also performs this reconciliation after reconnecting.
 
 ### /quit
 
-Exit the TUI session. Active tool executions are not cancelled — the agent continues running on the gateway.
+Exit the client. `Ctrl+D` exits immediately. `Ctrl+C` first denies a pending
+approval or interrupts the active primary turn; while idle it requires a second
+press within two seconds to exit.
 
 ```
 /quit
 ```
 
-Aliases: `Ctrl+D`, `/exit`, `/q`
+Keyboard exit: `Ctrl+D`.
 
 ---
 
@@ -160,8 +159,8 @@ These commands are sent to the agent runtime via the gateway. They require an ac
 Approve a tool execution that is waiting for user confirmation. Tools in `ask` approval mode pause before executing and wait for explicit user approval.
 
 ```
-/approve              # approve the most recent pending request
-/approve abc123       # approve a specific request by ID
+/approve abc123
+/approve abc123 session
 ```
 
 !!! warning
@@ -172,7 +171,6 @@ Approve a tool execution that is waiting for user confirmation. Tools in `ask` a
 Deny a pending tool execution, optionally providing a reason the agent can use to adjust its approach.
 
 ```
-/deny                               # deny the most recent request
 /deny abc123 "use read instead"     # deny with guidance
 ```
 
@@ -196,14 +194,14 @@ Pending approvals (2):
 
 ### /clarify
 
-Ask the agent to explain or elaborate on its most recent action or reasoning.
+Answer a clarification request emitted by the agent.
 
 ```
-/clarify                            # generic "explain what you just did"
-/clarify why did you choose grep?   # specific question
+/clarify clarify-123 use-the-safe-option
 ```
 
-The agent responds with an explanation without advancing the task.
+Both renderers present an interactive choice UI, so users normally select a
+number or enter free text instead of constructing this command manually.
 
 ---
 
@@ -212,15 +210,10 @@ The agent responds with an explanation without advancing the task.
 | Key | Action |
 |-----|--------|
 | `Enter` | Send message |
-| `Shift+Enter` | Insert newline (multiline input) |
-| `Ctrl+C` | Cancel current input / interrupt streaming |
-| `Ctrl+D` | Quit the TUI |
-| `Ctrl+L` | Clear screen (same as `/clear`) |
-| `Up` / `Down` | Navigate input history |
-| `Ctrl+Up` / `Ctrl+Down` | Scroll output buffer |
-| `Tab` | Autocomplete command or file path |
-| `Ctrl+R` | Search input history |
-| `Esc` | Dismiss autocomplete / cancel selection |
+| `Esc`, then `Enter` | Insert a newline (inline renderer) |
+| `Ctrl+C` | Deny pending approval, stop active turn, or guarded exit |
+| `Ctrl+D` | Exit immediately |
+| `Up` / `Down` | Navigate input history (inline renderer) |
 
 ---
 
@@ -233,7 +226,8 @@ The agent responds with an explanation without advancing the task.
     Use `/save --format json` periodically to checkpoint your conversation. The JSON format preserves full metadata and can be reloaded for analysis.
 
 !!! tip "Multiline input"
-    For pasting code blocks or multi-paragraph prompts, use `Shift+Enter` to insert newlines. The message is sent only when you press `Enter` on a line that isn't preceded by `Shift`.
+    In the inline renderer, press `Esc` followed by `Enter` to insert a newline;
+    plain `Enter` submits the buffer.
 
 !!! note "No /undo or /retry"
     The catalog has thirteen commands and none re-runs a turn. Local commands are `/help`, `/clear`, `/copy`, `/details`, `/save`, `/theme`, `/reconnect`, `/status` and `/quit`; server commands are `/approve`, `/deny`, `/approvals` and `/clarify`.

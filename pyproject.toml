@@ -40,6 +40,8 @@ dependencies = [
     "numpy>=1.24",
     "fastembed>=0.6",  # >=0.6 for rerank.cross_encoder.TextCrossEncoder
     "questionary>=2.0",
+    # Used directly by the default scrollback-first interactive renderer.
+    "prompt-toolkit>=3.0",
     "httpx>=0.23",
     # rich>=13.5: this declares an existing fact rather than adding a new
     # install. rich already arrives with `[tui]` (textual depends on

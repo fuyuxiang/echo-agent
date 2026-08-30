@@ -38,7 +38,7 @@ echo-agent run
 echo-agent cli
 ```
 
-## TUI 命令
+## 终端交互命令
 
 在 CLI 交互中可使用本地命令：
 
@@ -48,6 +48,8 @@ echo-agent cli
 - `/details` — 显示详情
 - `/save` — 保存对话
 - `/theme` — 切换主题
+- `/reconnect` — 断线后重连
+- `/status` — 查询服务端回合状态
 - `/quit` — 退出
 
 服务端命令（连接 Gateway 时）：
@@ -59,5 +61,8 @@ echo-agent cli
 
 ## 与 Gateway CLI Client 的区别
 
+`echo-agent cli` 默认使用原生 scrollback 界面；`echo-agent cli --tui`
+使用共享同一协议和命令集的全屏 Textual 界面。
+
 - `echo-agent run`：前台模式，CLI 通道内建于进程中
-- `echo-agent cli`：TUI 薄客户端，通过 WebSocket 连接已运行的 Gateway
+- `echo-agent cli`：默认原生 scrollback 的瘦客户端，通过 WebSocket 连接 Gateway

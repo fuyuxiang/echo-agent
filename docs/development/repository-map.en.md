@@ -163,7 +163,7 @@ plugins/
 | `a2a/` | Agent-to-Agent protocol |
 | `bus/` | Event bus (InboundEvent/OutboundEvent) |
 | `checkpoint/` | File checkpoint persistence |
-| `cli/` | CLI entry point, TUI (Textual) |
+| `cli/` | CLI entry point, inline scrollback renderer, TUI (Textual) |
 | `cost/` | Cost tracking and budget control |
 | `dependencies/` | Dependency management |
 | `evaluation/` | Evaluation framework (datasets, metrics, runner) |

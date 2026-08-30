@@ -217,6 +217,16 @@ def _build_parser() -> argparse.ArgumentParser:
     cli_parser.add_argument("--user", default="local", help="Client user id for the cli: session (default: local)")
     cli_parser.add_argument("-c", "--config", help="Path to config file")
     cli_parser.add_argument("-w", "--workspace", help="Workspace directory")
+    renderer_group = cli_parser.add_mutually_exclusive_group()
+    renderer_group.add_argument(
+        "--inline", dest="renderer", action="store_const", const="inline",
+        help="Use native terminal scrollback output (default)",
+    )
+    renderer_group.add_argument(
+        "--tui", dest="renderer", action="store_const", const="tui",
+        help="Use the full-screen Textual interface",
+    )
+    cli_parser.set_defaults(renderer="inline")
 
     # dashboard — build the web SPA on demand
     dash_parser = subparsers.add_parser(
@@ -588,6 +598,7 @@ def _dispatch() -> None:
             api_prefix=info.api_prefix, save_dir=info.save_dir,
             config_path=args.config or args.top_config,
             workspace=args.workspace or args.top_workspace,
+            renderer=args.renderer,
         )
         _sys.exit(rc)
 

@@ -164,7 +164,8 @@ echo-agent gateway restart
 
 ## cli
 
-启动交互式 CLI 会话（无 TUI）。
+以瘦客户端连接本机正在运行的 Gateway。默认使用保留原生终端滚动历史的
+inline 界面；需要全屏界面时可显式选择 Textual TUI。
 
 ```bash
 echo-agent cli [OPTIONS]
@@ -172,16 +173,24 @@ echo-agent cli [OPTIONS]
 
 | 选项 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `--session` / `-s` | string | — | 恢复指定会话 ID |
-| `--one-shot` | string | — | 单次提问模式，输出后退出 |
+| `--port` | int | 配置中的 Gateway 端口 / `58123` | 覆盖连接端口 |
+| `--token` | string | Gateway 配置的首个 token | 认证 token |
+| `--user` | string | `local` | 会话用户 ID，会话键为 `cli:<user>` |
+| `-c`, `--config` | path | 自动发现 | 配置文件 |
+| `-w`, `--workspace` | path | 配置的 workspace | 工作区，也决定默认转录目录 |
+| `--inline` | flag | 默认 | 使用原生 scrollback 输出，无需 Textual |
+| `--tui` | flag | — | 使用全屏 Textual 界面（需安装 `echo-agent[tui]`） |
 
 ```bash
-# 进入交互式会话
+# 默认：类 Claude Code 的原生终端输出
 echo-agent cli
 
-# 单次提问
-echo-agent cli --one-shot "帮我总结今天的任务"
+# 可选：全屏 TUI
+echo-agent cli --tui
 ```
+
+CLI 仅连接 loopback 网关，不接受远程 host。远程使用请先通过 SSH
+做端口转发。交互命令见 [终端交互命令](tui-commands.md)。
 
 ---
 

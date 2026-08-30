@@ -96,7 +96,8 @@ echo-agent setup            # 配置向导（模型、通道、权限等，可�
 echo-agent status           # 查看当前配置状态
 echo-agent gateway          # 前台启动常驻网关
 echo-agent gateway install  # 把网关注册为后台服务（推荐的常驻方式，见下）
-echo-agent cli              # 以瘦客户端接入本机常驻网关（终端 TUI）
+echo-agent cli              # 接入本机常驻网关（默认原生 scrollback）
+echo-agent cli --tui        # 可选的全屏 Textual 界面
 echo-agent cost             # 查看成本归因报告
 echo-agent dashboard build  # 构建 Web Dashboard 前端产物（源码安装时按需执行）
 ```

@@ -38,7 +38,7 @@ echo-agent run
 echo-agent cli
 ```
 
-## TUI Commands
+## Terminal Interaction Commands
 
 Local commands available in CLI:
 
@@ -48,6 +48,8 @@ Local commands available in CLI:
 - `/details` — Show details
 - `/save` — Save conversation
 - `/theme` — Toggle theme
+- `/reconnect` — Reconnect after a dropped socket
+- `/status` — Query authoritative server-side turn state
 - `/quit` — Exit
 
 Server commands (when connected to Gateway):

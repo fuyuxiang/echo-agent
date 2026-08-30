@@ -158,32 +158,32 @@ echo-agent cli
 
 ### 工作原理
 
-CLI 客户端本身不运行 Agent 逻辑，而是通过 HTTP API 与 Gateway 通信：
+CLI 客户端本身不运行 Agent 逻辑，而是通过 WebSocket 与本机
+loopback Gateway 通信：
 
 ```
 ┌──────────────┐         ┌──────────────┐
-│  echo-agent  │  HTTP   │   Gateway    │
-│     cli      │────────▶│   (远端)     │
+│  echo-agent  │   WS    │   Gateway    │
+│     cli      │───────▶│   (本机)     │
 └──────────────┘         └──────────────┘
 ```
 
 ### 连接配置
 
 ```bash
-# 通过环境变量
-export ECHO_AGENT_GATEWAY_URL=http://localhost:58123
-export ECHO_AGENT_TOKEN=your-api-token
+# 端口和 token 默认来自 Gateway 配置
 echo-agent cli
 
-# 通过命令行参数
-echo-agent cli --gateway http://localhost:58123 --token your-api-token
+# 必要时覆盖端口/token；全屏界面需显式选择
+echo-agent cli --port 58123 --token your-api-token
+echo-agent cli --tui
 ```
 
 ### 适用场景
 
-- 从远程机器操作 Gateway
+- 通过 SSH 端口转发后操作远程 Gateway（客户端仍只连 loopback）
 - 多终端同时接入同一 Agent 实例
-- 轻量级客户端环境（无需安装完整依赖）
+- 轻量级客户端环境（默认 inline 界面无需 Textual）
 
 ---
 

@@ -244,7 +244,8 @@ echo-agent gateway logs -n 100 --level WARNING
 
 ## cli
 
-Launch an interactive CLI session connecting to a running agent (via gateway) or starting an embedded session.
+Attach a thin client to a running local Gateway. The default renderer keeps
+normal terminal scrollback; the full-screen Textual UI is opt-in.
 
 ```bash
 echo-agent cli [options]
@@ -252,22 +253,24 @@ echo-agent cli [options]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--host <host>` | Gateway host to connect to | `localhost` |
-| `--port <port>` | Gateway port | `3007` |
-| `--token <token>` | API token for authentication | — |
-| `--session <id>` | Resume a specific session | New session |
-| `--embedded` | Run without connecting to gateway | — |
+| `--port <port>` | Override the configured Gateway port | config / `58123` |
+| `--token <token>` | API token for authentication | first configured token |
+| `--user <id>` | User id; session key is `cli:<id>` | `local` |
+| `-c`, `--config <path>` | Configuration file | auto-discovered |
+| `-w`, `--workspace <path>` | Workspace and default transcript location | configured workspace |
+| `--inline` | Native terminal scrollback renderer | default |
+| `--tui` | Full-screen Textual renderer (requires `echo-agent[tui]`) | off |
 
 ```bash
 # Connect to local gateway
 echo-agent cli
 
-# Connect to remote gateway
-echo-agent cli --host myserver.local --port 3007 --token mytoken
-
-# Resume previous session
-echo-agent cli --session sess_abc123
+# Opt in to the full-screen UI
+echo-agent cli --tui
 ```
+
+The client intentionally connects only to loopback. Use SSH port forwarding for
+a remote Gateway. See [Terminal interaction commands](tui-commands.en.md).
 
 ---
 

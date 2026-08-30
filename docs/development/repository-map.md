@@ -162,7 +162,7 @@ plugins/
 | `a2a/` | Agent-to-Agent 协议 |
 | `bus/` | 事件总线（InboundEvent/OutboundEvent） |
 | `checkpoint/` | 文件检查点持久化 |
-| `cli/` | CLI 入口、TUI（Textual） |
+| `cli/` | CLI 入口、inline scrollback renderer、TUI（Textual） |
 | `cost/` | 成本追踪与预算控制 |
 | `dependencies/` | 依赖管理 |
 | `evaluation/` | 评估框架（数据集、指标、Runner） |

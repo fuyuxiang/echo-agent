@@ -121,14 +121,25 @@ _SETS = {"narrow": NARROW, "emoji": EMOJI, "ascii": ASCII, "claude": CLAUDE}
 
 
 def resolve_glyphs(env: Mapping[str, str] | None = None) -> GlyphSet:
-    """Glyph set named by ``ECHO_TUI_ICONS``; NARROW for anything unrecognised."""
+    """Glyph set named by ``ECHO_TUI_ICONS``; NARROW when unrecognised."""
     source = os.environ if env is None else env
     return _SETS.get(str(source.get("ECHO_TUI_ICONS", "")).strip().lower(), NARROW)
 
 
+def resolve_tui_glyphs(env: Mapping[str, str] | None = None) -> GlyphSet:
+    """Resolve a set that preserves the full-screen TUI's tree geometry.
+
+    CLAUDE remains a public selectable vocabulary for renderer tests and direct
+    inline use, but its deliberately blank rail/branch cannot be installed as
+    the Textual global without misaligning continuation rows.
+    """
+    chosen = resolve_glyphs(env)
+    return NARROW if chosen is CLAUDE else chosen
+
+
 # Resolved once at import: the set is a rendering constant for the life of the
 # process (no live re-theming path exists for glyphs, unlike /theme for colours).
-GLYPHS = resolve_glyphs()
+GLYPHS = resolve_tui_glyphs()
 
 
 def cog_glyph(cog_type: str, glyphs: GlyphSet | None = None) -> str:
