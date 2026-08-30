@@ -97,6 +97,15 @@ class EchoTUI(App):
         initial_status=None,
     ) -> None:
         super().__init__()
+        # Custom theme variables are referenced directly by app.tcss.  Textual
+        # compiles that stylesheet while it creates the initial screen, before
+        # on_mount runs, so registering the themes in on_mount leaves variables
+        # such as $status-surface undefined and prevents the app from mounting.
+        # Register and select the theme immediately after App initialisation so
+        # its complete variable map is available to the first CSS parse.
+        self.register_theme(ECHO_THEME)
+        self.register_theme(ECHO_THEME_LIGHT)
+        self.theme = resolve_theme_name()
         self._send = send_coro
         # Default directory for /save without an explicit path. run_cli_attach
         # passes <workspace>/transcripts so saved conversations sit next to the
@@ -209,11 +218,6 @@ class EchoTUI(App):
         # connected. StatusBar is yielded in compose() and mounted by now, so
         # query_one is safe without a guard (unlike notify_disconnected, where
         # the socket may die before mount).
-        # Register both palettes and pick one by probing the terminal (light
-        # profiles get the readable light theme; everything else stays dark).
-        self.register_theme(ECHO_THEME)
-        self.register_theme(ECHO_THEME_LIGHT)
-        self.theme = resolve_theme_name()
         self._mount_banner()
         bar = self.query_one(StatusBar)
         bar.set_session(self._session_key)

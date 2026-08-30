@@ -1,8 +1,11 @@
 import pytest
+from textual.color import Color
 
+from echo_agent.cli.palette import LIGHT_PALETTE
 from echo_agent.cli.tui.app import EchoTUI
 from echo_agent.cli.tui.blocks import UserTurn
 from echo_agent.cli.tui.prompt_input import PromptInput
+from echo_agent.cli.tui.status_bar import StatusBar
 
 
 @pytest.mark.asyncio
@@ -83,11 +86,24 @@ async def test_user_turn_has_visual_separation():
 
 @pytest.mark.asyncio
 async def test_echo_theme_registered_and_active():
-    # 现代极简主题作为设计 token 基础层，须在 on_mount 后生效
+    # 现代极简主题作为设计 token 基础层，须在首次解析 app.tcss 前生效。
+    # 若主题直到 on_mount 才注册，Textual 会先因 $status-surface 未定义而
+    # 中止挂载，测试甚至到不了下面的断言。
     app = EchoTUI()
     async with app.run_test() as pilot:
         await pilot.pause()
         assert app.theme == "echo"
+
+
+@pytest.mark.asyncio
+async def test_light_theme_variables_available_during_first_stylesheet_parse(monkeypatch):
+    """启动即选择浅色主题时，状态栏专用变量也必须参与首次 CSS 编译。"""
+    monkeypatch.setenv("ECHO_TUI_THEME", "light")
+    app = EchoTUI()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.theme == "echo-light"
+        assert app.query_one(StatusBar).styles.background == Color.parse(LIGHT_PALETTE["status-surface"])
 
 
 @pytest.mark.asyncio
