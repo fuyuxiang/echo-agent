@@ -144,8 +144,8 @@ PromptInput:disabled {
 StatusBar {
     height: 1;
     dock: bottom;
-    background: $surface;
-    color: $text;
+    background: $status-surface;
+    color: $status-foreground;
 }
 
 #slash_panel {

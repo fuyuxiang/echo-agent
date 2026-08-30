@@ -81,7 +81,7 @@ def test_timer_runs_continuously_until_stopped():
 
 
 def test_uses_theme_tokens_not_raw_ansi():
-    """The status bar must render with theme tokens ([$success]/[$accent]/…),
+    """The status bar must render with its dedicated theme tokens,
     not hardcoded Rich ANSI colours (cyan/magenta/green/red/yellow) that were
     illegible on the light palette's white surface."""
     bar = StatusBar()
@@ -92,7 +92,8 @@ def test_uses_theme_tokens_not_raw_ansi():
     text = bar._compose_text()
     for raw in ("[bold cyan]", "[green]", "[red]", "[magenta]", "[yellow]", "[dim]"):
         assert raw not in text, f"raw ANSI colour {raw} leaked into status bar"
-    assert "[$accent]" in text or "$accent" in text
+    for token in ("$status-ok", "$status-model", "$status-context", "$status-memory"):
+        assert token in text
 
 
 def test_responsive_tiers_drop_segments_when_narrow():

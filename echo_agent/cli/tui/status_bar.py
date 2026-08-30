@@ -23,11 +23,11 @@ def _ctx_bar(percent: int, width: int = 10) -> str:
     # Theme tokens (not raw ANSI) so the gauge adapts to light/dark — green/amber/
     # red were illegible on the light palette's white surface.
     if clamped >= 80:
-        color = "$error"
+        color = "$status-error"
     elif clamped >= 50:
-        color = "$warning"
+        color = "$status-warning"
     else:
-        color = "$success"
+        color = "$status-ok"
     bar = context_gauge(clamped, width)
     return f"[{color}]{bar}[/]"
 
@@ -88,7 +88,7 @@ class StatusBar(Static):
 
         # 0. Connection + session (all tiers). Theme tokens so the light palette
         # stays legible — raw green/red on white failed the contrast bar.
-        conn = f"[$success]{t('attach.ui.connected')}[/]" if self._ok else f"[$error]{t('attach.ui.offline')}[/]"
+        conn = f"[$status-ok]{t('attach.ui.connected')}[/]" if self._ok else f"[$status-error]{t('attach.ui.offline')}[/]"
         if self._session and tier == "wide":
             segments.append(f"{conn} {self._session}")
         else:
@@ -96,7 +96,7 @@ class StatusBar(Static):
 
         # 1. Model (all tiers)
         model_display = self._model or "—"
-        segments.append(f"[b $accent]⚡ {model_display}[/]")
+        segments.append(f"[b $status-model]⚡ {model_display}[/]")
 
         # 2. Context gauge (wide only)
         if tier == "wide":
@@ -105,18 +105,18 @@ class StatusBar(Static):
                 max_str = fmt_tokens(self._context_max)
                 percent = context_percent(self._context_used, self._context_max)
                 bar = _ctx_bar(percent)
-                segments.append(f"{used_str}/{max_str} {bar} {percent}%")
+                segments.append(f"[$status-context]{used_str}/{max_str} {bar} {percent}%[/]")
             else:
-                segments.append(f"[$text-muted]{t('attach.ui.context_unknown')}[/]")
+                segments.append(f"[$status-muted]{t('attach.ui.context_unknown')}[/]")
 
         # 3. Timer (all tiers)
         if self._turn_start is not None:
             elapsed = time.time() - self._turn_start
-            segments.append(f"[b]⏱ {fmt_duration(elapsed)}[/b]")
+            segments.append(f"[b $status-time]⏱ {fmt_duration(elapsed)}[/]")
         elif self._turn_elapsed > 0:
-            segments.append(f"⏱ {fmt_duration(self._turn_elapsed)}")
+            segments.append(f"[$status-time]⏱ {fmt_duration(self._turn_elapsed)}[/]")
         else:
-            segments.append("[$text-muted]⏱ 0s[/]")
+            segments.append("[$status-muted]⏱ 0s[/]")
 
         # 4. Cost (wide only)
         if tier == "wide":
@@ -125,7 +125,7 @@ class StatusBar(Static):
         # 5. Memory count (wide + mid). Prefer this compact, actionable session
         # signal over cost when only one secondary field fits.
         if tier in ("wide", "mid"):
-            segments.append(f"[$secondary]🧠 {self._memory_count}[/]")
+            segments.append(f"[$status-memory]🧠 {self._memory_count}[/]")
 
         return " │ ".join(segments)
 

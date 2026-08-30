@@ -23,6 +23,18 @@ DARK_PALETTE = {
     "surface": "#161b22",
     "panel": "#1c2128",
     "text-muted": "#8b949e",
+    # Status-bar-only palette. A midnight-indigo strip gives the telemetry a
+    # distinct, polished layer without changing the rest of the terminal UI.
+    "status-surface": "#12162b",
+    "status-foreground": "#eef0ff",
+    "status-muted": "#7f89ad",
+    "status-ok": "#46e6a7",
+    "status-model": "#86a5ff",
+    "status-context": "#bd9cff",
+    "status-time": "#5de4e7",
+    "status-memory": "#f0a3ff",
+    "status-warning": "#ffc266",
+    "status-error": "#ff718d",
 }
 
 LIGHT_PALETTE = {
@@ -37,6 +49,18 @@ LIGHT_PALETTE = {
     "surface": "#f0f2f5",
     "panel": "#e6e9ef",
     "text-muted": "#5a6472",
+    # The light counterpart keeps the same hue mapping with deeper inks on a
+    # cool lavender surface, preserving contrast in bright terminal profiles.
+    "status-surface": "#ebeefe",
+    "status-foreground": "#20264d",
+    "status-muted": "#626b90",
+    "status-ok": "#087a55",
+    "status-model": "#4059c7",
+    "status-context": "#6d47c9",
+    "status-time": "#087582",
+    "status-memory": "#a13da7",
+    "status-warning": "#945800",
+    "status-error": "#c33052",
 }
 
 _TRUE = {"1", "true", "yes", "on"}

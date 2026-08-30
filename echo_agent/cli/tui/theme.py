@@ -35,7 +35,10 @@ ECHO_THEME = Theme(
     surface=DARK_PALETTE["surface"],
     panel=DARK_PALETTE["panel"],
     dark=True,
-    variables={"text-muted": DARK_PALETTE["text-muted"]},
+    variables={
+        "text-muted": DARK_PALETTE["text-muted"],
+        **{key: value for key, value in DARK_PALETTE.items() if key.startswith("status-")},
+    },
 )
 
 # Light palette: darker teals/indigos that stay legible on white. Same variable
@@ -54,7 +57,10 @@ ECHO_THEME_LIGHT = Theme(
     surface=LIGHT_PALETTE["surface"],
     panel=LIGHT_PALETTE["panel"],
     dark=False,
-    variables={"text-muted": LIGHT_PALETTE["text-muted"]},
+    variables={
+        "text-muted": LIGHT_PALETTE["text-muted"],
+        **{key: value for key, value in LIGHT_PALETTE.items() if key.startswith("status-")},
+    },
 )
 
 

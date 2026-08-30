@@ -771,7 +771,7 @@ class InlineApp:
     def _prompt_style_rules() -> dict[str, str]:
         """Prompt-toolkit styles derived from the shared active palette."""
         palette = active_palette()
-        background = palette["surface"]
+        background = palette["status-surface"]
 
         def row(foreground: str, *, bold: bool = False) -> str:
             suffix = " bold" if bold else ""
@@ -779,15 +779,16 @@ class InlineApp:
 
         return {
             "prompt": f"bold {palette['primary']}",
-            "bottom-toolbar": row(palette["foreground"]),
-            "status.base": row(palette["foreground"]),
-            "status.muted": row(palette["text-muted"]),
-            "status.ok": row(palette["success"], bold=True),
-            "status.bad": row(palette["error"], bold=True),
-            "status.accent": row(palette["accent"], bold=True),
-            "status.info": row(palette["secondary"], bold=True),
-            "status.warn": row(palette["warning"], bold=True),
-            "status.memory": row(palette["secondary"], bold=True),
+            "bottom-toolbar": row(palette["status-foreground"]),
+            "status.base": row(palette["status-foreground"]),
+            "status.muted": row(palette["status-muted"]),
+            "status.ok": row(palette["status-ok"], bold=True),
+            "status.bad": row(palette["status-error"], bold=True),
+            "status.accent": row(palette["status-model"], bold=True),
+            "status.context": row(palette["status-context"], bold=True),
+            "status.info": row(palette["status-time"], bold=True),
+            "status.warn": row(palette["status-warning"], bold=True),
+            "status.memory": row(palette["status-memory"], bold=True),
             "activity.spinner": f"bold {palette['accent']}",
             "activity.text": palette["text-muted"],
         }
@@ -847,15 +848,15 @@ class InlineApp:
                 )
                 segments.append(
                     [
-                        ("class:status.base", f"{fmt_tokens(context_used)}/{fmt_tokens(context_max)} "),
+                        ("class:status.context", f"{fmt_tokens(context_used)}/{fmt_tokens(context_max)} "),
                         (gauge_style, context_gauge(percent)),
-                        ("class:status.base", f" {percent}%"),
+                        ("class:status.context", f" {percent}%"),
                     ]
                 )
             else:
                 segments.append([("class:status.muted", t("attach.ui.context_unknown"))])
         elif mid and context_max:
-            segments.append([("class:status.base", t("attach.ui.context", percent=percent))])
+            segments.append([("class:status.context", t("attach.ui.context", percent=percent))])
 
         if self._turn_started:
             elapsed = time.monotonic() - self._turn_started

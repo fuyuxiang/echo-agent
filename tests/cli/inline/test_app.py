@@ -442,8 +442,10 @@ def test_prompt_style_tracks_light_theme(monkeypatch):
     light = InlineApp._prompt_style_rules()
     monkeypatch.setenv("ECHO_TUI_THEME", "dark")
     dark = InlineApp._prompt_style_rules()
-    assert "bg:#f0f2f5" in light["status.base"]
-    assert "bg:#161b22" in dark["status.base"]
+    assert "bg:#ebeefe" in light["status.base"]
+    assert "bg:#12162b" in dark["status.base"]
+    assert "#4059c7" in light["status.accent"]
+    assert "#86a5ff" in dark["status.accent"]
     assert light != dark
 
 
