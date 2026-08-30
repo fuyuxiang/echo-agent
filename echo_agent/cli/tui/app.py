@@ -82,7 +82,7 @@ class EchoTUI(App):
     ]
 
     def __init__(self, send_coro=None, session_key: str = "", interrupt_coro=None,
-                 reconnect_coro=None, save_dir=None) -> None:
+                 reconnect_coro=None, save_dir=None, initial_status=None) -> None:
         super().__init__()
         self._send = send_coro
         # Default directory for /save without an explicit path. run_cli_attach
@@ -103,6 +103,7 @@ class EchoTUI(App):
         # the constructor signature so embedders with older EchoTUI factories stay
         # source-compatible.
         self._turn_status = None
+        self._initial_status = dict(initial_status or {})
         self._session_key = session_key
         # Connection state gates input: after a silent ws drop, submitting would
         # send into a dead socket and silently lose the message. False disables
@@ -203,6 +204,13 @@ class EchoTUI(App):
         bar = self.query_one(StatusBar)
         bar.set_session(self._session_key)
         bar.set_connection(True)
+        if self._initial_status.get("model"):
+            bar.set_model(str(self._initial_status["model"]))
+        if self._initial_status.get("context_max"):
+            bar.set_context(
+                int(self._initial_status.get("context_used", 0) or 0),
+                int(self._initial_status["context_max"]),
+            )
 
     def _mount_banner(self) -> None:
         """Brand banner on the transcript's first screen — a light touch of

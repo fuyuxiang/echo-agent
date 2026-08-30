@@ -29,7 +29,9 @@ def test_cli_subcommand_routes_to_run_cli_attach():
     with mock.patch.object(sys, "argv", argv), \
          mock.patch("echo_agent.cli.attach_client.run_cli_attach", return_value=0) as run, \
          mock.patch("echo_agent.cli.attach_client.resolve_connection",
-                    return_value=ConnectionInfo(port=9000)) as rd, \
+                    return_value=ConnectionInfo(
+                        port=9000, model="MiniMax-M3", context_max=1_000_000,
+                    )) as rd, \
          mock.patch("sys.exit", side_effect=_exit_with_code) as ex:
         with pytest.raises(SystemExit) as exc:
             m._dispatch()
@@ -45,6 +47,9 @@ def test_cli_subcommand_routes_to_run_cli_attach():
     assert kwargs["user_id"] == "alice"
     assert kwargs["token"] == "t"
     assert kwargs["renderer"] == "inline"
+    assert kwargs["initial_status"] == {
+        "model": "MiniMax-M3", "context_used": 0, "context_max": 1_000_000,
+    }
     ex.assert_called_once_with(0)
 
 

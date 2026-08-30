@@ -31,6 +31,7 @@ from typing import Any, Awaitable, Callable
 from prompt_toolkit.completion import Completer
 
 from echo_agent.agent.proc_lifecycle import run_owned
+from echo_agent.cli.palette import active_palette
 from echo_agent.cli.inline.printer import InlinePrinter
 from echo_agent.cli.render import ansi as A
 from echo_agent.cli.render.redact import (
@@ -38,8 +39,14 @@ from echo_agent.cli.render.redact import (
     mask_sensitive_strings,
     redact_for_export,
 )
+from echo_agent.cli.render.status import (
+    context_gauge,
+    context_percent,
+    fmt_duration,
+    fmt_tokens,
+)
 from echo_agent.cli.render.text import clip
-from echo_agent.cli.render.tool import humanize_tool, pick_object
+from echo_agent.cli.render.tool import humanize_risk, humanize_tool, pick_object
 from echo_agent.cli.tui.brand import load_brand
 from echo_agent.cli.tui.completion import COMMANDS
 from echo_agent.cli.tui.details import parse_command as parse_details, parse_env
@@ -151,6 +158,7 @@ class InlineApp:
         *,
         stream=None,
         input_reader: InputReader | None = None,
+        initial_status: dict[str, Any] | None = None,
     ) -> None:
         self._send = send_coro
         self._interrupt = interrupt_coro
@@ -181,13 +189,17 @@ class InlineApp:
         self._activity_task: asyncio.Task | None = None
         self._activity_label = ""
         self._turn_started = 0.0
+        self._turn_elapsed = 0.0
+        self._turn_outcome = ""
+        self._turn_tool_ids: set[str] = set()
+        self._prompt_session: Any | None = None
         self._last_ctrl_c = 0.0
         self._last_queue_confirm = 0.0
         self._prompt_default = ""
         self._stop_requested = False
         self._last_reply_event_id = ""
         self._cleared_since_reply = False
-        self._status: dict[str, Any] = {}
+        self._status: dict[str, Any] = dict(initial_status or {})
 
         # Conversation is the human-readable /copy and md/txt export source.
         # Audit additionally retains redacted cognitive and lifecycle evidence.
@@ -225,18 +237,24 @@ class InlineApp:
         self._printer.blank()
         self._group = None
 
-    def _start_activity(self, label: str = "正在思考") -> None:
+    def _start_activity(self, label: str = "正在分析请求") -> None:
         self._activity_label = label
         was_active = bool(self._turn_started)
         if not self._turn_started:
             self._turn_started = time.monotonic()
+            self._turn_elapsed = 0.0
+            self._turn_outcome = ""
+            self._turn_tool_ids.clear()
         # A pipe cannot repaint a transient status row.  Emit one start marker
         # per turn, then keep later stage refinements in memory only.
         if was_active and not self._printer.is_tty:
+            self._invalidate_toolbar()
             return
         if self._activity_task is not None and not self._activity_task.done():
+            self._invalidate_toolbar()
             return
         self._printer.spinner_start(self._activity_text())
+        self._invalidate_toolbar()
         if not self._printer.is_tty:
             return
         try:
@@ -260,13 +278,41 @@ class InlineApp:
             # Normal spinner shutdown; it owns no resources beyond this task.
             pass
 
-    def _stop_activity(self) -> None:
+    def _pause_activity(self) -> None:
+        """Hide transient motion without ending the whole turn timer.
+
+        Approval and clarification can park a turn for minutes. The old inline
+        renderer reset elapsed time at those boundaries, so the status row only
+        measured the final model round instead of the user's complete request.
+        """
         task, self._activity_task = self._activity_task, None
         if task is not None:
             task.cancel()
         self._printer.spinner_clear()
         self._activity_label = ""
-        self._turn_started = 0.0
+        self._invalidate_toolbar()
+
+    def _finish_activity(self, outcome: str = "done") -> None:
+        """Settle the current turn and retain its elapsed time and outcome."""
+        was_active = bool(self._turn_started)
+        self._pause_activity()
+        if was_active:
+            self._turn_elapsed = max(0.0, time.monotonic() - self._turn_started)
+            self._turn_started = 0.0
+            self._turn_outcome = outcome
+        self._invalidate_toolbar()
+
+    def _invalidate_toolbar(self) -> None:
+        """Ask prompt-toolkit to repaint telemetry that changed silently."""
+        session = self._prompt_session
+        if session is None:
+            return
+        try:
+            session.app.invalidate()
+        except Exception:
+            # The session may be between prompt applications during submit;
+            # the next prompt paints the current state anyway.
+            pass
 
     # ----------------------------------------------------------- bridge callbacks
     def on_turn_accepted(self, event_id: str) -> None:
@@ -283,11 +329,11 @@ class InlineApp:
         self._drafts[inbound_id] = (
             self._drafts.get(inbound_id, "") + text
         )[-256:]
-        self._start_activity("正在组织答案")
+        self._start_activity("正在生成回答")
 
     def on_user_reply_reset(self, inbound_id: str) -> None:
         self._drafts.pop(inbound_id, None)
-        self._start_activity("正在继续处理")
+        self._start_activity("正在重新规划")
 
     def on_user_reply_final(self, inbound_id: str, text: str) -> None:
         kind = self._turns.on_final(inbound_id)
@@ -295,6 +341,7 @@ class InlineApp:
         if kind == "control" and inbound_id not in self._visible_controls:
             return
         self._visible_controls.discard(inbound_id)
+        interrupted = self._stop_requested
         body = str(text or "").strip()
         if not body:
             if self._stop_requested:
@@ -303,7 +350,7 @@ class InlineApp:
             if kind != "control":
                 self._turns.note_turn_settled()
             if not self._turns.has_active_primary:
-                self._stop_activity()
+                self._finish_activity("interrupted" if interrupted else "done")
             return
         # Re-delivery on reconnect is common; exact event id is authoritative.
         if inbound_id and inbound_id == self._last_reply_event_id:
@@ -323,7 +370,7 @@ class InlineApp:
         if kind != "control":
             self._turns.note_turn_settled()
         if not self._turns.has_active_primary:
-            self._stop_activity()
+            self._finish_activity("interrupted" if interrupted else "done")
 
     def on_cognitive(self, ev: CogEvent) -> None:
         self._record_cognitive(ev)
@@ -334,8 +381,11 @@ class InlineApp:
             stage = str(data.get("stage", "")).strip()
             if stage and self._turns.has_active_primary:
                 labels = {
-                    "thinking": "正在思考", "tool": "正在调用工具",
-                    "responding": "正在组织答案",
+                    "thinking": "正在推理下一步",
+                    "tool": "正在调用工具",
+                    "calling_tool": "正在调用工具",
+                    "responding": "正在生成回答",
+                    "generating": "正在生成回答",
                 }
                 self._start_activity(labels.get(stage, "正在处理"))
             return
@@ -348,9 +398,10 @@ class InlineApp:
                 )
                 if data.get(key) is not None
             })
+            self._invalidate_toolbar()
             return
         if cog == "approval_request":
-            self._stop_activity()
+            self._pause_activity()
             self._pending_approval = _Approval(
                 str(data.get("request_id", "")), str(data.get("action", "")),
                 data.get("params") or {}, str(data.get("risk", "")),
@@ -364,10 +415,10 @@ class InlineApp:
                 self._pending_approval = None
                 self._notice("审批请求已关闭。")
                 if self._turns.has_active_primary:
-                    self._start_activity("正在继续处理")
+                    self._start_activity("正在继续执行")
             return
         if cog == "clarify_request":
-            self._stop_activity()
+            self._pause_activity()
             self._pending_clarify = _Clarify(
                 str(data.get("clarify_id", "")), str(data.get("question", "")),
                 _normalise_options(data.get("options")),
@@ -380,7 +431,7 @@ class InlineApp:
             if pending is not None and (not clarify_id or clarify_id == pending.clarify_id):
                 self._pending_clarify = None
                 if self._turns.has_active_primary:
-                    self._start_activity("正在继续处理")
+                    self._start_activity("正在继续执行")
             return
         if cog == "tool_call":
             self._handle_tool(ev)
@@ -410,24 +461,54 @@ class InlineApp:
         status = str(merged.get("status", "running"))
         name = str(merged.get("name", "tool"))
         if status == "running":
+            # A second live call makes both results potentially non-adjacent to
+            # their action lines. Remember that fact so completion rows repeat
+            # a short identity instead of leaving an ambiguous orphaned hook.
+            if tcid not in self._tools and self._tools:
+                merged["_parallel"] = True
+                for active in self._tools.values():
+                    active["_parallel"] = True
+            displayed = bool(merged.get("_displayed"))
+            if not displayed and self._details.shows(
+                "tool_call", tool_name=name,
+            ):
+                self._begin("trail")
+                self._printer.tool_start(name, merged.get("params") or {})
+                merged["_displayed"] = True
             self._tools[tcid] = merged
+            self._turn_tool_ids.add(tcid)
             count = len(self._tools)
             obj = pick_object(name, merged.get("params") or {})
             label = f"{humanize_tool(name)} {obj}".rstrip()
             if count > 1:
                 label += f" · {count} 个工具"
-            self._start_activity(label)
+            self._start_activity(f"正在{label}")
             return
 
         self._tools.pop(tcid, None)
+        self._turn_tool_ids.add(tcid)
         failed = status not in ("running", "ok")
-        if self._details.shows("tool_call", failed=failed, tool_name=name):
+        displayed = bool(merged.get("_displayed"))
+        should_show = self._details.shows(
+            "tool_call", failed=failed, tool_name=name,
+        )
+        if displayed or should_show:
             self._begin("trail")
-            self._printer.tool_line(
-                name, merged.get("params") or {}, status,
-                merged.get("result_meta"), str(merged.get("result_text", "")),
-                merged.get("duration_ms"),
-            )
+            if displayed:
+                self._printer.tool_result(
+                    name, merged.get("params") or {}, status,
+                    merged.get("result_meta"), str(merged.get("result_text", "")),
+                    merged.get("duration_ms"),
+                    include_identity=bool(merged.get("_parallel")),
+                )
+            else:
+                # Terminal-only delivery (or a failure hidden while running)
+                # still needs a self-contained action/result block.
+                self._printer.tool_line(
+                    name, merged.get("params") or {}, status,
+                    merged.get("result_meta"), str(merged.get("result_text", "")),
+                    merged.get("duration_ms"),
+                )
             if self._details.starts_expanded("tool_call"):
                 for entry in format_params(merged.get("params") or {}, value_width=120):
                     self._printer.cont(entry)
@@ -435,18 +516,29 @@ class InlineApp:
                 for line in result.splitlines():
                     self._printer.cont(line)
         if self._tools:
-            self._start_activity(f"正在调用工具 · {len(self._tools)} 个进行中")
+            active = next(iter(self._tools.values()))
+            active_name = str(active.get("name", "tool"))
+            active_obj = pick_object(active_name, active.get("params") or {})
+            label = f"正在{humanize_tool(active_name)} {active_obj}".rstrip()
+            if len(self._tools) > 1:
+                label += f" · {len(self._tools)} 个工具"
+            self._start_activity(label)
         elif self._turns.has_active_primary:
-            self._start_activity("正在继续处理")
+            self._start_activity("正在分析工具结果")
 
     def _retire_running_tools(self) -> None:
         """Settle transient-only tool state when no done frame can follow."""
         for tool in list(self._tools.values()):
             self._begin("trail")
-            self._printer.tool_line(
-                str(tool.get("name", "tool")), tool.get("params") or {},
-                "interrupted",
-            )
+            name = str(tool.get("name", "tool"))
+            params = tool.get("params") or {}
+            if tool.get("_displayed"):
+                self._printer.tool_result(
+                    name, params, "interrupted",
+                    include_identity=bool(tool.get("_parallel")),
+                )
+            else:
+                self._printer.tool_line(name, params, "interrupted")
         self._tools.clear()
 
     def _handle_thinking(self, ev: CogEvent) -> None:
@@ -457,7 +549,7 @@ class InlineApp:
             return
         if data.get("streaming"):
             self._thinking[tid] = ev
-            self._start_activity("正在思考")
+            self._start_activity("正在推理下一步")
             return
         self._thinking.pop(tid, None)
         if not self._details.shows("thinking"):
@@ -471,10 +563,10 @@ class InlineApp:
 
     def _show_approval(self, pending: _Approval) -> None:
         self._begin("ui")
-        action = mask_sensitive_strings(pending.action or "执行操作")
+        action = mask_sensitive_strings(humanize_tool(pending.action) or "执行操作")
         self._printer.head(f"需要确认：{action}", glyph="✦", style=A.fg("warning"))
         if pending.risk:
-            self._printer.child(f"风险等级：{pending.risk}")
+            self._printer.child(f"风险：{humanize_risk(pending.risk)}")
         for entry in format_params(pending.params, value_width=100):
             self._printer.cont(entry)
         self._printer.cont("输入 y 批准 · n 拒绝 · a 本会话始终允许")
@@ -488,7 +580,7 @@ class InlineApp:
         self._printer.cont(hint)
 
     def on_error(self, msg: str) -> None:
-        self._stop_activity()
+        self._finish_activity("error")
         self._retire_running_tools()
         self._notice(msg or "未知错误", error=True)
         self._turns.on_terminal_error()
@@ -503,7 +595,7 @@ class InlineApp:
         if not self._connected:
             return
         self._connected = False
-        self._stop_activity()
+        self._finish_activity("disconnected")
         self._retire_running_tools()
         self._pending_approval = None
         self._pending_clarify = None
@@ -552,7 +644,7 @@ class InlineApp:
                 await self._run_prompt_toolkit()
         finally:
             self._running = False
-            self._stop_activity()
+            self._finish_activity("interrupted")
 
     @staticmethod
     def _stdin_is_tty() -> bool:
@@ -585,7 +677,6 @@ class InlineApp:
 
     async def _run_prompt_toolkit(self) -> None:
         from prompt_toolkit import PromptSession
-        from prompt_toolkit.formatted_text import HTML
         from prompt_toolkit.history import InMemoryHistory
         from prompt_toolkit.key_binding import KeyBindings
         from prompt_toolkit.patch_stdout import patch_stdout
@@ -612,42 +703,162 @@ class InlineApp:
             history=InMemoryHistory(), completer=_SlashCompleter(),
             complete_while_typing=True, multiline=False, key_bindings=keys,
         )
-        style = Style.from_dict({
-            "prompt": "bold #4fd1c5", "toolbar": "bg:#161b22 #8b949e",
-        })
-        with patch_stdout(raw=True):
-            # Gateway callbacks now write through prompt-toolkit's proxy, which
-            # redraws the current edit buffer after each asynchronous line.
-            self._printer.set_stream(sys.stdout)
-            while not self._exit_requested:
-                try:
-                    default, self._prompt_default = self._prompt_default, ""
-                    text = await session.prompt_async(
-                        HTML(f"<prompt>{self._brand.prompt} </prompt>"),
-                        bottom_toolbar=self._toolbar,
-                        style=style,
-                        default=default,
-                    )
-                except KeyboardInterrupt:
-                    await self.handle_ctrl_c()
-                    continue
-                except EOFError:
-                    break
-                self._printer.note_external_line()
-                await self.submit(text, echo=False)
-        self._printer.set_stream(self._base_stream)
+        self._prompt_session = session
+        try:
+            with patch_stdout(raw=True):
+                # Gateway callbacks now write through prompt-toolkit's proxy,
+                # which redraws the edit buffer and status row after each
+                # asynchronous process line.
+                self._printer.set_stream(sys.stdout)
+                while not self._exit_requested:
+                    try:
+                        default, self._prompt_default = self._prompt_default, ""
+                        text = await session.prompt_async(
+                            [("class:prompt", f"{self._brand.prompt} ")],
+                            bottom_toolbar=self._toolbar,
+                            # Re-resolve once per submitted prompt so /theme
+                            # changes both transcript ANSI and this status row.
+                            style=Style.from_dict(self._prompt_style_rules()),
+                            default=default,
+                        )
+                    except KeyboardInterrupt:
+                        await self.handle_ctrl_c()
+                        continue
+                    except EOFError:
+                        break
+                    self._printer.note_external_line()
+                    await self.submit(text, echo=False)
+        finally:
+            self._prompt_session = None
+            self._printer.set_stream(self._base_stream)
 
-    def _toolbar(self) -> str:
+    @staticmethod
+    def _prompt_style_rules() -> dict[str, str]:
+        """Prompt-toolkit styles derived from the shared active palette."""
+        palette = active_palette()
+        background = palette["surface"]
+
+        def row(foreground: str, *, bold: bool = False) -> str:
+            suffix = " bold" if bold else ""
+            return f"bg:{background} {foreground}{suffix}"
+
+        return {
+            "prompt": f"bold {palette['primary']}",
+            "bottom-toolbar": row(palette["foreground"]),
+            "status.base": row(palette["foreground"]),
+            "status.muted": row(palette["text-muted"]),
+            "status.ok": row(palette["success"], bold=True),
+            "status.bad": row(palette["error"], bold=True),
+            "status.accent": row(palette["accent"], bold=True),
+            "status.info": row(palette["secondary"], bold=True),
+            "status.warn": row(palette["warning"], bold=True),
+            "status.memory": row(palette["secondary"], bold=True),
+        }
+
+    def _toolbar(self) -> list[tuple[str, str]]:
+        """Responsive Claude-style session telemetry for prompt-toolkit.
+
+        The transcript explains *what happened*; this row answers *what state
+        the session is in*. Heavy telemetry drops as the terminal narrows so the
+        bar never wraps into the input area.
+        """
+        width = shutil.get_terminal_size((100, 24)).columns
+        wide = width >= 105
+        mid = width >= 72
+
+        segments: list[list[tuple[str, str]]] = []
+        if self._connected:
+            connection = "●已连接"
+            if wide and self._session_key:
+                connection += f" {clip(self._session_key, 24)}"
+            segments.append([("class:status.ok", connection)])
+        else:
+            segments.append([("class:status.bad", "○已断开")])
+
+        model = clip(str(self._status.get("model") or "—"), 24 if wide else 16)
+        if mid:
+            segments.append([("class:status.accent", f"⚡ {model}")])
+
+        context_used = self._status.get("context_used", 0)
+        context_max = self._status.get("context_max", 0)
+        percent = context_percent(context_used, context_max)
+        if wide:
+            if context_max:
+                gauge_style = (
+                    "class:status.bad" if percent >= 80 else
+                    "class:status.warn" if percent >= 50 else
+                    "class:status.ok"
+                )
+                segments.append([
+                    ("class:status.base", f"{fmt_tokens(context_used)}/{fmt_tokens(context_max)} "),
+                    (gauge_style, context_gauge(percent)),
+                    ("class:status.base", f" {percent}%"),
+                ])
+            else:
+                segments.append([("class:status.muted", "上下文 —")])
+        elif mid and context_max:
+            segments.append([("class:status.base", f"上下文 {percent}%")])
+
+        if self._turn_started:
+            elapsed = time.monotonic() - self._turn_started
+        else:
+            elapsed = self._turn_elapsed
         if not self._connected:
-            return " ○ 已断开 · /reconnect"
-        if self._pending_approval:
-            return " ✦ 等待确认 · y/n/a"
-        if self._pending_clarify:
-            return " ? 等待补充信息"
-        if self._turns.has_active_primary:
-            return " ● 正在处理 · Ctrl+C 停止"
-        model = str(self._status.get("model", ""))
-        return f" ● 已连接{f' · {model}' if model else ''} · /help"
+            activity = "/reconnect"
+            activity_style = "class:status.bad"
+        elif self._pending_approval:
+            activity = "✦ 等待确认 · y/n/a"
+            activity_style = "class:status.warn"
+        elif self._pending_clarify:
+            activity = "? 等待补充信息"
+            activity_style = "class:status.warn"
+        elif self._turns.has_active_primary or self._turn_started:
+            # The spinner immediately above the prompt already names the live
+            # stage/tool. Repeating that sentence here made two adjacent rows
+            # compete for attention; the status row owns time and controls.
+            activity = f"⏱ {fmt_duration(elapsed)}"
+            if width >= 58:
+                activity += " · Ctrl+C 停止"
+            activity_style = "class:status.info"
+        elif self._turn_elapsed > 0:
+            tool_suffix = (
+                f" · {len(self._turn_tool_ids)} 个工具"
+                if self._turn_tool_ids and wide else ""
+            )
+            outcomes = {
+                "done": ("✓", "", "class:status.muted"),
+                "error": ("✗", "出错 · ", "class:status.bad"),
+                "interrupted": ("■", "已中断 · ", "class:status.warn"),
+                "disconnected": ("○", "上轮断开 · ", "class:status.warn"),
+            }
+            mark, label, activity_style = outcomes.get(
+                self._turn_outcome, outcomes["done"],
+            )
+            activity = f"{mark} {label}{fmt_duration(elapsed)}{tool_suffix}"
+        else:
+            activity = "⏱ 0s"
+            activity_style = "class:status.muted"
+        segments.append([(activity_style, activity)])
+
+        if wide:
+            try:
+                cost = float(self._status.get("total_cost", 0) or 0)
+            except (TypeError, ValueError):
+                cost = 0.0
+            segments.append([("class:status.base", f"${cost:.4f}")])
+            try:
+                memory = max(0, int(self._status.get("memory_count", 0) or 0))
+            except (TypeError, ValueError):
+                memory = 0
+            segments.append([("class:status.memory", f"🧠 {memory}")])
+
+        fragments: list[tuple[str, str]] = [("class:status.base", " ")]
+        for index, segment in enumerate(segments):
+            if index:
+                fragments.append(("class:status.muted", " │ "))
+            fragments.extend(segment)
+        fragments.append(("class:status.base", " "))
+        return fragments
 
     async def submit(self, text: str, *, echo: bool = True) -> None:
         text = str(text or "").strip()
@@ -710,7 +921,7 @@ class InlineApp:
         self._last_queue_confirm = 0.0
         self._conversation.append({"role": "user", "text": text})
         self._audit.append({"type": "user", "text": text})
-        self._start_activity("正在思考")
+        self._start_activity("正在分析请求")
         await self._send_message(text, "primary")
 
     async def _send_message(
@@ -744,7 +955,7 @@ class InlineApp:
         self._begin("ui")
         mark = "已批准" if decision == "approve" else "已拒绝"
         self._printer.child(mark, dim=False)
-        self._start_activity("正在继续处理")
+        self._start_activity("正在继续执行")
 
     async def _answer_clarify(self, raw: str) -> None:
         pending = self._pending_clarify
@@ -765,7 +976,7 @@ class InlineApp:
         self._pending_clarify = None
         self._begin("ui")
         self._printer.child(f"已回答：{mask_sensitive_strings(answer)}", dim=False)
-        self._start_activity("正在继续处理")
+        self._start_activity("正在继续执行")
 
     async def handle_ctrl_c(self) -> None:
         if self._pending_approval is not None:
@@ -801,6 +1012,17 @@ class InlineApp:
             self._group = None
             self._drafts.clear()
             self._cleared_since_reply = True
+            # Running calls survive /clear operationally, but their printed
+            # action lines do not. Force a later terminal frame to render a
+            # self-contained action/result block instead of an orphaned child.
+            for tool in self._tools.values():
+                tool["_displayed"] = False
+                tool["_parallel"] = False
+            if not self._turn_started:
+                self._turn_elapsed = 0.0
+                self._turn_outcome = ""
+                self._turn_tool_ids.clear()
+                self._invalidate_toolbar()
             if self._pending_approval:
                 self._show_approval(self._pending_approval)
             elif self._pending_clarify:

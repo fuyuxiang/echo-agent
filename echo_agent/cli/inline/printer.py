@@ -195,26 +195,68 @@ class InlinePrinter:
         result_text: str = "",
         duration_ms: int | None = None,
     ) -> None:
-        """One tool invocation: the action on the head line, its outcome below.
+        """Print a complete tool block when no earlier start line is available.
 
-        Unlike the Textual block this does NOT flip in place from running to
-        done — the running line stays where it was printed and the done frame
-        prints the result as a child line under it.
+        Live calls should use :meth:`tool_start` on the running frame and
+        :meth:`tool_result` on the terminal frame. This convenience method is
+        retained for terminal-only frames (for example after reconnect) and for
+        callers that already have the whole invocation.
+        """
+        self.tool_start(name, params)
+        if status == "running":
+            self.child(self._g.pending)
+            return
+        self.tool_result(
+            name, params, status, result_meta, result_text, duration_ms,
+        )
+
+    def tool_start(self, name: str, params: dict) -> None:
+        """Append the stable action line as soon as execution begins.
+
+        There is intentionally no permanent ``…`` child: the transient spinner
+        already says the call is live, and leaving a pending marker in native
+        scrollback after a successful completion would make settled work look
+        unfinished forever.
         """
         verb = humanize_tool(name)
         obj = mask_sensitive_strings(pick_object(name, params))
         head = f"{verb} {obj}".rstrip() if obj else verb
         self.head(head, style=A.fg("accent"))
-        if status == "running":
-            self.child(self._g.pending)
-            return
+
+    def tool_result(
+        self,
+        name: str,
+        params: dict,
+        status: str,
+        result_meta: dict | None = None,
+        result_text: str = "",
+        duration_ms: int | None = None,
+        *,
+        include_identity: bool = False,
+    ) -> None:
+        """Append the result beneath a previously printed action line.
+
+        Parallel starts may interleave before their results. In that case
+        ``include_identity`` repeats a short operand in the result so the user
+        can correlate it without call ids or tree-drawing cursor tricks.
+        """
+        identity = ""
+        if include_identity:
+            verb = humanize_tool(name)
+            obj = mask_sensitive_strings(pick_object(name, params))
+            identity = f"{verb} {obj}".rstrip() if obj else verb
         if status == "interrupted":
-            self.child(f"未完成 {self._g.unfinished}", dim=True)
+            summary = "未完成"
+            if identity:
+                summary = f"{identity} · {summary}"
+            self.child(f"{summary} {self._g.unfinished}", dim=True)
             return
         ok = status == "ok"
         summary = mask_sensitive_strings(
             summarize_result(name, result_meta, result_text, ok)
         )
+        if identity:
+            summary = f"{identity} · {summary}"
         took = fmt_duration_ms(duration_ms)
         if took:
             summary = f"{summary} {self._g.sep} {took}"

@@ -267,6 +267,7 @@ async def fetch_turn_status(
 async def run_client(
     *, host: str, port: int, ws_path: str, user_id: str, token: str,
     save_dir=None, api_prefix: str = "/api/v1", renderer: str = "tui",
+    initial_status: dict[str, Any] | None = None,
 ) -> int:
     from echo_agent.cli.tui.bridge import WSBridge
 
@@ -398,11 +399,16 @@ async def run_client(
                 session_key=session_key, token=token, event_id=event_id,
             )
 
-        app = app_factory(
-            send_coro=send_coro, session_key=session_key,
-            interrupt_coro=interrupt_coro, reconnect_coro=reconnect_coro,
-            save_dir=save_dir,
-        )
+        app_kwargs = {
+            "send_coro": send_coro, "session_key": session_key,
+            "interrupt_coro": interrupt_coro, "reconnect_coro": reconnect_coro,
+            "save_dir": save_dir,
+        }
+        # Keep third-party/test renderer factories source-compatible when there
+        # is no telemetry to seed. Real renderers accept this optional mapping.
+        if initial_status:
+            app_kwargs["initial_status"] = dict(initial_status)
+        app = app_factory(**app_kwargs)
         app._turn_status = turn_status_coro
         bridge = WSBridge(app)
 
@@ -440,6 +446,8 @@ class ConnectionInfo:
     token: str = ""
     api_prefix: str = "/api/v1"
     save_dir: Any = None
+    model: str = ""
+    context_max: int = 0
 
 
 def resolve_connection(config_path: str | None, workspace: str | None) -> ConnectionInfo:
@@ -476,6 +484,24 @@ def resolve_connection(config_path: str | None, workspace: str | None) -> Connec
     except Exception:  # noqa: BLE001 - a config we cannot read the gateway out of
         return ConnectionInfo()
 
+    model = ""
+    context_max = 0
+    try:
+        from echo_agent.models.model_windows import resolve_context_window
+
+        model = str(getattr(cfg.models, "default_model", "") or "")
+        if model:
+            context_max = resolve_context_window(
+                model,
+                captured_windows=getattr(cfg.models, "model_windows", None),
+                config_default=getattr(cfg.session, "context_window_tokens", 0),
+            )
+    except Exception:
+        # This is optimistic first-paint telemetry. The first cost_update frame
+        # remains authoritative and will replace it after actual model routing.
+        model = ""
+        context_max = 0
+
     save_dir = None
     try:
         from echo_agent.cli.workspace import resolve_effective_workspace
@@ -487,6 +513,7 @@ def resolve_connection(config_path: str | None, workspace: str | None) -> Connec
     return ConnectionInfo(
         host="127.0.0.1", port=port, ws_path=ws_path, token=token,
         api_prefix=api_prefix, save_dir=save_dir,
+        model=model, context_max=context_max,
     )
 
 
@@ -517,12 +544,14 @@ def run_cli_attach(
     api_prefix: str = "/api/v1", save_dir: Any = None,
     config_path: str | None = None, workspace: str | None = None,
     renderer: str = "tui",
+    initial_status: dict[str, Any] | None = None,
 ) -> int:
     try:
         return asyncio.run(run_client(
             host=host, port=port, ws_path=ws_path,
             user_id=user_id, token=token, save_dir=save_dir,
             api_prefix=api_prefix, renderer=renderer,
+            initial_status=initial_status,
         ))
     except MissingTUIDependencyError as e:
         # The gateway may be perfectly healthy — this is purely a missing

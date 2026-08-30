@@ -1,7 +1,13 @@
 import pytest
 
 from echo_agent.cli.tui.protocol import CogEvent
-from echo_agent.cli.tui.blocks import CognitiveBlock, ApprovalBlock, UserTurn, ChoiceBlock
+from echo_agent.cli.tui.blocks import (
+    ApprovalBlock,
+    ChoiceBlock,
+    CognitiveBlock,
+    ToolCallBlock,
+    UserTurn,
+)
 
 
 def _ev(cog_type, data, summary):
@@ -99,6 +105,22 @@ def test_approval_block_marks_decision():
     assert a.decision is None
     a.mark("approve")
     assert a.decision == "approve"
+
+
+def test_approval_explains_internal_action_and_risk_in_user_language():
+    body = ApprovalBlock("req1", "exec", {"command": "pwd"}, "exec")._body()
+    assert "执行" in body
+    assert "会执行代码或命令" in body
+
+
+def test_tool_failure_summary_is_actionable_but_redacted():
+    block = ToolCallBlock(
+        "t1", "web_fetch", {"url": "https://example.com"},
+        status="err", result_text="Bearer sk-super-secret-token was rejected",
+    )
+    summary = block.render_summary()
+    assert "失败：Bearer •••• was rejected" in summary
+    assert "sk-super-secret-token" not in summary
 
 
 def test_themed_markdown_maps_headings_to_theme_palette():

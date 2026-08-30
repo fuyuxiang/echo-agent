@@ -1,11 +1,13 @@
 import io
 import json
+import os
 
 import pytest
 
 from echo_agent.cli.inline.app import InlineApp
 from echo_agent.cli.render import ansi as A
 from echo_agent.cli.renderer_base import RenderSink
+from echo_agent.cli.tui.details import DetailPrefs
 from echo_agent.cli.tui.protocol import CogEvent
 
 
@@ -105,7 +107,7 @@ async def test_tool_done_inherits_params_from_running_frame():
 
 
 @pytest.mark.asyncio
-async def test_successful_read_is_quiet_in_default_lean_mode_but_failure_shows():
+async def test_default_process_view_shows_successful_read_and_failure():
     app, buf = _app()
     await app.submit("读取")
     app.on_turn_accepted("turn-1")
@@ -113,8 +115,49 @@ async def test_successful_read_is_quiet_in_default_lean_mode_but_failure_shows()
     app.on_cognitive(_tool("ok", tcid="r1", name="read_file"))
     app.on_cognitive(_tool("fail", tcid="r2", name="read_file", result_text="boom"))
     out = buf.getvalue()
+    assert out.count("读取 example.py") == 2
+    assert "✓" in out
+    assert "✗" in out
+
+
+@pytest.mark.asyncio
+async def test_explicit_lean_mode_still_hides_successful_read_but_shows_failure():
+    app, buf = _app()
+    app._details = DetailPrefs(tools="lean")
+    await app.submit("读取")
+    app.on_turn_accepted("turn-1")
+    app.on_cognitive(_tool("running", tcid="r1", name="read_file"))
+    app.on_cognitive(_tool("ok", tcid="r1", name="read_file"))
+    app.on_cognitive(_tool(
+        "fail", tcid="r2", name="read_file", result_text="boom",
+    ))
+    out = buf.getvalue()
     assert out.count("读取 example.py") == 1
     assert "✗" in out
+
+
+@pytest.mark.asyncio
+async def test_parallel_tool_results_repeat_identity_for_correlation():
+    app, buf = _app()
+    await app.submit("并行读取")
+    app.on_turn_accepted("turn-1")
+    app.on_cognitive(_tool(
+        "running", tcid="r1", name="read_file", params={"path": "/tmp/a.py"},
+    ))
+    app.on_cognitive(_tool(
+        "running", tcid="r2", name="read_file", params={"path": "/tmp/b.py"},
+    ))
+    app.on_cognitive(_tool(
+        "ok", tcid="r2", name="read_file", params={},
+        result_meta={"total_lines": 20},
+    ))
+    app.on_cognitive(_tool(
+        "ok", tcid="r1", name="read_file", params={},
+        result_meta={"total_lines": 10},
+    ))
+    out = buf.getvalue()
+    assert "读取 b.py · 20 行" in out
+    assert "读取 a.py · 10 行" in out
 
 
 @pytest.mark.asyncio
@@ -252,7 +295,128 @@ async def test_non_tty_activity_emits_only_one_static_progress_line_per_turn():
         "heartbeat", "h1", "turn-1", {"stage": "thinking"}, "",
     ))
     progress_lines = [line for line in buf.getvalue().splitlines() if "正在" in line]
-    assert progress_lines == ["正在思考"]
+    assert progress_lines == ["正在分析请求"]
+
+
+@pytest.mark.asyncio
+async def test_approval_pauses_motion_without_resetting_whole_turn_timer():
+    app, _ = _app()
+    await app.submit("执行")
+    started = app._turn_started
+    app.on_turn_accepted("turn-1")
+    app.on_cognitive(CogEvent(
+        "approval_request", "a1", "turn-1",
+        {"request_id": "req-1", "action": "exec", "params": {}, "risk": "EXEC"},
+        "",
+    ))
+    assert app._activity_task is None
+    assert app._turn_started == started
+    assert app._turn_elapsed == 0
+
+
+def test_wide_toolbar_restores_session_telemetry(monkeypatch):
+    app, _ = _app()
+    monkeypatch.setattr(
+        "echo_agent.cli.inline.app.shutil.get_terminal_size",
+        lambda fallback: os.terminal_size((140, 24)),
+    )
+    app._status.update({
+        "model": "MiniMax-M3",
+        "context_used": 57_300,
+        "context_max": 1_000_000,
+        "total_cost": 0.0042,
+        "memory_count": 769,
+    })
+    text = "".join(value for _style, value in app._toolbar())
+    assert "●已连接 cli:test" in text
+    assert "⚡ MiniMax-M3" in text
+    assert "57.3K/1.0M" in text
+    assert "6%" in text
+    assert "$0.0042" in text
+    assert "🧠 769" in text
+
+
+def test_initial_status_is_visible_before_first_model_round(monkeypatch):
+    monkeypatch.setattr(
+        "echo_agent.cli.inline.app.shutil.get_terminal_size",
+        lambda fallback: os.terminal_size((140, 24)),
+    )
+    app = InlineApp(
+        session_key="cli:test", stream=io.StringIO(),
+        initial_status={"model": "MiniMax-M3", "context_max": 1_000_000},
+    )
+    text = "".join(value for _style, value in app._toolbar())
+    assert "MiniMax-M3" in text
+    assert "0/1.0M" in text
+
+
+def test_narrow_toolbar_prioritizes_connection_and_activity(monkeypatch):
+    app, _ = _app()
+    monkeypatch.setattr(
+        "echo_agent.cli.inline.app.shutil.get_terminal_size",
+        lambda fallback: os.terminal_size((48, 24)),
+    )
+    monkeypatch.setattr("echo_agent.cli.inline.app.time.monotonic", lambda: 20.0)
+    app._turn_started = 10.0
+    app._activity_label = "正在读取 very-long-file-name.py"
+    text = "".join(value for _style, value in app._toolbar())
+    assert "●已连接" in text
+    assert "⏱ 10s" in text
+    # The spinner owns the live stage; repeating it in the adjacent toolbar
+    # would produce two competing "正在读取" rows.
+    assert "正在读取" not in text
+    assert "上下文" not in text and "🧠" not in text and "$" not in text
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected"),
+    [("done", "✓"), ("error", "✗ 出错"),
+     ("interrupted", "■ 已中断"), ("disconnected", "○ 上轮断开")],
+)
+def test_toolbar_distinguishes_terminal_outcomes(outcome, expected):
+    app, _ = _app()
+    app._turn_elapsed = 2.0
+    app._turn_outcome = outcome
+    text = "".join(value for _style, value in app._toolbar())
+    assert expected in text
+
+
+def test_prompt_style_tracks_light_theme(monkeypatch):
+    monkeypatch.setenv("ECHO_TUI_THEME", "light")
+    light = InlineApp._prompt_style_rules()
+    monkeypatch.setenv("ECHO_TUI_THEME", "dark")
+    dark = InlineApp._prompt_style_rules()
+    assert "bg:#f0f2f5" in light["status.base"]
+    assert "bg:#161b22" in dark["status.base"]
+    assert light != dark
+
+
+@pytest.mark.asyncio
+async def test_clear_removes_settled_summary_from_toolbar():
+    app, _ = _app()
+    app._turn_elapsed = 3.0
+    app._turn_outcome = "error"
+    app._turn_tool_ids.add("t1")
+    await app.submit("/clear")
+    assert app._turn_elapsed == 0
+    assert app._turn_outcome == ""
+    assert app._turn_tool_ids == set()
+
+
+@pytest.mark.asyncio
+async def test_clear_during_tool_makes_later_result_self_contained():
+    app, buf = _app()
+    await app.submit("读取")
+    app.on_turn_accepted("turn-1")
+    app.on_cognitive(_tool("running", name="read_file"))
+    await app.submit("/clear")
+    after_clear = len(buf.getvalue())
+    app.on_cognitive(_tool(
+        "ok", name="read_file", params={}, result_meta={"total_lines": 12},
+    ))
+    post_clear = buf.getvalue()[after_clear:]
+    assert "读取 example.py" in post_clear
+    assert "12 行" in post_clear
 
 
 @pytest.mark.asyncio

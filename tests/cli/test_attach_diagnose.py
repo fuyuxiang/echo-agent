@@ -95,3 +95,17 @@ def test_connection_info_loads_config_once(monkeypatch, tmp_path):
     attach_client.resolve_connection(str(cfg), None)
 
     assert len(calls) == 1, f"loaded the config {len(calls)} times"
+
+
+def test_connection_info_seeds_first_paint_model_and_context(tmp_path):
+    cfg = tmp_path / "echo-agent.yaml"
+    cfg.write_text(
+        "gateway:\n  enabled: true\n  port: 58123\n"
+        "models:\n  defaultModel: MiniMax-M3\n",
+        encoding="utf-8",
+    )
+    info = attach_client.resolve_connection(str(cfg), None)
+    assert info.model == "MiniMax-M3"
+    # models.dev cache may know the provider's exact binary 1M window
+    # (1,048,576); the built-in cold-start registry uses decimal 1,000,000.
+    assert info.context_max >= 1_000_000

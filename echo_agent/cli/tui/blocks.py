@@ -36,6 +36,7 @@ from echo_agent.cli.render.tool import (
     _OBJECT_KEY as _OBJECT_KEY,
     _TOOL_VERB as _TOOL_VERB,
     fmt_duration_ms as _fmt_duration_ms,
+    humanize_risk,
     humanize_tool,
     pick_object,
     summarize_result,
@@ -52,6 +53,7 @@ from echo_agent.cli.render.tool import (
 # under their public names.
 from echo_agent.cli.render.redact import (
     format_params,
+    mask_sensitive_strings,
     redact_for_export as redact_for_export,
 )
 # Diff colouring, now in cli/render/diff.py with an injectable palette so the
@@ -632,9 +634,9 @@ class ToolCallBlock(ExpandableBlock):
         mark = (
             f"[$success]{GLYPHS.ok}[/]" if ok else f"[$error]{GLYPHS.fail}[/]"
         )
-        summary = _markup_safe(summarize_result(
+        summary = _markup_safe(mask_sensitive_strings(summarize_result(
             self.tool_name, self.result_meta, self.result_text, ok
-        ))
+        )))
         tone = "$text-muted" if ok else "$error"
         line = f"{head} {sep} [{tone}]{summary}[/]"
         # Duration was carried on the frame and stored but never shown, so a
@@ -709,7 +711,8 @@ class ApprovalBlock(Static):
         super().__init__(self._body())
 
     def _body(self) -> str:
-        action = escape(str(self.action))
+        action = escape(humanize_tool(str(self.action)))
+        risk = escape(humanize_risk(str(self.risk)))
         alert = cog_glyph("approval_request")
         sep = f"[$text-muted]{GLYPHS.sep}[/]"
         if self.decision == "approve":
@@ -724,7 +727,7 @@ class ApprovalBlock(Static):
             )
         lines = [
             f"[$warning]{alert} 需要确认:[/] [b]{action}[/b]",
-            f"    [$text-muted]{escape(str(self.risk))}[/]",
+            f"    [$text-muted]风险：{risk}[/]",
         ]
         # This is the screen the user authorizes a high-risk action from, so the
         # parameters go one per line (a raw str(dict) wrapped into an unreadable

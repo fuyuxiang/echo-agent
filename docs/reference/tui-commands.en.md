@@ -66,18 +66,37 @@ Report or change how much process information is shown.
 ```
 /details
 /details thinking expanded
-/details tools lean
+/details tools collapsed
 ```
 
-The defaults favor a quiet transcript while keeping failures visible:
+The defaults keep the agent's concrete work observable without expanding raw
+payloads:
 
 ```
 ── Process detail ──────────────────────────
 Thinking:   collapsed
-Tools:      lean
+Tools:      collapsed
 Activity:   hidden
 ────────────────────────────────────────────
 ```
+
+A tool action is printed when execution starts and gets a compact result on
+completion. Parallel results repeat a short operand so their correlation stays
+clear. Select `tools lean` for a quieter transcript that suppresses successful
+read-only calls; failures always remain visible.
+
+The inline prompt keeps a responsive session bar underneath the input. Wide
+terminals show connection/session, model, context occupancy, whole-turn elapsed
+time, cumulative cost, and memory count. Medium widths retain model and context
+percentage; very narrow terminals keep only connection and timing so the bar
+never wraps into the input. The default model and context
+limit are seeded from configuration on first paint, then replaced by server
+telemetry after actual routing. The spinner owns “what is happening now”; the
+bar owns time and controls, avoiding duplicate adjacent status sentences.
+Terminal outcomes distinguish completed, failed, interrupted, and disconnected
+turns. Approval and clarification waits remain part of whole-turn elapsed time;
+`/clear` also clears the settled summary, and `/theme` updates both transcript
+and bar colors.
 
 ### /save
 

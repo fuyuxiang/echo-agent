@@ -15,6 +15,17 @@ _TOOL_VERB = {
     "session_search": "检索会话", "knowledge_search": "查知识库",
     "exec": "执行", "process": "运行进程", "web_fetch": "抓取网页",
     "web_search": "联网搜索", "memory": "记忆", "todo": "更新待办",
+    "read_document": "读取文档", "read_spill": "读取完整结果",
+    "execute_code": "运行代码", "browser": "操作浏览器",
+    "clarify": "询问", "cronjob": "管理定时任务",
+    "delegate_task": "委派任务", "spawn_task": "启动后台任务",
+    "image_generate": "生成图片", "vision_analyze": "分析图片",
+    "knowledge_index": "更新知识库", "message": "发送消息",
+    "notify": "发送通知", "send_file": "发送文件",
+    "skills_list": "列出技能", "skill_view": "查看技能",
+    "skill_manage": "管理技能", "skill_install": "安装技能",
+    "skill_run": "运行技能", "task": "管理任务",
+    "workflow": "管理工作流", "text_to_speech": "生成语音",
 }
 
 # 每个工具用哪个参数当"操作对象"。缺省走兜底：第一个字符串参数。
@@ -22,12 +33,36 @@ _OBJECT_KEY = {
     "read_file": "path", "write_file": "path", "edit_file": "path",
     "patch": "path", "list_dir": "path", "exec": "command",
     "process": "command", "web_fetch": "url", "web_search": "query",
+    "read_document": "path", "read_spill": "path",
+    "execute_code": "language", "browser": "url", "clarify": "question",
+    "cronjob": "name", "delegate_task": "goal", "spawn_task": "task",
+    "image_generate": "prompt", "vision_analyze": "image",
+    "knowledge_search": "query", "knowledge_index": "path",
+    "message": "text", "notify": "text", "send_file": "path",
+    "skill_view": "name", "skill_manage": "name", "skill_install": "name",
+    "skill_run": "name", "task": "task_id", "workflow": "workflow_id",
+    "text_to_speech": "text", "memory": "action", "todo": "action",
+}
+
+_ACTION_TOOLS = frozenset({"browser", "cronjob", "task", "workflow", "memory", "todo"})
+
+_RISK_LABEL = {
+    "read_only": "只读",
+    "write": "会修改数据",
+    "exec": "会执行代码或命令",
+    "dangerous": "高风险操作",
 }
 
 
 def humanize_tool(name: str) -> str:
     """Tool id -> Chinese verb. Unknown tools fall back to the raw id."""
     return _TOOL_VERB.get(name, name)
+
+
+def humanize_risk(risk: str) -> str:
+    """Turn an internal risk enum into language a user can decide from."""
+    raw = str(risk or "").strip()
+    return _RISK_LABEL.get(raw.lower(), raw)
 
 
 def fmt_duration_ms(ms: int | None) -> str:
@@ -57,15 +92,26 @@ def pick_object(name: str, params: dict) -> str:
     params = params or {}
     if name == "search_files":
         pat = params.get("pattern")
-        return f'"{pat}"' if pat else ""
+        compact = " ".join(str(pat).split()) if pat else ""
+        return f'"{clip(compact, 46)}"' if compact else ""
     key = _OBJECT_KEY.get(name)
     val = params.get(key) if key else None
+    if name in _ACTION_TOOLS:
+        action = str(params.get("action", "")).strip()
+        target = str(val or "").strip()
+        if action and target and target != action:
+            val = f"{action} {target}"
+        elif action:
+            val = action
     if val is None:
         # Fallback: first string-valued argument.
         val = next((v for v in params.values() if isinstance(v, str)), "")
     if name in ("read_file", "write_file", "edit_file", "patch") and val:
         val = os.path.basename(str(val))
-    return clip(val, 48) if val else ""
+    # A model can pass a multiline command/prompt. Process summaries must stay
+    # one physical terminal row; expanded details retain the original payload.
+    compact = " ".join(str(val).split()) if val else ""
+    return clip(compact, 48) if compact else ""
 
 
 def summarize_result(
@@ -73,8 +119,10 @@ def summarize_result(
 ) -> str:
     """Turn the producer-supplied count (result_meta) into Chinese words;
     fall back to a text preview. Never recount on the truncated result_text."""
+    compact_result = " ".join(str(result_text or "").split())
     if not success:
-        return "失败"
+        reason = clip(compact_result, 72)
+        return f"失败：{reason}" if reason else "失败"
     meta = result_meta or {}
     if name == "read_file" and "total_lines" in meta:
         return f"{meta['total_lines']} 行"
@@ -84,5 +132,5 @@ def summarize_result(
         return f"{meta['count']} 个"
     if name in ("exec", "process"):
         return "完成"
-    preview = clip(result_text or "", 40)
+    preview = clip(compact_result, 40)
     return preview or "完成"

@@ -5,7 +5,7 @@ Visibility is a per-section setting with four states:
 - ``expanded``  — the line is shown, and its detail view opens on mount.
 - ``collapsed`` — the line is shown as a one-row summary; detail on demand.
 - ``lean``      — (tools only) successful read-only calls suppressed; writes/
-                  exec/failures shown. The default for tools.
+                  exec/failures shown. An opt-in quiet mode for tools.
 - ``hidden``    — the section is not mounted at all.
 
 The sections are the three bands of trace that answer different questions:
@@ -32,7 +32,11 @@ STATES: tuple[str, ...] = ("expanded", "collapsed", "lean", "hidden")
 
 SECTION_DEFAULTS: dict[str, str] = {
     "thinking": "collapsed",
-    "tools": "lean",
+    # Tool calls are the agent's observable work, not implementation noise.
+    # Showing their compact action/result pair by default makes a long turn
+    # explain itself while it runs. Users who prefer a quieter transcript can
+    # still select ``lean`` (hide successful reads) or ``hidden`` explicitly.
+    "tools": "collapsed",
     "activity": "hidden",
 }
 

@@ -227,6 +227,20 @@ async def test_on_mount_writes_session_and_connected():
 
 
 @pytest.mark.asyncio
+async def test_on_mount_seeds_model_and_context_before_first_turn():
+    from echo_agent.cli.tui.app import EchoTUI
+    from echo_agent.cli.tui.status_bar import StatusBar
+    app = EchoTUI(initial_status={
+        "model": "MiniMax-M3", "context_used": 0, "context_max": 1_000_000,
+    })
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bar = app.query_one(StatusBar)
+        assert bar._model == "MiniMax-M3"
+        assert bar._context_max == 1_000_000
+
+
+@pytest.mark.asyncio
 async def test_tool_block_toggles_on_click_and_enter():
     # The P2 fix: ToolCallBlock detail/diff was togglable in code but had no
     # user input path. It is now focusable and toggles on click / Enter.
@@ -411,5 +425,4 @@ async def test_reconnect_failure_keeps_disconnected():
         await pilot.press("enter")
         await pilot.pause()
         assert app._connected is False
-
 

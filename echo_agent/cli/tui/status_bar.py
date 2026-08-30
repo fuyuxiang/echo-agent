@@ -9,19 +9,16 @@ import time
 
 from textual.widgets import Static
 
-
-def _fmt_tokens(n: int) -> str:
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:.1f}M"
-    if n >= 1_000:
-        return f"{n / 1_000:.1f}K"
-    return str(n)
+from echo_agent.cli.render.status import (
+    context_gauge,
+    context_percent,
+    fmt_duration,
+    fmt_tokens,
+)
 
 
 def _ctx_bar(percent: int, width: int = 10) -> str:
     clamped = max(0, min(100, percent))
-    filled = round(clamped / 100 * width)
-    empty = width - filled
     # Theme tokens (not raw ANSI) so the gauge adapts to light/dark — green/amber/
     # red were illegible on the light palette's white surface.
     if clamped >= 80:
@@ -30,20 +27,8 @@ def _ctx_bar(percent: int, width: int = 10) -> str:
         color = "$warning"
     else:
         color = "$success"
-    bar = "█" * filled + "░" * empty
+    bar = context_gauge(clamped, width)
     return f"[{color}]{bar}[/]"
-
-
-def _fmt_duration(seconds: float) -> str:
-    s = max(0, int(seconds))
-    if s < 60:
-        return f"{s}s"
-    m = s // 60
-    remainder = s % 60
-    if m < 60:
-        return f"{m}m {remainder}s" if remainder else f"{m}m"
-    h = m // 60
-    return f"{h}h {m % 60}m"
 
 
 class StatusBar(Static):
@@ -115,9 +100,9 @@ class StatusBar(Static):
         # 2. Context gauge (wide only)
         if tier == "wide":
             if self._context_max > 0:
-                used_str = _fmt_tokens(self._context_used)
-                max_str = _fmt_tokens(self._context_max)
-                percent = min(100, round(self._context_used / self._context_max * 100))
+                used_str = fmt_tokens(self._context_used)
+                max_str = fmt_tokens(self._context_max)
+                percent = context_percent(self._context_used, self._context_max)
                 bar = _ctx_bar(percent)
                 segments.append(f"{used_str}/{max_str} {bar} {percent}%")
             else:
@@ -126,9 +111,9 @@ class StatusBar(Static):
         # 3. Timer (all tiers)
         if self._turn_start is not None:
             elapsed = time.time() - self._turn_start
-            segments.append(f"[b]⏱ {_fmt_duration(elapsed)}[/b]")
+            segments.append(f"[b]⏱ {fmt_duration(elapsed)}[/b]")
         elif self._turn_elapsed > 0:
-            segments.append(f"⏱ {_fmt_duration(self._turn_elapsed)}")
+            segments.append(f"⏱ {fmt_duration(self._turn_elapsed)}")
         else:
             segments.append("[$text-muted]⏱ 0s[/]")
 

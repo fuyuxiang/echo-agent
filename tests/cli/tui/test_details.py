@@ -51,8 +51,9 @@ def _tool(tcid: str, status: str = "running") -> CogEvent:
 def test_defaults_keep_the_answer_the_biggest_thing_on_screen():
     prefs = DetailPrefs()
     # 工具行的摘要已含动词/对象/结果/耗时，明细是原始参数与 diff，
-    # 默认展开等于每次调用多 5~8 行，正是本次要消掉的噪声
-    assert prefs.state("tools") == "lean"
+    # “折叠”只显示这两行过程，不展开原始载荷；用户因此能看到 Agent 真正在做
+    # 什么，又不会让每次调用多出 5~8 行明细。
+    assert prefs.state("tools") == "collapsed"
     assert prefs.state("thinking") == "collapsed"
     # 逐帧的运行状态与页脚常驻指示器重复
     assert prefs.state("activity") == "hidden"
@@ -122,7 +123,7 @@ def test_unknown_cog_type_stays_visible_but_quiet():
 def test_prefs_are_immutable_so_a_change_is_one_assignment():
     prefs = DetailPrefs()
     changed = prefs.with_section("tools", "expanded")
-    assert prefs.state("tools") == "lean"
+    assert prefs.state("tools") == "collapsed"
     assert changed.state("tools") == "expanded"
     assert changed is not prefs
 
@@ -220,13 +221,14 @@ def _read_tool(tcid: str, status: str = "running") -> CogEvent:
 
 
 @pytest.mark.asyncio
-async def test_lean_default_hides_successful_read_only_tool():
+async def test_collapsed_default_shows_successful_read_only_tool():
     app = _T()
     async with app.run_test():
         tv = app.query_one(TranscriptView)
-        assert tv.details.state("tools") == "lean"
-        assert tv.add_tool_call(_read_tool("r1", "running")) is None
-        assert tv.add_tool_call(_read_tool("r1", "ok")) is None
+        assert tv.details.state("tools") == "collapsed"
+        block = tv.add_tool_call(_read_tool("r1", "running"))
+        assert block is not None
+        assert tv.add_tool_call(_read_tool("r1", "ok")) is block
 
 
 @pytest.mark.asyncio
@@ -234,6 +236,7 @@ async def test_lean_shows_failed_read_only_tool():
     app = _T()
     async with app.run_test():
         tv = app.query_one(TranscriptView)
+        tv.details = DetailPrefs(tools="lean")
         assert tv.details.state("tools") == "lean"
         assert tv.add_tool_call(_read_tool("r1", "running")) is None
         block = tv.add_tool_call(_read_tool("r1", "error"))
@@ -246,6 +249,7 @@ async def test_lean_shows_write_tools():
     app = _T()
     async with app.run_test():
         tv = app.query_one(TranscriptView)
+        tv.details = DetailPrefs(tools="lean")
         assert tv.details.state("tools") == "lean"
         block = tv.add_tool_call(_tool("w1", "ok"))
         assert block is not None

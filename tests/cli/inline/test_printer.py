@@ -74,6 +74,29 @@ def test_tool_line_running_shows_pending():
     assert "…" in out
 
 
+def test_live_tool_start_and_result_do_not_leave_a_pending_marker():
+    p, buf = _printer()
+    p.tool_start("read_file", {"path": "/a/config.py"})
+    p.tool_result(
+        "read_file", {"path": "/a/config.py"}, "ok",
+        result_meta={"total_lines": 210},
+    )
+    out = buf.getvalue()
+    assert out.count("读取 config.py") == 1
+    assert "210 行" in out and "✓" in out
+    assert "…" not in out
+
+
+def test_parallel_result_can_repeat_short_identity():
+    p, buf = _printer()
+    p.tool_start("read_file", {"path": "/a/config.py"})
+    p.tool_result(
+        "read_file", {"path": "/a/config.py"}, "ok",
+        result_meta={"total_lines": 210}, include_identity=True,
+    )
+    assert "读取 config.py · 210 行" in buf.getvalue()
+
+
 def test_tool_line_done_shows_summary_and_mark():
     p, buf = _printer()
     p.tool_line(
@@ -89,7 +112,19 @@ def test_tool_line_failure_marks_and_words_it():
     p, buf = _printer()
     p.tool_line("exec", {"command": "false"}, "fail", result_text="boom")
     out = buf.getvalue()
-    assert "失败" in out or "✗" in out
+    assert "失败：boom" in out
+    assert "✗" in out
+
+
+def test_tool_failure_reason_is_redacted():
+    p, buf = _printer()
+    p.tool_line(
+        "web_fetch", {"url": "https://example.com"}, "fail",
+        result_text="Bearer sk-super-secret-token",
+    )
+    out = buf.getvalue()
+    assert "sk-super-secret-token" not in out
+    assert "Bearer ••••" in out
 
 
 def test_tool_line_masks_secret_params():

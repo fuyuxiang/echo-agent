@@ -596,6 +596,11 @@ def _dispatch() -> None:
             host=info.host, port=port, ws_path=info.ws_path,
             user_id=args.user, token=token,
             api_prefix=info.api_prefix, save_dir=info.save_dir,
+            initial_status={
+                "model": info.model,
+                "context_used": 0,
+                "context_max": info.context_max,
+            },
             config_path=args.config or args.top_config,
             workspace=args.workspace or args.top_workspace,
             renderer=args.renderer,
