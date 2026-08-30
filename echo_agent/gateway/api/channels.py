@@ -15,6 +15,9 @@ class ChannelsAPI:
     def _guard(self, request: web.Request, action: str) -> web.Response | None:
         return self._server._require_api_token(request, action=action)
 
+    def _admin_guard(self, request: web.Request, action: str) -> web.Response | None:
+        return self._server._require_admin_token(request, action=action)
+
     async def list_channels(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "channels_list")
         if guard is not None:
@@ -24,9 +27,19 @@ class ChannelsAPI:
         active = manager.active_channels
 
         channel_names = [
-            "telegram", "discord", "webhook", "cron", "slack",
-            "whatsapp", "weixin", "qqbot", "feishu", "dingtalk",
-            "email", "wecom", "matrix",
+            "telegram",
+            "discord",
+            "webhook",
+            "cron",
+            "slack",
+            "whatsapp",
+            "weixin",
+            "qqbot",
+            "feishu",
+            "dingtalk",
+            "email",
+            "wecom",
+            "matrix",
         ]
 
         config = getattr(self._server._agent_loop, "config", None)
@@ -59,3 +72,45 @@ class ChannelsAPI:
                 channels.append({"name": name, "enabled": True, "running": True})
 
         return web.json_response({"channels": channels})
+
+    async def lifecycle(self, request: web.Request) -> web.Response:
+        guard = self._admin_guard(request, "channels_lifecycle")
+        if guard is not None:
+            return guard
+        name = request.match_info["name"]
+        action = request.match_info["action"]
+        if name == "cli":
+            return web.json_response(
+                {"error": f"channel '{name}' is managed by the process lifecycle"},
+                status=409,
+            )
+        manager = self._server.channel_manager
+        if getattr(manager.config, name, None) is None:
+            return web.json_response({"error": f"unknown channel '{name}'"}, status=404)
+        try:
+            if action == "start":
+                channel = await manager.start_channel(name)
+            elif action == "stop":
+                await manager.stop_channel(name)
+                channel = manager.get_channel(name)
+            elif action == "restart":
+                channel = await manager.restart_channel(name)
+            else:
+                return web.json_response({"error": "unknown lifecycle action"}, status=404)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=409)
+        except Exception as exc:
+            return web.json_response(
+                {"error": f"channel {action} failed: {exc}"},
+                status=502,
+            )
+        return web.json_response(
+            {
+                "success": True,
+                "channel": {
+                    "name": name,
+                    "enabled": bool(getattr(getattr(manager.config, name), "enabled", False)),
+                    "running": bool(channel and channel.is_running),
+                },
+            }
+        )

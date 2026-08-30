@@ -99,13 +99,13 @@ describe("Knowledge 页", () => {
 
     await waitFor(() =>
       expect(spy).toHaveBeenCalledWith(
-        "/knowledge/documents/sub%20dir/nested%20doc.md",
+        "/knowledge/documents/sub%20dir/nested%20doc.md?background=true",
         { method: "DELETE" },
       ),
     );
   });
 
-  it("删除成功后同时刷新文档列表与状态行", async () => {
+  it("删除任务入队后刷新文档与任务，完成状态由实时事件刷新", async () => {
     const spy = mockApi(true);
     renderKnowledge();
 
@@ -113,8 +113,10 @@ describe("Knowledge 页", () => {
     fireEvent.click(await screen.findByRole("button", { name: "删除" }));
 
     await waitFor(() => {
-      const calls = spy.mock.calls.filter((c) => c[0] === "/knowledge/status");
-      expect(calls.length).toBeGreaterThan(1);
+      const documentCalls = spy.mock.calls.filter((c) => c[0] === "/knowledge/documents");
+      const jobCalls = spy.mock.calls.filter((c) => c[0] === "/knowledge/jobs?limit=10");
+      expect(documentCalls.length).toBeGreaterThan(1);
+      expect(jobCalls.length).toBeGreaterThan(1);
     });
   });
 });

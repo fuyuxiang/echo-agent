@@ -28,7 +28,7 @@ describe("Config 页", () => {
     render(<Config />);
 
     await waitFor(() => expect(screen.getByText(/"echo"/)).toBeInTheDocument());
-    expect(spy).toHaveBeenCalledWith("/config");
+    expect(spy).toHaveBeenCalledWith("/config", expect.anything());
   });
 
   it("非 admin 令牌下不请求 /config,只提示权限不足", async () => {
@@ -56,6 +56,6 @@ describe("Config 页", () => {
     render(<Config />);
 
     await waitFor(() => expect(screen.getByText(/加载失败：boom/)).toBeInTheDocument());
-    expect(spy).toHaveBeenCalledWith("/config");
+    expect(spy).toHaveBeenCalledWith("/config", expect.anything());
   });
 });

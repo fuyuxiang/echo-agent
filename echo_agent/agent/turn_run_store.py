@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Awaitable, Callable
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any
 
 
 TERMINAL_TURN_STATUSES = frozenset({"completed", "incomplete", "failed", "interrupted"})
@@ -35,6 +36,25 @@ class TurnRunStore:
     ) -> None:
         self._storage = storage
         self._clock = clock
+        self._event_sink: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
+
+    def set_event_sink(
+        self,
+        sink: Callable[[str, dict[str, Any]], Awaitable[None]] | None,
+    ) -> None:
+        self._event_sink = sink
+
+    async def _emit(self, event_id: str) -> None:
+        if self._event_sink is None:
+            return
+        try:
+            row = await self.get(event_id)
+            if row is not None:
+                await self._event_sink("session_turn_updated", row)
+        except Exception:
+            # Dashboard notification is best-effort; durable turn state was
+            # already written and must not fail because an observer is gone.
+            pass
 
     @staticmethod
     def _now() -> str:
@@ -76,14 +96,20 @@ class TurnRunStore:
             # must never reset a running/terminal row back toward execution.
             "ON CONFLICT(event_id) DO NOTHING",
             (
-                event_id, session_key, context_key, trace_id,
-                json.dumps(metadata or {}, ensure_ascii=False), now, now,
+                event_id,
+                session_key,
+                context_key,
+                trace_id,
+                json.dumps(metadata or {}, ensure_ascii=False),
+                now,
+                now,
             ),
         )
         # Bound cached terminal results, but never delete accepted/running work:
         # those rows are the at-most-once authority and may legitimately exceed
         # the result retention bound during a burst or long approval wait.
         await self._prune_terminal_session(session_key)
+        await self._emit(event_id)
 
     async def claim_idempotency(
         self,
@@ -149,15 +175,13 @@ class TurnRunStore:
 
     async def mark_idempotency_admitted(self, event_id: str) -> None:
         await self._storage.execute_sql(
-            "UPDATE inbound_idempotency SET status='accepted', updated_at=? "
-            "WHERE event_id=? AND status='pending'",
+            "UPDATE inbound_idempotency SET status='accepted', updated_at=? WHERE event_id=? AND status='pending'",
             (self._now(), event_id),
         )
 
     async def release_idempotency(self, event_id: str) -> bool:
         changed = await self._storage.execute_sql(
-            "DELETE FROM inbound_idempotency WHERE event_id=? "
-            "AND status IN ('pending','accepted')",
+            "DELETE FROM inbound_idempotency WHERE event_id=? AND status IN ('pending','accepted')",
             (event_id,),
         )
         if changed is None:
@@ -170,15 +194,10 @@ class TurnRunStore:
         response_text = str(row.get("response_text") or "")
         error = str(row.get("error") or "")
         terminal = status in TERMINAL_TURN_STATUSES
-        expires_at = (
-            self._clock() + self._IDEMPOTENCY_TTL_SECONDS
-            if terminal
-            else None
-        )
+        expires_at = self._clock() + self._IDEMPOTENCY_TTL_SECONDS if terminal else None
         if expires_at is None:
             await self._storage.execute_sql(
-                "UPDATE inbound_idempotency SET status=?, response_text=?, "
-                "error=?, updated_at=? WHERE event_id=?",
+                "UPDATE inbound_idempotency SET status=?, response_text=?, error=?, updated_at=? WHERE event_id=?",
                 (status, response_text, error, self._now(), row.get("event_id")),
             )
         else:
@@ -231,6 +250,7 @@ class TurnRunStore:
                 "WHERE event_id=? AND status IN ('pending','accepted')",
                 (self._now(), event_id),
             )
+            await self._emit(event_id)
         return claimed
 
     async def release_acceptance(self, event_id: str, session_key: str) -> bool:
@@ -242,8 +262,7 @@ class TurnRunStore:
         makes this safe under races: a running or terminal row is never reset.
         """
         changed = await self._storage.execute_sql(
-            "DELETE FROM turn_runs "
-            "WHERE event_id=? AND session_key=? AND status='accepted'",
+            "DELETE FROM turn_runs WHERE event_id=? AND session_key=? AND status='accepted'",
             (event_id, session_key),
         )
         # Older third-party backends do not report rowcount, but still execute
@@ -251,7 +270,11 @@ class TurnRunStore:
         return changed is None or changed == 1
 
     async def mark_activity(
-        self, event_id: str, *, status: str = "running", current_tool: str = "",
+        self,
+        event_id: str,
+        *,
+        status: str = "running",
+        current_tool: str = "",
     ) -> None:
         if status in TERMINAL_TURN_STATUSES:
             raise ValueError("mark_activity cannot write a terminal status")
@@ -260,6 +283,7 @@ class TurnRunStore:
             "WHERE event_id=? AND status NOT IN ('completed','incomplete','failed','interrupted')",
             (status, current_tool, self._now(), event_id),
         )
+        await self._emit(event_id)
 
     async def mark_terminal(
         self,
@@ -303,6 +327,7 @@ class TurnRunStore:
             )
         if row is not None:
             await self._prune_terminal_session(str(row.get("session_key") or ""))
+        await self._emit(event_id)
 
     async def reconcile_orphaned(self, *, error: str = "process restarted") -> int:
         """Fail every non-terminal row left by a previous process instance.
@@ -351,14 +376,14 @@ class TurnRunStore:
 
     async def get(self, event_id: str) -> dict[str, Any] | None:
         rows = await self._storage.fetch_sql(
-            "SELECT * FROM turn_runs WHERE event_id=?", (event_id,),
+            "SELECT * FROM turn_runs WHERE event_id=?",
+            (event_id,),
         )
         return self._decode(rows[0]) if rows else None
 
     async def list_session(self, session_key: str, *, limit: int = 20) -> list[dict[str, Any]]:
         rows = await self._storage.fetch_sql(
-            "SELECT * FROM turn_runs WHERE session_key=? "
-            "ORDER BY created_at DESC LIMIT ?",
+            "SELECT * FROM turn_runs WHERE session_key=? ORDER BY created_at DESC LIMIT ?",
             (session_key, max(1, min(int(limit), 100))),
         )
         return [self._decode(row) for row in rows]

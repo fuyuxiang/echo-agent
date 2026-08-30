@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useApi } from "../hooks/use-api";
+import { useWsSubscribe } from "../hooks/use-ws";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from "recharts";
@@ -18,6 +19,8 @@ interface ChannelUsage {
   output_tokens: number;
   cost_usd: number;
 }
+interface SkillUsage { skill: string; calls: number; successes: number; failures: number; success_rate: number }
+interface SkillUsageResponse { skills: SkillUsage[]; available: boolean; unavailable_reason?: string }
 
 /** Recharts 的 formatter 参数可能是 undefined/字符串,签名要照它的类型来。 */
 function formatUsd(value: unknown): string {
@@ -28,16 +31,21 @@ function formatUsd(value: unknown): string {
 export function Analytics() {
   const { t } = useTranslation(["analytics", "common"]);
   const [days, setDays] = useState(7);
-  const { data: tokens, error } = useApi<{ usage: TokenUsage[] }>(`/analytics/tokens?days=${days}`);
-  // 渠道归因:后端 get_channel_usage 是真实 SQL 聚合(cost_ledger_dim 有 channel 列),
-  // 此前端点完全没被使用。注:技能维度(get_skill_usage)确实无数据源——成本埋点只记
-  // provider/model/channel,cost_ledger_dim 无 skill 列,故不做技能图表。
-  const { data: channels, error: channelsError } = useApi<{ channels: ChannelUsage[] }>(
+  const { data: tokens, error, refetch: refetchTokens } = useApi<{ usage: TokenUsage[] }>(`/analytics/tokens?days=${days}`);
+  // 渠道归因与技能调用质量都来自持久化聚合，页面通过实时事件刷新。
+  const { data: channels, error: channelsError, refetch: refetchChannels } = useApi<{ channels: ChannelUsage[] }>(
     `/analytics/channels?days=${days}`
   );
+  const { data: skills, error: skillsError, refetch: refetchSkills } = useApi<SkillUsageResponse>(
+    `/analytics/skills?days=${days}`,
+  );
+  useWsSubscribe(["analytics"], () => {
+    refetchTokens(); refetchChannels(); refetchSkills();
+  }, ["analytics_updated"]);
 
   const usage = tokens?.usage ?? [];
   const channelRows = channels?.channels ?? [];
+  const skillRows = Array.isArray(skills?.skills) ? skills.skills : [];
   const totalCost = error ? null : usage.reduce((sum, d) => sum + (d.cost_usd ?? 0), 0);
 
   return (
@@ -116,6 +124,28 @@ export function Analytics() {
               </BarChart>
             </ResponsiveContainer>
           )}
+        </div>
+      </section>
+
+      <section>
+        <h2 className="font-semibold mb-2">{t("skillUsage")}</h2>
+        <div className="bg-white border rounded-lg overflow-x-auto">
+          {skillsError ? <div className="p-4 text-sm text-red-600">{t("common:loadFailed", { error: skillsError })}</div>
+            : skills?.available === false ? <div className="p-4 text-sm text-amber-700">{t("skillUnavailable")}</div>
+            : skillRows.length === 0 ? <div className="p-4 text-sm text-gray-400">{t("common:noData")}</div>
+            : <table className="w-full text-sm">
+              <thead className="bg-gray-50 text-gray-500"><tr>
+                <th className="text-left p-3">{t("skill")}</th><th className="text-right p-3">{t("calls")}</th>
+                <th className="text-right p-3">{t("successes")}</th><th className="text-right p-3">{t("failures")}</th>
+                <th className="text-right p-3">{t("successRate")}</th>
+              </tr></thead>
+              <tbody>{skillRows.map((row) => <tr key={row.skill} className="border-t">
+                <td className="p-3 font-medium">{row.skill}</td><td className="p-3 text-right tabular-nums">{row.calls}</td>
+                <td className="p-3 text-right text-green-700 tabular-nums">{row.successes}</td>
+                <td className="p-3 text-right text-red-700 tabular-nums">{row.failures}</td>
+                <td className="p-3 text-right tabular-nums">{(row.success_rate * 100).toFixed(1)}%</td>
+              </tr>)}</tbody>
+            </table>}
         </div>
       </section>
     </div>

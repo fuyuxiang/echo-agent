@@ -25,6 +25,7 @@ from echo_agent.scheduler.authorization import verify as verify_authorization
 
 try:
     import fcntl
+
     _HAS_FCNTL = True
 except ImportError:
     fcntl = None  # type: ignore[assignment]
@@ -78,6 +79,10 @@ class ScheduledJob:
     last_status: str = ""
     last_error: str = ""
     run_count: int = 0
+    # Bounded, persisted execution ledger. Kept on the job so scheduler.json
+    # remains the single atomic state file and existing workspaces need no
+    # separate migration. Old jobs simply deserialize with an empty history.
+    run_history: list[dict[str, Any]] = field(default_factory=list)
     created_at_ms: int = field(default_factory=lambda: int(time.time() * 1000))
     # Per-job unattended-execution authorization. None means unauthorized —
     # jobs stored before this field existed read back as None by design, so an
@@ -86,15 +91,25 @@ class ScheduledJob:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "id": self.id, "name": self.name, "trigger": self.trigger.value,
-            "cron_expr": self.cron_expr, "interval_ms": self.interval_ms,
-            "at_ms": self.at_ms, "timezone": self.timezone,
-            "event_name": self.event_name, "payload": self.payload,
-            "status": self.status.value, "enabled": self.enabled,
+            "id": self.id,
+            "name": self.name,
+            "trigger": self.trigger.value,
+            "cron_expr": self.cron_expr,
+            "interval_ms": self.interval_ms,
+            "at_ms": self.at_ms,
+            "timezone": self.timezone,
+            "event_name": self.event_name,
+            "payload": self.payload,
+            "status": self.status.value,
+            "enabled": self.enabled,
             "delete_after_run": self.delete_after_run,
-            "next_run_ms": self.next_run_ms, "last_run_ms": self.last_run_ms,
-            "last_status": self.last_status, "last_error": self.last_error,
-            "run_count": self.run_count, "created_at_ms": self.created_at_ms,
+            "next_run_ms": self.next_run_ms,
+            "last_run_ms": self.last_run_ms,
+            "last_status": self.last_status,
+            "last_error": self.last_error,
+            "run_count": self.run_count,
+            "run_history": self.run_history[-100:],
+            "created_at_ms": self.created_at_ms,
             "authorization": self.authorization.to_dict() if self.authorization else None,
         }
 
@@ -118,6 +133,7 @@ class ScheduledJob:
             last_status=data.get("last_status", ""),
             last_error=data.get("last_error", ""),
             run_count=data.get("run_count", 0),
+            run_history=(data.get("run_history") or [])[-100:],
             created_at_ms=data.get("created_at_ms", 0),
             authorization=JobAuthorization.from_dict(data.get("authorization")),
         )
@@ -135,9 +151,11 @@ def _compute_next_run(job: ScheduledJob, now_ms: int) -> int | None:
     if job.trigger == TriggerKind.CRON and job.cron_expr:
         try:
             from croniter import croniter
+
             if job.timezone:
                 try:
                     from zoneinfo import ZoneInfo
+
                     tz = ZoneInfo(job.timezone)
                     base = datetime.fromtimestamp(now_ms / 1000, tz=tz)
                 except Exception as tz_e:
@@ -246,9 +264,7 @@ class Scheduler:
                         self._events_dropped,
                     )
 
-    async def _drain_events(
-        self, queue: asyncio.Queue[tuple[str, dict[str, Any]] | None]
-    ) -> None:
+    async def _drain_events(self, queue: asyncio.Queue[tuple[str, dict[str, Any]] | None]) -> None:
         """Deliver queued events one at a time, off the job execution path.
 
         Each send is bounded by _EVENT_SEND_TIMEOUT so one stuck subscriber costs
@@ -268,15 +284,14 @@ class Scheduler:
             try:
                 sink = self._event_sink
                 if sink is not None:
-                    await asyncio.wait_for(
-                        sink(event_type, payload), timeout=_EVENT_SEND_TIMEOUT
-                    )
+                    await asyncio.wait_for(sink(event_type, payload), timeout=_EVENT_SEND_TIMEOUT)
             except asyncio.CancelledError:
                 queue.task_done()
                 raise
             except (asyncio.TimeoutError, TimeoutError):
                 logger.debug(
-                    "Cron event emit ({}) timed out after {}s", event_type,
+                    "Cron event emit ({}) timed out after {}s",
+                    event_type,
                     _EVENT_SEND_TIMEOUT,
                 )
                 queue.task_done()
@@ -342,7 +357,8 @@ class Scheduler:
                 if revision < self._written_revision:
                     logger.debug(
                         "Skipping stale scheduler snapshot (revision {} < {})",
-                        revision, self._written_revision,
+                        revision,
+                        self._written_revision,
                     )
                     return
                 self._written_revision = revision
@@ -354,6 +370,7 @@ class Scheduler:
         # A crash mid-write must never leave the JSON truncated, otherwise
         # _load on next startup loses every scheduled job.
         import tempfile as _tempfile
+
         fd, tmp = _tempfile.mkstemp(
             dir=str(self._store_path.parent),
             prefix=".scheduler_",
@@ -387,15 +404,12 @@ class Scheduler:
                 job.next_run_ms = now
                 logger.warning("Job {} ('{}') was due during downtime; firing now", job.id, job.name)
                 continue
-            if (
-                job.trigger == TriggerKind.CRON
-                and job.last_run_ms
-                and job.next_run_ms
-                and job.next_run_ms <= now
-            ):
+            if job.trigger == TriggerKind.CRON and job.last_run_ms and job.next_run_ms and job.next_run_ms <= now:
                 logger.warning(
                     "Job {} ('{}'): cron occurrence(s) between {} and now were missed during downtime and are skipped",
-                    job.id, job.name, datetime.fromtimestamp(job.next_run_ms / 1000).isoformat(),
+                    job.id,
+                    job.name,
+                    datetime.fromtimestamp(job.next_run_ms / 1000).isoformat(),
                 )
             job.next_run_ms = _compute_next_run(job, now)
         await self._save_async()
@@ -447,9 +461,7 @@ class Scheduler:
                     # will time out and cancel the drain if no sentinel landed.
                     pass
             try:
-                await asyncio.wait_for(
-                    asyncio.shield(task), timeout=_EVENT_SEND_TIMEOUT
-                )
+                await asyncio.wait_for(asyncio.shield(task), timeout=_EVENT_SEND_TIMEOUT)
             except (asyncio.TimeoutError, TimeoutError):
                 logger.debug("Cron event queue did not drain before shutdown")
         if task is not None and not task.done():
@@ -535,12 +547,14 @@ class Scheduler:
             if job.next_run_ms is None and job.enabled:
                 logger.warning(
                     "Job {} ('{}') has no computable next run after update; it will not fire",
-                    job.id, job.name,
+                    job.id,
+                    job.name,
                 )
             elif previous and job.next_run_ms and previous < _now_ms():
                 logger.info(
                     "Job {} ('{}'): rescheduled from a past due time to {}",
-                    job.id, job.name,
+                    job.id,
+                    job.name,
                     datetime.fromtimestamp(job.next_run_ms / 1000).isoformat(),
                 )
 
@@ -554,21 +568,24 @@ class Scheduler:
         return self._jobs.get(job_id)
 
     def get_run_history(self, job_id: str, limit: int = 10) -> list[dict[str, Any]]:
-        """Return recent run info for a job (derived from current state).
-
-        The scheduler does not persist a full run log today; return a
-        summary based on the last execution so callers have something
-        to display. A future iteration can persist per-run records.
-        """
+        """Return newest-first persisted execution records for a job."""
         job = self._jobs.get(job_id)
-        if not job or not job.last_run_ms:
+        if not job:
             return []
-        return [{
-            "ts": job.last_run_ms,
-            "status": job.last_status or "unknown",
-            "error": job.last_error,
-            "run_count": job.run_count,
-        }]
+        bounded = max(1, min(int(limit), 100))
+        if job.run_history:
+            return list(reversed(job.run_history[-bounded:]))
+        # Compatibility for scheduler.json written before run_history existed.
+        if job.last_run_ms:
+            return [
+                {
+                    "ts": job.last_run_ms,
+                    "status": job.last_status or "unknown",
+                    "error": job.last_error,
+                    "run_count": job.run_count,
+                }
+            ]
+        return []
 
     async def record_run_outcome(self, job_id: str, status: str, error: str = "") -> None:
         """Write back the real end-to-end outcome of a dispatched job run.
@@ -584,6 +601,12 @@ class Scheduler:
             return
         job.last_status = status
         job.last_error = error
+        if job.run_history:
+            latest = job.run_history[-1]
+            if latest.get("run_count") == job.run_count:
+                latest["status"] = status
+                latest["error"] = error
+                latest["completed_ts"] = _now_ms()
         await self._save_async()
         # The terminal outcome, not just the dispatch: this is the one the cron
         # page's "last result" column actually cares about.
@@ -665,6 +688,20 @@ class Scheduler:
             job.last_error = str(e)
             logger.error("Job {} failed: {}", job.id, e)
 
+        job.run_history.append(
+            {
+                "ts": job.last_run_ms,
+                "status": job.last_status or "unknown",
+                "error": job.last_error,
+                "run_count": job.run_count,
+                # queued is intentionally non-terminal; record_run_outcome fills this
+                # when the agent turn and delivery actually finish.
+                "completed_ts": None if job.last_status == "queued" else _now_ms(),
+            }
+        )
+        if len(job.run_history) > 100:
+            del job.run_history[:-100]
+
         if job.delete_after_run or job.trigger == TriggerKind.ONCE:
             job.status = JobStatus.COMPLETED
         else:
@@ -698,7 +735,8 @@ class Scheduler:
             "{} 个已启用的定时任务没有有效的无人值守授权，触发时写文件/执行命令等操作会被拒绝："
             "{}。如需放开，对每个任务运行 `echo-agent cron authorize <id>`，"
             "或将 permissions.approval.unattended_policy 设为 allow_safe。",
-            len(stale), "、".join(stale[:10]) + ("…" if len(stale) > 10 else ""),
+            len(stale),
+            "、".join(stale[:10]) + ("…" if len(stale) > 10 else ""),
         )
 
     def _try_acquire_lock(self, job_id: str) -> Any:

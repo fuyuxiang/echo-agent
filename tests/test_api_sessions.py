@@ -44,6 +44,26 @@ async def test_list_sessions(mock_server, api):
 
 
 @pytest.mark.asyncio
+async def test_list_sessions_searches_before_pagination(mock_server, api):
+    """Search must cover the full result set, not only the current UI page."""
+    mock_server.session_manager.list_sessions_async = AsyncMock(return_value=[
+        {"key": "cli:first", "message_count": 1, "updated_at": "2026-07-07T10:00:00"},
+        {"key": "FEISHU:target", "message_count": 2, "updated_at": "2026-07-07T11:00:00"},
+        {"key": "cli:last", "message_count": 3, "updated_at": "2026-07-07T12:00:00"},
+    ])
+
+    app = web.Application()
+    app.router.add_get("/api/v1/sessions", api.list_sessions)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/api/v1/sessions?q=feishu&limit=1&offset=0")
+        data = await resp.json()
+
+    assert data["total"] == 1
+    assert [item["key"] for item in data["sessions"]] == ["FEISHU:target"]
+    assert data["has_more"] is False
+
+
+@pytest.mark.asyncio
 async def test_get_session_history(mock_server, api):
     # 用真实 Session 而非 MagicMock:历史端点必须走 get_display_history(展示全量),
     # 不能是 get_history(LLM 用的、从 last_consolidated 起切的紧凑视图)。MagicMock

@@ -31,9 +31,10 @@ describe("Analytics 页", () => {
     const spy = mockApi();
     render(<Analytics />);
 
-    await waitFor(() => expect(spy).toHaveBeenCalledWith("/analytics/tokens?days=7"));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("/analytics/tokens?days=7", expect.anything()));
     // 渠道归因端点此前完全没被前端使用。
-    expect(spy).toHaveBeenCalledWith("/analytics/channels?days=7");
+    expect(spy).toHaveBeenCalledWith("/analytics/channels?days=7", expect.anything());
+    expect(spy).toHaveBeenCalledWith("/analytics/skills?days=7", expect.anything());
     expect(screen.getByRole("button", { name: "7天" })).toHaveAttribute("aria-pressed", "true");
   });
 
@@ -48,11 +49,12 @@ describe("Analytics 页", () => {
     const spy = mockApi();
     render(<Analytics />);
 
-    await waitFor(() => expect(spy).toHaveBeenCalledWith("/analytics/tokens?days=7"));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("/analytics/tokens?days=7", expect.anything()));
     fireEvent.click(screen.getByRole("button", { name: "30天" }));
 
-    await waitFor(() => expect(spy).toHaveBeenCalledWith("/analytics/tokens?days=30"));
-    expect(spy).toHaveBeenCalledWith("/analytics/channels?days=30");
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("/analytics/tokens?days=30", expect.anything()));
+    expect(spy).toHaveBeenCalledWith("/analytics/channels?days=30", expect.anything());
+    expect(spy).toHaveBeenCalledWith("/analytics/skills?days=30", expect.anything());
   });
 
   it("渲染成本趋势区块 —— cost_usd 之前只在类型里声明,从没画出来", async () => {
@@ -93,6 +95,18 @@ describe("Analytics 页", () => {
     });
     render(<Analytics />);
 
-    expect(await screen.findByText("暂无数据")).toBeInTheDocument();
+    expect((await screen.findAllByText("暂无数据")).length).toBeGreaterThan(0);
+  });
+
+  it("Skill 统计未配置存储时显示明确的不可用状态", async () => {
+    vi.spyOn(api, "apiFetch").mockImplementation(async (path: string) => {
+      if (path.startsWith("/analytics/skills")) return { skills: [], available: false } as never;
+      if (path.startsWith("/analytics/channels")) return CHANNELS as never;
+      return USAGE as never;
+    });
+    render(<Analytics />);
+
+    expect(await screen.findByText(/Skill 调用统计/)).toBeInTheDocument();
+    expect(screen.queryByText("暂无数据")).not.toBeInTheDocument();
   });
 });

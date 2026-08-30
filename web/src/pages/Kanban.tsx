@@ -347,8 +347,8 @@ function KanbanCard({ task, onOpenDetail }: { task: TaskCard; onOpenDetail: (id:
         )}
       </div>
 
-      {/* 操作条:hover 显现,避免常态干扰。 */}
-      <div className="flex gap-1 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
+      {/* 鼠标、键盘聚焦、触屏都能到达操作条。 */}
+      <div className="flex gap-1 mt-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 transition-opacity">
         {canStart && (
           <button onClick={actions.start} aria-label={t("action.start")} className="p-1 hover:bg-blue-50 rounded text-blue-600" title={t("action.start")}>
             <Play size={14} />
@@ -378,4 +378,3 @@ function KanbanCard({ task, onOpenDetail }: { task: TaskCard; onOpenDetail: (id:
     </div>
   );
 }
-

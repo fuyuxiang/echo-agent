@@ -9,6 +9,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from loguru import logger
@@ -86,8 +87,9 @@ class ToolRegistry:
         "code": "execute_code",
     }
 
-    def __init__(self, audit_log_path: Path | None = None, config: Any = None,
-                 spill_policy: Any = None):  # SpillPolicy;用 Any 避免 registry 依赖 spill 包
+    def __init__(
+        self, audit_log_path: Path | None = None, config: Any = None, spill_policy: Any = None
+    ):  # SpillPolicy;用 Any 避免 registry 依赖 spill 包
         self._tools: dict[str, Tool] = {}
         self._replay_cache: collections.OrderedDict[str, dict[str, Any]] = collections.OrderedDict()
         self._execution_log: collections.deque[dict[str, Any]] = collections.deque(maxlen=_MAX_EXECUTION_LOG)
@@ -105,6 +107,25 @@ class ToolRegistry:
         # execute 是所有工具的唯一收口点,超长输出的落盘策略挂在这里才能覆盖
         # 动态注册的 MCP 工具——逐工具打补丁覆盖不到它们。未装配时是 no-op。
         self._spill_policy = spill_policy
+        self._skill_usage_recorder: Callable[[str, bool], Awaitable[None]] | None = None
+
+    def set_skill_usage_recorder(
+        self,
+        recorder: Callable[[str, bool], Awaitable[None]] | None,
+    ) -> None:
+        """Attach analytics without coupling the registry to CostTracker."""
+        self._skill_usage_recorder = recorder
+
+    async def _record_skill_usage(self, name: str, params: dict[str, Any], success: bool) -> None:
+        if name != "skill_run" or self._skill_usage_recorder is None:
+            return
+        skill = params.get("name") or params.get("skill")
+        if not isinstance(skill, str) or not skill.strip():
+            return
+        try:
+            await self._skill_usage_recorder(skill, success)
+        except Exception:
+            logger.debug("Skill usage recorder failed for '{}'", skill)
 
     def set_audit_log_path(self, path: Path) -> None:
         self._audit_log_path = path
@@ -114,10 +135,7 @@ class ToolRegistry:
             return
         try:
             self._audit_log_path.parent.mkdir(parents=True, exist_ok=True)
-            if (
-                self._audit_log_path.exists()
-                and self._audit_log_path.stat().st_size > _MAX_AUDIT_FILE_BYTES
-            ):
+            if self._audit_log_path.exists() and self._audit_log_path.stat().st_size > _MAX_AUDIT_FILE_BYTES:
                 rotated = self._audit_log_path.with_name(
                     f"{self._audit_log_path.stem}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}.jsonl"
                 )
@@ -146,23 +164,16 @@ class ToolRegistry:
         """
         raw_name = getattr(tool, "name", "")
         if not isinstance(raw_name, str) or not _TOOL_NAME_RE.fullmatch(raw_name):
-            raise ValueError(
-                "Tool name must be a 1-64 character string containing only "
-                "letters, digits, '_' or '-'"
-            )
+            raise ValueError("Tool name must be a 1-64 character string containing only letters, digits, '_' or '-'")
         name = raw_name
         if name in self._ALIASES:
             target = self._ALIASES[name]
-            raise ValueError(
-                f"Tool name '{name}' is reserved as an alias for '{target}'"
-            )
+            raise ValueError(f"Tool name '{name}' is reserved as an alias for '{target}'")
         existing = self._tools.get(name)
         if existing is tool:
             return
         if existing is not None and not replace:
-            raise ValueError(
-                f"Tool '{name}' is already registered; explicit replace=True is required"
-            )
+            raise ValueError(f"Tool '{name}' is already registered; explicit replace=True is required")
         self._tools[name] = tool
 
     def unregister(self, name: str) -> None:
@@ -229,9 +240,12 @@ class ToolRegistry:
         # though the tool is still in the registry.
         if self._config is not None:
             from echo_agent.security.tool_policy import is_tool_allowed
+
             if not is_tool_allowed(self._config, tool):
                 logger.warning("Tool '{}' blocked at execute time by security policy", resolved_name)
-                return ToolResult(success=False, error=f"Tool '{name}' is not allowed under the current security profile")
+                return ToolResult(
+                    success=False, error=f"Tool '{name}' is not allowed under the current security profile"
+                )
 
         errors = tool.validate_params(params)
         if errors:
@@ -275,9 +289,12 @@ class ToolRegistry:
                 log_entry["attempt"] = attempt + 1
                 self._execution_log.append(log_entry)
                 self._append_audit(log_entry)
+                await self._record_skill_usage(resolved_name, params, result.success)
 
                 if result.success and tool.execution_mode(params) == "side_effect" and exec_ctx.idempotency_key:
-                    effective_key = f"{replay_scope}:{exec_ctx.idempotency_key}" if replay_scope else exec_ctx.idempotency_key
+                    effective_key = (
+                        f"{replay_scope}:{exec_ctx.idempotency_key}" if replay_scope else exec_ctx.idempotency_key
+                    )
                     async with self._lock:
                         self._replay_cache[effective_key] = {
                             "tool": name,
@@ -288,7 +305,9 @@ class ToolRegistry:
                             self._replay_cache.popitem(last=False)
                 return self._apply_spill(resolved_name, exec_ctx, result)
             except asyncio.TimeoutError:
-                last_result = ToolResult(success=False, error=f"Tool '{name}' timed out after {tool.timeout_seconds}s", error_kind="timeout")
+                last_result = ToolResult(
+                    success=False, error=f"Tool '{name}' timed out after {tool.timeout_seconds}s", error_kind="timeout"
+                )
                 logger.warning("Tool {} timed out (attempt {}/{})", name, attempt + 1, max_attempts)
             except Exception as e:
                 last_result = ToolResult(success=False, error=f"Tool '{name}' error: {e}", error_kind="internal")
@@ -301,6 +320,7 @@ class ToolRegistry:
         log_entry["attempt"] = attempt
         self._execution_log.append(log_entry)
         self._append_audit(log_entry)
+        await self._record_skill_usage(resolved_name, params, False)
         return self._apply_spill(resolved_name, exec_ctx, last_result)
 
     def apply_spill(self, tool_name: str, ctx: ToolExecutionContext, result: ToolResult) -> ToolResult:

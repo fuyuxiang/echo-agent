@@ -31,7 +31,7 @@ describe("Logs 页分页", () => {
     const spy = mockApi();
     render(<Logs />);
 
-    await waitFor(() => expect(spy).toHaveBeenCalledWith("/logs?limit=200&offset=0"));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("/logs?limit=200&offset=0", expect.anything()));
     expect(await screen.findByText("off0-0")).toBeInTheDocument();
   });
 
@@ -50,7 +50,7 @@ describe("Logs 页分页", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: /较旧/ }));
 
-    await waitFor(() => expect(spy).toHaveBeenCalledWith("/logs?limit=200&offset=200"));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("/logs?limit=200&offset=200", expect.anything()));
     expect(await screen.findByText("第 201-400 条 / 共 640 条")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /较新/ })).toBeEnabled();
   });
@@ -60,12 +60,12 @@ describe("Logs 页分页", () => {
     render(<Logs />);
 
     fireEvent.click(await screen.findByRole("button", { name: /较旧/ }));
-    await waitFor(() => expect(spy).toHaveBeenCalledWith("/logs?limit=200&offset=200"));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("/logs?limit=200&offset=200", expect.anything()));
 
     fireEvent.change(screen.getByLabelText("全部级别"), { target: { value: "ERROR" } });
 
     await waitFor(() =>
-      expect(spy).toHaveBeenCalledWith("/logs?limit=200&offset=0&level=ERROR"),
+      expect(spy).toHaveBeenCalledWith("/logs?limit=200&offset=0&level=ERROR", expect.anything()),
     );
   });
 
@@ -74,11 +74,11 @@ describe("Logs 页分页", () => {
     render(<Logs />);
 
     fireEvent.click(await screen.findByRole("button", { name: /较旧/ }));
-    await waitFor(() => expect(spy).toHaveBeenCalledWith("/logs?limit=200&offset=200"));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("/logs?limit=200&offset=200", expect.anything()));
 
     fireEvent.change(screen.getByLabelText("每页条数"), { target: { value: "50" } });
 
-    await waitFor(() => expect(spy).toHaveBeenCalledWith("/logs?limit=50&offset=0"));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("/logs?limit=50&offset=0", expect.anything()));
   });
 
   it("搜索词做 URL 编码", async () => {
@@ -90,7 +90,7 @@ describe("Logs 页分页", () => {
     });
 
     await waitFor(() =>
-      expect(spy).toHaveBeenCalledWith("/logs?limit=200&offset=0&q=a%20b%26c"),
+      expect(spy).toHaveBeenCalledWith("/logs?limit=200&offset=0&q=a%20b%26c", expect.anything()),
     );
   });
 

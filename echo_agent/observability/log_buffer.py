@@ -14,6 +14,7 @@ single module-level buffer with an idempotent installer keeps ownership clear.
 from __future__ import annotations
 
 import collections
+from collections.abc import Callable
 from typing import Any
 
 from loguru import logger
@@ -27,18 +28,24 @@ _buffer: collections.deque[dict[str, Any]] = collections.deque(maxlen=_MAX_LOG_R
 # loguru sink id, so re-installing replaces the old sink instead of stacking a
 # second one that would double every record.
 _sink_id: int | None = None
+_listeners: set[Callable[[dict[str, Any]], None]] = set()
 
 
 def _record_sink(message: Any) -> None:
     """loguru sink: project each record down to the shape the logs API serves."""
     record = message.record
-    _buffer.append(
-        {
-            "ts": record["time"].isoformat(),
-            "level": record["level"].name,
-            "message": record["message"],
-        }
-    )
+    entry = {
+        "ts": record["time"].isoformat(),
+        "level": record["level"].name,
+        "message": record["message"],
+    }
+    _buffer.append(entry)
+    for listener in list(_listeners):
+        try:
+            listener(dict(entry))
+        except Exception:
+            # Never log from a log sink: doing so would recurse.
+            pass
 
 
 def install_log_buffer(level: str = "DEBUG") -> collections.deque[dict[str, Any]]:
@@ -61,6 +68,16 @@ def install_log_buffer(level: str = "DEBUG") -> collections.deque[dict[str, Any]
 def get_log_buffer() -> collections.deque[dict[str, Any]]:
     """Return the shared log buffer (empty until a record is logged)."""
     return _buffer
+
+
+def subscribe_log_events(listener: Callable[[dict[str, Any]], None]) -> Callable[[], None]:
+    """Register a live listener and return an idempotent unsubscribe."""
+    _listeners.add(listener)
+
+    def unsubscribe() -> None:
+        _listeners.discard(listener)
+
+    return unsubscribe
 
 
 def clear_log_buffer() -> None:

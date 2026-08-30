@@ -1,5 +1,5 @@
 import { lazy, Suspense, type ReactNode } from "react";
-import { BrowserRouter, Routes, Route } from "react-router";
+import { BrowserRouter, Link, Routes, Route } from "react-router";
 import { useTranslation } from "react-i18next";
 import { Layout } from "./components/Layout";
 import { Toaster } from "./components/Toaster";
@@ -36,6 +36,15 @@ function LazyRoute({ children }: { children: ReactNode }) {
   return <Suspense fallback={<RouteLoading />}>{children}</Suspense>;
 }
 
+function NotFound() {
+  const { t } = useTranslation("common");
+  return <div className="h-full grid place-items-center text-center">
+    <div><div className="text-5xl font-bold text-gray-200">404</div>
+      <p className="mt-2 text-gray-600">{t("notFound")}</p>
+      <Link to="/" className="inline-block mt-3 text-sm text-blue-600 hover:underline">{t("backHome")}</Link></div>
+  </div>;
+}
+
 export function App() {
   return (
     <BrowserRouter>
@@ -55,6 +64,7 @@ export function App() {
             <Route path="logs" element={<LazyRoute><Logs /></LazyRoute>} />
             <Route path="config" element={<LazyRoute><Config /></LazyRoute>} />
             <Route path="analytics" element={<LazyRoute><Analytics /></LazyRoute>} />
+            <Route path="*" element={<NotFound />} />
           </Route>
         </Routes>
       </ConfirmProvider>

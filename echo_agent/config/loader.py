@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import types
 import typing
 from pathlib import Path
@@ -78,9 +79,7 @@ def _load_yaml_file(path: Path | None) -> dict[str, Any]:
         except yaml.YAMLError as e:
             mark = getattr(e, "problem_mark", None)
             location = f" (line {mark.line + 1}, column {mark.column + 1})" if mark else ""
-            raise ConfigError(
-                f"Invalid YAML in {path}{location}: {getattr(e, 'problem', e)}"
-            ) from e
+            raise ConfigError(f"Invalid YAML in {path}{location}: {getattr(e, 'problem', e)}") from e
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -151,11 +150,7 @@ def _canonicalize_keys(model: type[BaseModel], data: Any) -> Any:
     """
     if not isinstance(data, dict):
         return data
-    by_alias = {
-        f.alias: name
-        for name, f in model.model_fields.items()
-        if f.alias and f.alias != name
-    }
+    by_alias = {f.alias: name for name, f in model.model_fields.items() if f.alias and f.alias != name}
     result: dict[str, Any] = {}
     for key, value in data.items():
         name = key if key in model.model_fields else by_alias.get(key, key)
@@ -218,7 +213,7 @@ def _env_overrides() -> dict[str, Any]:
     for key, value in os.environ.items():
         if not key.startswith(prefix):
             continue
-        parts = key[len(prefix):].lower().split("__")
+        parts = key[len(prefix) :].lower().split("__")
         parsed_value = _coerce_env_value(parts, value)
         current = result
         for part in parts[:-1]:
@@ -261,8 +256,8 @@ def migrate_heartbeat_config(data: dict[str, Any]) -> dict[str, Any]:
             logger.debug("config: on_uneditable=every migrated to heartbeat.verbosity=every_tool")
         else:
             logger.debug(
-                "config: on_uneditable={} is obsolete and ignored; "
-                "heartbeat now adapts per channel capability", legacy,
+                "config: on_uneditable={} is obsolete and ignored; heartbeat now adapts per channel capability",
+                legacy,
             )
     if "interval_sec" in hb and "min_interval_sec" not in hb:
         hb["min_interval_sec"] = hb.pop("interval_sec")
@@ -280,9 +275,7 @@ def load_config(
     # accepts camelCase aliases too, and an un-normalized merge would keep both
     # spellings of the same setting as separate keys — letting the alias win and
     # silently dropping the override. See _canonicalize_keys.
-    data: dict[str, Any] = _canonicalize_keys(
-        Config, _load_yaml_file(_PACKAGED_DEFAULT_CONFIG)
-    )
+    data: dict[str, Any] = _canonicalize_keys(Config, _load_yaml_file(_PACKAGED_DEFAULT_CONFIG))
 
     path = resolve_config_file(config_path)
     if path and path.exists():
@@ -301,6 +294,7 @@ def load_config(
         data = _deep_merge(data, _canonicalize_keys(Config, overrides))
 
     from echo_agent.config.profile_defaults import apply_profile_cognitive_defaults
+
     data = apply_profile_cognitive_defaults(data)
 
     data = migrate_heartbeat_config(data)
@@ -320,9 +314,25 @@ def load_config(
 
 
 def save_config(data: dict[str, Any], path: str | Path | None = None) -> Path:
-    """Write configuration dict to a YAML file."""
+    """Atomically write a configuration dict to a YAML file."""
     target = Path(path).expanduser() if path else default_config_path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    with open(target, "w", encoding="utf-8") as f:
-        yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        dir=target.parent,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, target)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            # Preserve the original save error; orphan cleanup is best-effort.
+            pass
+        raise
     return target

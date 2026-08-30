@@ -137,6 +137,28 @@ async def test_record_run_outcome_overwrites_queued(tmp_path) -> None:
     await scheduler.record_run_outcome("jx", "error", "boom")
     assert job.last_status == "error"
     assert job.last_error == "boom"
+    assert scheduler.get_run_history("jx")[0]["status"] == "error"
+    assert scheduler.get_run_history("jx")[0]["completed_ts"] is not None
+
+
+@pytest.mark.asyncio
+async def test_run_history_is_persisted_newest_first_and_bounded(tmp_path) -> None:
+    store = tmp_path / "scheduler.json"
+
+    async def completed(_job):
+        return "completed"
+
+    scheduler = Scheduler(store_path=store, on_job=completed)
+    job = ScheduledJob(id="history", name="h", interval_ms=1_000)
+    scheduler.add_job(job)
+    for _ in range(105):
+        await scheduler._run_job(job)
+
+    restored = Scheduler(store_path=store)
+    history = restored.get_run_history("history", limit=100)
+    assert len(history) == 100
+    assert history[0]["run_count"] == 105
+    assert history[-1]["run_count"] == 6
 
 
 @pytest.mark.asyncio

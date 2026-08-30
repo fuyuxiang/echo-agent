@@ -3,5 +3,14 @@
   "empty": "No configured channels",
   "notConnected": "Not connected",
   "groupPolicy": "Group: {{policy}}",
-  "allowFrom": "Allowlist: {{count}}"
+  "allowFrom": "Allowlist: {{count}}",
+  "startAria": "Start channel {{name}}",
+  "restartAria": "Restart channel {{name}}",
+  "enableAria": "Enable channel {{name}}",
+  "disableAria": "Disable channel {{name}}",
+  "enabledSuccess": "Channel enabled",
+  "disabledSuccess": "Channel disabled",
+  "toggleFailed": "Failed to update channel configuration",
+  "actionSuccess": { "start": "Channel started", "stop": "Channel stopped", "restart": "Channel restarted" },
+  "actionFailed": { "start": "Channel failed to start", "stop": "Channel failed to stop", "restart": "Channel failed to restart" }
 }

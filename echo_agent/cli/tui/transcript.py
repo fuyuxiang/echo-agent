@@ -15,6 +15,7 @@ import json
 from rich.markup import escape
 from textual.containers import VerticalScroll
 
+from echo_agent.cli.i18n import t
 from echo_agent.cli.tui.blocks import (
     AgentReply,
     ApprovalBlock,
@@ -403,7 +404,7 @@ class TranscriptView(VerticalScroll):
         w.is_status = True
         self._place(w)
         w.set_markup(
-            f"[$error]{cog_glyph('approval_request')} 服务端错误:[/] "
+            f"[$error]{cog_glyph('approval_request')} {t('attach.ui.server_error')}[/] "
             f"[$text-muted]{escape(str(msg))}[/]"
         )
         return w
@@ -508,18 +509,18 @@ class TranscriptView(VerticalScroll):
         block, and one ``## 用户`` / ``## 助手`` section per message so the
         file reads well in any Markdown viewer. Status lines (is_status) reuse
         AgentReply and are excluded — they are UI chatter, not conversation."""
-        lines: list[str] = ["# Echo 对话记录", ""]
+        lines: list[str] = [f"# {t('attach.ui.export_title', brand='Echo')}", ""]
         meta: list[str] = []
         if session_key:
-            meta.append(f"- 会话: `{session_key}`")
+            meta.append(f"- {t('attach.ui.export_session')}: `{session_key}`")
         if when:
-            meta.append(f"- 导出时间: {when}")
+            meta.append(f"- {t('attach.ui.export_time')}: {when}")
         if meta:
             lines.extend(meta)
             lines.append("")
         for w in self.children:
             if isinstance(w, UserTurn):
-                lines.append("## 用户")
+                lines.append(f"## {t('attach.ui.export_user')}")
                 lines.append("")
                 lines.append(w.raw_text)
                 lines.append("")
@@ -529,7 +530,7 @@ class TranscriptView(VerticalScroll):
                 body = w.text
                 if not body:
                     continue
-                lines.append("## 助手")
+                lines.append(f"## {t('attach.ui.export_assistant')}")
                 lines.append("")
                 lines.append(body)
                 lines.append("")

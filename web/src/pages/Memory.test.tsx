@@ -42,7 +42,7 @@ describe("Memory 页", () => {
     const spy = mockApi();
     renderMemory();
 
-    await waitFor(() => expect(spy).toHaveBeenCalledWith("/memory?tier=working&limit=100"));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("/memory?tier=working&limit=50&offset=0", expect.anything()));
     expect(await screen.findByText("用户偏好简体中文")).toBeInTheDocument();
     // 之前读的是后端不存在的 weight,这里恒显示 "-"。
     expect(screen.getByText(/重要度: 0.75/)).toBeInTheDocument();
@@ -55,7 +55,7 @@ describe("Memory 页", () => {
     await screen.findByText("用户偏好简体中文");
     fireEvent.click(screen.getByRole("button", { name: "情景记忆" }));
 
-    await waitFor(() => expect(spy).toHaveBeenCalledWith("/memory?tier=episodic&limit=100"));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("/memory?tier=episodic&limit=50&offset=0", expect.anything()));
   });
 
   it("搜索带 all_scopes 全局检索,并解包 {entry,score}", async () => {

@@ -13,6 +13,8 @@ from dataclasses import dataclass
 
 from rich.markup import escape
 
+from echo_agent.cli.i18n import t
+
 # Tools whose result text is a unified-style diff worth coloring line by line.
 _DIFF_TOOLS = {"edit_file", "patch", "write_file"}
 
@@ -74,5 +76,5 @@ def colorize_diff(
         else:
             out.append(line)
     if len(lines) > max_lines:
-        out.append(f"{st.meta}… (还有 {len(lines) - max_lines} 行){st.reset}")
+        out.append(f"{st.meta}{t('attach.ui.more_lines', count=len(lines) - max_lines)}{st.reset}")
     return "\n".join(out)

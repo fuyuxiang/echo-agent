@@ -175,14 +175,20 @@ class LocalEmbedder:
                 staging = tempfile.mkdtemp(dir=self._cache_dir, prefix=".staging-")
                 staging_root = Path(staging).resolve()
                 with tarfile.open(tmp, "r:gz") as tar:
-                    # Guard against path traversal without relying on the 3.12+
-                    # `filter="data"` arg (project floor is Python 3.11): every
-                    # member must resolve to a path inside the staging root.
+                    # Validate explicitly for the oldest supported 3.11 patch,
+                    # then ask newer runtimes for their stricter data filter.
                     for member in tar.getmembers():
                         dest = (staging_root / member.name).resolve()
                         if dest != staging_root and staging_root not in dest.parents:
                             raise ValueError(f"unsafe tar member: {member.name}")
-                    tar.extractall(staging)
+                        if not (member.isfile() or member.isdir()):
+                            raise ValueError(f"unsupported tar member: {member.name}")
+                    try:
+                        tar.extractall(staging, filter="data")
+                    except TypeError as exc:
+                        if "filter" not in str(exc):
+                            raise
+                        tar.extractall(staging)
                 extracted = staging_root / pkg["cache_subdir"]
                 if not _dir_has_ready_model(extracted):
                     logger.warning("Release model incomplete after extract from {}", url)

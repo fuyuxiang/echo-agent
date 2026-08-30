@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from echo_agent.cli.i18n import t
+
 
 @dataclass(frozen=True)
 class SlashCommand:
@@ -19,35 +21,41 @@ class SlashCommand:
 
 
 COMMANDS: tuple[SlashCommand, ...] = (
-    SlashCommand("/approve", "<id> [session|always]", "批准待确认操作", "server", True),
-    SlashCommand("/deny", "<id> [原因]", "拒绝待确认操作", "server", True),
-    SlashCommand("/approvals", "", "列出待批操作", "server", False),
-    SlashCommand("/clarify", "<id> <答案>", "回复智能体的澄清提问", "server", True),
-    SlashCommand("/help", "", "列出所有命令", "local", False),
-    SlashCommand("/clear", "", "清空当前转录流", "local", False),
-    SlashCommand("/copy", "[all]", "复制最近回复（all=整段对话）", "local", True),
+    SlashCommand("/approve", "<id> [session|always]", t("attach.commands.approve"), "server", True),
+    SlashCommand("/deny", "<id> [reason]", t("attach.commands.deny"), "server", True),
+    SlashCommand("/approvals", "", t("attach.commands.approvals"), "server", False),
+    SlashCommand("/clarify", "<id> <answer>", t("attach.commands.clarify"), "server", True),
+    SlashCommand("/help", "", t("attach.commands.help"), "local", False),
+    SlashCommand("/clear", "", t("attach.commands.clear"), "local", False),
+    SlashCommand("/copy", "[all]", t("attach.commands.copy"), "local", True),
     SlashCommand(
-        "/details", "[思考|工具|状态 展开|折叠|精简|隐藏]",
-        "查看或调整过程信息的显示程度", "local", True,
+        "/details",
+        t("attach.args.details"),
+        t("attach.commands.details"),
+        "local",
+        True,
     ),
     SlashCommand(
-        "/save", "[--format md|txt|json] [路径]",
-        "保存对话（默认 Markdown，存到 transcripts/）", "local", True,
+        "/save",
+        t("attach.args.save"),
+        t("attach.commands.save"),
+        "local",
+        True,
     ),
-    SlashCommand("/theme", "[light|dark]", "切换或查看亮/暗主题", "local", True),
-    SlashCommand("/reconnect", "", "断线后重新连接网关", "local", False),
-    SlashCommand("/status", "[event_id]", "查询服务端权威回合状态", "local", True),
-    SlashCommand("/quit", "", "退出", "local", False),
+    SlashCommand("/theme", "[light|dark]", t("attach.commands.theme"), "local", True),
+    SlashCommand("/reconnect", "", t("attach.commands.reconnect"), "local", False),
+    SlashCommand("/status", "[event_id]", t("attach.commands.status"), "local", True),
+    SlashCommand("/quit", "", t("attach.commands.quit"), "local", False),
 )
 
 
 def help_text() -> str:
     """Rich-markup help listing every command, grouped by scope. Rendered by the
     /help local command so the banner's '/help 查看命令' promise is real."""
-    lines = ["[b]可用命令[/b]"]
+    lines = [f"[b]{t('attach.help.title')}[/b]"]
     server = [c for c in COMMANDS if c.scope == "server"]
     local = [c for c in COMMANDS if c.scope == "local"]
-    for title, group in (("本地命令", local), ("服务端命令", server)):
+    for title, group in ((t("attach.help.local"), local), (t("attach.help.server"), server)):
         lines.append(f"[$text-muted]{title}[/]")
         for c in group:
             arg = f" [$text-muted]{c.arg_template}[/]" if c.arg_template else ""

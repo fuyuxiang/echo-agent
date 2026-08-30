@@ -1,6 +1,7 @@
 import { NavLink } from "react-router";
 import { useTranslation } from "react-i18next";
 import { useAuthStore } from "../stores/auth";
+import { useAuthRequired } from "../stores/capabilities";
 import {
   LayoutDashboard, MessageSquare, Brain, Zap, BookOpen,
   Radio, Clock, Kanban, ScrollText, Settings, BarChart3, LogOut
@@ -23,6 +24,7 @@ const NAV = [
 export function Sidebar() {
   const { t, i18n } = useTranslation("nav");
   const logout = useAuthStore((s) => s.logout);
+  const authRequired = useAuthRequired();
   return (
     // 窄屏收成图标条(w-14),lg 以上展开为带文字的 w-56。此前固定 w-56 无折叠,
     // 在笔记本分屏/平板上会把主内容区压到不可读。
@@ -65,7 +67,7 @@ export function Sidebar() {
         </div>
         {/* 退出登录此前只有一条隐式路径:等 token 失效收到 401 才会被动跳回登录页。
             共用设备上想主动换个 token 只能手工清 localStorage。 */}
-        <button
+        {authRequired !== false && <button
           onClick={logout}
           title={t("logout")}
           aria-label={t("logout")}
@@ -73,7 +75,7 @@ export function Sidebar() {
         >
           <LogOut size={16} className="shrink-0" />
           <span className="hidden lg:inline">{t("logout")}</span>
-        </button>
+        </button>}
       </div>
     </aside>
   );

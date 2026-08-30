@@ -23,6 +23,7 @@ import os
 from dataclasses import dataclass, replace
 from typing import Mapping
 
+from echo_agent.cli.i18n import t
 from echo_agent.security.risk_classifier import RiskLevel, classify_risk
 
 # Section keys, in the order /details lists them.
@@ -52,17 +53,17 @@ _SECTION_OF_COG: dict[str, str] = {
     "cost_update": "activity",
 }
 
-SECTION_LABELS: dict[str, str] = {
-    "thinking": "思考与记忆",
-    "tools": "工具调用",
-    "activity": "运行状态",
+SECTION_LABEL_KEYS: dict[str, str] = {
+    "thinking": "attach.ui.details_thinking",
+    "tools": "attach.ui.details_tools",
+    "activity": "attach.ui.details_activity",
 }
 
-STATE_LABELS: dict[str, str] = {
-    "expanded": "展开",
-    "collapsed": "折叠",
-    "lean": "精简",
-    "hidden": "隐藏",
+STATE_LABEL_KEYS: dict[str, str] = {
+    "expanded": "attach.ui.details_expanded",
+    "collapsed": "attach.ui.details_collapsed",
+    "lean": "attach.ui.details_lean",
+    "hidden": "attach.ui.details_hidden",
 }
 
 _ENV_VAR = "ECHO_TUI_DETAILS"
@@ -149,7 +150,7 @@ class DetailPrefs:
     def describe(self) -> list[tuple[str, str]]:
         """(section label, state label) pairs for the /details listing."""
         return [
-            (SECTION_LABELS[s], STATE_LABELS[self.state(s)])
+            (t(SECTION_LABEL_KEYS[s]), t(STATE_LABEL_KEYS[self.state(s)]))
             for s in SECTIONS
         ]
 

@@ -8,5 +8,13 @@
   "toolCall": "Tool call: {{name}}",
   "toolResult": "Tool result: {{name}}",
   "unknownTool": "unknown tool",
-  "emptyContent": "(no content)"
+  "emptyContent": "(no content)",
+  "loadOlder": "Load older messages",
+  "reset": "Reset session",
+  "resetTitle": "Reset this session?",
+  "resetMessage": "This clears conversation history and active state for \"{{key}}\".",
+  "resetSuccess": "Session reset",
+  "resetFailed": "Reset failed",
+  "turnCount": "{{count}} recent turn records",
+  "turnLedger": "Turn execution ledger"
 }

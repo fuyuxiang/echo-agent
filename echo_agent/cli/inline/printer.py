@@ -23,6 +23,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.table import Table
 
+from echo_agent.cli.i18n import t
 from echo_agent.cli.render import ansi as A
 from echo_agent.cli.render.geometry import (
     child_prefix, cont_prefix, head_prefix,
@@ -246,7 +247,7 @@ class InlinePrinter:
             obj = mask_sensitive_strings(pick_object(name, params))
             identity = f"{verb} {obj}".rstrip() if obj else verb
         if status == "interrupted":
-            summary = "未完成"
+            summary = t("attach.ui.unfinished")
             if identity:
                 summary = f"{identity} · {summary}"
             self.child(f"{summary} {self._g.unfinished}", dim=True)

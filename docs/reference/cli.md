@@ -1,468 +1,220 @@
 # CLI 命令参考
 
-Echo Agent 命令行接口的完整参考。所有命令通过 `echo-agent` 主入口调用。
+本文档对应当前 `echo-agent` 参数解析器。最可靠的即时参考始终是
+`echo-agent --help` 和 `echo-agent <command> --help`。
 
-## 全局选项
+## 全局用法
 
-| 选项 | 缩写 | 类型 | 说明 |
-|------|------|------|------|
-| `--config` | `-c` | path | 指定配置文件路径 |
-| `--verbose` | `-v` | flag | 启用详细输出（可叠加 -vv） |
-| `--quiet` | `-q` | flag | 静默模式，仅输出错误 |
-| `--version` | — | flag | 显示版本号 |
-| `--help` | `-h` | flag | 显示帮助信息 |
+```bash
+echo-agent [--version] [-c CONFIG] [-w WORKSPACE] <command> ...
+```
 
----
+`-c/--config` 与 `-w/--workspace` 既可放在主命令前，也可放在支持它们的子命令后。
+项目没有全局 `--verbose`、`--quiet`，也没有隐式远程 CLI 连接。
+
+## 命令总览
+
+| 命令 | 用途 |
+|---|---|
+| `run` | 前台启动完整 Agent |
+| `setup` | 运行配置向导或单独配置一个区段 |
+| `status` | 查看配置与运行能力摘要 |
+| `cost` | 查看成本归因与趋势 |
+| `gateway` | 前台运行网关或管理后台服务 |
+| `cli` | 连接本机网关的交互终端 |
+| `dashboard build` | 构建完整 Web Dashboard |
+| `cron` | 查看、授权或撤销定时任务 |
+| `eval` | 运行评估数据集 |
+| `plugin` | 管理插件 |
+| `evolution` | 管理技能进化 |
+| `skill` | 审批暂存技能 |
+| `config` | 查看、解释、校验配置或生成文档 |
+| `checkpoint` | 查看和恢复文件检查点 |
+| `migrate` | 执行数据迁移 |
+| `deps` | 管理技能依赖 |
+| `service` | 已弃用的 `gateway` 兼容别名 |
 
 ## run
 
-启动 Echo Agent 主进程（前台运行）。
-
 ```bash
-echo-agent run [OPTIONS]
+echo-agent run [-c CONFIG] [-w WORKSPACE] [--force]
 ```
 
-| 选项 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `--config` / `-c` | path | `~/.echo-agent/config.yaml` | 配置文件 |
-| `--workspace` / `-w` | path | `.` | 工作区目录 |
-| `--profile` | string | — | 激活的配置 Profile |
-| `--no-gateway` | flag | — | 不启动 Gateway 服务 |
-| `--no-scheduler` | flag | — | 不启动定时任务调度 |
-| `--dry-run` | flag | — | 仅验证配置，不实际启动 |
-
-```bash
-# 基本启动
-echo-agent run
-
-# 指定配置文件和工作区
-echo-agent run -c ./my-config.yaml -w ~/projects/myapp
-
-# 仅验证配置
-echo-agent run --dry-run
-```
-
----
+`--force` 会跳过同一 workspace 的单实例保护，可能造成重复回复和并发写库，只应在明确
+知道风险时使用。当前命令没有 `--dry-run`、`--no-gateway` 或 `--no-scheduler`。
 
 ## setup
 
-交互式初始化向导，创建配置文件和必要目录。
-
 ```bash
-echo-agent setup [OPTIONS]
+echo-agent setup [SECTION] [-c CONFIG] [-w WORKSPACE]
+                 [--lang en|zh|auto] [--flow quickstart|full] [--json]
 ```
 
-| 选项 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `--force` | flag | — | 强制覆盖已有配置 |
-| `--minimal` | flag | — | 最小化配置（跳过可选项） |
-| `--non-interactive` | flag | — | 使用默认值，不交互提问 |
+- 省略 `SECTION` 时显示交互菜单；可用区段以 `echo-agent setup --help` 的实时列表为准。
+- `--flow` 跳过菜单直接执行快速或完整流程。
+- `--json` 仅用于 `doctor` 区段，输出无 ANSI 的机器可读结果。
 
 ```bash
-# 交互式向导
 echo-agent setup
-
-# 非交互式最小配置
-echo-agent setup --non-interactive --minimal
+echo-agent setup gateway --lang zh
+echo-agent setup doctor --json
 ```
-
----
 
 ## status
 
-显示当前 Echo Agent 运行状态摘要。
-
 ```bash
-echo-agent status [OPTIONS]
+echo-agent status [-c CONFIG] [-w WORKSPACE] [--json]
 ```
 
-| 选项 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `--json` | flag | — | JSON 格式输出 |
-| `--watch` | flag | — | 持续刷新显示 |
-
-输出信息包含：
-
-- 运行状态（running / stopped）
-- 活跃会话数
-- 通道连接状态
-- 内存使用量
-- 运行时长
-
----
+展示当前配置、网关与关键能力状态；`--json` 适合脚本和监控。当前没有 `--watch`。
 
 ## cost
 
-查看费用统计与分析。
-
 ```bash
-echo-agent cost [OPTIONS]
+echo-agent cost [-c CONFIG] [-w WORKSPACE] [--days N] [--json]
 ```
 
-| 选项 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `--period` | string | `today` | 统计周期（today/week/month/all） |
-| `--by-model` | flag | — | 按模型分组 |
-| `--by-tool` | flag | — | 按工具分组 |
-| `--json` | flag | — | JSON 格式输出 |
-
-```bash
-# 查看本月费用
-echo-agent cost --period month
-
-# 按模型分组统计
-echo-agent cost --period week --by-model
-```
-
----
+`--days` 默认 `7`。报告包含总成本、预算状态及模型/渠道归因；当前没有
+`--period`、`--by-model` 或 `--by-tool`。
 
 ## gateway
 
-管理 Gateway HTTP/WebSocket 服务。
-
-### 前台模式
-
 ```bash
-echo-agent gateway [OPTIONS]
+# 前台运行
+echo-agent gateway [-c CONFIG] [-w WORKSPACE] [--host HOST] [--port PORT]
+
+# 后台服务生命周期
+echo-agent gateway install|uninstall|start|stop|restart|status|logs
+                   [-c CONFIG] [-w WORKSPACE] [--system] [--force] [-f|--follow]
 ```
 
-直接前台启动 Gateway 服务（不启动完整 Agent 运行时）。
-
-| 选项 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `--host` | string | `127.0.0.1` | 监听地址 |
-| `--port` | int | `8080` | 监听端口 |
-| `--auth-mode` | string | `pairing` | 认证模式 |
-
-### 子命令
-
-| 子命令 | 说明 |
-|--------|------|
-| `gateway install` | 安装为系统服务（systemd/launchd/Windows Service） |
-| `gateway uninstall` | 卸载系统服务 |
-| `gateway start` | 启动已安装的服务 |
-| `gateway stop` | 停止服务 |
-| `gateway restart` | 重启服务 |
-| `gateway status` | 查看服务状态 |
-| `gateway logs` | 查看服务日志 |
-
-```bash
-# 安装为系统服务
-echo-agent gateway install
-
-# 查看服务日志（最近 100 行）
-echo-agent gateway logs --lines 100
-
-# 重启服务
-echo-agent gateway restart
-```
-
-!!! tip "服务管理"
-    `gateway install` 会自动检测当前平台并选择合适的服务管理器。Linux 使用 systemd，macOS 使用 launchd。
-
----
+- 省略 action 时只前台启动 Gateway，不会单独构造另一套 Agent。
+- `--host`、`--port` 只覆盖本次前台运行。
+- `--system` 在 Linux 上管理系统级而非用户级服务。
+- `--force` 允许重新生成已安装的服务文件。
+- `-f/--follow` 用于持续跟随日志。
 
 ## cli
 
-以瘦客户端连接本机正在运行的 Gateway。默认使用保留原生终端滚动历史的
-inline 界面；需要全屏界面时可显式选择 Textual TUI。
-
 ```bash
-echo-agent cli [OPTIONS]
+echo-agent cli [--port PORT] [--token TOKEN] [--user USER]
+               [-c CONFIG] [-w WORKSPACE] [--inline | --tui]
 ```
 
-| 选项 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `--port` | int | 配置中的 Gateway 端口 / `58123` | 覆盖连接端口 |
-| `--token` | string | Gateway 配置的首个 token | 认证 token |
-| `--user` | string | `local` | 会话用户 ID，会话键为 `cli:<user>` |
-| `-c`, `--config` | path | 自动发现 | 配置文件 |
-| `-w`, `--workspace` | path | 配置的 workspace | 工作区，也决定默认转录目录 |
-| `--inline` | flag | 默认 | 使用原生 scrollback 输出，无需 Textual |
-| `--tui` | flag | — | 使用全屏 Textual 界面（需安装 `echo-agent[tui]`） |
+- 默认使用保留原生终端 scrollback 的 `--inline` 界面。
+- `--tui` 使用全屏 Textual 界面，需要安装 `echo-agent[tui]`。
+- 客户端固定连接 loopback；远程使用应先建立 SSH 端口转发。
+- 默认会话键为 `cli:local`，`--user` 会把它改为 `cli:<USER>`。
+- 配置动态端口 `gateway.port: 0` 时，客户端会读取 workspace 中的运行时端点文件。
+- 断线后可用 `/reconnect`；客户端会恢复权威 turn 状态，并补显示断线期间完成的回复。
 
-```bash
-# 默认：类 Claude Code 的原生终端输出
-echo-agent cli
-
-# 可选：全屏 TUI
-echo-agent cli --tui
-```
-
-CLI 仅连接 loopback 网关，不接受远程 host。远程使用请先通过 SSH
-做端口转发。交互命令见 [终端交互命令](tui-commands.md)。
-
----
+交互命令、快捷键与审批操作见 [终端交互命令](tui-commands.md)。
 
 ## dashboard
 
-管理 Web Dashboard。
-
-### build
-
 ```bash
-echo-agent dashboard build [OPTIONS]
+echo-agent dashboard build [--force]
 ```
 
-| 选项 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `--output` / `-o` | path | `static/dashboard/` | 构建输出目录 |
-| `--dev` | flag | — | 开发模式（含 source map） |
-
----
+构建完整 SPA；已有产物有效时会复用，`--force` 强制重建。当前没有 `--output` 或
+`--dev` 参数。
 
 ## cron
 
-管理定时任务。
-
-| 子命令 | 说明 |
-|--------|------|
-| `cron list` | 列出所有定时任务 |
-| `cron authorize` | 授权待审批的定时任务（需先停止服务） |
-| `cron revoke` | 撤销已授权的定时任务（需先停止服务） |
-
 ```bash
-# 列出所有定时任务
-echo-agent cron list
-
-# 授权任务
-echo-agent cron authorize <task_id>
-
-# 撤销授权
-echo-agent cron revoke <task_id>
+echo-agent cron list [-c CONFIG] [-w WORKSPACE]
+echo-agent cron authorize JOB_ID [-y] [-c CONFIG] [-w WORKSPACE]
+echo-agent cron revoke JOB_ID [-y] [-c CONFIG] [-w WORKSPACE]
 ```
 
-!!! warning "authorize / revoke 需要服务处于停止状态"
-    这两个子命令直接改写 `<workspace>/data/scheduler.json`。运行中的 gateway 会
-    在内存中持有全部任务并定期整体回写，离线改动会被覆盖，因此命令检测到实例锁被
-    占用时会直接拒绝执行。服务运行期间请改用对话（「授权定时任务 `<job_id>`」）或
-    Dashboard 定时任务页授权。`cron list` 只读，任何时候都可用。
-
-### cron list 输出
-
-| 列 | 说明 |
-|----|------|
-| ID | 任务 ID |
-| Schedule | Cron 表达式 |
-| Status | enabled / disabled / pending |
-| Last Run | 上次执行时间 |
-| Next Run | 下次计划时间 |
-| Description | 任务描述 |
-
----
+`authorize` / `revoke` 直接修改 scheduler 持久化文件，要求常驻实例停止，否则内存中的
+旧状态可能覆盖离线修改。服务运行期间请改用 Dashboard 或对话命令。`-y/--yes` 跳过确认。
 
 ## eval
 
-运行评估任务（技能与模型评测）。
-
 ```bash
-echo-agent eval [OPTIONS] <dataset>
+echo-agent eval [-d DATASET] [-t TAG] [-p PARALLEL] [-o OUTPUT]
+                [-c CONFIG] [-w WORKSPACE]
 ```
 
-| 选项 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `<dataset>` | path | — | 评估数据集路径（必选） |
-| `--model` | string | — | 指定评估模型 |
-| `--output` / `-o` | path | `eval_results/` | 结果输出目录 |
-| `--parallel` / `-p` | int | `4` | 并发数 |
-| `--verbose` | flag | — | 显示每条评估的详情 |
-
-```bash
-echo-agent eval datasets/coding_bench.json --model claude-sonnet --parallel 8
-```
-
----
+数据集通过 `-d/--dataset` 指定，不是位置参数；并发默认 `3`。
 
 ## plugin
 
-管理插件系统。
-
-| 子命令 | 说明 |
-|--------|------|
-| `plugin list` | 列出所有已安装插件 |
-| `plugin info <name>` | 显示插件详细信息 |
-| `plugin enable <name>` | 启用插件 |
-| `plugin disable <name>` | 禁用插件 |
-| `plugin check` | 检查插件兼容性和健康状态 |
-
 ```bash
-# 列出插件
-echo-agent plugin list
-
-# 查看插件信息
-echo-agent plugin info slack-channel
-
-# 启用插件
-echo-agent plugin enable slack-channel
+echo-agent plugin list|check [--json] [-c CONFIG] [-w WORKSPACE]
+echo-agent plugin info|enable|disable NAME [--json] [-c CONFIG] [-w WORKSPACE]
 ```
-
----
 
 ## evolution
 
-管理技能进化系统。
-
-| 子命令 | 说明 |
-|--------|------|
-| `evolution status` | 查看进化系统状态 |
-| `evolution run` | 触发一次进化评估 |
-| `evolution list-candidates` | 列出候选技能 |
-| `evolution show-candidate <id>` | 显示候选详情 |
-| `evolution promote <id>` | 提升候选为正式技能 |
-| `evolution rollback <技能名>` | 回滚已提升的技能（参数是技能名，不是候选 id） |
-| `evolution init-dataset` | 初始化评估数据集 |
-
 ```bash
-# 查看状态
-echo-agent evolution status
-
-# 触发进化
-echo-agent evolution run
-
-# 提升候选技能
-echo-agent evolution promote candidate_abc123
+echo-agent evolution status|run|list-candidates|show-candidate|promote|rollback|init-dataset
+                     [TARGET] [--status STATUS] [-c CONFIG] [-w WORKSPACE]
 ```
 
-!!! warning "进化操作"
-    `promote` 操作会立即将候选技能加入活跃技能池。建议先通过 `show-candidate` 确认评估结果。
-
----
+`TARGET` 在 `show-candidate` / `promote` 中是 candidate id，在 `rollback` 中是技能名。
 
 ## skill
 
-管理暂存区技能审批。
-
-| 子命令 | 说明 |
-|--------|------|
-| `skill list-staged` | 列出暂存区中的技能 |
-| `skill approve <id>` | 批准暂存技能 |
-| `skill reject <id>` | 拒绝暂存技能 |
-
 ```bash
-echo-agent skill list-staged
-echo-agent skill approve skill_xyz
-echo-agent skill reject skill_xyz --reason "质量不达标"
+echo-agent skill list-staged [-c CONFIG] [-w WORKSPACE]
+echo-agent skill approve CANDIDATE_ID [-c CONFIG] [-w WORKSPACE]
+echo-agent skill reject CANDIDATE_ID [--reason TEXT] [-c CONFIG] [-w WORKSPACE]
 ```
-
----
 
 ## config
 
-配置管理工具。
-
-| 子命令 | 说明 |
-|--------|------|
-| `config dump` | 导出当前生效的完整配置 |
-| `config explain <field>` | 解释指定配置字段 |
-| `config validate` | 验证配置文件 |
-| `config gen-docs` | 生成配置文档 |
-
 ```bash
-# 导出配置（含来源标注）
-echo-agent config dump --show-source
-
-# 解释字段
-echo-agent config explain security.profile
-
-# 验证配置
-echo-agent config validate -c ./config.yaml
+echo-agent config dump [--format yaml|json] [-c CONFIG] [-w WORKSPACE]
+echo-agent config explain DOTTED_KEY [-c CONFIG] [-w WORKSPACE]
+echo-agent config validate [-c CONFIG] [-w WORKSPACE]
+echo-agent config gen-docs [-c CONFIG] [-w WORKSPACE]
 ```
 
----
+`dump` 默认 YAML。当前没有 `--show-source` 参数。
 
 ## checkpoint
 
-管理系统检查点（快照）。
-
-| 子命令 | 说明 |
-|--------|------|
-| `checkpoint list` | 列出所有检查点 |
-| `checkpoint show <id>` | 显示检查点详情 |
-| `checkpoint restore <id>` | 恢复到指定检查点 |
-| `checkpoint prune` | 清理过期检查点 |
-
 ```bash
-# 列出检查点
-echo-agent checkpoint list
-
-# 恢复
-echo-agent checkpoint restore chk_20240101_120000
-
-# 清理 30 天前的检查点
-echo-agent checkpoint prune --older-than 30d
+echo-agent checkpoint list [--json] [-c CONFIG] [-w WORKSPACE]
+echo-agent checkpoint show SHA [--json] [-c CONFIG] [-w WORKSPACE]
+echo-agent checkpoint restore SHA [-y] [--json] [-c CONFIG] [-w WORKSPACE]
+echo-agent checkpoint prune [--json] [-c CONFIG] [-w WORKSPACE]
 ```
 
-!!! danger "恢复操作"
-    `checkpoint restore` 会覆盖当前状态。操作前会自动创建一个备份检查点。
-
----
+恢复操作会改写工作区文件；省略 `-y/--yes` 时需要确认。当前没有 `--older-than` 参数。
 
 ## migrate
 
-数据库与数据迁移。
-
-| 子命令 | 说明 |
-|--------|------|
-| `migrate run` | 执行待处理的迁移 |
-| `migrate rollback` | 回滚最近一次迁移 |
-| `migrate status` | 查看迁移状态 |
-| `migrate memory-md` | 迁移旧版 memory.md 到新格式 |
-
 ```bash
-# 执行迁移
-echo-agent migrate run
-
-# 查看状态
-echo-agent migrate status
-
-# 迁移旧版记忆文件
-echo-agent migrate memory-md ./old-memory.md
+echo-agent migrate run|rollback|status|memory-md
+                   [--dry-run] [--adopt-empty] [-y]
+                   [-c CONFIG] [-w WORKSPACE]
 ```
 
----
+`--adopt-empty` 仅影响 `run`：把空 scope 的 USER 记忆收编到 owner key。
 
 ## deps
 
-管理运行时依赖。
-
-| 子命令 | 说明 |
-|--------|------|
-| `deps status` | 显示依赖状态 |
-| `deps install` | 安装缺失的依赖 |
-| `deps refresh` | 刷新依赖锁文件 |
+`deps` 的剩余参数会原样交给依赖管理器：
 
 ```bash
-echo-agent deps status
-echo-agent deps install
-echo-agent deps refresh
+echo-agent deps status [--json] [-w WORKSPACE]
+echo-agent deps install FEATURE [-y] [--json] [-w WORKSPACE]
+echo-agent deps refresh [-w WORKSPACE]
 ```
 
----
+具体 feature 与状态以 `echo-agent deps --help` 为准。
 
-## service（已废弃）
+## service（已弃用）
 
-!!! warning "已废弃"
-    `service` 命令已废弃，功能已迁移至 `gateway` 命令。请使用 `echo-agent gateway` 代替。
-    该兼容别名将在 **v0.5.0** 移除。
-
-```bash
-# 旧用法（已废弃）
-echo-agent service start
-
-# 新用法
-echo-agent gateway start
-```
-
----
+`service install|uninstall|start|stop|restart|status|logs` 只为旧脚本保留，并映射到旧的
+Linux 系统级服务语义。新代码应使用 `echo-agent gateway <action>`；实际移除版本由命令行
+警告中的 `SERVICE_ALIAS_REMOVAL_VERSION` 决定，不在文档中硬编码。
 
 ## 退出码
 
-| 退出码 | 含义 |
-|--------|------|
-| `0` | 成功 |
-| `1` | 通用错误 |
-| `2` | 配置错误 |
-| `3` | 连接失败 |
-| `4` | 认证失败 |
-| `5` | 权限不足 |
-| `130` | 用户中断（Ctrl+C） |
+命令成功返回 `0`，参数解析错误通常返回 `2`，其余失败由具体子命令返回非零值。
+不要依赖旧文档中未由实现统一保证的 `3/4/5/130` 固定映射；自动化脚本应同时读取
+stderr 或使用支持的 `--json` 输出。

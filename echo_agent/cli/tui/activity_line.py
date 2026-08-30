@@ -34,6 +34,7 @@ import time
 from rich.markup import escape
 from textual.widgets import Static
 
+from echo_agent.cli.i18n import t
 from echo_agent.cli.tui.blocks import humanize_tool
 from echo_agent.cli.tui.glyphs import GLYPHS
 
@@ -42,23 +43,23 @@ from echo_agent.cli.tui.glyphs import GLYPHS
 _FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 _ASCII_FRAMES = ("|", "/", "-", "\\")
 
-_STAGE_LABEL = {
-    "thinking": "思考中",
-    "calling_tool": "调用工具",
-    "generating": "正在组织答案",
+_STAGE_LABEL_KEY = {
+    "thinking": "attach.ui.stage_thinking",
+    "calling_tool": "attach.ui.stage_calling_tool",
+    "generating": "attach.ui.stage_generating",
 }
-_FALLBACK_STAGE = "处理中"
+_FALLBACK_STAGE_KEY = "attach.ui.stage_processing"
 
 # How a turn ended: label + theme colour. Distinct wording per outcome because
 # these used to be one indistinguishable `stop()` — "完成" and a socket drop must
 # not look the same. Keys are the `outcome` argument to settle().
 _OUTCOME = {
-    "done": ("完成", "$success"),
-    "interrupted": ("已中断", "$warning"),
-    "error": ("出错", "$error"),
-    "disconnected": ("连接已断开", "$error"),
+    "done": ("attach.ui.outcome_done", "$success"),
+    "interrupted": ("attach.ui.outcome_interrupted_label", "$warning"),
+    "error": ("attach.ui.outcome_error_label", "$error"),
+    "disconnected": ("attach.ui.outcome_disconnected_label", "$error"),
 }
-_FALLBACK_OUTCOME = ("已结束", "$text-muted")
+_FALLBACK_OUTCOME = ("attach.ui.outcome_ended", "$text-muted")
 
 
 def _fmt_elapsed(seconds: float) -> str:
@@ -209,13 +210,8 @@ class ActivityLine(Static):
             self._timer.pause()
         self._apply()
 
-    # Back-compat alias: `stop` is the verb every call site in app.py used
-    # before the settled row existed, and it reads correctly at those call sites
-    # ("the turn stopped"). Kept so the four end paths stay one-liners, and so
-    # any external caller keeps working — it now settles as "done" instead of
-    # hiding the row.
     def stop(self) -> None:
-        """Deprecated spelling of ``settle("done")``."""
+        """Compatibility spelling of ``settle("done")`` for TUI extensions."""
         self.settle("done")
 
     def reset(self) -> None:
@@ -321,29 +317,29 @@ class ActivityLine(Static):
         # action was Ctrl+C, so that is what the row must acknowledge. The spinner
         # keeps turning because the turn genuinely is still winding down.
         if self._stopping:
-            label = "正在停止"
+            label = t("attach.ui.activity_stopping")
         else:
             # Named from what is actually still running, never from a remembered
             # "last started" that may already have finished.
             running = [n for n in self._tools.values() if n]
             if running:
-                label = f"{_STAGE_LABEL.get('calling_tool', '')} {humanize_tool(running[0])}".strip()
+                label = f"{t(_STAGE_LABEL_KEY['calling_tool'])} {humanize_tool(running[0])}".strip()
             elif self._tools:
-                label = _STAGE_LABEL.get("calling_tool", _FALLBACK_STAGE)
+                label = t(_STAGE_LABEL_KEY.get("calling_tool", _FALLBACK_STAGE_KEY))
             else:
-                label = _STAGE_LABEL.get(self._stage, _FALLBACK_STAGE)
+                label = t(_STAGE_LABEL_KEY.get(self._stage, _FALLBACK_STAGE_KEY))
         parts = [f"[$accent]{spin}[/] [b]{escape(label)}[/b]"]
         if self._started is not None:
             elapsed = (now if now is not None else time.time()) - self._started
             parts.append(f"[$text-muted]{_fmt_elapsed(elapsed)}[/]")
         if len(self._tools) > 1:
-            parts.append(f"[$text-muted]{len(self._tools)} 个工具进行中[/]")
+            parts.append(f"[$text-muted]{t('attach.ui.tools_running', count=len(self._tools))}[/]")
         body = f" [$text-muted]{GLYPHS.sep}[/] ".join(parts)
         # No interrupt hint once a stop is already in flight — repeating it would
         # invite a second Ctrl+C, which the app reads as the exit guard.
         if self._stopping:
             return body
-        return f"{body}  [$text-muted]Ctrl+C 中断[/]"
+        return f"{body}  [$text-muted]{t('attach.ui.interrupt')}[/]"
 
     def _render_settled(self) -> str:
         """The terminal line for a finished turn, or "" before the first one.
@@ -355,7 +351,8 @@ class ActivityLine(Static):
         """
         if not self._outcome:
             return ""
-        label, color = _OUTCOME.get(self._outcome, _FALLBACK_OUTCOME)
+        label_key, color = _OUTCOME.get(self._outcome, _FALLBACK_OUTCOME)
+        label = t(label_key)
         mark = GLYPHS.ok if self._outcome == "done" else GLYPHS.unfinished
         parts = [f"[{color}]{mark}[/] [b {color}]{escape(label)}[/]"]
         # Duration is the point of the line for a long turn: it retroactively
@@ -363,6 +360,8 @@ class ActivityLine(Static):
         if self._final_elapsed > 0:
             parts.append(f"[$text-muted]{_fmt_elapsed(self._final_elapsed)}[/]")
         if self._tools_seen > 0:
-            parts.append(f"[$text-muted]{self._tools_seen} 个工具[/]")
+            parts.append(
+                f"[$text-muted]{t('attach.ui.tools_count', count=self._tools_seen)}[/]"
+            )
         body = f" [$text-muted]{GLYPHS.sep}[/] ".join(parts)
-        return f"{body}  [$text-muted]可以继续输入[/]"
+        return f"{body}  [$text-muted]{t('attach.ui.continue_input')}[/]"

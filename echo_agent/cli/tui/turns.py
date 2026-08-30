@@ -136,6 +136,21 @@ class TurnRegistry:
         interrupt for work that already finished."""
         self._server_may_be_busy = False
 
+    def restore_active(self, event_id: str) -> None:
+        """Rehydrate one authoritative active turn after reconnect.
+
+        The server-side ledger survives the socket, so unlike stale local
+        correlation this id can be interrupted safely and retired by a later
+        final frame on the replacement connection.
+        """
+        self._primary.clear()
+        self._control.clear()
+        self._pending_primary = 0
+        self._pending_kinds.clear()
+        if event_id:
+            self._primary.append(event_id)
+        self._server_may_be_busy = False
+
     @property
     def active_turn_id(self) -> str:
         """The event_id Ctrl+C should target: the oldest outstanding primary

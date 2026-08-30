@@ -13,5 +13,12 @@
   "deleteFailed": "删除失败",
   "deleteConfirmTitle": "删除文档？",
   "deleteConfirmMessage": "将删除「{{path}}」并重建整个知识库索引。此操作不可撤销。",
-  "deleteDocAria": "删除文档 {{path}}"
+  "deleteDocAria": "删除文档 {{path}}",
+  "jobQueued": "任务已进入后台队列",
+  "jobRunning": "正在{{action}}知识库…",
+  "jobFailed": "最近一次处理失败：{{error}}",
+  "jobCancelled": "已取消后台任务",
+  "cancelFailed": "取消失败",
+  "cancelJob": "取消当前任务",
+  "action": { "upload": "导入", "delete": "更新", "rebuild": "重建" }
 }

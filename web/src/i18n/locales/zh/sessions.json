@@ -8,5 +8,13 @@
   "toolCall": "调用工具：{{name}}",
   "toolResult": "工具结果：{{name}}",
   "unknownTool": "未知工具",
-  "emptyContent": "（无内容）"
+  "emptyContent": "（无内容）",
+  "loadOlder": "加载更早消息",
+  "reset": "重置会话",
+  "resetTitle": "重置这个会话？",
+  "resetMessage": "将清空「{{key}}」的对话历史和运行中状态。",
+  "resetSuccess": "会话已重置",
+  "resetFailed": "重置失败",
+  "turnCount": "最近 {{count}} 条轮次记录",
+  "turnLedger": "轮次运行台账"
 }

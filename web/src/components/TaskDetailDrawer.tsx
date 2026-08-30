@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { X, Pencil, Ban } from "lucide-react";
+import { X, Pencil, Ban, Play, RotateCcw, Check, Undo2 } from "lucide-react";
 import { relativeTime, fullTimestamp } from "../lib/datetime";
 import { statusMeta, useKanbanStore, canTransition, type TaskCard } from "../stores/kanban";
 import { useIsAdmin } from "../stores/capabilities";
@@ -14,7 +14,7 @@ import { toast } from "../stores/toast";
  */
 export function TaskDetailDrawer({ task, onClose }: { task: TaskCard; onClose: () => void }) {
   const { t } = useTranslation(["kanban", "common"]);
-  const { editTask, transitionTask, updateLocal } = useKanbanStore();
+  const { editTask, transitionTask, retryTask, updateLocal } = useKanbanStore();
   const confirm = useConfirm();
   const canWrite = useIsAdmin() !== false;
   const detail = task;
@@ -22,6 +22,7 @@ export function TaskDetailDrawer({ task, onClose }: { task: TaskCard; onClose: (
 
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [actionBusy, setActionBusy] = useState(false);
   const [form, setForm] = useState({
     title: detail.title,
     description: detail.description,
@@ -76,6 +77,25 @@ export function TaskDetailDrawer({ task, onClose }: { task: TaskCard; onClose: (
   // rule the board's drag uses, and it goes through transitionTask so a running
   // task's turn is interrupted the same way.
   const canCancel = canTransition(detail.status, "cancelled");
+
+  const runTransition = async (status: string, success: string) => {
+    const previous = detail.status;
+    setActionBusy(true);
+    updateLocal(detail.id, { status });
+    try {
+      await transitionTask(detail.id, status);
+      toast.success(success);
+    } catch { updateLocal(detail.id, { status: previous }); }
+    finally { setActionBusy(false); }
+  };
+
+  const runRetry = async () => {
+    const previous = detail.status;
+    setActionBusy(true); updateLocal(detail.id, { status: "queued" });
+    try { await retryTask(detail.id); toast.success(t("toast.requeued")); }
+    catch { updateLocal(detail.id, { status: previous }); }
+    finally { setActionBusy(false); }
+  };
 
   const doCancel = async () => {
     const confirmed = await confirm({
@@ -146,6 +166,23 @@ export function TaskDetailDrawer({ task, onClose }: { task: TaskCard; onClose: (
             <span key={l} className="bg-blue-100 text-blue-700 px-1.5 rounded">{l}</span>
           ))}
         </div>
+
+        {!editing && canWrite && (
+          <div className="flex flex-wrap gap-2 border-y py-3">
+            {canTransition(detail.status, "queued") && detail.status === "pending" &&
+              <ActionButton icon={<Play size={14} />} label={t("action.start")} disabled={actionBusy}
+                onClick={() => runTransition("queued", t("toast.queued"))} />}
+            {detail.status === "failed" &&
+              <ActionButton icon={<RotateCcw size={14} />} label={t("action.retry")} disabled={actionBusy}
+                onClick={runRetry} />}
+            {detail.status === "review" && <>
+              <ActionButton icon={<Check size={14} />} label={t("action.approve")} disabled={actionBusy}
+                onClick={() => runTransition("success", t("toast.approved"))} tone="success" />
+              <ActionButton icon={<Undo2 size={14} />} label={t("action.reject")} disabled={actionBusy}
+                onClick={() => runTransition("queued", t("toast.rejected"))} />
+            </>}
+          </div>
+        )}
 
         {editing ? (
           <form onSubmit={save} className="space-y-2 border rounded p-3">
@@ -240,6 +277,15 @@ export function TaskDetailDrawer({ task, onClose }: { task: TaskCard; onClose: (
       </aside>
     </div>
   );
+}
+
+function ActionButton({ icon, label, onClick, disabled, tone }: {
+  icon: React.ReactNode; label: string; onClick: () => void; disabled: boolean; tone?: "success";
+}) {
+  return <button onClick={onClick} disabled={disabled}
+    className={`flex items-center gap-1.5 border rounded px-2.5 py-1.5 text-xs disabled:opacity-40 ${tone === "success" ? "text-green-700 border-green-200 hover:bg-green-50" : "text-blue-700 border-blue-200 hover:bg-blue-50"}`}>
+    {icon}{label}
+  </button>;
 }
 
 function Field({

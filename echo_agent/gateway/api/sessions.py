@@ -35,7 +35,36 @@ class SessionsAPI:
         if channel:
             sessions = [s for s in sessions if s.get("key", "").startswith(channel)]
 
-        return web.json_response({"sessions": sessions, "total": len(sessions)})
+        query = request.query.get("q", "").strip().casefold()
+        if query:
+            sessions = [s for s in sessions if query in str(s.get("key", "")).casefold()]
+
+        total = len(sessions)
+        # Preserve the legacy "return everything" behaviour when pagination is
+        # omitted. The Dashboard opts into bounded pages; older API consumers do
+        # not silently lose sessions after an upgrade.
+        if "limit" not in request.query and "offset" not in request.query:
+            return web.json_response({"sessions": sessions, "total": total})
+        try:
+            offset = int(request.query.get("offset", "0"))
+            limit = int(request.query.get("limit", "100"))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "invalid offset/limit parameter"}, status=400)
+        if offset < 0 or not 1 <= limit <= 500:
+            return web.json_response(
+                {"error": "offset must be >= 0 and limit between 1 and 500"},
+                status=400,
+            )
+        page = sessions[offset : offset + limit]
+        return web.json_response(
+            {
+                "sessions": page,
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+                "has_more": offset + len(page) < total,
+            }
+        )
 
     async def get_history(self, request: web.Request) -> web.Response:
         guard = self._guard(request, "sessions_history")
@@ -45,8 +74,9 @@ class SessionsAPI:
         key = request.match_info["key"]
         try:
             limit = int(request.query.get("limit", "100"))
+            offset = int(request.query.get("offset", "0"))
         except (ValueError, TypeError):
-            return web.json_response({"error": "invalid limit parameter"}, status=400)
+            return web.json_response({"error": "invalid offset/limit parameter"}, status=400)
         # Reject out-of-range rather than silently clamping, so a client asking
         # for limit=0 or limit=-1 learns its request was wrong instead of getting
         # a page it did not ask for. Parsing alone used to be the only check, and
@@ -59,6 +89,8 @@ class SessionsAPI:
                 {"error": f"limit must be between 1 and {MAX_HISTORY_LIMIT}"},
                 status=400,
             )
+        if offset < 0:
+            return web.json_response({"error": "offset must be >= 0"}, status=400)
 
         # 只读取,不创建:此前用 get_or_create,查询一个不存在的 key 会真的建出一个
         # 空会话并写进 LRU 缓存(还可能连带驱逐、落盘另一个会话)——一个 GET 产生了
@@ -72,18 +104,29 @@ class SessionsAPI:
         # stored record and strips the entries that would misrepresent it to a
         # human — see Session.get_display_history.
         visible = session.display_messages()
-        messages = visible[-limit:]
+        # Pages walk backwards from the newest message while each page remains in
+        # chronological order. offset=0 is the newest page, offset=limit the page
+        # immediately before it. This gives chat UIs a stable "load older" model
+        # without reversing bubbles or changing the endpoint's legacy default.
+        end = max(0, len(visible) - offset)
+        start = max(0, end - limit)
+        messages = visible[start:end]
 
         # ``total`` is the size of the whole transcript, not of this page: a
         # client needs it to know whether older history exists. It used to be
         # ``len(messages)``, which is the page size by definition and told a
         # client nothing. ``returned`` carries the page size, so the previous
         # field's meaning is still available under an honest name.
-        return web.json_response({
-            "messages": messages,
-            "total": len(visible),
-            "returned": len(messages),
-        })
+        return web.json_response(
+            {
+                "messages": messages,
+                "total": len(visible),
+                "returned": len(messages),
+                "offset": offset,
+                "limit": limit,
+                "has_more": start > 0,
+            }
+        )
 
     def _turn_store(self):
         agent = self._server._agent_loop

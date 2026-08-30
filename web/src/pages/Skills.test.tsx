@@ -137,8 +137,8 @@ describe("Skills 页", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "查看技能 shell 详情" }));
 
-    await waitFor(() => expect(spy).toHaveBeenCalledWith("/skills/shell"));
-    expect(spy).toHaveBeenCalledWith("/skills/shell/deps");
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("/skills/shell", expect.anything()));
+    expect(spy).toHaveBeenCalledWith("/skills/shell/deps", expect.anything());
     expect(await screen.findByText("# Shell")).toBeInTheDocument();
   });
 });

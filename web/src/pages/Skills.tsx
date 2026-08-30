@@ -1,12 +1,13 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useApi } from "../hooks/use-api";
-import { apiFetch } from "../lib/api";
+import { apiFetch, apiUpload } from "../lib/api";
+import { useWsSubscribe } from "../hooks/use-ws";
 import { runMutation } from "../stores/toast";
 import { useIsAdmin } from "../stores/capabilities";
 import { Loadable } from "../components/Loadable";
 import { useConfirm } from "../components/ConfirmDialog";
 import { SkillDetailDrawer } from "../components/SkillDetailDrawer";
-import { Zap, Trash2, Plus, Info } from "lucide-react";
+import { Zap, Trash2, Plus, Info, Upload } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 interface Skill {
@@ -26,6 +27,9 @@ export function Skills() {
   const [selected, setSelected] = useState<string | null>(null);
   const [showImport, setShowImport] = useState(false);
   const [importPath, setImportPath] = useState("");
+  const uploadRef = useRef<HTMLInputElement>(null);
+
+  useWsSubscribe(["skills"], () => refetch(), ["skill_changed"]);
 
   const toggle = async (name: string) => {
     const ok = await runMutation(() => apiFetch(`/skills/${encodeURIComponent(name)}/toggle`, { method: "POST" }), {
@@ -70,6 +74,16 @@ export function Skills() {
     }
   };
 
+  const uploadSkill = async (file: File) => {
+    const ok = await runMutation(async () => {
+      const form = new FormData();
+      form.append("file", file, file.name);
+      await apiUpload("/skills/upload", form);
+    }, { success: t("uploadSuccess"), error: t("uploadFailed") });
+    if (uploadRef.current) uploadRef.current.value = "";
+    if (ok) { setShowImport(false); refetch(); }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center">
@@ -91,8 +105,16 @@ export function Skills() {
       )}
 
       {showImport && canAdmin && (
-        <form onSubmit={importSkill} className="bg-white border rounded p-4 space-y-2">
+        <form onSubmit={importSkill} className="bg-white border rounded p-4 space-y-3">
           <h2 className="text-sm font-medium">{t("importTitle")}</h2>
+          <button type="button" onClick={() => uploadRef.current?.click()}
+            className="w-full border-2 border-dashed rounded-lg p-5 text-sm text-gray-600 hover:border-blue-400 hover:bg-blue-50 flex flex-col items-center gap-2">
+            <Upload size={22} className="text-blue-600" />
+            <span>{t("uploadZip")}</span><span className="text-xs text-gray-400">{t("uploadHint")}</span>
+          </button>
+          <input ref={uploadRef} type="file" accept=".zip,application/zip" className="hidden"
+            onChange={(event) => event.target.files?.[0] && uploadSkill(event.target.files[0])} />
+          <div className="flex items-center gap-3 text-xs text-gray-400"><span className="h-px bg-gray-200 flex-1" />{t("orServerPath")}<span className="h-px bg-gray-200 flex-1" /></div>
           <input
             value={importPath}
             onChange={(e) => setImportPath(e.target.value)}

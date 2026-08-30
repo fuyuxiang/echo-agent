@@ -231,20 +231,27 @@ class LocalReranker:
                 staging = tempfile.mkdtemp(dir=self._cache_dir, prefix=".staging-")
                 staging_root = Path(staging).resolve()
                 with tarfile.open(tmp, "r:gz") as tar:
-                    # Path-traversal guard without the 3.12+ filter= arg (floor is
-                    # 3.11): every member must resolve inside the staging root.
+                    # Validate explicitly for the oldest supported 3.11 patch,
+                    # then ask newer runtimes for their stricter data filter.
                     members = tar.getmembers()
                     for member in members:
                         dest = (staging_root / member.name).resolve()
                         if dest != staging_root and staging_root not in dest.parents:
                             raise ValueError(f"unsafe tar member: {member.name}")
+                        if not (member.isfile() or member.isdir()):
+                            raise ValueError(f"unsupported tar member: {member.name}")
                     # Extract member-by-member instead of extractall() so close()
                     # interrupts a multi-minute unpack; the staging dir is removed
                     # in `finally`, so a partial tree is never left behind.
                     for member in members:
                         if self._closed:
                             raise _DownloadAborted("reranker closed")
-                        tar.extract(member, staging)
+                        try:
+                            tar.extract(member, staging, filter="data")
+                        except TypeError as exc:
+                            if "filter" not in str(exc):
+                                raise
+                            tar.extract(member, staging)
                 extracted = staging_root / pkg["cache_subdir"]
                 if not _hf_cache_has_ready_model(extracted):
                     logger.warning(

@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useApi } from "../hooks/use-api";
+import { useWsSubscribe } from "../hooks/use-ws";
 import { fullTimestamp, timeOfDay } from "../lib/datetime";
 import { RefreshCw, ChevronLeft, ChevronRight } from "lucide-react";
 
@@ -17,17 +18,30 @@ export function Logs() {
   const { t } = useTranslation(["logs", "common"]);
   const [level, setLevel] = useState<string>("");
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [live, setLive] = useState(true);
   const [pageSize, setPageSize] = useState<number>(200);
   const [offset, setOffset] = useState(0);
 
-  // 实时推送(WS log_entry 事件)后端从未接线,此前的“实时”开关是死功能,已移除;
-  // 改为拉取 + 手动刷新。待 dashboard WS broadcast 接线后再恢复实时。
+  useEffect(() => {
+    const timer = window.setTimeout(() => { setDebouncedSearch(search); setOffset(0); }, 300);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
   // 后端已改为倒序分页,offset=0 即最新一页,这里直接按返回顺序渲染。
   // offset 分页此前完全没接:limit 固定 200,缓冲区里更早的日志在界面上无法到达,
   // 而 total 一直在响应里返回着。
   const { data, loading, error, refetch } = useApi<{ logs: LogEntry[]; total: number }>(
-    `/logs?limit=${pageSize}&offset=${offset}${level ? `&level=${level}` : ""}${search ? `&q=${encodeURIComponent(search)}` : ""}`
+    `/logs?limit=${pageSize}&offset=${offset}${level ? `&level=${level}` : ""}${debouncedSearch ? `&q=${encodeURIComponent(debouncedSearch)}` : ""}`
   );
+  const liveTimer = useRef<number | null>(null);
+  useWsSubscribe(["logs"], () => {
+    if (!live || offset !== 0 || liveTimer.current !== null) return;
+    liveTimer.current = window.setTimeout(() => { liveTimer.current = null; refetch(); }, 500);
+  }, ["log_entry"]);
+  useEffect(() => () => {
+    if (liveTimer.current !== null) window.clearTimeout(liveTimer.current);
+  }, []);
 
   const entries = data?.logs ?? [];
   const total = data?.total ?? 0;
@@ -70,6 +84,9 @@ export function Logs() {
         <button onClick={() => refetch()} className="flex items-center gap-1 border rounded px-2 py-1 text-sm hover:bg-gray-100" title={t("common:refresh")}>
           <RefreshCw size={14} /> {t("common:refresh")}
         </button>
+        <label className="flex items-center gap-1 text-xs text-gray-600 select-none">
+          <input type="checkbox" checked={live} onChange={(event) => setLive(event.target.checked)} /> {t("live")}
+        </label>
       </div>
 
       <div

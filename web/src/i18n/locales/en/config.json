@@ -1,3 +1,14 @@
 {
-  "title": "Config (read-only)"
+  "title": "Runtime configuration",
+  "save": "Validate and save",
+  "saveSuccess": "Configuration saved safely",
+  "saveFailed": "Failed to save configuration",
+  "restartRequired": "Configuration saved. Channel switches take effect immediately; restart Echo Agent to fully apply other runtime settings.",
+  "advancedReadonly": "View complete redacted configuration (read-only)",
+  "sections": { "interface": "Interface and observability", "capabilities": "Agent capabilities", "cost": "Cost and budget" },
+  "fields": {
+    "locale": "Interface language", "logLevel": "Log level", "traceEnabled": "Record execution traces",
+    "memoryEnabled": "Cognitive memory", "knowledgeEnabled": "Knowledge retrieval", "autoIndex": "Automatically index documents",
+    "costEnabled": "Cost tracking and budget control", "dailyBudget": "Daily budget (USD, 0 = unlimited)", "softThreshold": "Soft warning ratio"
+  }
 }

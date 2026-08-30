@@ -53,10 +53,10 @@ describe("useApi 三态", () => {
     });
 
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(spy).toHaveBeenCalledWith("/a");
+    expect(spy).toHaveBeenCalledWith("/a", expect.objectContaining({ signal: expect.anything() }));
 
     rerender({ path: "/b" });
-    await waitFor(() => expect(spy).toHaveBeenCalledWith("/b"));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("/b", expect.objectContaining({ signal: expect.anything() })));
     expect(spy).toHaveBeenCalledTimes(2);
   });
 

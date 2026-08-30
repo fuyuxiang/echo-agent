@@ -19,5 +19,11 @@
   "deleteEntryAria": "Delete this memory entry",
   "deleteConfirmTitle": "Delete memory entry?",
   "deleteConfirmMessage": "This deletes the entry:\n{{content}}\n\nIt cannot be undone.",
-  "empty": "No memory entries"
+  "empty": "No memory entries",
+  "editContent": "Edit memory content",
+  "tagsPlaceholder": "Tags, separated by commas",
+  "saveEdit": "Save changes",
+  "editEntryAria": "Edit this memory entry",
+  "updateSuccess": "Memory updated",
+  "updateFailed": "Update failed"
 }

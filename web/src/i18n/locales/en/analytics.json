@@ -8,5 +8,12 @@
   "inputTokens": "Input",
   "outputTokens": "Output",
   "costUsd": "Cost (USD)",
-  "totalCost": "Total for range: ${{cost}}"
+  "totalCost": "Total for range: ${{cost}}",
+  "skillUsage": "Skill call quality",
+  "skillUnavailable": "Skill usage analytics are unavailable because no persistent usage store is configured.",
+  "skill": "Skill",
+  "calls": "Calls",
+  "successes": "Successes",
+  "failures": "Failures",
+  "successRate": "Success rate"
 }

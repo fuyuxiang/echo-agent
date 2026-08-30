@@ -222,15 +222,6 @@ class GatewayAuth:
             return normalized in self._LOOPBACK_HOSTS
         return False
 
-    @staticmethod
-    def _normalize_host(host: str) -> str:
-        """Deprecated alias for ``host_rules.normalize_host``.
-
-        Kept because this was a documented seam for tests; the logic itself now
-        lives in one place shared with the config side and the wizard.
-        """
-        return normalize_host(host)
-
     def _bound_is_loopback(self) -> bool:
         """Whether the bind address is reachable only from this machine.
 

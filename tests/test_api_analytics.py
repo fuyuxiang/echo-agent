@@ -72,11 +72,10 @@ async def test_channel_analytics(mock_server, api):
 
 @pytest.mark.asyncio
 async def test_skill_analytics_reports_unavailable_with_real_tracker():
-    """真实 CostTracker 下,端点必须如实告知技能维度未实现。
+    """无持久化存储的 CostTracker 必须如实告知技能维度不可用。
 
-    上面的 test_skill_analytics 把 get_skill_usage mock 成有数据,因此从未触及真实
-    实现恒返回 [] 这一事实。客户端若只看 skills 字段,会把"未埋点"误读成"这几天没
-    调过技能"。此用例用真实 tracker 锁住 available=False 契约。
+    技能埋点已实现，但 storage=None 时无法保存或聚合。客户端若只看
+    skills 字段，会把"无存储"误读成"这几天没调过技能"。
     """
     server = MagicMock()
     server._require_api_token = MagicMock(return_value=None)
@@ -92,7 +91,7 @@ async def test_skill_analytics_reports_unavailable_with_real_tracker():
         data = await resp.json()
         assert data["skills"] == []
         assert data["available"] is False
-        assert "not implemented" in data["unavailable_reason"]
+        assert "storage backend" in data["unavailable_reason"]
 
 
 @pytest.mark.asyncio

@@ -92,10 +92,12 @@ class CronAPI:
             return guard
 
         jobs = self._scheduler().list_jobs()
-        return web.json_response({
-            "jobs": [self._job_to_dict(j) for j in jobs],
-            "total": len(jobs),
-        })
+        return web.json_response(
+            {
+                "jobs": [self._job_to_dict(j) for j in jobs],
+                "total": len(jobs),
+            }
+        )
 
     async def create_job(self, request: web.Request) -> web.Response:
         guard = self._guard_write(request, "cron_create")
@@ -114,6 +116,7 @@ class CronAPI:
 
         try:
             from croniter import croniter
+
             croniter(cron_expr)
         except (ValueError, KeyError, TypeError) as e:
             return web.json_response({"error": f"invalid cron_expr: {e}"}, status=400)
@@ -162,6 +165,7 @@ class CronAPI:
         if "cron_expr" in body:
             try:
                 from croniter import croniter
+
                 croniter(body["cron_expr"])
             except (ValueError, KeyError, TypeError) as e:
                 return web.json_response({"error": f"invalid cron_expr: {e}"}, status=400)
@@ -174,9 +178,7 @@ class CronAPI:
         merged = None
         if "payload" in body:
             if not isinstance(body["payload"], dict):
-                return web.json_response(
-                    {"error": "payload must be an object"}, status=400
-                )
+                return web.json_response({"error": "payload must be an object"}, status=400)
             merged = _merge_payload(job.payload, body["payload"])
             if not _payload_has_content(merged):
                 return web.json_response(
@@ -236,9 +238,7 @@ class CronAPI:
             # neither argument so update_job's set_authorization stays False and
             # the stored grant is left untouched.
             return web.json_response({"job": self._job_to_dict(updated)})
-        updated = self._scheduler().update_job(
-            job_id, authorization=authorization, set_authorization=True
-        ) or updated
+        updated = self._scheduler().update_job(job_id, authorization=authorization, set_authorization=True) or updated
         return web.json_response({"job": self._job_to_dict(updated)})
 
     async def delete_job(self, request: web.Request) -> web.Response:
@@ -273,7 +273,11 @@ class CronAPI:
             limit = int(request.query.get("limit", "10"))
         except (ValueError, TypeError):
             return web.json_response({"error": "invalid limit parameter"}, status=400)
+        if not 1 <= limit <= 100:
+            return web.json_response({"error": "limit must be between 1 and 100"}, status=400)
         runs = self._scheduler().get_run_history(job_id, limit=limit)
+        if self._scheduler().get_job(job_id) is None:
+            return web.json_response({"error": "not found"}, status=404)
         return web.json_response({"runs": runs})
 
     def _job_to_dict(self, job: ScheduledJob) -> dict:

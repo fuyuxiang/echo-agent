@@ -42,6 +42,7 @@ async def _settle_cleanup(operation: Awaitable[Any]) -> asyncio.CancelledError |
     task.result()
     return deferred
 
+
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS sessions (
     key TEXT PRIMARY KEY,
@@ -109,7 +110,9 @@ _MIGRATIONS: list[tuple[int, str]] = [
     (1, "CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at)"),
     (2, "CREATE INDEX IF NOT EXISTS idx_logs_created ON logs(created_at)"),
     (3, "CREATE INDEX IF NOT EXISTS idx_vectors_source ON vectors(source_id)"),
-    (4, """CREATE TABLE IF NOT EXISTS memory_episodes (
+    (
+        4,
+        """CREATE TABLE IF NOT EXISTS memory_episodes (
         id TEXT PRIMARY KEY,
         session_key TEXT NOT NULL,
         summary TEXT NOT NULL,
@@ -118,18 +121,24 @@ _MIGRATIONS: list[tuple[int, str]] = [
         entities TEXT DEFAULT '[]',
         importance REAL DEFAULT 0.5,
         created_at TEXT NOT NULL
-    )"""),
+    )""",
+    ),
     (5, "CREATE INDEX IF NOT EXISTS idx_episodes_session ON memory_episodes(session_key)"),
-    (6, """CREATE TABLE IF NOT EXISTS memory_graph_nodes (
+    (
+        6,
+        """CREATE TABLE IF NOT EXISTS memory_graph_nodes (
         id TEXT PRIMARY KEY,
         label TEXT NOT NULL,
         node_type TEXT NOT NULL DEFAULT 'concept',
         properties TEXT DEFAULT '{}',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
-    )"""),
+    )""",
+    ),
     (7, "CREATE INDEX IF NOT EXISTS idx_graph_nodes_label ON memory_graph_nodes(label COLLATE NOCASE)"),
-    (8, """CREATE TABLE IF NOT EXISTS memory_graph_edges (
+    (
+        8,
+        """CREATE TABLE IF NOT EXISTS memory_graph_edges (
         id TEXT PRIMARY KEY,
         source_id TEXT NOT NULL,
         target_id TEXT NOT NULL,
@@ -139,10 +148,13 @@ _MIGRATIONS: list[tuple[int, str]] = [
         valid_to TEXT,
         source_memory_id TEXT,
         created_at TEXT NOT NULL
-    )"""),
+    )""",
+    ),
     (9, "CREATE INDEX IF NOT EXISTS idx_graph_edges_source ON memory_graph_edges(source_id)"),
     (10, "CREATE INDEX IF NOT EXISTS idx_graph_edges_target ON memory_graph_edges(target_id)"),
-    (11, """CREATE TABLE IF NOT EXISTS memory_contradictions (
+    (
+        11,
+        """CREATE TABLE IF NOT EXISTS memory_contradictions (
         id TEXT PRIMARY KEY,
         memory_id_a TEXT NOT NULL,
         memory_id_b TEXT NOT NULL,
@@ -150,26 +162,35 @@ _MIGRATIONS: list[tuple[int, str]] = [
         resolution TEXT,
         resolved_at TEXT,
         created_at TEXT NOT NULL
-    )"""),
-    (12, """CREATE TABLE IF NOT EXISTS memory_access_log (
+    )""",
+    ),
+    (
+        12,
+        """CREATE TABLE IF NOT EXISTS memory_access_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         memory_id TEXT NOT NULL,
         accessed_at TEXT NOT NULL,
         context_query TEXT
-    )"""),
+    )""",
+    ),
     (13, "CREATE INDEX IF NOT EXISTS idx_access_log_memory ON memory_access_log(memory_id)"),
     (14, "DROP TABLE IF EXISTS memory_graph_edges"),
     (15, "DROP TABLE IF EXISTS memory_graph_nodes"),
-    (16, """CREATE TABLE IF NOT EXISTS message_archive (
+    (
+        16,
+        """CREATE TABLE IF NOT EXISTS message_archive (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_key TEXT NOT NULL,
         compression_id TEXT NOT NULL DEFAULT '',
         messages TEXT NOT NULL,
         message_count INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL
-    )"""),
+    )""",
+    ),
     (17, "CREATE INDEX IF NOT EXISTS idx_archive_session ON message_archive(session_key)"),
-    (18, """CREATE TABLE IF NOT EXISTS plan_runs (
+    (
+        18,
+        """CREATE TABLE IF NOT EXISTS plan_runs (
         id TEXT PRIMARY KEY,
         session_key TEXT NOT NULL,
         trace_id TEXT NOT NULL DEFAULT '',
@@ -180,9 +201,12 @@ _MIGRATIONS: list[tuple[int, str]] = [
         plan TEXT NOT NULL DEFAULT '{}',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
-    )"""),
+    )""",
+    ),
     (19, "CREATE INDEX IF NOT EXISTS idx_plan_runs_session ON plan_runs(session_key)"),
-    (20, """CREATE TABLE IF NOT EXISTS cost_ledger (
+    (
+        20,
+        """CREATE TABLE IF NOT EXISTS cost_ledger (
         window_date TEXT PRIMARY KEY,
         spent_usd REAL NOT NULL DEFAULT 0,
         input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -190,8 +214,11 @@ _MIGRATIONS: list[tuple[int, str]] = [
         cache_read_tokens INTEGER NOT NULL DEFAULT 0,
         cache_write_tokens INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL DEFAULT ''
-    )"""),
-    (21, """CREATE TABLE IF NOT EXISTS cost_ledger_dim (
+    )""",
+    ),
+    (
+        21,
+        """CREATE TABLE IF NOT EXISTS cost_ledger_dim (
         window_date TEXT NOT NULL DEFAULT '',
         provider TEXT NOT NULL DEFAULT '',
         model TEXT NOT NULL DEFAULT '',
@@ -203,17 +230,24 @@ _MIGRATIONS: list[tuple[int, str]] = [
         cache_write_tokens INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL DEFAULT '',
         PRIMARY KEY (window_date, provider, model, channel)
-    )"""),
+    )""",
+    ),
     (22, "ALTER TABLE vectors ADD COLUMN model TEXT DEFAULT ''"),
     (23, "ALTER TABLE vectors ADD COLUMN dim INTEGER DEFAULT 0"),
     # 24 先清历史重复 episode(保留每组最早 id),否则 25 建唯一索引会失败。
     # (0,0) 区间是 legacy "无区间信息" 语义,用部分索引排除,保持逐次插入行为不变。
-    (24, """DELETE FROM memory_episodes WHERE NOT (message_range_start = 0 AND message_range_end = 0)
+    (
+        24,
+        """DELETE FROM memory_episodes WHERE NOT (message_range_start = 0 AND message_range_end = 0)
             AND id NOT IN (SELECT MIN(id) FROM memory_episodes
-            GROUP BY session_key, message_range_start, message_range_end)"""),
-    (25, """CREATE UNIQUE INDEX IF NOT EXISTS uq_episodes_span
+            GROUP BY session_key, message_range_start, message_range_end)""",
+    ),
+    (
+        25,
+        """CREATE UNIQUE INDEX IF NOT EXISTS uq_episodes_span
             ON memory_episodes(session_key, message_range_start, message_range_end)
-            WHERE NOT (message_range_start = 0 AND message_range_end = 0)"""),
+            WHERE NOT (message_range_start = 0 AND message_range_end = 0)""",
+    ),
     # 26-29:tasks 表引入租约(owner/lease/attempt)+乐观锁 version,支撑
     # dispatcher 崩溃回收与终态 CAS。存量行:version=0、lease NULL、owner/attempt 空串,
     # 平滑升级。新库建表未含这些列,ALTER 报 duplicate column 由 _run_migrations 跳过。
@@ -221,7 +255,9 @@ _MIGRATIONS: list[tuple[int, str]] = [
     (27, "ALTER TABLE tasks ADD COLUMN lease_until_ms INTEGER"),
     (28, "ALTER TABLE tasks ADD COLUMN attempt_id TEXT NOT NULL DEFAULT ''"),
     (29, "ALTER TABLE tasks ADD COLUMN version INTEGER NOT NULL DEFAULT 0"),
-    (30, """CREATE TABLE IF NOT EXISTS turn_runs (
+    (
+        30,
+        """CREATE TABLE IF NOT EXISTS turn_runs (
         event_id TEXT PRIMARY KEY,
         session_key TEXT NOT NULL,
         context_key TEXT NOT NULL DEFAULT '',
@@ -235,9 +271,12 @@ _MIGRATIONS: list[tuple[int, str]] = [
         started_at TEXT NOT NULL DEFAULT '',
         updated_at TEXT NOT NULL,
         completed_at TEXT NOT NULL DEFAULT ''
-    )"""),
+    )""",
+    ),
     (31, "CREATE INDEX IF NOT EXISTS idx_turn_runs_session ON turn_runs(session_key, created_at DESC)"),
-    (32, """CREATE TABLE IF NOT EXISTS inbound_idempotency (
+    (
+        32,
+        """CREATE TABLE IF NOT EXISTS inbound_idempotency (
         event_id TEXT PRIMARY KEY,
         namespace TEXT NOT NULL,
         fingerprint TEXT NOT NULL,
@@ -248,8 +287,21 @@ _MIGRATIONS: list[tuple[int, str]] = [
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         expires_at REAL NOT NULL
-    )"""),
+    )""",
+    ),
     (33, "CREATE INDEX IF NOT EXISTS idx_inbound_idempotency_expiry ON inbound_idempotency(expires_at)"),
+    (
+        34,
+        """CREATE TABLE IF NOT EXISTS skill_usage_daily (
+        window_date TEXT NOT NULL,
+        skill TEXT NOT NULL,
+        calls INTEGER NOT NULL DEFAULT 0,
+        successes INTEGER NOT NULL DEFAULT 0,
+        failures INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (window_date, skill)
+    )""",
+    ),
 ]
 
 
@@ -309,10 +361,7 @@ class SQLiteBackend(StorageBackend):
                 deferred_cancellation = close_cancellation or deferred_cancellation
             except BaseException as close_error:
                 logger.debug("SQLite initialization close failed: {}", close_error)
-            if (
-                deferred_cancellation is not None
-                and not isinstance(connect_error, asyncio.CancelledError)
-            ):
+            if deferred_cancellation is not None and not isinstance(connect_error, asyncio.CancelledError):
                 raise deferred_cancellation
             raise
         self._db = db
@@ -381,10 +430,7 @@ class SQLiteBackend(StorageBackend):
             except BaseException as rollback_error:
                 logger.warning("SQLite migration rollback failed: {}", rollback_error)
             else:
-                if (
-                    deferred_cancellation is not None
-                    and not isinstance(migration_error, asyncio.CancelledError)
-                ):
+                if deferred_cancellation is not None and not isinstance(migration_error, asyncio.CancelledError):
                     raise deferred_cancellation
             raise
 
@@ -417,18 +463,13 @@ class SQLiteBackend(StorageBackend):
                     # back SQLite transactions when possible.
                     try:
                         close_cancellation = await self._discard_connection(db)
-                        deferred_cancellation = (
-                            close_cancellation or deferred_cancellation
-                        )
+                        deferred_cancellation = close_cancellation or deferred_cancellation
                     except BaseException as close_error:
                         logger.warning(
                             "Failed to discard unsafe SQLite connection: {}",
                             close_error,
                         )
-                if (
-                    deferred_cancellation is not None
-                    and not isinstance(transaction_error, asyncio.CancelledError)
-                ):
+                if deferred_cancellation is not None and not isinstance(transaction_error, asyncio.CancelledError):
                     raise deferred_cancellation
                 raise
 
@@ -508,7 +549,9 @@ class SQLiteBackend(StorageBackend):
         if not row:
             return None
         return self._decode_json(
-            row[0][0], f"loading session '{key}'", expected_type=dict,
+            row[0][0],
+            f"loading session '{key}'",
+            expected_type=dict,
         )
 
     async def delete_session(self, key: str) -> bool:
@@ -532,21 +575,25 @@ class SQLiteBackend(StorageBackend):
         sessions: list[dict[str, Any]] = []
         for key, raw, created_at, updated_at in rows:
             data = self._decode_json(
-                raw, f"listing session '{key}'", expected_type=dict,
+                raw,
+                f"listing session '{key}'",
+                expected_type=dict,
             )
             messages = data.get("messages", [])
             metadata = data.get("metadata", {})
             if not isinstance(messages, list) or not isinstance(metadata, dict):
                 error = TypeError("session messages must be a list and metadata must be an object")
                 raise CorruptData(f"corrupt JSON shape while listing session '{key}': {error}")
-            sessions.append({
-                "key": key,
-                "status": data.get("status", "active"),
-                "created_at": data.get("created_at") or created_at,
-                "updated_at": data.get("updated_at") or updated_at,
-                "metadata": metadata,
-                "message_count": len(messages),
-            })
+            sessions.append(
+                {
+                    "key": key,
+                    "status": data.get("status", "active"),
+                    "created_at": data.get("created_at") or created_at,
+                    "updated_at": data.get("updated_at") or updated_at,
+                    "metadata": metadata,
+                    "message_count": len(messages),
+                }
+            )
         return sessions
 
     # ── Memory ─────────────────────────────────────────────────────────────
@@ -558,8 +605,15 @@ class SQLiteBackend(StorageBackend):
                 await db.execute(
                     "INSERT OR REPLACE INTO memories (id, type, key, data, created_at, updated_at) "
                     "VALUES (?, ?, ?, ?, COALESCE((SELECT created_at FROM memories WHERE id=?), ?), ?)",
-                    (entry_id, data.get("type", "user"), data.get("key", ""),
-                     json.dumps(data, ensure_ascii=False), entry_id, now, now),
+                    (
+                        entry_id,
+                        data.get("type", "user"),
+                        data.get("key", ""),
+                        json.dumps(data, ensure_ascii=False),
+                        entry_id,
+                        now,
+                        now,
+                    ),
                 )
         except Exception as e:
             logger.error("Failed to store memory '{}': {}", entry_id, e)
@@ -570,18 +624,14 @@ class SQLiteBackend(StorageBackend):
             async with self._read_connection() as db:
                 if mem_type:
                     rows = await db.execute_fetchall(
-                        "SELECT data FROM memories WHERE type=? ORDER BY updated_at DESC", (mem_type,),
+                        "SELECT data FROM memories WHERE type=? ORDER BY updated_at DESC",
+                        (mem_type,),
                     )
                 else:
-                    rows = await db.execute_fetchall(
-                        "SELECT data FROM memories ORDER BY updated_at DESC"
-                    )
+                    rows = await db.execute_fetchall("SELECT data FROM memories ORDER BY updated_at DESC")
         except (aiosqlite.Error, OSError) as e:
             raise self._read_failure("loading memories", e) from e
-        return [
-            self._decode_json(raw, "loading a memory row", expected_type=dict)
-            for raw, in rows
-        ]
+        return [self._decode_json(raw, "loading a memory row", expected_type=dict) for (raw,) in rows]
 
     async def delete_memory(self, entry_id: str) -> bool:
         try:
@@ -602,11 +652,19 @@ class SQLiteBackend(StorageBackend):
                     "INSERT OR REPLACE INTO tasks "
                     "(id, workflow_id, status, data, owner_id, lease_until_ms, attempt_id, version, created_at, updated_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM tasks WHERE id=?), ?), ?)",
-                    (task_id, data.get("workflow_id", ""), data.get("status", "pending"),
-                     json.dumps(data, ensure_ascii=False),
-                     data.get("owner_id", ""), data.get("lease_until_ms"),
-                     data.get("attempt_id", ""), data.get("version", 0),
-                     task_id, now, now),
+                    (
+                        task_id,
+                        data.get("workflow_id", ""),
+                        data.get("status", "pending"),
+                        json.dumps(data, ensure_ascii=False),
+                        data.get("owner_id", ""),
+                        data.get("lease_until_ms"),
+                        data.get("attempt_id", ""),
+                        data.get("version", 0),
+                        task_id,
+                        now,
+                        now,
+                    ),
                 )
         except Exception as e:
             logger.error("Failed to store task '{}': {}", task_id, e)
@@ -630,10 +688,16 @@ class SQLiteBackend(StorageBackend):
                 cur = await db.execute(
                     "UPDATE tasks SET status=?, data=?, owner_id=?, lease_until_ms=?, "
                     "attempt_id=?, version=version+1, updated_at=? WHERE id=? AND version=?",
-                    (persisted.get("status", "pending"),
-                     json.dumps(persisted, ensure_ascii=False),
-                     persisted.get("owner_id", ""), persisted.get("lease_until_ms"),
-                     persisted.get("attempt_id", ""), now, task_id, expected_version),
+                    (
+                        persisted.get("status", "pending"),
+                        json.dumps(persisted, ensure_ascii=False),
+                        persisted.get("owner_id", ""),
+                        persisted.get("lease_until_ms"),
+                        persisted.get("attempt_id", ""),
+                        now,
+                        task_id,
+                        expected_version,
+                    ),
                 )
             return cur.rowcount == 1
         except Exception as e:
@@ -649,7 +713,9 @@ class SQLiteBackend(StorageBackend):
         if not row:
             return None
         return self._decode_json(
-            row[0][0], f"loading task '{task_id}'", expected_type=dict,
+            row[0][0],
+            f"loading task '{task_id}'",
+            expected_type=dict,
         )
 
     async def list_tasks(
@@ -678,15 +744,13 @@ class SQLiteBackend(StorageBackend):
         try:
             async with self._read_connection() as db:
                 rows = await db.execute_fetchall(
-                    f"SELECT data FROM tasks{where} ORDER BY updated_at DESC", params,
+                    f"SELECT data FROM tasks{where} ORDER BY updated_at DESC",
+                    params,
                 )
         except (aiosqlite.Error, OSError) as e:
             raise self._read_failure("listing tasks", e) from e
 
-        results = [
-            self._decode_json(raw, "listing a task row", expected_type=dict)
-            for raw, in rows
-        ]
+        results = [self._decode_json(raw, "listing a task row", expected_type=dict) for (raw,) in rows]
         for result in results:
             labels = result.get("labels", [])
             if not isinstance(labels, list):
@@ -705,8 +769,15 @@ class SQLiteBackend(StorageBackend):
                 await db.execute(
                     "INSERT OR REPLACE INTO workflows (id, name, status, data, created_at, updated_at) "
                     "VALUES (?, ?, ?, ?, COALESCE((SELECT created_at FROM workflows WHERE id=?), ?), ?)",
-                    (workflow_id, data.get("name", ""), data.get("status", "pending"),
-                     json.dumps(data, ensure_ascii=False), workflow_id, now, now),
+                    (
+                        workflow_id,
+                        data.get("name", ""),
+                        data.get("status", "pending"),
+                        json.dumps(data, ensure_ascii=False),
+                        workflow_id,
+                        now,
+                        now,
+                    ),
                 )
         except Exception as e:
             logger.error("Failed to store workflow '{}': {}", workflow_id, e)
@@ -716,14 +787,17 @@ class SQLiteBackend(StorageBackend):
         try:
             async with self._read_connection() as db:
                 row = await db.execute_fetchall(
-                    "SELECT data FROM workflows WHERE id=?", (workflow_id,),
+                    "SELECT data FROM workflows WHERE id=?",
+                    (workflow_id,),
                 )
         except (aiosqlite.Error, OSError) as e:
             raise self._read_failure(f"loading workflow '{workflow_id}'", e) from e
         if not row:
             return None
         return self._decode_json(
-            row[0][0], f"loading workflow '{workflow_id}'", expected_type=dict,
+            row[0][0],
+            f"loading workflow '{workflow_id}'",
+            expected_type=dict,
         )
 
     async def list_workflows(self, status: str | None = None) -> list[dict[str, Any]]:
@@ -735,15 +809,10 @@ class SQLiteBackend(StorageBackend):
                         (status,),
                     )
                 else:
-                    rows = await db.execute_fetchall(
-                        "SELECT data FROM workflows ORDER BY updated_at DESC"
-                    )
+                    rows = await db.execute_fetchall("SELECT data FROM workflows ORDER BY updated_at DESC")
         except (aiosqlite.Error, OSError) as e:
             raise self._read_failure("listing workflows", e) from e
-        return [
-            self._decode_json(raw, "listing a workflow row", expected_type=dict)
-            for raw, in rows
-        ]
+        return [self._decode_json(raw, "listing a workflow row", expected_type=dict) for (raw,) in rows]
 
     # ── Log ────────────────────────────────────────────────────────────────
 
@@ -762,7 +831,8 @@ class SQLiteBackend(StorageBackend):
         try:
             async with self._read_connection() as db:
                 rows = await db.execute_fetchall(
-                    "SELECT trace_id, data, created_at FROM logs ORDER BY id DESC LIMIT ?", (limit,),
+                    "SELECT trace_id, data, created_at FROM logs ORDER BY id DESC LIMIT ?",
+                    (limit,),
                 )
         except (aiosqlite.Error, OSError) as e:
             raise self._read_failure("querying logs", e) from e
@@ -770,7 +840,9 @@ class SQLiteBackend(StorageBackend):
             {
                 "trace_id": trace_id,
                 "spans": self._decode_json(
-                    raw, f"querying log '{trace_id}'", expected_type=list,
+                    raw,
+                    f"querying log '{trace_id}'",
+                    expected_type=list,
                 ),
                 "created_at": created_at,
             }
@@ -790,16 +862,20 @@ class SQLiteBackend(StorageBackend):
             logger.error("Failed to store file meta '{}': {}", path, e)
 
     async def store_vector(
-        self, vec_id: str, source_id: str, embedding: bytes,
-        metadata: dict[str, Any] | None = None, model: str = "", dim: int = 0,
+        self,
+        vec_id: str,
+        source_id: str,
+        embedding: bytes,
+        metadata: dict[str, Any] | None = None,
+        model: str = "",
+        dim: int = 0,
     ) -> None:
         try:
             async with self._write_transaction() as db:
                 await db.execute(
                     "INSERT OR REPLACE INTO vectors (id, source_id, embedding, metadata, model, dim, created_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (vec_id, source_id, embedding, json.dumps(metadata or {}), model, dim,
-                     datetime.now().isoformat()),
+                    (vec_id, source_id, embedding, json.dumps(metadata or {}), model, dim, datetime.now().isoformat()),
                 )
         except Exception as e:
             logger.error("Failed to store vector '{}': {}", vec_id, e)
@@ -807,9 +883,7 @@ class SQLiteBackend(StorageBackend):
     async def load_vectors_all(self) -> list[dict[str, Any]]:
         try:
             async with self._read_connection() as db:
-                rows = await db.execute_fetchall(
-                    "SELECT id, source_id, embedding, metadata, model, dim FROM vectors"
-                )
+                rows = await db.execute_fetchall("SELECT id, source_id, embedding, metadata, model, dim FROM vectors")
         except (aiosqlite.Error, OSError) as e:
             raise self._read_failure("loading vectors", e) from e
         return [self._decode_vector_row(row) for row in rows]
@@ -818,8 +892,7 @@ class SQLiteBackend(StorageBackend):
         try:
             async with self._read_connection() as db:
                 rows = await db.execute_fetchall(
-                    "SELECT id, source_id, embedding, metadata, model, dim "
-                    "FROM vectors WHERE source_id=?",
+                    "SELECT id, source_id, embedding, metadata, model, dim FROM vectors WHERE source_id=?",
                     (source_id,),
                 )
         except (aiosqlite.Error, OSError) as e:
@@ -833,7 +906,9 @@ class SQLiteBackend(StorageBackend):
             "source_id": source_id,
             "embedding": embedding,
             "metadata": self._decode_json(
-                raw_metadata, f"loading vector '{vector_id}' metadata", expected_type=dict,
+                raw_metadata,
+                f"loading vector '{vector_id}' metadata",
+                expected_type=dict,
             ),
             "model": model or "",
             "dim": dim or 0,
@@ -867,7 +942,9 @@ class SQLiteBackend(StorageBackend):
 
     # ── Message Archive ────────────────────────────────────────────────────
 
-    async def archive_messages(self, session_key: str, messages: list[dict[str, Any]], compression_id: str = "") -> None:
+    async def archive_messages(
+        self, session_key: str, messages: list[dict[str, Any]], compression_id: str = ""
+    ) -> None:
         now = datetime.now().isoformat()
         try:
             async with self._write_transaction() as db:
@@ -890,7 +967,8 @@ class SQLiteBackend(StorageBackend):
                 rows = await cursor.fetchall()
         except (aiosqlite.Error, OSError) as e:
             raise self._read_failure(
-                f"loading archived messages for '{session_key}'", e,
+                f"loading archived messages for '{session_key}'",
+                e,
             ) from e
         return [
             {

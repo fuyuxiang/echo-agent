@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -108,8 +108,31 @@ class ChannelManager:
         self._inbound_ttl_seconds = 600.0
         self._state_lock = asyncio.Lock()
         self._cleanup_task: asyncio.Task | None = None
+        self._lifecycle_lock = asyncio.Lock()
+        self._event_sink: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
         self.bus.subscribe_outbound_global(self._filter_and_dispatch)
         self.bus.subscribe_inbound(self._on_inbound_lifecycle)
+
+    def set_event_sink(
+        self,
+        sink: Callable[[str, dict[str, Any]], Awaitable[None]] | None,
+    ) -> None:
+        self._event_sink = sink
+
+    async def _emit_lifecycle(self, name: str, operation: str) -> None:
+        if self._event_sink is None:
+            return
+        try:
+            await self._event_sink(
+                "channel_updated",
+                {
+                    "name": name,
+                    "operation": operation,
+                    "running": name in self.active_channels,
+                },
+            )
+        except Exception:
+            logger.debug("Failed to publish channel lifecycle update for {}", name)
 
     @property
     def active_channels(self) -> list[str]:
@@ -279,7 +302,9 @@ class ChannelManager:
         if not channel:
             logger.warning(
                 "Outbound dropped: no channel registered for channel={!r} chat_id={} event_id={}",
-                event.channel, str(event.chat_id)[:16], event.metadata.get("_inbound_event_id", ""),
+                event.channel,
+                str(event.chat_id)[:16],
+                event.metadata.get("_inbound_event_id", ""),
             )
             return
 
@@ -291,7 +316,9 @@ class ChannelManager:
             if hb_msg_id:
                 try:
                     result = await channel.edit_message(
-                        event.chat_id, hb_msg_id, event.text,
+                        event.chat_id,
+                        hb_msg_id,
+                        event.text,
                         metadata=self._public_metadata(event.metadata),
                         finalize=True,
                     )
@@ -355,7 +382,8 @@ class ChannelManager:
         seal-edit. Isolated from the caller: failures only log at debug level."""
         try:
             await channel.delete_message(
-                event.chat_id, msg_id,
+                event.chat_id,
+                msg_id,
                 metadata=self._public_metadata(event.metadata),
             )
         except Exception as e:  # noqa: BLE001
@@ -433,7 +461,9 @@ class ChannelManager:
             msg_id = self._heartbeat_msg_ids.get(key)
         if msg_id:
             await channel.edit_message(
-                event.chat_id, msg_id, event.text,
+                event.chat_id,
+                msg_id,
+                event.text,
                 metadata=self._public_metadata(event.metadata),
             )
             return
@@ -448,8 +478,10 @@ class ChannelManager:
     def _heartbeat_send_event(self, event: OutboundEvent) -> OutboundEvent:
         """Build the OutboundEvent used to deliver a heartbeat beat (DRY)."""
         send_event = OutboundEvent.text_reply(
-            channel=event.channel, chat_id=event.chat_id,
-            text=event.text, reply_to_id=event.reply_to_id,
+            channel=event.channel,
+            chat_id=event.chat_id,
+            text=event.text,
+            reply_to_id=event.reply_to_id,
         )
         send_event.is_final = False
         send_event.message_kind = "heartbeat"
@@ -576,10 +608,7 @@ class ChannelManager:
     @staticmethod
     def _public_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         # Preserve _inbound_event_id: webhook wait=true needs it for correlation.
-        return {
-            key: value for key, value in metadata.items()
-            if not key.startswith("_") or key == "_inbound_event_id"
-        }
+        return {key: value for key, value in metadata.items() if not key.startswith("_") or key == "_inbound_event_id"}
 
     @staticmethod
     def _visible_stream_text(text: str, *, final: bool) -> str:
@@ -611,26 +640,76 @@ class ChannelManager:
             return ""
         return f"{rendered}{_STREAM_CURSOR}"
 
+    def _build_channel(self, name: str) -> BaseChannel:
+        cls = _CHANNEL_REGISTRY.get(name)
+        if cls is None:
+            raise ValueError(f"unknown channel '{name}'")
+        channel_config = getattr(self.config, name, None)
+        if channel_config is None:
+            raise ValueError(f"channel '{name}' is not configured")
+        if cls is CLIChannel:
+            channel = cls(channel_config, self.bus, on_exit=self._on_cli_exit)
+        else:
+            channel = cls(channel_config, self.bus)
+        if self.config.transcription_api_key:
+            channel.transcription_api_key = self.config.transcription_api_key
+        return channel
+
+    async def start_channel(self, name: str) -> BaseChannel:
+        """Start one configured adapter and report failures to control-plane callers."""
+        async with self._lifecycle_lock:
+            existing = self._channels.get(name)
+            if existing is not None and existing.is_running:
+                return existing
+            channel_config = getattr(self.config, name, None)
+            if channel_config is None or not getattr(channel_config, "enabled", False):
+                raise ValueError(f"channel '{name}' is disabled")
+            if existing is not None:
+                try:
+                    await asyncio.wait_for(existing.stop(), timeout=10)
+                finally:
+                    self._channels.pop(name, None)
+            channel = self._build_channel(name)
+            try:
+                await channel.start()
+            except Exception:
+                try:
+                    await channel.stop()
+                except Exception as cleanup_error:
+                    logger.debug("Channel {} cleanup after failed start also failed: {}", name, cleanup_error)
+                raise
+            self._channels[name] = channel
+        logger.info("Channel {} {}", name, "started" if channel.is_running else "inactive")
+        await self._emit_lifecycle(name, "started")
+        return channel
+
+    async def stop_channel(self, name: str) -> bool:
+        """Stop one adapter without affecting the rest of the runtime."""
+        async with self._lifecycle_lock:
+            channel = self._channels.get(name)
+            if channel is None:
+                return False
+            try:
+                await asyncio.wait_for(channel.stop(), timeout=10)
+            finally:
+                self._channels.pop(name, None)
+        logger.info("Channel {} stopped", name)
+        await self._emit_lifecycle(name, "stopped")
+        return True
+
+    async def restart_channel(self, name: str) -> BaseChannel:
+        await self.stop_channel(name)
+        return await self.start_channel(name)
+
     async def start_all(self) -> None:
-        for name, cls in _CHANNEL_REGISTRY.items():
+        for name in _CHANNEL_REGISTRY:
             channel_config = getattr(self.config, name, None)
             if channel_config is None:
                 continue
             if not getattr(channel_config, "enabled", False):
                 continue
             try:
-                if cls is CLIChannel:
-                    channel = cls(channel_config, self.bus, on_exit=self._on_cli_exit)
-                else:
-                    channel = cls(channel_config, self.bus)
-                if self.config.transcription_api_key:
-                    channel.transcription_api_key = self.config.transcription_api_key
-                await channel.start()
-                self._channels[name] = channel
-                if channel.is_running:
-                    logger.info("Channel {} started", name)
-                else:
-                    logger.info("Channel {} inactive", name)
+                await self.start_channel(name)
             except Exception as e:
                 logger.error("Failed to start channel {}: {}", name, e)
         self._cleanup_task = asyncio.create_task(self._ttl_cleanup_loop())
@@ -645,7 +724,7 @@ class ChannelManager:
                 # cannot race channel teardown.
                 pass
             self._cleanup_task = None
-        for name, channel in self._channels.items():
+        for name, channel in list(self._channels.items()):
             try:
                 await asyncio.wait_for(channel.stop(), timeout=10)
                 logger.info("Channel {} stopped", name)
@@ -662,22 +741,19 @@ class ChannelManager:
             now = time.monotonic()
             async with self._state_lock:
                 stale_streams = [
-                    k for k, v in self._stream_states.items()
-                    if (now - v.created_at) > self._stream_ttl_seconds
+                    k for k, v in self._stream_states.items() if (now - v.created_at) > self._stream_ttl_seconds
                 ]
                 for k in stale_streams:
                     del self._stream_states[k]
 
                 stale_inbound = [
-                    k for k, v in self._inbound_msg_ids.items()
-                    if (now - v[2]) > self._inbound_ttl_seconds
+                    k for k, v in self._inbound_msg_ids.items() if (now - v[2]) > self._inbound_ttl_seconds
                 ]
                 for k in stale_inbound:
                     del self._inbound_msg_ids[k]
 
                 stale_finalized = [
-                    k for k, ts in self._finalized_keys.items()
-                    if (now - ts) > self._inbound_ttl_seconds
+                    k for k, ts in self._finalized_keys.items() if (now - ts) > self._inbound_ttl_seconds
                 ]
                 for k in stale_finalized:
                     del self._finalized_keys[k]

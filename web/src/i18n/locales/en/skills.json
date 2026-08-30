@@ -28,5 +28,10 @@
   "importPathHint": "A directory the server can read, containing SKILL.md",
   "importSubmit": "Import",
   "importSuccess": "Imported — disabled by default",
-  "importFailed": "Import failed"
+  "importFailed": "Import failed",
+  "uploadZip": "Upload a Skill ZIP from this device",
+  "uploadHint": "The ZIP must contain exactly one SKILL.md; imports start disabled for review",
+  "orServerPath": "or use a server path",
+  "uploadSuccess": "Skill imported safely (disabled by default)",
+  "uploadFailed": "Skill upload failed"
 }

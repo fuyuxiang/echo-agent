@@ -11,6 +11,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.widgets import OptionList, Static
 
+from echo_agent.cli.i18n import t
 from echo_agent.cli.tui.transcript import TranscriptView
 from echo_agent.cli.tui.activity_line import ActivityLine
 from echo_agent.cli.tui.prompt_input import PromptInput
@@ -22,8 +23,12 @@ from echo_agent.cli.tui.theme import ECHO_THEME, ECHO_THEME_LIGHT, resolve_theme
 from echo_agent.cli.tui.brand import load_brand
 from echo_agent.cli.tui.turns import TurnRegistry
 from echo_agent.cli.tui.protocol import (
-    CogEvent, approve_command, deny_command, clarify_command,
+    CogEvent,
+    approve_command,
+    deny_command,
+    clarify_command,
 )
+
 
 class EchoTUI(App):
     CSS_PATH = "app.tcss"
@@ -32,14 +37,15 @@ class EchoTUI(App):
     # keys, so the prompt never showed typed text. Declaring AUTO_FOCUS hands
     # focus to PromptInput on mount, the framework-native way to fix this.
     AUTO_FOCUS = "PromptInput"
+    _SERVER_CONTROLS = frozenset({"/approve", "/deny", "/clarify", "/approvals"})
 
     BINDINGS = [
-        Binding("ctrl+r", "toggle_memory", "记忆", show=False),
-        Binding("ctrl+o", "toggle_thinking", "思考", show=False),
+        Binding("ctrl+r", "toggle_memory", t("attach.ui.details_thinking"), show=False),
+        Binding("ctrl+o", "toggle_thinking", t("attach.ui.thought"), show=False),
         # Ctrl+C is a guarded interrupt, not an instant quit: it denies a
         # pending approval, else clears prompt text, else arms a 2s "press
         # again to exit" window. Ctrl+D stays the immediate escape hatch.
-        Binding("ctrl+c", "interrupt", "中断/退出", show=False, priority=True),
+        Binding("ctrl+c", "interrupt", t("attach.ui.interrupt"), show=False, priority=True),
         # priority=True is load-bearing: TextArea binds "delete,ctrl+d" to
         # delete_right, and PromptInput holds focus in the normal case
         # (AUTO_FOCUS), so without priority the widget consumed Ctrl+D and the
@@ -47,15 +53,15 @@ class EchoTUI(App):
         # ("Ctrl+D 退出" in the banner, the disconnect notice, and the Ctrl+C
         # exit prompt) promise this key works, and after a drop it is the only
         # exit the user is told about.
-        Binding("ctrl+d", "quit", "退出", show=False, priority=True),
+        Binding("ctrl+d", "quit", t("attach.commands.quit"), show=False, priority=True),
         # y/n/a are declared as bindings (not on_key) because a focused
         # PromptInput (TextArea) consumes printable keys before on_key runs in
         # textual 8.2.8. check_action gates them so they only fire while an
         # approval is pending; when pending we also blur focus so the App-level
         # binding is not filtered out by TextArea.check_consume_key.
-        Binding("y", "approve", "批准", show=False),
-        Binding("n", "deny", "拒绝", show=False),
-        Binding("a", "approve_always", "始终允许", show=False),
+        Binding("y", "approve", t("attach.ui.approved"), show=False),
+        Binding("n", "deny", t("attach.ui.denied"), show=False),
+        Binding("a", "approve_always", t("attach.ui.approval_approved"), show=False),
         # Clarify selection keys. Gated by check_action so they only fire while
         # a clarify is pending; otherwise they pass through to the focused
         # PromptInput (typing a digit into the prompt).
@@ -81,8 +87,15 @@ class EchoTUI(App):
         Binding("escape", "clarify_leave_free_input", show=False),
     ]
 
-    def __init__(self, send_coro=None, session_key: str = "", interrupt_coro=None,
-                 reconnect_coro=None, save_dir=None, initial_status=None) -> None:
+    def __init__(
+        self,
+        send_coro=None,
+        session_key: str = "",
+        interrupt_coro=None,
+        reconnect_coro=None,
+        save_dir=None,
+        initial_status=None,
+    ) -> None:
         super().__init__()
         self._send = send_coro
         # Default directory for /save without an explicit path. run_cli_attach
@@ -90,6 +103,7 @@ class EchoTUI(App):
         # rest of the workspace data; None falls back to ./transcripts under the
         # cwd (unit tests / standalone runs where no workspace was resolved).
         from pathlib import Path
+
         self._save_dir = Path(save_dir) if save_dir is not None else Path.cwd() / "transcripts"
         # Sends a control-only interrupt frame ({"type":"interrupt"}) upstream so
         # the gateway can cooperatively stop the running turn. Distinct from
@@ -218,12 +232,14 @@ class EchoTUI(App):
         from echo_agent.cli.tui.blocks import Banner
 
         try:
-            self._tv.mount_block(Banner(
-                self._session_key,
-                name=self._brand.name,
-                tagline=self._brand.tagline,
-                welcome=self._brand.welcome,
-            ))
+            self._tv.mount_block(
+                Banner(
+                    self._session_key,
+                    name=self._brand.name,
+                    tagline=self._brand.tagline,
+                    welcome=self._brand.welcome,
+                )
+            )
         except Exception:
             # The banner is presentation-only and may race an early mount; the
             # transcript and input remain fully functional without it.
@@ -234,10 +250,7 @@ class EchoTUI(App):
         # otherwise return None so the key passes through to the focused widget
         # (e.g. typing "y" into the prompt).
         if action in ("approve", "deny", "approve_always"):
-            pending = (
-                self._pending_approval is not None
-                and self._pending_approval.decision is None
-            )
+            pending = self._pending_approval is not None and self._pending_approval.decision is None
             return True if pending else None
         if action in ("clarify_pick", "clarify_move", "clarify_accept"):
             # Only while a clarify is pending AND the user has not stepped into
@@ -248,10 +261,7 @@ class EchoTUI(App):
             # key was then filtered out while the prompt stayed disabled, leaving
             # the user with no way to answer the clarify at all. Mirrors how the
             # approval keys gate (on pending state, not focus).
-            active = (
-                self._pending_clarify is not None
-                and not self._clarify_free_input
-            )
+            active = self._pending_clarify is not None and not self._clarify_free_input
             return True if active else None
         if action == "clarify_leave_free_input":
             # Escape only reclaims the keyboard for option picking when there is
@@ -463,8 +473,8 @@ class EchoTUI(App):
         if ev.cog_type == "approval_request":
             d = ev.data
             self._pending_approval = self._tv.add_approval(
-                d.get("request_id", ""), d.get("action", ""),
-                d.get("params", {}), d.get("risk", ""))
+                d.get("request_id", ""), d.get("action", ""), d.get("params", {}), d.get("risk", "")
+            )
             # Disable the prompt so App-level y/n/a bindings are not filtered
             # out by a focused TextArea (textual 8.2.8 check_consume_key), and
             # so a mouse click cannot re-focus it and swallow the keys.
@@ -473,7 +483,8 @@ class EchoTUI(App):
         if ev.cog_type == "clarify_request":
             d = ev.data
             self._pending_clarify = self._tv.add_clarify(
-                d.get("clarify_id", ""), d.get("question", ""),
+                d.get("clarify_id", ""),
+                d.get("question", ""),
                 d.get("options", []) or [],
             )
             self._clarify_free_input = False
@@ -533,9 +544,7 @@ class EchoTUI(App):
             # order remove the right entry from the live line.
             tcid = str(ev.data.get("tool_call_id", "") or ev.cog_event_id or "")
             if str(ev.data.get("status", "running")) == "running":
-                name = block.tool_name if block is not None else str(
-                    ev.data.get("name", "")
-                )
+                name = block.tool_name if block is not None else str(ev.data.get("name", ""))
                 self._activity_call("tool_started", name, tcid)
             else:
                 self._activity_call("tool_finished", tcid)
@@ -553,7 +562,7 @@ class EchoTUI(App):
         # LIVE socket — it is not a disconnect. Surface the reason in the
         # transcript rather than flipping the status bar to "disconnected",
         # which would mislead the user into debugging their connection.
-        self._tv.add_error(msg or "未知错误")
+        self._tv.add_error(msg or t("attach.ui.unknown_error"))
         # A gateway error frame is terminal for the turn: the request was
         # rejected, so no reply will land to clear the active flag. End the turn
         # now, otherwise the Ctrl+C guard would keep trying to interrupt a turn
@@ -625,7 +634,7 @@ class EchoTUI(App):
         # One notice per drop (not on every re-entry), so a flapping link doesn't
         # spam the transcript.
         try:
-            self._tv.add_error("连接已断开。输入 /reconnect 重连（Ctrl+D 退出）。")
+            self._tv.add_error(t("attach.ui.disconnected"))
         except Exception:
             # A transcript notice is best-effort during widget teardown; connection
             # gating and reconnect behavior do not depend on rendering it.
@@ -733,14 +742,14 @@ class EchoTUI(App):
             if last and last.strip() == text.strip():
                 return
         self._tv._cleared_since_last_reply = False
-        self._tv.add_notice("[$text-muted]（补显示断连期间的回复）[/]")
+        self._tv.add_notice(f"[$text-muted]({t('attach.ui.missed_reply')})[/]")
         r = self._tv.start_reply()
         r.set_markdown(text)
         self._tv.record_reply(event_id, text)
         if event_id:
             self._tv._last_reply_event_id = event_id
         try:
-            self._tv.add_notice("[$success]● 已重新连接[/]")
+            self._tv.add_notice(f"[$success]{t('attach.ui.reconnected')}[/]")
         except Exception:
             # Successful socket replacement is authoritative; this notice is only
             # cosmetic and can race a screen teardown.
@@ -838,9 +847,7 @@ class EchoTUI(App):
         self._lock_prompt()
 
     # --- input ---
-    async def on_prompt_input_submitted(
-        self, message: PromptInput.Submitted
-    ) -> None:
+    async def on_prompt_input_submitted(self, message: PromptInput.Submitted) -> None:
         text = message.text
         # Local commands execute inside the TUI and are never sent upstream;
         # server commands (/approve, /deny, /approvals) fall through to send.
@@ -866,7 +873,7 @@ class EchoTUI(App):
         # is silently lost. Local commands above still work; point the user at
         # /reconnect instead of accepting a turn that goes nowhere.
         if not self._connected:
-            self._tv.add_error("未连接。请先输入 /reconnect 重连。")
+            self._tv.add_error(t("attach.ui.not_connected"))
             return
         # Queue-guard: a real conversation turn (not a server control command
         # like /approve /deny) submitted while a primary turn is still running
@@ -878,18 +885,15 @@ class EchoTUI(App):
         # confirm the user really means to queue a new turn, not answer the
         # question. Control commands (/approve …) are excluded: they act on the
         # running turn and must go through immediately.
-        if not text.startswith("/") and self._turns.has_active_primary:
+        head = text.partition(" ")[0].lower()
+        if head not in self._SERVER_CONTROLS and self._turns.has_active_primary:
             now = time.monotonic()
             if now - self._last_queue_confirm >= self.QUEUE_CONFIRM_WINDOW:
                 # First submit (or a stale one): arm the window, keep the text in
                 # the box so a second Enter resends it, and tell the user why.
                 self._last_queue_confirm = now
                 self.query_one(PromptInput).restore_draft(text)
-                self._tv.add_notice(
-                    "[$text-muted]上一轮仍在进行中。当前回复不会打断它，"
-                    "而是作为新一轮排在其后。再次回车确认发送，"
-                    "或按 Ctrl+C 停止当前任务。[/]"
-                )
+                self._tv.add_notice(f"[$text-muted]{t('attach.ui.queue_confirm')}[/]")
                 return
             # Second submit within the window: confirmed — fall through to send.
         # Clear the arm unconditionally on any real send so a stale timestamp
@@ -971,10 +975,7 @@ class EchoTUI(App):
         The widgets are preserved in place (not rebuilt) so their internal state
         — a dict option's real answer value, the current highlight — survives.
         """
-        keep = [
-            w for w in (self._pending_approval, self._pending_clarify)
-            if w is not None
-        ]
+        keep = [w for w in (self._pending_approval, self._pending_clarify) if w is not None]
         self._tv.clear(keep=keep)
         # The reply widgets those ids pointed at are gone, so a still-streaming
         # turn must start a fresh one instead of appending into a removed widget.
@@ -995,27 +996,48 @@ class EchoTUI(App):
         """/reconnect — rebuild the WS connection after a drop. No-op (with a
         hint) when already connected or when no reconnect handler was injected."""
         if self._connected:
-            self._tv.add_notice("[$text-muted]当前已连接，无需重连。[/]")
+            self._tv.add_notice(f"[$text-muted]{t('attach.ui.already_connected')}[/]")
             return
         if self._reconnect is None:
-            self._tv.add_error("此环境不支持重连，请重新启动 echo-agent cli。")
+            self._tv.add_error(t("attach.ui.reconnect_unsupported"))
             return
-        self._tv.add_notice("[$text-muted]正在重连…[/]")
+        self._tv.add_notice(f"[$text-muted]{t('attach.ui.reconnecting')}[/]")
         try:
-            ok = await self._reconnect()
+            result = await self._reconnect()
         except Exception:
-            ok = False
+            result = False
+        ok = bool(result.get("ok", True)) if isinstance(result, dict) else bool(result)
         if ok:
             self.notify_reconnected()
+            if isinstance(result, dict) and isinstance(result.get("turn"), dict):
+                self.restore_reconnected_turn(result["turn"])
             await self._do_status("", quiet_unavailable=True)
         else:
-            self._tv.add_error("重连失败。请确认网关仍在运行后重试 /reconnect。")
+            self._tv.add_error(t("attach.ui.reconnect_failed"))
+
+    def restore_reconnected_turn(self, turn: dict) -> None:
+        if str(turn.get("status") or "") not in {
+            "accepted",
+            "running",
+            "waiting_approval",
+            "waiting_clarification",
+        }:
+            return
+        event_id = str(turn.get("event_id") or "")
+        if event_id:
+            self._turns.restore_active(event_id)
+            try:
+                self.query_one(StatusBar).start_turn_timer()
+            except Exception:
+                # Reconnect may finish while the view is unmounting; turn
+                # authority is already restored even if the cosmetic timer is gone.
+                pass
 
     async def _do_status(self, event_id: str = "", *, quiet_unavailable: bool = False) -> None:
         """Query the durable server-side lifecycle record for a turn."""
         if self._turn_status is None:
             if not quiet_unavailable:
-                self._tv.add_error("当前连接不支持回合状态查询。")
+                self._tv.add_error(t("attach.ui.status_unsupported"))
             return
         try:
             turn = await self._turn_status(event_id)
@@ -1023,27 +1045,21 @@ class EchoTUI(App):
             turn = {}
         if not turn:
             if not quiet_unavailable:
-                self._tv.add_error("未找到可查询的回合状态。")
+                self._tv.add_error(t("attach.ui.status_missing"))
             return
         status = str(turn.get("status", "unknown"))
         labels = {
-            "accepted": "已接收",
-            "running": "正在执行",
-            "waiting_approval": "等待审批",
-            "waiting_clarification": "等待补充信息",
-            "completed": "已完成",
-            "incomplete": "未完成",
-            "failed": "失败",
-            "interrupted": "已中断",
+            name: t(f"attach.ui.status_{name}") for name in (
+                "accepted", "running", "waiting_approval", "waiting_clarification",
+                "completed", "incomplete", "failed", "interrupted",
+            )
         }
         detail = labels.get(status, status)
         tool = str(turn.get("current_tool", ""))
         if tool:
-            detail += f" · 当前工具 {tool}"
+            detail += f" · {t('attach.ui.current_tool', tool=tool)}"
         eid = str(turn.get("event_id", ""))
-        self._tv.add_notice(
-            f"[$text-muted]回合 {eid or '-'}：{detail}[/]"
-        )
+        self._tv.add_notice(f"[$text-muted]{t('attach.ui.turn_notice', event_id=eid or '-', detail=detail)}[/]")
         self._tv.record_turn_status(turn)
         if status in {"accepted", "running", "waiting_approval", "waiting_clarification"}:
             self._activity_call("start")
@@ -1061,11 +1077,11 @@ class EchoTUI(App):
         the copied length rather than silently succeeding."""
         text = self._tv.export_text() if whole else self._tv.last_turn_reply_text()
         if not text:
-            self.notify("暂无可复制的内容", severity="warning", timeout=3)
+            self.notify(t("attach.ui.copy_empty"), severity="warning", timeout=3)
             return
         self.copy_to_clipboard(text)
-        scope = "整段对话" if whole else "最近回复"
-        self.notify(f"已复制{scope}（{len(text)} 字）到剪贴板", timeout=3)
+        scope = t("attach.ui.copy_scope_all" if whole else "attach.ui.copy_scope_latest")
+        self.notify(t("attach.ui.copied", scope=scope, count=len(text)), timeout=3)
 
     def _do_save(self, arg: str) -> None:
         """/save [--format md|txt|json] [路径] — persist the transcript.
@@ -1085,7 +1101,7 @@ class EchoTUI(App):
         try:
             tokens = shlex.split(arg)
         except ValueError as e:
-            self.notify(f"路径解析失败: {e}", severity="error", timeout=4)
+            self.notify(t("attach.ui.path_error", error=e), severity="error", timeout=4)
             return
         path_parts: list[str] = []
         index = 0
@@ -1093,7 +1109,7 @@ class EchoTUI(App):
             token = tokens[index]
             if token == "--format":
                 if index + 1 >= len(tokens):
-                    self.notify("--format 需要 md、txt 或 json", severity="error", timeout=4)
+                    self.notify(t("attach.ui.format_required"), severity="error", timeout=4)
                     return
                 fmt = tokens[index + 1].lower()
                 index += 2
@@ -1105,7 +1121,7 @@ class EchoTUI(App):
             path_parts.append(token)
             index += 1
         if fmt not in {"md", "txt", "json"}:
-            self.notify(f"不支持的导出格式: {fmt}", severity="error", timeout=4)
+            self.notify(t("attach.ui.format_unsupported", format=fmt), severity="error", timeout=4)
             return
         path_arg = " ".join(path_parts)
 
@@ -1113,24 +1129,22 @@ class EchoTUI(App):
         # user turns / non-status agent replies), which is the same content
         # selection export_markdown uses — so this can never report "saved" for a
         # file that turns out to hold only the metadata header.
-        has_content = (
-            self._tv.has_audit_conversation()
-            if fmt == "json"
-            else bool(self._tv.export_text().strip())
-        )
+        has_content = self._tv.has_audit_conversation() if fmt == "json" else bool(self._tv.export_text().strip())
         if not has_content:
-            self.notify("暂无可保存的对话", severity="warning", timeout=3)
+            self.notify(t("attach.ui.save_empty"), severity="warning", timeout=3)
             return
         exported_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if fmt == "json":
             content = self._tv.export_json(
-                session_key=self._session_key, when=exported_at,
+                session_key=self._session_key,
+                when=exported_at,
             )
         elif fmt == "txt":
             content = self._tv.export_text().rstrip() + "\n"
         else:
             content = self._tv.export_markdown(
-                session_key=self._session_key, when=exported_at,
+                session_key=self._session_key,
+                when=exported_at,
             )
 
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -1155,9 +1169,9 @@ class EchoTUI(App):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
         except OSError as e:
-            self.notify(f"保存失败: {e}", severity="error", timeout=5)
+            self.notify(t("attach.ui.save_failed", error=e), severity="error", timeout=5)
             return
-        self.notify(f"已保存对话到 {target}（{len(content)} 字）", timeout=4)
+        self.notify(t("attach.ui.saved", path=target, count=len(content)), timeout=4)
 
     def _do_theme(self, arg: str) -> None:
         """/theme — switch or report the active palette. `light`/`dark` set it;
@@ -1172,10 +1186,10 @@ class EchoTUI(App):
             # unreadability the light theme fixes). Repaint what's on screen.
             self._tv.repaint_replies()
         elif arg:
-            self._tv.add_notice("[$warning]用法: /theme [light|dark][/]")
+            self._tv.add_notice(f"[$warning]{t('attach.ui.theme_usage')}[/]")
             return
-        current = "浅色" if self.theme == "echo-light" else "深色"
-        self._tv.add_notice(f"当前主题: [b]{current}[/b]")
+        current = t("attach.ui.theme_light" if self.theme == "echo-light" else "attach.ui.theme_dark")
+        self._tv.add_notice(t("attach.ui.theme_current", theme=f"[b]{current}[/b]"))
 
     def _do_details(self, arg: str) -> None:
         """/details — how much of the agent's working trace the transcript shows.
@@ -1188,21 +1202,14 @@ class EchoTUI(App):
         if arg:
             parsed = parse_details_arg(arg)
             if parsed is None:
-                self._tv.add_notice(
-                    "[$warning]用法: /details <思考|工具|状态> <展开|折叠|精简|隐藏>[/]"
-                )
+                self._tv.add_notice(f"[$warning]{t('attach.ui.details_usage')}[/]")
                 return
             section, state = parsed
             self._tv.set_details(self._tv.details.with_section(section, state))
-        rows = "\n".join(
-            f"  [$primary]{label}[/]  {state}"
-            for label, state in self._tv.details.describe()
-        )
-        self._tv.add_notice(f"[b]过程信息显示[/b]\n{rows}")
+        rows = "\n".join(f"  [$primary]{label}[/]  {state}" for label, state in self._tv.details.describe())
+        self._tv.add_notice(f"[b]{t('attach.ui.details_title')}[/b]\n{rows}")
 
-    def on_prompt_input_content_changed(
-        self, message: PromptInput.ContentChanged
-    ) -> None:
+    def on_prompt_input_content_changed(self, message: PromptInput.ContentChanged) -> None:
         self.query_one("#placeholder").display = message.is_empty
         # Emptying the box during a clarify returns the keyboard to the options.
         # Entering free text costs one keystroke, so it happens by accident
@@ -1228,10 +1235,8 @@ class EchoTUI(App):
         if matches:
             panel.clear_options()
             for c in matches:
-                tag = "本地" if c.scope == "local" else "服务端"
-                panel.add_option(
-                    f"{c.name} [dim]{c.arg_template}[/dim]  {c.desc} [{tag}]"
-                )
+                tag = t("attach.ui.scope_local" if c.scope == "local" else "attach.ui.scope_server")
+                panel.add_option(f"{c.name} [dim]{c.arg_template}[/dim]  {c.desc} [{tag}]")
             # Refiltering resets the highlight; the user must re-enter the panel
             # with Up/Down, keeping Enter on submit until they actively select.
             panel.highlighted = None
@@ -1241,9 +1246,7 @@ class EchoTUI(App):
         self.query_one(PromptInput).set_panel_visible(bool(matches))
 
     # --- completion panel keyboard wiring ---
-    def on_prompt_input_panel_nav(
-        self, message: PromptInput.PanelNav
-    ) -> None:
+    def on_prompt_input_panel_nav(self, message: PromptInput.PanelNav) -> None:
         panel = self.query_one("#slash_panel", OptionList)
         if panel.display is False or panel.option_count == 0:
             return
@@ -1252,9 +1255,7 @@ class EchoTUI(App):
         else:
             panel.action_cursor_up()
 
-    def on_prompt_input_panel_accept(
-        self, message: PromptInput.PanelAccept
-    ) -> None:
+    def on_prompt_input_panel_accept(self, message: PromptInput.PanelAccept) -> None:
         panel = self.query_one("#slash_panel", OptionList)
         idx = panel.highlighted
         matches = getattr(self, "_panel_matches", [])
@@ -1264,9 +1265,7 @@ class EchoTUI(App):
         pi.apply_completion(completion_insert(matches[idx]))
         self._close_panel()
 
-    def on_prompt_input_panel_close(
-        self, message: PromptInput.PanelClose
-    ) -> None:
+    def on_prompt_input_panel_close(self, message: PromptInput.PanelClose) -> None:
         self._close_panel()
 
     def _close_panel(self) -> None:
@@ -1288,19 +1287,16 @@ class EchoTUI(App):
 
     async def action_interrupt(self) -> None:
         """Guarded Ctrl+C. Priority:
-          1. A pending approval → deny it (unblocks the server), stay running.
-          2. Prompt has text → clear it (bash/readline convention), stay.
-          3. A turn is running → send an interrupt frame so the gateway
-             cooperatively stops it; stay running (do NOT arm exit).
-          4. Idle & empty → first press arms a 2s window and warns; a second
-             press within the window exits. Ctrl+D remains the instant exit."""
+        1. A pending approval → deny it (unblocks the server), stay running.
+        2. Prompt has text → clear it (bash/readline convention), stay.
+        3. A turn is running → send an interrupt frame so the gateway
+           cooperatively stops it; stay running (do NOT arm exit).
+        4. Idle & empty → first press arms a 2s window and warns; a second
+           press within the window exits. Ctrl+D remains the instant exit."""
         # 1. Deny a pending approval instead of exiting mid-decision. This
         # cancels the active prompt on Ctrl+C and, unlike a
         # bare exit, actively unblocks the server-side approval gate.
-        if (
-            self._pending_approval is not None
-            and self._pending_approval.decision is None
-        ):
+        if self._pending_approval is not None and self._pending_approval.decision is None:
             self._last_ctrl_c = 0.0
             await self._decide("deny")
             return
@@ -1343,7 +1339,7 @@ class EchoTUI(App):
             # spinning "调用工具 …" as though Ctrl+C had done nothing, and then
             # reported 完成 for a turn the user had cancelled.
             self._activity_call("note_stopping")
-            self.notify("已请求停止当前任务…", severity="warning", timeout=3)
+            self.notify(t("attach.ui.stop_requested"), severity="warning", timeout=3)
             return
 
         # 4. Two-press exit guard.
@@ -1353,10 +1349,7 @@ class EchoTUI(App):
             return
         self._last_ctrl_c = now
         active = self._turns.has_active_primary
-        hint = (
-            "回复仍在服务端生成，无法中断；再次按 Ctrl+C 退出"
-            if active else "再次按 Ctrl+C 退出（Ctrl+D 直接退出）"
-        )
+        hint = t("attach.ui.interrupt_hint_active" if active else "attach.ui.interrupt_hint_idle")
         self.notify(hint, severity="warning", timeout=self.CTRL_C_EXIT_WINDOW)
 
     async def _decide(self, decision: str, level: str = "") -> None:
@@ -1364,18 +1357,17 @@ class EchoTUI(App):
         if blk is None or blk.decision is not None:
             return
         if self._send is not None:
-            cmd = (approve_command(blk.request_id, level) if decision == "approve"
-                   else deny_command(blk.request_id))
+            cmd = approve_command(blk.request_id, level) if decision == "approve" else deny_command(blk.request_id)
             # Control send: its accepted frame and ack reply must NOT become the
             # interrupt target nor stop the original (still-parked) turn's timer.
             self._turns.note_send("control")
             try:
                 await self._send(cmd)
             except Exception:
-                self.notify("发送失败，请重试", severity="error", timeout=3)
+                self.notify(t("attach.ui.send_failed"), severity="error", timeout=3)
                 return
             if not self._connected:
-                self.notify("发送失败（连接已断开），请重连后重试", severity="error", timeout=3)
+                self.notify(t("attach.ui.send_disconnected"), severity="error", timeout=3)
                 return
         blk.mark("approve" if decision == "approve" else "deny")
         self._pending_approval = None
@@ -1408,10 +1400,10 @@ class EchoTUI(App):
             try:
                 await self._send(clarify_command(blk.clarify_id, answer))
             except Exception:
-                self.notify("发送失败，请重试", severity="error", timeout=3)
+                self.notify(t("attach.ui.send_failed"), severity="error", timeout=3)
                 return
             if not self._connected:
-                self.notify("发送失败（连接已断开），请重连后重试", severity="error", timeout=3)
+                self.notify(t("attach.ui.send_disconnected"), severity="error", timeout=3)
                 return
         blk.mark(answer)
         self._pending_clarify = None

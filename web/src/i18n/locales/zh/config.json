@@ -1,3 +1,14 @@
 {
-  "title": "配置（只读）"
+  "title": "运行配置",
+  "save": "验证并保存",
+  "saveSuccess": "配置已安全写入",
+  "saveFailed": "配置保存失败",
+  "restartRequired": "配置已保存。通道开关可即时生效；其他运行参数需重启 Echo Agent 后完全生效。",
+  "advancedReadonly": "查看完整脱敏配置（只读）",
+  "sections": { "interface": "界面与可观测性", "capabilities": "Agent 能力", "cost": "成本与预算" },
+  "fields": {
+    "locale": "界面语言", "logLevel": "日志级别", "traceEnabled": "记录执行轨迹",
+    "memoryEnabled": "认知记忆", "knowledgeEnabled": "知识库检索", "autoIndex": "自动索引文档",
+    "costEnabled": "成本追踪与预算控制", "dailyBudget": "每日成本预算（USD，0 为不限）", "softThreshold": "软告警比例"
+  }
 }

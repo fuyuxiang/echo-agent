@@ -78,6 +78,7 @@ class GatewayServer:
         workspace: Path,
         agent_loop: Any = None,
         a2a_config: Any = None,
+        config_path: Path | None = None,
     ):
         self._config = config
         self._bus = bus
@@ -86,6 +87,7 @@ class GatewayServer:
         self._workspace = workspace
         self._agent_loop = agent_loop
         self._a2a_config = a2a_config
+        self._config_path = config_path
 
         self._app: web.Application | None = None
         self._runner: web.AppRunner | None = None
@@ -94,10 +96,13 @@ class GatewayServer:
         self._pending_http: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._MAX_PENDING_HTTP = 500
         self._message_idempotency = BoundedIdempotencyStore(
-            max_entries=4096, ttl_seconds=3600.0,
+            max_entries=4096,
+            ttl_seconds=3600.0,
         )
         self._running = False
         self._actual_port: int | None = None
+        self._unsubscribe_log_events: Any = None
+        self._log_event_task: asyncio.Task[None] | None = None
 
         data_dir = workspace / "data"
         # Pass the bind address to the auth so the Host-header check can derive
@@ -148,7 +153,10 @@ class GatewayServer:
         return normalize_platform(reported, known + list(self._config.platforms or {}))
 
     async def _reset_session_if_needed(
-        self, session_key: str, *, force: bool = False,
+        self,
+        session_key: str,
+        *,
+        force: bool = False,
     ) -> tuple[Any, bool]:
         """Run the one authoritative reset path under the agent session lock."""
         session = await self.session_manager.get_or_create(session_key)
@@ -192,6 +200,10 @@ class GatewayServer:
                 # this reset's late cleanup.
                 await _clear_process_state()
         await self.hooks.emit("session_reset", session_key=session_key)
+        await self._dashboard_ws.broadcast(
+            "session_reset",
+            {"session_key": session_key},
+        )
         return session, True
 
     async def _accept_turn(self, event: InboundEvent, session: Any) -> None:
@@ -271,6 +283,7 @@ class GatewayServer:
             await self._site.start()
         except OSError as e:
             import errno
+
             if e.errno == errno.EADDRINUSE:
                 raise RuntimeError(
                     f"网关端口 {self._config.host}:{self._config.port} 已被占用，"
@@ -285,6 +298,30 @@ class GatewayServer:
         self._actual_port = actual_port
 
         self._running = True
+
+        # Loguru sinks may run in worker threads. Marshal records onto this
+        # event loop before publishing to WebSockets.
+        from echo_agent.observability.log_buffer import subscribe_log_events
+
+        loop = asyncio.get_running_loop()
+
+        def _on_log(entry: dict[str, Any]) -> None:
+            def _publish() -> None:
+                # Logs can arrive much faster than the browser can refetch the
+                # buffer. The event is only an invalidation signal, so coalesce
+                # a burst into the single notification already in flight.
+                if self._log_event_task is None or self._log_event_task.done():
+                    self._log_event_task = loop.create_task(
+                        self._dashboard_ws.broadcast("log_entry", entry)
+                    )
+
+            try:
+                loop.call_soon_threadsafe(_publish)
+            except RuntimeError:
+                # Shutdown closed the loop; the log entry no longer has a UI consumer.
+                pass
+
+        self._unsubscribe_log_events = subscribe_log_events(_on_log)
 
         # Persist the actually bound endpoint so attach / `service status` can
         # discover the real port even when gateway.port=0 (ephemeral) — until
@@ -313,7 +350,8 @@ class GatewayServer:
         await self.hooks.emit("gateway_start")
         logger.info(
             "Gateway listening on {}:{}",
-            self._config.host, actual_port,
+            self._config.host,
+            actual_port,
         )
 
     def _check_bind_safety(self) -> None:
@@ -344,6 +382,14 @@ class GatewayServer:
 
     async def stop(self) -> None:
         self._running = False
+        if self._unsubscribe_log_events is not None:
+            self._unsubscribe_log_events()
+            self._unsubscribe_log_events = None
+        if self._log_event_task is not None:
+            if not self._log_event_task.done():
+                self._log_event_task.cancel()
+            await asyncio.gather(self._log_event_task, return_exceptions=True)
+            self._log_event_task = None
         await self.hooks.emit("gateway_stop")
 
         for future in self._pending_http.values():
@@ -354,6 +400,10 @@ class GatewayServer:
         for ws_id, ws in list(self._ws_clients.items()):
             await ws.close(code=aiohttp.WSCloseCode.GOING_AWAY, message=b"shutdown")
         self._ws_clients.clear()
+
+        jobs = getattr(self, "_knowledge_jobs", None)
+        if jobs is not None:
+            await jobs.close()
 
         # Dashboard sockets live in their own registry. Leaving them open meant
         # runner.cleanup() below waited on live handlers — an open browser tab
@@ -402,6 +452,7 @@ class GatewayServer:
             from echo_agent.a2a.server import A2AServer
             from echo_agent.a2a.models import AgentCard
             from echo_agent import __version__
+
             card = AgentCard(
                 name=self._a2a_config.agent_name,
                 description=self._a2a_config.agent_description,
@@ -421,6 +472,7 @@ class GatewayServer:
 
         if self._agent_loop:
             from echo_agent.gateway.api import register_management_routes
+
             register_management_routes(app, prefix, self)
         else:
             app.router.add_get(f"{prefix}/sessions", self._handle_list_sessions)
@@ -450,8 +502,7 @@ class GatewayServer:
     @staticmethod
     def _idempotency_key(request: web.Request, body: dict[str, Any]) -> str:
         header_key = normalize_idempotency_key(
-            request.headers.get("Idempotency-Key")
-            or request.headers.get("X-Idempotency-Key")
+            request.headers.get("Idempotency-Key") or request.headers.get("X-Idempotency-Key")
         )
         body_key = normalize_idempotency_key(body.get("idempotency_key"))
         if header_key and body_key and header_key != body_key:
@@ -573,7 +624,10 @@ class GatewayServer:
         return web.json_response({"error": "unauthorized"}, status=401)
 
     def _require_a2a_principal(
-        self, request: web.Request, *, action: str,
+        self,
+        request: web.Request,
+        *,
+        action: str,
     ) -> str | web.Response:
         """Authenticate A2A and return the caller identity, not just a bool."""
         from echo_agent.a2a.task_store import DEFAULT_TASK_OWNER
@@ -702,7 +756,9 @@ class GatewayServer:
             await self._bus.release_durable_idempotency(event_id)
         except Exception as e:
             logger.error(
-                "Releasing durable idempotency claim {} failed: {}", event_id, e,
+                "Releasing durable idempotency claim {} failed: {}",
+                event_id,
+                e,
             )
 
     @staticmethod
@@ -728,18 +784,16 @@ class GatewayServer:
         }
         if turn_status != "completed":
             default_reason = (
-                "agent processing failed"
-                if turn_status in FAULTED_TURN_OUTCOMES
-                else f"turn {turn_status}"
+                "agent processing failed" if turn_status in FAULTED_TURN_OUTCOMES else f"turn {turn_status}"
             )
-            payload["error"] = str(
-                metadata.get("_error_reason") or default_reason
-            )
+            payload["error"] = str(metadata.get("_error_reason") or default_reason)
         return status, payload
 
     @staticmethod
     def _http_turn_run_response(
-        row: dict[str, Any], event_id: str, session_key: str,
+        row: dict[str, Any],
+        event_id: str,
+        session_key: str,
     ) -> tuple[int, dict[str, Any], bool]:
         """Represent an event already known by the durable turn ledger.
 
@@ -760,15 +814,19 @@ class GatewayServer:
         # same turn would answer 200 once and something else on retry.
         http_status = turn_outcome_http_status(status)
         if status == "completed":
-            return http_status, {
-                **base,
-                "reply": {
-                    "text": response_text,
-                    "is_final": True,
-                    "message_kind": "final",
-                    "metadata": {"_inbound_event_id": event_id},
+            return (
+                http_status,
+                {
+                    **base,
+                    "reply": {
+                        "text": response_text,
+                        "is_final": True,
+                        "message_kind": "final",
+                        "metadata": {"_inbound_event_id": event_id},
+                    },
                 },
-            }, True
+                True,
+            )
         payload = {
             **base,
             "error": str(row.get("error") or f"turn {status}"),
@@ -779,7 +837,8 @@ class GatewayServer:
 
     @staticmethod
     def _ws_turn_run_payload(
-        row: dict[str, Any], event_id: str,
+        row: dict[str, Any],
+        event_id: str,
     ) -> tuple[dict[str, Any], bool]:
         """Represent a durable replay in the Gateway WebSocket wire format."""
         status = str(row.get("status") or "accepted")
@@ -864,7 +923,8 @@ class GatewayServer:
         max_urls = self._config.media_max_urls_per_message
         if len(media_urls) > max_urls:
             return web.json_response(
-                {"error": f"too many media_urls (max {max_urls})"}, status=400,
+                {"error": f"too many media_urls (max {max_urls})"},
+                status=400,
             )
 
         rejection = self._authenticate_and_check_rate_limit(
@@ -892,7 +952,11 @@ class GatewayServer:
         )
         if sk_err:
             self.auth.audit(
-                "message", platform=platform, user_id=user_id, ok=False, reason=sk_err,
+                "message",
+                platform=platform,
+                user_id=user_id,
+                ok=False,
+                reason=sk_err,
             )
             return web.json_response({"error": "forbidden session_key"}, status=403)
 
@@ -903,22 +967,24 @@ class GatewayServer:
         if idempotency_key:
             principal = "anonymous"
             if self._tokens_configured():
-                principal = self.auth.principal_for_token(
-                    self._request_token(request)
-                ) or "invalid"
+                principal = self.auth.principal_for_token(self._request_token(request)) or "invalid"
             scope = f"http\0{principal}\0{session_key}"
             event_id = deterministic_event_id(
-                "gateway-message", scope, idempotency_key,
+                "gateway-message",
+                scope,
+                idempotency_key,
             )
-            operation_fingerprint = self._idempotency_fingerprint({
-                "platform": platform,
-                "user_id": user_id,
-                "chat_id": chat_id,
-                "text": text,
-                "media_urls": media_urls,
-                "is_group": is_group,
-                "session_key": session_key,
-            })
+            operation_fingerprint = self._idempotency_fingerprint(
+                {
+                    "platform": platform,
+                    "user_id": user_id,
+                    "chat_id": chat_id,
+                    "text": text,
+                    "media_urls": media_urls,
+                    "is_group": is_group,
+                    "session_key": session_key,
+                }
+            )
             claim = await self._message_idempotency.claim(
                 namespace="gateway-message",
                 scope=scope,
@@ -938,12 +1004,11 @@ class GatewayServer:
                 )
             if claim.outcome == "full":
                 return web.json_response(
-                    {"error": "idempotency store is full"}, status=503,
+                    {"error": "idempotency store is full"},
+                    status=503,
                 )
             if claim.outcome == "duplicate" and claim.entry is not None:
-                cached = (
-                    claim.entry.response if wait else claim.entry.admission
-                )
+                cached = claim.entry.response if wait else claim.entry.admission
                 if cached is not None:
                     return web.json_response(cached.payload, status=cached.status)
                 # A duplicate that races the admitting request must observe that
@@ -953,11 +1018,13 @@ class GatewayServer:
                 try:
                     waiter = (
                         self._message_idempotency.wait(
-                            claim.entry, timeout=timeout_seconds,
+                            claim.entry,
+                            timeout=timeout_seconds,
                         )
                         if wait
                         else self._message_idempotency.wait_admitted(
-                            claim.entry, timeout=timeout_seconds,
+                            claim.entry,
+                            timeout=timeout_seconds,
                         )
                     )
                     cached = await waiter
@@ -993,7 +1060,8 @@ class GatewayServer:
                 if claim.entry is not None:
                     await self._message_idempotency.abort(claim.entry)
                 return web.json_response(
-                    {"error": "durable idempotency store is full"}, status=503,
+                    {"error": "durable idempotency store is full"},
+                    status=503,
                 )
             if durable_outcome == "conflict":
                 if claim.entry is not None:
@@ -1003,10 +1071,10 @@ class GatewayServer:
                     status=409,
                 )
             if durable_outcome == "duplicate" and isinstance(durable_record, dict):
-                response_status, response_payload, terminal = (
-                    self._http_turn_run_response(
-                        durable_record, event_id, session_key,
-                    )
+                response_status, response_payload, terminal = self._http_turn_run_response(
+                    durable_record,
+                    event_id,
+                    session_key,
                 )
                 if terminal:
                     await self._message_idempotency.complete(
@@ -1078,10 +1146,10 @@ class GatewayServer:
                         {"error": "durable idempotency storage unavailable"},
                         status=503,
                     )
-                response_status, response_payload, terminal = (
-                    self._http_turn_run_response(
-                        durable_row, event_id, session_key,
-                    )
+                response_status, response_payload, terminal = self._http_turn_run_response(
+                    durable_row,
+                    event_id,
+                    session_key,
                 )
                 if terminal:
                     await self._message_idempotency.complete(
@@ -1098,7 +1166,8 @@ class GatewayServer:
                         payload=response_payload,
                     )
                 return web.json_response(
-                    response_payload, status=response_status,
+                    response_payload,
+                    status=response_status,
                 )
 
         published = False
@@ -1138,10 +1207,12 @@ class GatewayServer:
                         continue
                     if not path:
                         continue
-                    content_blocks.append(ContentBlock(
-                        type=self._infer_media_content_type(str(path), url),
-                        url=str(path),
-                    ))
+                    content_blocks.append(
+                        ContentBlock(
+                            type=self._infer_media_content_type(str(path), url),
+                            url=str(path),
+                        )
+                    )
 
             event = InboundEvent(
                 channel=f"gateway:{platform}",
@@ -1160,9 +1231,7 @@ class GatewayServer:
                 event.event_id = event_id
             if operation_fingerprint:
                 event.metadata[IDEMPOTENCY_NAMESPACE_METADATA] = "gateway-message"
-                event.metadata[IDEMPOTENCY_FINGERPRINT_METADATA] = (
-                    operation_fingerprint
-                )
+                event.metadata[IDEMPOTENCY_FINGERPRINT_METADATA] = operation_fingerprint
             future: asyncio.Future[dict[str, Any]] | None = None
             if wait:
                 if len(self._pending_http) >= self._MAX_PENDING_HTTP:
@@ -1196,7 +1265,8 @@ class GatewayServer:
                 # MessageBus. Release only our still-accepted ledger row; the
                 # SQL guard refuses to touch a running/terminal racing owner.
                 await self._bus.release_turn_acceptance(
-                    event.event_id, event.session_key,
+                    event.event_id,
+                    event.session_key,
                 )
                 if durable_claimed:
                     await self._release_durable_claim(event.event_id)
@@ -1210,9 +1280,7 @@ class GatewayServer:
 
             published = True
             if durable_claimed:
-                await asyncio.shield(
-                    self._bus.mark_durable_idempotency_admitted(event.event_id)
-                )
+                await asyncio.shield(self._bus.mark_durable_idempotency_admitted(event.event_id))
                 durable_claimed = False
             admission_payload = {
                 "status": "accepted",
@@ -1221,16 +1289,26 @@ class GatewayServer:
             }
             if claim is not None and claim.entry is not None:
                 if future:
-                    await asyncio.shield(self._message_idempotency.mark_admitted(
-                        claim.entry, status=200, payload=admission_payload,
-                    ))
+                    await asyncio.shield(
+                        self._message_idempotency.mark_admitted(
+                            claim.entry,
+                            status=200,
+                            payload=admission_payload,
+                        )
+                    )
                 else:
-                    await asyncio.shield(self._message_idempotency.complete(
-                        claim.entry, status=200, payload=admission_payload,
-                    ))
+                    await asyncio.shield(
+                        self._message_idempotency.complete(
+                            claim.entry,
+                            status=200,
+                            payload=admission_payload,
+                        )
+                    )
             await self.hooks.emit(
                 "message_received",
-                platform=platform, user_id=user_id, chat_id=chat_id,
+                platform=platform,
+                user_id=user_id,
+                chat_id=chat_id,
             )
 
             if future:
@@ -1246,37 +1324,27 @@ class GatewayServer:
                         status=504,
                     )
                 response_status, response_payload = self._http_final_response(
-                    event.event_id, session_key, payload,
+                    event.event_id,
+                    session_key,
+                    payload,
                 )
                 if claim is not None and claim.entry is not None:
                     await self._message_idempotency.complete(
-                        claim.entry, status=response_status, payload=response_payload,
+                        claim.entry,
+                        status=response_status,
+                        payload=response_payload,
                     )
                 return web.json_response(response_payload, status=response_status)
 
             return web.json_response(admission_payload)
         except asyncio.CancelledError:
-            if (
-                not published
-                and not publish_outcome_unknown
-                and claim is not None
-                and claim.entry is not None
-            ):
-                await asyncio.shield(
-                    self._message_idempotency.abort(claim.entry)
-                )
+            if not published and not publish_outcome_unknown and claim is not None and claim.entry is not None:
+                await asyncio.shield(self._message_idempotency.abort(claim.entry))
             if not published and not publish_outcome_unknown and durable_claimed:
-                await asyncio.shield(
-                    self._release_durable_claim(event_id)
-                )
+                await asyncio.shield(self._release_durable_claim(event_id))
             raise
         except Exception:
-            if (
-                not published
-                and not publish_outcome_unknown
-                and claim is not None
-                and claim.entry is not None
-            ):
+            if not published and not publish_outcome_unknown and claim is not None and claim.entry is not None:
                 await self._message_idempotency.abort(claim.entry)
             if not published and not publish_outcome_unknown and durable_claimed:
                 await self._release_durable_claim(event_id)
@@ -1360,12 +1428,15 @@ class GatewayServer:
         API prefix without hardcoding it.
         """
         from echo_agent import __version__
-        return web.json_response({
-            "api_prefix": self._config.api_prefix,
-            "ws_path": "/ws/dashboard",
-            "version": __version__,
-            "auth_required": self._tokens_configured(),
-        })
+
+        return web.json_response(
+            {
+                "api_prefix": self._config.api_prefix,
+                "ws_path": "/ws/dashboard",
+                "version": __version__,
+                "auth_required": self._tokens_configured(),
+            }
+        )
 
     async def _handle_capabilities(self, request: web.Request) -> web.Response:
         """What the *calling token* is allowed to do.
@@ -1396,19 +1467,17 @@ class GatewayServer:
         # unauthenticated-deployment case (no tokens configured at all → every
         # caller is effectively admin), so the UI never disables a control the
         # server would in fact allow.
-        admin_configured = bool(
-            self._config.auth.admin_tokens or self._config.auth.api_tokens
-        )
+        admin_configured = bool(self._config.auth.admin_tokens or self._config.auth.api_tokens)
         if not admin_configured:
             is_admin = True
         else:
-            is_admin = self.auth.authenticate_admin_token(
-                self.auth.token_from_headers(request.headers)
-            )
-        return web.json_response({
-            "admin": is_admin,
-            "authRequired": self._tokens_configured(),
-        })
+            is_admin = self.auth.authenticate_admin_token(self.auth.token_from_headers(request.headers))
+        return web.json_response(
+            {
+                "admin": is_admin,
+                "authRequired": self._tokens_configured(),
+            }
+        )
 
     async def _handle_stats(self, request: web.Request) -> web.Response:
         guard = self._require_api_token(request, action="stats")
@@ -1458,7 +1527,8 @@ class GatewayServer:
                     # client — a TUI turn can run for many minutes with no client
                     # frames — so remaining() drops the bound entirely.
                     raw_msg = await asyncio.wait_for(
-                        websocket.receive(), timeout=auth_deadline.remaining(),
+                        websocket.receive(),
+                        timeout=auth_deadline.remaining(),
                     )
                 except asyncio.TimeoutError:
                     self.auth.audit("ws_auth", ok=False, reason="authentication timeout")
@@ -1500,7 +1570,9 @@ class GatewayServer:
                             # admin_tokens alone must not leave the socket open,
                             # and authenticate_token already accepts both kinds.
                             if self._tokens_configured() and not self.auth.authenticate_token(token):
-                                self.auth.audit("ws_auth", platform=platform, user_id=user_id, ok=False, reason="invalid api token")
+                                self.auth.audit(
+                                    "ws_auth", platform=platform, user_id=user_id, ok=False, reason="invalid api token"
+                                )
                                 await websocket.send_json({"type": "error", "error": "unauthorized"})
                                 await websocket.close()
                                 return websocket
@@ -1510,7 +1582,9 @@ class GatewayServer:
                             trusted = self._is_loopback_peer(request)
                             normally_ok = self.auth.is_authorized(platform, user_id)
                             if not (normally_ok or trusted):
-                                self.auth.audit("ws_auth", platform=platform, user_id=user_id, ok=False, reason="user unauthorized")
+                                self.auth.audit(
+                                    "ws_auth", platform=platform, user_id=user_id, ok=False, reason="user unauthorized"
+                                )
                                 await websocket.send_json({"type": "error", "error": "unauthorized"})
                                 await websocket.close()
                                 return websocket
@@ -1526,8 +1600,11 @@ class GatewayServer:
                             )
                             if sk_err:
                                 self.auth.audit(
-                                    "ws_auth", platform=platform, user_id=user_id,
-                                    ok=False, reason=sk_err,
+                                    "ws_auth",
+                                    platform=platform,
+                                    user_id=user_id,
+                                    ok=False,
+                                    reason=sk_err,
                                 )
                                 await websocket.send_json({"type": "error", "error": "forbidden session_key"})
                                 await websocket.close()
@@ -1547,7 +1624,9 @@ class GatewayServer:
                             await websocket.send_json({"type": "auth_ok", "session_key": session_key})
                             self.auth.audit("ws_auth", platform=platform, user_id=user_id, ok=True)
                             await self.hooks.emit(
-                                "auth_success", platform=platform, user_id=user_id,
+                                "auth_success",
+                                platform=platform,
+                                user_id=user_id,
                             )
                             continue
 
@@ -1562,13 +1641,14 @@ class GatewayServer:
                                 continue
 
                             try:
-                                idempotency_key = normalize_idempotency_key(
-                                    data.get("idempotency_key")
-                                )
+                                idempotency_key = normalize_idempotency_key(data.get("idempotency_key"))
                             except ValueError as e:
-                                await websocket.send_json({
-                                    "type": "error", "error": str(e),
-                                })
+                                await websocket.send_json(
+                                    {
+                                        "type": "error",
+                                        "error": str(e),
+                                    }
+                                )
                                 continue
 
                             claim = None
@@ -1578,15 +1658,19 @@ class GatewayServer:
                             if idempotency_key:
                                 scope = f"ws\0{principal}\0{session_key}"
                                 event_id = deterministic_event_id(
-                                    "gateway-message", scope, idempotency_key,
+                                    "gateway-message",
+                                    scope,
+                                    idempotency_key,
                                 )
-                                operation_fingerprint = self._idempotency_fingerprint({
-                                    "text": text,
-                                    "is_group": is_group,
-                                    "platform": platform,
-                                    "user_id": user_id,
-                                    "chat_id": chat_id,
-                                })
+                                operation_fingerprint = self._idempotency_fingerprint(
+                                    {
+                                        "text": text,
+                                        "is_group": is_group,
+                                        "platform": platform,
+                                        "user_id": user_id,
+                                        "chat_id": chat_id,
+                                    }
+                                )
                                 claim = await self._message_idempotency.claim(
                                     namespace="gateway-message",
                                     scope=scope,
@@ -1600,91 +1684,108 @@ class GatewayServer:
                                     },
                                 )
                                 if claim.outcome == "conflict":
-                                    await websocket.send_json({
-                                        "type": "error",
-                                        "error": "idempotency key was already used for a different request",
-                                    })
+                                    await websocket.send_json(
+                                        {
+                                            "type": "error",
+                                            "error": "idempotency key was already used for a different request",
+                                        }
+                                    )
                                     continue
                                 if claim.outcome == "full":
-                                    await websocket.send_json({
-                                        "type": "error", "error": "idempotency store is full",
-                                    })
+                                    await websocket.send_json(
+                                        {
+                                            "type": "error",
+                                            "error": "idempotency store is full",
+                                        }
+                                    )
                                     continue
                                 if claim.outcome == "duplicate" and claim.entry is not None:
                                     cached = claim.entry.admission
                                     if cached is None:
                                         try:
                                             cached = await self._message_idempotency.wait_admitted(
-                                                claim.entry, timeout=30,
+                                                claim.entry,
+                                                timeout=30,
                                             )
                                         except asyncio.TimeoutError:
-                                            await websocket.send_json({
-                                                "type": "error",
-                                                "error": "idempotency outcome pending",
-                                                "event_id": event_id,
-                                            })
+                                            await websocket.send_json(
+                                                {
+                                                    "type": "error",
+                                                    "error": "idempotency outcome pending",
+                                                    "event_id": event_id,
+                                                }
+                                            )
                                             continue
                                     await websocket.send_json(cached.payload)
                                     continue
 
                                 try:
-                                    durable_claim = (
-                                        await self._bus.claim_durable_idempotency(
-                                            event_id,
-                                            namespace="gateway-message",
-                                            fingerprint=operation_fingerprint,
-                                            session_key=session_key,
-                                        )
+                                    durable_claim = await self._bus.claim_durable_idempotency(
+                                        event_id,
+                                        namespace="gateway-message",
+                                        fingerprint=operation_fingerprint,
+                                        session_key=session_key,
                                     )
                                 except Exception as e:
                                     logger.error(
-                                        "Durable WS idempotency claim failed: {}", e,
+                                        "Durable WS idempotency claim failed: {}",
+                                        e,
                                     )
                                     await self._message_idempotency.abort(claim.entry)
-                                    await websocket.send_json({
-                                        "type": "error",
-                                        "error": "durable idempotency storage unavailable",
-                                    })
+                                    await websocket.send_json(
+                                        {
+                                            "type": "error",
+                                            "error": "durable idempotency storage unavailable",
+                                        }
+                                    )
                                     continue
                                 durable_outcome = durable_claim.get("outcome")
                                 durable_record = durable_claim.get("row")
                                 if durable_outcome == "full":
                                     await self._message_idempotency.abort(claim.entry)
-                                    await websocket.send_json({
-                                        "type": "error",
-                                        "error": "durable idempotency store is full",
-                                    })
+                                    await websocket.send_json(
+                                        {
+                                            "type": "error",
+                                            "error": "durable idempotency store is full",
+                                        }
+                                    )
                                     continue
                                 if durable_outcome == "conflict":
                                     await self._message_idempotency.abort(claim.entry)
-                                    await websocket.send_json({
-                                        "type": "error",
-                                        "error": "idempotency key was already used for a different request",
-                                    })
+                                    await websocket.send_json(
+                                        {
+                                            "type": "error",
+                                            "error": "idempotency key was already used for a different request",
+                                        }
+                                    )
                                     continue
-                                if (
-                                    durable_outcome == "duplicate"
-                                    and isinstance(durable_record, dict)
-                                ):
+                                if durable_outcome == "duplicate" and isinstance(durable_record, dict):
                                     payload, terminal = self._ws_turn_run_payload(
-                                        durable_record, event_id,
+                                        durable_record,
+                                        event_id,
                                     )
                                     if terminal:
                                         await self._message_idempotency.complete(
-                                            claim.entry, status=200, payload=payload,
+                                            claim.entry,
+                                            status=200,
+                                            payload=payload,
                                         )
                                     else:
                                         await self._message_idempotency.abort(
-                                            claim.entry, status=200, payload=payload,
+                                            claim.entry,
+                                            status=200,
+                                            payload=payload,
                                         )
                                     await websocket.send_json(payload)
                                     continue
                                 if durable_outcome != "new":
                                     await self._message_idempotency.abort(claim.entry)
-                                    await websocket.send_json({
-                                        "type": "error",
-                                        "error": "durable idempotency storage unavailable",
-                                    })
+                                    await websocket.send_json(
+                                        {
+                                            "type": "error",
+                                            "error": "durable idempotency storage unavailable",
+                                        }
+                                    )
                                     continue
                                 durable_claimed = True
 
@@ -1695,10 +1796,12 @@ class GatewayServer:
                                     await self._release_durable_claim(event_id)
                                     durable_claimed = False
                                     await self._message_idempotency.abort(claim.entry)
-                                    await websocket.send_json({
-                                        "type": "error",
-                                        "error": "durable idempotency storage unavailable",
-                                    })
+                                    await websocket.send_json(
+                                        {
+                                            "type": "error",
+                                            "error": "durable idempotency storage unavailable",
+                                        }
+                                    )
                                     continue
                                 if durable_row is not None and claim.entry is not None:
                                     if durable_fingerprint_conflicts(
@@ -1713,14 +1816,14 @@ class GatewayServer:
                                             "error": "idempotency key was already used for a different request",
                                         }
                                         await self._message_idempotency.abort(
-                                            claim.entry, status=409, payload=payload,
+                                            claim.entry,
+                                            status=409,
+                                            payload=payload,
                                         )
                                         await websocket.send_json(payload)
                                         continue
                                     try:
-                                        await self._bus.sync_durable_idempotency(
-                                            durable_row
-                                        )
+                                        await self._bus.sync_durable_idempotency(durable_row)
                                     except Exception as e:
                                         # Mirrors the HTTP path: release the
                                         # tombstone instead of pinning this key
@@ -1728,28 +1831,34 @@ class GatewayServer:
                                         # was also unguarded, so a storage error
                                         # escaped into the socket read loop.
                                         logger.error(
-                                            "Durable WS idempotency sync failed: {}", e,
+                                            "Durable WS idempotency sync failed: {}",
+                                            e,
                                         )
                                         await self._release_durable_claim(event_id)
                                         durable_claimed = False
-                                        await self._message_idempotency.abort(
-                                            claim.entry
+                                        await self._message_idempotency.abort(claim.entry)
+                                        await websocket.send_json(
+                                            {
+                                                "type": "error",
+                                                "error": "durable idempotency storage unavailable",
+                                            }
                                         )
-                                        await websocket.send_json({
-                                            "type": "error",
-                                            "error": "durable idempotency storage unavailable",
-                                        })
                                         continue
                                     payload, terminal = self._ws_turn_run_payload(
-                                        durable_row, event_id,
+                                        durable_row,
+                                        event_id,
                                     )
                                     if terminal:
                                         await self._message_idempotency.complete(
-                                            claim.entry, status=200, payload=payload,
+                                            claim.entry,
+                                            status=200,
+                                            payload=payload,
                                         )
                                     else:
                                         await self._message_idempotency.abort(
-                                            claim.entry, status=200, payload=payload,
+                                            claim.entry,
+                                            status=200,
+                                            payload=payload,
                                         )
                                     await websocket.send_json(payload)
                                     continue
@@ -1789,12 +1898,8 @@ class GatewayServer:
                                 event.metadata["gateway"] = True
                                 event.metadata["platform"] = platform
                                 if operation_fingerprint:
-                                    event.metadata[IDEMPOTENCY_NAMESPACE_METADATA] = (
-                                        "gateway-message"
-                                    )
-                                    event.metadata[IDEMPOTENCY_FINGERPRINT_METADATA] = (
-                                        operation_fingerprint
-                                    )
+                                    event.metadata[IDEMPOTENCY_NAMESPACE_METADATA] = "gateway-message"
+                                    event.metadata[IDEMPOTENCY_FINGERPRINT_METADATA] = operation_fingerprint
                                 await self._accept_turn(event, session)
                                 try:
                                     accepted = await self._bus.publish_inbound(event)
@@ -1806,12 +1911,11 @@ class GatewayServer:
                                     raise
                                 if not accepted:
                                     await self._bus.release_turn_acceptance(
-                                        event.event_id, event.session_key,
+                                        event.event_id,
+                                        event.session_key,
                                     )
                                     if durable_claimed:
-                                        await self._release_durable_claim(
-                                            event.event_id
-                                        )
+                                        await self._release_durable_claim(event.event_id)
                                         durable_claimed = False
                                     if claim is not None and claim.entry is not None:
                                         await self._message_idempotency.abort(
@@ -1821,17 +1925,16 @@ class GatewayServer:
                                                 "error": "server overloaded",
                                             },
                                         )
-                                    await websocket.send_json({
-                                        "type": "error", "error": "server overloaded",
-                                    })
+                                    await websocket.send_json(
+                                        {
+                                            "type": "error",
+                                            "error": "server overloaded",
+                                        }
+                                    )
                                     continue
                                 published = True
                                 if durable_claimed:
-                                    await asyncio.shield(
-                                        self._bus.mark_durable_idempotency_admitted(
-                                            event.event_id
-                                        )
-                                    )
+                                    await asyncio.shield(self._bus.mark_durable_idempotency_admitted(event.event_id))
                                     durable_claimed = False
                                 accepted_payload = {
                                     "type": "accepted",
@@ -1856,17 +1959,9 @@ class GatewayServer:
                                     and claim is not None
                                     and claim.entry is not None
                                 ):
-                                    await asyncio.shield(
-                                        self._message_idempotency.abort(claim.entry)
-                                    )
-                                if (
-                                    not published
-                                    and not publish_outcome_unknown
-                                    and durable_claimed
-                                ):
-                                    await asyncio.shield(
-                                        self._release_durable_claim(event_id)
-                                    )
+                                    await asyncio.shield(self._message_idempotency.abort(claim.entry))
+                                if not published and not publish_outcome_unknown and durable_claimed:
+                                    await asyncio.shield(self._release_durable_claim(event_id))
                                 clear_session_vars(tokens)
 
                         if msg_type == "interrupt":
@@ -2009,9 +2104,7 @@ class GatewayServer:
                     pass
                 self._pending_http.pop(correlation_id, None)
             if is_final:
-                idempotency_context = (
-                    await self._message_idempotency.context_for_event(correlation_id)
-                )
+                idempotency_context = await self._message_idempotency.context_for_event(correlation_id)
                 if idempotency_context.get("transport") == "ws":
                     # Usually the WS admission ACK already completed this entry.
                     # If publish admission became outcome-unknown (cancellation
@@ -2019,7 +2112,9 @@ class GatewayServer:
                     # and must settle the pending retry instead of leaving it to
                     # time out until the stale-entry backstop.
                     await self._message_idempotency.complete_event(
-                        correlation_id, status=200, payload=payload,
+                        correlation_id,
+                        status=200,
+                        payload=payload,
                     )
                 elif idempotency_context.get("transport") == "http":
                     # A normal non-wait request already cached its admission
@@ -2057,7 +2152,8 @@ class GatewayServer:
             "Outbound FINAL reply not delivered to live client "
             "(session_key={}, event_id={}): socket missing or closed. "
             "Reply is persisted to history but the attached client missed it.",
-            session_key, event.event_id,
+            session_key,
+            event.event_id,
         )
         return SendResult(
             success=False,

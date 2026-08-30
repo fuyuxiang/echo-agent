@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from enum import Enum
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from loguru import logger
@@ -37,8 +38,12 @@ class CostTracker:
     """
 
     def __init__(
-        self, *, storage: Any = None, enabled: bool = False,
-        daily_budget_usd: float = 0.0, soft_ratio: float = 0.8,
+        self,
+        *,
+        storage: Any = None,
+        enabled: bool = False,
+        daily_budget_usd: float = 0.0,
+        soft_ratio: float = 0.8,
         pricing_overrides: dict | None = None,
     ):
         self._storage = storage
@@ -53,6 +58,25 @@ class CostTracker:
         self._cache_read = 0
         self._cache_write = 0
         self._soft_warned = False
+        self._event_sink: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
+        self.skill_usage_available = storage is not None
+
+    def set_event_sink(
+        self,
+        sink: Callable[[str, dict[str, Any]], Awaitable[None]] | None,
+    ) -> None:
+        self._event_sink = sink
+
+    async def _emit_changed(self, dimension: str) -> None:
+        if self._event_sink is None:
+            return
+        try:
+            await self._event_sink(
+                "analytics_updated",
+                {"dimension": dimension, "window_date": self._window_date},
+            )
+        except Exception:
+            logger.debug("analytics event publish failed")
 
     @property
     def spent_usd(self) -> float:
@@ -82,6 +106,7 @@ class CostTracker:
     def _window_floor(days: int) -> str:
         """最早统计日(含)的 window_date 字符串。days<=0 归一为 1 天(仅今天)。"""
         from datetime import timedelta
+
         span = max(1, int(days))
         return (date.today() - timedelta(days=span - 1)).isoformat()
 
@@ -131,18 +156,51 @@ class CostTracker:
             for r in rows
         ]
 
-    # 技能维度尚无埋点(见 get_skill_usage)。HTTP 层据此如实告知客户端"未实现",
-    # 而不是让空数组假装成"这几天没调过技能"。补埋点时连同此标志一起翻转。
-    skill_usage_available: bool = False
-
     async def get_skill_usage(self, days: int = 7) -> list[dict[str, Any]]:
-        """技能调用排行。
+        """技能调用排行，区分成功和失败以便发现不稳定技能。"""
+        if self._storage is None:
+            return []
+        rows = await self._storage.fetch_sql(
+            "SELECT skill, SUM(calls) AS calls, SUM(successes) AS successes, "
+            "SUM(failures) AS failures FROM skill_usage_daily "
+            "WHERE window_date >= ? GROUP BY skill ORDER BY calls DESC, skill ASC",
+            (self._window_floor(days),),
+        )
+        return [
+            {
+                "skill": str(r["skill"]),
+                "calls": int(r["calls"] or 0),
+                "successes": int(r["successes"] or 0),
+                "failures": int(r["failures"] or 0),
+                "success_rate": round(int(r["successes"] or 0) / max(1, int(r["calls"] or 0)), 4),
+            }
+            for r in rows
+        ]
 
-        当前无数据源:成本埋点只记录 provider/model/channel 维度,从未记录 skill
-        调用次数(cost_ledger_dim 无 skill 列,也无独立的技能计数表)。故先返回空
-        使接口优雅降级;待技能执行路径补埋点后再实现。参数保留以稳定签名。
-        """
-        return []
+    async def record_skill(self, skill: str, success: bool) -> None:
+        """Record one skill_run outcome. Metering must never break tool execution."""
+        if self._storage is None or not skill.strip():
+            return
+        try:
+            self._roll_window()
+            await self._storage.execute_sql(
+                "INSERT INTO skill_usage_daily "
+                "(window_date, skill, calls, successes, failures, updated_at) "
+                "VALUES (?, ?, 1, ?, ?, ?) "
+                "ON CONFLICT(window_date, skill) DO UPDATE SET "
+                "calls = calls + 1, successes = successes + excluded.successes, "
+                "failures = failures + excluded.failures, updated_at = excluded.updated_at",
+                (
+                    self._window_date,
+                    skill.strip(),
+                    1 if success else 0,
+                    0 if success else 1,
+                    datetime.now().isoformat(),
+                ),
+            )
+            await self._emit_changed("skills")
+        except Exception:
+            logger.warning("skill usage record failed for '{}'", skill)
 
     def _roll_window(self) -> None:
         today = _today_key()
@@ -165,11 +223,14 @@ class CostTracker:
             self._cache_write += norm.cache_write
             await self._persist()
             await self._persist_dim(model, provider, channel, cost, norm)
+            await self._emit_changed("tokens")
             if self.check() == BudgetStatus.SOFT_EXCEEDED and not self._soft_warned:
                 self._soft_warned = True
                 logger.warning(
                     "Daily cost ${:.4f} crossed soft threshold ({:.0%} of ${:.2f}).",
-                    self._spent_usd, self._soft_ratio, self._daily_budget_usd,
+                    self._spent_usd,
+                    self._soft_ratio,
+                    self._daily_budget_usd,
                 )
         except Exception:
             logger.warning("cost record failed; metering skipped for this call")
@@ -186,8 +247,15 @@ class CostTracker:
                 "input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens, "
                 "cache_read_tokens=excluded.cache_read_tokens, "
                 "cache_write_tokens=excluded.cache_write_tokens, updated_at=excluded.updated_at",
-                (self._window_date, self._spent_usd, self._input, self._output,
-                 self._cache_read, self._cache_write, datetime.now().isoformat()),
+                (
+                    self._window_date,
+                    self._spent_usd,
+                    self._input,
+                    self._output,
+                    self._cache_read,
+                    self._cache_write,
+                    datetime.now().isoformat(),
+                ),
             )
         except Exception:
             logger.warning("cost_ledger persist failed; kept in memory")
@@ -213,9 +281,18 @@ class CostTracker:
                 "cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens, "
                 "cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens, "
                 "updated_at = excluded.updated_at",
-                (self._window_date, (provider or "").strip(), (model or "").strip(),
-                 (channel or "").strip(), cost, norm.input, norm.output,
-                 norm.cache_read, norm.cache_write, datetime.now().isoformat()),
+                (
+                    self._window_date,
+                    (provider or "").strip(),
+                    (model or "").strip(),
+                    (channel or "").strip(),
+                    cost,
+                    norm.input,
+                    norm.output,
+                    norm.cache_read,
+                    norm.cache_write,
+                    datetime.now().isoformat(),
+                ),
             )
         except Exception:
             logger.warning("cost_ledger_dim persist failed; attribution skipped for this call")

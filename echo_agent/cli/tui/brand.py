@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from echo_agent.cli.i18n import t
 
 _MAX_LEN = 80
 
@@ -31,9 +33,9 @@ class Brand:
     name: str = "echo"
     tagline: str = "agent"
     prompt: str = "❯"
-    placeholder: str = "输入消息…"
-    welcome: str = "输入消息开始对话  ·  /help 查看命令  ·  Ctrl+C 停止任务/退出"
-    goodbye: str = "再见 👋"
+    placeholder: str = field(default_factory=lambda: t("attach.ui.placeholder"))
+    welcome: str = field(default_factory=lambda: t("attach.ui.welcome"))
+    goodbye: str = field(default_factory=lambda: t("attach.ui.goodbye"))
 
 
 def _clean(value: str | None, fallback: str) -> str:

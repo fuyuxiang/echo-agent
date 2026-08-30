@@ -82,6 +82,39 @@ async def test_ws_dashboard_subscribe_and_receive(dashboard_ws_url):
 
 
 @pytest.mark.asyncio
+async def test_slow_subscriber_does_not_block_healthy_clients(monkeypatch):
+    """A stalled browser is isolated and evicted after a bounded send."""
+    from echo_agent.gateway import ws_dashboard
+    from echo_agent.gateway.ws_dashboard import DashboardWebSocket, _DashboardClient
+
+    class FakeSocket:
+        def __init__(self, *, slow=False):
+            self.slow = slow
+            self.messages = []
+
+        async def send_str(self, message):
+            if self.slow:
+                await asyncio.sleep(10)
+            self.messages.append(message)
+
+    monkeypatch.setattr(ws_dashboard, "_BROADCAST_SEND_TIMEOUT_SECONDS", 0.02)
+    hub = DashboardWebSocket(MagicMock())
+    fast_socket = FakeSocket()
+    slow_socket = FakeSocket(slow=True)
+    fast = _DashboardClient("fast", fast_socket)
+    slow = _DashboardClient("slow", slow_socket)
+    fast.subscriptions.add("tasks")
+    slow.subscriptions.add("tasks")
+    hub._clients = {"fast": fast, "slow": slow}
+
+    await asyncio.wait_for(hub.broadcast("task_created", {"id": "t1"}), timeout=0.5)
+
+    assert len(fast_socket.messages) == 1
+    assert "fast" in hub._clients
+    assert "slow" not in hub._clients
+
+
+@pytest.mark.asyncio
 async def test_cross_site_origin_rejected_before_upgrade(dashboard_ws_url):
     """A cross-site page must be refused at the HTTP layer. Once the socket is
     upgraded the browser's onopen has already fired, so rejecting inside the

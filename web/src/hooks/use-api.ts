@@ -37,7 +37,7 @@ export function useApi<T>(path: string | null) {
     setLoading(true);
     setError(null);
     try {
-      const result = await apiFetch<T>(path);
+      const result = await apiFetch<T>(path, { signal: controller.signal });
       if (controller.signal.aborted) return;
       setData(result);
     } catch (e: unknown) {

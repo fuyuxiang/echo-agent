@@ -168,4 +168,3 @@ if __name__ == "__main__":
         (generated / "config-example.en.yaml").write_text(render_yaml("en"), encoding="utf-8")
 
     print(f"配置参考已生成 / config reference generated: {base.resolve()}")
-

@@ -9,6 +9,7 @@ import time
 
 from textual.widgets import Static
 
+from echo_agent.cli.i18n import t
 from echo_agent.cli.render.status import (
     context_gauge,
     context_percent,
@@ -87,7 +88,7 @@ class StatusBar(Static):
 
         # 0. Connection + session (all tiers). Theme tokens so the light palette
         # stays legible — raw green/red on white failed the contrast bar.
-        conn = "[$success]●已连接[/]" if self._ok else "[$error]○已断开[/]"
+        conn = f"[$success]{t('attach.ui.connected')}[/]" if self._ok else f"[$error]{t('attach.ui.offline')}[/]"
         if self._session and tier == "wide":
             segments.append(f"{conn} {self._session}")
         else:
@@ -106,7 +107,7 @@ class StatusBar(Static):
                 bar = _ctx_bar(percent)
                 segments.append(f"{used_str}/{max_str} {bar} {percent}%")
             else:
-                segments.append("[$text-muted]上下文 —[/]")
+                segments.append(f"[$text-muted]{t('attach.ui.context_unknown')}[/]")
 
         # 3. Timer (all tiers)
         if self._turn_start is not None:

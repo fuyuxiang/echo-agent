@@ -276,4 +276,3 @@ def show_status(
     _render_text(data)
     return _status_exit_code(data)
 
-

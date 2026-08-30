@@ -8,5 +8,12 @@
   "inputTokens": "输入",
   "outputTokens": "输出",
   "costUsd": "成本(USD)",
-  "totalCost": "区间总成本：${{cost}}"
+  "totalCost": "区间总成本：${{cost}}",
+  "skillUsage": "Skill 调用质量",
+  "skillUnavailable": "未配置持久化用量存储，暂无法提供 Skill 调用统计。",
+  "skill": "Skill",
+  "calls": "调用次数",
+  "successes": "成功",
+  "failures": "失败",
+  "successRate": "成功率"
 }

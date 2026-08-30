@@ -40,6 +40,7 @@
   "runsAria": "View run history for {{name}}",
   "runsEmpty": "No runs recorded",
   "runsLimited": "The scheduler currently keeps only a summary of the most recent run",
+  "runsRetention": "Each job persistently retains its 100 most recent outcomes",
   "runCount": "{{count}} runs total",
   "runTime": "Time",
   "runStatus": "Status",

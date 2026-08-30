@@ -3,6 +3,7 @@
 Provides `/ws/dashboard` with token auth, channel subscribe/unsubscribe,
 and a broadcast helper callable from other modules.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -16,6 +17,8 @@ from echo_agent.gateway import ws_common
 
 if TYPE_CHECKING:
     from echo_agent.gateway.server import GatewayServer
+
+_BROADCAST_SEND_TIMEOUT_SECONDS = 2.0
 
 
 class DashboardWebSocket:
@@ -45,7 +48,8 @@ class DashboardWebSocket:
 
         if self._unauthenticated >= ws_common.MAX_UNAUTHENTICATED_CLIENTS:
             self._server.auth.audit(
-                "dashboard_ws_auth", ok=False,
+                "dashboard_ws_auth",
+                ok=False,
                 reason=f"too many unauthenticated clients ({self._unauthenticated})",
             )
             return web.json_response({"error": "too many unauthenticated connections"}, status=503)
@@ -93,18 +97,16 @@ class DashboardWebSocket:
                     # Once authenticated the client is a legitimate long-lived
                     # subscriber and must be able to sit idle between events.
                     msg = await asyncio.wait_for(
-                        ws.receive(), timeout=auth_deadline.remaining(),
+                        ws.receive(),
+                        timeout=auth_deadline.remaining(),
                     )
                 except asyncio.TimeoutError:
-                    self._server.auth.audit(
-                        "dashboard_ws_auth", ok=False, reason="authentication timeout"
-                    )
+                    self._server.auth.audit("dashboard_ws_auth", ok=False, reason="authentication timeout")
                     await ws.close()
                     break
 
                 if msg.type != WSMsgType.TEXT:
-                    if msg.type in (WSMsgType.ERROR, WSMsgType.CLOSE, WSMsgType.CLOSED,
-                                    WSMsgType.CLOSING):
+                    if msg.type in (WSMsgType.ERROR, WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING):
                         break
                     continue
 
@@ -132,9 +134,7 @@ class DashboardWebSocket:
                         self._server.auth.audit("dashboard_ws_auth", ok=True)
                         await ws.send_json({"type": "auth_ok"})
                     else:
-                        self._server.auth.audit(
-                            "dashboard_ws_auth", ok=False, reason="invalid token"
-                        )
+                        self._server.auth.audit("dashboard_ws_auth", ok=False, reason="invalid token")
                         await ws.send_json({"type": "auth_error", "message": "invalid token"})
                         await ws.close()
                         break
@@ -152,17 +152,21 @@ class DashboardWebSocket:
                         # Silently accepting an unknown channel produced a
                         # subscription that could never deliver anything, which
                         # the UI could not distinguish from an idle one.
-                        await ws.send_json({
-                            "type": "subscribe_error",
-                            "channels": sorted(accepted),
-                            "unknown": unknown,
-                            "message": "unknown channel(s)",
-                        })
+                        await ws.send_json(
+                            {
+                                "type": "subscribe_error",
+                                "channels": sorted(accepted),
+                                "unknown": unknown,
+                                "message": "unknown channel(s)",
+                            }
+                        )
                     else:
-                        await ws.send_json({
-                            "type": "subscribed",
-                            "channels": sorted(client.subscriptions),
-                        })
+                        await ws.send_json(
+                            {
+                                "type": "subscribed",
+                                "channels": sorted(client.subscriptions),
+                            }
+                        )
 
                 elif msg_type == "unsubscribe":
                     channels = [str(c) for c in (data.get("channels") or [])]
@@ -176,16 +180,11 @@ class DashboardWebSocket:
 
         return ws
 
-    # Event prefix → subscription channel. `tasks` (tasks.manager) and `cron`
-    # (scheduler.service) are the two with a live sink wired in app.py; the rest
-    # are reserved names that nothing emits into yet, so subscribing to them
-    # from the UI silently yields no events. Keep them declared so a future
-    # emitter routes correctly without a protocol change, but do not treat their
-    # presence as a signal that the channel is live.
+    # Event prefix → subscription channel. Every declared channel has a live
+    # producer wired at the composition root or in GatewayServer.
     _EVENT_CHANNEL_MAP: dict[str, str] = {
         "task": "tasks",
         "cron": "cron",
-        # --- reserved, no emitter yet ---
         "session": "sessions",
         "memory": "memory",
         "skill": "skills",
@@ -207,15 +206,28 @@ class DashboardWebSocket:
             prefix = event_type.split("_")[0] if "_" in event_type else event_type
             ch = self._EVENT_CHANNEL_MAP.get(prefix, prefix)
         message = json.dumps({"type": event_type, "payload": payload})
-        dead: list[str] = []
-        for cid, client in list(self._clients.items()):
-            if ch in client.subscriptions:
-                try:
-                    await client.ws.send_str(message)
-                except Exception:
-                    dead.append(cid)
-        for cid in dead:
-            self._clients.pop(cid, None)
+        subscribers = [
+            (cid, client)
+            for cid, client in list(self._clients.items())
+            if ch in client.subscriptions
+        ]
+
+        async def _send(cid: str, client: _DashboardClient) -> tuple[str, bool]:
+            try:
+                await asyncio.wait_for(
+                    client.ws.send_str(message),
+                    timeout=_BROADCAST_SEND_TIMEOUT_SECONDS,
+                )
+                return cid, True
+            except Exception:
+                # A slow or broken browser must not hold up the mutation that
+                # produced this event, nor delay delivery to healthy clients.
+                return cid, False
+
+        results = await asyncio.gather(*(_send(cid, client) for cid, client in subscribers))
+        for cid, delivered in results:
+            if not delivered:
+                self._clients.pop(cid, None)
 
     async def close_all(self) -> None:
         """Close every dashboard socket, for gateway shutdown.
@@ -235,7 +247,8 @@ class DashboardWebSocket:
             for client in list(store.values()):
                 try:
                     await client.ws.close(
-                        code=aiohttp.WSCloseCode.GOING_AWAY, message=b"shutdown",
+                        code=aiohttp.WSCloseCode.GOING_AWAY,
+                        message=b"shutdown",
                     )
                 except Exception:
                     # A socket already gone is exactly what we wanted; never let one

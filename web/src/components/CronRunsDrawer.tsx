@@ -19,13 +19,11 @@ interface CronRun {
  * status string but never the error text behind a failure, so a job that had
  * been failing all week looked identical to one that had never run.
  *
- * The scheduler derives this from current job state rather than a persisted
- * log — at most one entry comes back. That limit is stated in the UI so an
- * empty-looking history is not mistaken for "nothing ever ran".
+ * History is persisted with the job and bounded to the latest 100 outcomes.
  */
 export function CronRunsDrawer({ job, onClose }: { job: CronJob; onClose: () => void }) {
   const { t } = useTranslation(["cron", "common"]);
-  const { data, loading, error } = useApi<{ runs: CronRun[] }>(`/cron/${job.id}/runs`);
+  const { data, loading, error } = useApi<{ runs: CronRun[] }>(`/cron/${job.id}/runs?limit=100`);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
@@ -93,7 +91,7 @@ export function CronRunsDrawer({ job, onClose }: { job: CronJob; onClose: () => 
           </ul>
         )}
 
-        <p className="text-xs text-gray-400 border-t pt-3">{t("runsLimited")}</p>
+        <p className="text-xs text-gray-400 border-t pt-3">{t("runsRetention")}</p>
       </aside>
     </div>
   );

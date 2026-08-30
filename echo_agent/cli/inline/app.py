@@ -31,6 +31,7 @@ from typing import Any, Awaitable, Callable
 from prompt_toolkit.completion import Completer
 
 from echo_agent.agent.proc_lifecycle import run_owned
+from echo_agent.cli.i18n import t
 from echo_agent.cli.palette import active_palette
 from echo_agent.cli.inline.printer import InlinePrinter
 from echo_agent.cli.render import ansi as A
@@ -60,7 +61,7 @@ from echo_agent.cli.tui.turns import TurnRegistry
 
 Send = Callable[[str], Awaitable[None]]
 Interrupt = Callable[[str], Awaitable[None]]
-Reconnect = Callable[[], Awaitable[bool]]
+Reconnect = Callable[[], Awaitable[bool | dict[str, Any]]]
 TurnStatus = Callable[[str], Awaitable[dict]]
 InputReader = Callable[[], str | Awaitable[str]]
 
@@ -165,9 +166,7 @@ class InlineApp:
         self._reconnect = reconnect_coro
         self._turn_status: TurnStatus | None = None
         self._session_key = session_key
-        self._save_dir = (
-            Path(save_dir) if save_dir is not None else Path.cwd() / "transcripts"
-        )
+        self._save_dir = Path(save_dir) if save_dir is not None else Path.cwd() / "transcripts"
         self._base_stream = stream if stream is not None else sys.stdout
         self._printer = InlinePrinter(self._base_stream)
         self._input_reader = input_reader
@@ -232,12 +231,13 @@ class InlineApp:
             + A.paint(f" · {self._brand.tagline}", A.fg("text-muted"))
         )
         if self._session_key:
-            self._printer.child(f"会话 {self._session_key}")
+            self._printer.child(t("attach.ui.session", session_key=self._session_key))
         self._printer.cont(self._brand.welcome)
         self._printer.blank()
         self._group = None
 
-    def _start_activity(self, label: str = "正在分析请求") -> None:
+    def _start_activity(self, label: str | None = None) -> None:
+        label = label or t("attach.ui.activity_analyze")
         self._activity_label = label
         was_active = bool(self._turn_started)
         if not self._turn_started:
@@ -258,9 +258,7 @@ class InlineApp:
         if not self._printer.is_tty:
             return
         try:
-            self._activity_task = asyncio.get_running_loop().create_task(
-                self._animate_activity()
-            )
+            self._activity_task = asyncio.get_running_loop().create_task(self._animate_activity())
         except RuntimeError:
             self._activity_task = None
 
@@ -326,14 +324,12 @@ class InlineApp:
         # draft only as state; the authoritative final is rendered exactly once.
         # Only a bounded tail is useful for diagnostics; the final frame is the
         # authority, so retaining an entire long draft would waste memory.
-        self._drafts[inbound_id] = (
-            self._drafts.get(inbound_id, "") + text
-        )[-256:]
-        self._start_activity("正在生成回答")
+        self._drafts[inbound_id] = (self._drafts.get(inbound_id, "") + text)[-256:]
+        self._start_activity(t("attach.ui.activity_generate"))
 
     def on_user_reply_reset(self, inbound_id: str) -> None:
         self._drafts.pop(inbound_id, None)
-        self._start_activity("正在重新规划")
+        self._start_activity(t("attach.ui.activity_replan"))
 
     def on_user_reply_final(self, inbound_id: str, text: str) -> None:
         kind = self._turns.on_final(inbound_id)
@@ -361,9 +357,13 @@ class InlineApp:
         self._begin("model")
         self._printer.reply(body)
         self._conversation.append({"role": "assistant", "text": body})
-        self._audit.append({
-            "type": "assistant", "event_id": inbound_id, "text": body,
-        })
+        self._audit.append(
+            {
+                "type": "assistant",
+                "event_id": inbound_id,
+                "text": body,
+            }
+        )
         if inbound_id:
             self._last_reply_event_id = inbound_id
         self._cleared_since_reply = False
@@ -381,30 +381,37 @@ class InlineApp:
             stage = str(data.get("stage", "")).strip()
             if stage and self._turns.has_active_primary:
                 labels = {
-                    "thinking": "正在推理下一步",
-                    "tool": "正在调用工具",
-                    "calling_tool": "正在调用工具",
-                    "responding": "正在生成回答",
-                    "generating": "正在生成回答",
+                    "thinking": t("attach.ui.activity_reason"),
+                    "tool": t("attach.ui.activity_tool"),
+                    "calling_tool": t("attach.ui.activity_tool"),
+                    "responding": t("attach.ui.activity_generate"),
+                    "generating": t("attach.ui.activity_generate"),
                 }
-                self._start_activity(labels.get(stage, "正在处理"))
+                self._start_activity(labels.get(stage, t("attach.ui.activity_process")))
             return
         if cog == "cost_update":
-            self._status.update({
-                key: data.get(key)
-                for key in (
-                    "total_cost", "model", "context_used", "context_max",
-                    "memory_count",
-                )
-                if data.get(key) is not None
-            })
+            self._status.update(
+                {
+                    key: data.get(key)
+                    for key in (
+                        "total_cost",
+                        "model",
+                        "context_used",
+                        "context_max",
+                        "memory_count",
+                    )
+                    if data.get(key) is not None
+                }
+            )
             self._invalidate_toolbar()
             return
         if cog == "approval_request":
             self._pause_activity()
             self._pending_approval = _Approval(
-                str(data.get("request_id", "")), str(data.get("action", "")),
-                data.get("params") or {}, str(data.get("risk", "")),
+                str(data.get("request_id", "")),
+                str(data.get("action", "")),
+                data.get("params") or {},
+                str(data.get("risk", "")),
             )
             self._show_approval(self._pending_approval)
             return
@@ -413,14 +420,15 @@ class InlineApp:
             request_id = str(data.get("request_id", ""))
             if pending is not None and (not request_id or request_id == pending.request_id):
                 self._pending_approval = None
-                self._notice("审批请求已关闭。")
+                self._notice(t("attach.ui.approval_closed"))
                 if self._turns.has_active_primary:
-                    self._start_activity("正在继续执行")
+                    self._start_activity(t("attach.ui.activity_continue"))
             return
         if cog == "clarify_request":
             self._pause_activity()
             self._pending_clarify = _Clarify(
-                str(data.get("clarify_id", "")), str(data.get("question", "")),
+                str(data.get("clarify_id", "")),
+                str(data.get("question", "")),
                 _normalise_options(data.get("options")),
             )
             self._show_clarify(self._pending_clarify)
@@ -431,7 +439,7 @@ class InlineApp:
             if pending is not None and (not clarify_id or clarify_id == pending.clarify_id):
                 self._pending_clarify = None
                 if self._turns.has_active_primary:
-                    self._start_activity("正在继续执行")
+                    self._start_activity(t("attach.ui.activity_continue"))
             return
         if cog == "tool_call":
             self._handle_tool(ev)
@@ -470,7 +478,8 @@ class InlineApp:
                     active["_parallel"] = True
             displayed = bool(merged.get("_displayed"))
             if not displayed and self._details.shows(
-                "tool_call", tool_name=name,
+                "tool_call",
+                tool_name=name,
             ):
                 self._begin("trail")
                 self._printer.tool_start(name, merged.get("params") or {})
@@ -481,8 +490,8 @@ class InlineApp:
             obj = pick_object(name, merged.get("params") or {})
             label = f"{humanize_tool(name)} {obj}".rstrip()
             if count > 1:
-                label += f" · {count} 个工具"
-            self._start_activity(f"正在{label}")
+                label += f" · {t('attach.ui.tools_count', count=count)}"
+            self._start_activity(t("attach.ui.activity_running", label=label))
             return
 
         self._tools.pop(tcid, None)
@@ -490,14 +499,19 @@ class InlineApp:
         failed = status not in ("running", "ok")
         displayed = bool(merged.get("_displayed"))
         should_show = self._details.shows(
-            "tool_call", failed=failed, tool_name=name,
+            "tool_call",
+            failed=failed,
+            tool_name=name,
         )
         if displayed or should_show:
             self._begin("trail")
             if displayed:
                 self._printer.tool_result(
-                    name, merged.get("params") or {}, status,
-                    merged.get("result_meta"), str(merged.get("result_text", "")),
+                    name,
+                    merged.get("params") or {},
+                    status,
+                    merged.get("result_meta"),
+                    str(merged.get("result_text", "")),
                     merged.get("duration_ms"),
                     include_identity=bool(merged.get("_parallel")),
                 )
@@ -505,8 +519,11 @@ class InlineApp:
                 # Terminal-only delivery (or a failure hidden while running)
                 # still needs a self-contained action/result block.
                 self._printer.tool_line(
-                    name, merged.get("params") or {}, status,
-                    merged.get("result_meta"), str(merged.get("result_text", "")),
+                    name,
+                    merged.get("params") or {},
+                    status,
+                    merged.get("result_meta"),
+                    str(merged.get("result_text", "")),
                     merged.get("duration_ms"),
                 )
             if self._details.starts_expanded("tool_call"):
@@ -519,12 +536,12 @@ class InlineApp:
             active = next(iter(self._tools.values()))
             active_name = str(active.get("name", "tool"))
             active_obj = pick_object(active_name, active.get("params") or {})
-            label = f"正在{humanize_tool(active_name)} {active_obj}".rstrip()
+            label = f"{humanize_tool(active_name)} {active_obj}".rstrip()
             if len(self._tools) > 1:
-                label += f" · {len(self._tools)} 个工具"
-            self._start_activity(label)
+                label += f" · {t('attach.ui.tools_count', count=len(self._tools))}"
+            self._start_activity(t("attach.ui.activity_running", label=label))
         elif self._turns.has_active_primary:
-            self._start_activity("正在分析工具结果")
+            self._start_activity(t("attach.ui.activity_tool_result"))
 
     def _retire_running_tools(self) -> None:
         """Settle transient-only tool state when no done frame can follow."""
@@ -534,7 +551,9 @@ class InlineApp:
             params = tool.get("params") or {}
             if tool.get("_displayed"):
                 self._printer.tool_result(
-                    name, params, "interrupted",
+                    name,
+                    params,
+                    "interrupted",
                     include_identity=bool(tool.get("_parallel")),
                 )
             else:
@@ -549,12 +568,12 @@ class InlineApp:
             return
         if data.get("streaming"):
             self._thinking[tid] = ev
-            self._start_activity("正在推理下一步")
+            self._start_activity(t("attach.ui.activity_reason"))
             return
         self._thinking.pop(tid, None)
         if not self._details.shows("thinking"):
             return
-        summary = mask_sensitive_strings(ev.summary or "已完成思考")
+        summary = mask_sensitive_strings(ev.summary or t("attach.ui.thought_complete"))
         self._begin("trail")
         self._printer.head(summary, glyph="✻")
         if self._details.starts_expanded("thinking") and data.get("text"):
@@ -563,26 +582,26 @@ class InlineApp:
 
     def _show_approval(self, pending: _Approval) -> None:
         self._begin("ui")
-        action = mask_sensitive_strings(humanize_tool(pending.action) or "执行操作")
-        self._printer.head(f"需要确认：{action}", glyph="✦", style=A.fg("warning"))
+        action = mask_sensitive_strings(humanize_tool(pending.action) or t("attach.ui.approval_action"))
+        self._printer.head(t("attach.ui.approval_title", action=action), glyph="✦", style=A.fg("warning"))
         if pending.risk:
-            self._printer.child(f"风险：{humanize_risk(pending.risk)}")
+            self._printer.child(t("attach.ui.risk", risk=humanize_risk(pending.risk)))
         for entry in format_params(pending.params, value_width=100):
             self._printer.cont(entry)
-        self._printer.cont("输入 y 批准 · n 拒绝 · a 本会话始终允许")
+        self._printer.cont(t("attach.ui.approval_hint"))
 
     def _show_clarify(self, pending: _Clarify) -> None:
         self._begin("ui")
-        self._printer.head(pending.question or "需要补充信息", glyph="?")
+        self._printer.head(pending.question or t("attach.ui.clarify_title"), glyph="?")
         for index, (label, _answer) in enumerate(pending.options, 1):
             self._printer.child(f"{index}. {mask_sensitive_strings(label)}")
-        hint = "输入序号或直接输入答案" if pending.options else "请直接输入答案"
+        hint = t("attach.ui.clarify_options" if pending.options else "attach.ui.clarify_text")
         self._printer.cont(hint)
 
     def on_error(self, msg: str) -> None:
         self._finish_activity("error")
         self._retire_running_tools()
-        self._notice(msg or "未知错误", error=True)
+        self._notice(msg or t("attach.ui.unknown_error"), error=True)
         self._turns.on_terminal_error()
         self._pending_display.clear()
         self._drafts.clear()
@@ -600,7 +619,7 @@ class InlineApp:
         self._pending_approval = None
         self._pending_clarify = None
         self._stop_requested = False
-        self._notice("连接已断开。输入 /reconnect 重连，Ctrl+D 退出。", error=True)
+        self._notice(t("attach.ui.disconnected"), error=True)
 
     def notify_reconnected(self) -> None:
         self._connected = True
@@ -613,7 +632,7 @@ class InlineApp:
         self._pending_approval = None
         self._pending_clarify = None
         self._stop_requested = False
-        self._notice("已重新连接。")
+        self._notice(t("attach.ui.reconnected"))
 
     def replay_missed_reply(self, text: str, event_id: str = "") -> None:
         body = str(text or "").strip()
@@ -622,13 +641,12 @@ class InlineApp:
         if event_id and event_id == self._last_reply_event_id:
             return
         last = next(
-            (item["text"] for item in reversed(self._conversation)
-             if item["role"] == "assistant"),
+            (item["text"] for item in reversed(self._conversation) if item["role"] == "assistant"),
             "",
         )
         if not self._cleared_since_reply and last.strip() == body:
             return
-        self._notice("补显示断连期间完成的回复：")
+        self._notice(t("attach.ui.missed_reply"))
         self.on_user_reply_final(event_id, body)
 
     # -------------------------------------------------------------------- input
@@ -700,8 +718,11 @@ class InlineApp:
             event.app.exit(exception=KeyboardInterrupt)
 
         session = PromptSession(
-            history=InMemoryHistory(), completer=_SlashCompleter(),
-            complete_while_typing=True, multiline=False, key_bindings=keys,
+            history=InMemoryHistory(),
+            completer=_SlashCompleter(),
+            complete_while_typing=True,
+            multiline=False,
+            key_bindings=keys,
         )
         self._prompt_session = session
         try:
@@ -768,12 +789,12 @@ class InlineApp:
 
         segments: list[list[tuple[str, str]]] = []
         if self._connected:
-            connection = "●已连接"
+            connection = t("attach.ui.connected")
             if wide and self._session_key:
                 connection += f" {clip(self._session_key, 24)}"
             segments.append([("class:status.ok", connection)])
         else:
-            segments.append([("class:status.bad", "○已断开")])
+            segments.append([("class:status.bad", t("attach.ui.offline"))])
 
         model = clip(str(self._status.get("model") or "—"), 24 if wide else 16)
         if mid:
@@ -785,19 +806,19 @@ class InlineApp:
         if wide:
             if context_max:
                 gauge_style = (
-                    "class:status.bad" if percent >= 80 else
-                    "class:status.warn" if percent >= 50 else
-                    "class:status.ok"
+                    "class:status.bad" if percent >= 80 else "class:status.warn" if percent >= 50 else "class:status.ok"
                 )
-                segments.append([
-                    ("class:status.base", f"{fmt_tokens(context_used)}/{fmt_tokens(context_max)} "),
-                    (gauge_style, context_gauge(percent)),
-                    ("class:status.base", f" {percent}%"),
-                ])
+                segments.append(
+                    [
+                        ("class:status.base", f"{fmt_tokens(context_used)}/{fmt_tokens(context_max)} "),
+                        (gauge_style, context_gauge(percent)),
+                        ("class:status.base", f" {percent}%"),
+                    ]
+                )
             else:
-                segments.append([("class:status.muted", "上下文 —")])
+                segments.append([("class:status.muted", t("attach.ui.context_unknown"))])
         elif mid and context_max:
-            segments.append([("class:status.base", f"上下文 {percent}%")])
+            segments.append([("class:status.base", t("attach.ui.context", percent=percent))])
 
         if self._turn_started:
             elapsed = time.monotonic() - self._turn_started
@@ -807,10 +828,10 @@ class InlineApp:
             activity = "/reconnect"
             activity_style = "class:status.bad"
         elif self._pending_approval:
-            activity = "✦ 等待确认 · y/n/a"
+            activity = t("attach.ui.waiting_approval")
             activity_style = "class:status.warn"
         elif self._pending_clarify:
-            activity = "? 等待补充信息"
+            activity = t("attach.ui.waiting_clarification")
             activity_style = "class:status.warn"
         elif self._turns.has_active_primary or self._turn_started:
             # The spinner immediately above the prompt already names the live
@@ -818,21 +839,19 @@ class InlineApp:
             # compete for attention; the status row owns time and controls.
             activity = f"⏱ {fmt_duration(elapsed)}"
             if width >= 58:
-                activity += " · Ctrl+C 停止"
+                activity += f" · {t('attach.ui.stop_hint')}"
             activity_style = "class:status.info"
         elif self._turn_elapsed > 0:
-            tool_suffix = (
-                f" · {len(self._turn_tool_ids)} 个工具"
-                if self._turn_tool_ids and wide else ""
-            )
+            tool_suffix = f" · {t('attach.ui.tools_count', count=len(self._turn_tool_ids))}" if self._turn_tool_ids and wide else ""
             outcomes = {
                 "done": ("✓", "", "class:status.muted"),
-                "error": ("✗", "出错 · ", "class:status.bad"),
-                "interrupted": ("■", "已中断 · ", "class:status.warn"),
-                "disconnected": ("○", "上轮断开 · ", "class:status.warn"),
+                "error": ("✗", t("attach.ui.outcome_error"), "class:status.bad"),
+                "interrupted": ("■", t("attach.ui.outcome_interrupted"), "class:status.warn"),
+                "disconnected": ("○", t("attach.ui.outcome_disconnected"), "class:status.warn"),
             }
             mark, label, activity_style = outcomes.get(
-                self._turn_outcome, outcomes["done"],
+                self._turn_outcome,
+                outcomes["done"],
             )
             activity = f"{mark} {label}{fmt_duration(elapsed)}{tool_suffix}"
         else:
@@ -875,10 +894,7 @@ class InlineApp:
         arg = raw_arg.strip()
 
         # Escape hatches stay available even when a question owns the input.
-        if (
-            (self._pending_clarify or self._pending_approval)
-            and lowered in self._CLARIFY_SAFE
-        ):
+        if (self._pending_clarify or self._pending_approval) and lowered in self._CLARIFY_SAFE:
             if await self._run_local(lowered, arg):
                 return
         if self._pending_approval:
@@ -890,7 +906,7 @@ class InlineApp:
             elif decision in {"n", "no", "否", "拒绝"}:
                 await self._decide_approval("deny")
             else:
-                self._notice("当前操作等待确认，请输入 y、n 或 a。")
+                self._notice(t("attach.ui.approval_invalid"))
             return
         if self._pending_clarify:
             await self._answer_clarify(text)
@@ -898,34 +914,36 @@ class InlineApp:
         if await self._run_local(lowered, arg):
             return
         if not self._connected:
-            self._notice("未连接。请先输入 /reconnect 重连。", error=True)
+            self._notice(t("attach.ui.not_connected"), error=True)
             return
 
         if lowered in self._SERVER_CONTROLS:
             await self._send_message(
-                text, "control", display_control=lowered == "/approvals",
+                text,
+                "control",
+                display_control=lowered == "/approvals",
             )
             return
-        if not text.startswith("/") and self._turns.has_active_primary:
+        if lowered not in self._SERVER_CONTROLS and self._turns.has_active_primary:
             now = time.monotonic()
             if now - self._last_queue_confirm >= self.QUEUE_CONFIRM_WINDOW:
                 self._last_queue_confirm = now
                 self._prompt_default = text
                 kept = self._input_reader is None and self._printer.is_tty
-                self._notice(
-                    "上一轮仍在进行；再次提交会将此消息排队。"
-                    + ("已将原文保留在输入框，" if kept else "重新输入后")
-                    + "再次提交以确认，或按 Ctrl+C 停止当前任务。"
-                )
+                self._notice(t("attach.ui.queue_confirm_kept" if kept else "attach.ui.queue_confirm_retype"))
                 return
         self._last_queue_confirm = 0.0
         self._conversation.append({"role": "user", "text": text})
         self._audit.append({"type": "user", "text": text})
-        self._start_activity("正在分析请求")
+        self._start_activity(t("attach.ui.activity_analyze"))
         await self._send_message(text, "primary")
 
     async def _send_message(
-        self, text: str, kind: str, *, display_control: bool = False,
+        self,
+        text: str,
+        kind: str,
+        *,
+        display_control: bool = False,
     ) -> bool:
         if not self._connected:
             return False
@@ -945,17 +963,15 @@ class InlineApp:
         if pending is None:
             return
         command = (
-            approve_command(pending.request_id, level)
-            if decision == "approve"
-            else deny_command(pending.request_id)
+            approve_command(pending.request_id, level) if decision == "approve" else deny_command(pending.request_id)
         )
         if not await self._send_message(command, "control"):
             return
         self._pending_approval = None
         self._begin("ui")
-        mark = "已批准" if decision == "approve" else "已拒绝"
+        mark = t("attach.ui.approved" if decision == "approve" else "attach.ui.denied")
         self._printer.child(mark, dim=False)
-        self._start_activity("正在继续执行")
+        self._start_activity(t("attach.ui.activity_continue"))
 
     async def _answer_clarify(self, raw: str) -> None:
         pending = self._pending_clarify
@@ -967,16 +983,17 @@ class InlineApp:
             if 0 <= index < len(pending.options):
                 answer = pending.options[index][1]
             else:
-                self._notice(f"请输入 1–{len(pending.options)} 中的序号，或直接输入文本答案。")
+                self._notice(t("attach.ui.clarify_range", count=len(pending.options)))
                 return
         if not await self._send_message(
-            clarify_command(pending.clarify_id, answer), "control",
+            clarify_command(pending.clarify_id, answer),
+            "control",
         ):
             return
         self._pending_clarify = None
         self._begin("ui")
-        self._printer.child(f"已回答：{mask_sensitive_strings(answer)}", dim=False)
-        self._start_activity("正在继续执行")
+        self._printer.child(t("attach.ui.answered", answer=mask_sensitive_strings(answer)), dim=False)
+        self._start_activity(t("attach.ui.activity_continue"))
 
     async def handle_ctrl_c(self) -> None:
         if self._pending_approval is not None:
@@ -993,15 +1010,15 @@ class InlineApp:
                 return
             self._pending_clarify = None
             self._stop_requested = True
-            self._activity_label = "正在停止"
-            self._notice("已请求停止当前任务…")
+            self._activity_label = t("attach.ui.activity_stop")
+            self._notice(t("attach.ui.stop_requested"))
             return
         now = time.monotonic()
         if now - self._last_ctrl_c < self.CTRL_C_EXIT_WINDOW:
             self._exit_requested = True
             return
         self._last_ctrl_c = now
-        self._notice("再次按 Ctrl+C 退出（Ctrl+D 直接退出）。")
+        self._notice(t("attach.ui.ctrl_c_exit"))
 
     # -------------------------------------------------------------- local cmds
     async def _run_local(self, name: str, arg: str) -> bool:
@@ -1047,8 +1064,8 @@ class InlineApp:
 
     def _show_help(self) -> None:
         self._begin("note")
-        self._printer.head("可用命令", glyph="/")
-        for title, scope in (("本地", "local"), ("服务端", "server")):
+        self._printer.head(t("attach.help.title"), glyph="/")
+        for title, scope in ((t("attach.ui.scope_local"), "local"), (t("attach.ui.scope_server"), "server")):
             self._printer.child(title, dim=False)
             for command in (c for c in COMMANDS if c.scope == scope):
                 args = f" {command.arg_template}" if command.arg_template else ""
@@ -1056,26 +1073,42 @@ class InlineApp:
 
     async def _do_reconnect(self) -> None:
         if self._connected:
-            self._notice("当前已连接，无需重连。")
+            self._notice(t("attach.ui.already_connected"))
             return
         if self._reconnect is None:
-            self._notice("此环境不支持重连，请重新启动 echo-agent cli。", error=True)
+            self._notice(t("attach.ui.reconnect_unsupported"), error=True)
             return
-        self._notice("正在重连…")
+        self._notice(t("attach.ui.reconnecting"))
         try:
-            ok = await self._reconnect()
+            result = await self._reconnect()
         except Exception:
-            ok = False
+            result = False
+        ok = bool(result.get("ok", True)) if isinstance(result, dict) else bool(result)
         if ok:
             self.notify_reconnected()
+            if isinstance(result, dict) and isinstance(result.get("turn"), dict):
+                self.restore_reconnected_turn(result["turn"])
             await self._do_status("", quiet=True)
         else:
-            self._notice("重连失败。请确认网关仍在运行后重试。", error=True)
+            self._notice(t("attach.ui.reconnect_failed"), error=True)
+
+    def restore_reconnected_turn(self, turn: dict) -> None:
+        if str(turn.get("status") or "") not in {
+            "accepted",
+            "running",
+            "waiting_approval",
+            "waiting_clarification",
+        }:
+            return
+        event_id = str(turn.get("event_id") or "")
+        if event_id:
+            self._turns.restore_active(event_id)
+            self._start_activity(str(turn.get("current_tool") or "running"))
 
     async def _do_status(self, event_id: str = "", *, quiet: bool = False) -> None:
         if self._turn_status is None:
             if not quiet:
-                self._notice("当前连接不支持回合状态查询。", error=True)
+                self._notice(t("attach.ui.status_unsupported"), error=True)
             return
         try:
             turn = await self._turn_status(event_id)
@@ -1083,46 +1116,48 @@ class InlineApp:
             turn = {}
         if not turn:
             if not quiet:
-                self._notice("未找到可查询的回合状态。", error=True)
+                self._notice(t("attach.ui.status_missing"), error=True)
             return
         labels = {
-            "accepted": "已接收", "running": "正在执行",
-            "waiting_approval": "等待审批",
-            "waiting_clarification": "等待补充信息",
-            "completed": "已完成", "incomplete": "未完成",
-            "failed": "失败", "interrupted": "已中断",
+            name: t(f"attach.ui.status_{name}") for name in (
+                "accepted", "running", "waiting_approval", "waiting_clarification",
+                "completed", "incomplete", "failed", "interrupted",
+            )
         }
         status = str(turn.get("status", "unknown"))
         detail = labels.get(status, status)
         if turn.get("current_tool"):
-            detail += f" · 当前工具 {turn['current_tool']}"
-        self._notice(f"回合 {turn.get('event_id') or '-'}：{detail}")
-        self._audit.append({
-            "type": "turn_status", **redact_for_export(turn),
-        })
+            detail += f" · {t('attach.ui.current_tool', tool=turn['current_tool'])}"
+        self._notice(t("attach.ui.turn_notice", event_id=turn.get("event_id") or "-", detail=detail))
+        self._audit.append(
+            {
+                "type": "turn_status",
+                **redact_for_export(turn),
+            }
+        )
 
     def _do_details(self, arg: str) -> None:
         if arg:
             parsed = parse_details(arg)
             if parsed is None:
-                self._notice("用法: /details <思考|工具|状态> <展开|折叠|精简|隐藏>", error=True)
+                self._notice(t("attach.ui.details_usage"), error=True)
                 return
             self._details = self._details.with_section(*parsed)
         self._begin("note")
-        self._printer.head("过程信息显示", glyph="·")
+        self._printer.head(t("attach.ui.details_title"), glyph="·")
         for label, state in self._details.describe():
             self._printer.child(f"{label}：{state}")
 
     def _do_theme(self, arg: str) -> None:
         value = arg.strip().lower()
         if value not in ("", "light", "dark"):
-            self._notice("用法: /theme [light|dark]", error=True)
+            self._notice(t("attach.ui.theme_usage"), error=True)
             return
         if value:
             os.environ["ECHO_TUI_THEME"] = value
             A.reset_palette_cache()
         current = os.environ.get("ECHO_TUI_THEME", "auto")
-        self._notice(f"当前主题：{current}（之后的输出生效）")
+        self._notice(t("attach.ui.theme_current", theme=current))
 
     def _copy_text(self, text: str) -> bool:
         candidates: list[list[str]] = []
@@ -1137,8 +1172,12 @@ class InlineApp:
                 continue
             try:
                 run_owned(
-                    command, input=text, text=True, check=True,
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    command,
+                    input=text,
+                    text=True,
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                 )
                 return True
             except (OSError, subprocess.SubprocessError):
@@ -1157,31 +1196,32 @@ class InlineApp:
         return False
 
     def _do_copy(self, *, whole: bool) -> None:
-        text = self._export_text() if whole else next(
-            (item["text"] for item in reversed(self._conversation)
-             if item["role"] == "assistant"),
-            "",
+        text = (
+            self._export_text()
+            if whole
+            else next(
+                (item["text"] for item in reversed(self._conversation) if item["role"] == "assistant"),
+                "",
+            )
         )
         if not text:
-            self._notice("暂无可复制的内容。")
+            self._notice(t("attach.ui.copy_empty"))
         elif self._copy_text(text):
-            scope = "整段对话" if whole else "最近回复"
-            self._notice(f"已复制{scope}（{len(text)} 字）。")
+            scope = t("attach.ui.copy_scope_all" if whole else "attach.ui.copy_scope_latest")
+            self._notice(t("attach.ui.copied", scope=scope, count=len(text)))
         else:
-            self._notice("未找到可用的系统剪贴板。可使用 /save 保存。", error=True)
+            self._notice(t("attach.ui.clipboard_unavailable"), error=True)
 
     def _export_text(self) -> str:
-        labels = {"user": "你", "assistant": self._brand.name}
-        return "\n\n".join(
-            f"{labels[item['role']]}：{item['text']}" for item in self._conversation
-        )
+        labels = {"user": t("attach.ui.user"), "assistant": self._brand.name}
+        return "\n\n".join(f"{labels[item['role']]}：{item['text']}" for item in self._conversation)
 
     def _do_save(self, arg: str) -> None:
         fmt = "md"
         try:
             tokens = shlex.split(arg)
         except ValueError as exc:
-            self._notice(f"路径解析失败：{exc}", error=True)
+            self._notice(t("attach.ui.path_error", error=exc), error=True)
             return
         path_parts: list[str] = []
         index = 0
@@ -1189,7 +1229,7 @@ class InlineApp:
             token = tokens[index]
             if token == "--format":
                 if index + 1 >= len(tokens):
-                    self._notice("--format 需要 md、txt 或 json。", error=True)
+                    self._notice(t("attach.ui.format_required"), error=True)
                     return
                 fmt = tokens[index + 1].lower()
                 index += 2
@@ -1200,27 +1240,38 @@ class InlineApp:
                 path_parts.append(token)
                 index += 1
         if fmt not in {"md", "txt", "json"}:
-            self._notice(f"不支持的导出格式：{fmt}", error=True)
+            self._notice(t("attach.ui.format_unsupported", format=fmt), error=True)
             return
         if not self._conversation:
-            self._notice("暂无可保存的对话。")
+            self._notice(t("attach.ui.save_empty"))
             return
 
         when = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if fmt == "json":
-            content = json.dumps({
-                "session_key": self._session_key, "exported_at": when,
-                "events": self._audit,
-            }, ensure_ascii=False, indent=2) + "\n"
+            content = (
+                json.dumps(
+                    {
+                        "session_key": self._session_key,
+                        "exported_at": when,
+                        "events": self._audit,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n"
+            )
         elif fmt == "txt":
             content = self._export_text().rstrip() + "\n"
         else:
             rows = [
-                f"# {self._brand.name} 对话", "",
-                f"- 会话：`{self._session_key}`", f"- 导出时间：{when}", "",
+                f"# {t('attach.ui.export_title', brand=self._brand.name)}",
+                "",
+                f"- {t('attach.ui.export_session')}: `{self._session_key}`",
+                f"- {t('attach.ui.export_time')}: {when}",
+                "",
             ]
             for item in self._conversation:
-                who = "你" if item["role"] == "user" else self._brand.name
+                who = t("attach.ui.user") if item["role"] == "user" else self._brand.name
                 rows.extend((f"## {who}", "", item["text"], ""))
             content = "\n".join(rows).rstrip() + "\n"
 
@@ -1241,14 +1292,15 @@ class InlineApp:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
         except OSError as exc:
-            self._notice(f"保存失败：{exc}", error=True)
+            self._notice(t("attach.ui.save_failed", error=exc), error=True)
             return
-        self._notice(f"已保存到 {target}（{len(content)} 字）。")
+        self._notice(t("attach.ui.saved", path=target, count=len(content)))
 
     # -------------------------------------------------------------------- audit
     def _record_cognitive(self, ev: CogEvent) -> None:
         record = {
-            "type": "cognitive", "cog_type": ev.cog_type,
+            "type": "cognitive",
+            "cog_type": ev.cog_type,
             "cog_event_id": ev.cog_event_id,
             "inbound_event_id": ev.inbound_event_id,
             "summary": redact_for_export(ev.summary),

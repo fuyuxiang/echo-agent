@@ -9,6 +9,7 @@ from typing import Any
 
 import aiohttp
 
+from echo_agent.cli.i18n import t
 from echo_agent.cli.runtime_probe import GatewayState, is_wsl, probe_gateway
 
 
@@ -36,10 +37,7 @@ def _require_textual() -> None:
     try:
         import textual
     except ImportError as e:
-        raise MissingTUIDependencyError(
-            "缺少 TUI 依赖 textual。请安装：pip install \"echo-agent[all]\" "
-            "或 pip install \"echo-agent[tui]\"。"
-        ) from e
+        raise MissingTUIDependencyError(t("attach.ui.missing_textual")) from e
 
     raw = getattr(textual, "__version__", "0")
     # Parse leading numeric components only (e.g. "8.2.8" -> (8, 2)); ignore
@@ -58,9 +56,7 @@ def _require_textual() -> None:
     if version < _MIN_TEXTUAL:
         need = ".".join(str(n) for n in _MIN_TEXTUAL)
         raise MissingTUIDependencyError(
-            f"TUI 依赖 textual 版本过低（已安装 {raw}，需要 >= {need}）。"
-            f"请升级：pip install -U \"textual>={need}\"，"
-            "或 pip install -U \"echo-agent[tui]\"。"
+            t("attach.ui.old_textual", installed=raw, required=need)
         )
 
 
@@ -70,18 +66,16 @@ def build_ws_url(host: str, port: int, ws_path: str) -> str:
     return f"ws://{host}:{port}{ws_path}"
 
 
-async def connect_ws(
-    session: aiohttp.ClientSession, url: str
-) -> aiohttp.ClientWebSocketResponse:
+async def connect_ws(session: aiohttp.ClientSession, url: str) -> aiohttp.ClientWebSocketResponse:
     try:
-        return await session.ws_connect(url, heartbeat=30)
-    except (aiohttp.ClientError, OSError) as e:
-        raise NoGatewayError(f"{url} 无法连接。") from e
+        ws_timeout_cls = getattr(aiohttp, "ClientWSTimeout", None)
+        ws_timeout = ws_timeout_cls(ws_close=10) if ws_timeout_cls else 10
+        return await session.ws_connect(url, heartbeat=30, timeout=ws_timeout)
+    except (aiohttp.ClientError, OSError, asyncio.TimeoutError) as e:
+        raise NoGatewayError(t("attach.ui.cannot_connect", url=url)) from e
 
 
-def diagnose_no_gateway(
-    url: str, config_path: str | None, workspace: str | None
-) -> str:
+def diagnose_no_gateway(url: str, config_path: str | None, workspace: str | None) -> str:
     """Turn a bare connection failure into the one action that applies here.
 
     Driven by the runtime probe rather than a hardcoded guess: the old version
@@ -91,42 +85,24 @@ def diagnose_no_gateway(
 
     Never raises: this runs on the failure path of `echo-agent cli`, where a
     traceback would replace the guidance the user is stuck without."""
-    head = f"未发现本机常驻 echo-agent（{url} 无法连接）。"
+    head = t("attach.diagnose.no_gateway", url=url)
     try:
         return _diagnose(head, config_path, workspace)
     except Exception:  # noqa: BLE001 - guidance must survive a broken sub-probe
-        return (
-            f"{head}\n"
-            "无法判定网关状态。请确认配置后重试：echo-agent gateway status\n"
-            "尚未配置过：echo-agent setup"
-        )
+        return f"{head}\n{t('attach.diagnose.probe_failed')}"
 
 
 def _diagnose(head: str, config_path: str | None, workspace: str | None) -> str:
     rt = probe_gateway(config_path=config_path, workspace=workspace)
 
     if rt.state is GatewayState.DISABLED:
-        return (
-            f"{head}\n"
-            "检测到配置中 gateway.enabled=false：网关组件未启用，因此 echo-agent cli "
-            "无法连接（微信 / QQ 等渠道不依赖网关，仍可正常工作）。\n"
-            "修复：运行 echo-agent setup gateway 启用网关（host 保持 127.0.0.1），"
-            "或临时前台运行 echo-agent gateway。"
-        )
+        return f"{head}\n{t('startup.disabled')}\n{t('startup.disabled_fix')}"
 
     if rt.state is GatewayState.NO_SERVICE_MANAGER:
-        lines = [
-            head,
-            "本机没有可用的服务管理器，网关未以后台服务方式运行。",
-        ]
+        lines = [head, t("startup.no_manager")]
         if is_wsl():
-            lines.append(
-                "WSL2 可开启 systemd：编辑 /etc/wsl.conf 加入 [boot] 与 systemd=true，"
-                "执行 wsl --shutdown 重启后再运行 echo-agent gateway install。"
-            )
-        lines.append(
-            "或保持前台进程：tmux new -s echo-agent 'echo-agent gateway'"
-        )
+            lines.append(t("startup.no_manager_wsl"))
+        lines.append(t("startup.no_manager_tmux"))
         return "\n".join(lines)
 
     if rt.state is GatewayState.SERVICE_INSTALLED_STOPPED:
@@ -134,52 +110,32 @@ def _diagnose(head: str, config_path: str | None, workspace: str | None) -> str:
             # The unit is active but nothing is listening: the process forked and
             # then died in bootstrap (bad API key, port already taken). Another
             # `start` would not help — the log is the only useful next step.
-            return (
-                f"{head}\n"
-                "后台服务显示为运行中，但端口无响应 —— 进程很可能在启动过程中退出"
-                "（常见原因：API key 无效、端口被占用）。\n"
-                "查看原因：echo-agent gateway logs\n"
-                "确认状态：echo-agent gateway status"
-            )
-        return (
-            f"{head}\n"
-            "后台服务已注册但未启动。\n"
-            "启动：echo-agent gateway start\n"
-            "确认状态：echo-agent gateway status"
-        )
+            return f"{head}\n{t('attach.diagnose.service_crashed')}"
+        return f"{head}\n{t('attach.diagnose.service_stopped')}"
 
     if rt.state is GatewayState.NOT_INSTALLED:
-        return (
-            f"{head}\n"
-            "网关尚未注册为后台服务。\n"
-            "注册并启动：echo-agent gateway install && echo-agent gateway start\n"
-            "或临时前台运行：echo-agent gateway"
-        )
+        return f"{head}\n{t('attach.diagnose.not_installed')}"
 
     # RUNNING: the probe says the port is up, yet this connection failed. Most
     # likely a token/path mismatch rather than a missing process.
-    return (
-        f"{head}\n"
-        f"探测显示 {rt.probe_host}:{rt.effective_port} 有进程在监听，但本次连接失败。\n"
-        "请确认 token 与 ws 路径是否与配置一致：echo-agent gateway status"
-    )
+    return f"{head}\n{t('attach.diagnose.listener_mismatch', host=rt.probe_host, port=rt.effective_port)}"
 
 
 class AuthError(Exception):
     """WS auth handshake rejected by the server."""
 
 
-async def authenticate(
-    ws, *, platform: str, user_id: str, session_key: str, token: str
-) -> str:
-    await ws.send_json({
-        "type": "auth",
-        "platform": platform,
-        "user_id": user_id,
-        "session_key": session_key,
-        "token": token,
-    })
-    msg = await ws.receive_json()
+async def authenticate(ws, *, platform: str, user_id: str, session_key: str, token: str) -> str:
+    await ws.send_json(
+        {
+            "type": "auth",
+            "platform": platform,
+            "user_id": user_id,
+            "session_key": session_key,
+            "token": token,
+        }
+    )
+    msg = await asyncio.wait_for(ws.receive_json(), timeout=10)
     if msg.get("type") != "auth_ok":
         raise AuthError(msg.get("error") or "auth failed")
     return msg.get("session_key", session_key)
@@ -219,10 +175,7 @@ async def fetch_last_assistant_reply(
                 return content
             # Block-style content: concatenate text blocks.
             if isinstance(content, list):
-                parts = [
-                    b.get("text", "") for b in content
-                    if isinstance(b, dict) and b.get("type") == "text"
-                ]
+                parts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
                 joined = "".join(parts).strip()
                 if joined:
                     return joined
@@ -265,8 +218,15 @@ async def fetch_turn_status(
 
 
 async def run_client(
-    *, host: str, port: int, ws_path: str, user_id: str, token: str,
-    save_dir=None, api_prefix: str = "/api/v1", renderer: str = "tui",
+    *,
+    host: str,
+    port: int,
+    ws_path: str,
+    user_id: str,
+    token: str,
+    save_dir=None,
+    api_prefix: str = "/api/v1",
+    renderer: str = "tui",
     initial_status: dict[str, Any] | None = None,
 ) -> int:
     from echo_agent.cli.tui.bridge import WSBridge
@@ -284,11 +244,15 @@ async def run_client(
         raise ValueError(f"unknown cli renderer: {renderer}")
 
     url = build_ws_url(host, port, ws_path)
-    async with aiohttp.ClientSession() as session:
+    timeout = aiohttp.ClientTimeout(connect=10, sock_connect=10, sock_read=None)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         ws = await connect_ws(session, url)
         session_key = await authenticate(
-            ws, platform="cli", user_id=user_id,
-            session_key=f"cli:{user_id}", token=token,
+            ws,
+            platform="cli",
+            user_id=user_id,
+            session_key=f"cli:{user_id}",
+            token=token,
         )
 
         # Mutable connection holder: the live ws is swapped in place on reconnect
@@ -340,7 +304,7 @@ async def run_client(
             # status bar to disconnected here rather than leaving it "●已连接".
             app.notify_disconnected()
 
-        async def reconnect_coro() -> bool:
+        async def reconnect_coro() -> bool | dict[str, Any]:
             # Rebuild the socket and re-auth reusing the SAME session_key so the
             # gateway rebinds this cli session (server-side history/turn state is
             # keyed by it). Returns True on success. On failure the old (dead)
@@ -348,8 +312,11 @@ async def run_client(
             try:
                 new_ws = await connect_ws(session, url)
                 await authenticate(
-                    new_ws, platform="cli", user_id=user_id,
-                    session_key=session_key, token=token,
+                    new_ws,
+                    platform="cli",
+                    user_id=user_id,
+                    session_key=session_key,
+                    token=token,
                 )
             except (NoGatewayError, AuthError, aiohttp.ClientError, OSError):
                 return False
@@ -371,19 +338,29 @@ async def run_client(
             # Recover from the authoritative turn ledger first. It carries both
             # terminal state and event correlation; old gateways fall back to the
             # text-only history endpoint below.
+            latest: dict[str, Any] = {}
             try:
                 latest = await fetch_turn_status(
-                    session, host=host, port=port, api_prefix=api_prefix,
-                    session_key=session_key, token=token,
+                    session,
+                    host=host,
+                    port=port,
+                    api_prefix=api_prefix,
+                    session_key=session_key,
+                    token=token,
                 )
                 if latest.get("response_text"):
                     app.replay_missed_reply(
-                        str(latest["response_text"]), str(latest.get("event_id", "")),
+                        str(latest["response_text"]),
+                        str(latest.get("event_id", "")),
                     )
                 elif not latest:
                     missed = await fetch_last_assistant_reply(
-                        session, host=host, port=port, api_prefix=api_prefix,
-                        session_key=session_key, token=token,
+                        session,
+                        host=host,
+                        port=port,
+                        api_prefix=api_prefix,
+                        session_key=session_key,
+                        token=token,
                     )
                     if missed:
                         app.replay_missed_reply(missed)
@@ -391,17 +368,24 @@ async def run_client(
                 # Ledger/history replay is opportunistic after reconnect; the live
                 # replacement socket remains authoritative when old servers lack it.
                 pass
-            return True
+            return {"ok": True, "turn": latest}
 
         async def turn_status_coro(event_id: str = "") -> dict:
             return await fetch_turn_status(
-                session, host=host, port=port, api_prefix=api_prefix,
-                session_key=session_key, token=token, event_id=event_id,
+                session,
+                host=host,
+                port=port,
+                api_prefix=api_prefix,
+                session_key=session_key,
+                token=token,
+                event_id=event_id,
             )
 
         app_kwargs = {
-            "send_coro": send_coro, "session_key": session_key,
-            "interrupt_coro": interrupt_coro, "reconnect_coro": reconnect_coro,
+            "send_coro": send_coro,
+            "session_key": session_key,
+            "interrupt_coro": interrupt_coro,
+            "reconnect_coro": reconnect_coro,
             "save_dir": save_dir,
         }
         # Keep third-party/test renderer factories source-compatible when there
@@ -511,15 +495,18 @@ def resolve_connection(config_path: str | None, workspace: str | None) -> Connec
         save_dir = None
 
     return ConnectionInfo(
-        host="127.0.0.1", port=port, ws_path=ws_path, token=token,
-        api_prefix=api_prefix, save_dir=save_dir,
-        model=model, context_max=context_max,
+        host="127.0.0.1",
+        port=port,
+        ws_path=ws_path,
+        token=token,
+        api_prefix=api_prefix,
+        save_dir=save_dir,
+        model=model,
+        context_max=context_max,
     )
 
 
-def resolve_defaults(
-    config_path: str | None, workspace: str | None
-) -> tuple[str, int, str, str]:
+def resolve_defaults(config_path: str | None, workspace: str | None) -> tuple[str, int, str, str]:
     """Backwards-compatible view of resolve_connection()."""
     info = resolve_connection(config_path, workspace)
     return info.host, info.port, info.ws_path, info.token
@@ -531,8 +518,10 @@ def _runtime_endpoint(cfg, config_path: str | None, workspace: str | None) -> di
     ``.echo-agent/gateway.json``. Returns None if unavailable."""
     try:
         from echo_agent.cli.workspace import (
-            read_runtime_endpoint, resolve_effective_workspace,
+            read_runtime_endpoint,
+            resolve_effective_workspace,
         )
+
         ws = resolve_effective_workspace(cfg, config_path, workspace)
         return read_runtime_endpoint(ws)
     except Exception:
@@ -540,31 +529,67 @@ def _runtime_endpoint(cfg, config_path: str | None, workspace: str | None) -> di
 
 
 def run_cli_attach(
-    *, host: str, port: int, ws_path: str, user_id: str, token: str,
-    api_prefix: str = "/api/v1", save_dir: Any = None,
-    config_path: str | None = None, workspace: str | None = None,
+    *,
+    host: str,
+    port: int,
+    ws_path: str,
+    user_id: str,
+    token: str,
+    api_prefix: str = "/api/v1",
+    save_dir: Any = None,
+    config_path: str | None = None,
+    workspace: str | None = None,
     renderer: str = "tui",
     initial_status: dict[str, Any] | None = None,
 ) -> int:
+    # Setup persists ui.locale; attach is a separate process, so restore that
+    # preference before importing/rendering either terminal frontend. Restore
+    # it afterwards as well because embedders/tests may call this function in a
+    # longer-lived process even though the console command normally exits.
+    from echo_agent.cli.i18n import detect_locale, get_locale, set_locale
+
+    previous_locale = get_locale()
     try:
-        return asyncio.run(run_client(
-            host=host, port=port, ws_path=ws_path,
-            user_id=user_id, token=token, save_dir=save_dir,
-            api_prefix=api_prefix, renderer=renderer,
-            initial_status=initial_status,
-        ))
-    except MissingTUIDependencyError as e:
-        # The gateway may be perfectly healthy — this is purely a missing
-        # optional dependency, so surface the install hint directly rather
-        # than the (misleading) gateway diagnosis.
-        print(str(e))
-        return 1
-    except NoGatewayError:
-        url = build_ws_url(host, port, ws_path)
-        print(diagnose_no_gateway(url, config_path, workspace))
-        return 1
-    except AuthError as e:
-        print(f"认证失败：{e}")
-        return 1
-    except KeyboardInterrupt:
-        return 0
+        from echo_agent.config.loader import load_config, resolve_config_file
+
+        resolved = config_path
+        if resolved is None and workspace:
+            resolved = str(resolve_config_file(search_dir=workspace) or "") or None
+        locale_pref = load_config(config_path=resolved).ui.locale
+        set_locale(detect_locale(None if locale_pref == "auto" else locale_pref))
+    except Exception:
+        # An unreadable optional preference must not prevent the client from
+        # starting; it safely keeps the caller's current locale.
+        pass
+    try:
+        try:
+            return asyncio.run(
+                run_client(
+                    host=host,
+                    port=port,
+                    ws_path=ws_path,
+                    user_id=user_id,
+                    token=token,
+                    save_dir=save_dir,
+                    api_prefix=api_prefix,
+                    renderer=renderer,
+                    initial_status=initial_status,
+                )
+            )
+        except MissingTUIDependencyError as e:
+            # The gateway may be perfectly healthy — this is purely a missing
+            # optional dependency, so surface the install hint directly rather
+            # than the (misleading) gateway diagnosis.
+            print(str(e))
+            return 1
+        except NoGatewayError:
+            url = build_ws_url(host, port, ws_path)
+            print(diagnose_no_gateway(url, config_path, workspace))
+            return 1
+        except AuthError as e:
+            print(t("attach.auth_failed", error=e))
+            return 1
+        except KeyboardInterrupt:
+            return 0
+    finally:
+        set_locale(previous_locale)

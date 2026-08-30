@@ -3,5 +3,14 @@
   "empty": "暂无已配置的通道",
   "notConnected": "未连接",
   "groupPolicy": "群聊: {{policy}}",
-  "allowFrom": "白名单: {{count}} 人"
+  "allowFrom": "白名单: {{count}} 人",
+  "startAria": "启动通道 {{name}}",
+  "restartAria": "重启通道 {{name}}",
+  "enableAria": "启用通道 {{name}}",
+  "disableAria": "停用通道 {{name}}",
+  "enabledSuccess": "通道已启用",
+  "disabledSuccess": "通道已停用",
+  "toggleFailed": "修改通道配置失败",
+  "actionSuccess": { "start": "通道已启动", "stop": "通道已停止", "restart": "通道已重启" },
+  "actionFailed": { "start": "通道启动失败", "stop": "通道停止失败", "restart": "通道重启失败" }
 }

@@ -10,6 +10,8 @@ from rich.text import Text
 from rich.theme import Theme as RichTheme
 from textual.widgets import Static
 
+from echo_agent.cli.i18n import t
+
 # Re-exported for importers that still reach for these through blocks.py; the
 # definitions now live in cli/render/text.py so the inline renderer can share
 # them without pulling in Textual. _LEGACY_SUMMARY_GLYPHS has no caller left in
@@ -212,12 +214,12 @@ class Banner(Static):
         *,
         name: str = "echo",
         tagline: str = "agent",
-        welcome: str = "输入消息开始对话  ·  /help 查看命令  ·  Ctrl+C 停止任务/退出",
+        welcome: str | None = None,
     ) -> None:
         self.session_key = session_key
         self.brand_name = name
         self.brand_tagline = tagline
-        self.brand_welcome = welcome
+        self.brand_welcome = welcome if welcome is not None else t("attach.ui.welcome")
         # Narrow terminals collapse the 5-row ASCII wordmark to a single-line
         # brand so it doesn't dominate a short screen; recomputed on resize.
         self._narrow = False
@@ -248,7 +250,11 @@ class Banner(Static):
                 f"[{color}]{escape(row)}[/]"
                 for row, color in zip(_LOGO_ART, _LOGO_GRADIENT)
             )
-        sess = f"  ·  会话 {self.session_key}" if self.session_key else ""
+        sess = (
+            f"  ·  {t('attach.ui.session', session_key=self.session_key)}"
+            if self.session_key
+            else ""
+        )
         tagline = f"[$text-muted]· {escape(self.brand_tagline)}[/]{sess}"
         return f"{logo}\n{tagline}\n[$text-muted]{escape(self.brand_welcome)}[/]"
 
@@ -496,7 +502,7 @@ class CognitiveBlock(ExpandableBlock):
         if not self.is_streaming:
             return
         self.ev.data["streaming"] = False
-        self.ev.summary = f"思考 {GLYPHS.unfinished} 未完成"
+        self.ev.summary = f"{t('attach.ui.thought')} {GLYPHS.unfinished} {t('attach.ui.unfinished')}"
         self.update(
             self.render_detail() if self.expanded else self.render_summary()
         )
@@ -627,7 +633,7 @@ class ToolCallBlock(ExpandableBlock):
             # frame arrived. Say so instead of leaving the running "…", which
             # read as "still executing" for work that had already stopped.
             return (
-                f"{head} {sep} [$text-muted]未完成[/] "
+                f"{head} {sep} [$text-muted]{t('attach.ui.unfinished')}[/] "
                 f"[$warning]{GLYPHS.unfinished}[/]"
             )
         ok = self.status == "ok"
@@ -653,7 +659,7 @@ class ToolCallBlock(ExpandableBlock):
         if self.params:
             # One line per parameter with secrets masked — a raw str(dict) both
             # wrapped unreadably and leaked credentials into the transcript.
-            rows.append(("参数", [_markup_safe(e) for e in format_params(self.params)]))
+            rows.append((t("attach.ui.parameters"), [_markup_safe(e) for e in format_params(self.params)]))
         if self.result_text:
             # Edit-family tools return a diff — color it so added/removed lines
             # read at a glance. Everything else keeps the compact text preview.
@@ -661,10 +667,10 @@ class ToolCallBlock(ExpandableBlock):
                 ln[:1] in "+-@" for ln in self.result_text.splitlines()
             )
             if self.tool_name in _DIFF_TOOLS and looks_like_diff:
-                rows.append(("变更", colorize_diff(self.result_text).split("\n")))
+                rows.append((t("attach.ui.changes"), colorize_diff(self.result_text).split("\n")))
             else:
                 rows.append(
-                    ("结果", [_markup_safe(_clip(self.result_text, 200))])
+                    (t("attach.ui.result"), [_markup_safe(_clip(self.result_text, 200))])
                 )
         for idx, (label, body) in enumerate(rows):
             elbow, cont = self.child_rail(last=idx == len(rows) - 1)
@@ -718,16 +724,16 @@ class ApprovalBlock(Static):
         if self.decision == "approve":
             return (
                 f"[$warning]{alert}[/] {action} {sep} "
-                f"[$success]{GLYPHS.ok} 已批准[/]"
+                f"[$success]{GLYPHS.ok} {t('attach.ui.approval_approved')}[/]"
             )
         if self.decision == "deny":
             return (
                 f"[$warning]{alert}[/] {action} {sep} "
-                f"[$error]{GLYPHS.fail} 已拒绝[/]"
+                f"[$error]{GLYPHS.fail} {t('attach.ui.approval_denied')}[/]"
             )
         lines = [
-            f"[$warning]{alert} 需要确认:[/] [b]{action}[/b]",
-            f"    [$text-muted]风险：{risk}[/]",
+            f"[$warning]{alert} {t('attach.ui.approval_required', action='')}[/] [b]{action}[/b]",
+            f"    [$text-muted]{t('attach.ui.approval_risk', risk=risk)}[/]",
         ]
         # This is the screen the user authorizes a high-risk action from, so the
         # parameters go one per line (a raw str(dict) wrapped into an unreadable
@@ -735,13 +741,11 @@ class ApprovalBlock(Static):
         # verbatim, and /save wrote them to disk).
         param_lines = format_params(self.params, value_width=80)
         if param_lines:
-            lines.append("    [$text-muted]参数:[/]")
+            lines.append(f"    [$text-muted]{t('attach.ui.approval_parameters')}[/]")
             for entry in param_lines:
                 lines.append(f"      [$text-muted]{escape(entry)}[/]")
-        lines.append(
-            "    [$success]\\[y] 批准[/]  [$error]\\[n] 拒绝[/]"
-            "  [$warning]\\[a] 本会话始终允许[/]"
-        )
+        keys = escape(t("attach.ui.approval_keys"))
+        lines.append(f"    [$text-muted]{keys}[/]")
         return "\n".join(lines)
 
     def mark(self, decision: str) -> None:
@@ -888,21 +892,21 @@ class ChoiceBlock(Static):
     def render_body(self) -> str:
         q = escape(str(self.question))
         if self.answer is not None:
-            return f"[$secondary]❓[/] {q} [$text-muted]—[/] [$success]已选:{escape(str(self.answer))}[/]"
+            return f"[$secondary]❓[/] {q} [$text-muted]—[/] [$success]{t('attach.ui.clarify_selected', answer=escape(str(self.answer)))}[/]"
         # A cancelled prompt keeps the question on screen (it is part of the
         # conversation) but drops every selection hint: the keys are gone, so
         # repeating them would send the user hunting for a working keystroke.
         if self.cancelled:
             return (
                 f"[$secondary]❓[/] {q} [$text-muted]—[/] "
-                f"[$text-muted]该提问已失效（当前轮已结束，未作选择）[/]"
+                f"[$text-muted]{t('attach.ui.clarify_expired')}[/]"
             )
         if not self.options:
-            return f"[$secondary]❓[/] {q}\n    [$text-muted](请输入回答)[/]"
+            return f"[$secondary]❓[/] {q}\n    [$text-muted]({t('attach.ui.clarify_enter')})[/]"
         lines = [f"[$secondary]❓[/] [b]{q}[/b]"]
         # Real options followed by the virtual "其他(自行输入)" entry, so it
         # renders and highlights exactly like a normal numbered choice.
-        labels = list(self.options) + ["其他（自行输入）"]
+        labels = list(self.options) + [t("attach.ui.clarify_other")]
         for i, opt in enumerate(labels):
             # Only the first 9 slots get a number: quick-select bindings exist
             # for 1-9 only, and pressing "1" fires immediately, so there is no
@@ -918,18 +922,16 @@ class ChoiceBlock(Static):
             else:
                 lines.append(f"    [$text-muted]{label}[/]")
         hint = (
-            "(按数字选择 · ↑↓ 移动后回车 · 选\"其他\"可自行输入)"
+            f"({t('attach.ui.clarify_hint_short')})"
             if len(labels) <= 9 else
-            "(前 9 项可按数字选择 · 其余用 ↑↓ 移动后回车 · 选\"其他\"可自行输入)"
+            f"({t('attach.ui.clarify_hint_long')})"
         )
         lines.append(f"    [$text-muted]{hint}[/]")
         # Only shown once the user has stepped into free-text entry. Stepping in
         # is easy (any printable character) but used to be irreversible, so the
         # way back needs advertising at the moment it applies.
         if self.free_input:
-            lines.append(
-                "    [$text-muted](输入框为空时按 Esc 可返回选项)[/]"
-            )
+            lines.append(f"    [$text-muted]({t('attach.ui.clarify_escape')})[/]")
         return "\n".join(lines)
 
     def move(self, delta: int) -> None:

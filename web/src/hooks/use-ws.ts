@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef } from "react";
-import { useNavigate } from "react-router";
 import { dashboardWS } from "../lib/ws";
 import { useAuthStore } from "../stores/auth";
 import { useAuthRequired } from "../stores/capabilities";
@@ -23,7 +22,6 @@ export function useWsSubscribe(
   const token = useAuthStore((s) => s.token);
   const authRequired = useAuthRequired();
   const logout = useAuthStore((s) => s.logout);
-  const navigate = useNavigate();
 
   const handlerRef = useRef(handler);
   handlerRef.current = handler;
@@ -50,7 +48,12 @@ export function useWsSubscribe(
     // and route to login rather than letting the socket retry indefinitely.
     const onAuthFailure = () => {
       logout();
-      navigate("/login", { replace: true });
+      // Authentication failure can happen from any page, including consumers
+      // rendered outside a Router (tests, embedded views). Updating browser
+      // history keeps the hook Router-independent while still notifying a
+      // mounted BrowserRouter through the standard popstate event.
+      window.history.replaceState(null, "", "/login");
+      window.dispatchEvent(new PopStateEvent("popstate"));
     };
     dashboardWS.onAuthFailure = onAuthFailure;
 
@@ -61,5 +64,5 @@ export function useWsSubscribe(
       unsubs.forEach((u) => u());
       release();
     };
-  }, [token, authRequired, channelList, typeList, logout, navigate]);
+  }, [token, authRequired, channelList, typeList, logout]);
 }

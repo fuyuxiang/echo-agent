@@ -40,6 +40,7 @@
   "runsAria": "查看 {{name}} 的运行历史",
   "runsEmpty": "暂无运行记录",
   "runsLimited": "调度器目前只保留最近一次执行的汇总",
+  "runsRetention": "每个任务持久保留最近 100 次执行结果",
   "runCount": "累计执行 {{count}} 次",
   "runTime": "时间",
   "runStatus": "状态",

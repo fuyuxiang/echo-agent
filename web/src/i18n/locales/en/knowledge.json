@@ -13,5 +13,12 @@
   "deleteFailed": "Delete failed",
   "deleteConfirmTitle": "Delete document?",
   "deleteConfirmMessage": "This deletes \"{{path}}\" and rebuilds the entire knowledge index. It cannot be undone.",
-  "deleteDocAria": "Delete document {{path}}"
+  "deleteDocAria": "Delete document {{path}}",
+  "jobQueued": "Background job queued",
+  "jobRunning": "{{action}} knowledge base…",
+  "jobFailed": "Latest operation failed: {{error}}",
+  "jobCancelled": "Background job cancelled",
+  "cancelFailed": "Cancel failed",
+  "cancelJob": "Cancel current job",
+  "action": { "upload": "Importing", "delete": "Updating", "rebuild": "Rebuilding" }
 }

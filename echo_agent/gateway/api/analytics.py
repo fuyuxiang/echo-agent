@@ -44,17 +44,13 @@ class AnalyticsAPI:
             return web.json_response({"error": "invalid 'days' parameter"}, status=400)
         tracker = self._server._agent_loop.cost_tracker
         skills = await tracker.get_skill_usage(days=days)
-        # 技能维度目前没有埋点,恒返回空列表。只回 {"skills": []} 时客户端无法区分
-        # "这几天没用技能"和"该功能未实现",会把缺口当成真实统计画进图表。故显式
-        # 带上可用性;字段形状保持不变,老客户端不受影响。未声明该标志的自定义
-        # tracker 视为可用,不牵连第三方实现。
+        # The built-in tracker persists this dimension. Custom trackers may not
+        # have a storage backend, so expose availability separately from a
+        # legitimate zero-call result.
         available = bool(getattr(tracker, "skill_usage_available", True))
         body: dict[str, Any] = {"skills": skills, "available": available}
         if not available:
-            body["unavailable_reason"] = (
-                "skill-dimension cost instrumentation is not implemented yet; "
-                "an empty list here does not mean zero skill usage"
-            )
+            body["unavailable_reason"] = "skill usage storage backend is unavailable"
         return web.json_response(body)
 
     async def channel_usage(self, request: web.Request) -> web.Response:

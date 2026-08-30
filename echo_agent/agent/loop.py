@@ -131,27 +131,39 @@ class _ProviderEmbedFn:
 
 
 def resolve_embed_fallback(
-    embed_provider, emb_model, local_model_name, local_load_timeout=60.0, hf_endpoint="",
-    cache_dir="", max_load_attempts=5, retry_backoff=30.0,
+    embed_provider,
+    emb_model,
+    local_model_name,
+    local_load_timeout=60.0,
+    hf_endpoint="",
+    cache_dir="",
+    max_load_attempts=5,
+    retry_backoff=30.0,
 ):
     """Resolve the embedding tier: provider-backed when available, else the
     local fastembed fallback (zero-config vector search), else nothing.
 
     Returns (embed_fn | None, embed_model_id, local_embedder | None)."""
     if embed_provider is not None:
+
         async def _embed(text: str, _p=embed_provider, _model=emb_model) -> list[float]:
             result = await _p.embed(text, model=_model)
             return result or []
+
         model_id = _embed_model_identity(embed_provider, emb_model)
         return _embed, model_id, None
 
     if local_model_name:
         from echo_agent.memory.local_embed import LocalEmbedder
+
         resolved_cache = str(Path(cache_dir).expanduser()) if cache_dir else ""
         local = LocalEmbedder(
-            local_model_name, load_timeout_seconds=local_load_timeout,
-            hf_endpoint=hf_endpoint, cache_dir=resolved_cache,
-            max_load_attempts=max_load_attempts, retry_backoff_seconds=retry_backoff,
+            local_model_name,
+            load_timeout_seconds=local_load_timeout,
+            hf_endpoint=hf_endpoint,
+            cache_dir=resolved_cache,
+            max_load_attempts=max_load_attempts,
+            retry_backoff_seconds=retry_backoff,
         )
         if local.available:
             logger.info(
@@ -230,6 +242,7 @@ class AgentLoop:
     ):
         self.bus = bus
         from echo_agent.agent.cognitive_emitter import CognitiveEmitter
+
         self.cognitive_emitter = CognitiveEmitter(bus)
         self.config = config
         self.provider = provider
@@ -290,6 +303,7 @@ class AgentLoop:
         )
         from echo_agent.spill.policy import SpillPolicy
         from echo_agent.spill.store import SpillStore
+
         self._spill_store = SpillStore(workspace / config.storage.spill_dir)
         # 清扫循环的句柄,由 start() 建、aclose() 收。见 _start_spill_sweeper。
         self._spill_sweep_task: asyncio.Task | None = None
@@ -303,6 +317,7 @@ class AgentLoop:
             ),
         )
         from echo_agent.gateway.media import MediaCache
+
         media_cache = MediaCache(
             cache_dir=workspace / config.gateway.media_cache_dir,
             max_size_mb=config.gateway.media_cache_max_mb,
@@ -311,6 +326,7 @@ class AgentLoop:
             allow_private=config.gateway.media_allow_private_addresses,
         )
         from echo_agent.agent.media.understanding import default_understanders
+
         understanders = default_understanders(
             config.media_understanding,
             transcription_api_key=config.channels.transcription_api_key,
@@ -332,7 +348,8 @@ class AgentLoop:
             config_default=config.session.context_window_tokens,
         )
         _comp_window = compression_window(
-            self._initial_context_window, config.session.compression_window_cap,
+            self._initial_context_window,
+            config.session.compression_window_cap,
         )
         self.compressor = ConversationCompressor(
             config=config.compression,
@@ -347,12 +364,13 @@ class AgentLoop:
         self.compressor.context_window_tokens = self._initial_context_window
         try:
             from echo_agent.models.tokenizer import TokenCounter
+
             provider_name = getattr(config.models, "default_provider", "") or ""
             if not provider_name and config.models.providers:
                 provider_name = config.models.providers[0].name
             if self._default_model:
                 tc = TokenCounter.for_model(provider_name, self._default_model)
-                if hasattr(self.compressor, 'set_token_counter'):
+                if hasattr(self.compressor, "set_token_counter"):
                     self.compressor.set_token_counter(tc)
         except Exception as e:
             logger.debug("Tokenizer initialization skipped: {}", e)
@@ -364,16 +382,21 @@ class AgentLoop:
             store_path=workspace / "data" / "approvals.json",
         )
         from echo_agent.agent.clarify_manager import ClarifyManager
+
         self.clarify = ClarifyManager()
         from echo_agent.agent.interrupt_manager import InterruptManager
+
         self.interrupt = InterruptManager()
         self.inference = InferenceController()
         if config.permissions.approval.require_approval:
             from echo_agent.models.inference import InferenceConstraints
-            self.inference.set_constraints(InferenceConstraints(
-                require_confirmation_for=list(config.permissions.approval.require_approval),
-                blocked_tools=list(config.permissions.approval.auto_deny),
-            ))
+
+            self.inference.set_constraints(
+                InferenceConstraints(
+                    require_confirmation_for=list(config.permissions.approval.require_approval),
+                    blocked_tools=list(config.permissions.approval.auto_deny),
+                )
+            )
         self.approval_gate = ApprovalGate(
             config=config,
             approval=self.approval,
@@ -426,6 +449,7 @@ class AgentLoop:
         self._plan_run_store = None
         if config.planning.enabled:
             from echo_agent.agent.planning import AgentPlanner
+
             self.planner = AgentPlanner(
                 llm_call=self.provider.chat_with_retry,
                 default_strategy=config.planning.default_strategy,
@@ -435,11 +459,13 @@ class AgentLoop:
             )
             if storage is not None:
                 from echo_agent.agent.planning.plan_run_store import PlanRunStore
+
                 self._plan_run_store = PlanRunStore(storage)
 
         self._telemetry = None
         if config.observability.otel_enabled:
             from echo_agent.observability.telemetry import TelemetryManager
+
             self._telemetry = TelemetryManager(
                 service_name=config.observability.otel_service_name,
                 otel_endpoint=config.observability.otel_endpoint,
@@ -453,6 +479,7 @@ class AgentLoop:
         self.evolution: Any = None
         if config.knowledge.enabled:
             from echo_agent.knowledge import KnowledgeIndex
+
             self.knowledge = KnowledgeIndex(
                 workspace=workspace,
                 docs_dir=config.knowledge.docs_dir,
@@ -494,6 +521,7 @@ class AgentLoop:
         self._retrieval_cache: OrderedDict[str, Any] = OrderedDict()
         self._max_cached_sessions = 200
         from echo_agent.agent.background import BackgroundScheduler
+
         self._bg_scheduler = BackgroundScheduler(config.execution.max_background_tasks)
         self._state_lock = asyncio.Lock()
         self._plugin_manager: Any = None
@@ -528,7 +556,7 @@ class AgentLoop:
             context_builder=self.context,
             skill_store=self.skill_store,
             knowledge=self.knowledge,
-            hybrid_retriever=getattr(self, '_hybrid_retriever', None),
+            hybrid_retriever=getattr(self, "_hybrid_retriever", None),
             planner=self.planner,
             inference=self.inference,
             working_memories=self._working_memories,
@@ -557,6 +585,7 @@ class AgentLoop:
             soft_ratio=config.cost.soft_threshold_ratio,
             pricing_overrides=config.cost.pricing_overrides,
         )
+        self.tools.set_skill_usage_recorder(self._cost_tracker.record_skill)
         self._inference_stage = InferenceStage(
             config=config,
             bus=bus,
@@ -601,7 +630,9 @@ class AgentLoop:
             RetrievalPrefetcher(
                 # limit=8 matches the inline sync path (5 memory + 3 episode)
                 # now that episodes ride the same retrieve() call.
-                self._hybrid_retriever, self._put_retrieval_cache, limit=8,
+                self._hybrid_retriever,
+                self._put_retrieval_cache,
+                limit=8,
                 knowledge_fetch=_knowledge_fetch if self.knowledge else None,
             )
             if self._hybrid_retriever
@@ -619,6 +650,7 @@ class AgentLoop:
         if storage is not None and self.skill_store is not None:
             from echo_agent.evolution.store import TrajectoryStore
             from echo_agent.skills.admission import SkillAdmission
+
             self._skill_candidate_store = TrajectoryStore(storage)
             self._skill_admission = SkillAdmission(
                 skill_store=self.skill_store,
@@ -648,6 +680,7 @@ class AgentLoop:
 
     def _register_tools(self, scheduler: Any = None, task_manager: Any = None, workflow_engine: Any = None) -> None:
         from echo_agent.agent.tools import discover_tools
+
         all_tools = discover_tools(
             config=self.config,
             workspace=self.workspace,
@@ -661,21 +694,16 @@ class AgentLoop:
             # 配套的矛盾检测/失效回调在关闭时一并传 None，避免半开状态。
             memory_store=self.memory if self.config.memory.enabled else None,
             contradiction_detector=(
-                getattr(self, "_contradiction_detector", None)
-                if self.config.memory.enabled else None
+                getattr(self, "_contradiction_detector", None) if self.config.memory.enabled else None
             ),
             task_manager=task_manager,
             workflow_engine=workflow_engine,
             knowledge_index=self.knowledge,
             approval=self.approval,
             clarify_manager=self.clarify,
-            memory_invalidate_fn=(
-                self._invalidate_memory_caches if self.config.memory.enabled else None
-            ),
+            memory_invalidate_fn=(self._invalidate_memory_caches if self.config.memory.enabled else None),
             # R1 Task8:MemoryTool 注入 loop 单例 service,不再就近 new。
-            memory_service=(
-                self._memory_service if self.config.memory.enabled else None
-            ),
+            memory_service=(self._memory_service if self.config.memory.enabled else None),
         )
         for tool in all_tools:
             self.tools.register(tool)
@@ -723,7 +751,10 @@ class AgentLoop:
         if config.memory.vector_enabled and storage:
             emb_model = config.memory.embedding_model or None
             self._embed_candidate = pick_embed_candidate(
-                self._embed_backend, self.provider, self.router, emb_model,
+                self._embed_backend,
+                self.provider,
+                self.router,
+                emb_model,
             )
         self._vector_index = vector_index
         self._embed_fn = embed_fn
@@ -758,6 +789,7 @@ class AgentLoop:
         # runs real tool calls (exec/write_file/cronjob) through the approval
         # flow, instead of being a tool-less completion that only "plans".
         from echo_agent.agent.tools.delegate import SpawnTool
+
         spawn_tool = SpawnTool(
             provider=self.provider,
             bus=self.bus,
@@ -784,6 +816,7 @@ class AgentLoop:
         # Register agent-facing evolution tools so the LLM can introspect / trigger.
         try:
             from echo_agent.evolution.tools import build_evolution_tools
+
             for tool in build_evolution_tools(engine):
                 self.tools.register(tool)
         except Exception as e:
@@ -863,7 +896,12 @@ class AgentLoop:
             return True
 
     async def _mark_turn_terminal(
-        self, event_id: str, status: str, *, response_text: str = "", error: str = "",
+        self,
+        event_id: str,
+        status: str,
+        *,
+        response_text: str = "",
+        error: str = "",
     ) -> None:
         """Best-effort observability write; never turn it into a task failure."""
         turn_runs = getattr(self, "_turn_runs", None)
@@ -871,7 +909,10 @@ class AgentLoop:
             return
         try:
             await turn_runs.mark_terminal(
-                event_id, status, response_text=response_text, error=error,
+                event_id,
+                status,
+                response_text=response_text,
+                error=error,
             )
         except Exception as e:
             logger.warning("Turn terminal ledger write failed for {}: {}", event_id, e)
@@ -969,7 +1010,9 @@ class AgentLoop:
         use_provider = False
         if candidate is not None:
             dim = await probe_embed_provider(
-                candidate, emb_model, config.memory.embed_timeout_seconds,
+                candidate,
+                emb_model,
+                config.memory.embed_timeout_seconds,
             )
             if dim > 0:
                 use_provider = True
@@ -995,7 +1038,9 @@ class AgentLoop:
             self._embed_model_id = _embed_model_identity(candidate, emb_model)
         else:
             embed_fn, self._embed_model_id, self._local_embedder = resolve_embed_fallback(
-                None, emb_model, config.memory.local_embedding_model,
+                None,
+                emb_model,
+                config.memory.local_embedding_model,
                 local_load_timeout=config.memory.embed_load_timeout_seconds,
                 hf_endpoint=config.memory.hf_embedding_endpoint,
                 cache_dir=config.memory.local_embedding_cache_dir,
@@ -1004,6 +1049,7 @@ class AgentLoop:
             )
 
         from echo_agent.memory.vectors import VectorIndex
+
         # 维度优先用探针实测值（config.vector_dimensions 默认 0=自动跟随），
         # 让索引在首个向量入库前就知道正确维度。
         vector_index = VectorIndex(
@@ -1021,7 +1067,8 @@ class AgentLoop:
             # must not enter the candidate pool (it would only be filtered later
             # at the retrieve() admission gate — cheaper to drop it at source).
             self._episodic.attach_embedding(
-                embed_fn, vector_index,
+                embed_fn,
+                vector_index,
                 min_similarity=config.memory.rrf_min_similarity,
             )
         self._wire_vector_consumers(vector_index, embed_fn)
@@ -1036,6 +1083,7 @@ class AgentLoop:
 
         if config.memory.contradiction_detection and storage:
             from echo_agent.memory.contradiction import ContradictionDetector
+
             # R1 Task8:裁决 mark_superseded 走 loop 单例 service 的 maintenance
             # 通道(统一失效+审计)。矛盾镜像跟踪(unresolved 标记/清除)仍直接落 store。
             detector = ContradictionDetector(
@@ -1046,9 +1094,7 @@ class AgentLoop:
             )
             self._contradiction_detector = detector
             self.consolidator.set_contradiction_detector(detector)
-            self.consolidator.set_auto_resolve_contradictions(
-                config.memory.auto_resolve_contradictions
-            )
+            self.consolidator.set_auto_resolve_contradictions(config.memory.auto_resolve_contradictions)
             # memory 工具在 _register_tools 时以 None 建成，这里补上检测器引用。
             mem_tool = self.tools.get("memory")
             if mem_tool is not None and hasattr(mem_tool, "_contradiction_detector"):
@@ -1056,14 +1102,17 @@ class AgentLoop:
 
         if config.memory.reflection_enabled:
             from echo_agent.memory.reflection import ReflectionEngine
+
             # R1 Task8:reflection 的写(蒸馏 add/清 tag/裁决 mark_superseded)注入
             # loop 单例 service,统一走 maintenance 通道失效+审计。收口前就近 new 的
             # reflection service 无 audit_path,审计 no-op——收敛后一并落统一审计。
-            self.consolidator.set_reflection(ReflectionEngine(
-                self._memory_service,
-                llm_call=self.provider.chat_with_retry,
-                contradiction_detector=self._contradiction_detector,
-            ))
+            self.consolidator.set_reflection(
+                ReflectionEngine(
+                    self._memory_service,
+                    llm_call=self.provider.chat_with_retry,
+                    contradiction_detector=self._contradiction_detector,
+                )
+            )
 
         from echo_agent.memory.retrieval import HybridRetriever
 
@@ -1080,9 +1129,7 @@ class AgentLoop:
         async def _episode_search(query: str, session_key: str, limit: int) -> list:
             if episodic_mgr is None:
                 return []
-            return await episodic_mgr.search_episodes(
-                query, session_key=session_key or None, limit=limit
-            )
+            return await episodic_mgr.search_episodes(query, session_key=session_key or None, limit=limit)
 
         # Optional cross-encoder reranker. Built once here; the rerank_fn closure
         # bounds each call with the INFERENCE budget so a slow/still-loading model
@@ -1095,6 +1142,7 @@ class AgentLoop:
         rerank_min_score = None
         if config.memory.rerank_enabled:
             from echo_agent.memory.local_rerank import LocalReranker
+
             self._reranker = LocalReranker(
                 model_name=config.memory.rerank_model,
                 load_timeout_seconds=config.memory.rerank_load_timeout_seconds,
@@ -1108,9 +1156,7 @@ class AgentLoop:
 
             async def rerank_fn(query: str, docs: list) -> "list[float] | None":
                 try:
-                    return await asyncio.wait_for(
-                        _reranker.rerank(query, docs), timeout=_rerank_budget
-                    )
+                    return await asyncio.wait_for(_reranker.rerank(query, docs), timeout=_rerank_budget)
                 except (asyncio.TimeoutError, TimeoutError):
                     logger.debug("Rerank exceeded {}s budget; keeping RRF order", _rerank_budget)
                     return None
@@ -1150,7 +1196,9 @@ class AgentLoop:
         self._prefetcher = RetrievalPrefetcher(
             # limit=8 matches the inline sync path (5 memory + 3 episode) now
             # that episodes ride the same retrieve() call.
-            self._hybrid_retriever, self._put_retrieval_cache, limit=8,
+            self._hybrid_retriever,
+            self._put_retrieval_cache,
+            limit=8,
             knowledge_fetch=_knowledge_fetch if self.knowledge else None,
         )
         self._response_stage._prefetcher = self._prefetcher
@@ -1212,8 +1260,8 @@ class AgentLoop:
             )
         except Exception as e:
             logger.warning(
-                "Reranker warmup failed ({}); retrieval keeps the RRF order until "
-                "the model loads on a later turn", e,
+                "Reranker warmup failed ({}); retrieval keeps the RRF order until the model loads on a later turn",
+                e,
             )
             return
         if scores:
@@ -1226,7 +1274,8 @@ class AgentLoop:
             logger.warning(
                 "Reranker '{}' not ready after {}s; retrieval keeps the un-reranked "
                 "RRF order until the background load completes",
-                self.config.memory.rerank_model, budget,
+                self.config.memory.rerank_model,
+                budget,
             )
 
     async def start(self) -> None:
@@ -1279,7 +1328,8 @@ class AgentLoop:
         # knowledge is constructed, so injection cannot live there.
         if self.knowledge is not None and self._embed_fn is not None:
             self.knowledge.attach_embedding(
-                self._embed_fn, self._resolved_vector_dimensions(),
+                self._embed_fn,
+                self._resolved_vector_dimensions(),
                 embed_timeout=self.config.memory.embed_timeout_seconds,
             )
         if self.knowledge is not None and self.knowledge.needs_vector_backfill():
@@ -1291,9 +1341,7 @@ class AgentLoop:
                 # unresolved 镜像本身是全局索引,启动重建必须扫全库——这是
                 # get_unresolved 唯一合法的不带 memory_scope(全库)调用方。
                 for c in await self._contradiction_detector.get_unresolved(limit=10000):
-                    self.memory.mark_contradiction_unresolved(
-                        c.id, c.memory_id_a, c.memory_id_b
-                    )
+                    self.memory.mark_contradiction_unresolved(c.id, c.memory_id_a, c.memory_id_b)
             except Exception as e:
                 logger.warning("Unresolved-contradiction rebuild failed: {}", e)
         # DURABLE, not DISCARDABLE: MCP startup is the only thing that ever
@@ -1301,6 +1349,7 @@ class AgentLoop:
         # saturated at boot a DISCARDABLE task is dropped and the agent runs
         # for its whole lifetime with no MCP tools and no error anyone sees.
         from echo_agent.agent.background import Tier
+
         self._spawn_background(self._start_mcp_background(), tier=Tier.DURABLE)
         self._start_spill_sweeper()
         # Skill admission candidate store: ensure schema exists before the first
@@ -1352,11 +1401,7 @@ class AgentLoop:
         # without another hard-coded shutdown branch.
         for name in reversed(self.tools.tool_names):
             tool = self.tools.get(name)
-            if (
-                tool is not None
-                and callable(plugin_owns_tool)
-                and plugin_owns_tool(tool) is True
-            ):
+            if tool is not None and callable(plugin_owns_tool) and plugin_owns_tool(tool) is True:
                 continue
             close = getattr(tool, "aclose", None)
             if not callable(close):
@@ -1371,6 +1416,7 @@ class AgentLoop:
             await self.mcp_manager.stop_all()
         try:
             from echo_agent.agent.browser.session import manager as _browser_manager
+
             await _browser_manager.close_all()
         except Exception as e:
             logger.debug("browser manager close_all raised (ignored): {}", e)
@@ -1421,6 +1467,7 @@ class AgentLoop:
 
     def _spawn_background(self, coro: Any, *, tier: Any = None) -> None:
         from echo_agent.agent.background import Tier
+
         self._bg_scheduler.spawn(coro, tier=tier or Tier.DISCARDABLE)
 
     def _start_spill_sweeper(self) -> None:
@@ -1436,14 +1483,17 @@ class AgentLoop:
         所以无条件启动是安全的。
         """
         from echo_agent.spill.sweeper import sweep_forever
+
         # 挂在 start() 而非 __init__:AgentLoop 在 app.py 里于事件循环之外构造,
         # 那里 create_task 会抛 "no running event loop"。
-        self._spill_sweep_task = asyncio.create_task(sweep_forever(
-            self._spill_store.root,
-            self.config.spill.retention_days,
-            self.config.spill.max_total_mb,
-            self.config.spill.sweep_interval_hours,
-        ))
+        self._spill_sweep_task = asyncio.create_task(
+            sweep_forever(
+                self._spill_store.root,
+                self.config.spill.retention_days,
+                self.config.spill.max_total_mb,
+                self.config.spill.sweep_interval_hours,
+            )
+        )
 
     async def _lru_put(self, cache: OrderedDict, key: str, value: Any) -> None:  # type: ignore[type-arg]
         async with self._state_lock:
@@ -1453,8 +1503,12 @@ class AgentLoop:
                 cache.popitem(last=False)
 
     async def put_memory_snapshot(
-        self, key: str, value: str, ids: "frozenset[str] | None" = None,
-        scope: str = "", version: int = 0,
+        self,
+        key: str,
+        value: str,
+        ids: "frozenset[str] | None" = None,
+        scope: str = "",
+        version: int = 0,
     ) -> None:
         """快照缓存的唯一写入入口:经统一 LRU 管控。同时写入进入快照的 entry.id 集,
         供动态召回去重。并记录构建时的 (scope, version),读侧据此按 scope 版本校验:
@@ -1526,6 +1580,7 @@ class AgentLoop:
         if not mcp_servers:
             return
         from echo_agent.mcp.manager import MCPManager
+
         self.mcp_manager = MCPManager(
             workspace=self.workspace,
             security_policy=self.config.tools.mcp_security_policy,
@@ -1536,6 +1591,7 @@ class AgentLoop:
 
     def _apply_runtime_tool_policy(self) -> None:
         from echo_agent.security.tool_policy import is_tool_allowed
+
         for name in list(self.tools.tool_names):
             if name.startswith("mcp_") and not is_tool_allowed(self.config, name):
                 self.tools.unregister(name)
@@ -1547,8 +1603,14 @@ class AgentLoop:
             if cfg.url and self.config.execution.network_policy == "deny":
                 logger.warning("Skipping MCP server '{}' because networkPolicy is deny", name)
                 continue
-            if cfg.command and self.config.security.profile == "public_gateway" and not self.config.permissions.elevated.enabled:
-                logger.warning("Skipping stdio MCP server '{}' under public_gateway profile without elevated access", name)
+            if (
+                cfg.command
+                and self.config.security.profile == "public_gateway"
+                and not self.config.permissions.elevated.enabled
+            ):
+                logger.warning(
+                    "Skipping stdio MCP server '{}' under public_gateway profile without elevated access", name
+                )
                 continue
             filtered[name] = cfg
         return filtered
@@ -1591,6 +1653,7 @@ class AgentLoop:
         if manager is None or not task_id:
             return
         from echo_agent.tasks.models import TERMINAL_TASK_STATUSES, TaskStatus
+
         target = TaskStatus.SUCCESS if status == "completed" else TaskStatus.FAILED
         if status == "incomplete" and not error:
             error = "任务未完成即结束(模型报错/预算或轮次耗尽/被中断),已按失败处理"
@@ -1653,7 +1716,9 @@ class AgentLoop:
                 out.metadata["_inbound_event_id"] = event.event_id
                 await self.bus.publish_outbound(out)
                 await self._mark_turn_terminal(
-                    event.event_id, "completed", response_text=response_text,
+                    event.event_id,
+                    "completed",
+                    response_text=response_text,
                 )
                 return
         # Clarify answers, like approval decisions, are handled BEFORE acquiring
@@ -1673,7 +1738,9 @@ class AgentLoop:
                 out.metadata["_inbound_event_id"] = event.event_id
                 await self.bus.publish_outbound(out)
                 await self._mark_turn_terminal(
-                    event.event_id, "completed", response_text=response_text,
+                    event.event_id,
+                    "completed",
+                    response_text=response_text,
                 )
                 return
         # Session-interrupt escape valve, handled BEFORE the session lock for the
@@ -1705,7 +1772,9 @@ class AgentLoop:
             trace_id = uuid.uuid4().hex[:12]
             span = self.tracer.start_span(trace_id, f"s_{trace_id}", "process_message", "input")
             heartbeat = ProgressHeartbeat(
-                self.bus, event, self.config.agent.heartbeat,
+                self.bus,
+                event,
+                self.config.agent.heartbeat,
                 cognitive_emitter=self.cognitive_emitter,
             )
             activity = SharedActivityState(started_at=time.monotonic())
@@ -1736,16 +1805,15 @@ class AgentLoop:
                 delivered = True
                 if final_text and _should_publish_reply(event, final_text):
                     out = OutboundEvent.from_text_with_media(
-                        channel=event.channel, chat_id=event.chat_id, text=final_text, reply_to_id=event.reply_to_id,
+                        channel=event.channel,
+                        chat_id=event.chat_id,
+                        text=final_text,
+                        reply_to_id=event.reply_to_id,
                     )
                     out.metadata = dict(event.metadata)
                     out.metadata["_inbound_event_id"] = event.event_id
                     if getattr(result, "task_incomplete", False):
-                        outcome = (
-                            "interrupted"
-                            if result.termination_reason == "interrupted"
-                            else "incomplete"
-                        )
+                        outcome = "interrupted" if result.termination_reason == "interrupted" else "incomplete"
                         stamp_turn_outcome(
                             out.metadata,
                             outcome,
@@ -1766,26 +1834,28 @@ class AgentLoop:
                     await self._record_cron_outcome(event, "error", "delivery failed")
                     await self._record_task_outcome(event, "error", "delivery failed")
                     await self._mark_turn_terminal(
-                        event.event_id, "failed", response_text=response_text,
+                        event.event_id,
+                        "failed",
+                        response_text=response_text,
                         error="delivery failed",
                     )
                 elif getattr(result, "task_incomplete", False):
                     await self._record_cron_outcome(event, "completed")
                     await self._record_task_outcome(event, "incomplete")
-                    terminal = (
-                        "interrupted"
-                        if result.termination_reason == "interrupted"
-                        else "incomplete"
-                    )
+                    terminal = "interrupted" if result.termination_reason == "interrupted" else "incomplete"
                     await self._mark_turn_terminal(
-                        event.event_id, terminal, response_text=response_text,
+                        event.event_id,
+                        terminal,
+                        response_text=response_text,
                         error=result.termination_reason,
                     )
                 else:
                     await self._record_cron_outcome(event, "completed")
                     await self._record_task_outcome(event, "completed")
                     await self._mark_turn_terminal(
-                        event.event_id, "completed", response_text=response_text,
+                        event.event_id,
+                        "completed",
+                        response_text=response_text,
                     )
             except DuplicateTurnClaim:
                 # The first claimant owns execution, response delivery and the
@@ -1802,14 +1872,19 @@ class AgentLoop:
                 await self._record_cron_outcome(event, "error", "cancelled")
                 await self._record_task_outcome(event, "error", "cancelled")
                 await self._mark_turn_terminal(
-                    event.event_id, "interrupted", error="cancelled",
+                    event.event_id,
+                    "interrupted",
+                    error="cancelled",
                 )
                 raise
             except Exception as e:
                 logger.error("Processing failed for event {}: {}", event.event_id, e)
                 self.tracer.end_span(span, error=str(e))
                 error_out = OutboundEvent.text_reply(
-                    channel=event.channel, chat_id=event.chat_id, text=GENERIC_FALLBACK_TEXT, reply_to_id=event.reply_to_id,
+                    channel=event.channel,
+                    chat_id=event.chat_id,
+                    text=GENERIC_FALLBACK_TEXT,
+                    reply_to_id=event.reply_to_id,
                 )
                 error_out.metadata = dict(event.metadata)
                 error_out.metadata["_inbound_event_id"] = event.event_id
@@ -1822,7 +1897,9 @@ class AgentLoop:
                 await self._record_cron_outcome(event, "error", str(e))
                 await self._record_task_outcome(event, "error", str(e))
                 await self._mark_turn_terminal(
-                    event.event_id, "failed", error=str(e),
+                    event.event_id,
+                    "failed",
+                    error=str(e),
                 )
             finally:
                 # Deregister the turn so a finished turn leaves no residue for
@@ -1831,7 +1908,9 @@ class AgentLoop:
                 await heartbeat.stop()
                 self.tracer.flush_trace(trace_id)
 
-    async def _process_event(self, event: InboundEvent, trace_id: str, *, publish_response: bool = False, activity: Any = None) -> _ProcessResult:
+    async def _process_event(
+        self, event: InboundEvent, trace_id: str, *, publish_response: bool = False, activity: Any = None
+    ) -> _ProcessResult:
         """处理单个入站事件 — 委托给 pipeline stages。"""
         # 记忆作用域键:与 session_key 解耦(后者承载会话锁/历史/投递路由,不能按人
         # 归一)。此处是所有入站路径(_on_inbound、A2A/CLI 的 process_direct)的唯一
@@ -1854,15 +1933,18 @@ class AgentLoop:
         context_key = conversation_context_key(event.session_key, session)
         if context_key not in self._working_memories:
             from echo_agent.memory.tiers import WorkingMemory
-            await self._lru_put(self._working_memories, context_key, WorkingMemory(
-                max_entries=self.config.memory.max_working_memory
-            ))
+
+            await self._lru_put(
+                self._working_memories, context_key, WorkingMemory(max_entries=self.config.memory.max_working_memory)
+            )
         if not event.is_control:
             from echo_agent.bus.idempotency import idempotency_ledger_metadata
 
             claimed = await self._mark_turn_running(
-                event.event_id, event.session_key,
-                context_key=context_key, trace_id=trace_id,
+                event.event_id,
+                event.session_key,
+                context_key=context_key,
+                trace_id=trace_id,
                 metadata=idempotency_ledger_metadata(event.metadata),
             )
             if not claimed:
@@ -1909,7 +1991,8 @@ class AgentLoop:
         try:
             # Stage 1: Context building
             ctx = await self._context_stage.build(
-                event, session,
+                event,
+                session,
                 publish_response=publish_response,
                 trace_id=trace_id,
                 stream_publisher=stream_publisher,
@@ -2157,7 +2240,7 @@ class AgentLoop:
         # Slice the answer out by offset rather than re-splitting: split() would
         # discard exactly the whitespace this parse exists to preserve. Only the
         # single separator between the id and the answer is dropped.
-        answer = rest[len(clarify_id):]
+        answer = rest[len(clarify_id) :]
         if answer[:1].isspace():
             answer = answer[1:]
         ok = self.clarify.resolve(clarify_id, answer)
@@ -2215,16 +2298,17 @@ class AgentLoop:
         paragraph-mode defaults, which exist to stay inside edit-API budgets.
         """
         ch = self.config.channels
-        if ch.stream_local_flush_chars > 0 and _channel_matches(
-            channel, ch.stream_local_channels
-        ):
+        if ch.stream_local_flush_chars > 0 and _channel_matches(channel, ch.stream_local_channels):
             return (ch.stream_local_flush_chars, ch.stream_local_flush_interval_ms, False)
         return (ch.stream_flush_chars, ch.stream_flush_interval_ms, ch.stream_paragraph_mode)
 
     async def process_direct(self, content: str, session_key: str = "cli:direct", channel: str = "cli") -> str:
         """Process a message directly (for CLI or testing)."""
         event = InboundEvent.text_message(
-            channel=channel, sender_id="user", chat_id="direct", text=content,
+            channel=channel,
+            sender_id="user",
+            chat_id="direct",
+            text=content,
             session_key_override=session_key,
         )
         # Hold the same per-session lock the inbound dispatcher uses so two
@@ -2234,18 +2318,24 @@ class AgentLoop:
         async with session_lock:
             try:
                 result = await self._process_event(
-                    event, uuid.uuid4().hex[:12], publish_response=False,
+                    event,
+                    uuid.uuid4().hex[:12],
+                    publish_response=False,
                 )
                 status = "incomplete" if result.task_incomplete else "completed"
                 if result.termination_reason == "interrupted":
                     status = "interrupted"
                 await self._mark_turn_terminal(
-                    event.event_id, status, response_text=result.response_text,
+                    event.event_id,
+                    status,
+                    response_text=result.response_text,
                     error=result.termination_reason,
                 )
             except Exception as e:
                 await self._mark_turn_terminal(
-                    event.event_id, "failed", error=str(e),
+                    event.event_id,
+                    "failed",
+                    error=str(e),
                 )
                 raise
         return result.response_text or ""

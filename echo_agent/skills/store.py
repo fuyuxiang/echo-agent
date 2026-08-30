@@ -7,11 +7,13 @@ Skills are stored as SKILL.md files with YAML frontmatter in a directory hierarc
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
 import shutil
 import tempfile
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -52,7 +54,7 @@ def parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
     if end == -1:
         return {}, content
     fm_text = content[3:end].strip()
-    body = content[end + 4:].lstrip("\n")
+    body = content[end + 4 :].lstrip("\n")
     try:
         fm = yaml.safe_load(fm_text) or {}
     except yaml.YAMLError:
@@ -110,6 +112,30 @@ class SkillStore:
         self._disabled_file = self._user_dir / ".evolution_disabled.json"
         self._persisted_disabled = self._load_persisted_disabled()
         self._disabled = set(disabled or []) | self._persisted_disabled
+        self._event_sink: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
+
+    def set_event_sink(
+        self,
+        sink: Callable[[str, dict[str, Any]], Awaitable[None]] | None,
+    ) -> None:
+        """Publish best-effort control-plane updates after a skill mutation."""
+        self._event_sink = sink
+
+    def _emit_changed(self, operation: str, name: str) -> None:
+        if self._event_sink is None:
+            return
+        try:
+            asyncio.get_running_loop().create_task(
+                self._event_sink(
+                    "skill_changed",
+                    {"operation": operation, "name": name},
+                )
+            )
+        except RuntimeError:
+            # SkillStore is also usable from synchronous maintenance scripts.
+            # Missing a dashboard hint there is preferable to owning an event
+            # loop in this storage class.
+            pass
 
     def _load_persisted_disabled(self) -> set[str]:
         try:
@@ -141,6 +167,7 @@ class SkillStore:
             self._disabled.add(alias)
             self._persisted_disabled.add(alias)
         self._save_persisted_disabled()
+        self._emit_changed("disabled", name)
 
     def persist_enable(self, name: str) -> None:
         """Undo a durable disable (used by evolution rollback)."""
@@ -150,6 +177,7 @@ class SkillStore:
             self._disabled.discard(alias)
             self._persisted_disabled.discard(alias)
         self._save_persisted_disabled()
+        self._emit_changed("enabled", name)
 
     @property
     def user_dir(self) -> Path:
@@ -386,6 +414,7 @@ class SkillStore:
         final_content = _build_frontmatter(fm, body)
         self._atomic_write(skill_dir / "SKILL.md", final_content)
         logger.info("Created skill '{}' at {}", name, skill_dir)
+        self._emit_changed("created", name)
         return None
 
     def update_skill(self, name: str, content: str) -> str | None:
@@ -411,6 +440,7 @@ class SkillStore:
         final_content = _build_frontmatter(fm, body)
         self._atomic_write(skill_dir / "SKILL.md", final_content)
         logger.info("Updated skill '{}'", name)
+        self._emit_changed("updated", name)
         return None
 
     def patch_skill(self, name: str, old_text: str, new_text: str, file_path: str = "") -> str | None:
@@ -439,6 +469,7 @@ class SkillStore:
         updated = current.replace(old_text, new_text, 1)
         self._atomic_write(target, updated)
         logger.info("Patched skill '{}' file '{}'", name, file_path or "SKILL.md")
+        self._emit_changed("updated", name)
         return None
 
     def delete_skill(self, name: str) -> str | None:
@@ -461,6 +492,7 @@ class SkillStore:
             self._persisted_disabled.discard(alias)
         self._save_persisted_disabled()
         logger.info("Deleted skill '{}'", name)
+        self._emit_changed("deleted", name)
         return None
 
     def write_file(self, name: str, file_path: str, content: str) -> str | None:
@@ -477,7 +509,10 @@ class SkillStore:
         return self._write_file_payload(name, file_path, data)
 
     def _write_file_payload(
-        self, name: str, file_path: str, payload: str | bytes,
+        self,
+        name: str,
+        file_path: str,
+        payload: str | bytes,
     ) -> str | None:
         skill_dir = self._find_skill_dir(name, include_disabled=True)
         if not skill_dir:
@@ -504,6 +539,7 @@ class SkillStore:
         target.parent.mkdir(parents=True, exist_ok=True)
         self._atomic_write(target, payload)
         logger.info("Wrote file '{}' in skill '{}'", file_path, name)
+        self._emit_changed("updated", name)
         return None
 
     def remove_file(self, name: str, file_path: str) -> str | None:
@@ -525,6 +561,7 @@ class SkillStore:
             return "path traversal not allowed"
         target.unlink()
         logger.info("Removed file '{}' from skill '{}'", file_path, name)
+        self._emit_changed("updated", name)
         return None
 
     def write_provenance(

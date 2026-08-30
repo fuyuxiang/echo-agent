@@ -386,4 +386,3 @@ class HybridRetriever:
             logger.warning("embed_fn failed for vector search")
             return []
         return await self._vector_index.search(embedding, limit)
-

@@ -186,9 +186,36 @@ async def test_get_skill_usage_returns_empty_no_datasource(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_record_skill_aggregates_success_and_failure(tmp_path):
+    storage = await _fresh_storage(tmp_path)
+    tracker = _tracker(storage)
+    await tracker.record_skill("research", True)
+    await tracker.record_skill("research", False)
+    await tracker.record_skill("writer", True)
+
+    usage = await tracker.get_skill_usage(days=7)
+    assert usage == [
+        {
+            "skill": "research",
+            "calls": 2,
+            "successes": 1,
+            "failures": 1,
+            "success_rate": 0.5,
+        },
+        {
+            "skill": "writer",
+            "calls": 1,
+            "successes": 1,
+            "failures": 0,
+            "success_rate": 1.0,
+        },
+    ]
+    await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_reporting_methods_no_storage_return_empty():
     t = CostTracker(storage=None, enabled=False)
     assert await t.get_daily_usage() == []
     assert await t.get_channel_usage() == []
     assert await t.get_skill_usage() == []
-

@@ -19,5 +19,11 @@
   "deleteEntryAria": "删除该记忆条目",
   "deleteConfirmTitle": "删除记忆条目？",
   "deleteConfirmMessage": "将删除该条目：\n{{content}}\n\n此操作不可撤销。",
-  "empty": "无记忆条目"
+  "empty": "无记忆条目",
+  "editContent": "编辑记忆内容",
+  "tagsPlaceholder": "标签，用逗号分隔",
+  "saveEdit": "保存修改",
+  "editEntryAria": "编辑该记忆条目",
+  "updateSuccess": "记忆已更新",
+  "updateFailed": "更新失败"
 }

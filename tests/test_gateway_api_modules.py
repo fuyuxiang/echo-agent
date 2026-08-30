@@ -81,6 +81,9 @@ class _Part:
     async def read_chunk(self, size=8192):
         return self._chunks.pop(0) if self._chunks else b""
 
+    async def release(self):
+        self._chunks.clear()
+
 
 class _MultipartReader:
     """A fake multipart reader yielding parts via next()."""
@@ -497,6 +500,39 @@ class TestKnowledgeAPI:
         assert data["uploaded"] == ["note.txt"]
         assert data["index"]["indexed"] == 1
         assert (docs_dir / "note.txt").read_bytes() == b"hello world"
+
+    @pytest.mark.asyncio
+    async def test_upload_invalid_later_part_does_not_commit_earlier_file(self, tmp_path):
+        api, index, _ = self._make()
+        docs_dir = tmp_path / "docs"
+        index.status.return_value = {"docs_dir": str(docs_dir)}
+        index.allowed_extensions = [".md"]
+        reader = _MultipartReader(
+            [
+                _Part(name="file", filename="good.md", chunks=[b"good"]),
+                _Part(name="file", filename="..\\escape.md", chunks=[b"bad"]),
+            ]
+        )
+        resp = await api.upload(_Request(multipart=reader))
+        assert resp.status == 400
+        assert not (docs_dir / "good.md").exists()
+        assert not (tmp_path / "escape.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_upload_too_large_leaves_no_partial_document(self, tmp_path, monkeypatch):
+        import echo_agent.gateway.api.knowledge as knowledge_module
+
+        monkeypatch.setattr(knowledge_module, "_MAX_UPLOAD_FILE_BYTES", 4)
+        api, index, _ = self._make()
+        docs_dir = tmp_path / "docs"
+        index.status.return_value = {"docs_dir": str(docs_dir)}
+        reader = _MultipartReader(
+            [_Part(name="file", filename="large.md", chunks=[b"123", b"456"])]
+        )
+        resp = await api.upload(_Request(multipart=reader))
+        assert resp.status == 413
+        assert not (docs_dir / "large.md").exists()
+        assert list(docs_dir.glob(".upload-*")) == []
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -994,6 +1030,59 @@ class TestConfigAPI:
         # 嵌套子模型被递归序列化为原生 dict(旧实现会在此抛 TypeError)
         assert data["models"]["nested"]["timeout"] == 5
 
+    @pytest.mark.asyncio
+    async def test_update_config_validates_persists_and_updates_live_model(self, tmp_path):
+        import yaml
+
+        from echo_agent.config.schema import Config
+
+        target = tmp_path / "echo-agent.yaml"
+        target.write_text("ui:\n  locale: auto\ncustom:\n  keep: true\n", encoding="utf-8")
+        api, config, server = self._make(config=Config())
+        server._config_path = target
+        server.dashboard_ws.broadcast = AsyncMock()
+
+        resp = await api.update_config(_Request(body={"changes": {"ui.locale": "zh"}}))
+        assert resp.status == 200
+        assert config.ui.locale == "zh"
+        saved = yaml.safe_load(target.read_text(encoding="utf-8"))
+        assert saved["ui"]["locale"] == "zh"
+        assert saved["custom"]["keep"] is True
+        server.dashboard_ws.broadcast.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_update_config_rejects_sensitive_and_invalid_values(self, tmp_path):
+        from echo_agent.config.schema import Config
+
+        api, _, server = self._make(config=Config())
+        server._config_path = tmp_path / "echo-agent.yaml"
+        server.dashboard_ws.broadcast = AsyncMock()
+
+        secret = await api.update_config(
+            _Request(body={"changes": {"channels.telegram.token": "secret"}})
+        )
+        invalid = await api.update_config(_Request(body={"changes": {"ui.locale": "xx"}}))
+        assert secret.status == 400
+        assert invalid.status == 400
+        assert not server._config_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_update_whole_nested_section_is_yaml_safe(self, tmp_path):
+        import yaml
+
+        from echo_agent.config.schema import Config
+
+        api, config, server = self._make(config=Config())
+        server._config_path = tmp_path / "echo-agent.yaml"
+        server.dashboard_ws.broadcast = AsyncMock()
+        resp = await api.update_config(
+            _Request(body={"changes": {"channels.telegram": {"enabled": True}}})
+        )
+        assert resp.status == 200
+        saved = yaml.safe_load(server._config_path.read_text(encoding="utf-8"))
+        assert saved["channels"]["telegram"]["enabled"] is True
+        assert config.channels.telegram.enabled is True
+
 def test_sanitize_helpers():
     from echo_agent.gateway.api.config import _sanitize
 
@@ -1149,6 +1238,31 @@ class TestChannelsAPI:
         assert resp.status == 200
         data = await _payload(resp)
         assert data["channels"] == []
+
+    @pytest.mark.asyncio
+    async def test_cron_channel_supports_normal_lifecycle(self):
+        api, server = self._make()
+        cron_config = MagicMock(enabled=True)
+        server.channel_manager.config = MagicMock(cron=cron_config)
+        running = MagicMock(is_running=True)
+        server.channel_manager.start_channel = AsyncMock(return_value=running)
+
+        resp = await api.lifecycle(
+            _Request(match_info={"name": "cron", "action": "start"})
+        )
+        data = await _payload(resp)
+
+        assert resp.status == 200
+        assert data["channel"] == {"name": "cron", "enabled": True, "running": True}
+        server.channel_manager.start_channel.assert_awaited_once_with("cron")
+
+    @pytest.mark.asyncio
+    async def test_cli_lifecycle_stays_process_managed(self):
+        api, _ = self._make()
+        resp = await api.lifecycle(
+            _Request(match_info={"name": "cli", "action": "start"})
+        )
+        assert resp.status == 409
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -77,7 +77,7 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
   return resp.json();
 }
 
-export async function apiUpload(path: string, body: FormData): Promise<void> {
+export async function apiUpload<T = unknown>(path: string, body: FormData): Promise<T> {
   const resp = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: { Authorization: `Bearer ${getToken()}` },
@@ -94,4 +94,5 @@ export async function apiUpload(path: string, body: FormData): Promise<void> {
     const err = await resp.json().catch(() => ({ error: resp.statusText }));
     throw new Error(err.error || resp.statusText);
   }
+  return resp.json();
 }

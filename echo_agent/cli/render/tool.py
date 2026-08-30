@@ -1,4 +1,4 @@
-"""Tool-line vocabulary: tool id -> Chinese verb, which param is the operand,
+"""Tool-line vocabulary: tool id -> localized verb, which param is the operand,
 and how to word a result. Pure functions with no UI dependency, shared by the
 Textual transcript and the inline renderer.
 """
@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import os
 
+from echo_agent.cli.i18n import get_locale, t
 from echo_agent.cli.render.text import clip
 
-_TOOL_VERB = {
+_TOOL_VERB_ZH = {
     "read_file": "读取", "write_file": "写入", "edit_file": "编辑",
     "patch": "打补丁", "list_dir": "列出", "search_files": "搜索",
     "session_search": "检索会话", "knowledge_search": "查知识库",
@@ -27,6 +28,25 @@ _TOOL_VERB = {
     "skill_run": "运行技能", "task": "管理任务",
     "workflow": "管理工作流", "text_to_speech": "生成语音",
 }
+
+_TOOL_VERB_EN = {
+    "read_file": "Read", "write_file": "Write", "edit_file": "Edit",
+    "patch": "Patch", "list_dir": "List", "search_files": "Search",
+    "session_search": "Search sessions", "knowledge_search": "Search knowledge",
+    "exec": "Execute", "process": "Run process", "web_fetch": "Fetch web page",
+    "web_search": "Search web", "memory": "Memory", "todo": "Update tasks",
+    "read_document": "Read document", "read_spill": "Read full result",
+    "execute_code": "Run code", "browser": "Use browser", "clarify": "Ask",
+    "cronjob": "Manage scheduled job", "delegate_task": "Delegate task",
+    "spawn_task": "Start background task", "image_generate": "Generate image",
+    "vision_analyze": "Analyze image", "knowledge_index": "Update knowledge",
+    "message": "Send message", "notify": "Send notification", "send_file": "Send file",
+    "skills_list": "List skills", "skill_view": "View skill", "skill_manage": "Manage skill",
+    "skill_install": "Install skill", "skill_run": "Run skill", "task": "Manage task",
+    "workflow": "Manage workflow", "text_to_speech": "Generate speech",
+}
+# Backward-compatible inspection export; rendering goes through humanize_tool.
+_TOOL_VERB = _TOOL_VERB_ZH
 
 # 每个工具用哪个参数当"操作对象"。缺省走兜底：第一个字符串参数。
 _OBJECT_KEY = {
@@ -46,23 +66,32 @@ _OBJECT_KEY = {
 
 _ACTION_TOOLS = frozenset({"browser", "cronjob", "task", "workflow", "memory", "todo"})
 
-_RISK_LABEL = {
+_RISK_LABEL_ZH = {
     "read_only": "只读",
     "write": "会修改数据",
     "exec": "会执行代码或命令",
     "dangerous": "高风险操作",
 }
 
+_RISK_LABEL_EN = {
+    "read_only": "read-only",
+    "write": "modifies data",
+    "exec": "executes code or commands",
+    "dangerous": "high-risk operation",
+}
+
 
 def humanize_tool(name: str) -> str:
-    """Tool id -> Chinese verb. Unknown tools fall back to the raw id."""
-    return _TOOL_VERB.get(name, name)
+    """Tool id -> localized verb. Unknown tools fall back to the raw id."""
+    labels = _TOOL_VERB_ZH if get_locale() == "zh" else _TOOL_VERB_EN
+    return labels.get(name, name)
 
 
 def humanize_risk(risk: str) -> str:
     """Turn an internal risk enum into language a user can decide from."""
     raw = str(risk or "").strip()
-    return _RISK_LABEL.get(raw.lower(), raw)
+    labels = _RISK_LABEL_ZH if get_locale() == "zh" else _RISK_LABEL_EN
+    return labels.get(raw.lower(), raw)
 
 
 def fmt_duration_ms(ms: int | None) -> str:
@@ -122,15 +151,15 @@ def summarize_result(
     compact_result = " ".join(str(result_text or "").split())
     if not success:
         reason = clip(compact_result, 72)
-        return f"失败：{reason}" if reason else "失败"
+        return t("attach.ui.failed_reason", reason=reason) if reason else t("attach.ui.failed")
     meta = result_meta or {}
     if name == "read_file" and "total_lines" in meta:
-        return f"{meta['total_lines']} 行"
+        return t("attach.ui.lines", count=meta["total_lines"])
     if name == "search_files" and "count" in meta:
-        return f"找到 {meta['count']} 处"
+        return t("attach.ui.matches", count=meta["count"])
     if name == "list_dir" and "count" in meta:
-        return f"{meta['count']} 个"
+        return t("attach.ui.items", count=meta["count"])
     if name in ("exec", "process"):
-        return "完成"
+        return t("attach.ui.done")
     preview = clip(compact_result, 40)
-    return preview or "完成"
+    return preview or t("attach.ui.done")

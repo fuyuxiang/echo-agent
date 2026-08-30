@@ -35,6 +35,7 @@ def configure_logging(level: str) -> None:
 @dataclass
 class BootstrapResult:
     config: Any = None
+    config_file: Path | None = None
     workspace: Path = field(default_factory=lambda: Path("."))
     storage: Any = None
     bus: Any = None
@@ -98,6 +99,7 @@ async def bootstrap(
     # so a duplicate process bails out here rather than concurrently initializing
     # the database. Raising before any resource is opened means nothing to leak.
     async with AsyncExitStack() as stack:
+
         async def _rollback(name: str, coro_factory: Any) -> None:
             # Guard each teardown so one failing rollback step cannot abort
             # the unwind of the others (mirrors AppRuntime._stop_step).
@@ -109,6 +111,7 @@ async def bootstrap(
         instance_lock: Any = None
         if single_instance and config.runtime.single_instance and not force:
             from echo_agent.runtime_lock import acquire_instance_lock
+
             instance_lock = acquire_instance_lock(ws, role=role)
 
             async def _release_lock() -> None:
@@ -130,10 +133,13 @@ async def bootstrap(
         )
 
         from echo_agent.bus.rate_limiter import SessionRateLimiter
-        bus.set_rate_limiter(SessionRateLimiter(
-            rpm=config.rate_limit.session_rpm,
-            burst=config.rate_limit.session_burst,
-        ))
+
+        bus.set_rate_limiter(
+            SessionRateLimiter(
+                rpm=config.rate_limit.session_rpm,
+                burst=config.rate_limit.session_burst,
+            )
+        )
         stack.push_async_callback(_rollback, "bus", bus.stop)
         router = ModelRouter(
             config.models,
@@ -158,10 +164,7 @@ async def bootstrap(
 
             if config.models.providers:
                 details = "; ".join(provider_errors) or "all configured providers were skipped"
-                stub_message = (
-                    "[No LLM provider could be initialized. Check provider SDK/API key. "
-                    f"Details: {details}]"
-                )
+                stub_message = f"[No LLM provider could be initialized. Check provider SDK/API key. Details: {details}]"
                 logger.error("No providers initialized — using stub: {}", details)
             else:
                 stub_message = "[No LLM provider configured. Set up a provider in echo-agent.yaml]"
@@ -171,6 +174,7 @@ async def bootstrap(
             router.register_provider("stub", provider)
 
         from echo_agent.scheduler.service import Scheduler, ScheduledJob, TriggerKind
+
         scheduler: Scheduler | None = None
         if config.scheduler.enabled:
             inspection_runner = None
@@ -178,6 +182,7 @@ async def bootstrap(
             if insp_cfg.enabled:
                 from echo_agent.agent.inspection.store import InspectStore
                 from echo_agent.agent.inspection.tick import run_inspection_tick
+
                 insp_store = InspectStore(
                     ws / insp_cfg.inspect_file,
                     ws / "data" / "inspect_state.json",
@@ -191,28 +196,34 @@ async def bootstrap(
                 on_job=build_scheduled_job_handler(bus, inspection_runner=inspection_runner),
                 max_concurrent=config.scheduler.max_concurrent_jobs,
             )
-            if insp_cfg.enabled and not any(
-                j.name == "__inspection_tick__" for j in scheduler.list_jobs()
-            ):
-                scheduler.add_job(ScheduledJob(
-                    name="__inspection_tick__",
-                    trigger=TriggerKind.INTERVAL,
-                    interval_ms=insp_cfg.tick_interval_sec * 1000,
-                    payload={"_inspection_tick": True},
-                ))
+            if insp_cfg.enabled and not any(j.name == "__inspection_tick__" for j in scheduler.list_jobs()):
+                scheduler.add_job(
+                    ScheduledJob(
+                        name="__inspection_tick__",
+                        trigger=TriggerKind.INTERVAL,
+                        interval_ms=insp_cfg.tick_interval_sec * 1000,
+                        payload={"_inspection_tick": True},
+                    )
+                )
 
         if scheduler is not None:
             stack.push_async_callback(_rollback, "scheduler", scheduler.stop)
         from echo_agent.tasks.manager import TaskManager
         from echo_agent.tasks.workflow import WorkflowEngine
+
         task_manager = TaskManager(storage)
         workflow_engine = WorkflowEngine(storage, task_manager)
 
         agent = AgentLoop(
-            bus=bus, config=config, provider=provider, workspace=ws,
+            bus=bus,
+            config=config,
+            provider=provider,
+            workspace=ws,
             router=router,
-            scheduler=scheduler, storage=storage,
-            task_manager=task_manager, workflow_engine=workflow_engine,
+            scheduler=scheduler,
+            storage=storage,
+            task_manager=task_manager,
+            workflow_engine=workflow_engine,
         )
 
         stack.push_async_callback(_rollback, "agent", agent.stop)
@@ -220,6 +231,7 @@ async def bootstrap(
         # has no executor of its own — the agent is the executor). Polls QUEUED tasks
         # and dispatches each as an inbound event on its own isolated session.
         from echo_agent.tasks.dispatcher import TaskDispatcher, new_owner_id
+
         dispatcher_owner_id = new_owner_id()
         task_dispatcher = TaskDispatcher(bus, task_manager, owner_id=dispatcher_owner_id)
         # Release the concurrency slot only when the whole turn reaches a terminal
@@ -242,6 +254,7 @@ async def bootstrap(
         # Checkpoint safety net — snapshot workspace before write tools (fail-open)
         try:
             from echo_agent.checkpoint.hook import install_checkpoint
+
             install_checkpoint(config, ws, plugin_manager.hooks)
         except Exception as e:
             logger.debug("checkpoint install failed (fail-open): {}", e)
@@ -249,6 +262,7 @@ async def bootstrap(
         # Post-write validation — lint the written file, feed errors back (fail-open)
         try:
             from echo_agent.validation.hook import install_validation
+
             install_validation(config, ws, plugin_manager.hooks)
         except Exception as e:
             logger.debug("validation install failed (fail-open): {}", e)
@@ -282,6 +296,7 @@ async def bootstrap(
                 reflection_module = None
                 try:
                     from echo_agent.agent.planning.reflection import ReflectionModule
+
                     reflection_module = ReflectionModule(provider.chat_with_retry)
                 except Exception as e:
                     logger.debug("Reflection module unavailable for evolution: {}", e)
@@ -342,10 +357,19 @@ async def bootstrap(
         health.register_check("session_cleanup", _session_cleanup)
 
         result = BootstrapResult(
-            config=config, workspace=ws, storage=storage, bus=bus,
-            router=router, provider=provider, agent=agent,
-            channels=channels, scheduler=scheduler, health=health,
-            instance_lock=instance_lock, task_dispatcher=task_dispatcher,
+            config=config,
+            config_file=config_file,
+            workspace=ws,
+            storage=storage,
+            bus=bus,
+            router=router,
+            provider=provider,
+            agent=agent,
+            channels=channels,
+            scheduler=scheduler,
+            health=health,
+            instance_lock=instance_lock,
+            task_dispatcher=task_dispatcher,
         )
         # Success: hand ownership to AppRuntime. pop_all() detaches the
         # registered teardowns so exiting this block is a no-op; AppRuntime.stop()
@@ -375,6 +399,7 @@ def _is_supervised() -> bool:
     warn-only rather than exiting.
     """
     import os
+
     return bool(os.environ.get("INVOCATION_ID") or os.environ.get("_ECHO_AGENT_SUPERVISED"))
 
 
@@ -456,6 +481,7 @@ class AppRuntime:
 
         if ctx.config.gateway.enabled:
             from echo_agent.gateway.server import GatewayServer
+
             self._gateway = GatewayServer(
                 config=ctx.config.gateway,
                 bus=ctx.bus,
@@ -464,6 +490,7 @@ class AppRuntime:
                 workspace=ctx.workspace,
                 agent_loop=ctx.agent,
                 a2a_config=ctx.config.a2a,
+                config_path=ctx.config_file or (ctx.workspace / "echo-agent.yaml"),
             )
             # Say so when the SPA is absent. A supervised gateway skips the
             # on-demand build by design, so without this line the only clue is
@@ -488,6 +515,14 @@ class AppRuntime:
             # ever emitted into it.
             if ctx.scheduler is not None:
                 ctx.scheduler.set_event_sink(self._gateway.dashboard_ws.broadcast)
+            memory_service = getattr(ctx.agent, "_memory_service", None)
+            if memory_service is not None:
+                memory_service.set_event_sink(self._gateway.dashboard_ws.broadcast)
+            if ctx.agent.skill_store is not None:
+                ctx.agent.skill_store.set_event_sink(self._gateway.dashboard_ws.broadcast)
+            ctx.agent.cost_tracker.set_event_sink(self._gateway.dashboard_ws.broadcast)
+            ctx.agent.turn_runs.set_event_sink(self._gateway.dashboard_ws.broadcast)
+            ctx.channels.set_event_sink(self._gateway.dashboard_ws.broadcast)
             logger.info("Gateway started on {}:{}", ctx.config.gateway.host, ctx.config.gateway.port)
         return True
 
@@ -535,14 +570,20 @@ async def run(config_path: str | None = None, workspace: str | None = None, forc
     """Run the full agent (``echo-agent run``)."""
     if config_path is None and workspace:
         from echo_agent.config.loader import resolve_config_file
+
         config_path = str(resolve_config_file(search_dir=workspace) or "")
     overrides = {"workspace": workspace} if workspace else None
     shutdown = asyncio.Event()
     from echo_agent.runtime_lock import InstanceLockError
+
     try:
         ctx = await bootstrap(
-            config_path=config_path, overrides=overrides, on_cli_exit=shutdown.set,
-            single_instance=True, force=force, role="run",
+            config_path=config_path,
+            overrides=overrides,
+            on_cli_exit=shutdown.set,
+            single_instance=True,
+            force=force,
+            role="run",
         )
     except InstanceLockError as e:
         logger.error(e.message)
@@ -675,6 +716,7 @@ async def run_gateway(
     started here too."""
     if config_path is None and workspace:
         from echo_agent.config.loader import resolve_config_file
+
         config_path = str(resolve_config_file(search_dir=workspace) or "")
 
     # Preflight the listen port BEFORE bootstrap(), so an occupied port (a
@@ -683,6 +725,7 @@ async def run_gateway(
     # AppRuntime.stop() is a no-op before start(), so a post-bootstrap bail
     # would leak the connection). Resolve host/port from args first, else config.
     from echo_agent.config.loader import load_config, resolve_config_file
+
     _cfg_file = resolve_config_file(config_path)
     _cfg = load_config(config_path=_cfg_file)
     pre_host = host or _cfg.gateway.host
@@ -698,6 +741,7 @@ async def run_gateway(
     # issued from inside it (agent exec tool) can refuse — with the service
     # manager's KeepAlive/Restart=always that would be a kill/respawn loop.
     import os as _os
+
     _os.environ["_ECHO_AGENT_GATEWAY"] = "1"
 
     overrides: dict[str, Any] = {"workspace": workspace} if workspace else {}
@@ -711,10 +755,15 @@ async def run_gateway(
         overrides["security"] = {**overrides.get("security", {}), **profile_override["security"]}
     shutdown = asyncio.Event()
     from echo_agent.runtime_lock import InstanceLockError
+
     try:
         ctx = await bootstrap(
-            config_path=config_path, overrides=overrides or None, on_cli_exit=shutdown.set,
-            single_instance=True, force=force, role="gateway",
+            config_path=config_path,
+            overrides=overrides or None,
+            on_cli_exit=shutdown.set,
+            single_instance=True,
+            force=force,
+            role="gateway",
         )
     except InstanceLockError as e:
         logger.error(e.message)

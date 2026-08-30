@@ -51,14 +51,17 @@ export function Overview() {
     return () => clearInterval(timer);
   }, [refetchHealth, refetchChannels, refetchTasks, refetchMemory]);
 
-  // 任务计数额外订阅 WS,让状态变化即时反映而不必等下一轮轮询。只订阅 tasks:
-  // _EVENT_CHANNEL_MAP 里还列了 sessions/channels/memory 等,但服务端只有
-  // TaskManager 与 Scheduler 接了 broadcast sink(app.py),cron 事件与本页的
-  // 计数无关,订阅其余频道仍会做成死功能。
+  // Mutations for all three dashboard metrics have live producers. Dispatch by
+  // event family so each update only refetches the affected card; polling stays
+  // as a reconnect/backstop path.
   useWsSubscribe(
-    ["tasks"],
-    () => { refetchTasks(); },
-    ["task_created", "task_transitioned", "task_updated"],
+    ["tasks", "channels", "memory"],
+    (event) => {
+      if (event.type.startsWith("task_")) refetchTasks();
+      else if (event.type.startsWith("channel_")) refetchChannels();
+      else if (event.type.startsWith("memory_")) refetchMemory();
+    },
+    ["task_created", "task_transitioned", "task_updated", "channel_updated", "memory_changed"],
   );
 
   const statusCounts: Record<string, number> = {};

@@ -91,6 +91,16 @@ class MemoryService:
         self._flush_fn = flush_fn
         self._audit_path = Path(audit_path) if audit_path else None
         self._allow_env_writes = allow_env_writes
+        self._event_sink: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None
+
+    def set_event_sink(
+        self,
+        sink: Callable[[str, dict[str, Any]], Awaitable[Any]] | None,
+    ) -> None:
+        """Publish successful writes to operator surfaces without coupling the
+        memory core to the gateway. The sink is best-effort and hot-swappable so
+        tests and gateway-disabled runtimes keep the same behaviour."""
+        self._event_sink = sink
 
     @property
     def store(self):
@@ -246,9 +256,7 @@ class MemoryService:
         await self._finalize(ctx, "replace", entry_id, target.type, source, "", True)
         return WriteResult(ok=True, entry=updated)
 
-    async def remove(
-        self, ctx: ActorContext, entry_id: str, *, override: bool = False
-    ) -> WriteResult:
+    async def remove(self, ctx: ActorContext, entry_id: str, *, override: bool = False) -> WriteResult:
         """删除既有条目,走完整八步写序(含 provenance 守卫)。
 
         override=True 时跳过第④步 provenance(admin 通道显式越权)。
@@ -325,9 +333,7 @@ class MemoryService:
         await self._finalize(ctx, "maintenance_update", entry_id, target.type, source or "", "", True)
         return WriteResult(ok=True, entry=updated)
 
-    async def mark_superseded(
-        self, ctx: ActorContext, entry_id: str, superseded_by: str
-    ) -> WriteResult:
+    async def mark_superseded(self, ctx: ActorContext, entry_id: str, superseded_by: str) -> WriteResult:
         """标记条目被取代:裁决动作,精简写序。"""
         target = self._store.get(entry_id)
         if target is None:
@@ -339,9 +345,7 @@ class MemoryService:
         await self._finalize(ctx, "mark_superseded", entry_id, target.type, "", "", True)
         return WriteResult(ok=True, entry=self._store.get(entry_id))
 
-    async def set_tier(
-        self, ctx: ActorContext, entry_id: str, tier: MemoryTier
-    ) -> WriteResult:
+    async def set_tier(self, ctx: ActorContext, entry_id: str, tier: MemoryTier) -> WriteResult:
         """调整条目 tier(如归档):内部维护,精简写序。"""
         target = self._store.get(entry_id)
         if target is None:
@@ -398,6 +402,19 @@ class MemoryService:
                 logger.warning("MemoryService invalidate failed: {}", e)
         # ⑧ 审计
         self._append_audit(ctx, op, entry_id, mem_type, source, reason, ok)
+        if ok and self._event_sink is not None:
+            try:
+                await self._event_sink(
+                    "memory_changed",
+                    {
+                        "operation": op,
+                        "entry_id": entry_id,
+                        "type": mem_type.value if mem_type is not None else "",
+                        "scope": ctx.memory_scope,
+                    },
+                )
+            except Exception as e:
+                logger.debug("MemoryService event emission failed: {}", e)
 
     def _reject(
         self,
@@ -437,10 +454,7 @@ class MemoryService:
         }
         try:
             self._audit_path.parent.mkdir(parents=True, exist_ok=True)
-            if (
-                self._audit_path.exists()
-                and self._audit_path.stat().st_size > _MAX_AUDIT_FILE_BYTES
-            ):
+            if self._audit_path.exists() and self._audit_path.stat().st_size > _MAX_AUDIT_FILE_BYTES:
                 rotated = self._audit_path.with_name(
                     f"{self._audit_path.stem}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}.jsonl"
                 )

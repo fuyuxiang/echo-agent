@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import re
+import shutil
+import stat
+import tempfile
+import zipfile
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -11,6 +16,11 @@ if TYPE_CHECKING:
 # A single safe path segment. Mirrors SkillStore's own name rule: no separators,
 # no "..", no absolute paths — anything joined into a filesystem path must match.
 _SAFE_SEGMENT_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+_MAX_ARCHIVE_BYTES = 10 * 1024 * 1024
+_MAX_EXTRACTED_BYTES = 20 * 1024 * 1024
+_MAX_ARCHIVE_ENTRIES = 500
+_MAX_IMPORTED_FILE_BYTES = 1_048_576
+_ALLOWED_IMPORT_DIRS = frozenset({"references", "templates", "scripts", "assets"})
 
 
 class SkillsAPI:
@@ -84,13 +94,15 @@ class SkillsAPI:
         if content is None:
             return web.json_response({"error": "not found"}, status=404)
 
-        files = store.list_files(name)
-        return web.json_response({
-            "name": name,
-            "content": content,
-            "enabled": not store.is_disabled(name),
-            "files": files,
-        })
+        files = store.list_files(name, include_disabled=True)
+        return web.json_response(
+            {
+                "name": name,
+                "content": content,
+                "enabled": not store.is_disabled(name),
+                "files": files,
+            }
+        )
 
     async def toggle_skill(self, request: web.Request) -> web.Response:
         # Enabling a skill changes what the agent can do on its next turn, which
@@ -120,10 +132,12 @@ class SkillsAPI:
             store.persist_disable(name)
             enabled = False
 
-        return web.json_response({
-            "success": True,
-            "skill": {"name": name, "enabled": enabled},
-        })
+        return web.json_response(
+            {
+                "success": True,
+                "skill": {"name": name, "enabled": enabled},
+            }
+        )
 
     async def delete_skill(self, request: web.Request) -> web.Response:
         guard = self._admin_guard(request, "skills_delete")
@@ -152,6 +166,7 @@ class SkillsAPI:
         if content is None:
             return None
         from echo_agent.skills.store import parse_frontmatter
+
         fm, _ = parse_frontmatter(content)
         echo_meta = (fm.get("metadata", {}) or {}).get("echo", {}) or {}
         requires = echo_meta.get("requires", {}) or {}
@@ -169,13 +184,16 @@ class SkillsAPI:
         if specs is None:
             return web.json_response({"error": "not found"}, status=404)
         from echo_agent.dependencies.lazy_deps import _is_satisfied
+
         missing = [s for s in specs if not _is_satisfied(s)]
-        return web.json_response({
-            "name": name,
-            "requires": list(specs),
-            "missing": missing,
-            "satisfied": not missing,
-        })
+        return web.json_response(
+            {
+                "name": name,
+                "requires": list(specs),
+                "missing": missing,
+                "satisfied": not missing,
+            }
+        )
 
     async def install_skill_deps(self, request: web.Request) -> web.Response:
         guard = self._admin_guard(request, "skills_deps_install")
@@ -189,6 +207,7 @@ class SkillsAPI:
         if specs is None:
             return web.json_response({"error": "not found"}, status=404)
         from echo_agent.dependencies.lazy_deps import install_authorized_async
+
         result = await install_authorized_async(tuple(specs), source=f"http:skill:{name}")
         status = 200 if result.get("success") else 400
         return web.json_response(result, status=status)
@@ -210,35 +229,52 @@ class SkillsAPI:
         if not path:
             return web.json_response({"error": "path is required"}, status=400)
 
-        from pathlib import Path as P
-        source = P(path).expanduser()
+        source = Path(path).expanduser()
         if not source.exists() or not (source / "SKILL.md").exists():
-            return web.json_response(
-                {"error": f"no SKILL.md found at '{path}'"}, status=400
-            )
+            return web.json_response({"error": f"no SKILL.md found at '{path}'"}, status=400)
+
+        return self._import_source(source)
+
+    def _validate_source_tree(self, source: Path) -> str | None:
+        total = 0
+        for item in source.rglob("*"):
+            if item.is_symlink():
+                return f"symlinks are not allowed: {item.relative_to(source)}"
+            if not item.is_file():
+                continue
+            relative = item.relative_to(source)
+            if relative != Path("SKILL.md") and (
+                len(relative.parts) < 2 or relative.parts[0] not in _ALLOWED_IMPORT_DIRS
+            ):
+                return f"unsupported file location: {relative}"
+            size = item.stat().st_size
+            if size > _MAX_IMPORTED_FILE_BYTES:
+                return f"file exceeds 1 MiB limit: {relative}"
+            total += size
+            if total > _MAX_EXTRACTED_BYTES:
+                return "skill exceeds 20 MiB extracted-size limit"
+        return None
+
+    def _import_source(self, source: Path) -> web.Response:
+        tree_error = self._validate_source_tree(source)
+        if tree_error:
+            return web.json_response({"error": tree_error}, status=400)
 
         store = self._store()
         meta = store._read_meta(source)
         if not meta:
-            return web.json_response(
-                {"error": "failed to parse SKILL.md"}, status=400
-            )
+            return web.json_response({"error": "failed to parse SKILL.md"}, status=400)
 
         # name and category come straight out of the imported SKILL.md, i.e.
         # from a file this endpoint does not control. Unvalidated they were
         # joined into a filesystem path: `name: /tmp/x` or `name: ../../x`
         # relocated the write outside user_dir entirely.
         if not _SAFE_SEGMENT_RE.match(meta.name):
-            return web.json_response(
-                {"error": f"invalid skill name in SKILL.md: '{meta.name}'"}, status=400
-            )
+            return web.json_response({"error": f"invalid skill name in SKILL.md: '{meta.name}'"}, status=400)
         category = meta.category or "general"
         if not _SAFE_SEGMENT_RE.match(category):
-            return web.json_response(
-                {"error": f"invalid category in SKILL.md: '{category}'"}, status=400
-            )
+            return web.json_response({"error": f"invalid category in SKILL.md: '{category}'"}, status=400)
 
-        import shutil
         user_dir = store.user_dir
         target = user_dir / category / meta.name
         # Belt-and-braces after the segment checks: confirm the resolved target
@@ -246,20 +282,21 @@ class SkillsAPI:
         try:
             target.resolve().relative_to(user_dir.resolve())
         except ValueError:
-            return web.json_response(
-                {"error": "resolved skill path escapes the skill directory"}, status=400
-            )
+            return web.json_response({"error": "resolved skill path escapes the skill directory"}, status=400)
         if target.exists():
-            return web.json_response(
-                {"error": f"skill '{meta.name}' already exists"}, status=409
-            )
+            return web.json_response({"error": f"skill '{meta.name}' already exists"}, status=409)
         # Importing a skill the operator has not reviewed should not also import
         # whatever the source tree happens to contain, and symlinks would copy
         # host files in by reference.
         target.mkdir(parents=True, exist_ok=True)
         try:
-            shutil.copytree(source, target, dirs_exist_ok=True, symlinks=False,
-                            ignore=shutil.ignore_patterns(".git", "__pycache__", ".venv", "venv"))
+            shutil.copytree(
+                source,
+                target,
+                dirs_exist_ok=True,
+                symlinks=False,
+                ignore=shutil.ignore_patterns(".git", "__pycache__", ".venv", "venv"),
+            )
         except Exception as e:
             shutil.rmtree(target, ignore_errors=True)
             return web.json_response({"error": f"import failed: {e}"}, status=400)
@@ -268,3 +305,71 @@ class SkillsAPI:
         d = meta.to_dict()
         d["enabled"] = False
         return web.json_response({"success": True, "skill": d})
+
+    async def upload_skill(self, request: web.Request) -> web.Response:
+        """Import a browser-uploaded ZIP safely; imported skills start disabled."""
+        guard = self._admin_guard(request, "skills_upload")
+        if guard is not None:
+            return guard
+        unavailable = self._unavailable()
+        if unavailable is not None:
+            return unavailable
+        try:
+            reader = await request.multipart()
+        except Exception:
+            return web.json_response({"error": "multipart form data required"}, status=400)
+        part = await reader.next()
+        while part is not None and part.name != "file":
+            part = await reader.next()
+        if part is None or not (part.filename or "").lower().endswith(".zip"):
+            return web.json_response({"error": "a .zip file is required"}, status=400)
+
+        with tempfile.TemporaryDirectory(prefix="echo-skill-upload-") as temporary:
+            root = Path(temporary)
+            archive = root / "upload.zip"
+            size = 0
+            with archive.open("wb") as handle:
+                while True:
+                    chunk = await part.read_chunk(size=64 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > _MAX_ARCHIVE_BYTES:
+                        return web.json_response(
+                            {"error": "archive exceeds 10 MiB limit"},
+                            status=413,
+                        )
+                    handle.write(chunk)
+            try:
+                with zipfile.ZipFile(archive) as bundle:
+                    entries = [entry for entry in bundle.infolist() if not entry.is_dir()]
+                    if len(entries) > _MAX_ARCHIVE_ENTRIES:
+                        return web.json_response({"error": "archive has too many files"}, status=400)
+                    if sum(entry.file_size for entry in entries) > _MAX_EXTRACTED_BYTES:
+                        return web.json_response(
+                            {"error": "archive exceeds 20 MiB extracted-size limit"},
+                            status=400,
+                        )
+                    extract_root = root / "extracted"
+                    extract_root.mkdir()
+                    for entry in entries:
+                        relative = Path(entry.filename)
+                        if relative.is_absolute() or ".." in relative.parts:
+                            return web.json_response({"error": "archive contains an unsafe path"}, status=400)
+                        mode = entry.external_attr >> 16
+                        if stat.S_ISLNK(mode):
+                            return web.json_response({"error": "archive contains a symlink"}, status=400)
+                        target = extract_root / relative
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        with bundle.open(entry) as source_handle, target.open("wb") as target_handle:
+                            shutil.copyfileobj(source_handle, target_handle)
+            except (zipfile.BadZipFile, OSError) as exc:
+                return web.json_response({"error": f"invalid ZIP archive: {exc}"}, status=400)
+
+            skill_files = [path for path in extract_root.rglob("SKILL.md") if "__MACOSX" not in path.parts]
+            if len(skill_files) != 1:
+                return web.json_response(
+                    {"error": "archive must contain exactly one SKILL.md"},
+                    status=400,
+                )
+            return self._import_source(skill_files[0].parent)

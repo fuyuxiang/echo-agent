@@ -1,13 +1,14 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useApi } from "../hooks/use-api";
+import { useWsSubscribe } from "../hooks/use-ws";
 import { apiFetch } from "../lib/api";
 import { relativeTime } from "../lib/datetime";
 import { runMutation } from "../stores/toast";
 import { Loadable } from "../components/Loadable";
 import { useConfirm } from "../components/ConfirmDialog";
 import { useIsAdmin } from "../stores/capabilities";
-import { Trash2, Search, X, ShieldAlert } from "lucide-react";
+import { Trash2, Search, X, ShieldAlert, Pencil, Save, ChevronLeft, ChevronRight } from "lucide-react";
 
 const TIERS = ["working", "episodic", "semantic", "archival"] as const;
 
@@ -20,6 +21,7 @@ interface MemoryEntry {
   // 之前前端读 entry.weight 恒为 undefined。
   importance: number;
   created_at: string;
+  tags?: string[];
 }
 
 // 搜索接口返回 {results:[{entry, score}]},与 list 的 {entries:[...]} 结构不同。
@@ -34,6 +36,10 @@ export function Memory() {
   const [tier, setTier] = useState<string>("working");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<MemoryEntry[] | null>(null);
+  const [offset, setOffset] = useState(0);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editContent, setEditContent] = useState("");
+  const [editTags, setEditTags] = useState("");
 
   // 这个页面整体是跨主体视图:列表不带 session_key、搜索用 all_scopes,两者服务端
   // 都要求 admin token(普通 api token 只能读自己 scope 内的记忆)。探测到明确不是
@@ -43,14 +49,18 @@ export function Memory() {
   const canReadAll = isAdmin !== false;
 
   const { data, loading, error, refetch } = useApi<{ entries: MemoryEntry[]; total: number }>(
-    canReadAll ? `/memory?tier=${tier}&limit=100` : null
+    canReadAll ? `/memory?tier=${tier}&limit=50&offset=${offset}` : null
   );
+
+  const searching = searchResults !== null;
+
+  useWsSubscribe(["memory"], () => {
+    if (!searching) refetch();
+  }, ["memory_changed"]);
 
   // 搜索是全局的(all_scopes: true),与 tier 分层正交。此前切 tier 会静默清掉搜索
   // 结果、而搜索框里的关键词还留着,用户无法判断当前看的是哪一种视图。改为:搜索
   // 激活时 tier 页签禁用并显式提示“正在看搜索结果”,清除搜索才回到分层浏览。
-  const searching = searchResults !== null;
-
   const handleSearch = async () => {
     if (!canReadAll) return;
     if (!searchQuery.trim()) { setSearchResults(null); return; }
@@ -68,6 +78,34 @@ export function Memory() {
   const clearSearch = () => {
     setSearchQuery("");
     setSearchResults(null);
+  };
+
+  const startEdit = (entry: MemoryEntry) => {
+    setEditingId(entry.id);
+    setEditContent(entry.content);
+    setEditTags((entry.tags ?? []).join(", "));
+  };
+
+  const saveEdit = async (entry: MemoryEntry) => {
+    const ok = await runMutation(
+      () => apiFetch(`/memory/${entry.id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          content: editContent,
+          tags: editTags.split(",").map((tag) => tag.trim()).filter(Boolean),
+          override: true,
+        }),
+      }),
+      { success: t("updateSuccess"), error: t("updateFailed") },
+    );
+    if (ok) {
+      setEditingId(null);
+      if (searchResults) {
+        setSearchResults((current) => current?.map((item) => item.id === entry.id
+          ? { ...item, content: editContent, tags: editTags.split(",").map((tag) => tag.trim()).filter(Boolean) }
+          : item) ?? null);
+      } else refetch();
+    }
   };
 
   const handleDelete = async (entry: MemoryEntry) => {
@@ -92,22 +130,30 @@ export function Memory() {
     <div className="space-y-2">
       {entries.length === 0 && <div className="text-gray-400 text-center py-8">{t("empty")}</div>}
       {entries.map((entry) => (
-        <div key={entry.id} className="bg-white border rounded-lg p-4 flex justify-between items-start">
+        <div key={entry.id} className="bg-white border rounded-lg p-4 flex justify-between items-start gap-3">
           <div className="flex-1">
-            <div className="text-sm whitespace-pre-wrap break-words">{entry.content}</div>
+            {editingId === entry.id ? <div className="space-y-2">
+              <textarea value={editContent} onChange={(event) => setEditContent(event.target.value)} rows={4}
+                className="w-full border rounded p-2 text-sm" aria-label={t("editContent")} />
+              <input value={editTags} onChange={(event) => setEditTags(event.target.value)}
+                className="w-full border rounded px-2 py-1 text-xs" placeholder={t("tagsPlaceholder")} />
+            </div> : <div className="text-sm whitespace-pre-wrap break-words">{entry.content}</div>}
             <div className="text-xs text-gray-400 mt-1">
               {entry.type} · {t("importance")}: {entry.importance?.toFixed(2) ?? "-"} ·{" "}
               {relativeTime(entry.created_at, t("unknownTime"))}
               {searching && entry.tier && <> · {t(`tier.${entry.tier}`, { defaultValue: entry.tier })}</>}
             </div>
           </div>
-          <button
-            onClick={() => handleDelete(entry)}
-            aria-label={t("deleteEntryAria")}
-            className="text-red-400 hover:text-red-600 ml-2"
-          >
-            <Trash2 size={16} />
-          </button>
+          <div className="flex gap-1">
+            {editingId === entry.id ? <>
+              <button onClick={() => saveEdit(entry)} disabled={!editContent.trim()}
+                aria-label={t("saveEdit")} className="p-1 text-blue-600 disabled:opacity-40"><Save size={16} /></button>
+              <button onClick={() => setEditingId(null)} aria-label={t("common:cancel")} className="p-1 text-gray-500"><X size={16} /></button>
+            </> : <button onClick={() => startEdit(entry)} aria-label={t("editEntryAria")}
+              className="p-1 text-gray-400 hover:text-blue-600"><Pencil size={16} /></button>}
+            <button onClick={() => handleDelete(entry)} aria-label={t("deleteEntryAria")}
+              className="p-1 text-red-400 hover:text-red-600"><Trash2 size={16} /></button>
+          </div>
         </div>
       ))}
     </div>
@@ -149,7 +195,7 @@ export function Memory() {
         {TIERS.map((tierKey) => (
           <button
             key={tierKey}
-            onClick={() => setTier(tierKey)}
+            onClick={() => { setTier(tierKey); setOffset(0); }}
             disabled={searching}
             title={searching ? t("tierDisabledHint") : undefined}
             className={`px-4 py-2 text-sm border-b-2 disabled:opacity-40 disabled:cursor-not-allowed ${
@@ -181,6 +227,15 @@ export function Memory() {
         <Loadable loading={loading} error={error} data={data} emptyText={t("empty")}>
           {(d) => renderEntries(d.entries)}
         </Loadable>
+      )}
+      {!searching && data && data.total > 50 && (
+        <div className="flex justify-end items-center gap-2 text-xs text-gray-500">
+          <span>{offset + 1}-{Math.min(offset + data.entries.length, data.total)} / {data.total}</span>
+          <button onClick={() => setOffset(Math.max(0, offset - 50))} disabled={offset === 0}
+            className="border rounded p-1 disabled:opacity-40" aria-label={t("common:previous")}><ChevronLeft size={15} /></button>
+          <button onClick={() => setOffset(offset + 50)} disabled={offset + data.entries.length >= data.total}
+            className="border rounded p-1 disabled:opacity-40" aria-label={t("common:next")}><ChevronRight size={15} /></button>
+        </div>
       )}
     </div>
   );

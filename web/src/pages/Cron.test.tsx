@@ -287,7 +287,7 @@ describe("Cron 页", () => {
 
   it("运行历史抽屉按 job 拉取 runs", async () => {
     const spy = mockApi({
-      "/cron/j1/runs": {
+      "/cron/j1/runs?limit=100": {
         runs: [{ ts: "2026-07-27T09:00:00Z", status: "completed", error: "", run_count: 12 }],
       },
     });
@@ -295,9 +295,8 @@ describe("Cron 页", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "查看 每日汇报 的运行历史" }));
 
-    await waitFor(() => expect(spy).toHaveBeenCalledWith("/cron/j1/runs"));
-    // 调度器只留最近一次汇总,抽屉必须把这个局限说清楚。
-    expect(await screen.findByText(/只保留最近一次/)).toBeInTheDocument();
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("/cron/j1/runs?limit=100", expect.anything()));
+    expect(await screen.findByText(/最近 100 次/)).toBeInTheDocument();
   });
 
   it("删除确认里提示可改用停用,避免被逼做破坏性操作", async () => {
