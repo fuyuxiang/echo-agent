@@ -29,6 +29,9 @@ class PipelineContext:
     tool_defs: list[dict[str, Any]] = field(default_factory=list)
     retrieval: str = ""
     task_type: str = "chat"
+    # A deterministic output contract set by ContextStage. Inference may only
+    # complete such a turn after artifact_deliver succeeds in this tool loop.
+    artifact_required: bool = False
     execution_plan: Plan | None = None
     plan_run_id: str = ""
     intro_text: str = ""

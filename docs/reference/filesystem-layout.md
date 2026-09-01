@@ -105,6 +105,21 @@ Echo Agent 的数据存储分为全局目录和工作区目录两个层次。
 !!! tip "自动清理"
     默认保留 7 天（`spill.retention_days`），目录总量上限 512 MB（`spill.max_total_mb`），清理每 6 小时扫描一次（`spill.sweep_interval_hours`）。超量时会在保留期之外继续删除最旧的产物。
 
+### 用户产物目录
+
+`data/artifacts/` 保存由 `artifact_*` 工具创建并交付给用户的报告。它与模型私有的 spill 目录完全分离，布局为会话哈希、随机产物 ID、分块日志及清单；模型不会看到内部路径。
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `artifacts.root_dir` | `data/artifacts` | 工作区内的专用相对目录 |
+| `artifacts.max_chunk_chars` | `3000` | 单次追加字符上限；避免工具参数本身撞上模型输出上限 |
+| `artifacts.max_artifact_mb` | `50` | 单产物体积上限 |
+| `artifacts.retention_days` | `30` | 产物保留天数 |
+| `artifacts.max_total_mb` | `1024` | 全部产物总体积上限 |
+| `artifacts.sweep_interval_hours` | `24` | 清理周期 |
+
+清理器只删除具有合法会话哈希、产物 ID 和匹配 manifest 的目录，不会遍历或删除不认识的目录形状。总配额清理会保护最近一小时内仍在更新的草稿，避免与正在生成的报告竞争。
+
 ### data/logs/
 
 | 文件 | 说明 |

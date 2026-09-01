@@ -307,6 +307,7 @@ class AgentLoop:
         self._spill_store = SpillStore(workspace / config.storage.spill_dir)
         # 清扫循环的句柄,由 start() 建、aclose() 收。见 _start_spill_sweeper。
         self._spill_sweep_task: asyncio.Task | None = None
+        self._artifact_sweep_task: asyncio.Task | None = None
         self.tools = ToolRegistry(
             audit_log_path=workspace / config.storage.logs_dir / "tool_audit.jsonl",
             config=config,
@@ -1352,6 +1353,7 @@ class AgentLoop:
 
         self._spawn_background(self._start_mcp_background(), tier=Tier.DURABLE)
         self._start_spill_sweeper()
+        self._start_artifact_sweeper()
         # Skill admission candidate store: ensure schema exists before the first
         # background skill review can stage a candidate. Must run BEFORE
         # subscribe_inbound to close the startup race where an inbound event
@@ -1431,6 +1433,14 @@ class AgentLoop:
                 if not isinstance(e, asyncio.CancelledError):
                     logger.debug("spill 清扫任务收尾异常(忽略): {}", e)
             self._spill_sweep_task = None
+        if self._artifact_sweep_task is not None:
+            self._artifact_sweep_task.cancel()
+            try:
+                await self._artifact_sweep_task
+            except (asyncio.CancelledError, Exception) as e:  # noqa: BLE001
+                if not isinstance(e, asyncio.CancelledError):
+                    logger.debug("artifact cleanup shutdown failed (ignored): {}", e)
+            self._artifact_sweep_task = None
         # All background work is spawned via ``_spawn_background`` and owned by
         # the scheduler; ``aclose`` cancels discardable tasks and flushes durable
         # ones. This is the single shutdown path for background work.
@@ -1492,6 +1502,32 @@ class AgentLoop:
                 self.config.spill.retention_days,
                 self.config.spill.max_total_mb,
                 self.config.spill.sweep_interval_hours,
+            )
+        )
+
+    def _start_artifact_sweeper(self) -> None:
+        """Own the perpetual user-artifact retention loop outside the worker pool."""
+        if not self.config.artifacts.enabled:
+            return
+        from echo_agent.artifacts.sweeper import sweep_forever
+
+        workspace_root = self.workspace.resolve()
+        configured_root = workspace_root / self.config.artifacts.root_dir
+        root = configured_root.resolve()
+        try:
+            root.relative_to(workspace_root)
+        except ValueError:
+            logger.error("Artifact cleanup disabled: configured root escapes the workspace")
+            return
+        if configured_root.is_symlink():
+            logger.error("Artifact cleanup disabled: configured root is a symbolic link")
+            return
+        self._artifact_sweep_task = asyncio.create_task(
+            sweep_forever(
+                root,
+                self.config.artifacts.retention_days,
+                self.config.artifacts.max_total_mb,
+                self.config.artifacts.sweep_interval_hours,
             )
         )
 

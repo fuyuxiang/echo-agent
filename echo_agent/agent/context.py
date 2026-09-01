@@ -279,6 +279,25 @@ def build_capabilities_context(tool_defs: list[dict[str, Any]] | None) -> str:
         "",
         "Available tools: " + ", ".join(sorted(names)),
     ]
+    artifact_flow = {
+        "artifact_create", "artifact_append", "artifact_validate",
+        "artifact_finalize", "artifact_deliver",
+    }
+    if artifact_flow.issubset(set(names)):
+        lines.extend([
+            "",
+            "Long-document output policy:",
+            "- For a full report, audit, review, manuscript, or any answer likely to be long, "
+            "create a user artifact instead of placing the whole document in the final chat reply.",
+            "- Use artifact_create once, artifact_append in small consecutive chunks, then "
+            "artifact_validate, artifact_finalize, and artifact_deliver.",
+            "- Call exactly one artifact_append per assistant turn and wait for its tool result "
+            "before generating the next chunk, so tool-call JSON cannot hit a single-output limit.",
+            "- artifact_validate replaces shell-based wc/lint checks; do not claim a shell is "
+            "required for document metrics or format verification.",
+            "- The final chat reply must be a short summary plus the truthful artifact delivery status.",
+            "- Never use spill paths as user deliverables and never expose internal artifact paths.",
+        ])
     return "\n".join(lines)
 
 

@@ -20,7 +20,7 @@ from echo_agent.cli.colors import (
     print_info,
     set_color_override,
 )
-from echo_agent.config.loader import load_config, resolve_config_file
+from echo_agent.config.loader import load_config, profile_explicitly_set, resolve_config_file
 from echo_agent.config.schema import ProviderConfig
 
 _CHANNEL_NAMES = [
@@ -28,6 +28,39 @@ _CHANNEL_NAMES = [
     "whatsapp", "weixin", "qqbot", "feishu", "dingtalk",
     "email", "wecom", "matrix",
 ]
+
+_DIAGNOSTIC_TOOLS = (
+    "write_file", "exec", "artifact_create", "artifact_append",
+    "artifact_validate", "artifact_finalize", "artifact_deliver", "send_file",
+)
+
+
+def _capability_report(config: Any, *, entrypoint: str) -> dict[str, Any]:
+    """Explain policy outcomes without constructing side-effectful tool objects."""
+    from echo_agent.security.tool_policy import tool_policy_decision
+
+    if not all(hasattr(config, name) for name in ("security", "tools", "execution", "artifacts")):
+        return {
+            "entrypoint": entrypoint,
+            "security_profile": "unknown",
+            "tools_profile": "unknown",
+            "tools": [],
+        }
+
+    items: list[dict[str, Any]] = []
+    for name in _DIAGNOSTIC_TOOLS:
+        allowed, reason = tool_policy_decision(config, name)
+        if name == "exec" and not config.tools.exec.enabled:
+            allowed, reason = False, "disabled by tools.exec.enabled=false"
+        if name.startswith("artifact_") and not config.artifacts.enabled:
+            allowed, reason = False, "disabled by artifacts.enabled=false"
+        items.append({"name": name, "available": allowed, "reason": reason})
+    return {
+        "entrypoint": entrypoint,
+        "security_profile": config.security.profile,
+        "tools_profile": config.tools.profile,
+        "tools": items,
+    }
 
 
 def _provider_credential_status(provider: ProviderConfig) -> tuple[str, str]:
@@ -123,6 +156,16 @@ def _gather_status(config_path: str | Path | None, workspace: str | Path | None)
     )
     health = _health_probes(config)
 
+    profile_is_explicit = profile_explicitly_set(config_file)
+    gateway_config = config.model_copy(deep=True) if hasattr(config, "model_copy") else config
+    if not profile_is_explicit and hasattr(gateway_config, "security"):
+        gateway_config.security.profile = "public_gateway"
+    capabilities = {
+        "profile_explicit": profile_is_explicit,
+        "cli": _capability_report(config, entrypoint="cli"),
+        "gateway": _capability_report(gateway_config, entrypoint="gateway"),
+    }
+
     return {
         "config_file": str(config_file) if config_file else None,
         "config_file_exists": config_file_exists,
@@ -143,6 +186,7 @@ def _gather_status(config_path: str | Path | None, workspace: str | Path | None)
             else {"installed": runtime.service_installed, "running": runtime.service_running}
         ),
         "health": health,
+        "capabilities": capabilities,
     }
 
 
@@ -252,6 +296,21 @@ def _render_text(data: dict[str, Any]) -> None:
             print(line)
         print()
 
+    print_header("Effective Tool Capabilities")
+    caps = data["capabilities"]
+    if not caps["profile_explicit"]:
+        print_info("security.profile is implicit; Gateway uses public_gateway")
+    for entrypoint in ("cli", "gateway"):
+        report = caps[entrypoint]
+        print(
+            f"  {entrypoint}: security={report['security_profile']}, "
+            f"tools={report['tools_profile']}"
+        )
+        for item in report["tools"]:
+            mark = color("●", Colors.GREEN) if item["available"] else color("○", Colors.YELLOW)
+            print(f"    {mark} {item['name']}: {item['reason']}")
+    print()
+
 
 def show_status(
     config_path: str | Path | None = None,
@@ -275,4 +334,3 @@ def show_status(
     data = _gather_status(config_path, workspace)
     _render_text(data)
     return _status_exit_code(data)
-

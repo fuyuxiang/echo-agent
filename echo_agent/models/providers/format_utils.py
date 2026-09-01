@@ -217,6 +217,7 @@ def anthropic_response_to_llm_fields(
         "content": "\n".join(text_parts) if text_parts else None,
         "tool_calls": tool_calls,
         "finish_reason": finish,
+        "raw_finish_reason": stop_reason,
         "usage": resp_usage,
         "model": model,
     }

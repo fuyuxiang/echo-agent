@@ -121,6 +121,9 @@ class LLMResponse:
     model: str = ""
     reasoning_content: str | None = None
     thinking_blocks: list[dict[str, Any]] | None = None
+    # Provider-native reason retained for diagnostics; finish_reason above is
+    # the normalized control-flow value used by the agent.
+    raw_finish_reason: str = ""
 
     @property
     def has_tool_calls(self) -> bool:

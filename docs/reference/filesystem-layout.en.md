@@ -187,6 +187,21 @@ The spill directory stores large content that exceeds context window limits. Fil
 
 Cleanup applies both rules: artifacts past `retention_days` go first, and if the directory still exceeds `max_total_mb` the oldest remaining artifacts are removed until it fits.
 
+### User Artifact Directory
+
+`data/artifacts/` stores reports created and delivered through the `artifact_*` tools. It is completely separate from model-private spill storage. The layout uses a session hash, a random artifact ID, an immutable chunk journal and a manifest; internal paths are never shown to the model.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `artifacts.root_dir` | `data/artifacts` | Dedicated workspace-relative directory |
+| `artifacts.max_chunk_chars` | `3000` | Per-append limit, kept below common model output ceilings |
+| `artifacts.max_artifact_mb` | `50` | Per-artifact size limit |
+| `artifacts.retention_days` | `30` | Artifact retention period |
+| `artifacts.max_total_mb` | `1024` | Total artifact storage limit |
+| `artifacts.sweep_interval_hours` | `24` | Cleanup interval |
+
+The sweeper deletes only directories with a valid session hash, artifact ID and matching manifest. Unknown directory shapes are not traversed or removed. Total-quota cleanup protects drafts updated within the last hour so it cannot race a report that is still being generated.
+
 ### Trace files
 
 There is no size- or age-based log rotation, and no `observability.log_rotation` section. What is bounded is the number of trace files, capped by count:

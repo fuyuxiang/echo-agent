@@ -331,6 +331,9 @@ async def bootstrap(
         _send_file_tool = agent.tools.get("send_file")
         if _send_file_tool is not None:
             _send_file_tool._channel_lookup = channels.get_channel
+        _artifact_deliver_tool = agent.tools.get("artifact_deliver")
+        if _artifact_deliver_tool is not None:
+            _artifact_deliver_tool._channel_lookup = channels.get_channel
         health = HealthChecker(check_interval=config.observability.health_check_interval_seconds)
 
         from echo_agent.observability.monitor import ComponentHealth as CH
@@ -665,8 +668,9 @@ def _gateway_profile_override(config_path: str | None) -> dict[str, Any]:
             "security.profile，已默认切到 public_gateway 收紧档，会关闭 "
             "exec/execute_code/write_file/edit_file/patch/process 等高危工具——"
             "full/coding 的相应能力将失效。如需恢复：在配置中显式设置 "
-            "security.profile: personal_cli（私人自用，全工具生效），或保留 "
-            "public_gateway 并在 tools.also_allow 里按名单单独放行所需工具。",
+            "security.profile: personal_cli（仅限可信私人部署，全工具生效）。"
+            "公网部署应保留 public_gateway，并使用 artifact_create/append/finalize/deliver "
+            "生成用户产物；不要为文档任务放开通用 write_file/exec。",
             tools_profile,
         )
     else:

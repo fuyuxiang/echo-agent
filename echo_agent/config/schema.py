@@ -3116,6 +3116,143 @@ class SpillConfig(_Base):
     )
 
 
+# ── User artifact config ─────────────────────────────────────────────────────
+
+class ArtifactConfig(_Base):
+    """Session-scoped, user-deliverable documents created by the agent.
+
+    This is deliberately separate from ``spill``.  Spill files are private
+    model scratch output; artifacts are durable user-owned results with an
+    explicit draft/finalized lifecycle and a much narrower authority than the
+    general-purpose ``write_file`` tool.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        json_schema_extra={
+            "status": "effective", "ref": "artifacts/store.py",
+            "desc_zh": "启用会话隔离的用户产物工具",
+            "desc_en": "Enable session-scoped user artifact tools",
+        },
+    )
+    root_dir: str = Field(
+        default="data/artifacts",
+        json_schema_extra={
+            "status": "effective", "ref": "artifacts/store.py",
+            "desc_zh": "用户产物目录（必须是工作区内的专用相对目录）",
+            "desc_en": "User artifact directory (a dedicated workspace-relative directory)",
+        },
+    )
+    max_chunk_chars: int = Field(
+        # A chunk is itself generated inside one tool-call JSON argument and
+        # therefore consumes model output tokens before the tool can run. Keep
+        # the default below common 4k output ceilings, especially for CJK text
+        # where one character can approach one token.
+        default=3000, ge=500, le=100000,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/tools/artifact.py",
+            "desc_zh": "单次追加到产物的最大字符数",
+            "desc_en": "Maximum characters accepted by one artifact append",
+        },
+    )
+    max_artifact_mb: int = Field(
+        default=50, ge=1, le=1024,
+        json_schema_extra={
+            "status": "effective", "ref": "artifacts/store.py",
+            "desc_zh": "单个产物最大体积（MB）",
+            "desc_en": "Maximum size of one artifact in MB",
+        },
+    )
+    text_fallback_max_chars: int = Field(
+        default=100000, ge=1000, le=1000000,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/tools/artifact.py",
+            "desc_zh": "通道不支持附件时，允许自动分段发送的最大产物字符数",
+            "desc_en": "Largest artifact eligible for segmented text fallback when attachments are unsupported",
+        },
+    )
+    text_fallback_chunk_chars: int = Field(
+        default=1700, ge=500, le=1700,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/tools/artifact.py",
+            "desc_zh": "文本降级交付的单段字符数（默认兼容 Discord 2000 字符限制）",
+            "desc_en": "Chunk size for text fallback delivery (default fits Discord's 2000-character limit)",
+        },
+    )
+    retention_days: int = Field(
+        default=30, ge=1,
+        json_schema_extra={
+            "status": "effective", "ref": "artifacts/store.py",
+            "desc_zh": "已完成用户产物的建议保留天数",
+            "desc_en": "Recommended retention period for finalized artifacts",
+        },
+    )
+    max_total_mb: int = Field(
+        default=1024, ge=1,
+        json_schema_extra={
+            "status": "effective", "ref": "artifacts/sweeper.py",
+            "desc_zh": "全部用户产物的总体积上限（MB，超出时最旧优先清理）",
+            "desc_en": "Total user artifact size cap in MB (oldest artifacts are removed first)",
+        },
+    )
+    sweep_interval_hours: int = Field(
+        default=24, ge=1,
+        json_schema_extra={
+            "status": "effective", "ref": "artifacts/sweeper.py",
+            "desc_zh": "用户产物清理周期（小时）",
+            "desc_en": "User artifact cleanup interval in hours",
+        },
+    )
+    allowed_extensions: list[str] = Field(
+        default_factory=lambda: [".md", ".txt", ".json", ".csv"],
+        json_schema_extra={
+            "status": "effective", "ref": "artifacts/store.py",
+            "desc_zh": "允许模型创建的文本产物扩展名",
+            "desc_en": "Text artifact extensions the model may create",
+        },
+    )
+
+    @field_validator("root_dir")
+    @classmethod
+    def _artifact_root_must_be_dedicated(cls, v: str) -> str:
+        raw = v.strip()
+        if not raw:
+            raise ValueError("artifacts.rootDir must not be empty")
+        p = PurePosixPath(raw.replace("\\", "/"))
+        if p.is_absolute() or (len(raw) > 1 and raw[1] == ":"):
+            raise ValueError("artifacts.rootDir must be workspace-relative")
+        parts = [seg for seg in p.parts if seg != "."]
+        if not parts or any(seg == ".." for seg in parts):
+            raise ValueError("artifacts.rootDir must be a dedicated subdirectory inside the workspace")
+        return raw
+
+    @field_validator("allowed_extensions")
+    @classmethod
+    def _normalize_artifact_extensions(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for value in values:
+            ext = str(value).strip().lower()
+            if (
+                not ext.startswith(".")
+                or not 2 <= len(ext) <= 16
+                or not ext[1:].isalnum()
+            ):
+                raise ValueError(f"invalid artifact extension: {value}")
+            if ext not in normalized:
+                normalized.append(ext)
+        if not normalized:
+            raise ValueError("artifacts.allowedExtensions must not be empty")
+        return normalized
+
+    @model_validator(mode="after")
+    def _artifact_quotas_must_be_consistent(self) -> "ArtifactConfig":
+        if self.max_total_mb < self.max_artifact_mb:
+            raise ValueError(
+                "artifacts.maxTotalMb must be greater than or equal to maxArtifactMb"
+            )
+        return self
+
+
 # ── Observability configs ────────────────────────────────────────────────────
 
 class ObservabilityConfig(_Base):
@@ -4340,6 +4477,22 @@ class AgentBehaviorConfig(_Base):
             "desc_en": "Maximum iterations of the agent main loop",
         },
     )
+    max_output_continuations: int = Field(
+        default=3, ge=0, le=10,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/pipeline/inference_stage.py",
+            "desc_zh": "模型命中单次输出上限后自动续写的最大次数",
+            "desc_en": "Maximum automatic continuations after a model output-length stop",
+        },
+    )
+    continuation_overlap_chars: int = Field(
+        default=2000, ge=100, le=10000,
+        json_schema_extra={
+            "status": "effective", "ref": "agent/pipeline/inference_stage.py",
+            "desc_zh": "自动续写时用于检测并去除重复文本的窗口字符数",
+            "desc_en": "Character window used to remove overlap between continuation chunks",
+        },
+    )
     tool_concurrency: ToolConcurrencyConfig = Field(
         default_factory=ToolConcurrencyConfig,
     )
@@ -4401,6 +4554,7 @@ class Config(_Base):
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     spill: SpillConfig = Field(default_factory=SpillConfig)
+    artifacts: ArtifactConfig = Field(default_factory=ArtifactConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     compression: CompressionConfig = Field(default_factory=CompressionConfig)

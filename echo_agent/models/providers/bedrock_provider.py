@@ -25,6 +25,16 @@ from echo_agent.models.providers.format_utils import (
 )
 
 
+def _normalize_converse_stop_reason(reason: str) -> str:
+    if reason == "tool_use":
+        return "tool_calls"
+    if reason == "max_tokens":
+        return "length"
+    if reason in {"guardrail_intervened", "content_filtered"}:
+        return "content_filter"
+    return "stop"
+
+
 def _is_claude_model(model: str) -> bool:
     return "anthropic." in model or "claude" in model.lower()
 
@@ -196,10 +206,11 @@ class BedrockProvider(LLMProvider):
         # max_tokens truncation is not misreported as a clean stop. The text-only
         # stream path never collects toolUse (the tool case falls back to the
         # non-streaming converse upstream), so tool_use is not expected here.
-        finish = "length" if stop_reason == "max_tokens" else "stop"
+        finish = _normalize_converse_stop_reason(stop_reason)
         return LLMResponse(
             content="".join(text_parts),
             finish_reason=finish,
+            raw_finish_reason=stop_reason,
             usage=usage,
             model=model,
         )
@@ -404,12 +415,13 @@ class BedrockProvider(LLMProvider):
             usage["completion_tokens"] = u.get("outputTokens", 0)
 
         stop = resp.get("stopReason", "end_turn")
-        finish = "tool_calls" if stop == "tool_use" else ("length" if stop == "max_tokens" else "stop")
+        finish = _normalize_converse_stop_reason(stop)
 
         return LLMResponse(
             content="\n".join(text_parts) if text_parts else None,
             tool_calls=tool_calls,
             finish_reason=finish,
+            raw_finish_reason=stop,
             usage=usage,
             model=model,
         )

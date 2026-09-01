@@ -1018,8 +1018,14 @@ def setup_security(config: dict) -> None:
     print_info(t("security.gateway_intro"))
     deploy_keys = ["personal_cli", "public_gateway"]
     deploy_labels = [t("security.deploy_personal"), t("security.deploy_public")]
-    cur = sec.get("profile", "personal_cli")
-    # Default highlight is personal_cli (index 0) — the common self-hosted case.
+    host = str((config.get("gateway", {}) or {}).get("host") or "127.0.0.1").strip()
+    recommended = "personal_cli" if is_loopback_bind(host) else "public_gateway"
+    # The prompt is the explicit confirmation point. Highlight the safe choice
+    # for the *current bind*, even when a stale profile value came from an older
+    # setup run; the operator can deliberately select the other option.
+    cur = recommended
+    # A network-exposed listener is untrusted by default; loopback remains the
+    # common private/self-hosted case. The user may still make an explicit choice.
     default_idx = deploy_keys.index(cur) if cur in deploy_keys else 0
     d_idx = _choice(t("security.deployment"), deploy_labels, default=default_idx)
     sec["profile"] = deploy_keys[d_idx]
@@ -2051,6 +2057,8 @@ def _run_setup_wizard(
             return 1
         _print_banner()
         func(config)
+        if canonical == "gateway":
+            setup_security(config)
         path = save_config(config, config_target)
         label = t(f"section.{canonical}")
         print_success(t("summary.section_saved", label=label, path=path))
@@ -2087,6 +2095,12 @@ def _run_setup_wizard(
             key = choice.split(":", 1)[1]
             func = section_map[key]
             func(config)
+            # Changing the gateway changes the trust boundary. Re-evaluate and
+            # pin the matching security profile in the same saved transaction;
+            # otherwise a section-only public bind inherits a stale private
+            # profile from quickstart.
+            if key == "gateway":
+                setup_security(config)
             path = save_config(config, config_target)
             print_success(t("summary.section_saved", label=t(f"section.{key}"), path=path))
             _offer_gateway_start(config, path, workspace, section_only=True)
@@ -2109,6 +2123,7 @@ def _run_setup_wizard(
             setup_language(config)
         setup_model(config)
         setup_permissions(config)
+        setup_security(config)
         path = save_config(config, config_target)
         _ensure_credential_key(_resolve_workspace(config))
         setup_doctor(config)

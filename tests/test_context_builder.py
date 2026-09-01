@@ -554,3 +554,14 @@ class TestBuildCapabilitiesContext:
         defs = [self._tool("zebra"), self._tool("alpha")]
         ctx = build_capabilities_context(defs)
         assert ctx.index("alpha") < ctx.index("zebra")
+
+    def test_complete_artifact_flow_injects_long_document_policy(self):
+        defs = [
+            self._tool(name) for name in (
+                "artifact_create", "artifact_append", "artifact_validate",
+                "artifact_finalize", "artifact_deliver",
+            )
+        ]
+        ctx = build_capabilities_context(defs)
+        assert "Long-document output policy" in ctx
+        assert "artifact_validate replaces shell-based wc/lint" in ctx

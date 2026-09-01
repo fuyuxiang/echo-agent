@@ -70,6 +70,22 @@ def wants_resume(text: str) -> bool:
     return any(lowered.startswith(m) for m in _RESUME_MARKERS)
 
 
+def artifact_output_required(
+    text: str,
+    available_names: set[str | None],
+    artifact_resume_state: object = None,
+) -> bool:
+    """Resolve the artifact contract from this request and resumable state."""
+    artifact_flow = {
+        "artifact_create", "artifact_append", "artifact_validate",
+        "artifact_finalize", "artifact_deliver",
+    }
+    resume_artifact = wants_resume(text) and isinstance(artifact_resume_state, dict)
+    return artifact_flow.issubset(available_names) and (
+        ContextStage._expects_artifact(text) or resume_artifact
+    )
+
+
 def _message_text(message: dict[str, Any]) -> str:
     content = message.get("content", "")
     if isinstance(content, str):
@@ -168,6 +184,10 @@ class ContextStage:
     """Builds the full pipeline context: system prompt, messages, retrieval, tool defs."""
 
     _TASK_MARKERS = {
+        "document": (
+            "审校", "校对", "报告", "文档", "全文", "完整稿", "白皮书", "说明书",
+            "proofread", "report", "document", "manuscript", "full review",
+        ),
         "code": ("代码", "报错", "bug", "函数", "class ", "def ", "typescript", "python"),
         "research": ("搜索", "查找", "search", "find", "look up", "查一下"),
         "planning": ("计划", "规划", "plan", "schedule", "安排"),
@@ -608,6 +628,61 @@ class ContextStage:
             history_image_skip_if_current=session_cfg.history_image_skip_if_current,
         )
 
+        available_names = {
+            item.get("function", {}).get("name") for item in tool_defs if isinstance(item, dict)
+        }
+        artifact_resume_state = (
+            session.metadata.get("_artifact_continuation")
+            if isinstance(session.metadata, dict) else None
+        )
+        resume_artifact = wants_resume(event.text) and isinstance(
+            artifact_resume_state, dict
+        )
+        artifact_required = artifact_output_required(
+            event.text, available_names, artifact_resume_state,
+        )
+        if artifact_required:
+            if resume_artifact:
+                instruction = (
+                    "[Output mode: artifact resume] The previous artifact workflow did not reach "
+                    "successful delivery. Resume from the artifact IDs and tool results already in "
+                    "conversation history; do not create a duplicate when a usable draft exists. "
+                    "Append one chunk per turn, validate, finalize, and deliver it."
+                )
+            else:
+                instruction = (
+                    "[Output mode: artifact] This request requires a complete long-form document. "
+                    "Create it with the artifact tools in ordered chunks, validate and finalize it, "
+                    "then deliver it. Keep the final chat answer to a short summary and delivery status; "
+                    "do not paste the full document into one model response."
+                )
+            last_content = messages[-1]["content"]
+            if isinstance(last_content, list):
+                last_content[0]["text"] += f"\n\n{instruction}"
+            else:
+                messages[-1]["content"] = f"{last_content}\n\n{instruction}"
+
+        continuation_state = (
+            session.metadata.get("_output_continuation")
+            if isinstance(session.metadata, dict) else None
+        )
+        if (
+            wants_resume(event.text)
+            and not artifact_required
+            and isinstance(continuation_state, dict)
+        ):
+            tail = str(continuation_state.get("tail") or "")[-2000:]
+            resume_instruction = (
+                "[Output continuation — resumed] The previous final answer was truncated. "
+                "Continue exactly after the saved tail below without repeating it, and finish the answer.\n"
+                f"<saved_tail>{tail}</saved_tail>"
+            )
+            last_content = messages[-1]["content"]
+            if isinstance(last_content, list):
+                last_content[0]["text"] += f"\n\n{resume_instruction}"
+            else:
+                messages[-1]["content"] = f"{last_content}\n\n{resume_instruction}"
+
         # tool_defs already computed above for capability derivation.
 
         execution_plan = None
@@ -685,6 +760,7 @@ class ContextStage:
             tool_defs=tool_defs,
             retrieval=retrieval,
             task_type=task_type,
+            artifact_required=artifact_required,
             execution_plan=execution_plan,
             plan_run_id=plan_run_id,
             intro_text=intro_text,
@@ -722,3 +798,15 @@ class ContextStage:
             if any(marker in lower for marker in markers):
                 return task_type
         return "chat"
+
+    @staticmethod
+    def _expects_artifact(text: str) -> bool:
+        lower = (text or "").lower()
+        if any(marker in lower for marker in ("直接在聊天", "不要文件", "无需文件", "no file", "chat only")):
+            return False
+        explicit = (
+            "审校报告", "校对报告", "完整报告", "详细报告", "全文", "完整稿",
+            "生成报告", "输出报告", "保存文件", "写入文件", "full report",
+            "complete report", "detailed report", "proofreading report", "save as file",
+        )
+        return len(text or "") >= 8000 or any(marker in lower for marker in explicit)

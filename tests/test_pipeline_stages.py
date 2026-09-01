@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from echo_agent.agent.pipeline.types import PipelineContext, InferenceResult
-from echo_agent.agent.pipeline.context_stage import ContextStage
+from echo_agent.agent.pipeline.context_stage import ContextStage, artifact_output_required
 from echo_agent.agent.pipeline.response_stage import ResponseStage
 from echo_agent.bus.events import InboundEvent
 from echo_agent.session.manager import Session
@@ -19,6 +19,7 @@ class TestPipelineTypes:
         session = Session(key="test:c1")
         ctx = PipelineContext(event=event, session=session, trace_id="abc", publish_response=False)
         assert ctx.task_type == "chat"
+        assert ctx.artifact_required is False
         assert ctx.messages == []
 
     def test_inference_result_defaults(self):
@@ -186,6 +187,28 @@ class TestContextStage:
             tool_definitions_fn=lambda channel=None: [],
         )
         assert stage._infer_task_type("你好") == "chat"
+
+    def test_document_task_and_artifact_expectation(self):
+        stage = ContextStage(
+            config=MagicMock(), sessions=MagicMock(), memory=MagicMock(),
+            compressor=MagicMock(), context_builder=MagicMock(), skill_store=None,
+            knowledge=None, hybrid_retriever=None, planner=None,
+            inference=MagicMock(), working_memories=OrderedDict(),
+            memory_snapshots=OrderedDict(), snapshot_enabled=False,
+            tool_definitions_fn=lambda channel=None: [],
+        )
+        assert stage._infer_task_type("请生成完整审校报告") == "document"
+        assert stage._expects_artifact("请生成完整审校报告") is True
+        assert stage._expects_artifact("请直接在聊天中说明报告结论，不要文件") is False
+
+    def test_artifact_contract_resumes_only_with_complete_live_tool_flow(self):
+        names = {
+            "artifact_create", "artifact_append", "artifact_validate",
+            "artifact_finalize", "artifact_deliver",
+        }
+        assert artifact_output_required("继续", names, {"trace_id": "old"}) is True
+        assert artifact_output_required("继续", names - {"artifact_deliver"}, {"trace_id": "old"}) is False
+        assert artifact_output_required("继续", names, None) is False
 
     @pytest.mark.asyncio
     async def test_reply_quote_enters_current_turn_prompt(self):

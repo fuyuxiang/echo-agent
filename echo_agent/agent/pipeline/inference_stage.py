@@ -48,6 +48,24 @@ if TYPE_CHECKING:
     from echo_agent.permissions.manager import CredentialManager
 
 
+def merge_continuation(existing: str, continuation: str, overlap_window: int = 2000) -> str:
+    """Join model continuation chunks while removing a repeated boundary.
+
+    Models commonly repeat the last sentence despite an explicit "do not
+    repeat" instruction.  Compare only a bounded suffix/prefix window so the
+    operation remains cheap for multi-megabyte drafts.
+    """
+    if not existing:
+        return continuation or ""
+    if not continuation:
+        return existing
+    limit = min(len(existing), len(continuation), max(1, overlap_window))
+    for size in range(limit, 0, -1):
+        if existing[-size:] == continuation[:size]:
+            return existing + continuation[size:]
+    return existing + continuation
+
+
 @dataclass
 class _LoopResult:
     """Output of one tool loop pass, used by run() to orchestrate reflection/rerun."""
@@ -73,6 +91,13 @@ class _LoopResult:
     # only a canned apology; the TASK did not complete — a dispatched board task
     # must be written back as FAILED, not SUCCESS.
     errored: bool = False
+    # Provider explicitly blocked the completion for safety/content policy.
+    # This is not a transient provider error and must never trigger fallback to
+    # another model as a way around the block.
+    content_filtered: bool = False
+    # The turn carried an artifact output contract but never successfully
+    # delivered one. Plain prose must not masquerade as task completion.
+    artifact_incomplete: bool = False
     # Provider ended with finish_reason="length" and the bounded recovery did
     # not produce a clean replacement. Partial text is deliverable, but the task
     # and plan remain incomplete/resumable.
@@ -98,6 +123,7 @@ class _BatchCounters:
     should_review_skills: bool
     should_review_memory: bool
     degraded_notices: list
+    successful_tools: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -161,6 +187,12 @@ class InferenceStage:
         self._circuit_breaker = circuit_breaker
         self._default_model = default_model
         self._max_iterations = max_iterations
+        raw_continuations = getattr(config.agent, "max_output_continuations", 3)
+        raw_overlap = getattr(config.agent, "continuation_overlap_chars", 2000)
+        self._max_output_continuations = (
+            raw_continuations if isinstance(raw_continuations, int) else 3
+        )
+        self._continuation_overlap_chars = raw_overlap if isinstance(raw_overlap, int) else 2000
         self._hook_registry: Any = None
         self._nudge_interval: int = config.skills.creation_nudge_interval if hasattr(config, 'skills') and hasattr(config.skills, 'creation_nudge_interval') else 0
         self._memory_nudge_interval: int = config.memory.memory_nudge_interval if hasattr(config.memory, 'memory_nudge_interval') else 0
@@ -494,6 +526,8 @@ class InferenceStage:
         if (
             not loop_result.interrupted
             and not loop_result.output_truncated
+            and not loop_result.artifact_incomplete
+            and not ctx.artifact_required
             and self._planner is not None
             and ctx.execution_plan is not None
             and len(ctx.execution_plan.steps) > 1
@@ -535,6 +569,8 @@ class InferenceStage:
                     forced_convergence=second.forced_convergence,
                     interrupted=second.interrupted,
                     errored=second.errored,
+                    content_filtered=second.content_filtered,
+                    artifact_incomplete=second.artifact_incomplete,
                     output_truncated=second.output_truncated,
                     should_review_skills=loop_result.should_review_skills or second.should_review_skills,
                     should_review_memory=loop_result.should_review_memory or second.should_review_memory,
@@ -591,6 +627,8 @@ class InferenceStage:
                     or loop_result.forced_convergence
                     or loop_result.interrupted
                     or loop_result.output_truncated
+                    or loop_result.content_filtered
+                    or loop_result.artifact_incomplete
                     or plan_failed
                 )
                 if task_incomplete:
@@ -628,12 +666,16 @@ class InferenceStage:
                 or loop_result.interrupted
                 or loop_result.errored
                 or loop_result.output_truncated
+                or loop_result.content_filtered
+                or loop_result.artifact_incomplete
                 or plan_failed
             ),
             output_truncated=loop_result.output_truncated,
             termination_reason=(
                 "interrupted" if loop_result.interrupted else
                 "output_truncated" if loop_result.output_truncated else
+                "content_filtered" if loop_result.content_filtered else
+                "artifact_not_delivered" if loop_result.artifact_incomplete else
                 "provider_error" if loop_result.errored else
                 "forced_convergence" if loop_result.forced_convergence else
                 "budget_halted" if loop_result.budget_halted else
@@ -660,17 +702,21 @@ class InferenceStage:
         loop_exhausted = True
         budget_halted = False
         # Degraded-convergence controls: force_no_tools strips tools from the
-        # NEXT call (set by the truncation retry below); truncation_retried
-        # bounds that retry to once per pass. forcing_final marks the last
+        # NEXT call (set by the truncation recovery below). forcing_final marks the last
         # iteration's forced-conclusion call; forced_convergence records that
         # the pass ended that way so run() keeps the plan resumable.
         force_no_tools = False
-        truncation_retried = False
+        empty_truncation_retried = False
+        continuation_attempts = 0
+        continuation_active = False
         forcing_final = False
         forced_convergence = False
         interrupted = False
         errored = False
+        content_filtered = False
+        artifact_incomplete = False
         output_truncated = False
+        artifact_contract_retries = 0
 
         # Read nudge counters from session (do NOT write back — run() owns that)
         _skill_iters = session.metadata.get("_nudge_tool_iters_skill", 0)
@@ -814,6 +860,8 @@ class InferenceStage:
                     "provider": route_decision.provider_name,
                     "route_reason": route_decision.reason,
                     "finish": response.finish_reason,
+                    "raw_finish": response.raw_finish_reason,
+                    "requested_max_tokens": route_decision.max_tokens,
                 },
             )
 
@@ -862,32 +910,112 @@ class InferenceStage:
                 errored = True
                 break
 
+            if response.finish_reason == "content_filter":
+                logger.warning(
+                    "LLM completion blocked by provider content policy in iteration {} (model {})",
+                    iteration, route_decision.model,
+                )
+                filtered_notice = "⚠️ 模型服务因内容安全策略未返回后续正文。请调整请求内容后重试。"
+                if response.content:
+                    response_text = merge_continuation(
+                        response_text, response.content, self._continuation_overlap_chars,
+                    )
+                response_text = f"{response_text}\n\n{filtered_notice}" if response_text else filtered_notice
+                loop_exhausted = False
+                content_filtered = True
+                break
+
             if response.finish_reason == "length":
                 # Output hit max_tokens. Provider-level reasoning promotion may
                 # already have recovered text into content; whatever we have is
                 # partial. Never treat this as a clean stop.
                 logger.warning(
-                    "LLM output truncated at max_tokens in iteration {} (model {}, content_len {})",
-                    iteration, route_decision.model, len(response.content or ""),
+                    "LLM output truncated at max_tokens in iteration {} "
+                    "(model {}, requested_max_tokens {}, completion_tokens {}, content_len {}, raw_finish {})",
+                    iteration,
+                    route_decision.model,
+                    route_decision.max_tokens,
+                    int((response.usage or {}).get("completion_tokens") or (response.usage or {}).get("output_tokens") or 0),
+                    len(response.content or ""),
+                    response.raw_finish_reason or "<unreported>",
                 )
+                if (
+                    ctx.artifact_required
+                    and "artifact_deliver" not in counters.successful_tools
+                ):
+                    if (
+                        artifact_contract_retries < self._max_output_continuations
+                        and iteration + 1 < self._max_iterations
+                    ):
+                        artifact_contract_retries += 1
+                        response_text = ""
+                        continuation_active = False
+                        force_no_tools = False
+                        if _draft_policy == "stream" and on_delta is not None:
+                            await stream_publisher.discard()
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "[System: artifact contract recovery] Your previous prose or tool-call "
+                                "payload hit the single-output limit and was not accepted as the report. "
+                                "Continue the required artifact workflow now. Issue exactly one artifact "
+                                "tool call in this turn; for artifact_append keep content within its schema "
+                                "limit, then wait for the tool result. Do not paste report prose into chat."
+                            ),
+                        })
+                        logger.info(
+                            "Recovering truncated artifact workflow (attempt {}/{})",
+                            artifact_contract_retries, self._max_output_continuations,
+                        )
+                        continue
+                    counters.degraded_notices.append(notice_for(REASON_OUTPUT_TRUNCATED))
+                    response_text = (
+                        "⚠️ 报告在生成产物时连续命中单次输出上限，未能完成文件交付。"
+                        "已保留会话中的草稿记录，可回复“继续”重试。"
+                    )
+                    loop_exhausted = False
+                    artifact_incomplete = True
+                    output_truncated = True
+                    break
                 if response.content:
-                    # Deliver the partial answer with a truncation notice
-                    # instead of discarding it.
-                    response_text = response.content
+                    response_text = merge_continuation(
+                        response_text, response.content, self._continuation_overlap_chars,
+                    )
+                    if (
+                        continuation_attempts < self._max_output_continuations
+                        and iteration + 1 < self._max_iterations
+                    ):
+                        continuation_attempts += 1
+                        continuation_active = True
+                        force_no_tools = True
+                        messages.append({"role": "assistant", "content": response.content})
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "[系统：自动续写] 上一段因单次输出上限中断。"
+                                "请从上一段最后一个字符之后继续，只输出缺失的后续正文；"
+                                "不要重复标题、前言或已输出段落，不要调用工具，并完整收尾。"
+                            ),
+                        })
+                        logger.info(
+                            "Continuing truncated output (attempt {}/{}, accumulated_chars={})",
+                            continuation_attempts, self._max_output_continuations, len(response_text),
+                        )
+                        continue
                     counters.degraded_notices.append(notice_for(REASON_OUTPUT_TRUNCATED))
                     if forcing_final:
                         counters.degraded_notices.append(notice_for(REASON_LOOP_EXHAUSTED))
                     loop_exhausted = False
                     output_truncated = True
                     break
-                if not truncation_retried and iteration + 1 < self._max_iterations:
+                if not empty_truncation_retried and iteration + 1 < self._max_iterations:
                     # Nothing recoverable — retry once without tools, asking
                     # for a bounded plain-text conclusion. One extra call
                     # salvages the whole turn's collected context. Requires a
                     # remaining iteration: on the last one, continue would fall
                     # off the range and the injected instruction would never
                     # be answered, so give up below instead.
-                    truncation_retried = True
+                    empty_truncation_retried = True
                     force_no_tools = True
                     messages.append({
                         "role": "user",
@@ -905,7 +1033,12 @@ class InferenceStage:
                 break
 
             if response.content:
-                response_text = response.content
+                if continuation_active:
+                    response_text = merge_continuation(
+                        response_text, response.content, self._continuation_overlap_chars,
+                    )
+                else:
+                    response_text = response.content
 
             # Post-LLM interrupt checkpoint. An interrupt may have arrived DURING
             # the (long) LLM call above. Check here — BEFORE the has_tool_calls
@@ -928,6 +1061,36 @@ class InferenceStage:
                 break
 
             if not response.has_tool_calls:
+                if (
+                    ctx.artifact_required
+                    and "artifact_deliver" not in counters.successful_tools
+                ):
+                    if (
+                        artifact_contract_retries < self._max_output_continuations
+                        and iteration + 1 < self._max_iterations
+                    ):
+                        artifact_contract_retries += 1
+                        response_text = ""
+                        continuation_active = False
+                        force_no_tools = False
+                        if _draft_policy == "stream" and on_delta is not None:
+                            await stream_publisher.discard()
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "[System: unmet artifact contract] A chat-only answer does not complete "
+                                "this request. Use the required create, one append per turn, validate, "
+                                "finalize, and deliver workflow. Issue exactly one artifact tool call now."
+                            ),
+                        })
+                        continue
+                    response_text = (
+                        "⚠️ 本轮未成功生成并交付要求的报告文件，因此任务不会被标记为完成。"
+                        "请回复“继续”重试产物流程。"
+                    )
+                    loop_exhausted = False
+                    artifact_incomplete = True
+                    break
                 if forcing_final:
                     # The forced final call delivered its conclusion — now the
                     # "以上是目前的进展" notice is truthful. Gate on actual
@@ -979,6 +1142,14 @@ class InferenceStage:
                 response_text = ""
                 loop_exhausted = False
                 break
+            if ctx.artifact_required and "artifact_deliver" in counters.successful_tools:
+                # Delivery is the artifact contract's terminal side effect. Do
+                # not spend another model call merely to phrase a summary: that
+                # call could fail, be filtered, or truncate after the user has
+                # already received the file and falsely downgrade a success.
+                response_text = "报告已生成、校验并交付。"
+                loop_exhausted = False
+                break
 
         if loop_exhausted:
             logger.warning(
@@ -994,6 +1165,25 @@ class InferenceStage:
         if not response_text:
             response_text = "I encountered an issue processing your request. Please try again or rephrase your question."
 
+        if isinstance(getattr(session, "metadata", None), dict):
+            if ctx.artifact_required:
+                if "artifact_deliver" in counters.successful_tools:
+                    session.metadata.pop("_artifact_continuation", None)
+                else:
+                    session.metadata["_artifact_continuation"] = {
+                        "trace_id": trace_id,
+                        "updated_at": time.time(),
+                    }
+            if output_truncated:
+                session.metadata["_output_continuation"] = {
+                    "tail": response_text[-self._continuation_overlap_chars:],
+                    "trace_id": trace_id,
+                    "attempts": continuation_attempts,
+                    "updated_at": time.time(),
+                }
+            else:
+                session.metadata.pop("_output_continuation", None)
+
         return _LoopResult(
             response_text=response_text,
             total_tool_calls=counters.total_tool_calls,
@@ -1002,6 +1192,8 @@ class InferenceStage:
             forced_convergence=forced_convergence,
             interrupted=interrupted,
             errored=errored,
+            content_filtered=content_filtered,
+            artifact_incomplete=artifact_incomplete,
             output_truncated=output_truncated,
             should_review_skills=counters.should_review_skills,
             should_review_memory=counters.should_review_memory,
@@ -1415,6 +1607,7 @@ class InferenceStage:
             # session (the breaker is process-global).
             if result.success:
                 self._circuit_breaker.record_success(tool_call.name)
+                counters.successful_tools.add(tool_call.name)
             elif result.is_infra_failure:
                 self._circuit_breaker.record_failure(tool_call.name)
 

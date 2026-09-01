@@ -1,6 +1,6 @@
 # 内置工具参考
 
-Echo Agent 内置 36 个工具。本页的工具名、参数、能力标签均取自代码中的注册信息：工具名是各工具类的 `name` 属性（定义在 `echo_agent/agent/tools/` 下），能力标签取自 `echo_agent/security/capabilities.py` 的 `TOOL_CAPABILITIES`，档位归属取自 `echo_agent/security/tool_policy.py`。
+Echo Agent 内置 41 个工具。本页的工具名、参数、能力标签均取自代码中的注册信息：工具名是各工具类的 `name` 属性（定义在 `echo_agent/agent/tools/` 下），能力标签取自 `echo_agent/security/capabilities.py` 的 `TOOL_CAPABILITIES`，档位归属取自 `echo_agent/security/tool_policy.py`。
 
 !!! note "工具名不等于模块名"
     工具名与实现它的模块文件名往往不同，调用时必须使用工具名。例如 `shell.py` 注册的工具是 `exec`，`code_exec.py` 注册的是 `execute_code`，`tts.py` 注册的是 `text_to_speech`，`web.py` 同时注册 `web_fetch` 与 `web_search`。
@@ -24,6 +24,11 @@ Echo Agent 内置 36 个工具。本页的工具名、参数、能力标签均�
 |------|----------|:-------:|:---------:|:------:|----------|
 | `agents_list` | 无实现（见下） | ✅ | ✅ | ✅ | `agent.read` |
 | `agents_route` | 无实现（见下） | ✅ | ✅ | ✅ | `agent.dispatch` |
+| `artifact_create` | `artifact.py` | ✅ | ✅ | ✅ | `artifact.write` |
+| `artifact_append` | `artifact.py` | ✅ | ✅ | ✅ | `artifact.write` |
+| `artifact_validate` | `artifact.py` | ✅ | ✅ | ✅ | `artifact.read` |
+| `artifact_finalize` | `artifact.py` | ✅ | ✅ | ✅ | `artifact.write` |
+| `artifact_deliver` | `artifact.py` | ✅ | ✅ | ✅ | `artifact.read` `message.send` |
 | `clarify` | `clarify.py` | ✅ | ✅ | ✅ | `message.ask` |
 | `knowledge_search` | `knowledge.py` | ✅ | ✅ | ✅ | `knowledge.read` |
 | `list_dir` | `filesystem.py` | ✅ | ✅ | ✅ | `fs.read` |
@@ -53,7 +58,7 @@ Echo Agent 内置 36 个工具。本页的工具名、参数、能力标签均�
 | `execute_code` | `code_exec.py` | ❌ | ❌ | ❌ | `code.exec` `process.exec` |
 | `process` | `process.py` | ❌ | ❌ | ❌ | `process.exec` `process.manage` |
 | `read_document` | `document.py` | ❌ | ❌ | ❌ | 未分类 |
-| `send_file` | `send_file.py` | ❌ | ❌ | ❌ | 未分类 |
+| `send_file` | `send_file.py` | ❌ | ❌ | ❌ | `fs.read` `message.send` |
 | `skill_install` | `skill_install.py` | ❌ | ❌ | ❌ | `skill.install` `network.outbound` `fs.write` |
 | `skill_manage` | `skills.py` | ❌ | ❌ | ❌ | `skill.write` `fs.write` |
 | `skill_run` | `skill_run.py` | ❌ | ❌ | ❌ | 未分类 |
@@ -63,7 +68,7 @@ Echo Agent 内置 36 个工具。本页的工具名、参数、能力标签均�
 
 标记为「未分类」的工具在 `TOOL_CAPABILITIES` 中没有条目，`tool_capabilities()` 对它们返回空集合，因此基于能力的拦截规则不会命中它们；这类工具只受工具名维度的策略约束。
 
-`agents_list` 与 `agents_route` 只出现在策略表（`capabilities.py`、`tool_policy.py`、`risk_classifier.py`）中，`echo_agent/agent/tools/` 下没有对应实现，因此当前不可调用。它们是为多 Agent 协作预留的名字，本页不为其提供参数说明。除这两项外，下文为全部 36 个已实现的工具逐一列出参数。
+`agents_list` 与 `agents_route` 只出现在策略表（`capabilities.py`、`tool_policy.py`、`risk_classifier.py`）中，`echo_agent/agent/tools/` 下没有对应实现，因此当前不可调用。它们是为多 Agent 协作预留的名字，本页不为其提供参数说明。除这两项外，下文为全部 41 个已实现的工具逐一列出参数。
 
 ## 高风险工具
 
@@ -73,6 +78,8 @@ Echo Agent 内置 36 个工具。本页的工具名、参数、能力标签均�
 
 - **`public_gateway`** — 在高风险 6 个之外，另行拒绝 `edit_file`、`knowledge_index`、`patch`、`workflow`、`write_file`，共 11 个；同时按能力拒绝 `code.exec`、`fs.write`、`process.exec`、`process.manage`、`scheduler.write`、`skill.install`、`skill.write`、`workflow.write`。
 - **`daemon`** — 默认拒绝 `exec`、`execute_code`、`process`、`skill_install`；同时按能力拒绝 `code.exec`、`process.exec`、`process.manage`、`skill.install`。
+
+`artifact_*` 使用独立的会话产物命名空间，不接受任意文件路径，也不具备 `fs.write` 或 `process.exec` 能力，因此在 `public_gateway` 下仍默认可用。公网文档任务应使用该链路，不应放开通用 `write_file` 或 `exec`。
 
 ## 工具详细列表
 
@@ -159,6 +166,46 @@ Echo Agent 内置 36 个工具。本页的工具名、参数、能力标签均�
 | `offset` | integer | | 起始位置 |
 | `limit` | integer | | 读取长度 |
 | `pattern` | string | | 过滤模式 |
+
+### 用户产物
+
+长报告使用固定流程：`artifact_create` → 多次 `artifact_append` → `artifact_validate` → `artifact_finalize` → `artifact_deliver`。产物按会话隔离，模型只接触不透明的 `artifact_id`，不会获得服务器文件路径。
+
+#### artifact_create
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|:----:|------|
+| `filename` | string | ✅ | 文件名；扩展名由 `artifacts.allowed_extensions` 限制 |
+| `title` | string | | 可选标题 |
+
+#### artifact_append
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|:----:|------|
+| `artifact_id` | string | ✅ | `artifact_create` 返回的 ID |
+| `sequence` | integer | ✅ | 从 0 开始的连续分块编号 |
+| `content` | string | ✅ | UTF-8 文本分块 |
+| `expected_bytes` | integer | | 乐观并发检查的预期字节偏移 |
+
+每个 assistant 回合只调用一次 `artifact_append`，收到结果后再生成下一块，避免多个工具参数合并后再次撞上单次输出上限。相同 `sequence` 和相同内容的重试是幂等的；不同内容或乱序写入会被拒绝。
+
+#### artifact_validate
+
+只需要 `artifact_id`。验证器不依赖 shell，可计算字符、中文字、英文词、行、段落和标题，并检查 Markdown、JSON、CSV 格式。
+
+#### artifact_finalize
+
+只需要 `artifact_id`。校验通过后原子定稿，之后禁止追加。
+
+#### artifact_deliver
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|:----:|------|
+| `artifact_id` | string | ✅ | 已定稿产物 ID |
+| `caption` | string | | 简短说明 |
+| `fallback_to_text` | boolean | | 通道不支持附件时是否改用编号文本分段，默认 true |
+
+工具只能投递到当前会话。支持附件的通道上传文件；不支持附件的通道在配置上限内自动发送编号文本分段，并如实返回交付模式。
 
 ### 知识与记忆
 

@@ -31,8 +31,9 @@ class _AggregateContent:
 
 
 class _AggregateCandidate:
-    def __init__(self, parts: list[_AggregatePart]):
+    def __init__(self, parts: list[_AggregatePart], finish_reason: Any = None):
         self.content = _AggregateContent(parts)
+        self.finish_reason = finish_reason
 
 
 class _GeminiAggregate:
@@ -51,12 +52,16 @@ class _GeminiAggregate:
         text_buf: list[str] = []
         fc_parts: list[_AggregatePart] = []
         usage: Any = None
+        finish_reason: Any = None
 
         for chunk in chunks:
             chunk_usage = getattr(chunk, "usage_metadata", None)
             if chunk_usage:
                 usage = chunk_usage
             for candidate in getattr(chunk, "candidates", None) or []:
+                candidate_finish = getattr(candidate, "finish_reason", None)
+                if candidate_finish is not None:
+                    finish_reason = candidate_finish
                 content = getattr(candidate, "content", None)
                 for part in getattr(content, "parts", None) or []:
                     text = getattr(part, "text", "") or ""
@@ -71,7 +76,7 @@ class _GeminiAggregate:
             parts.append(_AggregatePart(text="".join(text_buf)))
         parts.extend(fc_parts)
 
-        self.candidates = [_AggregateCandidate(parts)]
+        self.candidates = [_AggregateCandidate(parts, finish_reason)]
         if usage is not None:
             self.usage_metadata = usage
 
@@ -280,8 +285,12 @@ class GeminiProvider(LLMProvider):
     def _parse_response(self, resp: Any, model: str) -> LLMResponse:
         text_parts: list[str] = []
         tool_calls: list[ToolCallRequest] = []
+        raw_finish: Any = None
 
         for candidate in resp.candidates:
+            candidate_finish = getattr(candidate, "finish_reason", None)
+            if candidate_finish is not None:
+                raw_finish = candidate_finish
             for part in candidate.content.parts:
                 if hasattr(part, "text") and part.text:
                     text_parts.append(part.text)
@@ -294,7 +303,7 @@ class GeminiProvider(LLMProvider):
                         arguments=args,
                     ))
 
-        finish = "tool_calls" if tool_calls else "stop"
+        finish = "tool_calls" if tool_calls else self._normalize_finish_reason(raw_finish)
         usage: dict[str, int] = {}
         if hasattr(resp, "usage_metadata") and resp.usage_metadata:
             um = resp.usage_metadata
@@ -305,6 +314,23 @@ class GeminiProvider(LLMProvider):
             content="\n".join(text_parts) if text_parts else None,
             tool_calls=tool_calls,
             finish_reason=finish,
+            raw_finish_reason=str(raw_finish or ""),
             usage=usage,
             model=model,
         )
+
+    @staticmethod
+    def _normalize_finish_reason(raw: Any) -> str:
+        """Map Gemini SDK enum/string variants onto Echo's provider contract."""
+        if raw is None:
+            return "stop"
+        name = getattr(raw, "name", None)
+        value = str(name or raw).rsplit(".", 1)[-1].strip().lower()
+        if value in {"max_tokens", "max_output_tokens"}:
+            return "length"
+        if value in {
+            "safety", "recitation", "blocklist", "prohibited_content",
+            "spii", "image_safety", "image_prohibited_content",
+        }:
+            return "content_filter"
+        return "stop"

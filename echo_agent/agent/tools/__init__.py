@@ -82,6 +82,35 @@ def discover_tools(
                                  workspace=str(ws)))
     tools.append(MessageTool(publish_fn=bus.publish_outbound))
 
+    if config.artifacts.enabled:
+        from echo_agent.artifacts import ArtifactStore
+        from echo_agent.agent.tools.artifact import (
+            ArtifactAppendTool,
+            ArtifactCreateTool,
+            ArtifactDeliverTool,
+            ArtifactFinalizeTool,
+            ArtifactValidateTool,
+        )
+        artifact_store = ArtifactStore(
+            workspace,
+            config.artifacts.root_dir,
+            max_chunk_chars=config.artifacts.max_chunk_chars,
+            max_artifact_mb=config.artifacts.max_artifact_mb,
+            allowed_extensions=config.artifacts.allowed_extensions,
+        )
+        tools.extend([
+            ArtifactCreateTool(artifact_store),
+            ArtifactAppendTool(artifact_store),
+            ArtifactValidateTool(artifact_store),
+            ArtifactFinalizeTool(artifact_store),
+            ArtifactDeliverTool(
+                artifact_store,
+                publish_fn=bus.publish_outbound,
+                text_fallback_max_chars=config.artifacts.text_fallback_max_chars,
+                text_fallback_chunk_chars=config.artifacts.text_fallback_chunk_chars,
+            ),
+        ])
+
     from echo_agent.agent.tools.send_file import SendFileTool
     tools.append(SendFileTool(ws, restrict, publish_fn=bus.publish_outbound,
                               spill_root=spill_root))

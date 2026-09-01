@@ -17,6 +17,11 @@ if TYPE_CHECKING:
 MINIMAL_TOOLS = frozenset({
     "agents_list",
     "agents_route",
+    "artifact_append",
+    "artifact_create",
+    "artifact_deliver",
+    "artifact_finalize",
+    "artifact_validate",
     "clarify",
     "knowledge_search",
     "list_dir",
@@ -124,8 +129,8 @@ def _explicit_allow(config: "Config") -> set[str]:
     return set(tools_cfg.allow or []) | set(tools_cfg.also_allow or [])
 
 
-def is_tool_allowed(config: "Config", tool: object) -> bool:
-    """Return whether a tool should be exposed to the model."""
+def tool_policy_decision(config: "Config", tool: object) -> tuple[bool, str]:
+    """Return the effective decision and a stable, operator-facing reason."""
     tools_cfg = config.tools
     explicit = _explicit_allow(config)
     deny = set(tools_cfg.deny or [])
@@ -134,7 +139,7 @@ def is_tool_allowed(config: "Config", tool: object) -> bool:
     profile = tools_cfg.profile
 
     if name in deny:
-        return False
+        return False, "explicitly denied by tools.deny"
 
     if tools_cfg.allow:
         base_allowed = name in tools_cfg.allow
@@ -142,7 +147,9 @@ def is_tool_allowed(config: "Config", tool: object) -> bool:
         base_allowed = _profile_allows(profile, name) or name in tools_cfg.also_allow
 
     if not base_allowed:
-        return False
+        if tools_cfg.allow:
+            return False, "not present in the exclusive tools.allow list"
+        return False, f"not included by tools.profile={profile}"
 
     security_profile = config.security.profile
     if (
@@ -150,30 +157,42 @@ def is_tool_allowed(config: "Config", tool: object) -> bool:
         and (name in PUBLIC_GATEWAY_DENY or capabilities.intersection(PUBLIC_GATEWAY_DENY_CAPABILITIES))
         and name not in explicit
     ):
-        return False
+        return False, "blocked by security.profile=public_gateway"
     if (
         security_profile == "daemon"
         and (name in DAEMON_DENY_BY_DEFAULT or capabilities.intersection(DAEMON_DENY_CAPABILITIES))
         and name not in explicit
     ):
-        return False
+        return False, "blocked by security.profile=daemon"
 
     if config.execution.network_policy == "deny" and (
         name in {"web_fetch", "web_search"} or "network.outbound" in capabilities
     ):
-        return False
+        return False, "blocked by execution.network_policy=deny"
 
-    return True
+    if name in explicit:
+        return True, "explicitly allowed by tools.allow/tools.also_allow"
+    return True, f"allowed by tools.profile={profile} and security.profile={security_profile}"
+
+
+def is_tool_allowed(config: "Config", tool: object) -> bool:
+    """Return whether a tool should be exposed to the model."""
+    return tool_policy_decision(config, tool)[0]
 
 
 def filter_tools_by_policy(config: "Config", tools: Iterable["Tool"]) -> list["Tool"]:
     allowed: list[Tool] = []
-    skipped: list[str] = []
+    skipped: list[tuple[str, str]] = []
     for tool in tools:
-        if is_tool_allowed(config, tool):
+        allowed_by_policy, reason = tool_policy_decision(config, tool)
+        if allowed_by_policy:
             allowed.append(tool)
         else:
-            skipped.append(tool.name)
+            skipped.append((tool.name, reason))
     if skipped:
-        logger.info("Tool policy skipped {} tools: {}", len(skipped), ", ".join(sorted(skipped)))
+        logger.info(
+            "Tool policy skipped {} tools: {}",
+            len(skipped),
+            "; ".join(f"{name} ({reason})" for name, reason in sorted(skipped)),
+        )
     return allowed

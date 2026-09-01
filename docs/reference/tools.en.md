@@ -1,6 +1,6 @@
 # Built-in Tool Reference
 
-Echo Agent ships 36 built-in tools. The tool names, parameters and capability tags on this page are taken from the registrations in code: a tool's name is the `name` attribute of its class (under `echo_agent/agent/tools/`), capability tags come from `TOOL_CAPABILITIES` in `echo_agent/security/capabilities.py`, and profile membership comes from `echo_agent/security/tool_policy.py`.
+Echo Agent ships 41 built-in tools. The tool names, parameters and capability tags on this page are taken from the registrations in code: a tool's name is the `name` attribute of its class (under `echo_agent/agent/tools/`), capability tags come from `TOOL_CAPABILITIES` in `echo_agent/security/capabilities.py`, and profile membership comes from `echo_agent/security/tool_policy.py`.
 
 !!! note "A tool's name is not its module name"
     Tool names frequently differ from the file that implements them, and calls must use the tool name. For example `shell.py` registers `exec`, `code_exec.py` registers `execute_code`, `tts.py` registers `text_to_speech`, and `web.py` registers both `web_fetch` and `web_search`.
@@ -24,6 +24,11 @@ The table below shows which `tools.profile` tiers expose each tool. `full` permi
 |------|--------|:-------:|:---------:|:------:|-----------------|
 | `agents_list` | none (see below) | ✅ | ✅ | ✅ | `agent.read` |
 | `agents_route` | none (see below) | ✅ | ✅ | ✅ | `agent.dispatch` |
+| `artifact_create` | `artifact.py` | ✅ | ✅ | ✅ | `artifact.write` |
+| `artifact_append` | `artifact.py` | ✅ | ✅ | ✅ | `artifact.write` |
+| `artifact_validate` | `artifact.py` | ✅ | ✅ | ✅ | `artifact.read` |
+| `artifact_finalize` | `artifact.py` | ✅ | ✅ | ✅ | `artifact.write` |
+| `artifact_deliver` | `artifact.py` | ✅ | ✅ | ✅ | `artifact.read` `message.send` |
 | `clarify` | `clarify.py` | ✅ | ✅ | ✅ | `message.ask` |
 | `knowledge_search` | `knowledge.py` | ✅ | ✅ | ✅ | `knowledge.read` |
 | `list_dir` | `filesystem.py` | ✅ | ✅ | ✅ | `fs.read` |
@@ -53,7 +58,7 @@ The table below shows which `tools.profile` tiers expose each tool. `full` permi
 | `execute_code` | `code_exec.py` | ❌ | ❌ | ❌ | `code.exec` `process.exec` |
 | `process` | `process.py` | ❌ | ❌ | ❌ | `process.exec` `process.manage` |
 | `read_document` | `document.py` | ❌ | ❌ | ❌ | unclassified |
-| `send_file` | `send_file.py` | ❌ | ❌ | ❌ | unclassified |
+| `send_file` | `send_file.py` | ❌ | ❌ | ❌ | `fs.read` `message.send` |
 | `skill_install` | `skill_install.py` | ❌ | ❌ | ❌ | `skill.install` `network.outbound` `fs.write` |
 | `skill_manage` | `skills.py` | ❌ | ❌ | ❌ | `skill.write` `fs.write` |
 | `skill_run` | `skill_run.py` | ❌ | ❌ | ❌ | unclassified |
@@ -63,7 +68,7 @@ The table below shows which `tools.profile` tiers expose each tool. `full` permi
 
 Tools marked "unclassified" have no entry in `TOOL_CAPABILITIES`, so `tool_capabilities()` returns an empty set for them and capability-based deny rules never match. Such tools are constrained only by rules that name them directly.
 
-`agents_list` and `agents_route` appear only in the policy tables (`capabilities.py`, `tool_policy.py`, `risk_classifier.py`); there is no implementation under `echo_agent/agent/tools/`, so they cannot currently be called. They are reserved names for multi-agent collaboration, and this page does not document parameters for them. Every one of the 36 implemented tools is documented below.
+`agents_list` and `agents_route` appear only in the policy tables (`capabilities.py`, `tool_policy.py`, `risk_classifier.py`); there is no implementation under `echo_agent/agent/tools/`, so they cannot currently be called. They are reserved names for multi-agent collaboration, and this page does not document parameters for them. Every one of the 41 implemented tools is documented below.
 
 ## High-risk tools
 
@@ -73,6 +78,8 @@ Two deployment shapes add further restrictions on top:
 
 - **`public_gateway`** — beyond the 6 high-risk tools, also denies `edit_file`, `knowledge_index`, `patch`, `workflow` and `write_file` (11 in total), plus the capabilities `code.exec`, `fs.write`, `process.exec`, `process.manage`, `scheduler.write`, `skill.install`, `skill.write` and `workflow.write`.
 - **`daemon`** — denies `exec`, `execute_code`, `process` and `skill_install` by default, plus the capabilities `code.exec`, `process.exec`, `process.manage` and `skill.install`.
+
+The `artifact_*` tools use a dedicated session namespace, accept no arbitrary filesystem paths, and carry neither `fs.write` nor `process.exec`. They therefore remain available under `public_gateway`. Public document workflows should use this path instead of enabling general `write_file` or `exec`.
 
 ## Tool details
 
@@ -159,6 +166,46 @@ Retrieve a tool output artifact that was spilled to disk, using the path given i
 | `offset` | integer | | Starting position |
 | `limit` | integer | | Length to read |
 | `pattern` | string | | Filter pattern |
+
+### User artifacts
+
+Long reports use the fixed flow `artifact_create` → repeated `artifact_append` → `artifact_validate` → `artifact_finalize` → `artifact_deliver`. Artifacts are session-isolated; the model receives only an opaque `artifact_id`, never a server path.
+
+#### artifact_create
+
+| Parameter | Type | Required | Description |
+|-----------|------|:--------:|-------------|
+| `filename` | string | ✅ | Filename; extension constrained by `artifacts.allowed_extensions` |
+| `title` | string | | Optional title |
+
+#### artifact_append
+
+| Parameter | Type | Required | Description |
+|-----------|------|:--------:|-------------|
+| `artifact_id` | string | ✅ | ID returned by `artifact_create` |
+| `sequence` | integer | ✅ | Consecutive chunk number starting at 0 |
+| `content` | string | ✅ | UTF-8 text chunk |
+| `expected_bytes` | integer | | Expected byte offset for optimistic concurrency |
+
+Call exactly one `artifact_append` per assistant turn and wait for its result before generating the next chunk, preventing combined tool arguments from hitting the single-output limit again. A retry with the same sequence and content is idempotent. Conflicting content and out-of-order chunks are rejected.
+
+#### artifact_validate
+
+Accepts only `artifact_id`. Validation needs no shell: it computes characters, CJK characters, English words, lines, paragraphs and headings, and checks Markdown, JSON and CSV structure.
+
+#### artifact_finalize
+
+Accepts only `artifact_id`. It atomically materializes a valid document and prevents later appends.
+
+#### artifact_deliver
+
+| Parameter | Type | Required | Description |
+|-----------|------|:--------:|-------------|
+| `artifact_id` | string | ✅ | Finalized artifact ID |
+| `caption` | string | | Short caption |
+| `fallback_to_text` | boolean | | Use numbered text chunks when attachments are unsupported; default true |
+
+Delivery is restricted to the current conversation. File-capable channels receive an attachment; text-only channels receive bounded numbered chunks, and the result reports the actual delivery mode.
 
 ### Knowledge and memory
 

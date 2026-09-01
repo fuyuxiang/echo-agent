@@ -94,7 +94,10 @@ def test_override_conflict_warns_on_full_profile(tmp_path):
     cfg = _write_yaml(tmp_path, "tools:\n  profile: full\n")
     msgs = _capture_loguru(lambda: _gateway_profile_override(config_path=str(cfg)))
     # The loud conflict warning names the fix, not the soft "已收紧" note.
-    assert any("配置冲突" in m and "also_allow" in m for m in msgs)
+    assert any(
+        "配置冲突" in m and "artifact_create" in m and "不要" in m and "write_file/exec" in m
+        for m in msgs
+    )
 
 
 def test_override_soft_note_when_no_broad_profile(tmp_path):

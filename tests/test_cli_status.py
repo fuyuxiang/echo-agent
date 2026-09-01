@@ -14,6 +14,7 @@ from unittest.mock import patch
 from echo_agent.cli import runtime_probe
 from echo_agent.cli import status as status_mod
 from echo_agent.cli.colors import Colors
+from echo_agent.config.schema import Config
 
 _T = "echo_agent.cli.status"
 # Runtime probing moved into cli.runtime_probe, so the stubs that used to patch
@@ -166,6 +167,16 @@ def test_status_does_not_lie_when_cli_disabled(capsys):
     assert "telegram" in out
 
 
+def test_effective_capabilities_explain_public_artifact_boundary():
+    cfg = Config(security={"profile": "public_gateway"}, tools={"profile": "full"})
+    report = status_mod._capability_report(cfg, entrypoint="gateway")
+    by_name = {item["name"]: item for item in report["tools"]}
+    assert by_name["write_file"]["available"] is False
+    assert "public_gateway" in by_name["write_file"]["reason"]
+    assert by_name["exec"]["available"] is False
+    assert by_name["artifact_create"]["available"] is True
+
+
 # ── TCP probe ─────────────────────────────────────────────────────────────────
 # The probe itself now lives in cli.runtime_probe (shared with doctor and the
 # cli diagnostics); status calls it instead of carrying its own copy. These two
@@ -284,4 +295,3 @@ def test_status_runtime_endpoint_shown(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "4242" in out
     assert "59999" in out
-

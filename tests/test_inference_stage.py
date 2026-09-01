@@ -9,6 +9,7 @@ import pytest
 from echo_agent.agent.pipeline.inference_stage import InferenceStage
 from echo_agent.agent.pipeline.types import PipelineContext
 from echo_agent.models.provider import LLMResponse, ToolCallRequest
+from echo_agent.tools import ToolResult
 
 
 def _make_config():
@@ -653,14 +654,36 @@ class TestInferenceStageLengthTruncation:
     """finish_reason='length' — 截断分层处理：保部分正文 / 降级重试 / 兜底。"""
 
     @pytest.mark.asyncio
-    async def test_partial_content_kept_with_truncation_notice(self):
+    async def test_partial_content_is_automatically_continued(self):
+        provider = AsyncMock()
+        provider.chat_stream_with_retry = AsyncMock(side_effect=[
+            LLMResponse(content="第一段。重复边界", finish_reason="length"),
+            LLMResponse(content="重复边界第二段。", finish_reason="stop"),
+        ])
+        stage, _bus = _make_stage(provider=provider)
+        ctx = _make_ctx()
+
+        result = await stage.run(ctx)
+
+        assert result.response_text == "第一段。重复边界第二段。"
+        assert result.degraded_notices == []
+        assert result.output_truncated is False
+        assert result.task_incomplete is False
+        assert provider.chat_stream_with_retry.call_count == 2
+        retry_kwargs = provider.chat_stream_with_retry.call_args_list[1].kwargs
+        assert retry_kwargs["tools"] is None
+
+    @pytest.mark.asyncio
+    async def test_partial_continuation_exhaustion_keeps_notice(self):
         from echo_agent.agent.degraded_notice import notice_for, REASON_OUTPUT_TRUNCATED
         provider = AsyncMock()
         provider.chat_stream_with_retry = AsyncMock(
             return_value=LLMResponse(content="部分答案...", finish_reason="length")
         )
         stage, _bus = _make_stage(provider=provider)
-        ctx = _make_ctx()
+        session = _make_session()
+        session.metadata = {}
+        ctx = _make_ctx(session=session)
 
         result = await stage.run(ctx)
 
@@ -669,8 +692,8 @@ class TestInferenceStageLengthTruncation:
         assert result.output_truncated is True
         assert result.task_incomplete is True
         assert result.termination_reason == "output_truncated"
-        # No retry: the partial answer is delivered as-is.
-        assert provider.chat_stream_with_retry.call_count == 1
+        assert provider.chat_stream_with_retry.call_count == 4
+        assert session.metadata["_output_continuation"]["tail"] == "部分答案..."
 
     @pytest.mark.asyncio
     async def test_empty_truncation_retries_once_without_tools(self):
@@ -731,6 +754,102 @@ class TestInferenceStageLengthTruncation:
         assert not any(
             "超出输出长度上限" in str(m.get("content", "")) for m in ctx.messages
         )
+
+
+class TestArtifactOutputContract:
+    @pytest.mark.asyncio
+    async def test_chat_only_answer_cannot_complete_required_artifact(self):
+        provider = AsyncMock()
+        provider.chat_stream_with_retry = AsyncMock(
+            return_value=LLMResponse(content="这是未写入文件的报告正文", finish_reason="stop")
+        )
+        stage, _bus = _make_stage(provider=provider)
+        session = _make_session()
+        session.metadata = {}
+        ctx = _make_ctx(
+            session=session,
+            tool_defs=[{"function": {"name": "artifact_create"}}],
+        )
+        ctx.artifact_required = True
+
+        result = await stage.run(ctx)
+
+        assert result.task_incomplete is True
+        assert result.termination_reason == "artifact_not_delivered"
+        assert "未成功生成并交付" in result.response_text
+        assert provider.chat_stream_with_retry.call_count == 4
+        assert session.metadata["_artifact_continuation"]["trace_id"] == "trace_001"
+
+    @pytest.mark.asyncio
+    async def test_successful_delivery_satisfies_required_artifact(self):
+        deliver = ToolCallRequest(
+            id="deliver-1", name="artifact_deliver", arguments={"artifact_id": "a" * 32},
+        )
+        provider = AsyncMock()
+        provider.chat_stream_with_retry = AsyncMock(return_value=LLMResponse(
+            content="", tool_calls=[deliver], finish_reason="tool_calls",
+        ))
+        tools = MagicMock()
+        tools.execute = AsyncMock(return_value=ToolResult(output='{"delivered": true}'))
+        tools.has = MagicMock(return_value=False)
+        tools.get = MagicMock(return_value=None)
+        stage, _bus = _make_stage(provider=provider, tools=tools)
+        session = _make_session()
+        session.metadata = {}
+        ctx = _make_ctx(
+            session=session,
+            tool_defs=[{"function": {"name": "artifact_deliver"}}],
+        )
+        ctx.artifact_required = True
+
+        result = await stage.run(ctx)
+
+        assert result.response_text == "报告已生成、校验并交付。"
+        assert result.task_incomplete is False
+        assert result.termination_reason == ""
+        assert provider.chat_stream_with_retry.call_count == 1
+        assert "_artifact_continuation" not in session.metadata
+        tools.execute.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_truncated_artifact_prose_retries_with_tools_enabled(self):
+        provider = AsyncMock()
+        provider.chat_stream_with_retry = AsyncMock(side_effect=[
+            LLMResponse(content="被截断的报告正文", finish_reason="length"),
+            LLMResponse(content="仍然没有使用产物", finish_reason="stop"),
+            LLMResponse(content="仍然没有使用产物", finish_reason="stop"),
+            LLMResponse(content="仍然没有使用产物", finish_reason="stop"),
+        ])
+        stage, _bus = _make_stage(provider=provider)
+        session = _make_session()
+        session.metadata = {}
+        ctx = _make_ctx(
+            session=session,
+            tool_defs=[{"function": {"name": "artifact_create"}}],
+        )
+        ctx.artifact_required = True
+
+        result = await stage.run(ctx)
+
+        retry_kwargs = provider.chat_stream_with_retry.call_args_list[1].kwargs
+        assert retry_kwargs["tools"] == ctx.tool_defs
+        assert "被截断的报告正文" not in result.response_text
+        assert result.task_incomplete is True
+
+    @pytest.mark.asyncio
+    async def test_content_filter_is_incomplete_without_provider_fallback(self):
+        provider = AsyncMock()
+        provider.chat_stream_with_retry = AsyncMock(
+            return_value=LLMResponse(content=None, finish_reason="content_filter")
+        )
+        stage, _bus = _make_stage(provider=provider)
+
+        result = await stage.run(_make_ctx())
+
+        assert "内容安全策略" in result.response_text
+        assert result.task_incomplete is True
+        assert result.termination_reason == "content_filtered"
+        assert provider.chat_stream_with_retry.call_count == 1
 
 
 class TestInferenceStageFinalAnswerForcing:

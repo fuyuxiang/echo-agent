@@ -9,6 +9,7 @@ accounting.
 from __future__ import annotations
 
 import base64
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -248,6 +249,14 @@ class TestBedrockConverseParsing:
         resp = {"output": {"message": {"content": [{"text": "x"}]}}, "stopReason": "max_tokens"}
         out = p._parse_converse_response(resp, "m")
         assert out.finish_reason == "length"
+
+    @pytest.mark.parametrize("reason", ["guardrail_intervened", "content_filtered"])
+    def test_parse_policy_stop_maps_to_content_filter(self, reason):
+        p = self._provider()
+        resp = {"output": {"message": {"content": []}}, "stopReason": reason}
+        out = p._parse_converse_response(resp, "m")
+        assert out.finish_reason == "content_filter"
+        assert out.raw_finish_reason == reason
 
     def test_parse_empty_output(self):
         p = self._provider()
@@ -560,7 +569,7 @@ class TestGeminiConvertTools:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def _gemini_resp(text_parts=(), function_calls=(), usage=None):
+def _gemini_resp(text_parts=(), function_calls=(), usage=None, finish_reason=None):
     parts = []
     for t in text_parts:
         part = MagicMock(spec=["text", "function_call"])
@@ -577,6 +586,7 @@ def _gemini_resp(text_parts=(), function_calls=(), usage=None):
         parts.append(part)
     candidate = MagicMock()
     candidate.content.parts = parts
+    candidate.finish_reason = finish_reason
     resp = MagicMock()
     resp.candidates = [candidate]
     if usage is None:
@@ -616,6 +626,21 @@ class TestGeminiParseResponse:
         p = _gemini_provider()
         out = p._parse_response(_gemini_resp(), "gemini-pro")
         assert out.content is None
+
+    def test_max_tokens_maps_to_length(self):
+        p = _gemini_provider()
+        reason = SimpleNamespace(name="MAX_TOKENS")
+        out = p._parse_response(
+            _gemini_resp(text_parts=["partial"], finish_reason=reason), "gemini-pro"
+        )
+        assert out.finish_reason == "length"
+        assert "MAX_TOKENS" in out.raw_finish_reason
+
+    def test_safety_maps_to_content_filter(self):
+        p = _gemini_provider()
+        reason = SimpleNamespace(name="SAFETY")
+        out = p._parse_response(_gemini_resp(finish_reason=reason), "gemini-pro")
+        assert out.finish_reason == "content_filter"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
