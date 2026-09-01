@@ -102,6 +102,128 @@ async def test_canceled_task_is_not_revived_by_worker_result():
 
 
 @pytest.mark.asyncio
+async def test_canceled_task_cannot_revive_after_result_ttl_expires():
+    """The cancel promise outlives its row while a stubborn worker is alive."""
+
+    class _Clock:
+        now = 0.0
+
+        def __call__(self) -> float:
+            return self.now
+
+    clock = _Clock()
+    entered = asyncio.Event()
+    first_cancel = asyncio.Event()
+    second_cancel = asyncio.Event()
+    release = asyncio.Event()
+
+    async def swallows_repeated_cancel(task: A2ATask) -> A2ATask:
+        entered.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            first_cancel.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                second_cancel.set()
+                await release.wait()
+        task.state = TaskState.COMPLETED
+        return task
+
+    proto = A2AProtocol(
+        swallows_repeated_cancel, task_ttl_seconds=10.0, clock=clock,
+    )
+    send = asyncio.create_task(proto._handle_send({"id": "ttl-cancel", "message": _msg()}))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+
+    assert proto._handle_cancel({"id": "ttl-cancel"})["state"] == "canceled"
+    await asyncio.wait_for(first_cancel.wait(), timeout=1)
+
+    clock.now = 11.0
+    assert proto._tasks.get("ttl-cancel") is None
+    await asyncio.wait_for(second_cancel.wait(), timeout=1)
+    assert "ttl-cancel" in proto._settled
+
+    release.set()
+    assert (await asyncio.wait_for(send, timeout=1))["state"] == "canceled"
+    # The expired row stays expired and the temporary fence is released only
+    # after the late result has been neutralised.
+    assert proto._tasks.get("ttl-cancel") is None
+    assert "ttl-cancel" not in proto._settled
+    assert "ttl-cancel" not in proto._reclaimed_settlements
+
+
+@pytest.mark.asyncio
+async def test_cancel_fence_survives_ttl_purge_after_worker_done_before_commit():
+    """A done worker is not yet an observed/committed worker result."""
+    now = 0.0
+    proto = None
+    entered = asyncio.Event()
+
+    async def stubborn_worker(task: A2ATask) -> A2ATask:
+        nonlocal now
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            now = 11.0
+            task.state = TaskState.COMPLETED
+            # This callback runs after the worker completes but can run before
+            # _handle_send resumes from ``await run``.
+            asyncio.get_running_loop().call_soon(proto._tasks.get, task.id)
+            return task
+
+    proto = A2AProtocol(
+        stubborn_worker,
+        task_ttl_seconds=10.0,
+        clock=lambda: now,
+    )
+    send = asyncio.create_task(proto._handle_send({
+        "id": "done-race",
+        "message": _msg(),
+    }))
+    await entered.wait()
+
+    assert proto._handle_cancel({"id": "done-race"})["state"] == "canceled"
+    assert (await send)["state"] == "canceled"
+    assert proto._tasks.get("done-race") is None
+    assert proto._settled == {}
+    assert proto._reclaimed_settlements == set()
+
+
+@pytest.mark.asyncio
+async def test_get_never_observes_late_worker_mutation_after_cancel():
+    entered = asyncio.Event()
+    mutated = asyncio.Event()
+    release = asyncio.Event()
+
+    async def mutates_then_waits(task: A2ATask) -> A2ATask:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            task.state = TaskState.COMPLETED
+            mutated.set()
+            await release.wait()
+            return task
+
+    proto = A2AProtocol(mutates_then_waits)
+    send = asyncio.create_task(proto._handle_send({
+        "id": "observable-race",
+        "message": _msg(),
+    }))
+    await entered.wait()
+
+    assert proto._handle_cancel({"id": "observable-race"})["state"] == "canceled"
+    await mutated.wait()
+    assert proto._handle_get({"id": "observable-race"})["state"] == "canceled"
+
+    release.set()
+    assert (await send)["state"] == "canceled"
+
+
+@pytest.mark.asyncio
 async def test_cancel_after_completion_still_rejected():
     """任务已自然完成时 cancel 仍必须报错 —— 终态不可再迁移。"""
 

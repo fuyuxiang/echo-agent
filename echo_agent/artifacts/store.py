@@ -74,7 +74,20 @@ class ArtifactStore:
                 raise ArtifactError("artifact root escaped the workspace") from exc
             if resolved_root != self.root:
                 raise ArtifactError("artifact root changed through a symbolic link")
+            # The session component is deterministic, so a local process can
+            # pre-create it before the first artifact.  Never follow that entry:
+            # otherwise ``mkdir(<session>/<uuid>)`` would create files at the
+            # symlink target, outside the configured artifact store.
+            if path.is_symlink():
+                raise ArtifactError("artifact session directory cannot be a symbolic link")
             path.mkdir(parents=True, exist_ok=True, mode=0o700)
+            try:
+                resolved_session = path.resolve(strict=True)
+                resolved_session.relative_to(resolved_root)
+            except (OSError, ValueError) as exc:
+                raise ArtifactError("artifact session directory escaped its store") from exc
+            if resolved_session != path or not path.is_dir():
+                raise ArtifactError("artifact session directory changed through a symbolic link")
         return path
 
     def _artifact_dir(self, session_key: str, artifact_id: str) -> Path:
@@ -335,16 +348,84 @@ class ArtifactStore:
             return path, manifest
 
     async def record_delivery(
-        self, session_key: str, artifact_id: str, *, channel: str, chat_id: str,
+        self,
+        session_key: str,
+        artifact_id: str,
+        *,
+        channel: str,
+        chat_id: str,
+        delivery_id: str = "",
+        mode: str = "attachment",
+        completed_parts: int = 1,
+        total_parts: int = 1,
     ) -> None:
+        """Durably checkpoint delivery progress for safe retries.
+
+        Sending and recording cannot be one atomic transaction with an external
+        channel.  Persisting every acknowledged text part is nevertheless enough
+        to prevent a normal retry after part N fails from replaying parts 1..N-1.
+        ``delivery_id`` is an opaque digest produced by the delivery tool; raw
+        chat identifiers and local paths are never written to the manifest.
+        """
+        if completed_parts < 0 or total_parts < 1 or completed_parts > total_parts:
+            raise ArtifactError("invalid artifact delivery progress")
         async with self._lock(session_key, artifact_id):
             directory, manifest = self._load(session_key, artifact_id)
+            if manifest.get("state") != "finalized":
+                raise ArtifactError("artifact must be finalized before delivery")
             deliveries = list(manifest.get("deliveries") or [])
-            deliveries.append({"channel": channel, "chat_id_hash": hashlib.sha256(chat_id.encode()).hexdigest()[:16],
-                               "delivered_at": _utc_now()})
+            now = _utc_now()
+            entry = {
+                "delivery_id": delivery_id,
+                "channel": channel,
+                "chat_id_hash": hashlib.sha256(chat_id.encode()).hexdigest()[:16],
+                "mode": mode,
+                "completed_parts": completed_parts,
+                "total_parts": total_parts,
+                "updated_at": now,
+            }
+            if completed_parts == total_parts:
+                entry["delivered_at"] = now
+            prior_index = next(
+                (
+                    index for index, item in enumerate(deliveries)
+                    if delivery_id and item.get("delivery_id") == delivery_id
+                ),
+                None,
+            )
+            if prior_index is None:
+                deliveries.append(entry)
+            else:
+                prior = deliveries[prior_index]
+                if (
+                    prior.get("mode") != mode
+                    or int(prior.get("total_parts", -1)) != total_parts
+                    or int(prior.get("completed_parts", 0)) > completed_parts
+                ):
+                    raise ArtifactError("artifact delivery checkpoint conflict")
+                deliveries[prior_index] = entry
             manifest["deliveries"] = deliveries[-20:]
-            manifest["updated_at"] = _utc_now()
+            manifest["updated_at"] = now
             self._atomic_json(directory / "manifest.json", manifest)
+
+    async def delivery_progress(
+        self,
+        session_key: str,
+        artifact_id: str,
+        *,
+        delivery_id: str,
+    ) -> dict[str, Any] | None:
+        """Return a copy of an opaque delivery checkpoint, if one exists."""
+        if not delivery_id:
+            return None
+        async with self._lock(session_key, artifact_id):
+            _directory, manifest = self._load(session_key, artifact_id)
+            if manifest.get("state") != "finalized":
+                raise ArtifactError("artifact must be finalized before delivery")
+            for item in manifest.get("deliveries") or []:
+                if item.get("delivery_id") == delivery_id:
+                    return dict(item)
+        return None
 
     @staticmethod
     def public_manifest(manifest: dict[str, Any]) -> dict[str, Any]:

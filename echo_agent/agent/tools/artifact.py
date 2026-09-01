@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
+import weakref
 from typing import Any
 
 from loguru import logger
@@ -33,6 +36,18 @@ def _failure(exc: Exception) -> ToolResult:
             error_kind="dependency",
         )
     return ToolResult(success=False, error=str(exc), error_kind="business")
+
+
+def _receipt_is_deferred(receipt: object) -> bool:
+    """True when transport accepted data for later terminal delivery.
+
+    A synchronous gateway HTTP waiter buffers tool-delivery frames until the
+    turn's authoritative final response.  That is enough to continue this
+    in-process turn, but not enough to write a durable delivery checkpoint: a
+    crash before the final response would lose the volatile buffer.
+    """
+    detail = getattr(receipt, "detail", None)
+    return isinstance(detail, dict) and detail.get("deferred") is True
 
 
 class ArtifactCreateTool(Tool):
@@ -189,6 +204,73 @@ class ArtifactDeliverTool(Tool):
         self._channel_lookup = channel_lookup
         self._text_fallback_max_chars = text_fallback_max_chars
         self._text_fallback_chunk_chars = text_fallback_chunk_chars
+        # Serialize equivalent deliveries in this process.  Durable per-part
+        # checkpoints below handle retries/restarts; this lock prevents two
+        # concurrent calls from both observing the same checkpoint and sending
+        # the same next part.
+        self._delivery_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
+            weakref.WeakValueDictionary()
+        )
+
+    @staticmethod
+    def _delivery_id(
+        manifest: dict[str, Any], ctx: ToolExecutionContext, *, mode: str, caption: str,
+        part_size: int = 0,
+    ) -> str:
+        # Delivery checkpoints belong to one logical user turn, not forever to
+        # artifact+destination.  Otherwise asking to send the same finalized
+        # report again on a later turn is mistaken for an idempotent replay and
+        # nothing is emitted.  The inbound id is stable across model/tool retry
+        # attempts and across delegated child contexts; narrower execution keys
+        # are conservative fallbacks for embedders without an inbound event.
+        intent_kind, turn_intent = next(
+            (
+                (kind, value)
+                for kind, value in (
+                    ("artifact_intent", ctx.artifact_intent_id),
+                    ("inbound", ctx.inbound_event_id),
+                    ("idempotency", ctx.idempotency_key),
+                    ("execution", ctx.execution_id),
+                    ("trace", ctx.trace_id),
+                    ("session", ctx.session_key),
+                )
+                if value
+            ),
+            ("anonymous", ""),
+        )
+        material = "\0".join((
+            str(manifest.get("artifact_id") or ""),
+            str(manifest.get("sha256") or ""),
+            ctx.channel,
+            ctx.chat_id,
+            intent_kind,
+            turn_intent,
+            mode,
+            caption,
+            str(part_size),
+        ))
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+    def _delivery_lock(self, delivery_id: str) -> asyncio.Lock:
+        return self._delivery_locks.setdefault(delivery_id, asyncio.Lock())
+
+    @staticmethod
+    def _delivered_payload(
+        params: dict[str, Any], manifest: dict[str, Any], ctx: ToolExecutionContext,
+        *, mode: str, chunks: int | None = None, idempotent_replay: bool = False,
+    ) -> ToolResult:
+        payload: dict[str, Any] = {
+            "artifact_id": params["artifact_id"],
+            "filename": manifest["filename"],
+            "delivered": True,
+            "channel": ctx.channel,
+            "delivery_mode": mode,
+        }
+        if chunks is not None:
+            payload["chunks"] = chunks
+        if idempotent_replay:
+            payload["idempotent_replay"] = True
+        return _ok(payload)
 
     async def _deliver_as_text(
         self, path, manifest: dict[str, Any], params: dict[str, Any], ctx: ToolExecutionContext,
@@ -203,7 +285,20 @@ class ArtifactDeliverTool(Tool):
         chunks = [content[index:index + size] for index in range(0, len(content), size)] or [""]
         caption = str(params.get("caption") or "").strip()[:160]
         total = len(chunks)
-        for index, chunk in enumerate(chunks, 1):
+        delivery_id = self._delivery_id(
+            manifest, ctx, mode="text_chunks", caption=caption, part_size=size,
+        )
+        progress = await self._store.delivery_progress(
+            ctx.session_key, params["artifact_id"], delivery_id=delivery_id,
+        )
+        completed_parts = int((progress or {}).get("completed_parts", 0))
+        if completed_parts >= total:
+            return self._delivered_payload(
+                params, manifest, ctx, mode="text_chunks", chunks=total,
+                idempotent_replay=True,
+            )
+        for index in range(completed_parts + 1, total + 1):
+            chunk = chunks[index - 1]
             prefix = f"{caption}\n\n" if index == 1 and caption else ""
             text = f"{prefix}[{manifest['filename']} {index}/{total}]\n{chunk}"
             event = OutboundEvent.text_reply(
@@ -212,6 +307,15 @@ class ArtifactDeliverTool(Tool):
                 text=text,
                 reply_to_id=ctx.reply_to_id or None,
             ).mark_tool_delivery(ctx)
+            # Renderers normally dedupe/replace repeated final frames for one
+            # inbound turn.  Give each artifact part a transport-neutral display
+            # identity so append-only CLI and TUI clients retain every part;
+            # ``_inbound_event_id`` itself stays unchanged for turn accounting.
+            event.metadata.update({
+                "_artifact_delivery_id": delivery_id[:16],
+                "_artifact_part": index,
+                "_artifact_parts": total,
+            })
             receipt = await self._publish(event)
             if receipt is not None and not getattr(receipt, "ok", True):
                 detail = getattr(receipt, "error", "") or getattr(
@@ -222,17 +326,20 @@ class ArtifactDeliverTool(Tool):
                     error=f"artifact text fallback failed at part {index}/{total}: {detail}",
                     error_kind="dependency",
                 )
-        await self._store.record_delivery(
-            ctx.session_key, params["artifact_id"], channel=ctx.channel, chat_id=ctx.chat_id,
+            if not _receipt_is_deferred(receipt):
+                await self._store.record_delivery(
+                    ctx.session_key,
+                    params["artifact_id"],
+                    channel=ctx.channel,
+                    chat_id=ctx.chat_id,
+                    delivery_id=delivery_id,
+                    mode="text_chunks",
+                    completed_parts=index,
+                    total_parts=total,
+                )
+        return self._delivered_payload(
+            params, manifest, ctx, mode="text_chunks", chunks=total,
         )
-        return _ok({
-            "artifact_id": params["artifact_id"],
-            "filename": manifest["filename"],
-            "delivered": True,
-            "channel": ctx.channel,
-            "delivery_mode": "text_chunks",
-            "chunks": total,
-        })
 
     async def execute(self, params: dict[str, Any], ctx: ToolExecutionContext | None = None) -> ToolResult:
         try:
@@ -242,30 +349,66 @@ class ArtifactDeliverTool(Tool):
             if self._publish is None:
                 raise ArtifactError("message bus is not connected")
             path, manifest = await self._store.finalized_path(session_key, params["artifact_id"])
-            if self._channel_lookup is not None:
-                adapter = self._channel_lookup(ctx.channel)
-                if adapter is not None and not getattr(adapter, "supports_files", False):
+            adapter = self._channel_lookup(ctx.channel) if self._channel_lookup is not None else None
+            # File support is an affirmative capability.  Gateway pseudo-
+            # channels (notably gateway:cli) have no BaseChannel adapter and the
+            # WS payload is text-only; treating a missing adapter as support sent
+            # an empty frame and then falsely reported delivery.  Fail closed to
+            # the existing text transport instead.
+            if adapter is None or not getattr(adapter, "supports_files", False):
+                delivery_id = self._delivery_id(
+                    manifest,
+                    ctx,
+                    mode="text_chunks",
+                    caption=str(params.get("caption") or "").strip()[:160],
+                    part_size=self._text_fallback_chunk_chars,
+                )
+                async with self._delivery_lock(delivery_id):
                     if params.get("fallback_to_text", True):
                         return await self._deliver_as_text(path, manifest, params, ctx)
                     raise ArtifactError(f"channel '{ctx.channel}' cannot send file attachments")
             blocks: list[ContentBlock] = []
             caption = str(params.get("caption") or "").strip()[:160]
-            if caption:
-                blocks.append(ContentBlock(type=ContentType.TEXT, text=caption))
-            blocks.append(ContentBlock(
-                type=ContentType.FILE, url=str(path), metadata={"name": manifest["filename"]},
-            ))
-            event = OutboundEvent(channel=ctx.channel, chat_id=ctx.chat_id, content=blocks).mark_tool_delivery(ctx)
-            receipt = await self._publish(event)
-            if receipt is not None and not getattr(receipt, "ok", True):
-                detail = getattr(receipt, "error", "") or getattr(getattr(receipt, "stage", None), "value", "failed")
-                return ToolResult(success=False, error=f"artifact delivery failed: {detail}", error_kind="dependency")
-            await self._store.record_delivery(
-                session_key, params["artifact_id"], channel=ctx.channel, chat_id=ctx.chat_id,
+            delivery_id = self._delivery_id(
+                manifest, ctx, mode="attachment", caption=caption,
             )
-            return _ok({
-                "artifact_id": params["artifact_id"], "filename": manifest["filename"],
-                "delivered": True, "channel": ctx.channel, "delivery_mode": "attachment",
-            })
+            async with self._delivery_lock(delivery_id):
+                progress = await self._store.delivery_progress(
+                    session_key, params["artifact_id"], delivery_id=delivery_id,
+                )
+                if int((progress or {}).get("completed_parts", 0)) >= 1:
+                    return self._delivered_payload(
+                        params, manifest, ctx, mode="attachment", idempotent_replay=True,
+                    )
+                if caption:
+                    blocks.append(ContentBlock(type=ContentType.TEXT, text=caption))
+                blocks.append(ContentBlock(
+                    type=ContentType.FILE, url=str(path), metadata={"name": manifest["filename"]},
+                ))
+                event = OutboundEvent(
+                    channel=ctx.channel, chat_id=ctx.chat_id, content=blocks,
+                ).mark_tool_delivery(ctx)
+                receipt = await self._publish(event)
+                if receipt is not None and not getattr(receipt, "ok", True):
+                    detail = getattr(receipt, "error", "") or getattr(
+                        getattr(receipt, "stage", None), "value", "failed",
+                    )
+                    return ToolResult(
+                        success=False,
+                        error=f"artifact delivery failed: {detail}",
+                        error_kind="dependency",
+                    )
+                if not _receipt_is_deferred(receipt):
+                    await self._store.record_delivery(
+                        session_key,
+                        params["artifact_id"],
+                        channel=ctx.channel,
+                        chat_id=ctx.chat_id,
+                        delivery_id=delivery_id,
+                        mode="attachment",
+                    )
+                return self._delivered_payload(
+                    params, manifest, ctx, mode="attachment",
+                )
         except (ArtifactError, OSError, KeyError, TypeError, ValueError) as exc:
             return _failure(exc)

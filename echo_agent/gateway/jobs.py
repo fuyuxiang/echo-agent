@@ -124,7 +124,11 @@ class AsyncJobRegistry:
         if job["status"] in {"queued", "running"}:
             self._mark_cancelled(job_id)
             await self._emit(job_id)
-        return True
+        # Work may deliberately suppress cancellation after crossing an
+        # irreversible commit boundary. In that race the truthful terminal
+        # state is completed/failed and the cancel endpoint must not claim
+        # success merely because Task.cancel() was called.
+        return job["status"] == "cancelled"
 
     async def close(self) -> None:
         tasks = list(self._tasks.values())

@@ -7,12 +7,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from echo_agent.tools import ToolExecutionContext
+from echo_agent.models.provider import ToolCallRequest
+from echo_agent.tools import ToolExecutionContext, ToolResult
 from echo_agent.agent.tools.delegate import (
     DelegateTool,
     SpawnTool,
     SPAWN_BLOCKED_TOOLS,
     WORKER_BLOCKED_TOOLS,
+    build_worker_tool_executor,
 )
 from echo_agent.agent.multi_agent.models import WorkerProfile, WorkerResult
 
@@ -126,6 +128,50 @@ class TestDelegateFormatResults:
 
 
 class TestDelegateExecute:
+    @pytest.mark.asyncio
+    async def test_worker_context_preserves_parent_inbound_turn_identity(self):
+        registry = MagicMock()
+        registry.execute = AsyncMock(return_value=ToolResult(output="delivered"))
+        gate = MagicMock()
+        gate.check = AsyncMock(return_value=MagicMock(
+            denial=None,
+            approved_actions=frozenset({"artifact_deliver"}),
+            approval_source="auto",
+        ))
+        credentials = MagicMock()
+        credentials.get_for_tool.return_value = {}
+        parent = _ctx(
+            channel="gateway:cli",
+            chat_id="u1",
+            inbound_event_id="origin-turn-42",
+            artifact_intent_id="artifact-origin-7",
+            execution_id="parent-exec",
+        )
+        executor = build_worker_tool_executor(
+            tool_registry=registry,
+            approval_gate=gate,
+            credentials=credentials,
+            parent_ctx=parent,
+            allowed_tools={"artifact_deliver"},
+            depth=1,
+        )
+
+        outcome = await executor(
+            "artifact_deliver",
+            ToolCallRequest(
+                id="call-1",
+                name="artifact_deliver",
+                arguments={"artifact_id": "a" * 32},
+            ),
+            0,
+        )
+
+        assert outcome.success is True
+        worker_ctx = registry.execute.await_args.args[2]
+        assert worker_ctx.inbound_event_id == "origin-turn-42"
+        assert worker_ctx.artifact_intent_id == "artifact-origin-7"
+        assert worker_ctx.execution_id != parent.execution_id
+
     @pytest.mark.asyncio
     async def test_depth_limit_reached(self):
         tool = _make_delegate(max_depth=1)

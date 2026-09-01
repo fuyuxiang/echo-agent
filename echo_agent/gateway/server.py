@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -99,6 +100,22 @@ class GatewayServer:
         self._ws_clients: dict[str, web.WebSocketResponse] = {}
         self._pending_http: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._MAX_PENDING_HTTP = 500
+        # Tool-originated outbound events inherit ``is_final=True``, but they
+        # are side deliveries within a turn rather than the turn's terminal
+        # answer.  Synchronous HTTP callers only have one waiter, so retain
+        # those frames until the real terminal arrives.  Bound both one request
+        # and the whole gateway: the pending-request cap alone would otherwise
+        # permit hundreds of maximum-sized buffers at once.
+        self._pending_http_tool_deliveries: dict[
+            str, tuple[list[dict[str, Any]], int, float]
+        ] = {}
+        self._pending_http_tool_delivery_frames = 0
+        self._pending_http_tool_delivery_chars = 0
+        self._MAX_HTTP_TOOL_DELIVERY_FRAMES = 128
+        self._MAX_HTTP_TOOL_DELIVERY_CHARS = 256_000
+        self._MAX_HTTP_TOOL_DELIVERY_TOTAL_FRAMES = 4096
+        self._MAX_HTTP_TOOL_DELIVERY_TOTAL_CHARS = 8_000_000
+        self._HTTP_TOOL_DELIVERY_TTL_SECONDS = 3600.0
         self._message_idempotency = BoundedIdempotencyStore(
             max_entries=4096,
             ttl_seconds=3600.0,
@@ -219,6 +236,10 @@ class GatewayServer:
         command = event.text.strip().split(maxsplit=1)[0].lower() if event.text.strip() else ""
         if event.is_control or command in {"/approve", "/deny", "/approvals", "/clarify"}:
             return
+        interrupt = getattr(self._agent_loop, "interrupt", None)
+        admit_interrupt = getattr(interrupt, "admit", None)
+        if callable(admit_interrupt):
+            admit_interrupt(event.session_key, event.event_id)
         turn_runs = getattr(self._agent_loop, "turn_runs", None)
         if turn_runs is None:
             return
@@ -241,6 +262,37 @@ class GatewayServer:
         except Exception as e:
             # Status observability must never become a message-ingestion outage.
             logger.warning("Turn acceptance ledger write failed: {}", e)
+
+    def _discard_turn_interrupt_admission(self, event: InboundEvent) -> None:
+        interrupt = getattr(self._agent_loop, "interrupt", None)
+        discard = getattr(interrupt, "discard", None)
+        if callable(discard):
+            discard(event.session_key, event.event_id)
+
+    async def _publish_accepted_turn(self, event: InboundEvent) -> bool:
+        """Publish while giving interrupt admission a definitive owner.
+
+        Request-handler cancellation can land while ``Queue.put`` is waiting.
+        Shielding the bus operation and observing its eventual result prevents a
+        never-enqueued event from remaining forever in InterruptManager's
+        admission order, where an old-client unscoped stop could later bind to
+        that ghost instead of real work.
+        """
+        publish_task = asyncio.create_task(self._bus.publish_inbound(event))
+        try:
+            return await asyncio.shield(publish_task)
+        except asyncio.CancelledError:
+            try:
+                accepted = await asyncio.shield(publish_task)
+            except BaseException:
+                self._discard_turn_interrupt_admission(event)
+            else:
+                if not accepted:
+                    self._discard_turn_interrupt_admission(event)
+            raise
+        except BaseException:
+            self._discard_turn_interrupt_admission(event)
+            raise
 
     async def _reject_turn(self, event_id: str, reason: str) -> None:
         turn_runs = getattr(self._agent_loop, "turn_runs", None)
@@ -401,6 +453,7 @@ class GatewayServer:
             if not future.done():
                 future.cancel()
         self._pending_http.clear()
+        self._clear_all_http_tool_deliveries()
 
         for ws_id, ws in list(self._ws_clients.items()):
             await ws.close(code=aiohttp.WSCloseCode.GOING_AWAY, message=b"shutdown")
@@ -775,6 +828,163 @@ class GatewayServer:
             "edit_message_id": event.edit_message_id,
             "metadata": event.metadata,
         }
+
+    def _buffer_http_tool_delivery(
+        self,
+        correlation_id: str,
+        payload: dict[str, Any],
+    ) -> str | None:
+        """Snapshot one tool delivery for a synchronous HTTP response.
+
+        Returns an error string when the frame cannot be buffered.  Serializing
+        here serves two purposes: it measures the actual JSON character cost and
+        prevents later mutation of an ``OutboundEvent.metadata`` dictionary from
+        changing an already accepted delivery.
+        """
+        try:
+            encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            snapshot = json.loads(encoded)
+        except (TypeError, ValueError) as exc:
+            return f"gateway tool delivery is not JSON serializable: {exc}"
+
+        now = time.monotonic()
+        self._purge_http_tool_deliveries(now)
+        entry = self._pending_http_tool_deliveries.get(correlation_id)
+        frames, char_count = (entry[0], entry[1]) if entry is not None else ([], 0)
+        metadata = snapshot.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        artifact_delivery_id = str(metadata.get("_artifact_delivery_id") or "")
+        artifact_part = metadata.get("_artifact_part")
+        if artifact_delivery_id and artifact_part is not None:
+            # Artifact retries deliberately reuse this semantic identity while
+            # their transport event_id is new. Keep the first accepted snapshot
+            # so retrying one part does not duplicate it in the eventual HTTP
+            # response or consume the remaining buffer budget.
+            for frame in frames:
+                existing_metadata = frame.get("metadata")
+                if not isinstance(existing_metadata, dict):
+                    continue
+                if (
+                    str(existing_metadata.get("_artifact_delivery_id") or "")
+                    == artifact_delivery_id
+                    and existing_metadata.get("_artifact_part") == artifact_part
+                ):
+                    self._pending_http_tool_deliveries[correlation_id] = (
+                        frames,
+                        char_count,
+                        now,
+                    )
+                    return None
+        frame_chars = len(encoded)
+        if (
+            len(frames) >= self._MAX_HTTP_TOOL_DELIVERY_FRAMES
+            or char_count + frame_chars > self._MAX_HTTP_TOOL_DELIVERY_CHARS
+            or not self._make_http_tool_delivery_room(
+                frame_chars,
+                preserve=correlation_id,
+            )
+        ):
+            return (
+                "gateway HTTP tool-delivery buffer limit exceeded "
+                f"(correlation_id={correlation_id})"
+            )
+
+        frames.append(snapshot)
+        self._pending_http_tool_deliveries[correlation_id] = (
+            frames,
+            char_count + frame_chars,
+            now,
+        )
+        self._pending_http_tool_delivery_frames += 1
+        self._pending_http_tool_delivery_chars += frame_chars
+        return None
+
+    def _pop_http_tool_deliveries(
+        self, correlation_id: str,
+    ) -> tuple[list[dict[str, Any]], int, float] | None:
+        entry = self._pending_http_tool_deliveries.pop(correlation_id, None)
+        if entry is None:
+            return None
+        frames, char_count, updated_at = entry
+        self._pending_http_tool_delivery_frames = max(
+            0,
+            self._pending_http_tool_delivery_frames - len(frames),
+        )
+        self._pending_http_tool_delivery_chars = max(
+            0,
+            self._pending_http_tool_delivery_chars - char_count,
+        )
+        return frames, char_count, updated_at
+
+    def _take_http_tool_deliveries(
+        self,
+        correlation_id: str,
+    ) -> list[dict[str, Any]]:
+        entry = self._pop_http_tool_deliveries(correlation_id)
+        if entry is None:
+            return []
+        frames, _char_count, updated_at = entry
+        if time.monotonic() - updated_at > self._HTTP_TOOL_DELIVERY_TTL_SECONDS:
+            return []
+        return frames
+
+    def _clear_http_tool_deliveries(self, correlation_id: str) -> None:
+        self._pop_http_tool_deliveries(correlation_id)
+
+    def _purge_http_tool_deliveries(self, now: float | None = None) -> None:
+        current = time.monotonic() if now is None else now
+        expired = [
+            correlation_id
+            for correlation_id, (_frames, _chars, updated_at)
+            in self._pending_http_tool_deliveries.items()
+            if current - updated_at > self._HTTP_TOOL_DELIVERY_TTL_SECONDS
+        ]
+        for correlation_id in expired:
+            self._clear_http_tool_deliveries(correlation_id)
+
+    def _make_http_tool_delivery_room(
+        self,
+        frame_chars: int,
+        *,
+        preserve: str,
+    ) -> bool:
+        """Evict oldest orphaned wait buffers under global memory pressure."""
+        def has_room() -> bool:
+            return (
+                self._pending_http_tool_delivery_frames + 1
+                <= self._MAX_HTTP_TOOL_DELIVERY_TOTAL_FRAMES
+                and self._pending_http_tool_delivery_chars + frame_chars
+                <= self._MAX_HTTP_TOOL_DELIVERY_TOTAL_CHARS
+            )
+
+        while not has_room():
+            orphaned = [
+                (updated_at, correlation_id)
+                for correlation_id, (_frames, _chars, updated_at)
+                in self._pending_http_tool_deliveries.items()
+                if (
+                    correlation_id != preserve
+                    and (
+                        correlation_id not in self._pending_http
+                        or self._pending_http[correlation_id].done()
+                    )
+                )
+            ]
+            if not orphaned:
+                return False
+            _updated_at, oldest = min(orphaned)
+            logger.warning(
+                "Evicting orphaned gateway HTTP tool-delivery buffer "
+                "under capacity pressure (correlation_id={})",
+                oldest,
+            )
+            self._clear_http_tool_deliveries(oldest)
+        return True
+
+    def _clear_all_http_tool_deliveries(self) -> None:
+        self._pending_http_tool_deliveries.clear()
+        self._pending_http_tool_delivery_frames = 0
+        self._pending_http_tool_delivery_chars = 0
 
     async def _release_durable_claim(self, event_id: str) -> None:
         """Best-effort release of a tombstone this request can no longer own.
@@ -1281,7 +1491,7 @@ class GatewayServer:
 
             await self._accept_turn(event, session)
             try:
-                accepted = await self._bus.publish_inbound(event)
+                accepted = await self._publish_accepted_turn(event)
             except BaseException:
                 # Cancellation can race queue admission: the event may already
                 # be enqueued even though publish_inbound did not return. The
@@ -1292,6 +1502,7 @@ class GatewayServer:
                 publish_outcome_unknown = True
                 raise
             if not accepted:
+                self._discard_turn_interrupt_admission(event)
                 # `False` is the one definitive no-admission result promised by
                 # MessageBus. Release only our still-accepted ledger row; the
                 # SQL guard refuses to touch a running/terminal racing owner.
@@ -1383,6 +1594,12 @@ class GatewayServer:
         finally:
             if pending_event_id:
                 self._pending_http.pop(pending_event_id, None)
+                # After admission, a 504/client cancellation does not stop the
+                # turn. Keep its bounded buffer so a late terminal can complete
+                # the idempotency record with every tool delivery. Definite
+                # pre-admission failures have no possible late terminal.
+                if not published and not publish_outcome_unknown:
+                    self._clear_http_tool_deliveries(pending_event_id)
             if tokens is not None:
                 clear_session_vars(tokens)
 
@@ -1933,7 +2150,7 @@ class GatewayServer:
                                     event.metadata[IDEMPOTENCY_FINGERPRINT_METADATA] = operation_fingerprint
                                 await self._accept_turn(event, session)
                                 try:
-                                    accepted = await self._bus.publish_inbound(event)
+                                    accepted = await self._publish_accepted_turn(event)
                                 except BaseException:
                                     # Invocation can be cancelled or fail after
                                     # queue admission. Keep the claim outcome
@@ -1941,6 +2158,7 @@ class GatewayServer:
                                     publish_outcome_unknown = True
                                     raise
                                 if not accepted:
+                                    self._discard_turn_interrupt_admission(event)
                                     await self._bus.release_turn_acceptance(
                                         event.event_id,
                                         event.session_key,
@@ -2113,28 +2331,43 @@ class GatewayServer:
             return None
         if not event.channel.startswith("gateway:"):
             return None
+        self._purge_http_tool_deliveries()
 
         _, platform = event.channel.split(":", 1)
         session_key = f"gateway:{platform}:{event.chat_id}"
         payload = self._build_outbound_payload(event)
         is_final = event.is_final or event.message_kind == "final"
+        is_tool_delivery = bool(event.metadata.get("_tool_delivery"))
+        is_turn_terminal = is_final and not is_tool_delivery
 
         # An HTTP waiter is a real delivery target: the caller is blocked on this
         # reply and will receive it, whether or not a WebSocket is also attached.
+        # Tool deliveries are complete frames in their own right but are not the
+        # turn terminal.  Buffer them for that waiter and resolve it only after
+        # the agent's real terminal frame arrives.
         answered_http_waiter = False
+        buffered_http_tool_delivery = False
+        buffer_error: str | None = None
         correlation_id = str(event.metadata.get("_inbound_event_id") or event.reply_to_id or "")
         if correlation_id:
             future = self._pending_http.get(correlation_id)
-            if future is not None and not future.done() and is_final:
-                try:
-                    future.set_result(payload)
-                    answered_http_waiter = True
-                except asyncio.InvalidStateError:
-                    # The HTTP waiter timed out/cancelled between the done check
-                    # and set_result; its lifecycle owner has already settled it.
-                    pass
-                self._pending_http.pop(correlation_id, None)
-            if is_final:
+            if is_tool_delivery and future is not None and not future.done():
+                buffer_error = self._buffer_http_tool_delivery(correlation_id, payload)
+                buffered_http_tool_delivery = buffer_error is None
+            elif is_turn_terminal:
+                tool_deliveries = self._take_http_tool_deliveries(correlation_id)
+                if tool_deliveries:
+                    payload = {**payload, "tool_deliveries": tool_deliveries}
+                if future is not None and not future.done():
+                    try:
+                        future.set_result(payload)
+                        answered_http_waiter = True
+                    except asyncio.InvalidStateError:
+                        # The HTTP waiter timed out/cancelled between the done
+                        # check and set_result; its lifecycle owner has settled it.
+                        pass
+                    self._pending_http.pop(correlation_id, None)
+            if is_turn_terminal:
                 idempotency_context = await self._message_idempotency.context_for_event(correlation_id)
                 if idempotency_context.get("transport") == "ws":
                     # Usually the WS admission ACK already completed this entry.
@@ -2165,10 +2398,22 @@ class GatewayServer:
                     )
 
         delivered = await self.broadcast_to_ws(session_key, payload)
+        if buffer_error is not None:
+            # A WebSocket may also have received this frame, but the synchronous
+            # HTTP caller did not.  Reporting success would let multipart
+            # producers checkpoint a part that the waiting response can never
+            # reproduce, so the aggregate delivery verdict must remain failed.
+            logger.warning(buffer_error)
+            return SendResult(success=False, error=buffer_error)
         if delivered or answered_http_waiter:
             return SendResult(success=True)
+        if buffered_http_tool_delivery:
+            # Volatile HTTP buffering is not a durable delivery receipt. Expose
+            # that distinction through the bus so an artifact producer can keep
+            # sending later parts without checkpointing this one across crashes.
+            return SendResult(success=True, deferred=True)
 
-        if not is_final:
+        if not is_final and not is_tool_delivery:
             # Interim stream frames are level-triggered progress: the final still
             # carries the full text, so a dropped one is not a delivery failure.
             # Stay silent rather than faulting the turn over a skipped frame.

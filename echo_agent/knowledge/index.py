@@ -30,6 +30,10 @@ _FUSION_BASE = 0.5
 _INDEX_FORMAT = "echo-agent-knowledge-v3"
 
 
+class _KnowledgeRebuildCancelled(Exception):
+    """Internal cooperative-stop signal raised by the executor worker."""
+
+
 @dataclass
 class KnowledgeSearchResult:
     citation_id: str
@@ -128,6 +132,11 @@ class KnowledgeIndex:
         # "rebuild" twice and watch two backfills run sequentially.
         self._rebuild_lock = asyncio.Lock()
         self._rebuild_future: asyncio.Future[dict[str, Any]] | None = None
+        # ``rebuild`` remains a synchronous public API.  The async wrapper sets
+        # a worker-thread-local event so native rebuilds can stop cooperatively
+        # without changing that public signature; custom/monkeypatched rebuilds
+        # remain supported and are simply awaited to completion on cancellation.
+        self._rebuild_cancel_context = threading.local()
 
     @property
     def chunk_count(self) -> int:
@@ -184,18 +193,50 @@ class KnowledgeIndex:
         return manifest
 
     def rebuild(self) -> dict[str, Any]:
+        cancel_event: threading.Event | None = getattr(
+            self._rebuild_cancel_context, "event", None,
+        )
+
+        def _raise_if_cancelled() -> None:
+            if cancel_event is not None and cancel_event.is_set():
+                raise _KnowledgeRebuildCancelled()
+
         with self._lock:
-            self._chunks = []
-            self._df = Counter()
-            self.docs_dir.mkdir(parents=True, exist_ok=True)
-            files = self._scan_docs()
-            for path in files:
-                self._index_file(path)
-            self._recompute_stats()
-            self._manifest = self._build_manifest(files)
-            self._save()
-            self._loaded = True
-            self._needs_rebuild = False
+            snapshot = (
+                self._chunks,
+                self._df,
+                self._manifest,
+                self._loaded,
+                self._needs_rebuild,
+            )
+            try:
+                self.docs_dir.mkdir(parents=True, exist_ok=True)
+                files = self._scan_docs()
+                _raise_if_cancelled()
+                self._chunks = []
+                self._df = Counter()
+                for path in files:
+                    _raise_if_cancelled()
+                    self._index_file(path)
+                _raise_if_cancelled()
+                self._recompute_stats()
+                self._manifest = self._build_manifest(files)
+                _raise_if_cancelled()
+                # No cancellation check follows the atomic replace: once the
+                # durable commit starts, completing truthfully is safer than
+                # reporting cancelled after the new index is already visible.
+                self._save()
+                self._loaded = True
+                self._needs_rebuild = False
+            except BaseException:
+                (
+                    self._chunks,
+                    self._df,
+                    self._manifest,
+                    self._loaded,
+                    self._needs_rebuild,
+                ) = snapshot
+                raise
         summary = {"documents": len(files), "chunks": len(self._chunks), "index_path": str(self.index_path)}
         logger.info("Knowledge index rebuilt: {} documents, {} chunks", summary["documents"], summary["chunks"])
         return summary
@@ -306,7 +347,10 @@ class KnowledgeIndex:
         # concurrent rebuilds racing on the vector sidecar was the data-
         # integrity bug this protects (reviewer P2).
         if self._rebuild_future is not None and not self._rebuild_future.done():
-            return await self._rebuild_future
+            # A joined caller owns only its wait, not the shared rebuild. Its
+            # disconnect/cancellation must not cancel the Future all other
+            # callers (including the owner) are using.
+            return await asyncio.shield(self._rebuild_future)
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
         self._rebuild_future = future
@@ -333,7 +377,7 @@ class KnowledgeIndex:
     async def _run_rebuild(self, loop: asyncio.AbstractEventLoop) -> dict[str, Any]:
         async with self._rebuild_lock:
             if not self._vector_store or not self._vector_store.available or not self._embed_fn:
-                return await loop.run_in_executor(None, self.rebuild)
+                return await self._run_sync_rebuild(loop)
             # 0) 复用判定的权威依据是 sidecar 自记录的 content_hash,而非 self._chunks 的
             #    旧 hash:重启启动期 ensure_ready 可能已把 self._chunks rebuild 成新内容,
             #    此时旧 hash 已失真,只有 sidecar 知道每个向量是基于哪段文本算出来的。
@@ -341,7 +385,7 @@ class KnowledgeIndex:
             old_vectors = self._vector_store.load()
             sidecar_hashes = self._vector_store.content_hashes()
             # 1) 重建文本索引(同步内核,executor 防阻塞事件循环)
-            summary = await loop.run_in_executor(None, self.rebuild)
+            summary = await self._run_sync_rebuild(loop)
             # 2) 仅对 id 命中且 sidecar 记录的 hash 与当前 chunk hash 一致的复用,余者重算
             new_vectors: dict[str, list[float]] = {}
             for chunk in self._chunks:
@@ -364,6 +408,52 @@ class KnowledgeIndex:
             self._chunk_vectors = new_vectors
             logger.info("knowledge vectors backfilled: {} chunks", len(ordered))
             return summary
+
+    async def _run_sync_rebuild(
+        self, loop: asyncio.AbstractEventLoop,
+    ) -> dict[str, Any]:
+        """Run the synchronous rebuild with a cancellation completion barrier.
+
+        Cancelling an asyncio wrapper does not stop its executor thread.  Keep
+        the async lock/future alive, signal the native worker cooperatively, and
+        wait until it is actually terminal before returning or propagating the
+        cancellation.  If a non-cooperative/custom rebuild commits first, its
+        result wins and the caller observes completion rather than a false
+        cancelled state.
+        """
+        cancel_event = threading.Event()
+
+        def _worker() -> dict[str, Any]:
+            self._rebuild_cancel_context.event = cancel_event
+            try:
+                return self.rebuild()
+            finally:
+                try:
+                    del self._rebuild_cancel_context.event
+                except AttributeError:  # pragma: no cover - defensive thread-local cleanup
+                    pass
+
+        future = loop.run_in_executor(None, _worker)
+        cancellation: asyncio.CancelledError | None = None
+        while True:
+            try:
+                result = await asyncio.shield(future)
+            except asyncio.CancelledError as exc:
+                if future.cancelled():
+                    # Executor/event-loop shutdown cancelled the owned future;
+                    # retrying an already-cancelled Future would spin forever.
+                    raise
+                cancellation = cancellation or exc
+                cancel_event.set()
+                continue
+            except _KnowledgeRebuildCancelled:
+                if cancellation is not None:
+                    raise cancellation
+                raise
+            else:
+                # The durable replace may have won a race with cancellation.
+                # Returning its real result keeps the job state truthful.
+                return result
 
     async def search_async(self, query: str, *, limit: int = 5, user_id: str = "", channel: str = "") -> list[KnowledgeSearchResult]:
         self._ensure_loaded()

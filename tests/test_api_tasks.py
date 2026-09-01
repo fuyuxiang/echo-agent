@@ -80,6 +80,40 @@ async def test_create_task_rejects_non_object_metadata(mock_server, api):
         mock_server._agent_loop.task_manager.create.assert_not_awaited()
 
 
+@pytest.mark.parametrize("method,path,payload", [
+    ("post", "/api/v1/tasks", []),
+    ("patch", "/api/v1/tasks/t1", []),
+    ("patch", "/api/v1/tasks/t1", "title"),
+])
+@pytest.mark.asyncio
+async def test_task_writes_reject_non_object_json(
+    mock_server, api, method, path, payload,
+):
+    app = web.Application()
+    app.router.add_post("/api/v1/tasks", api.create_task)
+    app.router.add_patch("/api/v1/tasks/{id}", api.update_task)
+    async with TestClient(TestServer(app)) as client:
+        resp = await getattr(client, method)(path, json=payload)
+        assert resp.status == 400
+        assert (await resp.json())["error"] == "JSON body must be an object"
+
+    mock_server._agent_loop.task_manager.create.assert_not_awaited()
+    mock_server._agent_loop.task_manager.update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_task_create_rejects_json_null(mock_server, api):
+    app = web.Application()
+    app.router.add_post("/api/v1/tasks", api.create_task)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/api/v1/tasks", data="null", headers={"Content-Type": "application/json"},
+        )
+        assert resp.status == 400
+        assert (await resp.json())["error"] == "JSON body must be an object"
+    mock_server._agent_loop.task_manager.create.assert_not_awaited()
+
+
 # TaskRecord 是普通 dataclass,不做任何类型收敛,所以非法值会直接落盘并被原样读回。
 # 看板前端把 priority 当 number、labels 当数组用(web/src/stores/kanban.ts),
 # 因此这里不校验就等于让 API 写坏自己的数据契约。

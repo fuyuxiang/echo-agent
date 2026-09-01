@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 
 from echo_agent.cli.i18n import get_locale, t
+from echo_agent.cli.render.redact import is_secret_key, mask, mask_sensitive_strings
 from echo_agent.cli.render.text import clip
 
 _TOOL_VERB_ZH = {
@@ -117,12 +118,18 @@ def fmt_duration_ms(ms: int | None) -> str:
 
 
 def pick_object(name: str, params: dict) -> str:
-    """The primary argument shown as the tool's operand."""
+    """The safe primary argument shown as the tool's operand.
+
+    This is the boundary shared by the TUI summary, inline transcript, and live
+    activity label.  Keeping redaction here means a new renderer cannot expose
+    a credential merely by forgetting an extra masking call.
+    """
     params = params or {}
     if name == "search_files":
         pat = params.get("pattern")
         compact = " ".join(str(pat).split()) if pat else ""
-        return f'"{clip(compact, 46)}"' if compact else ""
+        safe = mask_sensitive_strings(compact)
+        return f'"{clip(safe, 46)}"' if safe else ""
     key = _OBJECT_KEY.get(name)
     val = params.get(key) if key else None
     if name in _ACTION_TOOLS:
@@ -133,14 +140,34 @@ def pick_object(name: str, params: dict) -> str:
         elif action:
             val = action
     if val is None:
-        # Fallback: first string-valued argument.
-        val = next((v for v in params.values() if isinstance(v, str)), "")
+        # Fallback: first non-secret string-valued argument.  If the only useful
+        # operand itself lives under a secret-looking key, show a placeholder
+        # rather than silently selecting and exposing it.
+        val = next(
+            (
+                value
+                for param_key, value in params.items()
+                if isinstance(value, str) and not is_secret_key(str(param_key))
+            ),
+            None,
+        )
+        if val is None:
+            secret = next(
+                (
+                    value
+                    for param_key, value in params.items()
+                    if isinstance(value, str) and is_secret_key(str(param_key))
+                ),
+                "",
+            )
+            val = mask(secret) if secret else ""
     if name in ("read_file", "write_file", "edit_file", "patch") and val:
         val = os.path.basename(str(val))
     # A model can pass a multiline command/prompt. Process summaries must stay
     # one physical terminal row; expanded details retain the original payload.
     compact = " ".join(str(val).split()) if val else ""
-    return clip(compact, 48) if compact else ""
+    safe = mask_sensitive_strings(compact)
+    return clip(safe, 48) if safe else ""
 
 
 def summarize_result(

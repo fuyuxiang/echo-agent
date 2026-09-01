@@ -64,6 +64,20 @@ def test_tool_block_running_then_done_flip():
     assert "…" not in done                  # 完成后去掉省略号
 
 
+def test_tool_block_summary_never_renders_command_secret():
+    from echo_agent.cli.tui.blocks import ToolCallBlock
+
+    secret = "sk-live-123456"
+    block = ToolCallBlock(
+        "tc-secret",
+        "exec",
+        {"command": f"curl --token {secret} https://example.test"},
+    )
+    summary = _plain(block.render_summary())
+    assert secret not in summary
+    assert "••••" in summary
+
+
 def test_tool_block_shows_duration_only_when_it_matters():
     """耗时此前只存不显，30 秒的命令和瞬时读取长得一模一样。现在超过 1 秒才
     显示，否则每一行都挂个 "0.1s" 反而盖住真正慢的那次调用。"""

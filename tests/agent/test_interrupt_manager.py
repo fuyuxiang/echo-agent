@@ -49,3 +49,61 @@ def test_fresh_request_resets_stale_interrupt():
     m.clear("s1")
     m.request("s1")                         # 新 turn
     assert m.is_interrupted("s1") is False
+
+
+def test_targeted_interrupt_is_consumed_when_turn_registers_later():
+    m = InterruptManager()
+    m.admit("s1", "event-later")
+    assert m.interrupt("s1", "event-later") is True
+
+    m.request("s1", "event-later")
+
+    assert m.is_interrupted("s1") is True
+
+
+def test_unscoped_interrupt_binds_to_oldest_admitted_turn():
+    m = InterruptManager()
+    m.admit("s1", "event-first")
+    m.admit("s1", "event-second")
+
+    assert m.interrupt("s1") is True
+    m.request("s1", "event-first")
+
+    assert m.is_interrupted("s1") is True
+
+
+def test_pending_target_never_interrupts_a_different_turn():
+    m = InterruptManager()
+    m.admit("s1", "event-old")
+    assert m.interrupt("s1", "event-old") is True
+
+    m.request("s1", "event-new")
+
+    assert m.is_interrupted("s1") is False
+
+
+def test_running_scope_distinguishes_current_from_queued_target():
+    m = InterruptManager()
+    m.request("s1", "event-current")
+    m.admit("s1", "event-queued")
+
+    assert m.targets_running("s1", "event-current") is True
+    assert m.targets_running("s1") is True
+    assert m.targets_running("s1", "event-queued") is False
+
+
+def test_unadmitted_target_is_not_retained():
+    m = InterruptManager()
+    assert m.interrupt("s1", "forged-event") is False
+    assert m._pending_targets == set()
+
+
+def test_rejected_admission_discards_pending_stop():
+    m = InterruptManager()
+    m.admit("s1", "event-rejected")
+    assert m.interrupt("s1", "event-rejected") is True
+
+    m.discard("s1", "event-rejected")
+
+    assert not m._admitted
+    assert m._pending_targets == set()

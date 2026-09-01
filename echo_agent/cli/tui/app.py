@@ -12,6 +12,7 @@ from textual.containers import Horizontal
 from textual.widgets import OptionList, Static
 
 from echo_agent.cli.i18n import t
+from echo_agent.cli.renderer_base import render_sink_implementation
 from echo_agent.cli.tui.transcript import TranscriptView
 from echo_agent.cli.tui.activity_line import ActivityLine
 from echo_agent.cli.tui.prompt_input import PromptInput
@@ -30,6 +31,7 @@ from echo_agent.cli.tui.protocol import (
 )
 
 
+@render_sink_implementation
 class EchoTUI(App):
     CSS_PATH = "app.tcss"
     # Textual focuses the first can_focus widget in DOM order on mount, which is
@@ -337,6 +339,16 @@ class EchoTUI(App):
         r = self._replies.get(inbound_id)
         if r is not None:
             r.clear_stream()
+
+    def on_tool_delivery(self, inbound_id: str, delivery_id: str, text: str) -> None:
+        """Display tool output under the original turn without settling it."""
+        turn_seq = self._event_turn_seq.get(inbound_id, 0)
+        r = self._tv.start_reply(turn_seq=turn_seq)
+        r.set_markdown(text)
+        self._tv.record_reply(delivery_id, text, turn_seq=turn_seq)
+        if delivery_id:
+            self._tv._last_reply_event_id = delivery_id
+            self._tv._cleared_since_last_reply = False
 
     def on_user_reply_final(self, inbound_id: str, text: str) -> None:
         # Classify BEFORE rendering: control replies (approve/deny/clarify acks)

@@ -10,6 +10,7 @@ class Sink:
     def on_user_reply_token(self, i, t): self.events.append(("tok", i, t))
     def on_user_reply_final(self, i, t): self.events.append(("fin", i, t))
     def on_user_reply_reset(self, i): self.events.append(("reset", i))
+    def on_tool_delivery(self, i, d, t): self.events.append(("delivery", i, d, t))
     def on_cognitive(self, ev): self.events.append(("cog", ev.cog_type, ev.cog_event_id))
     def on_error(self, m): self.events.append(("err", m))
 
@@ -33,6 +34,80 @@ def test_bridge_routes_error_and_final_text():
                 "is_final": True, "metadata": {"_inbound_event_id": "in1"}})
     assert ("err", "boom") in s.events
     assert ("fin", "in1", "答案") in s.events
+
+
+def test_bridge_keeps_every_artifact_text_part_distinct():
+    s = Sink()
+    b = WSBridge(s)
+    for part in (1, 2, 3):
+        b.dispatch({
+            "type": "message",
+            "message_kind": "final",
+            "text": f"part {part}",
+            "is_final": True,
+            "metadata": {
+                "_inbound_event_id": "in1",
+                "_tool_delivery": True,
+                "_artifact_delivery_id": "delivery1",
+                "_artifact_part": part,
+                "_artifact_parts": 3,
+            },
+        })
+
+    assert s.events == [
+        ("delivery", "in1", "in1:artifact:delivery1:1", "part 1"),
+        ("delivery", "in1", "in1:artifact:delivery1:2", "part 2"),
+        ("delivery", "in1", "in1:artifact:delivery1:3", "part 3"),
+    ]
+
+
+def test_bridge_tool_delivery_does_not_settle_primary_turn():
+    s = Sink()
+    b = WSBridge(s)
+    b.dispatch({
+        "type": "message",
+        "event_id": "out-tool-1",
+        "message_kind": "final",
+        "text": "tool delivery",
+        "is_final": True,
+        "metadata": {
+            "_inbound_event_id": "in1",
+            "_tool_delivery": True,
+        },
+    })
+    b.dispatch({
+        "type": "message",
+        "event_id": "out-final-1",
+        "message_kind": "final",
+        "text": "authoritative reply",
+        "is_final": True,
+        "metadata": {"_inbound_event_id": "in1"},
+    })
+
+    assert s.events == [
+        ("delivery", "in1", "in1:tool-delivery:out-tool-1", "tool delivery"),
+        ("fin", "in1", "authoritative reply"),
+    ]
+
+
+def test_bridge_deduplicates_replayed_tool_delivery():
+    s = Sink()
+    b = WSBridge(s)
+    frame = {
+        "type": "message",
+        "event_id": "out-tool-1",
+        "message_kind": "final",
+        "text": "tool delivery",
+        "is_final": True,
+        "metadata": {"_inbound_event_id": "in1", "_tool_delivery": True},
+    }
+
+    b.dispatch(frame)
+    b.dispatch(frame)
+
+    assert s.events == [
+        ("delivery", "in1", "in1:tool-delivery:out-tool-1", "tool delivery"),
+    ]
 
 
 def test_bridge_ignores_control_frames():
@@ -425,4 +500,3 @@ async def test_reconnect_failure_keeps_disconnected():
         await pilot.press("enter")
         await pilot.pause()
         assert app._connected is False
-

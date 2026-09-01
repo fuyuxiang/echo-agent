@@ -8,6 +8,7 @@ import pytest
 from echo_agent.cli.inline.app import InlineApp
 from echo_agent.cli.render import ansi as A
 from echo_agent.cli.renderer_base import RenderSink
+from echo_agent.cli.tui.bridge import WSBridge
 from echo_agent.cli.tui.details import DetailPrefs
 from echo_agent.cli.tui.protocol import CogEvent
 
@@ -47,6 +48,19 @@ def _tool(status, *, tcid="t1", name="edit_file", params=None, **extra):
 def test_inline_app_satisfies_renderer_contract():
     app, _ = _app()
     assert isinstance(app, RenderSink)
+
+
+def test_tool_activity_and_summary_never_render_command_secret():
+    secret = "sk-live-123456"
+    app, buf = _app()
+    app.on_cognitive(_tool(
+        "running",
+        name="exec",
+        params={"command": f"curl --token {secret} https://example.test"},
+    ))
+    assert secret not in app._activity_label
+    assert secret not in buf.getvalue()
+    assert "••••" in app._activity_label
 
 
 @pytest.mark.asyncio
@@ -527,3 +541,118 @@ async def test_piped_stdin_uses_control_sequence_free_fallback(monkeypatch):
     assert "❯ 管道消息" in out
     assert "\033[" not in out
     assert "\r" not in out
+
+
+@pytest.mark.asyncio
+async def test_piped_stdin_eof_waits_for_submitted_turn_final(monkeypatch):
+    sent = asyncio.Event()
+    release_reply = asyncio.Event()
+    holder = {}
+
+    async def send(_text):
+        app = holder["app"]
+        app.on_turn_accepted("turn-pipe")
+        sent.set()
+
+        async def finish():
+            await release_reply.wait()
+            app.on_user_reply_final("turn-pipe", "管道最终回答")
+
+        asyncio.create_task(finish())
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("管道消息\n"))
+    app, buf = _app(send=send)
+    holder["app"] = app
+    run = asyncio.create_task(app.run_async())
+    await asyncio.wait_for(sent.wait(), timeout=1)
+    await asyncio.sleep(0)
+    assert not run.done()
+
+    release_reply.set()
+    await asyncio.wait_for(run, timeout=1)
+    assert "管道最终回答" in buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_piped_stdin_without_transport_does_not_wait_forever(monkeypatch):
+    monkeypatch.setattr("sys.stdin", io.StringIO("无传输消息\n"))
+    app, _ = _app(send=None)
+
+    await asyncio.wait_for(app.run_async(), timeout=1)
+
+    assert app._turns.has_active_primary is False
+
+
+@pytest.mark.asyncio
+async def test_piped_stdin_does_not_treat_tool_delivery_as_turn_terminal(monkeypatch):
+    tool_delivered = asyncio.Event()
+    release_reply = asyncio.Event()
+    holder = {}
+
+    async def send(_text):
+        app = holder["app"]
+        app.on_turn_accepted("turn-pipe")
+        bridge = WSBridge(app)
+        bridge.dispatch({
+            "type": "message",
+            "event_id": "out-tool",
+            "message_kind": "final",
+            "text": "工具已发送",
+            "is_final": True,
+            "metadata": {
+                "_inbound_event_id": "turn-pipe",
+                "_tool_delivery": True,
+            },
+        })
+        tool_delivered.set()
+
+        async def finish():
+            await release_reply.wait()
+            bridge.dispatch({
+                "type": "message",
+                "event_id": "out-final",
+                "message_kind": "final",
+                "text": "真正最终回答",
+                "is_final": True,
+                "metadata": {"_inbound_event_id": "turn-pipe"},
+            })
+
+        asyncio.create_task(finish())
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("管道消息\n"))
+    app, buf = _app(send=send)
+    holder["app"] = app
+    run = asyncio.create_task(app.run_async())
+    await asyncio.wait_for(tool_delivered.wait(), timeout=1)
+    await asyncio.sleep(0)
+    assert not run.done()
+
+    release_reply.set()
+    await asyncio.wait_for(run, timeout=1)
+    assert "工具已发送" in buf.getvalue()
+    assert "真正最终回答" in buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_expanded_inline_diff_uses_ansi_only_when_colour_enabled(monkeypatch):
+    class TTYBuffer(io.StringIO):
+        def isatty(self):
+            return True
+
+    diff = "--- a/example.py\n+++ b/example.py\n-old\n+new"
+
+    colour_stream = TTYBuffer()
+    colour_app = InlineApp(session_key="cli:test", stream=colour_stream)
+    colour_app._details = DetailPrefs(tools="expanded")
+    A.set_color_override(True)
+    colour_app.on_cognitive(_tool("ok", result_text=diff))
+    assert "\033[38;2;104;211;145m+new\033[0m" in colour_stream.getvalue()
+
+    plain_stream = TTYBuffer()
+    plain_app = InlineApp(session_key="cli:test", stream=plain_stream)
+    plain_app._details = DetailPrefs(tools="expanded")
+    A.set_color_override(None)
+    monkeypatch.setenv("NO_COLOR", "1")
+    plain_app.on_cognitive(_tool("ok", result_text=diff))
+    assert "+new" in plain_stream.getvalue()
+    assert "\033[" not in plain_stream.getvalue()

@@ -922,6 +922,10 @@ class AgentLoop:
         """Converge ledger/task state when the bus refuses an accepted event."""
         if event.is_control:
             return
+        interrupt = getattr(self, "interrupt", None)
+        discard = getattr(interrupt, "discard", None)
+        if callable(discard):
+            discard(event.session_key, event.event_id)
         status = "interrupted" if reason == "shutdown" else "failed"
         await self._record_cron_outcome(event, "error", reason)
         await self._record_task_outcome(event, "error", reason)
@@ -2246,7 +2250,16 @@ class AgentLoop:
         # it through so a delayed stop frame can't land on a later turn. Empty
         # means "stop whatever is running" (older clients that don't track IDs).
         target_event_id = str(event.metadata.get("_interrupt_target_event_id", ""))
+        targets_running = self.interrupt.targets_running(
+            event.session_key,
+            target_event_id,
+        )
         self.interrupt.interrupt(event.session_key, target_event_id)
+        if not targets_running:
+            # A targeted control may have been retained for admitted-but-queued
+            # work. It must not mutate the clarification/approval owned by a
+            # different turn that happens to be current for this session.
+            return
         self.clarify.cancel_session(event.session_key)
         # A turn parked on an approval must be stoppable too. The interrupt flag
         # is only polled at the inference loop's checkpoints, and a turn blocked

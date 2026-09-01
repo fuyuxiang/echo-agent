@@ -36,6 +36,7 @@ class _Sink:
     def on_user_reply_token(self, i, t): self.calls.append(("tok", i, t))
     def on_user_reply_final(self, i, t): self.calls.append(("fin", i, t))
     def on_user_reply_reset(self, i): self.calls.append(("reset", i))
+    def on_tool_delivery(self, i, d, t): self.calls.append(("delivery", i, d, t))
     def on_cognitive(self, ev): self.calls.append(("cog",))
     def on_error(self, m): self.calls.append(("err", m))
 

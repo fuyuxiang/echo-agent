@@ -31,6 +31,21 @@ def test_pick_object_falls_back_to_first_string_param():
     assert pick_object("mystery", {"n": 3, "thing": "hello"}) == "hello"
 
 
+def test_pick_object_is_safe_for_every_renderer_and_activity_line():
+    secret = "sk-live-123456"
+    shown = pick_object(
+        "exec",
+        {"command": f"curl --token {secret} https://example.test"},
+    )
+    assert secret not in shown
+    assert "••••" in shown
+
+
+def test_pick_object_unknown_tool_never_uses_secret_key_as_fallback():
+    shown = pick_object("mystery", {"password": "hunter2xyz"})
+    assert shown == "••••2xyz"
+
+
 def test_pick_object_keeps_action_tools_understandable():
     assert pick_object("browser", {"action": "navigate", "url": "https://example.com"}) == (
         "navigate https://example.com"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 from typing import Any, Callable, Awaitable
 
 from loguru import logger
@@ -85,6 +86,10 @@ class A2AProtocol:
         # the stored object in place, so declining to write it back does not undo
         # the damage — the settled state has to be re-asserted onto the object.
         self._settled: dict[str, TaskState] = {}
+        # A terminal row can expire while a cancellation-resistant worker is
+        # still alive. Keep that confirmed terminal promise until the owning
+        # _handle_send has fenced the worker's late result.
+        self._reclaimed_settlements: set[str] = set()
 
     async def handle(
         self,
@@ -165,8 +170,13 @@ class A2AProtocol:
         if requested_storage_key and requested_storage_key in self._runs:
             raise A2ATaskBusy(task_id)
 
-        task = self._tasks.get_owned(owner, task_id) if task_id else None
-        if task is not None:
+        stored_task = self._tasks.get_owned(owner, task_id) if task_id else None
+        if stored_task is not None:
+            # The worker owns its own object graph.  Keeping the store and
+            # worker on the same mutable dataclass let a cancellation-resistant
+            # processor expose COMPLETED through tasks/get before _commit could
+            # re-assert the acknowledged CANCELED state.
+            task = copy.deepcopy(stored_task)
             # Continuing a genuinely active record does not consume another
             # slot. Reviving a terminal record does, so it must pass the same
             # admission bound as a brand-new ID.
@@ -193,7 +203,7 @@ class A2AProtocol:
         # re-arms a revived terminal task as active so a later _purge_expired
         # cannot reclaim it while _process is still running.
         task.state = TaskState.WORKING
-        self._tasks.set_owned(owner, task)
+        self._tasks.set_owned(owner, copy.deepcopy(task))
 
         # Run through a Task so tasks/cancel has something to cancel. Awaiting
         # the coroutine directly gave the cancel handler no handle at all: it
@@ -212,11 +222,13 @@ class A2AProtocol:
             task.id = authoritative_task_id
             task.owner = owner
             self._record_state(task, TaskState.CANCELED)
+            self._release_reclaimed_settlement(storage_key)
             raise
         except Exception:
             task.id = authoritative_task_id
             task.owner = owner
             self._record_state(task, TaskState.FAILED)
+            self._release_reclaimed_settlement(storage_key)
             raise
         finally:
             # Drop the handle before anything else can observe it: a settled run
@@ -235,7 +247,9 @@ class A2AProtocol:
         # The worker's own terminal state, unless a cancel already settled one.
         # Without this guard a cancel that arrived mid-run was silently undone —
         # tasks/cancel answered "canceled" and tasks/get then said "completed".
-        return self._commit(task).to_dict()
+        authoritative = self._commit(task)
+        self._release_reclaimed_settlement(storage_key)
+        return authoritative.to_dict()
 
     def _forget(self, task_id: str) -> None:
         """Drop per-task bookkeeping for a task the store just reclaimed.
@@ -250,10 +264,27 @@ class A2AProtocol:
         `_handle_send` performs terminal writeback and compare-and-pop cleanup.
         A same-ID send therefore stays BUSY throughout that cancellation window.
         """
-        self._settled.pop(task_id, None)
         run = self._runs.get(task_id)
-        if run is not None and not run.done():
-            run.cancel()
+        if run is not None:
+            # A cancellation already acknowledged to a caller must outlive the
+            # expired store row until the owning _handle_send has observed and
+            # fenced the worker's result. ``run.done()`` is not enough: there is
+            # an event-loop window after the worker returns but before its
+            # awaiting handler resumes and calls _commit.
+            if task_id in self._settled:
+                self._reclaimed_settlements.add(task_id)
+            if not run.done():
+                run.cancel()
+            return
+        self._settled.pop(task_id, None)
+        self._reclaimed_settlements.discard(task_id)
+
+    def _release_reclaimed_settlement(self, storage_key: str) -> None:
+        """Release a retained promise after late worker writeback is fenced."""
+        if storage_key not in self._reclaimed_settlements:
+            return
+        self._reclaimed_settlements.discard(storage_key)
+        self._settled.pop(storage_key, None)
 
     def _has_active_capacity(self) -> bool:
         """Count actual workers as well as store-visible active records.
@@ -280,15 +311,16 @@ class A2AProtocol:
         storage_key = self._tasks.storage_key(task.owner, task.id)
         settled = self._settled.get(storage_key)
         if settled is not None:
-            # Re-assert rather than merely skip the write: a worker that ignored
-            # its cancellation may have mutated this very object (the store holds
-            # the same reference) after we answered "canceled".
+            # Return a fenced snapshot.  The worker and store are deliberately
+            # separate object graphs, so a late worker mutation is never visible
+            # to readers even transiently.
             stored = self._tasks.get_owned(task.owner, task.id)
-            target = stored if stored is not None else task
+            target = copy.deepcopy(stored if stored is not None else task)
             target.state = settled
             return target
-        self._tasks.set_owned(task.owner, task)
-        return task
+        committed = copy.deepcopy(task)
+        self._tasks.set_owned(task.owner, committed)
+        return copy.deepcopy(committed)
 
     def _record_state(self, task: A2ATask, state: TaskState) -> None:
         """Settle `task` into a terminal state, unless one is already settled."""
@@ -296,6 +328,7 @@ class A2AProtocol:
         if storage_key in self._settled:
             self._commit(task)  # re-assert the settled state, drop this one
             return
+        task = copy.deepcopy(task)
         task.state = state
         self._settled[storage_key] = state
         self._tasks.set_owned(task.owner, task)
@@ -308,10 +341,15 @@ class A2AProtocol:
     ) -> dict[str, Any]:
         owner = self._normalize_principal(principal)
         task_id = self._validate_task_id(params.get("id", ""))
+        storage_key = self._tasks.storage_key(owner, task_id)
         task = self._tasks.get_owned(owner, task_id)
         if not task:
             raise A2ATaskNotFound(task_id)
-        return task.to_dict()
+        view = copy.deepcopy(task)
+        settled = self._settled.get(storage_key)
+        if settled is not None:
+            view.state = settled
+        return view.to_dict()
 
     def _handle_cancel(
         self,
@@ -326,12 +364,17 @@ class A2AProtocol:
         if not task:
             raise A2ATaskNotFound(task_id)
         # Honour the A2A contract: a task in a terminal state cannot be canceled.
-        if task.state in _TERMINAL_STATES:
+        # The settlement side table is authoritative across any late worker
+        # write and the small store-expiry/handler-commit window.
+        settled = self._settled.get(storage_key)
+        if settled is not None or task.state in _TERMINAL_STATES:
+            terminal = settled or task.state
             raise A2ATaskConflict(
-                f"Task '{task_id}' is already {task.state.value} and cannot be canceled"
+                f"Task '{task_id}' is already {terminal.value} and cannot be canceled"
             )
         # Settle CANCELED *before* cancelling the run, so the worker's own
         # writeback (or its CancelledError handler) cannot overwrite it.
+        task = copy.deepcopy(task)
         task.state = TaskState.CANCELED
         self._settled[storage_key] = TaskState.CANCELED
         # Write back so the store arms this task's TTL. Skipping it leaves the

@@ -91,6 +91,8 @@ class TasksAPI:
             body = await request.json()
         except Exception:
             return web.json_response({"error": "invalid JSON body"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
 
         title = body.get("title", "")
         if not title:
@@ -132,6 +134,8 @@ class TasksAPI:
             body = await request.json()
         except Exception:
             return web.json_response({"error": "invalid JSON body"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
 
         if err := _validate_task_fields(body):
             return web.json_response({"error": err}, status=400)

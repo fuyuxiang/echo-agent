@@ -318,7 +318,11 @@ class PluginManager:
         record.tools_registered = ctx.registered_tools
         record.hooks_registered = ctx.registered_hooks
         self._contexts[name] = ctx
-        self._owned_tools[name] = ctx.registered_tool_instances
+        # Include tools whose registry admission failed but whose exception the
+        # plugin caught. Activation can still succeed in that compatibility
+        # pattern; the object nevertheless transferred lifecycle ownership to
+        # the host before register() was attempted and must close on shutdown.
+        self._owned_tools[name] = ctx.owned_tool_instances
 
         if deactivate_fn is not None:
             self._deactivators[name] = deactivate_fn
@@ -417,6 +421,7 @@ class PluginManager:
                 ctx._registered_tools.clear()
                 ctx._registered_tool_instances.clear()
                 ctx._denied_tool_instances.clear()
+                ctx._pending_tool_instances.clear()
                 ctx._denied_registrations.clear()
 
     async def _release_context_resources_shielded(

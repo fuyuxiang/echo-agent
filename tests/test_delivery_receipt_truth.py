@@ -27,7 +27,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from echo_agent.bus.delivery import DeliveryResult, DeliveryStage
-from echo_agent.bus.events import OutboundEvent
+from echo_agent.agent.interrupt_manager import InterruptManager
+from echo_agent.bus.events import InboundEvent, OutboundEvent
 from echo_agent.bus.queue import MessageBus
 from echo_agent.config.schema import (
     GatewayAuthConfig,
@@ -64,11 +65,79 @@ def _final(channel: str = "gateway:cli", chat_id: str = "u1") -> OutboundEvent:
     return event
 
 
+def _tool_delivery(text: str, *, correlation_id: str, part: int) -> OutboundEvent:
+    return OutboundEvent.text_reply(
+        channel="gateway:cli",
+        chat_id="u1",
+        text=text,
+        metadata={
+            "_inbound_event_id": correlation_id,
+            "_tool_delivery": True,
+            "_artifact_delivery_id": "delivery-1",
+            "_artifact_part": part,
+            "_artifact_parts": 2,
+        },
+    )
+
+
 def _live_socket() -> MagicMock:
     ws = MagicMock()
     ws.closed = False
     ws.send_json = AsyncMock()
     return ws
+
+
+@pytest.mark.asyncio
+async def test_cancelled_pre_enqueue_publish_discards_interrupt_admission():
+    gw = _gateway()
+    interrupts = InterruptManager()
+    gw._agent_loop.interrupt = interrupts
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def reject_after_wait(_event):
+        entered.set()
+        await release.wait()
+        return False
+
+    gw._bus.publish_inbound = reject_after_wait
+    event = InboundEvent.text_message(
+        channel="gateway:cli",
+        sender_id="u1",
+        chat_id="u1",
+        text="work",
+    )
+    interrupts.admit(event.session_key, event.event_id)
+
+    publish = asyncio.create_task(gw._publish_accepted_turn(event))
+    await entered.wait()
+    publish.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await publish
+
+    assert not interrupts._admitted
+    assert interrupts.interrupt(event.session_key) is False
+
+
+@pytest.mark.asyncio
+async def test_pre_enqueue_publish_exception_discards_interrupt_admission():
+    gw = _gateway()
+    interrupts = InterruptManager()
+    gw._agent_loop.interrupt = interrupts
+    gw._bus.publish_inbound = AsyncMock(side_effect=RuntimeError("queue unavailable"))
+    event = InboundEvent.text_message(
+        channel="gateway:cli",
+        sender_id="u1",
+        chat_id="u1",
+        text="work",
+    )
+    interrupts.admit(event.session_key, event.event_id)
+
+    with pytest.raises(RuntimeError, match="queue unavailable"):
+        await gw._publish_accepted_turn(event)
+
+    assert not interrupts._admitted
 
 
 # ── gateway outbound receipts ────────────────────────────────────────────────
@@ -123,6 +192,184 @@ async def test_http_waiter_alone_counts_as_delivered():
 
     assert result is not None and result.success is True
     assert future.done()
+
+
+@pytest.mark.asyncio
+async def test_http_waiter_collects_tool_deliveries_until_real_terminal():
+    """Multipart tool output must not consume the turn's one HTTP waiter."""
+    gw = _gateway()
+    future: asyncio.Future = asyncio.get_running_loop().create_future()
+    gw._pending_http["evt-multipart"] = future
+    gw._message_idempotency.context_for_event = AsyncMock(
+        return_value={
+            "transport": "http",
+            "wait": True,
+            "session_key": "gateway:cli:u1",
+        }
+    )
+    gw._message_idempotency.complete_event = AsyncMock(return_value=True)
+
+    first = _tool_delivery("part one", correlation_id="evt-multipart", part=1)
+    second = _tool_delivery("part two", correlation_id="evt-multipart", part=2)
+    first_result = await gw._handle_outbound(first)
+    assert first_result.success is True and first_result.deferred is True
+    # Snapshot semantics: mutation after an accepted delivery cannot rewrite
+    # the eventual synchronous response.
+    first.metadata["_artifact_part"] = 99
+    duplicate_result = await gw._handle_outbound(
+        _tool_delivery("part one", correlation_id="evt-multipart", part=1)
+    )
+    assert duplicate_result.success is True and duplicate_result.deferred is True
+    second_result = await gw._handle_outbound(second)
+    assert second_result.success is True and second_result.deferred is True
+
+    assert not future.done()
+    assert "evt-multipart" in gw._pending_http
+    gw._message_idempotency.context_for_event.assert_not_awaited()
+    gw._message_idempotency.complete_event.assert_not_awaited()
+
+    terminal = _final()
+    terminal.metadata["_inbound_event_id"] = "evt-multipart"
+    result = await gw._handle_outbound(terminal)
+
+    assert result is not None and result.success is True
+    assert result.deferred is False
+    payload = future.result()
+    assert [frame["text"] for frame in payload["tool_deliveries"]] == [
+        "part one",
+        "part two",
+    ]
+    assert payload["tool_deliveries"][0]["metadata"]["_artifact_part"] == 1
+    assert payload["text"] == "answer"
+    assert "evt-multipart" not in gw._pending_http
+    assert gw._pending_http_tool_deliveries == {}
+    assert gw._pending_http_tool_delivery_frames == 0
+    assert gw._pending_http_tool_delivery_chars == 0
+    gw._message_idempotency.context_for_event.assert_awaited_once_with(
+        "evt-multipart"
+    )
+    gw._message_idempotency.complete_event.assert_awaited_once()
+    completed_payload = gw._message_idempotency.complete_event.await_args.kwargs[
+        "payload"
+    ]
+    assert [
+        frame["text"]
+        for frame in completed_payload["reply"]["tool_deliveries"]
+    ] == ["part one", "part two"]
+
+
+@pytest.mark.asyncio
+async def test_http_tool_delivery_buffer_overflow_reports_failure_even_with_ws():
+    gw = _gateway()
+    gw._MAX_HTTP_TOOL_DELIVERY_FRAMES = 1
+    gw._ws_clients["gateway:cli:u1"] = _live_socket()
+    future: asyncio.Future = asyncio.get_running_loop().create_future()
+    gw._pending_http["evt-overflow"] = future
+
+    first = await gw._handle_outbound(
+        _tool_delivery("part one", correlation_id="evt-overflow", part=1)
+    )
+    overflow = await gw._handle_outbound(
+        _tool_delivery("part two", correlation_id="evt-overflow", part=2)
+    )
+
+    assert first is not None and first.success is True
+    assert first.deferred is False  # the live WebSocket received this part
+    assert overflow is not None and overflow.success is False
+    assert "buffer limit exceeded" in overflow.error
+    assert not future.done()
+    frames, _char_count, _updated_at = gw._pending_http_tool_deliveries[
+        "evt-overflow"
+    ]
+    assert [frame["text"] for frame in frames] == ["part one"]
+    gw._clear_http_tool_deliveries("evt-overflow")
+    future.cancel()
+
+
+@pytest.mark.asyncio
+async def test_gateway_stop_cancels_waiter_and_clears_tool_delivery_buffers():
+    gw = _gateway()
+    future: asyncio.Future = asyncio.get_running_loop().create_future()
+    gw._pending_http["evt-stop"] = future
+    result = await gw._handle_outbound(
+        _tool_delivery("part one", correlation_id="evt-stop", part=1)
+    )
+    assert result is not None and result.success is True
+    assert result.deferred is True
+    assert gw._pending_http_tool_deliveries
+
+    await gw.stop()
+
+    assert future.cancelled()
+    assert gw._pending_http == {}
+    assert gw._pending_http_tool_deliveries == {}
+    assert gw._pending_http_tool_delivery_frames == 0
+    assert gw._pending_http_tool_delivery_chars == 0
+
+
+@pytest.mark.asyncio
+async def test_bus_receipt_preserves_deferred_http_tool_delivery():
+    gw = _gateway()
+    future: asyncio.Future = asyncio.get_running_loop().create_future()
+    gw._pending_http["evt-deferred"] = future
+
+    receipt = await gw._bus.publish_outbound(
+        _tool_delivery("part one", correlation_id="evt-deferred", part=1)
+    )
+
+    assert receipt.ok is True
+    assert receipt.stage is DeliveryStage.DELIVERED
+    assert receipt.detail["deferred"] is True
+    assert not future.done()
+    gw._clear_http_tool_deliveries("evt-deferred")
+    future.cancel()
+
+
+@pytest.mark.asyncio
+async def test_buffer_capacity_evicts_oldest_timed_out_waiter():
+    gw = _gateway()
+    gw._MAX_HTTP_TOOL_DELIVERY_TOTAL_FRAMES = 1
+    old_future: asyncio.Future = asyncio.get_running_loop().create_future()
+    gw._pending_http["evt-old"] = old_future
+    old = await gw._handle_outbound(
+        _tool_delivery("old part", correlation_id="evt-old", part=1)
+    )
+    assert old is not None and old.deferred is True
+
+    # Simulate the HTTP request timing out while the admitted turn continues.
+    gw._pending_http.pop("evt-old")
+    old_future.cancel()
+    new_future: asyncio.Future = asyncio.get_running_loop().create_future()
+    gw._pending_http["evt-new"] = new_future
+    new = await gw._handle_outbound(
+        _tool_delivery("new part", correlation_id="evt-new", part=1)
+    )
+
+    assert new is not None and new.success is True and new.deferred is True
+    assert "evt-old" not in gw._pending_http_tool_deliveries
+    assert "evt-new" in gw._pending_http_tool_deliveries
+    gw._clear_http_tool_deliveries("evt-new")
+    new_future.cancel()
+
+
+@pytest.mark.asyncio
+async def test_orphaned_tool_delivery_buffer_expires_at_ttl():
+    gw = _gateway()
+    future: asyncio.Future = asyncio.get_running_loop().create_future()
+    gw._pending_http["evt-expired"] = future
+    result = await gw._handle_outbound(
+        _tool_delivery("old part", correlation_id="evt-expired", part=1)
+    )
+    assert result is not None and result.deferred is True
+
+    gw._pending_http.pop("evt-expired")
+    future.cancel()
+    gw._HTTP_TOOL_DELIVERY_TTL_SECONDS = -1
+    gw._purge_http_tool_deliveries()
+
+    assert gw._pending_http_tool_deliveries == {}
+    assert gw._pending_http_tool_delivery_frames == 0
+    assert gw._pending_http_tool_delivery_chars == 0
 
 
 @pytest.mark.asyncio
@@ -289,6 +536,35 @@ async def test_send_file_without_lookup_does_not_block(tmp_path, a_file):
     )
 
     assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_send_file_refuses_unknown_adapter_when_lookup_is_wired(tmp_path, a_file):
+    """Gateway pseudo-channels have no uploader and must fail before publish."""
+    from echo_agent.agent.tools.send_file import SendFileTool
+
+    publish = AsyncMock(return_value=DeliveryResult(
+        DeliveryStage.DELIVERED, "gateway:cli",
+    ))
+    tool = SendFileTool(
+        str(tmp_path),
+        publish_fn=publish,
+        channel_lookup=lambda _name: None,
+    )
+
+    result = await tool.execute(
+        {
+            "channel": "gateway:cli",
+            "chat_id": "c",
+            "file_path": str(a_file),
+        },
+        None,
+    )
+
+    assert result.success is False
+    assert result.error_kind == "business"
+    assert "no file-capable adapter" in result.error
+    publish.assert_not_awaited()
 
 
 def test_capable_channels_declare_support():

@@ -202,8 +202,36 @@ class ChannelManager:
             result = None
             if not event.metadata.get("_token_stream"):
                 result = await self._deliver_final(event)
-            await self._on_outbound_final(event)
+            artifact_parts = self._artifact_multipart_position(event)
+            # A numbered artifact part is final as a *message* but not as the
+            # user turn.  Keep typing, heartbeat bookkeeping, and processing
+            # reaction alive until the last part is actually acknowledged.  If
+            # that last send fails, the later authoritative error final owns
+            # settlement and applies the failure reaction.
+            settles_turn = artifact_parts is None or (
+                artifact_parts[0] == artifact_parts[1]
+                and (result is None or result.success)
+            )
+            if settles_turn:
+                await self._on_outbound_final(event)
             return result
+        return None
+
+    @staticmethod
+    def _artifact_multipart_position(event: OutboundEvent) -> tuple[int, int] | None:
+        """Return a validated ``(part, total)`` for artifact tool deliveries."""
+        if not event.metadata.get("_tool_delivery"):
+            return None
+        part = event.metadata.get("_artifact_part")
+        total = event.metadata.get("_artifact_parts")
+        if (
+            isinstance(part, int)
+            and not isinstance(part, bool)
+            and isinstance(total, int)
+            and not isinstance(total, bool)
+            and 1 <= part <= total
+        ):
+            return part, total
         return None
 
     async def _on_outbound_final(self, event: OutboundEvent) -> None:
@@ -270,6 +298,13 @@ class ChannelManager:
         key = str(event.metadata.get("_inbound_event_id", ""))
         target = f"{event.channel}:{event.chat_id}"
         is_tool_delivery = bool(event.metadata.get("_tool_delivery"))
+        artifact_parts = self._artifact_multipart_position(event)
+        # A partial text fallback is not a completed delivery.  Claiming the
+        # target after part 1 meant a later transport failure on part 2 caused
+        # the turn's truthful failure summary to be suppressed as a duplicate.
+        # Malformed/unmarked tool events retain the established single-message
+        # behaviour; only a well-formed multipart artifact defers its claim.
+        claims_target_on_success = artifact_parts is None or artifact_parts[0] == artifact_parts[1]
 
         if key:
             async with self._state_lock:
@@ -284,10 +319,9 @@ class ChannelManager:
                 return
             # Record finalization so a late heartbeat that fires during the
             # in-flight channel.send is discarded rather than overwriting the
-            # answer. This is the only state written before transport: a
-            # "this turn has *begun* its terminal write" marker, not a
-            # delivery claim. The claim itself happens only after a successful
-            # channel.send below.
+            # answer. This is a terminal-write *fence*, not a delivery claim:
+            # multipart artifact part 1 must raise it immediately, while only
+            # the successfully acknowledged last part may claim the target.
             async with self._state_lock:
                 self._finalized_keys[key] = time.monotonic()
                 while len(self._finalized_keys) > self._max_inbound_ids:
@@ -328,10 +362,18 @@ class ChannelManager:
                         # fall through to a fresh send on edit failure
                     else:
                         # In-place edit succeeded → the heartbeat slot IS the
-                        # delivery. Commit the claim now; do NOT leave the
-                        # target unclaimed, otherwise a later fallback send
-                        # would duplicate it.
-                        if key:
+                        # delivery.  Once a multipart artifact consumes that
+                        # slot, detach it immediately: every later part must be
+                        # a fresh message or it would overwrite the prior part
+                        # and leave only the last chunk visible remotely.
+                        if artifact_parts is not None:
+                            async with self._state_lock:
+                                if self._heartbeat_msg_ids.get(key) == hb_msg_id:
+                                    self._heartbeat_msg_ids.pop(key, None)
+                        # Commit the target claim only for a complete delivery;
+                        # partial artifact success deliberately leaves room for
+                        # the turn's authoritative failure summary.
+                        if key and claims_target_on_success:
                             async with self._state_lock:
                                 claimed = self._finalized_targets.setdefault(key, set())
                                 claimed.add(target)
@@ -367,7 +409,7 @@ class ChannelManager:
         # Success receipt. Commit the claim so subsequent finals to the same
         # target within this turn are deduped (the duplicate-final bug the
         # ledger was originally built for).
-        if key:
+        if key and claims_target_on_success:
             async with self._state_lock:
                 claimed = self._finalized_targets.setdefault(key, set())
                 claimed.add(target)

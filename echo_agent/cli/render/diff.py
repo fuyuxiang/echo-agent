@@ -41,6 +41,10 @@ TEXTUAL_DIFF_STYLE = DiffStyle(
     reset="[/]", escape_content=True,
 )
 
+PLAIN_DIFF_STYLE = DiffStyle(
+    added="", removed="", meta="", reset="", escape_content=False,
+)
+
 # 24-bit ANSI. Hues match the dark palette's success/error/text-muted so the
 # inline renderer reads as the same product as the TUI.
 ANSI_DIFF_STYLE = DiffStyle(

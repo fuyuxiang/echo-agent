@@ -123,6 +123,8 @@ def sweep(root: Path, retention_days: int, max_total_mb: int) -> int:
         try:
             session_dir.rmdir()
         except OSError:
+            # Expected for every non-empty/live session directory.  Artifact
+            # cleanup is best-effort and must never remove an unowned child.
             pass
     return deleted
 

@@ -26,6 +26,31 @@ async def test_immediate_cancel_always_reaches_terminal_state() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancel_does_not_claim_success_after_irreversible_completion() -> None:
+    registry = AsyncJobRegistry()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def commits_despite_late_cancel() -> str:
+        entered.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            # Models an operation which has crossed an irreversible commit
+            # boundary and truthfully completes instead of pretending to stop.
+            return "committed"
+        return "committed"
+
+    job = registry.start("commit", commits_despite_late_cancel)
+    await entered.wait()
+    assert await registry.cancel(job["id"]) is False
+    state = registry.get(job["id"])
+    assert state is not None
+    assert state["status"] == "completed"
+    assert state["result"] == "committed"
+
+
+@pytest.mark.asyncio
 async def test_failed_job_is_observable_and_does_not_escape() -> None:
     async def fails() -> None:
         raise RuntimeError("index exploded")

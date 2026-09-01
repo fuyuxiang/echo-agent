@@ -125,6 +125,13 @@ def build_worker_tool_executor(
             chat_id=parent_ctx.chat_id if parent_ctx else "",
             unattended=bool(parent_ctx.unattended) if parent_ctx else False,
             cron_authorized=bool(parent_ctx.cron_authorized) if parent_ctx else False,
+            # Preserve the originating user turn through worker isolation.
+            # Delivery tools use this as their idempotency scope and outbound
+            # correlation; replacing it with a worker-local execution id would
+            # both duplicate same-turn retries and detach delivery from the
+            # authoritative final reply.
+            inbound_event_id=parent_ctx.inbound_event_id if parent_ctx else "",
+            artifact_intent_id=parent_ctx.artifact_intent_id if parent_ctx else "",
         )
         result = await tool_registry.execute(tool_name, tool_call.arguments, worker_ctx)
         text = result.text

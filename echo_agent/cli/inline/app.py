@@ -35,6 +35,12 @@ from echo_agent.cli.i18n import t
 from echo_agent.cli.palette import active_palette
 from echo_agent.cli.inline.printer import InlinePrinter
 from echo_agent.cli.render import ansi as A
+from echo_agent.cli.render.diff import (
+    ANSI_DIFF_STYLE,
+    PLAIN_DIFF_STYLE,
+    _DIFF_TOOLS,
+    colorize_diff,
+)
 from echo_agent.cli.render.redact import (
     format_params,
     mask_sensitive_strings,
@@ -49,6 +55,7 @@ from echo_agent.cli.render.status import (
 )
 from echo_agent.cli.render.text import clip
 from echo_agent.cli.render.tool import humanize_risk, humanize_tool, pick_object
+from echo_agent.cli.renderer_base import render_sink_implementation
 from echo_agent.cli.tui.brand import load_brand
 from echo_agent.cli.tui.completion import COMMANDS
 from echo_agent.cli.tui.details import parse_command as parse_details, parse_env
@@ -142,6 +149,7 @@ class _SlashCompleter(Completer):
                 )
 
 
+@render_sink_implementation
 class InlineApp:
     """RenderSink implementation plus a prompt-toolkit input loop."""
 
@@ -177,6 +185,12 @@ class InlineApp:
         self._connected = True
         self._exit_requested = False
         self._running = False
+        # Non-interactive stdin reaches EOF immediately after the request is
+        # written.  Keep the websocket/pump alive until that submitted primary
+        # turn reaches a terminal frame; otherwise ``printf ... | echo-agent
+        # cli`` races the reply and usually closes the socket first.
+        self._primary_terminal = asyncio.Event()
+        self._primary_terminal.set()
 
         self._group: str | None = None
         self._drafts: dict[str, str] = {}
@@ -345,6 +359,26 @@ class InlineApp:
         self._drafts.pop(inbound_id, None)
         self._start_activity(t("attach.ui.activity_replan"))
 
+    def on_tool_delivery(self, inbound_id: str, delivery_id: str, text: str) -> None:
+        """Render a tool's user-visible payload without settling its turn."""
+        body = str(text or "").strip()
+        if not body or (delivery_id and delivery_id == self._last_reply_event_id):
+            return
+        self._begin("model")
+        self._printer.reply(body)
+        self._conversation.append({"role": "assistant", "text": body})
+        self._audit.append(
+            {
+                "type": "assistant",
+                "event_id": delivery_id,
+                "inbound_event_id": inbound_id,
+                "text": body,
+            }
+        )
+        if delivery_id:
+            self._last_reply_event_id = delivery_id
+        self._cleared_since_reply = False
+
     def on_user_reply_final(self, inbound_id: str, text: str) -> None:
         kind = self._turns.on_final(inbound_id)
         self._drafts.pop(inbound_id, None)
@@ -361,6 +395,7 @@ class InlineApp:
                 self._turns.note_turn_settled()
             if not self._turns.has_active_primary:
                 self._finish_activity("interrupted" if interrupted else "done")
+                self._primary_terminal.set()
             return
         # Re-delivery on reconnect is common; exact event id is authoritative.
         if inbound_id and inbound_id == self._last_reply_event_id:
@@ -385,6 +420,7 @@ class InlineApp:
             self._turns.note_turn_settled()
         if not self._turns.has_active_primary:
             self._finish_activity("interrupted" if interrupted else "done")
+            self._primary_terminal.set()
 
     def on_cognitive(self, ev: CogEvent) -> None:
         self._record_cognitive(ev)
@@ -543,7 +579,24 @@ class InlineApp:
             if self._details.starts_expanded("tool_call"):
                 for entry in format_params(merged.get("params") or {}, value_width=120):
                     self._printer.cont(entry)
-                result = clip(mask_sensitive_strings(str(merged.get("result_text", ""))), 2000)
+                result = mask_sensitive_strings(
+                    str(merged.get("result_text", ""))
+                )
+                if len(result) > 2000:
+                    result = result[:1999] + "…"
+                looks_like_diff = "\n" in result and any(
+                    line[:1] in "+-@" for line in result.splitlines()
+                )
+                if name in _DIFF_TOOLS and looks_like_diff:
+                    # ANSI_DIFF_STYLE is only selected through the central
+                    # colour policy.  NO_COLOR and non-TTY streams therefore
+                    # get byte-clean plain text, never hard-coded escapes.
+                    style = (
+                        ANSI_DIFF_STYLE
+                        if self._printer.is_tty and A.supports_color()
+                        else PLAIN_DIFF_STYLE
+                    )
+                    result = colorize_diff(result, style=style)
                 for line in result.splitlines():
                     self._printer.cont(line)
         if self._tools:
@@ -623,6 +676,7 @@ class InlineApp:
         self._pending_approval = None
         self._pending_clarify = None
         self._stop_requested = False
+        self._primary_terminal.set()
 
     def notify_disconnected(self) -> None:
         if not self._connected:
@@ -633,6 +687,7 @@ class InlineApp:
         self._pending_approval = None
         self._pending_clarify = None
         self._stop_requested = False
+        self._primary_terminal.set()
         self._notice(t("attach.ui.disconnected"), error=True)
 
     def notify_reconnected(self) -> None:
@@ -693,6 +748,11 @@ class InlineApp:
             except (OSError, ValueError):
                 break
             if line == "":
+                # EOF means "no more requests", not "discard the response to
+                # the request already sent".  A final/error/disconnect callback
+                # releases this wait while the receive pump remains alive.
+                while self._turns.has_active_primary and self._connected:
+                    await self._primary_terminal.wait()
                 break
             await self.submit(line, echo=True)
 
@@ -989,12 +1049,12 @@ class InlineApp:
         *,
         display_control: bool = False,
     ) -> bool:
-        if not self._connected:
+        if not self._connected or self._send is None:
             return False
+        if kind == "primary":
+            self._primary_terminal.clear()
         self._turns.note_send(kind)
         self._pending_display.append(display_control)
-        if self._send is None:
-            return True
         try:
             await self._send(text)
         except Exception:

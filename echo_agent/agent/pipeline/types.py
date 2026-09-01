@@ -32,6 +32,9 @@ class PipelineContext:
     # A deterministic output contract set by ContextStage. Inference may only
     # complete such a turn after artifact_deliver succeeds in this tool loop.
     artifact_required: bool = False
+    # Originating event of this artifact workflow. Preserved across a validated
+    # continuation turn so multipart delivery resumes from its last receipt.
+    artifact_intent_id: str = ""
     execution_plan: Plan | None = None
     plan_run_id: str = ""
     intro_text: str = ""

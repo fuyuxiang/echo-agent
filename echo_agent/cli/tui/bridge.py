@@ -11,6 +11,7 @@ class WSBridge:
     def __init__(self, sink: RenderSink) -> None:
         self._sink = sink
         self._dedup = CogDedup()
+        self._delivery_dedup = CogDedup()
 
     def dispatch(self, payload: dict) -> None:
         mtype = payload.get("type")
@@ -56,6 +57,34 @@ class WSBridge:
         if meta.get("_approval_request"):
             return
         inbound_id = str(meta.get("_inbound_event_id", ""))
+        artifact_part = meta.get("_artifact_part")
+        artifact_delivery_id = str(meta.get("_artifact_delivery_id") or "")
+        if meta.get("_tool_delivery"):
+            delivery_id = ""
+            if artifact_delivery_id and isinstance(artifact_part, int) and artifact_part > 0:
+                delivery_id = (
+                    f"{inbound_id}:artifact:{artifact_delivery_id}:{artifact_part}"
+                )
+            else:
+                delivery_event_id = str(payload.get("event_id") or "")
+                if delivery_event_id:
+                    delivery_id = f"{inbound_id}:tool-delivery:{delivery_event_id}"
+            if self._delivery_dedup.seen(delivery_id):
+                return
+            self._sink.on_tool_delivery(
+                inbound_id,
+                delivery_id,
+                str(payload.get("text") or ""),
+            )
+            return
+        if artifact_delivery_id and isinstance(artifact_part, int) and artifact_part > 0:
+            # One artifact is intentionally delivered as several authoritative
+            # text frames on clients without attachment support.  A renderer's
+            # ordinary final-frame dedup uses inbound_id and would otherwise
+            # discard/replace every part after the first.  Keep turn correlation
+            # in metadata on the wire, but give each displayed part a stable,
+            # retry-idempotent identity locally.
+            inbound_id = f"{inbound_id}:artifact:{artifact_delivery_id}:{artifact_part}"
         text = payload.get("text") or ""
         streaming = bool(meta.get("_token_stream"))
         is_final = payload.get("is_final", True) or payload.get("message_kind") == "final"

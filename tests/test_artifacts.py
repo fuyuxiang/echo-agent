@@ -106,6 +106,11 @@ async def test_artifact_delivery_is_current_session_only_and_truthful(tmp_path):
     assert len(published) == 1
     assert published[0].chat_id == "chat-a"
     assert "data/artifacts" not in result.output
+    replay = await supported.execute(
+        {"artifact_id": artifact_id, "caption": "完成"}, ctx,
+    )
+    assert json.loads(replay.output)["idempotent_replay"] is True
+    assert len(published) == 1
 
     unsupported = ArtifactDeliverTool(
         store, publish_fn=_publish,
@@ -120,6 +125,237 @@ async def test_artifact_delivery_is_current_session_only_and_truthful(tmp_path):
     )
     assert result.success is False
     assert "cannot send file attachments" in result.error
+
+
+@pytest.mark.asyncio
+async def test_gateway_cli_uses_real_text_transport_instead_of_false_attachment_success(tmp_path):
+    store = _store(tmp_path)
+    created = await store.create("gateway:cli:alice", filename="report.md")
+    artifact_id = created["artifact_id"]
+    await store.append("gateway:cli:alice", artifact_id, sequence=0, content="# Report")
+    await store.finalize("gateway:cli:alice", artifact_id)
+    published = []
+
+    async def _publish(event):
+        published.append(event)
+        return SimpleNamespace(ok=True)
+
+    tool = ArtifactDeliverTool(
+        store,
+        publish_fn=_publish,
+        # gateway:cli is a gateway pseudo-channel, not a ChannelManager adapter.
+        channel_lookup=lambda _name: None,
+    )
+    ctx = ToolExecutionContext(
+        session_key="gateway:cli:alice", channel="gateway:cli", chat_id="alice",
+    )
+
+    result = await tool.execute({"artifact_id": artifact_id, "caption": "已完成"}, ctx)
+
+    payload = json.loads(result.output)
+    assert result.success is True
+    assert payload["delivery_mode"] == "text_chunks"
+    assert len(published) == 1
+    assert published[0].text.startswith("已完成\n\n[report.md 1/1]\n# Report")
+    assert all(block.type.value == "text" for block in published[0].content)
+    assert "data/artifacts" not in published[0].text
+
+
+@pytest.mark.asyncio
+async def test_text_fallback_retry_resumes_after_last_acknowledged_part(tmp_path):
+    store = _store(tmp_path)
+    created = await store.create("cli:retry", filename="report.txt")
+    artifact_id = created["artifact_id"]
+    await store.append("cli:retry", artifact_id, sequence=0, content="ABCDEFGHI")
+    await store.finalize("cli:retry", artifact_id)
+    attempts = []
+    fail_second_once = True
+
+    async def _publish(event):
+        nonlocal fail_second_once
+        attempts.append(event.text)
+        if "2/3" in event.text and fail_second_once:
+            fail_second_once = False
+            return SimpleNamespace(ok=False, error="offline")
+        return SimpleNamespace(ok=True)
+
+    tool = ArtifactDeliverTool(
+        store,
+        publish_fn=_publish,
+        channel_lookup=lambda _name: SimpleNamespace(supports_files=False),
+        text_fallback_chunk_chars=3,
+    )
+    ctx = ToolExecutionContext(
+        session_key="cli:retry",
+        channel="cli",
+        chat_id="retry",
+        inbound_event_id="turn-retry",
+        idempotency_key="attempt-one",
+        execution_id="exec-one",
+    )
+    retry_ctx = ToolExecutionContext(
+        session_key="cli:retry",
+        channel="cli",
+        chat_id="retry",
+        # Model retries are new executions/idempotency keys but remain the same
+        # logical delivery because the originating inbound turn is stable.
+        inbound_event_id="turn-retry",
+        idempotency_key="attempt-two",
+        execution_id="exec-two",
+    )
+
+    first = await tool.execute({"artifact_id": artifact_id}, ctx)
+    second = await tool.execute({"artifact_id": artifact_id}, retry_ctx)
+    before_replay = len(attempts)
+    third = await tool.execute({"artifact_id": artifact_id}, retry_ctx)
+
+    assert first.success is False
+    assert "part 2/3" in first.error
+    assert second.success is True
+    assert json.loads(third.output)["idempotent_replay"] is True
+    assert len(attempts) == before_replay
+    assert [text.splitlines()[0] for text in attempts] == [
+        "[report.txt 1/3]",
+        "[report.txt 2/3]",
+        "[report.txt 2/3]",
+        "[report.txt 3/3]",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_artifact_delivery_checkpoint_is_scoped_to_originating_turn(tmp_path):
+    store = _store(tmp_path)
+    created = await store.create("cli:resend", filename="report.txt")
+    artifact_id = created["artifact_id"]
+    await store.append("cli:resend", artifact_id, sequence=0, content="report body")
+    await store.finalize("cli:resend", artifact_id)
+    published = []
+
+    async def _publish(event):
+        published.append(event)
+        return SimpleNamespace(ok=True)
+
+    tool = ArtifactDeliverTool(
+        store,
+        publish_fn=_publish,
+        channel_lookup=lambda _name: SimpleNamespace(supports_files=False),
+    )
+
+    def _turn(event_id: str, execution_id: str) -> ToolExecutionContext:
+        return ToolExecutionContext(
+            session_key="cli:resend",
+            channel="cli",
+            chat_id="resend",
+            inbound_event_id=event_id,
+            idempotency_key=f"idem-{execution_id}",
+            execution_id=execution_id,
+        )
+
+    first = await tool.execute({"artifact_id": artifact_id}, _turn("turn-1", "exec-1"))
+    replay = await tool.execute({"artifact_id": artifact_id}, _turn("turn-1", "exec-2"))
+    resend = await tool.execute({"artifact_id": artifact_id}, _turn("turn-2", "exec-3"))
+
+    assert first.success is True
+    assert json.loads(replay.output)["idempotent_replay"] is True
+    assert resend.success is True
+    assert "idempotent_replay" not in json.loads(resend.output)
+    assert len(published) == 2
+    assert published[0].metadata["_inbound_event_id"] == "turn-1"
+    assert published[1].metadata["_inbound_event_id"] == "turn-2"
+    assert published[0].metadata["_artifact_delivery_id"] != (
+        published[1].metadata["_artifact_delivery_id"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_continuation_turn_resumes_original_delivery_checkpoint(tmp_path):
+    store = _store(tmp_path)
+    created = await store.create("cli:continue", filename="report.txt")
+    artifact_id = created["artifact_id"]
+    await store.append("cli:continue", artifact_id, sequence=0, content="abcdefghi")
+    await store.finalize("cli:continue", artifact_id)
+    attempts = []
+    fail_second_once = True
+
+    async def _publish(event):
+        nonlocal fail_second_once
+        attempts.append(event.text.splitlines()[0])
+        if "2/3" in event.text and fail_second_once:
+            fail_second_once = False
+            return SimpleNamespace(ok=False, error="offline")
+        return SimpleNamespace(ok=True)
+
+    tool = ArtifactDeliverTool(
+        store,
+        publish_fn=_publish,
+        channel_lookup=lambda _name: SimpleNamespace(supports_files=False),
+        text_fallback_chunk_chars=3,
+    )
+    first_ctx = ToolExecutionContext(
+        session_key="cli:continue",
+        channel="cli",
+        chat_id="continue",
+        inbound_event_id="turn-origin",
+        artifact_intent_id="turn-origin",
+    )
+    continuation_ctx = ToolExecutionContext(
+        session_key="cli:continue",
+        channel="cli",
+        chat_id="continue",
+        inbound_event_id="turn-continue",
+        # ContextStage copies the validated continuation's source event here.
+        artifact_intent_id="turn-origin",
+    )
+
+    first = await tool.execute({"artifact_id": artifact_id}, first_ctx)
+    resumed = await tool.execute({"artifact_id": artifact_id}, continuation_ctx)
+
+    assert first.success is False
+    assert resumed.success is True
+    assert attempts == [
+        "[report.txt 1/3]",
+        "[report.txt 2/3]",
+        "[report.txt 2/3]",
+        "[report.txt 3/3]",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_deferred_delivery_is_not_durably_checkpointed(tmp_path):
+    """Volatile HTTP buffering may advance the turn, never crash recovery."""
+    store = _store(tmp_path)
+    created = await store.create("gateway:http:u1", filename="report.txt")
+    artifact_id = created["artifact_id"]
+    await store.append("gateway:http:u1", artifact_id, sequence=0, content="body")
+    await store.finalize("gateway:http:u1", artifact_id)
+    published = []
+
+    async def _publish(event):
+        published.append(event)
+        return SimpleNamespace(ok=True, detail={"deferred": True})
+
+    tool = ArtifactDeliverTool(
+        store,
+        publish_fn=_publish,
+        channel_lookup=lambda _name: None,
+    )
+    ctx = ToolExecutionContext(
+        session_key="gateway:http:u1",
+        channel="gateway:http",
+        chat_id="u1",
+        inbound_event_id="turn-http-1",
+    )
+
+    first = await tool.execute({"artifact_id": artifact_id}, ctx)
+    retry = await tool.execute({"artifact_id": artifact_id}, ctx)
+
+    assert first.success is True
+    assert retry.success is True
+    assert "idempotent_replay" not in json.loads(retry.output)
+    assert len(published) == 2
+    assert published[0].metadata["_artifact_delivery_id"] == (
+        published[1].metadata["_artifact_delivery_id"]
+    )
 
 
 def test_public_gateway_gets_artifacts_but_not_general_write_or_exec(tmp_path):
@@ -249,3 +485,18 @@ async def test_artifact_sweeper_does_not_quota_delete_active_draft(tmp_path):
 
     assert sweep(store.root, retention_days=30, max_total_mb=1) == 0
     assert (directory / "chunks" / "00000000.part").is_file()
+
+
+@pytest.mark.asyncio
+async def test_artifact_create_rejects_precreated_session_symlink(tmp_path):
+    store = _store(tmp_path)
+    store.root.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    session_link = store.root / store.session_hash("cli:symlink")
+    session_link.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ArtifactError, match="session directory.*symbolic link"):
+        await store.create("cli:symlink", filename="report.md")
+
+    assert list(outside.iterdir()) == []

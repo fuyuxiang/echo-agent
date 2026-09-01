@@ -93,6 +93,10 @@ class ToolExecutionContext:
     # unrelated finals and both go out. Same key the progress/heartbeat events
     # use (`_inbound_event_id`), so all of one turn's traffic shares one identity.
     inbound_event_id: str = ""
+    # Stable logical id for an artifact workflow. A bare "continue" is a new
+    # inbound event but resumes the original delivery checkpoint; an unrelated
+    # later request leaves this empty/new and deliberately sends again.
+    artifact_intent_id: str = ""
 
 
 def build_idempotency_key(trace_id: str, tool_name: str, index: int, params: Mapping[str, Any]) -> str:

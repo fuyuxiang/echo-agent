@@ -200,15 +200,79 @@ class TestContextStage:
         assert stage._infer_task_type("请生成完整审校报告") == "document"
         assert stage._expects_artifact("请生成完整审校报告") is True
         assert stage._expects_artifact("请直接在聊天中说明报告结论，不要文件") is False
+        assert stage._expects_artifact("x" * 9000 + "\n请用三句话总结全文") is False
+        assert stage._expects_artifact("请把审校结果整理成报告并交付") is True
+        assert stage._expects_artifact("请不要保存附件，直接回复完整报告的摘要") is False
+        assert stage._expects_artifact("完整报告") is True
+        assert stage._expects_artifact("full report") is True
+        assert stage._expects_artifact("请用三句话概括下面的完整报告") is False
+        assert stage._expects_artifact("请写一份完整报告") is True
+        assert stage._expects_artifact("帮我写一个详细报告") is True
+        assert stage._expects_artifact(
+            "Do not answer in chat; save it as a file."
+        ) is True
+        assert stage._expects_artifact("请阅读我写的报告并用三句话概括") is False
+        assert stage._expects_artifact("我写报告时遇到问题，请给三个建议") is False
+        assert stage._expects_artifact("我写了一份完整报告，请用三句话总结") is False
+        assert stage._expects_artifact("How do I write a report?") is False
+        assert stage._expects_artifact(
+            "Explain how to create a document template."
+        ) is False
+        assert stage._expects_artifact(
+            "Don't reply in the chat; create a detailed report."
+        ) is True
+        assert stage._expects_artifact(
+            "不要直接在聊天里回答，请生成报告文件"
+        ) is True
+        assert stage._expects_artifact(
+            "直接在聊天里回答，给我一份完整报告"
+        ) is False
+        assert stage._expects_artifact(
+            "请写一份关于人工智能在金融、医疗、教育和制造业中的应用与风险的完整报告"
+        ) is True
+        assert stage._expects_artifact(
+            "请帮我撰写一份关于公司过去五年经营状况、竞争格局及未来战略建议的详细报告"
+        ) is True
+        assert stage._expects_artifact(
+            "Write an in-depth analysis of the last thirty commits as a detailed report."
+        ) is True
+        assert stage._expects_artifact("请写三句话总结这份报告") is False
+        assert stage._expects_artifact("请写一段话评价这份报告") is False
+        assert stage._expects_artifact("请写五个要点概括下面的报告") is False
+        assert stage._expects_artifact(
+            "Write three sentences summarizing this report."
+        ) is False
+        assert stage._expects_artifact(
+            "Please write a short chat response about this report."
+        ) is False
 
     def test_artifact_contract_resumes_only_with_complete_live_tool_flow(self):
         names = {
             "artifact_create", "artifact_append", "artifact_validate",
             "artifact_finalize", "artifact_deliver",
         }
-        assert artifact_output_required("继续", names, {"trace_id": "old"}) is True
-        assert artifact_output_required("继续", names - {"artifact_deliver"}, {"trace_id": "old"}) is False
+        live = {
+            "version": 1,
+            "trace_id": "old",
+            "source_event_id": "evt-old",
+            "context_key": "cli:user:epoch-1",
+            "updated_at": 1000.0,
+        }
+        kwargs = {"context_key": "cli:user:epoch-1", "now": 1001.0}
+        assert artifact_output_required("继续", names, live, **kwargs) is True
+        assert artifact_output_required("继续讨论股票", names, live, **kwargs) is False
+        assert artifact_output_required(
+            "继续", names - {"artifact_deliver"}, live, **kwargs,
+        ) is False
         assert artifact_output_required("继续", names, None) is False
+        assert artifact_output_required(
+            "继续", names, live, context_key="cli:user:epoch-2", now=1001.0,
+        ) is False
+        assert artifact_output_required(
+            "继续", names, live, context_key="cli:user:epoch-1", now=1000.0 + 1801,
+        ) is False
+        # Legacy "any dict means resume" markers are deliberately invalid.
+        assert artifact_output_required("继续", names, {"trace_id": "old"}) is False
 
     @pytest.mark.asyncio
     async def test_reply_quote_enters_current_turn_prompt(self):

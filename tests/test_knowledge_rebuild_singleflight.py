@@ -15,12 +15,14 @@ embedding path so both calls are paused at the same await point.
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
 from echo_agent.knowledge.index import KnowledgeIndex
+from echo_agent.gateway.jobs import AsyncJobRegistry
 
 
 def _make_index(tmp_path: Path) -> KnowledgeIndex:
@@ -181,3 +183,43 @@ async def test_failed_rebuild_unblocks_subsequent_calls(tmp_path):
     # The failed future was cleared; a second caller proceeds with a fresh rebuild.
     result = await index.rebuild_async()
     assert result["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_job_cancel_waits_for_executor_and_rolls_back_partial_rebuild(tmp_path):
+    """A cancelled Dashboard job has no writer left running behind its status."""
+    index = _make_index(tmp_path)
+    index.ensure_ready()
+    original_chunks = list(index._chunks)
+    original_index = index.index_path.read_bytes()
+
+    entered = threading.Event()
+    release = threading.Event()
+    original_index_file = index._index_file
+
+    def blocked_index_file(path: Path) -> None:
+        entered.set()
+        assert release.wait(timeout=2)
+        original_index_file(path)
+
+    index._index_file = blocked_index_file
+    registry = AsyncJobRegistry()
+    job = registry.start("rebuild", index.rebuild_async)
+    assert await asyncio.to_thread(entered.wait, 1)
+
+    cancel = asyncio.create_task(registry.cancel(job["id"]))
+    owned = registry._tasks[job["id"]]
+    while owned.cancelling() == 0:
+        await asyncio.sleep(0)
+    # cancel() must remain pending until the executor has acknowledged the
+    # cooperative stop; otherwise another rebuild could acquire the lock now.
+    assert cancel.done() is False
+    release.set()
+
+    assert await asyncio.wait_for(cancel, timeout=2) is True
+    state = registry.get(job["id"])
+    assert state is not None and state["status"] == "cancelled"
+    assert index._chunks == original_chunks
+    assert index.index_path.read_bytes() == original_index
+    assert index._rebuild_future is None
+    assert index._rebuild_lock.locked() is False

@@ -25,6 +25,10 @@ class SendResult:
     message_id: str = ""
     error: str = ""
     skipped: bool = False
+    # Accepted into a volatile buffer, but not yet observed by a durable or
+    # remote recipient. Multipart callers can continue while withholding their
+    # durable delivery checkpoint until a non-deferred receipt is available.
+    deferred: bool = False
 
 
 class BaseChannel(ABC):

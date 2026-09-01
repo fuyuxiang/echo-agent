@@ -58,6 +58,7 @@ async def test_handle_interrupt_also_wakes_parked_clarify(tmp_path):
     # A Ctrl+C while the agent is parked on a clarify must unblock it (return the
     # interrupted sentinel), not leave it waiting.
     loop = _make_loop(tmp_path)
+    loop.interrupt.request("gateway:cli", "evt-current")
     req = loop.clarify.request("q", ["A"], user_id="u1", session_key="gateway:cli")
 
     async def wait_side():
@@ -74,6 +75,27 @@ async def test_handle_interrupt_also_wakes_parked_clarify(tmp_path):
 
     answer, interrupted = await asyncio.wait_for(waiter, timeout=1.0)
     assert (answer, interrupted) == ("", True)
+
+
+@pytest.mark.asyncio
+async def test_delayed_targeted_interrupt_does_not_cancel_new_turn_prompt(tmp_path):
+    loop = _make_loop(tmp_path)
+    loop.interrupt.request("gateway:cli", "evt-new")
+    req = loop.clarify.request("q", ["A"], user_id="u1", session_key="gateway:cli")
+
+    event = InboundEvent.text_message(
+        channel="gateway:cli",
+        chat_id="c",
+        sender_id="u1",
+        text="/__interrupt__",
+        session_key_override="gateway:cli",
+        is_control=True,
+    )
+    event.metadata["_interrupt_target_event_id"] = "evt-old"
+    await loop._handle_interrupt(event)
+
+    assert loop.clarify.get(req.id) is not None
+    assert loop.interrupt.is_interrupted("gateway:cli") is False
 
 
 @pytest.mark.asyncio

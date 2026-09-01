@@ -65,6 +65,7 @@ class TaskDispatcher:
         lease_ttl_ms: int = 60000,
         renew_interval_sec: float = 20.0,
         stop_grace_sec: float = 30.0,
+        interrupt_manager: Any = None,
     ):
         self._bus = bus
         self._tasks = task_manager
@@ -73,6 +74,7 @@ class TaskDispatcher:
         self._lease_ttl_ms = lease_ttl_ms
         self._renew_interval = renew_interval_sec
         self._stop_grace = stop_grace_sec
+        self._interrupt = interrupt_manager
         self._running = False
         self._tick_task: asyncio.Task[None] | None = None
         self._renew_task: asyncio.Task[None] | None = None
@@ -168,10 +170,17 @@ class TaskDispatcher:
             )
             fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
             self._pending_release[task.id] = fut
+            interrupt_admitted = False
             try:
                 # Move to running BEFORE publishing so a second scan (or another
                 # instance) won't pick the same task up again.
                 await self._tasks.transition(task.id, TaskStatus.RUNNING)
+                # set_running_context exposes this event id to TasksAPI cancel.
+                # Reserve it first so the independent control lane cannot race
+                # ahead of AgentLoop.request() and silently lose that stop.
+                if self._interrupt is not None:
+                    self._interrupt.admit(session_key, event.event_id)
+                    interrupt_admitted = True
                 await self._tasks.set_running_context(
                     task.id, session_key, event.event_id,
                     owner_id=self._owner_id, lease_ttl_ms=self._lease_ttl_ms,
@@ -182,10 +191,14 @@ class TaskDispatcher:
                 # 缺口(a):transition/context/publish 任一步异常都回队,
                 # 否则任务卡在 RUNNING 无 turn 收尾。
                 logger.error("Failed to dispatch task {}: {}", task.id, e)
+                if interrupt_admitted:
+                    self._interrupt.discard(session_key, event.event_id)
                 await self._tasks.requeue_dispatch_failed(task.id)
                 return
             if not accepted:
                 logger.warning("Task {} dispatch rejected by bus (full/stopping), re-queueing", task.id)
+                if interrupt_admitted:
+                    self._interrupt.discard(session_key, event.event_id)
                 await self._tasks.requeue_dispatch_failed(task.id)
                 return
             # 缺口(d):publish 成功,持槽等到 turn 终态。用短超时轮询终态 future,

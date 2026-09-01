@@ -102,6 +102,32 @@ async def test_copy_last_turn_excludes_previous_turns():
 
 
 @pytest.mark.asyncio
+async def test_late_tool_delivery_keeps_original_turn_group():
+    """A queued second prompt must not steal the first turn's artifact part."""
+    app = EchoTUI()
+
+    async def body(pilot):
+        app._tv.add_user("第一轮问题")
+        first_seq = app._tv._turn_seq
+        app._event_turn_seq["in1"] = first_seq
+        app._tv.add_user("第二轮问题")
+        assert app._tv._turn_seq != first_seq
+
+        app.on_tool_delivery(
+            "in1",
+            "in1:artifact:delivery1:1",
+            "第一轮的产物分段",
+        )
+        await pilot.pause()
+
+        event = app._tv._audit_events[-1]
+        assert event["event_id"] == "in1:artifact:delivery1:1"
+        assert event["turn_seq"] == first_seq
+
+    await _drive(app, body)
+
+
+@pytest.mark.asyncio
 async def test_copy_with_no_reply_notifies_and_skips_clipboard():
     app = EchoTUI()
 

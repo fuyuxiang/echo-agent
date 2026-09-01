@@ -589,6 +589,75 @@ async def test_gateway_http_retry_publishes_one_event(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_gateway_timeout_retry_replays_late_terminal_with_tool_deliveries(
+    tmp_path,
+) -> None:
+    """A 504 ends the socket wait, not the admitted turn or its replay data."""
+    gateway, publish = _gateway(tmp_path)
+    accepted_event_id = ""
+
+    async def accept_after_tool_delivery(event) -> bool:
+        nonlocal accepted_event_id
+        accepted_event_id = event.event_id
+        tool_delivery = OutboundEvent.text_reply(
+            channel=event.channel,
+            chat_id=event.chat_id,
+            text="report part 1",
+            metadata={
+                "_inbound_event_id": event.event_id,
+                "_tool_delivery": True,
+                "_artifact_delivery_id": "report-delivery",
+                "_artifact_part": 1,
+                "_artifact_parts": 1,
+            },
+        )
+        receipt = await gateway._handle_outbound(tool_delivery)
+        assert receipt is not None
+        assert receipt.success is True and receipt.deferred is True
+        return True
+
+    publish.side_effect = accept_after_tool_delivery
+    body = {
+        "platform": "api",
+        "user_id": "user",
+        "chat_id": "chat",
+        "text": "build report",
+        "wait": True,
+        "timeout_seconds": 1,
+    }
+    headers = {"Idempotency-Key": "late-report"}
+
+    timed_out = await gateway._handle_message(_Request(body, headers=headers))
+
+    assert timed_out.status == 504
+    assert accepted_event_id
+    assert gateway._pending_http == {}
+    assert accepted_event_id in gateway._pending_http_tool_deliveries
+
+    terminal = OutboundEvent.text_reply(
+        channel="gateway:api",
+        chat_id="chat",
+        text="report complete",
+        is_final=True,
+        message_kind="final",
+        metadata={"_inbound_event_id": accepted_event_id},
+    )
+    stamp_turn_outcome(terminal.metadata, "completed")
+    await gateway._handle_outbound(terminal)
+
+    replay = await gateway._handle_message(_Request(body, headers=headers))
+    payload = _response_json(replay)
+    assert replay.status == 200
+    assert payload["status"] == "completed"
+    assert payload["reply"]["text"] == "report complete"
+    assert [
+        frame["text"] for frame in payload["reply"]["tool_deliveries"]
+    ] == ["report part 1"]
+    assert gateway._pending_http_tool_deliveries == {}
+    publish.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_gateway_keyed_request_fails_closed_without_durable_storage(
     tmp_path,
 ) -> None:

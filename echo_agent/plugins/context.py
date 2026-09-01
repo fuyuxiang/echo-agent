@@ -64,6 +64,11 @@ class PluginContext:
         # object or leak the original one.
         self._registered_tool_instances: list["Tool"] = []
         self._denied_tool_instances: list["Tool"] = []
+        # Tool ownership transfers to the host before registry admission.  A
+        # collision or invalid name raises from ToolRegistry.register(); keeping
+        # the exact object here lets activation rollback close resources that
+        # were constructed by the plugin but never became registry-visible.
+        self._pending_tool_instances: list["Tool"] = []
         self._registered_hooks: list[str] = []
         self._registered_inbound_handlers: list[InboundHandler] = []
         self._denied_registrations: set[str] = set()
@@ -89,7 +94,12 @@ class PluginContext:
                 self._denied_tool_instances.append(tool)
             self._raise_if_strict("tool.register")
             return
+        if all(owned is not tool for owned in self._pending_tool_instances):
+            self._pending_tool_instances.append(tool)
         self._tool_registry.register(tool)
+        self._pending_tool_instances = [
+            owned for owned in self._pending_tool_instances if owned is not tool
+        ]
         if tool.name not in self._registered_tools:
             self._registered_tools.append(tool.name)
             self._registered_tool_instances.append(tool)
@@ -211,7 +221,11 @@ class PluginContext:
         """All exact tool objects whose lifecycle was handed to this context."""
         seen: set[int] = set()
         tools: list["Tool"] = []
-        for tool in (*self._registered_tool_instances, *self._denied_tool_instances):
+        for tool in (
+            *self._registered_tool_instances,
+            *self._denied_tool_instances,
+            *self._pending_tool_instances,
+        ):
             if id(tool) not in seen:
                 seen.add(id(tool))
                 tools.append(tool)

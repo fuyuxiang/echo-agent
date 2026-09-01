@@ -603,6 +603,69 @@ async def test_activation_failure_rolls_back_every_context_resource(
 
 
 @pytest.mark.asyncio
+async def test_registry_rejection_still_closes_plugin_tool(tmp_path, monkeypatch):
+    """Ownership begins before registry admission, not after it succeeds."""
+    existing_events: list[str] = []
+    rejected_events: list[str] = []
+    builtin = _ClosablePluginTool("shared_name", existing_events)
+    rejected = _ClosablePluginTool("shared_name", rejected_events)
+    record = PluginRecord(manifest=PluginManifest(name="collision"), source="test")
+    manager, registry = _lifecycle_manager(tmp_path)
+    registry.register(builtin)
+
+    monkeypatch.setattr(
+        "echo_agent.plugins.manager.load_plugin_module",
+        lambda _record: {
+            "activate": lambda ctx: ctx.register_tool(rejected),
+            "deactivate": None,
+        },
+    )
+
+    await manager._load_and_activate(record)
+
+    assert record.status == "failed"
+    assert "already registered" in record.error
+    assert registry.get("shared_name") is builtin
+    assert existing_events == []
+    assert rejected_events == ["close:shared_name"]
+
+
+@pytest.mark.asyncio
+async def test_caught_registry_rejection_is_closed_on_successful_plugin_shutdown(
+    tmp_path, monkeypatch,
+):
+    existing_events: list[str] = []
+    rejected_events: list[str] = []
+    builtin = _ClosablePluginTool("shared_name", existing_events)
+    rejected = _ClosablePluginTool("shared_name", rejected_events)
+    record = PluginRecord(manifest=PluginManifest(name="collision-caught"), source="test")
+    manager, registry = _lifecycle_manager(tmp_path)
+    registry.register(builtin)
+
+    def activate(ctx):
+        try:
+            ctx.register_tool(rejected)
+        except ValueError:
+            # Compatibility plugins may probe an optional name and continue.
+            pass
+
+    monkeypatch.setattr(
+        "echo_agent.plugins.manager.load_plugin_module",
+        lambda _record: {"activate": activate, "deactivate": None},
+    )
+
+    await manager._load_and_activate(record)
+    assert record.status == "activated"
+    assert rejected_events == []
+
+    await manager.shutdown()
+
+    assert registry.get("shared_name") is builtin
+    assert existing_events == []
+    assert rejected_events == ["close:shared_name"]
+
+
+@pytest.mark.asyncio
 async def test_shutdown_unsubscribes_plugin_inbound_handler(tmp_path, monkeypatch):
     record = PluginRecord(manifest=PluginManifest(name="observer"), source="test")
     manager, _registry = _lifecycle_manager(tmp_path)

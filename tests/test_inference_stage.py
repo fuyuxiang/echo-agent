@@ -778,7 +778,35 @@ class TestArtifactOutputContract:
         assert result.termination_reason == "artifact_not_delivered"
         assert "未成功生成并交付" in result.response_text
         assert provider.chat_stream_with_retry.call_count == 4
-        assert session.metadata["_artifact_continuation"]["trace_id"] == "trace_001"
+        continuation = session.metadata["_artifact_continuation"]
+        assert continuation["version"] == 1
+        assert continuation["trace_id"] == "trace_001"
+        assert continuation["source_event_id"] == "evt_001"
+        assert continuation["context_key"] == "test:chat_1"
+
+    @pytest.mark.asyncio
+    async def test_ordinary_turn_clears_stale_artifact_continuation(self):
+        provider = AsyncMock()
+        provider.chat_stream_with_retry = AsyncMock(
+            return_value=LLMResponse(content="ordinary answer", finish_reason="stop")
+        )
+        stage, _bus = _make_stage(provider=provider)
+        session = _make_session()
+        session.metadata = {
+            "_artifact_continuation": {
+                "version": 1,
+                "trace_id": "old",
+                "source_event_id": "evt-old",
+                "context_key": "test:chat_1",
+                "updated_at": 1.0,
+            },
+        }
+        ctx = _make_ctx(session=session)
+
+        result = await stage.run(ctx)
+
+        assert result.response_text == "ordinary answer"
+        assert "_artifact_continuation" not in session.metadata
 
     @pytest.mark.asyncio
     async def test_successful_delivery_satisfies_required_artifact(self):

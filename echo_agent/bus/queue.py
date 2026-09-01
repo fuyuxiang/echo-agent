@@ -29,6 +29,15 @@ class MessageBus:
 
     def __init__(self, max_queue_size: int = 1000, max_concurrency: int = 50):
         self._inbound_queue: asyncio.Queue[InboundEvent] = asyncio.Queue(maxsize=max_queue_size)
+        # Trusted control events use a separate ingress lane.  A single FIFO
+        # cannot provide a real escape hatch: once its dispatcher is waiting for
+        # normal-work capacity, a cancel queued behind that work can no longer be
+        # observed.  Control handlers are deliberately cheap and do not acquire
+        # the normal concurrency semaphore, so this lane has its own bounded
+        # queue and independent dispatcher.
+        self._control_queue: asyncio.Queue[InboundEvent] = asyncio.Queue(
+            maxsize=max_queue_size,
+        )
         self._outbound_handlers: dict[str, list[OutboundHandler]] = defaultdict(list)
         self._global_outbound_handlers: list[OutboundHandler] = []
         self._inbound_subscribers: list[InboundHandler] = []
@@ -36,6 +45,7 @@ class MessageBus:
         self._running = False
         self._accepting = True
         self._dispatch_task: asyncio.Task | None = None
+        self._control_dispatch_task: asyncio.Task | None = None
         self._inflight_inbound: set[asyncio.Task] = set()
         self._inflight_events: dict[asyncio.Task, InboundEvent] = {}
         self._lifecycle_lock = asyncio.Lock()
@@ -48,6 +58,12 @@ class MessageBus:
         self._publishers_idle = asyncio.Event()
         self._publishers_idle.set()
         self._concurrency_sem = asyncio.Semaphore(max_concurrency)
+        # Controls bypass normal-work capacity, but not every resource bound.
+        # A separate small pool prevents an authenticated interrupt burst (or a
+        # slow plugin subscriber) from creating unbounded handler tasks.
+        self._control_concurrency_sem = asyncio.Semaphore(
+            max(1, min(max_concurrency, 16)),
+        )
         self._rate_limiter: SessionRateLimiter | None = None
         self._turn_run_store = None
 
@@ -118,10 +134,21 @@ class MessageBus:
             logger.warning("Bus is shutting down, rejecting event from {}:{}", event.channel, event.chat_id)
             return False
         try:
-            await asyncio.wait_for(self._inbound_queue.put(event), timeout=5.0)
+            if event.is_control:
+                # Never make an interrupt compete for space with the work it is
+                # intended to stop.  ``is_control`` is a trusted typed field set
+                # by internal gateway/channel code, not copied from metadata.
+                self._control_queue.put_nowait(event)
+            else:
+                await asyncio.wait_for(self._inbound_queue.put(event), timeout=5.0)
             return True
-        except asyncio.TimeoutError:
-            logger.error("Inbound queue full after 5s wait, rejecting event from {}:{}", event.channel, event.chat_id)
+        except (asyncio.TimeoutError, asyncio.QueueFull):
+            logger.error(
+                "{} inbound queue full, rejecting event from {}:{}",
+                "Control" if event.is_control else "Normal",
+                event.channel,
+                event.chat_id,
+            )
             return False
         finally:
             async with self._admission_lock:
@@ -238,6 +265,7 @@ class MessageBus:
             async with self._admission_lock:
                 self._accepting = True
             self._dispatch_task = asyncio.create_task(self._dispatch_loop())
+            self._control_dispatch_task = asyncio.create_task(self._control_dispatch_loop())
         logger.info("MessageBus started")
 
     async def stop(self, drain_timeout: float = 10.0) -> None:
@@ -260,17 +288,28 @@ class MessageBus:
                     # ensure the dispatcher no longer owns a queued event.
                     pass
                 self._dispatch_task = None
+            if self._control_dispatch_task:
+                self._control_dispatch_task.cancel()
+                try:
+                    await self._control_dispatch_task
+                except asyncio.CancelledError:
+                    # Symmetric with the normal dispatcher: stop owns this
+                    # cancellation and waits until no control event is local to
+                    # the dispatcher.
+                    pass
+                self._control_dispatch_task = None
             # The dispatcher may not have observed every item accepted just
             # before shutdown. Hand the remaining bounded queue to tracked tasks
             # while subscribers (especially AgentLoop) are still alive; dropping
             # them here used to strand Gateway's already-written `accepted`
             # ledger rows forever.
-            while not self._inbound_queue.empty():
-                try:
-                    event = self._inbound_queue.get_nowait()
-                except asyncio.QueueEmpty:  # pragma: no cover - single-loop race guard
-                    break
-                self._schedule_inbound(event)
+            for queue in (self._control_queue, self._inbound_queue):
+                while not queue.empty():
+                    try:
+                        event = queue.get_nowait()
+                    except asyncio.QueueEmpty:  # pragma: no cover - single-loop race guard
+                        break
+                    self._schedule_inbound(event)
             # Give in-flight turns a chance to finish (and persist their
             # sessions) before hard-cancelling them.
             if self._inflight_inbound:
@@ -331,7 +370,8 @@ class MessageBus:
             # interrupt or clarify-cancel that had to queue behind full slots
             # could never reach the turn holding them (a hard deadlock when every
             # slot is a clarify wait). Control handlers return early before the
-            # session lock, so they're cheap and safe to dispatch unbounded.
+            # session lock. Their separate bounded semaphore keeps the escape
+            # hatch responsive without turning a burst into unbounded tasks.
             self._schedule_inbound(event)
 
             # Backpressure lives here, in the dispatcher, and nowhere else. The
@@ -347,6 +387,36 @@ class MessageBus:
             if not event.is_control:
                 await self._wait_for_capacity()
 
+    async def _control_dispatch_loop(self) -> None:
+        """Dispatch trusted control events independently of normal capacity.
+
+        This must remain a separate wait loop.  Merely putting control events in
+        a priority queue is insufficient when the consumer is already blocked
+        waiting for a normal-work semaphore slot.
+        """
+        while self._running:
+            await self._control_concurrency_sem.acquire()
+            try:
+                event = await self._control_queue.get()
+            except asyncio.CancelledError:
+                self._control_concurrency_sem.release()
+                break
+            task = asyncio.create_task(self._dispatch_control_reserved(event))
+            self._track_inbound(task, event)
+            # Give the cheap handler a chance to publish its interrupt flag
+            # before consuming the next burst item.
+            await asyncio.sleep(0)
+
+    async def _dispatch_control_reserved(self, event: InboundEvent) -> None:
+        try:
+            await self._dispatch_inbound_event(event)
+        finally:
+            self._control_concurrency_sem.release()
+
+    async def _dispatch_control_guarded(self, event: InboundEvent) -> None:
+        await self._control_concurrency_sem.acquire()
+        await self._dispatch_control_reserved(event)
+
     async def _wait_for_capacity(self) -> None:
         """Block the dispatcher while every concurrency slot is occupied."""
         await self._concurrency_sem.acquire()
@@ -355,7 +425,9 @@ class MessageBus:
     def _schedule_inbound(self, event: InboundEvent) -> None:
         """Transfer one dequeued event into lifecycle-tracked work."""
         if event.is_control:
-            task = asyncio.create_task(self._dispatch_inbound_event(event))
+            # Used by shutdown draining after the dedicated dispatcher stops.
+            # Keep the same independent-but-bounded control concurrency.
+            task = asyncio.create_task(self._dispatch_control_guarded(event))
             self._track_inbound(task, event)
             return
 
@@ -449,4 +521,4 @@ class MessageBus:
 
     @property
     def pending_inbound(self) -> int:
-        return self._inbound_queue.qsize()
+        return self._inbound_queue.qsize() + self._control_queue.qsize()

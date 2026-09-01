@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from echo_agent.tasks.dispatcher import TaskDispatcher, new_owner_id, render_task_prompt
+from echo_agent.agent.interrupt_manager import InterruptManager
 from echo_agent.tasks.models import TaskStatus
 
 
@@ -135,6 +136,57 @@ async def test_dispatch_releases_slot_when_task_changes_owner() -> None:
     )
     await asyncio.wait_for(dispatcher._dispatch(task), timeout=1)
     assert not dispatcher._sem.locked()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_reserves_interrupt_before_exposing_event_to_bus() -> None:
+    tasks = _Tasks()
+    task = _task()
+    tasks.current = SimpleNamespace(
+        id=task.id, status=TaskStatus.PENDING, owner_id="owner"
+    )
+    interrupts = InterruptManager()
+    observed_interrupted = False
+
+    class _OvertakingBus:
+        async def publish_inbound(self, event: object) -> bool:
+            nonlocal observed_interrupted
+            assert interrupts.interrupt(event.session_key, event.event_id) is True
+            interrupts.request(event.session_key, event.event_id)
+            observed_interrupted = interrupts.is_interrupted(event.session_key)
+            return True
+
+    dispatcher = TaskDispatcher(
+        _OvertakingBus(),
+        tasks,
+        owner_id="owner",
+        renew_interval_sec=0.01,
+        interrupt_manager=interrupts,
+    )
+
+    await asyncio.wait_for(dispatcher._dispatch(task), timeout=1)
+
+    assert observed_interrupted is True
+
+
+@pytest.mark.asyncio
+async def test_dispatch_rejection_discards_interrupt_admission() -> None:
+    tasks = _Tasks()
+    task = _task()
+    interrupts = InterruptManager()
+
+    class _RejectingBus:
+        async def publish_inbound(self, event: object) -> bool:
+            assert (event.session_key, event.event_id) in interrupts._admitted
+            return False
+
+    dispatcher = TaskDispatcher(
+        _RejectingBus(), tasks, interrupt_manager=interrupts,
+    )
+
+    await dispatcher._dispatch(task)
+
+    assert not interrupts._admitted
 
 
 @pytest.mark.asyncio

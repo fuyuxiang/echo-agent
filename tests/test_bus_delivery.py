@@ -36,6 +36,15 @@ def test_from_send_result_keeps_skipped_distinct_from_delivered():
     assert skipped.detail == {"skipped": True}
 
 
+def test_from_send_result_preserves_deferred_receipt_detail():
+    deferred = DeliveryResult.from_send_result(
+        SendResult(success=True, message_id="buffer-1", deferred=True),
+        "gateway:cli",
+    )
+    assert deferred.stage is DeliveryStage.DELIVERED
+    assert deferred.detail == {"message_id": "buffer-1", "deferred": True}
+
+
 @pytest.mark.asyncio
 async def test_publish_no_handler_returns_no_handler():
     bus = MessageBus()
@@ -59,6 +68,19 @@ async def test_publish_send_result_success_is_delivered():
     bus.subscribe_outbound("cli", h)
     res = await bus.publish_outbound(_evt())
     assert res.stage is DeliveryStage.DELIVERED
+
+
+@pytest.mark.asyncio
+async def test_publish_send_result_deferred_reaches_caller_detail():
+    bus = MessageBus()
+
+    async def h(e):
+        return SendResult(success=True, deferred=True)
+
+    bus.subscribe_outbound("gateway:cli", h)
+    res = await bus.publish_outbound(_evt("gateway:cli"))
+    assert res.stage is DeliveryStage.DELIVERED
+    assert res.detail["deferred"] is True
 
 
 @pytest.mark.asyncio

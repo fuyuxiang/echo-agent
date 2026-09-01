@@ -54,7 +54,7 @@ class SendFileTool(Tool):
         self._channel_lookup = channel_lookup
 
     def _unsupported_reason(self, channel: str) -> str:
-        """Why *channel* cannot deliver a file, or "" when it can (or is unknown).
+        """Why *channel* cannot deliver a file, or "" when capability is known.
 
         Only channels that actually consume structured FILE/IMAGE blocks upload
         an attachment; the rest send the caption text and drop the file. Saying
@@ -65,7 +65,11 @@ class SendFileTool(Tool):
             return ""
         adapter = self._channel_lookup(channel)
         if adapter is None:
-            return ""
+            return (
+                f"channel '{channel}' has no file-capable adapter; the attachment "
+                "would be dropped. Send the content as text, or use a channel "
+                "with file support."
+            )
         if getattr(adapter, "supports_files", False):
             return ""
         return (

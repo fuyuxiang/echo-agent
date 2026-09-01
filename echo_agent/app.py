@@ -233,7 +233,12 @@ async def bootstrap(
         from echo_agent.tasks.dispatcher import TaskDispatcher, new_owner_id
 
         dispatcher_owner_id = new_owner_id()
-        task_dispatcher = TaskDispatcher(bus, task_manager, owner_id=dispatcher_owner_id)
+        task_dispatcher = TaskDispatcher(
+            bus,
+            task_manager,
+            owner_id=dispatcher_owner_id,
+            interrupt_manager=agent.interrupt,
+        )
         # Release the concurrency slot only when the whole turn reaches a terminal
         # state (decision d), not merely after the inbound publish.
         task_manager.add_terminal_listener(task_dispatcher._on_task_terminal)

@@ -148,6 +148,7 @@ async def test_interrupt_command_releases_pending_approval(tmp_path):
         "shell", tool_name="shell", params={"cmd": "ls"},
         user_id="u1", session_key=session_key,
     )
+    loop.interrupt.request(session_key, "evt-current")
 
     event = InboundEvent.text_message(
         channel="gateway:cli", sender_id="u1", chat_id="c2",

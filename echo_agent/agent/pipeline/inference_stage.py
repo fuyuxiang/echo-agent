@@ -1166,14 +1166,22 @@ class InferenceStage:
             response_text = "I encountered an issue processing your request. Please try again or rephrase your question."
 
         if isinstance(getattr(session, "metadata", None), dict):
-            if ctx.artifact_required:
-                if "artifact_deliver" in counters.successful_tools:
-                    session.metadata.pop("_artifact_continuation", None)
-                else:
-                    session.metadata["_artifact_continuation"] = {
-                        "trace_id": trace_id,
-                        "updated_at": time.time(),
-                    }
+            if ctx.artifact_required and "artifact_deliver" not in counters.successful_tools:
+                session.metadata["_artifact_continuation"] = {
+                    "version": 1,
+                    "trace_id": trace_id,
+                    "source_event_id": str(ctx.artifact_intent_id or event.event_id or ""),
+                    # conversation_context_key changes on reset, so a marker
+                    # from an earlier epoch can never resume into the new one.
+                    "context_key": str(ctx.context_key or event.session_key),
+                    "updated_at": time.time(),
+                }
+            else:
+                # A successful delivery and every non-artifact turn both
+                # supersede the old recovery marker.  Previously ordinary
+                # questions left it behind indefinitely, allowing a later bare
+                # "continue" to revive an unrelated report.
+                session.metadata.pop("_artifact_continuation", None)
             if output_truncated:
                 session.metadata["_output_continuation"] = {
                     "tail": response_text[-self._continuation_overlap_chars:],
@@ -1347,6 +1355,7 @@ class InferenceStage:
                 chat_id=event.chat_id,
                 reply_to_id=event.reply_to_id or "",
                 inbound_event_id=event.event_id,
+                artifact_intent_id=ctx.artifact_intent_id,
                 # Trust facts travel with the context so a nested call (a
                 # delegate/spawn worker) can be gated on them. Read from the
                 # typed InboundEvent fields only — never metadata, which external

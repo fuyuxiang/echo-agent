@@ -26,7 +26,8 @@ per-target and one-directional on purpose; the tests below pin both limits.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock
+import time
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -65,6 +66,33 @@ class _FakeChannel:
         pass
 
 
+class _EditableFakeChannel(_FakeChannel):
+    """An editable adapter with a persistent remote-message model."""
+
+    supports_edit = True
+
+    def __init__(self):
+        super().__init__()
+        self.remote_order: list[str] = []
+        self.remote_text: dict[str, str] = {}
+        self._next_message = 1
+
+    async def send(self, event):
+        message_id = f"remote-{self._next_message}"
+        self._next_message += 1
+        self.remote_order.append(message_id)
+        self.remote_text[message_id] = event.text
+        return SendResult(success=True, message_id=message_id)
+
+    async def edit_message(self, _chat_id, message_id, text, **_kwargs):
+        self.remote_text[message_id] = text
+        return SendResult(success=True, message_id=message_id)
+
+    @property
+    def visible_messages(self) -> list[str]:
+        return [self.remote_text[message_id] for message_id in self.remote_order]
+
+
 def _manager(bus: MessageBus, channel: _FakeChannel) -> ChannelManager:
     """A ChannelManager with only the state the outbound path touches.
 
@@ -100,10 +128,33 @@ def _tool_event(text: str, chat_id: str = "room1") -> OutboundEvent:
     ).mark_tool_delivery(_ctx(chat_id))
 
 
+def _artifact_part(part: int, total: int, text: str) -> OutboundEvent:
+    event = _tool_event(text)
+    event.metadata.update({
+        "_artifact_delivery_id": "delivery-1",
+        "_artifact_part": part,
+        "_artifact_parts": total,
+    })
+    return event
+
+
 def _final_reply(text: str, chat_id: str = "room1") -> OutboundEvent:
     """What loop.py publishes as the turn's own answer."""
     event = OutboundEvent.text_reply(channel="weixin", chat_id=chat_id, text=text)
     event.metadata["_inbound_event_id"] = TURN
+    return event
+
+
+def _heartbeat(text: str, milestone: int) -> OutboundEvent:
+    event = OutboundEvent.text_reply(channel="weixin", chat_id="room1", text=text)
+    event.is_final = False
+    event.message_kind = "heartbeat"
+    event.metadata.update({
+        "_heartbeat": True,
+        "_inbound_event_id": TURN,
+        "_hb_milestone": milestone,
+        "_hb_key": True,
+    })
     return event
 
 
@@ -172,6 +223,113 @@ async def test_two_tool_deliveries_to_one_target_both_go_out(wired):
     await bus.publish_outbound(_tool_event("第二条"))
 
     assert channel.sent == ["第一条", "第二条"]
+
+
+@pytest.mark.asyncio
+async def test_failed_artifact_middle_part_does_not_suppress_failure_summary(
+    wired, monkeypatch,
+):
+    """Only the last acknowledged part completes a multipart delivery.
+
+    Part 1 reaching the channel must not claim the turn target: if part 2 then
+    fails, the normal final reply is the only way to tell the user the report
+    is incomplete and must remain deliverable.
+    """
+    bus, channel, manager = wired
+    from echo_agent.channels import manager as manager_module
+
+    monkeypatch.setitem(manager_module._EMOJI_MAP["processing"], "weixin", "processing")
+    monkeypatch.setitem(manager_module._EMOJI_MAP["success"], "weixin", "success")
+    monkeypatch.setitem(manager_module._EMOJI_MAP["failure"], "weixin", "failure")
+    channel.config.reactions_enabled = True
+    channel.stop_typing = AsyncMock()
+    channel.remove_reaction = AsyncMock()
+    channel.send_reaction = AsyncMock()
+    manager._inbound_msg_ids[TURN] = ("weixin", "platform-message", time.monotonic())
+
+    async def fail_part_two(event):
+        # Transport-facing metadata is intentionally public-only, so model the
+        # adapter failure from the actual second-part payload it receives.
+        if event.text == "[report 2/3]":
+            return SendResult(success=False, error="transport offline")
+        channel.sent.append(event.text)
+        return SendResult(success=True)
+
+    channel.send = fail_part_two
+    first = await bus.publish_outbound(_artifact_part(1, 3, "[report 1/3]"))
+    second = await bus.publish_outbound(_artifact_part(2, 3, "[report 2/3]"))
+    assert "weixin:room1" not in manager._finalized_targets.get(TURN, set())
+    assert TURN in manager._inbound_msg_ids
+    channel.stop_typing.assert_not_awaited()
+    channel.send_reaction.assert_not_awaited()
+    error_final = _final_reply("⚠️ 报告交付在第 2/3 段失败")
+    error_final.metadata["_error"] = True
+    summary = await bus.publish_outbound(error_final)
+
+    assert first.ok is True
+    assert second.ok is False
+    assert summary.ok is True
+    assert channel.sent == ["[report 1/3]", "⚠️ 报告交付在第 2/3 段失败"]
+    assert "weixin:room1" in manager._finalized_targets[TURN]
+    channel.stop_typing.assert_awaited_once_with("room1")
+    channel.send_reaction.assert_awaited_once_with(
+        "room1", "platform-message", "failure",
+    )
+
+
+@pytest.mark.asyncio
+async def test_successful_last_artifact_part_suppresses_redundant_summary(wired):
+    """After every part succeeds, the last part commits the normal claim."""
+    bus, channel, manager = wired
+
+    for part in (1, 2, 3):
+        receipt = await bus.publish_outbound(
+            _artifact_part(part, 3, f"[report {part}/3]"),
+        )
+        assert receipt.ok is True
+    summary = await bus.publish_outbound(_final_reply("报告已交付"))
+
+    assert summary.ok is True
+    assert channel.sent == ["[report 1/3]", "[report 2/3]", "[report 3/3]"]
+    assert "weixin:room1" in manager._finalized_targets[TURN]
+
+
+@pytest.mark.asyncio
+async def test_editable_channel_keeps_every_artifact_part_and_fences_late_heartbeat():
+    """The heartbeat slot may host part 1, but never all parts in succession."""
+    bus = MessageBus()
+    channel = _EditableFakeChannel()
+    manager = _manager(bus, channel)
+    channel.stop_typing = AsyncMock()
+
+    await bus.publish_outbound(_heartbeat("处理中", milestone=1))
+    assert channel.visible_messages == ["处理中"]
+    assert TURN in manager._heartbeat_msg_ids
+
+    first = await bus.publish_outbound(_artifact_part(1, 3, "PART1"))
+    assert first.ok is True
+    assert channel.visible_messages == ["PART1"]
+    assert TURN not in manager._heartbeat_msg_ids
+    assert TURN in manager._finalized_keys
+    assert "weixin:room1" not in manager._finalized_targets.get(TURN, set())
+    channel.stop_typing.assert_not_awaited()
+
+    # Once part 1 is visible, a delayed progress beat must neither overwrite it
+    # nor allocate a new "processing" message.
+    await bus.publish_outbound(_heartbeat("仍在处理中", milestone=2))
+    assert channel.visible_messages == ["PART1"]
+
+    second = await bus.publish_outbound(_artifact_part(2, 3, "PART2"))
+    assert second.ok is True
+    assert channel.visible_messages == ["PART1", "PART2"]
+    assert "weixin:room1" not in manager._finalized_targets.get(TURN, set())
+    channel.stop_typing.assert_not_awaited()
+
+    third = await bus.publish_outbound(_artifact_part(3, 3, "PART3"))
+    assert third.ok is True
+    assert channel.visible_messages == ["PART1", "PART2", "PART3"]
+    assert "weixin:room1" in manager._finalized_targets[TURN]
+    channel.stop_typing.assert_awaited_once_with("room1")
 
 
 @pytest.mark.asyncio

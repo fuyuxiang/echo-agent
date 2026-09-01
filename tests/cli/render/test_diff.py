@@ -1,5 +1,5 @@
 from echo_agent.cli.render.diff import (
-    ANSI_DIFF_STYLE, TEXTUAL_DIFF_STYLE, colorize_diff,
+    ANSI_DIFF_STYLE, PLAIN_DIFF_STYLE, TEXTUAL_DIFF_STYLE, colorize_diff,
 )
 
 
@@ -46,3 +46,10 @@ def test_textual_style_escapes_brackets_in_content():
 def test_ansi_style_leaves_brackets_alone():
     out = colorize_diff("+text [literal]", style=ANSI_DIFF_STYLE)
     assert "[literal]" in out
+
+
+def test_plain_style_has_no_markup_or_terminal_escapes():
+    out = colorize_diff("+added\n-removed", style=PLAIN_DIFF_STYLE)
+    assert out == "+added\n-removed"
+    assert "\033[" not in out
+    assert "[$" not in out

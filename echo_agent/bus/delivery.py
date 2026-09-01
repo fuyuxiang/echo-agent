@@ -46,7 +46,19 @@ class DeliveryResult:
         # ``ok`` compatibility of ACCEPTED while letting callers that require a
         # real receipt (notably approval prompts) distinguish the two.
         if sr.skipped:
-            return cls(DeliveryStage.ACCEPTED, channel, detail={"skipped": True})
+            detail = {"skipped": True}
+            if sr.deferred:
+                detail["deferred"] = True
+            return cls(DeliveryStage.ACCEPTED, channel, detail=detail)
         if sr.success:
-            return cls(DeliveryStage.DELIVERED, channel, detail={"message_id": sr.message_id})
-        return cls(DeliveryStage.FAILED, channel, error=sr.error or "send failed")
+            detail = {"message_id": sr.message_id}
+            if sr.deferred:
+                detail["deferred"] = True
+            return cls(DeliveryStage.DELIVERED, channel, detail=detail)
+        detail = {"deferred": True} if sr.deferred else {}
+        return cls(
+            DeliveryStage.FAILED,
+            channel,
+            error=sr.error or "send failed",
+            detail=detail,
+        )
