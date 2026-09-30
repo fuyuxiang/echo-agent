@@ -15,8 +15,8 @@ from echo_agent.security.guards import evaluate_shell_command, scan_shell_comman
 class _ExecPolicy:
     """Minimal exec policy stub for decision-level guard tests."""
 
-    def __init__(self, ask="on_miss"):
-        self.security = "allowlist"
+    def __init__(self, ask="on_miss", security="allowlist"):
+        self.security = security
         self.ask = ask
         self.blocked_commands = ()
         self.allowed_commands = ()
@@ -78,6 +78,13 @@ class TestNormalizeCommand:
     def test_backslash_evasion(self):
         result = normalize_command("r\\m -rf /")
         assert "rm" in result
+
+    def test_ifs_expands_to_field_separator(self):
+        # POSIX shells expand $IFS / ${IFS} to the input field separator, so
+        # these run as `rm -rf /`. Normalization must surface that separator
+        # instead of welding the tokens together.
+        for cmd in ("rm${IFS}-rf${IFS}/", "rm$IFS-rf$IFS/", "rm${IFS}-rf /"):
+            assert "rm -rf" in normalize_command(cmd), cmd
 
     def test_preserves_path_case(self):
         # normalize_command must not lowercase paths — case-sensitive
@@ -146,6 +153,16 @@ class TestScanBypassVectors:
     def test_backslash_escaped_rm(self):
         findings = scan_shell_command("r\\m -rf /")
         assert any(f.hard_block for f in findings)
+
+    # --- $IFS 词分隔符混淆:按 shell 语义展开后必须命中硬阻断 ---
+    def test_ifs_expansion_cannot_hide_root_rm(self):
+        for cmd in ("rm${IFS}-rf${IFS}/", "rm$IFS-rf$IFS/", "rm${IFS}-rf /"):
+            findings = scan_shell_command(cmd)
+            assert any(f.key == "root_rm" and f.hard_block for f in findings), cmd
+
+    def test_ifs_expansion_cannot_hide_block_device_write(self):
+        findings = scan_shell_command("dd${IFS}of=/dev/sda")
+        assert any(f.key == "block_device_write" and f.hard_block for f in findings)
 
     # --- 大小写绕过(经 normalize 后应被硬阻断)---
     def test_uppercase_rm_rf_root(self):
@@ -289,6 +306,17 @@ class TestScanBypassVectors:
 
 class TestUnattendedDecision:
     """Decision-level guarantees under ask=off (unattended channels deny)."""
+
+    def test_ifs_obfuscated_root_rm_denied_under_full_policy(self):
+        # security=full skips the allowlist ask/deny path entirely, so a bypassed
+        # hard-block pattern would be executed with no prompt and no denial.
+        decision = evaluate_shell_command(
+            "rm${IFS}-rf${IFS}/",
+            exec_policy=_ExecPolicy(ask="on_miss", security="full"),
+            network_policy="allow",
+        )
+        assert decision.action == "deny"
+        assert decision.pattern_key == "root_rm"
 
     def test_bare_root_rm_denied_regardless_of_ask(self):
         # Hard-block patterns deny even when approval is otherwise enabled.

@@ -25,6 +25,14 @@ _ANSI_C_SIMPLE = {
 }
 _SHELL_VAR_BRACE_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z_0-9]*)(?::?[-=+?][^}]*)?\}")
 _SHELL_VAR_SIMPLE_RE = re.compile(r"\$([A-Za-z_][A-Za-z_0-9]*)")
+# ``$IFS`` / ``${IFS}`` expand to the shell's input field separator, so
+# ``rm${IFS}-rf${IFS}/`` runs as ``rm -rf /``. The generic variable pass below
+# replaces a reference with its *name*, which welds the surrounding tokens
+# together (``rmIFS-rfIFS/``) and hides the separator from every
+# whitespace-anchored guard pattern. Substitute the separator itself first.
+# The brace form also covers modifiers (``${IFS:0:1}``, ``${IFS%?}``,
+# ``${IFS:- }``), all of which yield a field separator when unquoted.
+_IFS_EXPANSION_RE = re.compile(r"\$\{IFS[^}]*\}|\$IFS\b")
 
 
 def decode_percent_encoding(s: str) -> str:
@@ -53,8 +61,14 @@ def expand_shell_variables(s: str) -> str:
 
     This ensures patterns like ${cmd} where cmd=rm are surfaced for guard matching.
     We replace ${VAR} with the literal VAR name so guards can detect suspicious names.
+
+    ``$IFS`` is the exception: it is the shell's field separator, so replacing it
+    with its name would erase the token boundary a command like ``rm${IFS}-rf``
+    relies on to look glued together to a regex. Expand it to a space instead,
+    before the name-marker pass can consume it.
     """
-    result = _SHELL_VAR_BRACE_RE.sub(r"\1", s)
+    result = _IFS_EXPANSION_RE.sub(" ", s)
+    result = _SHELL_VAR_BRACE_RE.sub(r"\1", result)
     result = _SHELL_VAR_SIMPLE_RE.sub(r"\1", result)
     return result
 
