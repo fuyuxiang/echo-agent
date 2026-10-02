@@ -86,6 +86,21 @@ class TestNormalizeCommand:
         for cmd in ("rm${IFS}-rf${IFS}/", "rm$IFS-rf$IFS/", "rm${IFS}-rf /"):
             assert "rm -rf" in normalize_command(cmd), cmd
 
+    def test_ifs_parameter_expansions_keep_their_actual_word(self):
+        # The + operator substitutes its word, not IFS. Prefixes that happen
+        # to start with IFS are separate shell variables.
+        for value in ("${IFS+X}", "${IFS:+X}", "${IFS_SUFFIX}", "${IFSfoo}"):
+            assert normalize_command(f"rm{value}-rf{value}/") != "rm -rf /", value
+
+    def test_empty_ifs_transform_does_not_create_a_separator(self):
+        for value in ("${IFS:9:1}", "${IFS%%*}"):
+            assert normalize_command(f"rm{value}-rf{value}/") != "rm -rf /", value
+
+    def test_large_ifs_slice_offsets_are_bounded(self):
+        huge_offset = "9" * 5000
+        assert normalize_command(f"rm${{IFS:{huge_offset}:1}}-rf /") == "rm-rf /"
+        assert normalize_command("rm${IFS:0000000001:1}-rf /") == "rm -rf /"
+
     def test_preserves_path_case(self):
         # normalize_command must not lowercase paths — case-sensitive
         # filesystems treat /etc/Passwd as distinct from /etc/passwd.
@@ -156,13 +171,30 @@ class TestScanBypassVectors:
 
     # --- $IFS 词分隔符混淆:按 shell 语义展开后必须命中硬阻断 ---
     def test_ifs_expansion_cannot_hide_root_rm(self):
-        for cmd in ("rm${IFS}-rf${IFS}/", "rm$IFS-rf$IFS/", "rm${IFS}-rf /"):
+        separators = (
+            "${IFS}", "$IFS", "${IFS:0:1}", "${IFS:1:1}",
+            "${IFS%?}", "${IFS:- }", "${IFS+ }", "${IFS:+ }",
+            "${IFS+${IFS}}",
+        )
+        for separator in separators:
+            cmd = f"rm{separator}-rf{separator}/"
             findings = scan_shell_command(cmd)
             assert any(f.key == "root_rm" and f.hard_block for f in findings), cmd
 
     def test_ifs_expansion_cannot_hide_block_device_write(self):
         findings = scan_shell_command("dd${IFS}of=/dev/sda")
         assert any(f.key == "block_device_write" and f.hard_block for f in findings)
+
+    def test_deeply_nested_ifs_expansion_stays_bounded_and_blocked(self):
+        separator = "${IFS+" * 200 + "${IFS}" + "}" * 200
+        findings = scan_shell_command(f"rm{separator}-rf{separator}/")
+        assert any(f.key == "root_rm" and f.hard_block for f in findings)
+
+    def test_other_ifs_named_variables_do_not_hard_block(self):
+        for value in ("${IFS_SUFFIX}", "${IFSfoo}", "${IFS+X}", "${IFS:+X}"):
+            cmd = f"rm{value}-rf{value}/"
+            findings = scan_shell_command(cmd)
+            assert not any(f.key == "root_rm" for f in findings), cmd
 
     # --- 大小写绕过(经 normalize 后应被硬阻断)---
     def test_uppercase_rm_rf_root(self):
@@ -317,6 +349,60 @@ class TestUnattendedDecision:
         )
         assert decision.action == "deny"
         assert decision.pattern_key == "root_rm"
+
+    def test_non_separator_ifs_form_is_allowed_under_full_policy(self):
+        decision = evaluate_shell_command(
+            "rm${IFS+X}-rf${IFS+X}/",
+            exec_policy=_ExecPolicy(security="full"),
+            network_policy="allow",
+        )
+        assert decision.action == "allow"
+
+    def test_non_separator_ifs_form_is_approvable_under_allowlist(self):
+        decision = evaluate_shell_command(
+            "rm${IFS+X}-rf${IFS+X}/",
+            exec_policy=_ExecPolicy(),
+            network_policy="allow",
+        )
+        assert decision.action == "ask"
+        assert decision.pattern_key == "allowlist_miss"
+
+    def test_custom_ifs_cannot_turn_a_literal_word_into_a_bypass(self):
+        for command in (
+            "IFS=X; rm${IFS+X}-rf${IFS+X}/",
+            "IFS=0123456789; rm${IFS:9:1}-rf${IFS:9:1}/",
+        ):
+            decision = evaluate_shell_command(
+                command,
+                exec_policy=_ExecPolicy(security="full"),
+                network_policy="allow",
+            )
+            assert decision.action == "deny", command
+            assert decision.pattern_key == "root_rm", command
+
+        decision = evaluate_shell_command(
+            "IFS=X; dd${IFS+X}of=/dev/sda",
+            exec_policy=_ExecPolicy(security="full"),
+            network_policy="allow",
+        )
+        assert decision.action == "deny"
+        assert decision.pattern_key == "block_device_write"
+
+    def test_custom_ifs_assignment_alone_is_not_blocked(self):
+        decision = evaluate_shell_command(
+            "IFS=X; echo hello",
+            exec_policy=_ExecPolicy(security="full"),
+            network_policy="allow",
+        )
+        assert decision.action == "allow"
+
+    def test_later_ifs_assignment_does_not_change_an_earlier_command(self):
+        decision = evaluate_shell_command(
+            "rm${IFS+X}-rf${IFS+X}/; IFS=X",
+            exec_policy=_ExecPolicy(security="full"),
+            network_policy="allow",
+        )
+        assert decision.action == "allow"
 
     def test_bare_root_rm_denied_regardless_of_ask(self):
         # Hard-block patterns deny even when approval is otherwise enabled.

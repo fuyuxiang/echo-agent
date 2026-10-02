@@ -20,6 +20,7 @@
 - `rich>=13.5` 成为必选依赖。此前它只是 `[tui]` extra 的传递依赖（随 `textual` 装入），而 CLI 的终端渲染代码在不装 `[tui]` 时同样需要它做 markup 转义；最小安装 `pip install echo-agent` 现在会多装 rich。下限取 13.5 是因为更早的版本 `rich.markup.escape` 不补偿结尾反斜杠，会让以 `\` 结尾的 diff 行（C 宏、shell 续行、Windows 路径）吃掉闭合标签
 
 ### Fixed
+- **安全**：命令守卫现在识别 `$IFS` 及常见参数展开构造的字段分隔符，阻断原先可绕过的根目录删除与块设备写入；同时区分 `IFS_SUFFIX` 等其他变量和 `${IFS+word}` 的实际替换内容，避免把非分隔符误判为危险命令。
 - 修复首次配置向导与 schema 默认值背离：原始 YAML 没有 `skills` 块时，向导错误地将默认开启的技能系统取消勾选并持久化为 `skills.enabled: false`
 - 公网 Gateway 向导现在同时配置 `allowed_hosts` 与 Dashboard `allowed_origins`，并规范化 Origin 的大小写、默认端口和末尾斜杠；修复部分浏览器/WebView 只读页可用，但 WebSocket 与通道开关持续返回 `cross-site request forbidden` 的配置陷阱
 - 修复 inline CLI 动画通过 `patch_stdout` 反复撤下并重绘输入区、导致底部状态栏随 spinner 闪烁；交互动画现由 prompt-toolkit 统一差量渲染，中等宽度的 inline/TUI 状态栏同时恢复显示记忆数
