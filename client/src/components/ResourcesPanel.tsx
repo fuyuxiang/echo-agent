@@ -75,6 +75,7 @@ export function ResourcesPanel({ cwd, sessionId, onToast }: ResourcesPanelProps)
   const [busy, setBusy] = useState(false);
   const { requestConfirmation, dialog } = useAppDialog(JSON.stringify([cwd ?? null, sessionId ?? null]));
   const reloadGeneration = useRef(0);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   const reload = useCallback(async () => {
     const generation = ++reloadGeneration.current;
@@ -268,6 +269,10 @@ export function ResourcesPanel({ cwd, sessionId, onToast }: ResourcesPanelProps)
   const globalCount = entries.filter((entry) => entry.scope === "global").length;
   const workspaceCount = entries.filter((entry) => entry.scope === "workspace").length;
   const sessionCount = entries.filter((entry) => entry.scope === "session").length;
+  const clearSearch = () => {
+    setQuery("");
+    searchInputRef.current?.focus();
+  };
 
   return (
     <div className="resources-panel">
@@ -353,7 +358,7 @@ export function ResourcesPanel({ cwd, sessionId, onToast }: ResourcesPanelProps)
       <div className="resources-panel__list-controls">
         <div className="resources-panel__search">
           <SearchIcon size="md" className="resources-panel__search-icon" />
-          <input className="resources-panel__search-input" aria-label="搜索记忆" placeholder={activeTab === "summaries" ? "搜索会话摘要…" : "搜索长期记忆…"} value={query} onChange={(event) => setQuery(event.target.value)} />
+          <input ref={searchInputRef} className="resources-panel__search-input" aria-label="搜索记忆" placeholder={activeTab === "summaries" ? "搜索会话摘要…" : "搜索长期记忆…"} value={query} onChange={(event) => setQuery(event.target.value)} />
         </div>
         <div className="resources-panel__stats">
           {activeTab === "summaries" ? (
@@ -396,17 +401,17 @@ export function ResourcesPanel({ cwd, sessionId, onToast }: ResourcesPanelProps)
         {!loading && !loadError && filtered.length === 0 && (
           <div className="resources-panel__empty" role="status">
             <BookIcon size="xl" color="var(--echo-text-tertiary)" />
-            {normalizedQuery ? (
-              <>
-                <p>没有找到匹配的记忆，请尝试其他关键词。</p>
-                <button type="button" className="btn btn--ghost" onClick={() => setQuery("")}>清除搜索</button>
-              </>
-            ) : activeTab === "summaries" ? (
+            {visibleEntries.length === 0 && activeTab === "summaries" ? (
               <p>暂无会话摘要。Agent 只会在会话中出现值得跨会话复用的信息时生成摘要。</p>
-            ) : (
+            ) : visibleEntries.length === 0 ? (
               <p>
                 暂无长期记忆文档。可手动添加，或在对话中使用 <code>/remember</code> 保存。
               </p>
+            ) : (
+              <p>没有找到匹配的{activeTab === "summaries" ? "会话摘要" : "长期记忆文档"}，请尝试其他关键词。</p>
+            )}
+            {query && (
+              <button type="button" className="btn btn--ghost" onClick={clearSearch}>清除搜索</button>
             )}
           </div>
         )}

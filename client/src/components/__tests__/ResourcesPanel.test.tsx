@@ -133,12 +133,42 @@ describe("ResourcesPanel", () => {
     await screen.findByText("MEMORY.md");
 
     await user.type(screen.getByRole("textbox", { name: "搜索记忆" }), "不存在的关键词");
-    expect(screen.getByRole("status")).toHaveTextContent("没有找到匹配的记忆");
+    expect(screen.getByRole("status")).toHaveTextContent("没有找到匹配的长期记忆文档");
     expect(screen.queryByText(/暂无长期记忆文档/)).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "清除搜索" }));
     expect(screen.getByText("MEMORY.md")).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "搜索记忆" })).toHaveValue("");
+    expect(screen.getByRole("textbox", { name: "搜索记忆" })).toHaveFocus();
+
+    await user.click(screen.getByRole("tab", { name: /会话摘要/ }));
+    await user.type(screen.getByRole("textbox", { name: "搜索记忆" }), "不存在的关键词");
+    expect(screen.getByRole("status")).toHaveTextContent("没有找到匹配的会话摘要");
+  });
+
+  it("没有长期记忆时不会把搜索反馈误写成无匹配结果", async () => {
+    api.memoryList.mockResolvedValueOnce([]);
+    const user = userEvent.setup();
+    render(<ResourcesPanel cwd="/repo" />);
+    await screen.findByText(/暂无长期记忆文档/);
+
+    await user.type(screen.getByRole("textbox", { name: "搜索记忆" }), "关键词");
+    expect(screen.getByRole("status")).toHaveTextContent("暂无长期记忆文档");
+    expect(screen.getByRole("status")).not.toHaveTextContent("没有匹配");
+    await user.click(screen.getByRole("button", { name: "清除搜索" }));
+    expect(screen.getByRole("textbox", { name: "搜索记忆" })).toHaveFocus();
+  });
+
+  it("当前分类没有摘要时说明数据为空，即使长期记忆已有内容", async () => {
+    api.memoryList.mockResolvedValueOnce([GLOBAL_ENTRY]);
+    const user = userEvent.setup();
+    render(<ResourcesPanel cwd="/repo" />);
+    await screen.findByText("MEMORY.md");
+    await user.click(screen.getByRole("tab", { name: /会话摘要/ }));
+
+    await user.type(screen.getByRole("textbox", { name: "搜索记忆" }), "关键词");
+    expect(screen.getByRole("status")).toHaveTextContent("暂无会话摘要");
+    expect(screen.getByRole("status")).not.toHaveTextContent("没有匹配");
   });
 
   it("新建记忆追加到工作区主文件", async () => {
