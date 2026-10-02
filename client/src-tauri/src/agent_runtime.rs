@@ -22,13 +22,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use agent_client_protocol as acp;
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use base64::Engine;
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
 use echo_agent_acp::{
-    AcpAgentGatewaySender, AcpAgentTx, AcpClientRx, AcpGatewayReceiver, acp_channels, acp_send,
+    acp_channels, acp_send, AcpAgentGatewaySender, AcpAgentTx, AcpClientRx, AcpGatewayReceiver,
 };
 use echo_agent_runtime::agent::init::bootstrap;
 use echo_agent_runtime::agent::mvp_agent::MvpAgent;

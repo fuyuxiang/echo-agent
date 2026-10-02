@@ -127,6 +127,20 @@ describe("ResourcesPanel", () => {
     expect(screen.queryByDisplayValue(/private reasoning/)).not.toBeInTheDocument();
   });
 
+  it("搜索无结果时说明原因并能一键恢复列表", async () => {
+    const user = userEvent.setup();
+    render(<ResourcesPanel cwd="/repo" />);
+    await screen.findByText("MEMORY.md");
+
+    await user.type(screen.getByRole("textbox", { name: "搜索记忆" }), "不存在的关键词");
+    expect(screen.getByRole("status")).toHaveTextContent("没有找到匹配的记忆");
+    expect(screen.queryByText(/暂无长期记忆文档/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "清除搜索" }));
+    expect(screen.getByText("MEMORY.md")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "搜索记忆" })).toHaveValue("");
+  });
+
   it("新建记忆追加到工作区主文件", async () => {
     const user = userEvent.setup();
     render(<ResourcesPanel cwd="/repo" sessionId="session-1" />);

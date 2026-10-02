@@ -394,9 +394,14 @@ export function ResourcesPanel({ cwd, sessionId, onToast }: ResourcesPanelProps)
 
       <div className="resources-panel__list">
         {!loading && !loadError && filtered.length === 0 && (
-          <div className="resources-panel__empty">
+          <div className="resources-panel__empty" role="status">
             <BookIcon size="xl" color="var(--echo-text-tertiary)" />
-            {activeTab === "summaries" ? (
+            {normalizedQuery ? (
+              <>
+                <p>没有找到匹配的记忆，请尝试其他关键词。</p>
+                <button type="button" className="btn btn--ghost" onClick={() => setQuery("")}>清除搜索</button>
+              </>
+            ) : activeTab === "summaries" ? (
               <p>暂无会话摘要。Agent 只会在会话中出现值得跨会话复用的信息时生成摘要。</p>
             ) : (
               <p>

@@ -20,10 +20,10 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use echo_agent_runtime::session::RewindMode as RuntimeRewindMode;
 use echo_agent_runtime::session::memory::{
-    MemoryIndex, MemoryScope, MemoryStorage, init_sqlite_vec, storage::normalize_memory_content,
+    init_sqlite_vec, storage::normalize_memory_content, MemoryIndex, MemoryScope, MemoryStorage,
 };
+use echo_agent_runtime::session::RewindMode as RuntimeRewindMode;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, State};
@@ -2475,14 +2475,14 @@ pub async fn marketplace_action(
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_ADMIN_ACTION_STRING_BYTES, MemoryEntryScope, MemoryIndex, MemoryStorage,
-        ModelReloadAck, RawSearchHit, RunningTaskSource, check_expected_revision,
-        delete_session_memory_artifacts_from_storage, file_revision, init_sqlite_vec,
-        kill_running_task, list_memory, list_running_tasks, normalize_plugin_action,
-        parse_model_reload_ack, parse_rewind_execution, parse_slash_commands, remember_marketplace,
-        remember_plugins, request_internal_reload_and_wait, require_listed_marketplace_source,
+        check_expected_revision, delete_session_memory_artifacts_from_storage, file_revision,
+        init_sqlite_vec, kill_running_task, list_memory, list_running_tasks,
+        normalize_plugin_action, parse_model_reload_ack, parse_rewind_execution,
+        parse_slash_commands, remember_marketplace, remember_plugins,
+        request_internal_reload_and_wait, require_listed_marketplace_source,
         require_listed_plugin_id, resolve_memory_path, rewind_execute_payload, rewind_point_values,
-        secure_remote_source, validate_admin_action,
+        secure_remote_source, validate_admin_action, MemoryEntryScope, MemoryIndex, MemoryStorage,
+        ModelReloadAck, RawSearchHit, RunningTaskSource, MAX_ADMIN_ACTION_STRING_BYTES,
     };
 
     #[test]
@@ -2821,11 +2821,9 @@ mod tests {
                 "authReady": true,
             })));
 
-        assert!(
-            parse_model_reload_ack(response)
-                .expect_err("authReady without an auth method must fail closed")
-                .contains("inconsistent authentication state")
-        );
+        assert!(parse_model_reload_ack(response)
+            .expect_err("authReady without an auth method must fail closed")
+            .contains("inconsistent authentication state"));
     }
 
     #[test]
@@ -2892,12 +2890,10 @@ mod tests {
             )
             .unwrap();
             assert_eq!(index.search_fts("NewPreferenceToken", 10).unwrap().len(), 1);
-            assert!(
-                index
-                    .search_fts("OldPreferenceToken", 10)
-                    .unwrap()
-                    .is_empty()
-            );
+            assert!(index
+                .search_fts("OldPreferenceToken", 10)
+                .unwrap()
+                .is_empty());
         }
         super::sync_memory_indexes(&first_storage, MemoryEntryScope::Global, &global_file, true)
             .unwrap();
@@ -2908,12 +2904,10 @@ mod tests {
             crate::agent_runtime::MEMORY_EMBEDDING_DIMENSIONS,
         )
         .unwrap();
-        assert!(
-            index
-                .search_fts("NewPreferenceToken", 10)
-                .unwrap()
-                .is_empty()
-        );
+        assert!(index
+            .search_fts("NewPreferenceToken", 10)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -3005,10 +2999,10 @@ mod tests {
             accepted,
             flush::FlushResult::Accepted("## Decision\n\nKeep the public result.".to_string())
         );
-        assert!(
-            dream::process_dream_response("<reasoning>private ## headings</reasoning>\nNO_REPLY")
-                .is_none()
-        );
+        assert!(dream::process_dream_response(
+            "<reasoning>private ## headings</reasoning>\nNO_REPLY"
+        )
+        .is_none());
     }
 
     #[test]
