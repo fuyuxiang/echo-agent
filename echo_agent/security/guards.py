@@ -49,6 +49,7 @@ _ROOT_RM_DIRS = "home|root|etc|usr|var|bin|sbin|boot|lib|sys|proc|dev"
 # transparent wrapper (sudo/env/exec/...). Used to anchor the shutdown family so
 # it fires on `sudo reboot` but not on data like echo "we will REBOOT at noon".
 _CMD_START = r"(?:^|[;&|\n`]|\$\(|\b(?:sudo|env|exec|nohup|setsid|time)\s+)\s*"
+_IFS_ASSIGNMENT_RE = re.compile(r"(?<![A-Za-z_0-9])IFS\s*\+?=")
 
 
 SHELL_HARD_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
@@ -178,9 +179,18 @@ def scan_shell_command(command: str) -> list[GuardFinding]:
     seen_keys: set[str] = set()
 
     normalized = normalize_command(command)
-    sub_commands = ShellTokenizer().tokenize(normalized)
-
-    targets = [normalized] + [sc for sc in sub_commands if sc != normalized]
+    targets = [normalized]
+    # A command can change IFS before expanding a later word. In that case a
+    # literal `${IFS+X}` may split on X, even though it cannot do so with the
+    # default IFS. Scan that possible interpretation as well.
+    if assignment := _IFS_ASSIGNMENT_RE.search(command):
+        # Earlier commands still use the default separator; only scan the
+        # suffix where this assignment can affect later expansions.
+        custom_normalized = normalize_command(command[assignment.start():], custom_ifs=True)
+        if custom_normalized != normalized:
+            targets.append(custom_normalized)
+    tokenizer = ShellTokenizer()
+    targets.extend(sc for target in tuple(targets) for sc in tokenizer.tokenize(target) if sc != target)
 
     for target in targets:
         for key, pattern, reason in SHELL_HARD_PATTERNS:
