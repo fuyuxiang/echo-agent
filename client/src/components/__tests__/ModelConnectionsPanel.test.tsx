@@ -116,6 +116,39 @@ describe("ModelConnectionsPanel", () => {
     expect(screen.queryByRole("button", { name: "编辑连接" })).not.toBeInTheDocument();
   });
 
+  it("标题和无纵向溢出的连接列表可继续滚动详情，移动布局交由原生滚动", async () => {
+    mocks.providersList.mockResolvedValue({
+      providers: [{ id: "custom", providerKind: "custom", label: "工作", source: "personal", baseUrl: "https://example.com/v1" }],
+      models: [{ modelId: "model-a", providerId: "custom" }],
+    });
+    const { container } = render(<ModelConnectionsPanel />);
+    const detail = await screen.findByRole("region", { name: "工作连接详情" });
+    const sourceList = screen.getByLabelText("模型连接");
+    const panel = container.querySelector<HTMLElement>(".model-connections")!;
+    panel.style.overflowY = "hidden";
+    Object.defineProperties(detail, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 200 },
+    });
+    Object.defineProperties(sourceList, {
+      scrollHeight: { configurable: true, value: 200 },
+      clientHeight: { configurable: true, value: 200 },
+    });
+
+    fireEvent.wheel(screen.getByRole("heading", { name: "模型与连接" }), { deltaY: 120 });
+    expect(detail.scrollTop).toBe(120);
+    fireEvent.wheel(sourceList, { deltaY: 120 });
+    expect(detail.scrollTop).toBe(240);
+
+    Object.defineProperty(sourceList, "scrollHeight", { configurable: true, value: 500 });
+    fireEvent.wheel(sourceList, { deltaY: 120 });
+    expect(detail.scrollTop).toBe(240);
+
+    panel.style.overflowY = "auto";
+    fireEvent.wheel(screen.getByRole("heading", { name: "模型与连接" }), { deltaY: 120 });
+    expect(detail.scrollTop).toBe(240);
+  });
+
   it("个人 HTTP 连接仍显示明文传输提醒", async () => {
     mocks.providersList.mockResolvedValue({
       providers: [{ id: "custom", providerKind: "custom", label: "个人连接", source: "personal", baseUrl: "http://example.com/v1" }],

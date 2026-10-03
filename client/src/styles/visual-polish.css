@@ -36,6 +36,7 @@
   flex-direction: column;
   gap: 14px;
   overflow: hidden;
+  overscroll-behavior: contain;
 }
 
 .model-connections__header {
@@ -735,6 +736,7 @@
   .model-connections {
     height: auto;
     overflow-y: auto;
+    overscroll-behavior-y: auto;
   }
 
   .model-connections__workspace {
@@ -748,7 +750,8 @@
     gap: 10px;
     overflow-x: auto;
     overflow-y: hidden;
-    overscroll-behavior: contain;
+    overscroll-behavior-x: contain;
+    overscroll-behavior-y: auto;
     border-right: 0;
     border-bottom: 1px solid var(--echo-border-default);
     scrollbar-gutter: auto;
@@ -3162,9 +3165,20 @@ button,
 }
 
 .settings-subview > .settings-section {
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   min-height: 0;
   height: auto;
+  overflow-x: clip;
+  overflow-y: visible;
+}
+
+.settings-view-tabs__sticky {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  flex: 0 0 auto;
+  padding-bottom: 8px;
+  background: var(--ui-surface);
 }
 
 .settings-view-tabs {
@@ -3386,6 +3400,12 @@ button,
 
 .settings-section__body {
   gap: 30px;
+}
+
+.settings-modal__panel .quota-panel {
+  overflow-x: clip;
+  overflow-y: visible;
+  overscroll-behavior: auto;
 }
 
 .settings-group {

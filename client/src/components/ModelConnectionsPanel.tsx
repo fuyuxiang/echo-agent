@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type WheelEvent } from "react";
 import {
   Building2,
   Check,
@@ -218,9 +218,31 @@ export function ModelConnectionsPanel({ onModelsChanged }: ModelConnectionsPanel
   const [syncingOrganization, setSyncingOrganization] = useState(false);
   const [testingProviderId, setTestingProviderId] = useState<string | null>(null);
   const reloadGenerationRef = useRef(0);
+  const sourceListRef = useRef<HTMLElement>(null);
+  const detailRef = useRef<HTMLElement>(null);
   const organizationSession = useOrgSessionStore((state) => state.session);
   const hydrateOrganization = useOrgSessionStore((state) => state.hydrate);
   const { requestConfirmation, dialog } = useAppDialog(selectedProviderId);
+
+  const handleWheel = (event: WheelEvent<HTMLDivElement>) => {
+    const target = event.target;
+    if (event.deltaY === 0 || !(target instanceof Element) || target.closest(
+      ".model-connections__detail, .models-settings-panel__editor-overlay, .app-dialog-overlay",
+    )) return;
+
+    const sourceList = sourceListRef.current;
+    const overSourceList = Boolean(sourceList?.contains(target));
+    const canScroll = (element: HTMLElement | null) => element && (event.deltaY > 0
+      ? element.scrollTop + element.clientHeight < element.scrollHeight - 1
+      : element.scrollTop > 0);
+    if (overSourceList && canScroll(sourceList)) return;
+    if (getComputedStyle(event.currentTarget).overflowY !== "hidden") return;
+
+    const scrollTarget = [detailRef.current, sourceList].find(canScroll);
+    if (!scrollTarget) return;
+    const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? scrollTarget.clientHeight : 1;
+    scrollTarget.scrollTop += event.deltaY * unit;
+  };
 
   const reload = useCallback(async (): Promise<string | null> => {
     const generation = ++reloadGenerationRef.current;
@@ -388,7 +410,7 @@ export function ModelConnectionsPanel({ onModelsChanged }: ModelConnectionsPanel
   };
 
   return (
-    <div className="model-connections">
+    <div className="model-connections" onWheel={handleWheel}>
       <header className="model-connections__header">
         <div>
           <h2>模型与连接</h2>
@@ -434,7 +456,7 @@ export function ModelConnectionsPanel({ onModelsChanged }: ModelConnectionsPanel
         </div>
       ) : (
         <div className="model-connections__workspace">
-          <aside className="model-connections__source-list" aria-label="模型连接">
+          <aside className="model-connections__source-list" aria-label="模型连接" ref={sourceListRef}>
             {organizationProviders.length > 0 && (
               <ConnectionGroup
                 title="组织提供"
@@ -470,6 +492,7 @@ export function ModelConnectionsPanel({ onModelsChanged }: ModelConnectionsPanel
               className="model-connections__detail"
               aria-label={`${connectionName(selectedProvider)}连接详情`}
               tabIndex={0}
+              ref={detailRef}
             >
               <header className="model-connections__detail-header">
                 <div>

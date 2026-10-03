@@ -107,12 +107,14 @@ function SettingsViewTabs({
   onSelect: (section: SettingsSectionId) => void;
 }) {
   return (
-    <div className="settings-view-tabs" role="group" aria-label={label}>
-      {items.map(([id, title]) => (
-        <button key={id} type="button" aria-pressed={active === id}
-          className={`settings-view-tabs__item${active === id ? " settings-view-tabs__item--active" : ""}`}
-          onClick={() => onSelect(id)}>{title}</button>
-      ))}
+    <div className="settings-view-tabs__sticky">
+      <div className="settings-view-tabs" role="group" aria-label={label}>
+        {items.map(([id, title]) => (
+          <button key={id} type="button" aria-pressed={active === id}
+            className={`settings-view-tabs__item${active === id ? " settings-view-tabs__item--active" : ""}`}
+            onClick={() => onSelect(id)}>{title}</button>
+        ))}
+      </div>
     </div>
   );
 }

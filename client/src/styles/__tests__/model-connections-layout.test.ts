@@ -30,4 +30,10 @@ describe("model connections layout contract", () => {
       expect(block).toMatch(/overscroll-behavior:\s*contain/);
     }
   });
+
+  it("allows vertical wheel chaining through the mobile connection strip", () => {
+    expect(css).toMatch(
+      /@media \(max-width: 760px\)[\s\S]*?\.model-connections__source-list\s*\{[^}]*overscroll-behavior-x:\s*contain;[^}]*overscroll-behavior-y:\s*auto;/,
+    );
+  });
 });
