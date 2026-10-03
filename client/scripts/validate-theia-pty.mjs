@@ -1,14 +1,14 @@
 import { createRequire } from "node:module";
 import { resolve, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { isNodePtyConsoleHelperHidden, isNodePtyPipeErrorsHandled, isNodePtyConptyRebuilt } from "./patch-theia-node-pty.mjs";
+import { isNodePtyConsoleHelperHidden, isNodePtyPipeErrorsHandled, isNodePtyConptyReady } from "./patch-theia-node-pty.mjs";
 
 if (process.platform !== "win32") throw new Error("This ConPTY smoke test requires Windows.");
 if (process.argv.length !== 3) throw new Error("Usage: node scripts/validate-theia-pty.mjs [theia-browser-directory]");
 const browserRoot = resolve(process.argv[2]);
 if (!isNodePtyConsoleHelperHidden(browserRoot)) throw new Error("Staged node-pty helper is not hidden.");
 if (!isNodePtyPipeErrorsHandled(browserRoot)) throw new Error("Staged node-pty ConPTY pipe errors can terminate the IDE backend.");
-if (!isNodePtyConptyRebuilt(browserRoot)) throw new Error("Staged node-pty ConPTY binary lacks the no-window rebuild.");
+if (!isNodePtyConptyReady(browserRoot)) throw new Error("Staged node-pty ConPTY binary or upstream creation flags failed validation.");
 
 const require = createRequire(join(browserRoot, "package.json"));
 const childProcess = require("node:child_process");

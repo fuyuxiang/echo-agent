@@ -689,14 +689,15 @@ pub fn backup_restore(
     if expected != &token {
         return Err("备份预览已过期，请重新选择".into());
     }
-    fs::rename(
-        path,
-        crate::paths::echo_agent_home_dir().join("restore-pending.zip"),
-    )
-    .map_err(|e| e.to_string())?;
+    let source = path.clone();
+    let pending = crate::paths::echo_agent_home_dir().join("restore-pending.zip");
+    fs::rename(&source, &pending).map_err(|e| e.to_string())?;
+    if let Err(error) = crate::request_graceful_restart(app) {
+        fs::rename(&pending, &source)
+            .map_err(|rollback| format!("{error}；备份文件回退失败：{rollback}"))?;
+        return Err(error);
+    }
     guard.take();
-    drop(guard);
-    crate::request_graceful_restart(app);
     Ok(())
 }
 #[tauri::command]

@@ -3,7 +3,7 @@ import { resolve, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { latestTheiaSourceMtime } from "./theia-source-mtime.mjs";
 import { ensureTheiaNodeWritable } from "./ensure-theia-node-writable.mjs";
-import { isNodePtyConsoleHelperHidden, isNodePtyPipeErrorsHandled, isNodePtyConptyRebuilt } from "./patch-theia-node-pty.mjs";
+import { isNodePtyConsoleHelperHidden, isNodePtyPipeErrorsHandled, isNodePtyConptyReady } from "./patch-theia-node-pty.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const major = Number(process.versions.node.split(".")[0]);
@@ -46,7 +46,7 @@ if (existsSync(runtime) && existsSync(node)
     && isNodePtyConsoleHelperHidden(join(resources, "browser"))
     && (process.platform !== "win32" || (
       isNodePtyPipeErrorsHandled(join(resources, "browser"))
-      && isNodePtyConptyRebuilt(join(resources, "browser"))
+      && isNodePtyConptyReady(join(resources, "browser"))
     ))
     && platform?.platform === process.platform && platform?.arch === process.arch
     && platform?.node === process.version
@@ -59,6 +59,9 @@ if (existsSync(runtime) && existsSync(node)
 
 const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 for (const script of ["ide:build", "ide:stage"]) {
-  const result = spawnSync(pnpm, [script], { cwd: root, stdio: "inherit" });
+  const result = spawnSync(pnpm, [script], {
+    cwd: root, stdio: "inherit", shell: process.platform === "win32",
+  });
+  if (result.error) throw new Error(`${script} failed to start`, { cause: result.error });
   if (result.status !== 0) throw new Error(`${script} failed`);
 }

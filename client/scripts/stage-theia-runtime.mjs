@@ -3,7 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { latestTheiaSourceMtime } from "./theia-source-mtime.mjs";
 import { ensureTheiaNodeWritable } from "./ensure-theia-node-writable.mjs";
-import { patchNodePtyConsoleHelper, patchNodePtyPipeErrors, patchNodePtyConptySource, markNodePtyConptyRebuilt } from "./patch-theia-node-pty.mjs";
+import { patchNodePtyConsoleHelper, patchNodePtyPipeErrors, ensureNodePtyConptySourceUnmodified, syncNodePtyPrebuilds, markNodePtyConptyRebuilt } from "./patch-theia-node-pty.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 const sourceRoot = join(projectRoot, "vendor/theia-platform");
@@ -117,22 +117,26 @@ for (const name of needed) {
 }
 
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+const npmShell = process.platform === "win32";
 const install = spawnSync(npm, ["ci", "--omit=dev", "--no-audit", "--no-fund"], {
   cwd: runtimeRoot,
   env: { ...process.env, PUPPETEER_SKIP_DOWNLOAD: "1" },
   stdio: "inherit",
+  shell: npmShell,
 });
 if (install.status !== 0) throw new Error("Theia runtime dependency staging failed");
 patchNodePtyConsoleHelper(runtimeRoot);
 if (process.platform === "win32") {
   patchNodePtyPipeErrors(runtimeRoot);
-  patchNodePtyConptySource(runtimeRoot);
+  ensureNodePtyConptySourceUnmodified(runtimeRoot);
   const rebuild = spawnSync(npm, ["rebuild", "node-pty", "--build-from-source", "--no-audit", "--no-fund"], {
     cwd: runtimeRoot,
     env: { ...process.env, npm_config_build_from_source: "true" },
     stdio: "inherit",
+    shell: npmShell,
   });
   if (rebuild.status !== 0) throw new Error("Theia Windows ConPTY native rebuild failed");
+  syncNodePtyPrebuilds(runtimeRoot);
   markNodePtyConptyRebuilt(runtimeRoot);
 }
 

@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { isNodePtyConsoleHelperHidden, isNodePtyPipeErrorsHandled, isNodePtyConptyRebuilt } from "./patch-theia-node-pty.mjs";
+import { isNodePtyConsoleHelperHidden, isNodePtyPipeErrorsHandled, isNodePtyConptyReady } from "./patch-theia-node-pty.mjs";
 
 if (process.argv.length > 3) throw new Error("Usage: node scripts/validate-theia-runtime.mjs [theia-resource-directory]");
 const root = process.argv[2]
@@ -20,8 +20,8 @@ if (process.platform === "win32") {
   if (!isNodePtyPipeErrorsHandled(join(root, "browser"))) {
     throw new Error("Staged node-pty ConPTY pipe errors can terminate the IDE backend");
   }
-  if (!isNodePtyConptyRebuilt(join(root, "browser"))) {
-    throw new Error("Staged node-pty ConPTY binary was not rebuilt with the no-window flag");
+  if (!isNodePtyConptyReady(join(root, "browser"))) {
+    throw new Error("Staged node-pty ConPTY binary or upstream creation flags failed validation");
   }
 }
 const temporary = mkdtempSync(join(tmpdir(), "echo-中文项目验证-"));

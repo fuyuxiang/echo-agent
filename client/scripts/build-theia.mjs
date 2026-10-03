@@ -2,7 +2,7 @@ import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve, join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { patchNodePtyConsoleHelper, patchNodePtyPipeErrors, patchNodePtyConptySource, markNodePtyConptyRebuilt } from "./patch-theia-node-pty.mjs";
+import { patchNodePtyConsoleHelper, patchNodePtyPipeErrors, ensureNodePtyConptySourceUnmodified, syncNodePtyPrebuilds, markNodePtyConptyRebuilt } from "./patch-theia-node-pty.mjs";
 
 const major = Number(process.versions.node.split(".")[0]);
 if (major !== 22 && major !== 24) {
@@ -14,7 +14,10 @@ const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 const env = { ...process.env, PUPPETEER_SKIP_DOWNLOAD: "1" };
 
 function run(args, extraEnv = {}) {
-  const result = spawnSync(npm, args, { cwd: sourceRoot, env: { ...env, ...extraEnv }, stdio: "inherit" });
+  const result = spawnSync(npm, args, {
+    cwd: sourceRoot, env: { ...env, ...extraEnv }, stdio: "inherit",
+    shell: process.platform === "win32",
+  });
   if (result.status !== 0) {
     throw new Error(`Theia build failed: npm ${args.join(" ")}`);
   }
@@ -36,8 +39,9 @@ if (!existsSync(nodeModules) || installedFingerprint !== installFingerprint) {
 patchNodePtyConsoleHelper(sourceRoot);
 if (process.platform === "win32") {
   patchNodePtyPipeErrors(sourceRoot);
-  patchNodePtyConptySource(sourceRoot);
+  ensureNodePtyConptySourceUnmodified(sourceRoot);
   run(["rebuild", "node-pty", "--build-from-source"], { npm_config_build_from_source: "true" });
+  syncNodePtyPrebuilds(sourceRoot);
 }
 const plugins = spawnSync(process.execPath, [join(import.meta.dirname, "manage-theia-vsix.mjs"), "stage"], {
   cwd: sourceRoot, env, stdio: "inherit",

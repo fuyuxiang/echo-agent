@@ -82,9 +82,13 @@ fn request_graceful_exit(app: tauri::AppHandle) {
     });
 }
 
-fn request_graceful_restart(app: tauri::AppHandle) {
+fn request_graceful_restart(app: tauri::AppHandle) -> Result<(), String> {
     if !try_begin_exit(&EXIT_IN_PROGRESS) {
-        return;
+        return Ok(());
+    }
+    if let Err(error) = process_supervisor::permit_application_relaunch() {
+        EXIT_IN_PROGRESS.store(false, Ordering::Release);
+        return Err(format!("无法重启应用：{error}"));
     }
     tauri::async_runtime::spawn(async move {
         automation::shutdown_all().await;
@@ -93,6 +97,7 @@ fn request_graceful_restart(app: tauri::AppHandle) {
         commands::stop_agent_runtime(&app.state::<AppState>()).await;
         app.restart();
     });
+    Ok(())
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -335,6 +340,7 @@ pub fn run() {
     if let Err(error) = paths::initialize_runtime_home() {
         tracing::error!(%error, "failed to initialize EchoAgent runtime home");
     }
+    process_supervisor::install_host_job();
     let builder = tauri::Builder::default();
     // Tauri requires single-instance to be the first registered plugin. A
     // second launch focuses the resident window (which may be tray-hidden)

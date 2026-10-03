@@ -3,8 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import {
-  isNodePtyConsoleHelperHidden, isNodePtyPipeErrorsHandled, isNodePtyConptyRebuilt, isNodePtyConptySourceHidden,
-  markNodePtyConptyRebuilt, patchNodePtyConsoleHelper, patchNodePtyPipeErrors, patchNodePtyConptySource,
+  isNodePtyConsoleHelperHidden, isNodePtyPipeErrorsHandled, isNodePtyConptyReady, isNodePtyConptySourceUnmodified,
+  markNodePtyConptyRebuilt, patchNodePtyConsoleHelper, patchNodePtyPipeErrors, ensureNodePtyConptySourceUnmodified,
+  syncNodePtyPrebuilds,
 } from "./patch-theia-node-pty.mjs";
 
 const temporaryDirectories = [];
@@ -23,6 +24,13 @@ function fixture(version = "1.2.0-beta.12", call = originalCall) {
   writeFileSync(join(packageRoot, "lib/windowsTerminal.js"), "");
   writeFileSync(join(packageRoot, "src/win/conpty.cc"), `CreateProcessW(..., ${originalFlags});\n`);
   writeFileSync(join(packageRoot, "build/Release/conpty.node"), "test binary");
+  writeFileSync(join(packageRoot, "build/Release/conpty_console_list.node"), "test helper binary");
+  if (process.platform === "win32") {
+    const conptyDir = join(packageRoot, "build/Release/conpty");
+    mkdirSync(conptyDir, { recursive: true });
+    writeFileSync(join(conptyDir, "conpty.dll"), "dll");
+    writeFileSync(join(conptyDir, "OpenConsole.exe"), "console");
+  }
   return browserRoot;
 }
 
@@ -91,24 +99,48 @@ it("fails staging when the installed node-pty version or helper changes", () => 
   expect(() => patchNodePtyConsoleHelper(fixture("1.2.0-beta.12", "someOtherFork()"))).toThrow(/helper changed/);
 });
 
-it("patches the ConPTY shell spawn and rejects a stale or changed native binary", () => {
+it("keeps the ConPTY shell spawn unmodified and rejects a stale native binary", () => {
   const browserRoot = fixture();
-  expect(isNodePtyConptySourceHidden(browserRoot)).toBe(false);
-  patchNodePtyConptySource(browserRoot);
+  expect(isNodePtyConptySourceUnmodified(browserRoot)).toBe(true);
   const sourcePath = join(browserRoot, "node_modules/node-pty/src/win/conpty.cc");
   const source = readFileSync(sourcePath, "utf8");
-  expect(source).toContain("CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW");
-  patchNodePtyConptySource(browserRoot);
-  expect(readFileSync(sourcePath, "utf8")).toBe(source);
-  expect(isNodePtyConptyRebuilt(browserRoot)).toBe(false);
+  expect(source).toContain("EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,");
+  expect(source).not.toContain("CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW");
+  expect(isNodePtyConptyReady(browserRoot)).toBe(false);
+  expect(() => markNodePtyConptyRebuilt(browserRoot)).toThrow(/not ready/);
+  syncNodePtyPrebuilds(browserRoot);
   markNodePtyConptyRebuilt(browserRoot);
-  expect(isNodePtyConptyRebuilt(browserRoot)).toBe(true);
+  expect(isNodePtyConptyReady(browserRoot)).toBe(true);
   writeFileSync(join(browserRoot, "node_modules/node-pty/build/Release/conpty.node"), "different binary");
-  expect(isNodePtyConptyRebuilt(browserRoot)).toBe(false);
+  expect(isNodePtyConptyReady(browserRoot)).toBe(false);
 });
 
 it("fails when node-pty changes its ConPTY creation flags", () => {
   const browserRoot = fixture();
   writeFileSync(join(browserRoot, "node_modules/node-pty/src/win/conpty.cc"), "other CreateProcessW flags");
-  expect(() => patchNodePtyConptySource(browserRoot)).toThrow(/flags changed/);
+  expect(() => ensureNodePtyConptySourceUnmodified(browserRoot)).toThrow(/flags differ/);
+});
+
+it("migrates the old no-window ConPTY patch", () => {
+  const browserRoot = fixture();
+  const sourcePath = join(browserRoot, "node_modules/node-pty/src/win/conpty.cc");
+  writeFileSync(sourcePath, readFileSync(sourcePath, "utf8").replace(
+    "CREATE_UNICODE_ENVIRONMENT,", "CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW,"));
+  expect(isNodePtyConptySourceUnmodified(browserRoot)).toBe(false);
+  ensureNodePtyConptySourceUnmodified(browserRoot);
+  expect(isNodePtyConptySourceUnmodified(browserRoot)).toBe(true);
+});
+
+it("syncs rebuilt native files into prebuilds for Theia bundling", () => {
+  const browserRoot = fixture();
+  syncNodePtyPrebuilds(browserRoot);
+  const prebuildDir = join(browserRoot, "node_modules/node-pty/prebuilds", `${process.platform}-${process.arch}`);
+  expect(readFileSync(join(prebuildDir, "conpty.node"), "utf8")).toBe("test binary");
+  expect(readFileSync(join(prebuildDir, "conpty_console_list.node"), "utf8")).toBe("test helper binary");
+  if (process.platform === "win32") {
+    expect(readFileSync(join(prebuildDir, "conpty/conpty.dll"), "utf8")).toBe("dll");
+  }
+  markNodePtyConptyRebuilt(browserRoot);
+  writeFileSync(join(prebuildDir, "conpty.node"), "stale binary");
+  expect(isNodePtyConptyReady(browserRoot)).toBe(false);
 });

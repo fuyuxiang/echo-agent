@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 
@@ -8,9 +8,8 @@ import { join } from "node:path";
 const expectedVersion = "1.2.0-beta.12";
 const originalCall = "child_process_1.fork(path.join(__dirname, 'conpty_console_list_agent'), [_this._innerPid.toString()])";
 const hiddenCall = "child_process_1.fork(path.join(__dirname, 'conpty_console_list_agent'), [_this._innerPid.toString()], { windowsHide: true })";
-// The helper patch above only covers terminal teardown. ConPTY starts the
-// interactive shell through its own CreateProcessW call, bypassing Node's
-// windowsHide option and the no-window flag on the Theia backend process.
+// A ConPTY shell needs its pseudo console. CREATE_NO_WINDOW on this native
+// CreateProcessW call disconnects the shell from it and breaks terminal I/O.
 const originalConptyFlags = "EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT, // dwCreationFlags";
 const hiddenConptyFlags = "EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW, // dwCreationFlags";
 const originalInputSocket = "this._inSocket.setEncoding('utf8');";
@@ -56,7 +55,8 @@ const originalLateTerminalHandlers = `            // Shutdown if \`error\` event
                 _this._close();
             });
 `;
-const nativePatchVersion = 1;
+const nativePatchVersion = 2;
+const prebuildArtifacts = ["conpty.node", "conpty_console_list.node", "pty.node", "spawn-helper"];
 
 function paths(browserRoot) {
   const packageRoot = join(browserRoot, "node_modules/node-pty");
@@ -66,7 +66,7 @@ function paths(browserRoot) {
     terminal: join(packageRoot, "lib/windowsTerminal.js"),
     conptySource: join(packageRoot, "src/win/conpty.cc"),
     conptyBinary: join(packageRoot, "build/Release/conpty.node"),
-    nativeMarker: join(packageRoot, ".echoagent-conpty-no-window.json"),
+    nativeMarker: join(packageRoot, ".echoagent-conpty-upstream.json"),
   };
 }
 
@@ -140,32 +140,30 @@ export function patchNodePtyPipeErrors(browserRoot) {
   }
 }
 
-export function isNodePtyConptySourceHidden(browserRoot) {
+export function isNodePtyConptySourceUnmodified(browserRoot) {
   try {
     const { manifest, conptySource } = paths(browserRoot);
     if (JSON.parse(readFileSync(manifest, "utf8")).version !== expectedVersion) return false;
     const source = readFileSync(conptySource, "utf8");
-    return occurrences(source, hiddenConptyFlags) === 1 && occurrences(source, originalConptyFlags) === 0;
+    return occurrences(source, originalConptyFlags) === 1 && occurrences(source, hiddenConptyFlags) === 0;
   } catch {
     return false;
   }
 }
 
-export function patchNodePtyConptySource(browserRoot) {
+export function ensureNodePtyConptySourceUnmodified(browserRoot) {
   const { manifest, conptySource } = paths(browserRoot);
   const version = JSON.parse(readFileSync(manifest, "utf8")).version;
   if (version !== expectedVersion) {
-    throw new Error(`Unsupported node-pty version ${version}; review the Windows ConPTY patch.`);
+    throw new Error(`Unsupported node-pty version ${version}; review the ConPTY creation flags.`);
   }
   const source = readFileSync(conptySource, "utf8");
-  if (occurrences(source, hiddenConptyFlags) === 1 && occurrences(source, originalConptyFlags) === 0) return;
-  if (occurrences(source, originalConptyFlags) !== 1 || occurrences(source, hiddenConptyFlags) !== 0) {
-    throw new Error("node-pty ConPTY CreateProcessW flags changed; review before staging.");
+  if (occurrences(source, originalConptyFlags) === 1 && occurrences(source, hiddenConptyFlags) === 0) return;
+  if (occurrences(source, hiddenConptyFlags) === 1 && occurrences(source, originalConptyFlags) === 0) {
+    writeFileSync(conptySource, source.replace(hiddenConptyFlags, originalConptyFlags));
+    if (isNodePtyConptySourceUnmodified(browserRoot)) return;
   }
-  writeFileSync(conptySource, source.replace(originalConptyFlags, hiddenConptyFlags));
-  if (!isNodePtyConptySourceHidden(browserRoot)) {
-    throw new Error("node-pty ConPTY source patch verification failed.");
-  }
+  throw new Error("node-pty ConPTY creation flags differ from the pinned upstream source; review before staging.");
 }
 
 function binaryHash(path) {
@@ -173,20 +171,68 @@ function binaryHash(path) {
 }
 
 export function markNodePtyConptyRebuilt(browserRoot) {
-  if (!isNodePtyConptySourceHidden(browserRoot)) {
-    throw new Error("Rebuild requires the patched node-pty ConPTY source.");
+  if (!isNodePtyConptySourceUnmodified(browserRoot) || !nativeAssetsReady(browserRoot)) {
+    throw new Error("node-pty ConPTY source or prebuilds are not ready for staging.");
   }
   const { conptyBinary, nativeMarker } = paths(browserRoot);
   writeFileSync(nativeMarker, JSON.stringify({ version: nativePatchVersion, binarySha256: binaryHash(conptyBinary) }));
 }
 
-export function isNodePtyConptyRebuilt(browserRoot) {
+function nativeAssetsReady(browserRoot) {
+  const packageRoot = join(browserRoot, "node_modules/node-pty");
+  const releaseDir = join(packageRoot, "build/Release");
+  const prebuildDir = join(packageRoot, "prebuilds", `${process.platform}-${process.arch}`);
+  for (const name of ["conpty.node", "conpty_console_list.node"]) {
+    const source = join(releaseDir, name);
+    const staged = join(prebuildDir, name);
+    if (!existsSync(source) || !existsSync(staged) || binaryHash(source) !== binaryHash(staged)) return false;
+  }
+  if (process.platform === "win32") {
+    for (const name of ["conpty.dll", "OpenConsole.exe"]) {
+      const source = join(releaseDir, "conpty", name);
+      const staged = join(prebuildDir, "conpty", name);
+      if (!existsSync(source) || !existsSync(staged) || binaryHash(source) !== binaryHash(staged)) return false;
+    }
+  }
+  return true;
+}
+
+export function isNodePtyConptyReady(browserRoot) {
   try {
-    if (!isNodePtyConptySourceHidden(browserRoot)) return false;
+    if (!isNodePtyConptySourceUnmodified(browserRoot) || !nativeAssetsReady(browserRoot)) return false;
     const { conptyBinary, nativeMarker } = paths(browserRoot);
     const marker = JSON.parse(readFileSync(nativeMarker, "utf8"));
     return marker.version === nativePatchVersion && marker.binarySha256 === binaryHash(conptyBinary);
   } catch {
     return false;
+  }
+}
+
+export function syncNodePtyPrebuilds(browserRoot) {
+  if (!isNodePtyConptySourceUnmodified(browserRoot)) {
+    throw new Error("node-pty ConPTY creation flags must match upstream before syncing prebuilds.");
+  }
+  const packageRoot = join(browserRoot, "node_modules/node-pty");
+  const releaseDir = join(packageRoot, "build/Release");
+  const prebuildDir = join(packageRoot, "prebuilds", `${process.platform}-${process.arch}`);
+  for (const name of ["conpty.node", "conpty_console_list.node"]) {
+    if (!existsSync(join(releaseDir, name))) {
+      throw new Error(`node-pty rebuild did not produce ${name}.`);
+    }
+  }
+  mkdirSync(prebuildDir, { recursive: true });
+  for (const name of prebuildArtifacts) {
+    if (existsSync(join(releaseDir, name))) {
+      copyFileSync(join(releaseDir, name), join(prebuildDir, name));
+    }
+  }
+  if (process.platform === "win32") {
+    const conptyDir = join(releaseDir, "conpty");
+    for (const name of ["conpty.dll", "OpenConsole.exe"]) {
+      if (!existsSync(join(conptyDir, name))) {
+        throw new Error(`node-pty rebuild did not stage ${name}.`);
+      }
+    }
+    cpSync(conptyDir, join(prebuildDir, "conpty"), { recursive: true });
   }
 }

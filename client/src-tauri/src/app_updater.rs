@@ -164,12 +164,19 @@ pub async fn app_update_install(
     // `download` verifies the signature before returning. Publish the install
     // phase only after that succeeds, and return authoritative error stages.
     emit_progress(&app, "downloaded", downloaded, None);
-    update.install(bytes).map_err(|error| {
-        AppUpdateInstallError::new(
-            AppUpdateErrorStage::Install,
-            format!("更新安装失败：{error}"),
-        )
-    })?;
+    crate::process_supervisor::with_external_installer_launch(|| update.install(bytes))
+        .map_err(|error| {
+            AppUpdateInstallError::new(
+                AppUpdateErrorStage::Install,
+                format!("无法启动更新安装器：{error}"),
+            )
+        })?
+        .map_err(|error| {
+            AppUpdateInstallError::new(
+                AppUpdateErrorStage::Install,
+                format!("更新安装失败：{error}"),
+            )
+        })?;
 
     emit_progress(&app, "installed", downloaded, None);
 
