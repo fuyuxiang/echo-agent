@@ -2,249 +2,221 @@
 
 # Echo Agent
 
-**能长期记忆、持续学习、并真正执行任务的开源 AI Agent**
+**拥有长期记忆、可自进化、可嵌入的开源 Agent Runtime**
 
-运行在你自己的电脑或服务器上：既可以 7×24 常驻在微信、Telegram、Slack 等消息入口，也可以通过桌面工作台直接操作文件、浏览器和本地应用。
-
-**Self-hosted · Persistent Memory · Desktop Agent · Multi-channel · Human-in-the-loop**
+Echo Agent 为持续工作的 AI 助理与应用提供可自托管的运行时。认知记忆帮助 Agent 跨会话找回相关信息，技能自进化从执行经验中提炼并评估可复用技能，权限策略约束工具调用。它可以在终端运行、通过 Gateway 提供服务，也可以嵌入应用；EchoAgent Desktop 将 Agent 能力带入本地工作台。
 
 [![PyPI](https://img.shields.io/pypi/v/echo-agent)](https://pypi.org/project/echo-agent/)
 [![Python](https://img.shields.io/pypi/pyversions/echo-agent)](https://pypi.org/project/echo-agent/)
 [![CI](https://github.com/fuyuxiang/echo-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/fuyuxiang/echo-agent/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-latest-blue)](https://fuyuxiang.github.io/echo-agent/)
+[![Docs](https://img.shields.io/badge/docs-online-blue)](https://fuyuxiang.github.io/echo-agent/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Downloads](https://static.pepy.tech/badge/echo-agent)](https://pepy.tech/project/echo-agent)
-[![GitHub stars](https://img.shields.io/github/stars/fuyuxiang/echo-agent?style=social)](https://github.com/fuyuxiang/echo-agent)
+[![GitHub Stars](https://img.shields.io/github/stars/fuyuxiang/echo-agent?style=flat)](https://github.com/fuyuxiang/echo-agent/stargazers)
 
-[快速开始](#快速开始) · [Echo Agent Desktop](#echo-agent-desktop桌面工作台) · [中文](README.md) · [English](README.en.md) · [完整文档](https://fuyuxiang.github.io/echo-agent/)
+[快速开始](#快速开始) · [运行方式](#运行方式) · [记忆与进化](#长期记忆与技能自进化) · [桌面端](#echoagent-desktop) · [扩展与集成](#扩展与集成) · [文档](#文档) · [English](README.en.md)
 
 </div>
-
----
-
-## 什么是 Echo Agent
-
-一个仓库，两种形态，同一套内核能力（认知记忆 · 自进化技能 · 工具审批 · 模型路由）：
-
-```text
-                     Echo Agent
-         ┌──────────────┴──────────────┐
-    Agent Runtime                 Echo Agent Desktop
-    （Python 包 · pip install）     （Tauri 桌面应用 · 内嵌同一运行时）
-    7×24 常驻助理                   在你电脑上干活的工作台
-    ├── 14 通道：微信 / Telegram …   ├── 代码工作台
-    ├── CLI / Webhook / 定时任务     ├── Browser Use / Computer Use
-    └── Dashboard Web 管理面板       ├── 文件 · 知识库 · 定时自动化
-                                   └── 微信远程接管
-```
-
-### Agent Runtime（常驻助理）
-
-`pip install` 装到你自己的电脑或服务器上，`echo-agent gateway` 起一个常驻网关：微信、Telegram、钉钉、飞书等 14 个通道共享同一份记忆与权限，配合 CLI、Webhook 与定时任务。**你在哪里，它就在哪里；入口可以切换，长期记忆不会从零开始。**
-
-### Echo Agent Desktop（桌面工作台）
-
-Tauri 2 桌面应用，内嵌 Agent 运行时（源码快照在 `client/vendor/`，无需先装 Python 包）。**不只是和 AI 聊天，而是把任务交给它，让它在你电脑上完成**：处理本地文件与项目、受控的浏览器 / 电脑操作、并行任务看板、知识库与定时自动化。人在外面时，用微信远程继续任务、批准权限请求。每个高风险动作执行前都会先请你确认。
-
-<div align="center">
-  <img src="client/docs/images/echoagent-home.png" alt="Echo Agent Desktop" width="820" />
-</div>
-
-> Dashboard 是网关自带的 Web 管理面板：启动网关后浏览器直接访问（默认 `http://127.0.0.1:58123/`，端口由 `gateway.port` 决定），系统总览、会话、记忆、技能、知识库、任务与日志全在一处，详见 [Dashboard 指南](https://fuyuxiang.github.io/echo-agent/guides/dashboard/)。
-
----
-
-## 它能做什么
-
-四个真实任务形态（能力均已落地，边界见各节说明）：
-
-- 💻 **「分析这个项目，修掉失败的测试」** — Desktop 代码工作台：读取项目 → 定位 → 修改代码 → 跑测试 → 展示结果，任务与权限在面板上一目了然。
-- 📊 **「每个工作日早上，把昨天的数据整理成日报发到飞书」** — Runtime 定时任务：按计划触发 Agent 执行，结果以消息推送到你指定的通道。
-- 🌐 **「调研 10 家竞品，整理成表格」** — Desktop Browser Use：受控浏览器逐家访问、提取信息、汇总产出；每个站点操作前经你确认。
-- 📱 **「我出门了，刚才那个任务继续跑」** — 微信接管：桌面任务移交微信，路上继续对话、看进度、批准权限请求；桌面关闭时微信指令不会执行。
-
----
-
-## 核心能力
-
-- **记得住你** — 对话、偏好与任务经验跨会话沉淀，换通道也不丢。长期运行自动衰减低价值记忆，并修正相互矛盾的信息，而不是无限膨胀。
-- **越用越强** — 从真实执行轨迹中沉淀可复用技能：候选改进经评测集对照验证后才晋升，带冷却期与一键回滚，技能随使用进化而非出厂定型。
-- **真正执行** — Desktop 端直接操作文件、浏览器与本地应用完成任务；浏览器 / 电脑的每次点击、输入、上传执行前单独确认，默认聚焦拒绝。
-- **数据归自己** — 完全自托管：数据留在你自己的机器上，凭证加密存储，不依赖任何云端服务。
-- **安全可控** — 高风险工具调用统一审批，出站请求经共享 SSRF 防护，执行日志可审计。
-
-混合检索、模型路由、MCP / A2A（入站任务端点；当前 Agent 运行时不提供 A2A 出站委派入口）、插件体系与输出保全等其余能力，见[文档](#文档)；记忆与技能的实现机制见[记忆系统](https://fuyuxiang.github.io/echo-agent/concepts/memory-system/)与[技能进化](https://fuyuxiang.github.io/echo-agent/concepts/evolution-evaluation/)。
-
----
 
 ## 快速开始
 
 ### Agent Runtime
 
-环境要求：Python 3.11+，至少一个模型 API Key。
+环境要求：Python 3.11+，以及至少一个可用模型服务的 API Key。安装后通过配置向导添加模型，再启动交互式 Agent：
 
 ```bash
 # 安装
 pip install "echo-agent[all]"
 
-# 交互式配置向导（引导录入模型 API Key，数据默认存放在 ~/.echo-agent）
+# 配置模型
 echo-agent setup
 
-# 启动交互式对话
+# 在终端启动 Agent
 echo-agent run
 ```
 
-中国大陆网络环境可指定 PyPI 镜像：`pip install "echo-agent[all]" -i https://mirrors.aliyun.com/pypi/simple/`。Windows 下相同的三条命令在 PowerShell 中执行即可。
+中国大陆网络环境可指定 PyPI 镜像：`pip install "echo-agent[all]" -i https://mirrors.aliyun.com/pypi/simple/`。Windows 可在 PowerShell 中运行上述命令，平台依赖与限制见 [安装指南](https://fuyuxiang.github.io/echo-agent/getting-started/installation/)。
 
 <details>
 <summary>源码安装脚本（Linux / macOS / WSL2）</summary>
 
-`scripts/install.sh` 从 Git 仓库克隆源码、创建独立虚拟环境并安装依赖，可一步完成常驻部署；重复执行即为升级。脚本先下载到本地再执行，便于执行前审阅：
+安装脚本会克隆源码、创建独立环境并运行配置向导。建议先下载并查看脚本，再执行：
 
 ```bash
 curl -fsSL -o install.sh https://raw.githubusercontent.com/fuyuxiang/echo-agent/master/scripts/install.sh
-# Gitee 镜像（中国大陆网络更快）
-curl -fsSL -o install.sh https://gitee.com/fuyuxiang/echo-agent/raw/master/scripts/install.sh
-
-less install.sh && bash install.sh          # 完整选项见 bash install.sh --help
+less install.sh
+bash install.sh
 ```
+
+可用 `bash install.sh --help` 查看选项。
 
 </details>
 
-安装方式取舍、依赖分组与卸载见[安装文档](https://fuyuxiang.github.io/echo-agent/getting-started/installation/)；全部子命令见 [CLI 参考](https://fuyuxiang.github.io/echo-agent/reference/cli/)，配置项见 [配置参考](https://fuyuxiang.github.io/echo-agent/reference/configuration/)。
+安装方式、依赖分组与卸载见 [安装指南](https://fuyuxiang.github.io/echo-agent/getting-started/installation/)；全部命令见 [CLI 参考](https://fuyuxiang.github.io/echo-agent/reference/cli/)，配置项见 [配置参考](https://fuyuxiang.github.io/echo-agent/reference/configuration/)。
+
+需要 Dashboard、API、消息通道或定时任务时，可在前台启动 Gateway：
+
+```bash
+echo-agent gateway
+```
+
+Dashboard 默认地址为 `http://127.0.0.1:58123/`。
 
 ### 常驻运行（后台服务）
 
-`echo-agent run` 是前台进程；想让 Agent 7×24 常驻，把网关注册为系统服务（macOS 用户级 LaunchAgent / Linux 用户级 systemd，无需 root）：
+`echo-agent run` 和 `echo-agent gateway` 默认在前台运行。在 macOS 或使用 systemd 的 Linux 上，可将 Gateway 注册为用户级后台服务：
 
 ```bash
-echo-agent gateway install    # 注册并启动
-echo-agent gateway logs -f    # 跟踪日志
-echo-agent gateway status     # 查看运行状态
+echo-agent gateway install
+echo-agent gateway status
+echo-agent gateway logs --follow
 ```
 
-网关仅监听本机回环地址（127.0.0.1），浏览器跨站请求默认拒绝，远程接入请走 ssh。Linux 退出登录后保持运行、无 systemd 环境等细节见[后台常驻服务](https://fuyuxiang.github.io/echo-agent/operations/background-service/)与[网关认证](https://fuyuxiang.github.io/echo-agent/integrations/gateway/authentication/)。
+Gateway 默认监听 `127.0.0.1:58123`；远程访问可使用 SSH 端口转发。Linux 用户退出登录后继续运行服务，需按系统策略启用 linger。详见 [后台常驻服务](https://fuyuxiang.github.io/echo-agent/operations/background-service/)与 [Gateway 认证](https://fuyuxiang.github.io/echo-agent/integrations/gateway/authentication/)。
 
-### 构建 Echo Agent Desktop
+### EchoAgent Desktop
 
-安装包分发渠道建设中，当前从源码构建（需要 Node.js、pnpm、Rust 1.92+ 与 `protoc`，平台前置详见[客户端文档](client/docs/release-workflow.md)）：
+桌面端从源码运行需要 Node.js 22 或 24、pnpm 10、Rust 1.92+ 和 `protoc`。macOS 用户在仓库根目录下执行：
 
 ```bash
 cd client
-pnpm install
+pnpm setup:mac
+pnpm install --frozen-lockfile
 pnpm tauri dev
 ```
 
-`pnpm test` 运行前端测试，`pnpm build` 执行 TypeScript 检查与生产构建，`pnpm dist` 生成平台安装包。发布流程与自动化平台安全边界见 [release-workflow.md](client/docs/release-workflow.md) 与 [automation-platform-support.md](client/docs/automation-platform-support.md)。
+Windows 的环境准备与启动命令见 [EchoAgent Desktop 中文文档](client/README.md)。`pnpm test` 运行前端测试，`pnpm build` 检查 TypeScript 并构建前端，`pnpm dist` 生成平台安装包；发布要求见 [发布流程](client/docs/release-workflow.md)与 [自动化平台说明](client/docs/automation-platform-support.md)。
 
----
+## 运行方式
 
-## 14 个通道
-
-一个 Agent 实例可同时接入多个通道，共享同一份记忆与权限：
-
-| | 通道 |
-|------|------|
-| 海外 IM | Telegram · Discord · Slack · Matrix · WhatsApp · Email |
-| 国内 IM | 微信 · 企业微信 · 钉钉 · 飞书 / Lark · QQ 机器人 |
-| 其他入口 | CLI · Webhook · 定时任务 |
-
-Telegram、Discord、Slack 支持消息编辑与表情回应；微信与 QQ 机器人（视配置）可收发文件。各通道的完整能力矩阵与接入方式见[通道文档](https://fuyuxiang.github.io/echo-agent/integrations/channels/)。
-
----
-
-## 架构
+Echo Agent 提供终端交互、Gateway 服务和嵌入应用三种使用形态：
 
 <div align="center">
-  <img src="docs/assets/architecture.png" alt="Echo Agent 架构图" width="820" />
+  <img src="docs/assets/runtime-modes.png" alt="Echo Agent Runtime 的本地运行、Gateway 服务和嵌入应用三种形态" width="920" />
 </div>
 
-各组件的职责边界与数据流见[架构总览](https://fuyuxiang.github.io/echo-agent/concepts/architecture/)，仓库目录结构见[代码地图](https://fuyuxiang.github.io/echo-agent/development/repository-map/)。
+| 形态 | 使用入口 | 适用场景 |
+| --- | --- | --- |
+| **本地运行** | `echo-agent run` | 终端交互、开发调试、单机任务 |
+| **Gateway** | `echo-agent gateway` | 长期运行、消息通道、Dashboard、API 与自动化 |
+| **嵌入应用** | EchoAgent Desktop | 在宿主应用进程内运行 Agent |
 
----
+## 长期记忆与技能自进化
+
+### 认知记忆
+
+Agent 可跨会话找回相关的对话摘要、用户偏好和项目事实，减少重复交代背景。记忆按当前任务、会话摘要、长期事实和归档分层管理；混合检索负责召回，环境类记忆按时效衰减，冲突事实经检测后更新。详见 [记忆系统](https://fuyuxiang.github.io/echo-agent/concepts/memory-system/)。
+
+### 技能自进化
+
+Echo Agent 可从任务执行轨迹中提炼可复用的 Skills。候选技能经过内容验证和基线评估：低风险且效果更好的候选可自动晋升，高风险候选进入人工审核；已晋升技能支持手动回滚。详见 [进化与评估](https://fuyuxiang.github.io/echo-agent/concepts/evolution-evaluation/)。
+
+## 运行时能力
+
+Echo Agent Runtime 围绕以下能力组织 Agent 的执行与扩展：
+
+| 能力 | 作用 |
+| --- | --- |
+| **Agent Loop** | 协调模型推理、工具调用和执行反馈，持续推进任务 |
+| **会话与上下文** | 管理任务状态，并为每轮执行组织所需上下文 |
+| **模型接入与路由** | 连接多个模型服务，配置路由与故障回退 |
+| **工具与 MCP** | 使用本地工具，并连接外部 MCP Server |
+| **Skills 与 Plugins** | 加载可复用技能，扩展 Runtime 行为 |
+| **权限策略** | 检查工具调用，确认敏感操作并记录执行过程 |
+| **自动化与消息通道** | 通过定时任务、Webhook 和消息入口触发 Agent |
+
+例如，你可以在终端分析项目，或让 Gateway 定时整理数据并将结果发送到飞书或 Telegram。组件职责见 [架构概览](https://fuyuxiang.github.io/echo-agent/concepts/architecture/)。
+
+## Gateway 与 Dashboard
+
+Gateway 将完整 Runtime 作为服务运行，对外提供 Dashboard、HTTP / WebSocket API、消息通道、Webhook 和定时任务。CLI / TUI 连接已经运行的 Gateway，使用其中的模型、记忆、工具和权限策略：
+
+```bash
+echo-agent cli
+echo-agent cli --tui
+```
+
+Dashboard 用于查看会话、记忆、技能、知识库、定时任务、消息通道和运行状态。使用方式见 [Dashboard 指南](https://fuyuxiang.github.io/echo-agent/guides/dashboard/)和 [消息通道文档](https://fuyuxiang.github.io/echo-agent/integrations/channels/)。
+
+## EchoAgent Desktop
+
+**EchoAgent Desktop** 将 Echo Agent Runtime 集成到桌面工作台，让 Agent 在本地工作区中调用文件、浏览器和桌面能力完成任务，并呈现执行过程与变更。
+
+<div align="center">
+  <img src="client/docs/images/echoagent-home.png" alt="EchoAgent Desktop 工作台首页" width="920" />
+</div>
+
+| 场景 | 桌面端能力 |
+| --- | --- |
+| **代码开发** | 集成 Eclipse Theia IDE 与 Coding Agent，支持任务计划、代码修改、Diff 审阅、验证和交付 |
+| **浏览器与电脑操作** | Browser Use 使用任务隔离的浏览器环境；Computer Use 根据屏幕快照操作桌面，敏感操作逐项确认 |
+| **工作区与知识** | 管理项目文件、会话、知识库和任务产物，让 Agent 持续使用已有上下文 |
+| **模型与扩展** | 选择模型服务，并按需接入 MCP、Skills、Plugins、专家和子 Agent |
+| **远程继续任务** | 绑定微信后，可在桌面端运行期间继续会话、查看进展并处理权限请求 |
+
+桌面端可独立于 Gateway 启动。源码构建、平台要求和完整功能见 [EchoAgent Desktop 中文文档](client/README.md)。
+
+## 扩展与集成
+
+将 Echo Agent 接入现有产品时，可选择两种集成方式：
+
+- **进程内嵌入**：宿主应用集成 Runtime，并负责界面、任务状态和本地能力。桌面端提供了可参考的 [应用架构](client/README.md#工作原理)与 [运行时桥接代码](client/src-tauri/src/agent_runtime.rs)。
+- **连接 Gateway**：让 Runtime 独立运行，通过 [HTTP / WebSocket API](https://fuyuxiang.github.io/echo-agent/reference/gateway-api/) 与应用通信。
+
+进程内嵌入目前以桌面端集成为参考，具体接口与兼容性以所选源码版本为准。
+
+Echo Agent Runtime 还提供以下扩展点：
+
+| 扩展点 | 用途 | 文档 |
+| --- | --- | --- |
+| Tools | 增加原生执行能力 | [工具参考](https://fuyuxiang.github.io/echo-agent/reference/tools/) |
+| MCP | 连接外部工具服务 | [MCP 集成](https://fuyuxiang.github.io/echo-agent/integrations/mcp/) |
+| Skills 与 Plugins | 复用工作流、扩展运行行为 | [Skills](https://fuyuxiang.github.io/echo-agent/integrations/skills/using-skills/) · [Plugins](https://fuyuxiang.github.io/echo-agent/integrations/plugins/using-plugins/) |
+| Models | 接入模型服务 | [模型接入](https://fuyuxiang.github.io/echo-agent/guides/models/) |
+| Channels | 增加消息入口 | [消息通道](https://fuyuxiang.github.io/echo-agent/integrations/channels/) |
+
+## 数据与安全
+
+Echo Agent 可部署在自有设备或服务器。会话、记忆和配置等状态保存在部署环境中；工具调用受权限策略约束，需要确认的操作会等待用户决策并记录执行过程。
+
+使用远程模型、MCP Server 或第三方消息通道时，交互所需的数据会发送给相应服务。建议为同一工作区只运行一个完整 Runtime 实例；远程访问的配置与边界见 [安全模型](https://fuyuxiang.github.io/echo-agent/concepts/security-model/)和 [安全加固指南](https://fuyuxiang.github.io/echo-agent/operations/security-hardening/)。
 
 ## 文档
 
-完整文档在 **[fuyuxiang.github.io/echo-agent](https://fuyuxiang.github.io/echo-agent/)**，本 README 覆盖安装与上手部分。
+完整文档：[fuyuxiang.github.io/echo-agent](https://fuyuxiang.github.io/echo-agent/)
 
 | 主题 | 入口 |
-|------|------|
-| 开始使用 | [安装](https://fuyuxiang.github.io/echo-agent/getting-started/installation/) · [升级与卸载](https://fuyuxiang.github.io/echo-agent/getting-started/upgrade-uninstall/) |
-| 核心概念 | [架构](https://fuyuxiang.github.io/echo-agent/concepts/architecture/) · [记忆系统](https://fuyuxiang.github.io/echo-agent/concepts/memory-system/) · [技能进化](https://fuyuxiang.github.io/echo-agent/concepts/evolution-evaluation/) · [安全模型](https://fuyuxiang.github.io/echo-agent/concepts/security-model/) |
-| 使用指南 | [模型接入](https://fuyuxiang.github.io/echo-agent/guides/models/) · [工具与权限](https://fuyuxiang.github.io/echo-agent/guides/tools-permissions/) · [知识库](https://fuyuxiang.github.io/echo-agent/guides/knowledge-base/) · [成本](https://fuyuxiang.github.io/echo-agent/guides/cost-control/) |
-| 集成 | [通道](https://fuyuxiang.github.io/echo-agent/integrations/channels/) · [网关](https://fuyuxiang.github.io/echo-agent/integrations/gateway/) · [MCP](https://fuyuxiang.github.io/echo-agent/integrations/mcp/) · [A2A](https://fuyuxiang.github.io/echo-agent/integrations/a2a/) · [插件](https://fuyuxiang.github.io/echo-agent/integrations/plugins/using-plugins/) |
-| 运维与参考 | [部署](https://fuyuxiang.github.io/echo-agent/operations/) · [CLI](https://fuyuxiang.github.io/echo-agent/reference/cli/) · [配置项](https://fuyuxiang.github.io/echo-agent/reference/configuration/) |
-
----
+| --- | --- |
+| 开始使用 | [安装指南](https://fuyuxiang.github.io/echo-agent/getting-started/installation/) · [快速上手](https://fuyuxiang.github.io/echo-agent/getting-started/quickstart/) |
+| 核心原理 | [架构概览](https://fuyuxiang.github.io/echo-agent/concepts/architecture/) · [Agent Loop](https://fuyuxiang.github.io/echo-agent/concepts/agent-loop/) · [记忆系统](https://fuyuxiang.github.io/echo-agent/concepts/memory-system/) · [进化与评估](https://fuyuxiang.github.io/echo-agent/concepts/evolution-evaluation/) |
+| 配置与运维 | [配置参考](https://fuyuxiang.github.io/echo-agent/reference/configuration/) · [运行方式](https://fuyuxiang.github.io/echo-agent/operations/runtime-modes/) · [安全加固](https://fuyuxiang.github.io/echo-agent/operations/security-hardening/) |
+| 版本与兼容性 | [更新记录](CHANGELOG.md) · [兼容性说明](https://fuyuxiang.github.io/echo-agent/reference/compatibility/) |
+| 桌面端 | [EchoAgent Desktop](client/README.md) |
 
 ## 开发与贡献
 
-从源码搭建开发环境：
+仓库中的 `echo_agent/` 提供终端与 Gateway 的核心代码，`web/` 是 Dashboard 前端，`client/` 是桌面端源码，`skills/` 提供内置 Skills。完整目录说明见 [代码地图](https://fuyuxiang.github.io/echo-agent/development/repository-map/)。
+
+在 macOS 或 Linux 上准备开发环境并运行检查：
 
 ```bash
-git clone https://github.com/fuyuxiang/echo-agent.git   # 或 https://gitee.com/fuyuxiang/echo-agent.git
+git clone https://github.com/fuyuxiang/echo-agent.git
 cd echo-agent
-uv venv venv --python 3.11 && source venv/bin/activate
+uv venv venv --python 3.11
+source venv/bin/activate
 uv pip install -e ".[all,dev]"
-```
-
-提交前在本地运行与 CI 相同的检查：
-
-```bash
 ruff check .
 pytest
 ```
 
-### 提交 PR
+欢迎贡献 Bug 修复、Runtime 改进、工具、Skills、Plugins、消息通道和文档。提交约定见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-- 从 `master` 切出特性分支，一个 PR 只处理一个主题。
-- 涉及面向用户的改动时，同步更新 `README.md` 与 `README.en.md`；改动文档时同步中英文两份。
-- 修改配置项后运行 `echo-agent config gen-docs` 重新生成配置参考。
-- PR 模板中的检查项请逐条确认；CI 会运行 lint、测试、安全扫描、Dashboard 构建、文档构建与打包六项检查。
+## 社区与支持
 
-完整约定见 [CONTRIBUTING](CONTRIBUTING.md)，开发环境与调试方式见[开发文档](https://fuyuxiang.github.io/echo-agent/development/setup/)。
+- 使用交流与设计讨论：[GitHub Discussions](https://github.com/fuyuxiang/echo-agent/discussions)
+- 问题反馈与功能建议：[GitHub Issues](https://github.com/fuyuxiang/echo-agent/issues)
+- 中文交流：[QQ 群 47572014](https://qm.qq.com/q/JWOPDBNssw)
+- 安全漏洞：[GitHub 私密安全报告](https://github.com/fuyuxiang/echo-agent/security/advisories/new)，披露流程见 [SECURITY.md](SECURITY.md)
 
-### 参与方向
+## 许可证
 
-| 方向 | 入口 |
-|------|------|
-| 通道适配器 | [新增通道](https://fuyuxiang.github.io/echo-agent/development/add-channel/) |
-| 内置工具 | [新增工具](https://fuyuxiang.github.io/echo-agent/development/add-tool/) |
-| 模型 Provider | [新增 Provider](https://fuyuxiang.github.io/echo-agent/development/add-provider/) |
-| 技能与插件 | [技能编写](https://fuyuxiang.github.io/echo-agent/development/skill-authoring/) · [插件 API](https://fuyuxiang.github.io/echo-agent/development/plugin-api/) |
-| 评测数据集 | [测试与评测](https://fuyuxiang.github.io/echo-agent/development/testing-evaluation/) |
-| 文档 | [文档贡献](https://fuyuxiang.github.io/echo-agent/development/documentation/) |
-
-### 交流
-
-| 渠道 | 用途 |
-|------|------|
-| [GitHub Issues](https://github.com/fuyuxiang/echo-agent/issues) | 缺陷报告与功能提案，含 Bug / Feature 两类模板 |
-| [GitHub Discussions](https://github.com/fuyuxiang/echo-agent/discussions) | 使用问题、设计讨论与经验分享 |
-| QQ 群 [47572014](https://qm.qq.com/q/JWOPDBNssw) | 即时交流 |
-
-行为准则见 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
-
----
-
-## 版本与兼容性
-
-当前 `0.3.x`，处于 Beta。版本号采用语义化版本格式；具体兼容性以各版本更新说明为准。
-
-- **PATCH**（`0.3.x`）通常用于修复；升级前仍应阅读更新说明并备份。
-- **MINOR**（`0.x.0`）在 Beta 阶段可能包含配置或数据结构的破坏性变更；逐版本阅读更新说明。
-- 配置项与插件 / 技能接口的调整会在 [CHANGELOG](CHANGELOG.md) 中逐项标注。
-
-升级前建议备份工作区目录。详细流程见[升级与迁移](https://fuyuxiang.github.io/echo-agent/operations/upgrade-migrations/)，各接口的稳定级别见[兼容性说明](https://fuyuxiang.github.io/echo-agent/reference/compatibility/)。
-
-## 安全
-
-漏洞请通过 GitHub [私密安全报告](https://github.com/fuyuxiang/echo-agent/security/advisories/new)提交，我们在 48 小时内确认接收。披露流程与支持版本见 [SECURITY.md](SECURITY.md)。
-
-部署侧的安全边界与加固清单见[安全模型](https://fuyuxiang.github.io/echo-agent/concepts/security-model/)与[安全加固](https://fuyuxiang.github.io/echo-agent/operations/security-hardening/)。
-
----
-
-## 协议
-
-[MIT License](LICENSE)
+Echo Agent 基于 [MIT License](LICENSE) 开源。桌面端所含第三方组件的许可信息见 [第三方许可说明](client/THIRD_PARTY_NOTICES.md)。

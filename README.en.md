@@ -2,249 +2,221 @@
 
 # Echo Agent
 
-**An open-source AI agent with long-term memory, continuous learning, and real task execution**
+**An open-source Agent Runtime with long-term memory, self-evolving skills, and an embeddable design**
 
-Runs on your own computer or server: either resident 24/7 behind WeChat, Telegram, Slack and other chat channels, or driving files, browsers and local apps directly from the desktop workspace.
-
-**Self-hosted · Persistent Memory · Desktop Agent · Multi-channel · Human-in-the-loop**
+Echo Agent provides a self-hosted runtime for AI assistants and applications that work over time. Cognitive memory retrieves relevant information across sessions, skill evolution creates and evaluates reusable skills from execution experience, and permission policies govern tool calls. Run it in a terminal, operate it as a Gateway service, or embed it in an application; EchoAgent Desktop brings Agent capabilities into a local workbench.
 
 [![PyPI](https://img.shields.io/pypi/v/echo-agent)](https://pypi.org/project/echo-agent/)
 [![Python](https://img.shields.io/pypi/pyversions/echo-agent)](https://pypi.org/project/echo-agent/)
 [![CI](https://github.com/fuyuxiang/echo-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/fuyuxiang/echo-agent/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-latest-blue)](https://fuyuxiang.github.io/echo-agent/en/)
+[![Docs](https://img.shields.io/badge/docs-online-blue)](https://fuyuxiang.github.io/echo-agent/en/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Downloads](https://static.pepy.tech/badge/echo-agent)](https://pepy.tech/project/echo-agent)
-[![GitHub stars](https://img.shields.io/github/stars/fuyuxiang/echo-agent?style=social)](https://github.com/fuyuxiang/echo-agent)
+[![GitHub Stars](https://img.shields.io/github/stars/fuyuxiang/echo-agent?style=flat)](https://github.com/fuyuxiang/echo-agent/stargazers)
 
-[Quick start](#quick-start) · [Echo Agent Desktop](#echo-agent-desktop-desktop-workspace) · [中文](README.md) · English · [Documentation](https://fuyuxiang.github.io/echo-agent/en/)
+[Quick start](#quick-start) · [Ways to run](#ways-to-run) · [Memory & evolution](#long-term-memory-and-skill-evolution) · [Desktop](#echoagent-desktop) · [Extensions & integration](#extensions-and-integration) · [Documentation](#documentation) · [中文](README.md)
 
 </div>
-
----
-
-## What is Echo Agent
-
-One repository, two forms, sharing the same kernel capabilities (cognitive memory · self-evolving skills · tool approval · model routing):
-
-```text
-                       Echo Agent
-         ┌──────────────┴──────────────┐
-    Agent Runtime                 Echo Agent Desktop
-    (Python package, pip install)  (Tauri desktop app, same runtime embedded)
-    Always-on assistant            The workspace that works on your computer
-    ├── 14 channels: WeChat /      ├── Coding workspace
-    │   Telegram / …               ├── Browser Use / Computer Use
-    ├── CLI / Webhook / Cron       ├── Files · Knowledge base · Automations
-    └── Dashboard web panel        └── WeChat remote takeover
-```
-
-### Agent Runtime (always-on assistant)
-
-`pip install` it onto your own computer or server, start a resident gateway with `echo-agent gateway`: 14 channels — WeChat, Telegram, DingTalk, Feishu and more — share one set of memory and permissions, alongside CLI, Webhook and cron jobs. **It is wherever you are; entries can switch, the long-term memory never starts over.**
-
-### Echo Agent Desktop (desktop workspace)
-
-A Tauri 2 desktop app with the Agent runtime embedded (vendored under `client/vendor/`, no Python install needed first). **Not just chatting with AI — hand it a task and it gets done on your computer**: local files and projects, controlled browser / computer operation, a parallel task board, knowledge bases and scheduled automations. When you are away, continue the task and approve permission requests from WeChat. Every high-risk action asks for your confirmation before it runs.
-
-<div align="center">
-  <img src="client/docs/images/echoagent-home.png" alt="Echo Agent Desktop" width="820" />
-</div>
-
-> The Dashboard is the gateway's built-in web admin panel: start the gateway and open it in a browser (default `http://127.0.0.1:58123/`, the port set by `gateway.port`) — system overview, sessions, memory, skills, knowledge, tasks and logs in one place. See the [Dashboard guide](https://fuyuxiang.github.io/echo-agent/en/guides/dashboard/).
-
----
-
-## What it can do
-
-Four real task shapes (all capabilities are implemented; boundaries noted per section):
-
-- 💻 **"Analyze this project and fix the failing tests"** — Desktop coding workspace: read the project → locate → edit code → run tests → show the result, with tasks and permissions visible in one panel.
-- 📊 **"Every weekday morning, turn yesterday's data into a daily report and send it to Feishu"** — Runtime cron jobs: the agent runs on schedule and the result is delivered as a message to the channel you choose.
-- 🌐 **"Research 10 competitors and organize them into a table"** — Desktop Browser Use: a controlled browser visits each site, extracts information and assembles the output; each site action goes through your confirmation first.
-- 📱 **"I'm heading out — keep that task running"** — WeChat takeover: the desktop task hands over to WeChat; keep talking, watch progress and approve permission requests on the road. Nothing executes over WeChat while the desktop app is closed.
-
----
-
-## Core capabilities
-
-- **Remembers you** — Conversations, preferences and task experience persist across sessions and channels. Low-value memories decay automatically over long-running use, and contradictory information gets revised instead of silently overwriting.
-- **Gets better with use** — Reusable skills are distilled from real execution traces: candidate improvements are validated against an eval set before promotion, with cooldown and one-click rollback. Skills evolve with usage instead of being fixed at release.
-- **Actually executes** — On the desktop, it operates files, browsers and local apps to finish tasks; every browser / computer click, keystroke and upload is individually confirmed beforehand, with the confirm card defaulting to decline.
-- **Your data stays yours** — Fully self-hosted: data lives on your own machine, credentials are encrypted at rest, with no dependency on any cloud service.
-- **Safe and auditable** — High-risk tool calls go through unified approval, outbound requests pass a shared SSRF guard, and execution logs are auditable.
-
-For the remaining capabilities — hybrid retrieval, model routing, MCP / A2A (inbound task endpoint; the Agent runtime has no outbound A2A delegation entry point), plugins and output preservation — see the [documentation](#documentation); the internals of memory and skills are covered in [memory system](https://fuyuxiang.github.io/echo-agent/en/concepts/memory-system/) and [skill evolution](https://fuyuxiang.github.io/echo-agent/en/concepts/evolution-evaluation/).
-
----
 
 ## Quick Start
 
 ### Agent Runtime
 
-Requirements: Python 3.11+, at least one model API key.
+Requirements: Python 3.11+ and an API key for at least one model service. Install the package, configure a model, and start an interactive Agent:
 
 ```bash
 # Install
 pip install "echo-agent[all]"
 
-# Interactive setup wizard (prompts for your model API key; data lives in ~/.echo-agent by default)
+# Configure a model
 echo-agent setup
 
-# Run an interactive conversation
+# Start the Agent in your terminal
 echo-agent run
 ```
 
-Behind a slow PyPI mirror, pass an index explicitly: `pip install "echo-agent[all]" -i <index-url>`. On Windows the same three commands work in PowerShell.
+If access to PyPI is slow in mainland China, you can use a mirror: `pip install "echo-agent[all]" -i https://mirrors.aliyun.com/pypi/simple/`. The same commands work in Windows PowerShell; see the [installation guide](https://fuyuxiang.github.io/echo-agent/en/getting-started/installation/) for platform dependencies and limitations.
 
 <details>
-<summary>Source install script (Linux / macOS / WSL2)</summary>
+<summary>Source installation script (Linux / macOS / WSL2)</summary>
 
-`scripts/install.sh` clones the source from Git, creates a dedicated virtual environment and installs the dependencies, optionally registering a resident service in one step; re-running it upgrades in place. The script is downloaded first so its contents can be reviewed before execution:
+The script clones the source, creates a dedicated environment, and runs the setup wizard. Download and review it before running it:
 
 ```bash
 curl -fsSL -o install.sh https://raw.githubusercontent.com/fuyuxiang/echo-agent/master/scripts/install.sh
-# Gitee mirror (faster inside mainland China)
-curl -fsSL -o install.sh https://gitee.com/fuyuxiang/echo-agent/raw/master/scripts/install.sh
-
-less install.sh && bash install.sh          # full options: bash install.sh --help
+less install.sh
+bash install.sh
 ```
+
+Run `bash install.sh --help` for all options.
 
 </details>
 
-For the trade-offs between installation methods, dependency extras and uninstall steps see the [installation guide](https://fuyuxiang.github.io/echo-agent/en/getting-started/installation/); for every subcommand see the [CLI reference](https://fuyuxiang.github.io/echo-agent/en/reference/cli/), and for every option the [configuration reference](https://fuyuxiang.github.io/echo-agent/en/reference/configuration/).
+See the [installation guide](https://fuyuxiang.github.io/echo-agent/en/getting-started/installation/) for installation methods, optional dependencies, and uninstalling; the [CLI reference](https://fuyuxiang.github.io/echo-agent/en/reference/cli/) for commands; and the [configuration reference](https://fuyuxiang.github.io/echo-agent/en/reference/configuration/) for settings.
 
-### Running 24/7 as a background service
-
-`echo-agent run` is a foreground process; to keep the agent resident 24/7, register the gateway as a system service (user-level LaunchAgent on macOS, user-level systemd unit on Linux, no root required):
+To use Dashboard, the API, messaging channels, or scheduled jobs, start Gateway in the foreground:
 
 ```bash
-echo-agent gateway install    # register and start
-echo-agent gateway logs -f    # follow the logs
-echo-agent gateway status     # check whether it is running
+echo-agent gateway
 ```
 
-The gateway listens on local loopback only (127.0.0.1), cross-site browser requests are rejected by default, and remote access goes over ssh. For staying alive after logout on Linux, hosts without systemd and more, see [background service](https://fuyuxiang.github.io/echo-agent/en/operations/background-service/) and [gateway authentication](https://fuyuxiang.github.io/echo-agent/en/integrations/gateway/authentication/).
+Dashboard is available at `http://127.0.0.1:58123/` by default.
 
-### Building Echo Agent Desktop
+### Run as a Background Service
 
-The installer distribution channel is under construction; for now build from source (Node.js, pnpm, Rust 1.92+ and `protoc`; platform prerequisites in the [client docs](client/docs/release-workflow.md)):
+`echo-agent run` and `echo-agent gateway` run in the foreground by default. On macOS or Linux with systemd, register Gateway as a user-level background service:
+
+```bash
+echo-agent gateway install
+echo-agent gateway status
+echo-agent gateway logs --follow
+```
+
+Gateway listens on `127.0.0.1:58123` by default; use SSH port forwarding for remote access. On Linux, keeping a user service running after logout requires enabling linger according to your system policy. See [background services](https://fuyuxiang.github.io/echo-agent/en/operations/background-service/) and [Gateway authentication](https://fuyuxiang.github.io/echo-agent/en/integrations/gateway/authentication/).
+
+### EchoAgent Desktop
+
+Running the desktop app from source requires Node.js 22 or 24, pnpm 10, Rust 1.92+, and `protoc`. On macOS, run the following from the repository root:
 
 ```bash
 cd client
-pnpm install
+pnpm setup:mac
+pnpm install --frozen-lockfile
 pnpm tauri dev
 ```
 
-`pnpm test` runs the frontend tests, `pnpm build` the TypeScript check plus the production build, and `pnpm dist` the platform installers. See [release-workflow.md](client/docs/release-workflow.md) for the release flow and [automation-platform-support.md](client/docs/automation-platform-support.md) for desktop automation boundaries.
+For Windows prerequisites and startup commands, see the [EchoAgent Desktop documentation](client/README.en.md). `pnpm test` runs frontend tests, `pnpm build` checks TypeScript and builds the frontend, and `pnpm dist` creates platform installers. See the [release workflow](client/docs/release-workflow.md) and [automation platform support](client/docs/automation-platform-support.md) for release requirements.
 
----
+## Ways to Run
 
-## 14 channels
-
-A single Agent instance can serve multiple channels at once, all sharing one set of memory and permissions:
-
-| | Channels |
-|------|------|
-| Global IM | Telegram · Discord · Slack · Matrix · WhatsApp · Email |
-| Chinese IM | WeChat · WeCom · DingTalk · Feishu / Lark · QQ bot |
-| Other entries | CLI · Webhook · Cron |
-
-Telegram, Discord and Slack support message editing and reactions; WeChat and the QQ bot (depending on configuration) can send files. For the full capability matrix per channel and how to connect each one, see the [channels documentation](https://fuyuxiang.github.io/echo-agent/en/integrations/channels/).
-
----
-
-## Architecture
+Echo Agent supports terminal interaction, Gateway service mode, and embedding in an application:
 
 <div align="center">
-  <img src="docs/assets/architecture.png" alt="Echo Agent Architecture" width="820" />
+  <img src="docs/assets/runtime-modes.png" alt="Echo Agent Runtime used locally, as a Gateway service, or embedded in an application" width="920" />
 </div>
 
-For component boundaries and data flow see [architecture](https://fuyuxiang.github.io/echo-agent/en/concepts/architecture/); for the repository layout see the [code map](https://fuyuxiang.github.io/echo-agent/en/development/repository-map/).
+| Mode | Entry point | Best for |
+| --- | --- | --- |
+| **Local** | `echo-agent run` | Terminal interaction, development, and tasks on one machine |
+| **Gateway** | `echo-agent gateway` | Long-running service, messaging channels, Dashboard, APIs, and automation |
+| **Embedded** | EchoAgent Desktop | Running an Agent inside a host application |
 
----
+## Long-Term Memory and Skill Evolution
+
+### Cognitive Memory
+
+An Agent can retrieve relevant conversation summaries, user preferences, and project facts across sessions, reducing the need to repeat context. Memory is organized into working context, session summaries, long-term facts, and archives. Hybrid retrieval recalls relevant entries; environment memories decay over time, and conflicting facts are detected and updated. See the [memory system](https://fuyuxiang.github.io/echo-agent/en/concepts/memory-system/).
+
+### Self-Evolving Skills
+
+Echo Agent can distill reusable Skills from task execution traces. Candidate skills undergo content validation and evaluation against a baseline. Low-risk candidates that improve results may be promoted automatically; high-risk candidates enter human review. Promoted skills can be rolled back manually. See [evolution and evaluation](https://fuyuxiang.github.io/echo-agent/en/concepts/evolution-evaluation/).
+
+## Runtime Capabilities
+
+Echo Agent Runtime organizes Agent execution and extensibility around these capabilities:
+
+| Capability | Purpose |
+| --- | --- |
+| **Agent Loop** | Coordinates model inference, tool calls, and execution feedback to advance a task |
+| **Sessions and context** | Manages task state and assembles the context needed for each turn |
+| **Model providers and routing** | Connects multiple model services with configurable routing and failover |
+| **Tools and MCP** | Uses local tools and connects to external MCP servers |
+| **Skills and Plugins** | Loads reusable skills and extends Runtime behavior |
+| **Permission policies** | Checks tool calls, prompts for sensitive operations, and records execution |
+| **Automation and messaging channels** | Triggers Agents through scheduled jobs, Webhooks, and messaging entry points |
+
+For example, you can analyze a project in the terminal or have Gateway prepare a scheduled report and send it to Feishu or Telegram. See the [architecture overview](https://fuyuxiang.github.io/echo-agent/en/concepts/architecture/) for component responsibilities.
+
+## Gateway and Dashboard
+
+Gateway runs the full Runtime as a service and exposes Dashboard, HTTP / WebSocket APIs, messaging channels, Webhooks, and scheduled jobs. CLI / TUI connects to an existing Gateway and uses its models, memory, tools, and permission policies:
+
+```bash
+echo-agent cli
+echo-agent cli --tui
+```
+
+Dashboard shows sessions, memory, skills, the knowledge base, scheduled jobs, messaging channels, and runtime status. See the [Dashboard guide](https://fuyuxiang.github.io/echo-agent/en/guides/dashboard/) and [messaging channel documentation](https://fuyuxiang.github.io/echo-agent/en/integrations/channels/).
+
+## EchoAgent Desktop
+
+**EchoAgent Desktop** integrates Echo Agent Runtime into a desktop workbench. The Agent can work with files, browsers, and desktop capabilities in a local workspace while showing its execution progress and changes.
+
+<div align="center">
+  <img src="client/docs/images/echoagent-home.png" alt="EchoAgent Desktop home screen" width="920" />
+</div>
+
+| Use case | Desktop capabilities |
+| --- | --- |
+| **Coding** | Integrates Eclipse Theia IDE and a Coding Agent for task plans, code changes, diff review, verification, and delivery |
+| **Browser and computer use** | Browser Use operates in a task-isolated browser; Computer Use acts on screen snapshots and requests confirmation for sensitive operations |
+| **Workspace and knowledge** | Manages project files, sessions, the knowledge base, and task artifacts so the Agent can reuse existing context |
+| **Models and extensions** | Selects model services and connects MCP, Skills, Plugins, experts, and sub-Agents as needed |
+| **Continue remotely** | With WeChat linked, continue a session, check progress, and handle permission requests while the desktop app is running |
+
+The desktop app can start independently of Gateway. See the [EchoAgent Desktop documentation](client/README.en.md) for source builds, platform requirements, and its full feature set.
+
+## Extensions and Integration
+
+There are two ways to integrate Echo Agent into an existing product:
+
+- **Embed in-process:** The host application integrates Runtime and owns the UI, task state, and local capabilities. EchoAgent Desktop provides a reference [application architecture](client/README.en.md#architecture-and-data-flow) and [runtime bridge](client/src-tauri/src/agent_runtime.rs).
+- **Connect to Gateway:** Run Runtime independently and communicate with it through the [HTTP / WebSocket API](https://fuyuxiang.github.io/echo-agent/en/reference/gateway-api/).
+
+The desktop integration is the current reference for in-process embedding. Confirm API behavior and compatibility against the source version you use.
+
+Echo Agent Runtime also offers these extension points:
+
+| Extension point | Purpose | Documentation |
+| --- | --- | --- |
+| Tools | Add native execution capabilities | [Tool reference](https://fuyuxiang.github.io/echo-agent/en/reference/tools/) |
+| MCP | Connect external tool services | [MCP integration](https://fuyuxiang.github.io/echo-agent/en/integrations/mcp/) |
+| Skills and Plugins | Reuse workflows and extend runtime behavior | [Skills](https://fuyuxiang.github.io/echo-agent/en/integrations/skills/using-skills/) · [Plugins](https://fuyuxiang.github.io/echo-agent/en/integrations/plugins/using-plugins/) |
+| Models | Connect model services | [Model providers](https://fuyuxiang.github.io/echo-agent/en/guides/models/) |
+| Channels | Add messaging entry points | [Messaging channels](https://fuyuxiang.github.io/echo-agent/en/integrations/channels/) |
+
+## Data and Security
+
+Echo Agent can run on your own computer or server. Sessions, memory, configuration, and other state remain in the deployment environment. Permission policies govern tool calls; operations that require approval wait for a user decision and are recorded.
+
+When you use remote models, MCP servers, or third-party messaging channels, the data needed for those interactions is sent to the corresponding services. We recommend running only one full Runtime instance per workspace. See the [security model](https://fuyuxiang.github.io/echo-agent/en/concepts/security-model/) and [hardening guide](https://fuyuxiang.github.io/echo-agent/en/operations/security-hardening/) for remote access and deployment boundaries.
 
 ## Documentation
 
-Full documentation lives at **[fuyuxiang.github.io/echo-agent](https://fuyuxiang.github.io/echo-agent/en/)**. This README covers installation and getting started.
+Full documentation: [fuyuxiang.github.io/echo-agent/en](https://fuyuxiang.github.io/echo-agent/en/)
 
 | Topic | Entry points |
-|-------|--------------|
-| Getting started | [Installation](https://fuyuxiang.github.io/echo-agent/en/getting-started/installation/) · [Upgrade & uninstall](https://fuyuxiang.github.io/echo-agent/en/getting-started/upgrade-uninstall/) |
-| Core concepts | [Architecture](https://fuyuxiang.github.io/echo-agent/en/concepts/architecture/) · [Memory system](https://fuyuxiang.github.io/echo-agent/en/concepts/memory-system/) · [Skill evolution](https://fuyuxiang.github.io/echo-agent/en/concepts/evolution-evaluation/) · [Security model](https://fuyuxiang.github.io/echo-agent/en/concepts/security-model/) |
-| Guides | [Models](https://fuyuxiang.github.io/echo-agent/en/guides/models/) · [Tools & permissions](https://fuyuxiang.github.io/echo-agent/en/guides/tools-permissions/) · [Knowledge base](https://fuyuxiang.github.io/echo-agent/en/guides/knowledge-base/) · [Cost](https://fuyuxiang.github.io/echo-agent/en/guides/cost-control/) |
-| Integrations | [Channels](https://fuyuxiang.github.io/echo-agent/en/integrations/channels/) · [Gateway](https://fuyuxiang.github.io/echo-agent/en/integrations/gateway/) · [MCP](https://fuyuxiang.github.io/echo-agent/en/integrations/mcp/) · [A2A](https://fuyuxiang.github.io/echo-agent/en/integrations/a2a/) · [Plugins](https://fuyuxiang.github.io/echo-agent/en/integrations/plugins/using-plugins/) |
-| Operations & reference | [Deployment](https://fuyuxiang.github.io/echo-agent/en/operations/) · [CLI](https://fuyuxiang.github.io/echo-agent/en/reference/cli/) · [Configuration](https://fuyuxiang.github.io/echo-agent/en/reference/configuration/) |
+| --- | --- |
+| Getting started | [Installation](https://fuyuxiang.github.io/echo-agent/en/getting-started/installation/) · [Quick start](https://fuyuxiang.github.io/echo-agent/en/getting-started/quickstart/) |
+| Core concepts | [Architecture](https://fuyuxiang.github.io/echo-agent/en/concepts/architecture/) · [Agent Loop](https://fuyuxiang.github.io/echo-agent/en/concepts/agent-loop/) · [Memory system](https://fuyuxiang.github.io/echo-agent/en/concepts/memory-system/) · [Evolution and evaluation](https://fuyuxiang.github.io/echo-agent/en/concepts/evolution-evaluation/) |
+| Configuration and operations | [Configuration](https://fuyuxiang.github.io/echo-agent/en/reference/configuration/) · [Runtime modes](https://fuyuxiang.github.io/echo-agent/en/operations/runtime-modes/) · [Security hardening](https://fuyuxiang.github.io/echo-agent/en/operations/security-hardening/) |
+| Versions and compatibility | [Changelog](CHANGELOG.md) · [Compatibility](https://fuyuxiang.github.io/echo-agent/en/reference/compatibility/) |
+| Desktop app | [EchoAgent Desktop](client/README.en.md) |
 
----
+## Development and Contributing
 
-## Development & Contributing
+In this repository, `echo_agent/` contains the core code for terminal and Gateway use, `web/` is the Dashboard frontend, `client/` contains the desktop app, and `skills/` contains built-in Skills. See the [repository map](https://fuyuxiang.github.io/echo-agent/en/development/repository-map/) for the full layout.
 
-Set up a development environment from source:
+On macOS or Linux, set up a development environment and run checks:
 
 ```bash
-git clone https://github.com/fuyuxiang/echo-agent.git   # mirror: https://gitee.com/fuyuxiang/echo-agent.git
+git clone https://github.com/fuyuxiang/echo-agent.git
 cd echo-agent
-uv venv venv --python 3.11 && source venv/bin/activate
+uv venv venv --python 3.11
+source venv/bin/activate
 uv pip install -e ".[all,dev]"
-```
-
-Run the same checks CI runs before submitting:
-
-```bash
 ruff check .
 pytest
 ```
 
-### Submitting a PR
+We welcome bug fixes, Runtime improvements, tools, Skills, Plugins, messaging channels, and documentation. See [CONTRIBUTING.en.md](CONTRIBUTING.en.md) for contribution guidelines.
 
-- Branch off `master`; keep one PR to one topic.
-- For user-facing changes, update both `README.md` and `README.en.md`; for documentation changes, update both language versions.
-- After changing configuration fields, run `echo-agent config gen-docs` to regenerate the configuration reference.
-- Work through the checklist in the PR template. CI runs six checks: lint, tests, security scan, Dashboard build, docs build and packaging.
+## Community and Support
 
-See [CONTRIBUTING](CONTRIBUTING.en.md) for the full conventions and the [development guide](https://fuyuxiang.github.io/echo-agent/en/development/setup/) for environment and debugging details.
-
-### Where to contribute
-
-| Area | Entry point |
-|------|-------------|
-| Channel adapters | [Adding a channel](https://fuyuxiang.github.io/echo-agent/en/development/add-channel/) |
-| Built-in tools | [Adding a tool](https://fuyuxiang.github.io/echo-agent/en/development/add-tool/) |
-| Model providers | [Adding a provider](https://fuyuxiang.github.io/echo-agent/en/development/add-provider/) |
-| Skills and plugins | [Skill authoring](https://fuyuxiang.github.io/echo-agent/en/development/skill-authoring/) · [Plugin API](https://fuyuxiang.github.io/echo-agent/en/development/plugin-api/) |
-| Eval datasets | [Testing and evaluation](https://fuyuxiang.github.io/echo-agent/en/development/testing-evaluation/) |
-| Documentation | [Documentation guide](https://fuyuxiang.github.io/echo-agent/en/development/documentation/) |
-
-### Getting in touch
-
-| Channel | Use it for |
-|---------|-----------|
-| [GitHub Issues](https://github.com/fuyuxiang/echo-agent/issues) | Bug reports and feature proposals; Bug / Feature templates provided |
-| [GitHub Discussions](https://github.com/fuyuxiang/echo-agent/discussions) | Usage questions, design discussion, sharing setups |
-| QQ group [47572014](https://qm.qq.com/q/JWOPDBNssw) | Real-time chat (Chinese) |
-
-Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md).
-
----
-
-## Versioning & Compatibility
-
-Currently `0.3.x`, in Beta. Version numbers use the semantic-version format; read each release's notes for actual compatibility.
-
-- **PATCH** (`0.3.x`) is generally used for fixes; read the release notes and back up before upgrading.
-- **MINOR** (`0.x.0`) may include breaking configuration or data changes during Beta; read the notes for each release.
-- Changes to configuration keys and to the plugin / skill interfaces are itemised in the [CHANGELOG](CHANGELOG.md).
-
-Back up your workspace directory before upgrading. See [upgrade & migrations](https://fuyuxiang.github.io/echo-agent/en/operations/upgrade-migrations/) for the procedure and [compatibility](https://fuyuxiang.github.io/echo-agent/en/reference/compatibility/) for the stability level of each interface.
-
-## Security
-
-Report vulnerabilities through GitHub's [private security advisory](https://github.com/fuyuxiang/echo-agent/security/advisories/new) form; we acknowledge receipt within 48 hours. Disclosure process and supported versions are in [SECURITY.md](SECURITY.md).
-
-For deployment-side boundaries and the hardening checklist see [security model](https://fuyuxiang.github.io/echo-agent/en/concepts/security-model/) and [security hardening](https://fuyuxiang.github.io/echo-agent/en/operations/security-hardening/).
-
----
+- Usage questions and design discussions: [GitHub Discussions](https://github.com/fuyuxiang/echo-agent/discussions)
+- Bug reports and feature requests: [GitHub Issues](https://github.com/fuyuxiang/echo-agent/issues)
+- Chinese-language chat: [QQ group 47572014](https://qm.qq.com/q/JWOPDBNssw)
+- Security vulnerabilities: [GitHub private security reports](https://github.com/fuyuxiang/echo-agent/security/advisories/new); see [SECURITY.md](SECURITY.md) for the disclosure process
 
 ## License
 
-[MIT License](LICENSE)
+Echo Agent is open source under the [MIT License](LICENSE). See the [third-party notices](client/THIRD_PARTY_NOTICES.md) for licenses of components included in the desktop app.
