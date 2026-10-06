@@ -2,7 +2,7 @@
 
 # Echo Agent
 
-**记得住过去，学得会未来的开源 AI Agent**
+**住在你聊天软件里、记得住你、越用越懂你的自托管 AI 助理**
 
 <a href="https://github.com/fuyuxiang/echo-agent">
   <img src="docs/assets/echo-agent.png" alt="Echo Agent" width="720" />
@@ -18,69 +18,23 @@
 [![Downloads](https://static.pepy.tech/badge/echo-agent)](https://pepy.tech/project/echo-agent)
 [![GitHub stars](https://img.shields.io/github/stars/fuyuxiang/echo-agent?style=social)](https://github.com/fuyuxiang/echo-agent)
 
-[中文](README.md) · [English](README.en.md) · [完整文档](https://fuyuxiang.github.io/echo-agent/)
+[快速开始](#快速开始) · [中文](README.md) · [English](README.en.md) · [完整文档](https://fuyuxiang.github.io/echo-agent/)
 
 </div>
 
 ---
 
-## 一个内核，三种形态
+## 为什么是 Echo Agent
 
-Echo Agent 是一套开源 AI Agent 生态：一个**认知记忆 + 自进化**的内核，撑起三种使用形态。
+你用过的 AI 助手大多是一次性的：换个会话就忘了你是谁，交代过的偏好要再说一遍，换个入口记忆就对不上。Echo Agent 反其道而行——**一个大脑，7×24 常驻**：它通过你已有的聊天软件与你对话，把每次交互沉淀为长期记忆，让技能随真实使用进化，高风险操作先征得你的同意再执行。
 
-| 形态 | 是什么 | 位置 |
-|------|--------|------|
-| **echo-agent** | 可自托管的 Python Agent 运行时，长时记忆、技能进化、14 通道接入 | 本仓库根目录 |
-| **Dashboard** | 网关内置的 Web 管理面板，监控会话、记忆、技能、知识与成本 | `web/` |
-| **EchoAgent** | 以内核为运行时、可独立打包的桌面 Agent 客户端 | `client/` |
-
-三者共享同一套 Agent 能力：桌面客户端把运行时源码快照内嵌在 `client/vendor/`，无需先装 Python 包；Dashboard 挂在网关根路径，不占独立端口。
-
----
-
-## 核心亮点
-
-与一次性问答不同，Echo Agent **记得住、学得会**：
-
-- **认知记忆** — Working / Episodic / Semantic / Archival 四层结构，配合艾宾浩斯遗忘曲线（访问越多、忘得越慢）与矛盾检测（信念修正而非静默覆盖），解决长期运行下的记忆膨胀，对话不再从零开始。
-- **自进化技能** — 从真实执行轨迹生成候选改进，经评测集对照验证后才晋升，带冷却期与一键回滚，技能越用越强而非出厂定型。
-- **多入口归一** — CLI、Gateway、Webhook、Cron 与 Telegram / Discord / Slack / 微信 / 企业微信 / 飞书 / 钉钉 / QQ / WhatsApp / 邮件 / Matrix 共 [14 个通道](https://fuyuxiang.github.io/echo-agent/integrations/channels/)共享同一份记忆与权限。
+- **认知记忆** — Working / Episodic / Semantic / Archival 四层记忆结构，配合遗忘曲线与矛盾检测：访问越多的记忆忘得越慢，过时信念被修正而非静默覆盖，长期运行也不会记忆膨胀，对话不再从零开始。详见[记忆系统](https://fuyuxiang.github.io/echo-agent/concepts/memory-system/)。
+- **自进化技能** — 从真实执行轨迹生成候选改进，经评测集对照验证后才晋升，带冷却期与一键回滚。技能越用越强，而非出厂定型。详见[技能进化](https://fuyuxiang.github.io/echo-agent/concepts/evolution-evaluation/)。
+- **14 个通道接入** — Telegram、微信、钉钉、飞书、Slack、Discord、邮件等通道共享同一份记忆与权限：在微信里说的事，回到 Telegram 还记得。
 - **安全可控** — 高风险工具调用经统一审批，凭证加密存储，执行日志可审计。
+- **完全自托管** — 数据留在你自己的机器上，`pip install` 即用，不依赖任何云端服务。
 
-混合检索、模型路由、MCP / A2A、插件体系、定时任务与输出保全等其余能力，见下方[文档](#文档)中的对应主题。
-
-A2A 当前提供入站任务端点；当前 Agent 运行时不提供 A2A 出站委派入口。
-
----
-
-## Dashboard
-
-网关自带 Web 管理面板，启动后访问网关地址即可打开，无需独立端口。页面覆盖系统总览、会话、记忆、技能、知识库、定时任务、任务看板、日志、分析与运行时配置。
-
-> 用 `echo-agent gateway` 启动网关，浏览器访问 `http://127.0.0.1:58123/`（端口由 `gateway.port` 决定）；前端产物用 `echo-agent dashboard build` 构建。详见 [Dashboard](https://fuyuxiang.github.io/echo-agent/guides/dashboard/)。
-
----
-
-## EchoAgent 桌面客户端
-
-`client/` 是 Tauri 2 桌面应用：React / TypeScript 负责界面，Rust 负责本地能力与内嵌 Agent 运行时。除了对话、代码工作台、知识库、定时自动化与受控的 Browser Use / Computer Use，它的两个杀手锏是：
-
-- **微信接管会话** — 扫码绑定微信后，可把正在进行的任务交给微信继续、在微信里切换任务、确认权限请求、收发附件。桌面运行时处理指令，桌面和微信进入同一会话，桌面关闭后不会执行微信指令。详见 [微信远程对话](client/docs/weixin-remote.md)。
-- **组织 · 企业知识资产中枢** — 登录组织后，把团队 / 企业的知识资产接进个人工作区，与本地记忆、个人知识索引共同检索。访问令牌留在 Rust 内存、授权决策留在服务端，桌面只保存 HTTPS 来源与刷新凭据。
-
-<div align="center">
-  <img src="client/docs/images/echoagent-home.png" alt="EchoAgent 桌面客户端" width="820" />
-</div>
-
-本地开发需要 Node.js、pnpm、Rust stable（最低 1.92）和 `protoc`；macOS 还需 Xcode Command Line Tools，Windows 需 Visual Studio 2022 的"使用 C++ 的桌面开发"工作负载。
-
-```bash
-cd client
-pnpm install
-pnpm tauri dev
-```
-
-`pnpm test` 运行前端测试，`pnpm build` 执行 TypeScript 检查与前端生产构建；平台签名就绪后 `pnpm dist` 生成安装包（覆盖 Windows x86_64 与 macOS Apple Silicon / Intel）。发布流程见 [release-workflow.md](client/docs/release-workflow.md)，自动化平台与安全边界见 [automation-platform-support.md](client/docs/automation-platform-support.md)。
+混合检索、模型路由、MCP / A2A（入站任务端点；当前 Agent 运行时不提供 A2A 出站委派入口）、插件体系、定时任务与输出保全等其余能力，见[文档](#文档)。
 
 ---
 
@@ -155,7 +109,62 @@ echo-agent dashboard build  # 构建 Web Dashboard 前端产物（源码安装�
 
 完整子命令与参数见 [CLI 参考](https://fuyuxiang.github.io/echo-agent/reference/cli/)，全部配置项见 [配置参考](https://fuyuxiang.github.io/echo-agent/reference/configuration/)。
 
-### 常驻运行（后台服务）
+---
+
+## 三种使用形态
+
+一个内核，三种入口，共享同一份记忆、技能与权限。
+
+### 终端与网关
+
+`echo-agent run` 在终端里直接对话；`echo-agent gateway` 启动常驻网关后，Dashboard、各消息通道与 `echo-agent cli` 多终端接入都挂在这一个网关上——会话独立、记忆共享。网关默认只监听本机回环地址（127.0.0.1），远程接入请走 ssh。
+
+### Dashboard
+
+网关自带的 Web 管理面板，启动网关后浏览器访问其地址即可，无需独立端口。系统总览、会话、记忆、技能、知识库、定时任务、任务看板、日志、分析与运行时配置，全在一处。
+
+<!-- TODO: 补一张 Dashboard 总览截图（建议 docs/assets/dashboard.png，宽 820） -->
+
+> 用 `echo-agent gateway` 启动网关，浏览器访问 `http://127.0.0.1:58123/`（端口由 `gateway.port` 决定）；前端产物用 `echo-agent dashboard build` 构建。详见 [Dashboard 指南](https://fuyuxiang.github.io/echo-agent/guides/dashboard/)。
+
+### EchoAgent 桌面客户端
+
+`client/` 是 Tauri 2 桌面应用：React / TypeScript 负责界面，Rust 负责本地能力与内嵌 Agent 运行时（源码快照内嵌在 `client/vendor/`，无需先装 Python 包）。除了对话、代码工作台、知识库、定时自动化与受控的 Browser Use / Computer Use，它有两个杀手锏：
+
+- **微信接管会话** — 扫码绑定微信后，可把正在进行的任务交给微信继续、在微信里切换任务、确认权限请求、收发附件。桌面运行时处理指令，桌面和微信进入同一会话，桌面关闭后不会执行微信指令。详见 [微信远程对话](client/docs/weixin-remote.md)。
+- **组织 · 企业知识资产中枢** — 登录组织后，把团队 / 企业的知识资产接进个人工作区，与本地记忆、个人知识索引共同检索。访问令牌留在 Rust 内存、授权决策留在服务端，桌面只保存 HTTPS 来源与刷新凭据。
+
+<div align="center">
+  <img src="client/docs/images/echoagent-home.png" alt="EchoAgent 桌面客户端" width="820" />
+</div>
+
+本地开发需要 Node.js、pnpm、Rust stable（最低 1.92）和 `protoc`；macOS 还需 Xcode Command Line Tools，Windows 需 Visual Studio 2022 的"使用 C++ 的桌面开发"工作负载。
+
+```bash
+cd client
+pnpm install
+pnpm tauri dev
+```
+
+`pnpm test` 运行前端测试，`pnpm build` 执行 TypeScript 检查与前端生产构建；平台签名就绪后 `pnpm dist` 生成安装包（覆盖 Windows x86_64 与 macOS Apple Silicon / Intel）。发布流程见 [release-workflow.md](client/docs/release-workflow.md)，自动化平台与安全边界见 [automation-platform-support.md](client/docs/automation-platform-support.md)。
+
+---
+
+## 14 个通道
+
+一个 Agent 实例可同时接入多个通道，所有通道共享同一份记忆与权限：
+
+| | 通道 |
+|------|------|
+| 海外 IM | Telegram · Discord · Slack · Matrix · WhatsApp · Email |
+| 国内 IM | 微信 · 企业微信 · 钉钉 · 飞书 / Lark · QQ 机器人 |
+| 其他入口 | CLI · Webhook · 定时任务 |
+
+Telegram、Discord、Slack 支持消息编辑与表情回应；微信与 QQ 机器人（视配置）可收发文件。各通道的完整能力矩阵与接入方式见[通道文档](https://fuyuxiang.github.io/echo-agent/integrations/channels/)。
+
+---
+
+## 常驻运行（后台服务）
 
 `echo-agent run` 和 `echo-agent gateway` 都是前台进程，关掉终端就退出。想让 agent 7×24 常驻，把网关注册为系统服务即可（macOS 注册用户级 LaunchAgent，Linux 注册用户级 systemd 服务，均无需 root，开机自启、崩溃自动拉起）：
 
@@ -169,13 +178,21 @@ echo-agent gateway stop       # 停止
 echo-agent gateway uninstall  # 取消注册
 ```
 
-网关运行后，在本机任意终端用 `echo-agent cli` 接入，即可与同一个常驻 agent 对话（会话独立、记忆共享）。网关仅监听本机 loopback（127.0.0.1），不支持远程地址；远程接入请走 ssh。
-
 两点环境差异需要注意：Linux 的用户级服务随登录会话结束而停止，执行 `sudo loginctl enable-linger $USER` 可使其在退出登录后继续运行；未启用 systemd 的环境（WSL2 默认配置、容器）改用 tmux 维持前台进程，如 `tmux new -s echo-agent 'echo-agent gateway'`。系统级注册与服务文件更新见[后台常驻服务](https://fuyuxiang.github.io/echo-agent/operations/background-service/)。
 
 > **本机访问边界**：零配置下的 loopback 网关只接受两类客户端——`echo-agent cli`，以及不携带浏览器 `Origin` 的原生客户端（脚本、SDK）。携带跨站 `Origin` 的浏览器请求一律拒绝，防止网页借用户浏览器驱动本机 agent（CSRF）。开放浏览器或 playground 访问的配置方式见[网关认证](https://fuyuxiang.github.io/echo-agent/integrations/gateway/authentication/)。
 
 配对码客户端在验证失败时会收到明确的错误状态：请求格式不合法为 `400`，配对码无效或过期为 `403`，同一身份触发临时锁定为 `429` 并附带 `Retry-After` 等待时间。输入限制及锁定规则见[网关认证](https://fuyuxiang.github.io/echo-agent/integrations/gateway/authentication/#配对失败锁定)。
+
+---
+
+## 架构
+
+<div align="center">
+  <img src="docs/assets/architecture.png" alt="Echo Agent 架构图" width="820" />
+</div>
+
+各组件的职责边界与数据流见[架构总览](https://fuyuxiang.github.io/echo-agent/concepts/architecture/)，仓库目录结构见[代码地图](https://fuyuxiang.github.io/echo-agent/development/repository-map/)。
 
 ---
 
@@ -190,16 +207,6 @@ echo-agent gateway uninstall  # 取消注册
 | 使用指南 | [模型接入](https://fuyuxiang.github.io/echo-agent/guides/models/) · [工具与权限](https://fuyuxiang.github.io/echo-agent/guides/tools-permissions/) · [知识库](https://fuyuxiang.github.io/echo-agent/guides/knowledge-base/) · [成本](https://fuyuxiang.github.io/echo-agent/guides/cost-control/) |
 | 集成 | [通道](https://fuyuxiang.github.io/echo-agent/integrations/channels/) · [网关](https://fuyuxiang.github.io/echo-agent/integrations/gateway/) · [MCP](https://fuyuxiang.github.io/echo-agent/integrations/mcp/) · [A2A](https://fuyuxiang.github.io/echo-agent/integrations/a2a/) · [插件](https://fuyuxiang.github.io/echo-agent/integrations/plugins/using-plugins/) |
 | 运维与参考 | [部署](https://fuyuxiang.github.io/echo-agent/operations/) · [CLI](https://fuyuxiang.github.io/echo-agent/reference/cli/) · [配置项](https://fuyuxiang.github.io/echo-agent/reference/configuration/) |
-
----
-
-## 架构
-
-<div align="center">
-  <img src="docs/assets/architecture.png" alt="Echo Agent 架构图" width="820" />
-</div>
-
-各组件的职责边界与数据流见[架构总览](https://fuyuxiang.github.io/echo-agent/concepts/architecture/)，仓库目录结构见[代码地图](https://fuyuxiang.github.io/echo-agent/development/repository-map/)。
 
 ---
 
