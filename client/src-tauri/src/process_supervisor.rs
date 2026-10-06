@@ -189,7 +189,7 @@ mod windows_job {
             Ok(())
         }
 
-        fn assign(&self, process: HANDLE) -> io::Result<()> {
+        pub(super) fn assign(&self, process: HANDLE) -> io::Result<()> {
             if unsafe { AssignProcessToJobObject(self.0, process) } == 0 {
                 return Err(io::Error::last_os_error());
             }
