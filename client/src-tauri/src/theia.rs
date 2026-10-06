@@ -7,6 +7,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, State};
@@ -17,6 +18,7 @@ use crate::shell_fs::FilesystemAccess;
 #[derive(Default)]
 pub struct TheiaServer {
     process: Mutex<Option<RunningServer>>,
+    shutting_down: AtomicBool,
 }
 
 struct RunningServer {
@@ -46,16 +48,30 @@ impl RunningServer {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TheiaEndpoint {
-    url: String,
-    embed_token: String,
+    pub(crate) url: String,
+    pub(crate) embed_token: String,
 }
 
 impl TheiaServer {
+    pub fn begin_shutdown(&self) {
+        self.shutting_down.store(true, Ordering::Release);
+    }
+
+    fn ensure_start_allowed(&self) -> Result<(), String> {
+        if self.shutting_down.load(Ordering::Acquire) {
+            Err("应用正在退出，IDE 启动已取消".into())
+        } else {
+            Ok(())
+        }
+    }
+
     pub fn stop(&self) {
-        if let Ok(mut guard) = self.process.lock() {
-            if let Some(mut running) = guard.take() {
-                running.stop();
-            }
+        let mut guard = self
+            .process
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(mut running) = guard.take() {
+            running.stop();
         }
     }
 }
@@ -181,7 +197,7 @@ fn check_node(node: &PathBuf) -> Result<(), String> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        command.creation_flags(crate::process_supervisor::CREATE_NO_WINDOW);
+        command.creation_flags(crate::process_supervisor::WINDOWLESS_NODE_FLAGS);
     }
     let output = command
         .output()
@@ -268,6 +284,7 @@ pub async fn coding_theia_start(
         .process
         .lock()
         .map_err(|_| "Theia 状态锁不可用".to_string())?;
+    server.ensure_start_allowed()?;
     if let Some(running) = guard.as_mut() {
         if running.root == authorized_root
             && running
@@ -286,10 +303,12 @@ pub async fn coding_theia_start(
             old.stop();
         }
     }
+    server.ensure_start_allowed()?;
 
     let app_dir = node_compatible_path(&browser_app_dir(&app)?)?;
     let node = node_compatible_path(&node_executable(&app))?;
     check_node(&node)?;
+    server.ensure_start_allowed()?;
     let data_dir = app
         .path()
         .app_data_dir()
@@ -311,6 +330,7 @@ pub async fn coding_theia_start(
         .open(&log_path)
         .map_err(|error| format!("无法创建 IDE 日志：{error}"))?;
     for attempt in 0..3 {
+        server.ensure_start_allowed()?;
         // The preferred origin restores layout. A bind/drop/spawn race can
         // still occur; an occupied port gets a fresh ephemeral retry.
         let listener = if attempt == 0 {
@@ -356,6 +376,10 @@ pub async fn coding_theia_start(
 
         let deadline = Instant::now() + Duration::from_secs(30);
         while Instant::now() < deadline {
+            if let Err(error) = server.ensure_start_allowed() {
+                crate::process_supervisor::stop_sync(&mut child);
+                return Err(error);
+            }
             if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
                 let port_taken = port_conflict_in_attempt(&log_path, attempt_log_start);
                 if port_taken && attempt < 2 {
@@ -367,6 +391,10 @@ pub async fn coding_theia_start(
                 ));
             }
             if theia_ready(port, &embed_token) {
+                if let Err(error) = server.ensure_start_allowed() {
+                    crate::process_supervisor::stop_sync(&mut child);
+                    return Err(error);
+                }
                 *guard = Some(RunningServer {
                     child,
                     port,

@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, State};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+#[cfg(test)]
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
@@ -380,12 +381,12 @@ fn terminate_terminal_child(child: &mut PtyChild) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     if let Some(pid) = pid {
-        let _ = std::process::Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
+        let mut kill = crate::process_supervisor::background_sync_command("taskkill");
+        kill.args(["/PID", &pid.to_string(), "/T", "/F"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+            .stderr(Stdio::null());
+        let _ = kill.status();
     }
     if child.is_alive() {
         child
@@ -641,7 +642,7 @@ fn validation_commands(root: &Path, manifests: &[ManifestCandidate]) -> Vec<Stri
 }
 
 async fn git_output(root: &Path, arguments: &[&str]) -> Option<String> {
-    let output = Command::new("git")
+    let output = crate::process_supervisor::background_async_command("git")
         .arg("-C")
         .arg(root)
         .args(arguments)
@@ -657,7 +658,7 @@ async fn git_output(root: &Path, arguments: &[&str]) -> Option<String> {
 }
 
 async fn git_output_bytes(root: &Path, arguments: &[&str]) -> Option<Vec<u8>> {
-    let output = Command::new("git")
+    let output = crate::process_supervisor::background_async_command("git")
         .arg("-C")
         .arg(root)
         .args(arguments)
@@ -879,7 +880,7 @@ pub async fn coding_git_set_staged(
     } else {
         vec!["restore", "--staged", "--", path.as_str()]
     };
-    let mut output = Command::new("git")
+    let mut output = crate::process_supervisor::background_async_command("git")
         .arg("-C")
         .arg(&root)
         .args(arguments)
@@ -893,7 +894,7 @@ pub async fn coding_git_set_staged(
     // have one yet, so fall back to removing only the index entry while keeping
     // the working-tree file intact.
     if !staged && !output.status.success() {
-        output = Command::new("git")
+        output = crate::process_supervisor::background_async_command("git")
             .arg("-C")
             .arg(&root)
             .args(["rm", "--cached", "--ignore-unmatch", "--", path.as_str()])
@@ -2262,7 +2263,7 @@ pub async fn coding_search_workspace(
     if options.regex && regex::Regex::new(query).is_err() {
         return Err("正则表达式无效".into());
     }
-    let mut command = Command::new("rg");
+    let mut command = crate::process_supervisor::background_async_command("rg");
     command.args([
         "--line-number",
         "--column",

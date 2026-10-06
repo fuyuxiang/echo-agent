@@ -142,6 +142,11 @@ if (-not (Get-Command link.exe -ErrorAction SilentlyContinue)) {
     exit 1
 }
 Log-Ok "MSVC link.exe available: $((Get-Command link.exe).Source)"
+if ($vcvars -match '\\2022\\') {
+    # node-gyp can otherwise select a newer Visual Studio installation that
+    # lacks the Spectre libraries required by node-pty.
+    $env:npm_config_msvs_version = "2022"
+}
 
 # ---------------------------------------------------------------------------
 # 4. Vendored Runtime sanity check. Path dependencies in Cargo.toml resolve

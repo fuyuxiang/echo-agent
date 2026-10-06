@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { latestTheiaSourceMtime } from "./theia-source-mtime.mjs";
 import { ensureTheiaNodeWritable } from "./ensure-theia-node-writable.mjs";
 import { patchNodePtyConsoleHelper, patchNodePtyPipeErrors, ensureNodePtyConptySourceUnmodified, syncNodePtyPrebuilds, markNodePtyConptyRebuilt } from "./patch-theia-node-pty.mjs";
+import { isTheiaWindowlessRuntime } from "./patch-theia-windowless-helpers.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 const sourceRoot = join(projectRoot, "vendor/theia-platform");
@@ -53,6 +54,9 @@ if (nodeMajor !== 22 && nodeMajor !== 24) {
 
 if (!existsSync(join(appRoot, "lib/backend/main.js"))) {
   throw new Error("Build Theia first: pnpm ide:build");
+}
+if (!isTheiaWindowlessRuntime(sourceRoot)) {
+  throw new Error("Theia background workers are not windowless; run pnpm ide:build.");
 }
 
 const localPackages = new Map();
@@ -115,6 +119,9 @@ for (const name of needed) {
   const runtimePackage = { ...entry.pkg, scripts: {}, devDependencies: {} };
   writeFileSync(join(target, "package.json"), `${JSON.stringify(runtimePackage, null, 2)}\n`);
 }
+if (!isTheiaWindowlessRuntime(runtimeRoot)) {
+  throw new Error("Staged Theia background workers lost their windowless spawn options.");
+}
 
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 const npmShell = process.platform === "win32";
@@ -154,9 +161,7 @@ const licenseCandidates = [
   join(nodeDir, `../node_modules/node-${process.platform}-${process.arch}/LICENSE`),
   join(nodeDir, "../share/doc/node/LICENSE"),
 ];
-if (process.version === "v24.21.0") {
-  licenseCandidates.push(join(projectRoot, "vendor/nodejs/LICENSE-24.21.0"));
-}
+licenseCandidates.push(join(projectRoot, `vendor/nodejs/LICENSE-${process.version.slice(1)}`));
 const nodeLicense = licenseCandidates.find(existsSync);
 if (!nodeLicense) throw new Error("The bundled Node.js runtime needs its LICENSE file.");
 copyUnlessSameFile(nodeLicense, join(resourcesRoot, "node/LICENSE"));

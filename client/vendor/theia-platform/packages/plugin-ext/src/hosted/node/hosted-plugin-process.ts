@@ -184,6 +184,9 @@ export class HostedPluginProcess implements ServerPluginRunner {
             env: env,
             execArgv: [],
             windowsHide: process.platform === 'win32',
+            // A background IPC worker must not acquire a Windows console.
+            // The backend's Job still owns this child and reaps it on exit.
+            detached: process.platform === 'win32',
             // 5th element MUST be 'overlapped' for it to work properly on Windows.
             // 'overlapped' works just like 'pipe' on non-Windows platforms.
             // See: https://nodejs.org/docs/latest-v14.x/api/child_process.html#child_process_options_stdio

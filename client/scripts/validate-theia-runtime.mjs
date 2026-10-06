@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { isNodePtyConsoleHelperHidden, isNodePtyPipeErrorsHandled, isNodePtyConptyReady } from "./patch-theia-node-pty.mjs";
+import { isTheiaWindowlessRuntime } from "./patch-theia-windowless-helpers.mjs";
 
 if (process.argv.length > 3) throw new Error("Usage: node scripts/validate-theia-runtime.mjs [theia-resource-directory]");
 const root = process.argv[2]
@@ -13,6 +14,9 @@ const root = process.argv[2]
 const node = join(root, process.platform === "win32" ? "node/node.exe" : "node/bin/node");
 const entry = join(root, "browser/lib/backend/main.js");
 if (!existsSync(node) || !existsSync(entry)) throw new Error("Staged Node or Theia backend missing");
+if (!isTheiaWindowlessRuntime(join(root, "browser"))) {
+  throw new Error("Staged Theia background workers may allocate a Windows console");
+}
 if (!isNodePtyConsoleHelperHidden(join(root, "browser"))) {
   throw new Error("Staged node-pty ConPTY helper may open a visible Windows console");
 }

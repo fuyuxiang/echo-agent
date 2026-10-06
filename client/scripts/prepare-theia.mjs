@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { latestTheiaSourceMtime } from "./theia-source-mtime.mjs";
 import { ensureTheiaNodeWritable } from "./ensure-theia-node-writable.mjs";
 import { isNodePtyConsoleHelperHidden, isNodePtyPipeErrorsHandled, isNodePtyConptyReady } from "./patch-theia-node-pty.mjs";
+import { isTheiaWindowlessRuntime } from "./patch-theia-windowless-helpers.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const major = Number(process.versions.node.split(".")[0]);
@@ -41,6 +42,7 @@ const stagedNodeVersion = existsSync(node)
   : null;
 
 if (existsSync(runtime) && existsSync(node)
+    && isTheiaWindowlessRuntime(join(resources, "browser"))
     && runtimeDependencies.every(path => existsSync(join(resources, path)))
     && languagePluginsReady
     && isNodePtyConsoleHelperHidden(join(resources, "browser"))

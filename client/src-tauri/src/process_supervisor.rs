@@ -28,6 +28,8 @@ impl AsyncChild {
 
 pub struct SyncChild {
     inner: Box<dyn process_wrap::std::ChildWrapper>,
+    #[cfg(windows)]
+    job: windows_job::Job,
 }
 impl std::ops::Deref for SyncChild {
     type Target = dyn process_wrap::std::ChildWrapper;
@@ -42,6 +44,12 @@ impl std::ops::DerefMut for SyncChild {
 }
 impl SyncChild {
     fn kill_tree(&mut self) {
+        #[cfg(windows)]
+        {
+            let _ = self.job.terminate();
+            return;
+        }
+        #[cfg(not(windows))]
         let _ = self.inner.start_kill();
     }
 }
@@ -57,6 +65,41 @@ const REAP: Duration = Duration::from_secs(2);
 pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(windows)]
 const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+#[cfg(windows)]
+const DETACHED_PROCESS: u32 = 0x0000_0008;
+#[cfg(windows)]
+const CREATE_SUSPENDED: u32 = 0x0000_0004;
+#[cfg(windows)]
+pub(crate) const WINDOWLESS_NODE_FLAGS: u32 = CREATE_NO_WINDOW | DETACHED_PROCESS;
+
+/// Run a non-interactive CLI tool without opening a console from the desktop app.
+/// Interactive shells use a PTY and must not use this helper.
+pub(crate) fn background_sync_command(
+    executable: impl AsRef<std::ffi::OsStr>,
+) -> std::process::Command {
+    let command = std::process::Command::new(executable);
+    #[cfg(windows)]
+    let command = {
+        use std::os::windows::process::CommandExt;
+        let mut command = command;
+        command.creation_flags(CREATE_NO_WINDOW);
+        command
+    };
+    command
+}
+
+pub(crate) fn background_async_command(
+    executable: impl AsRef<std::ffi::OsStr>,
+) -> tokio::process::Command {
+    let command = tokio::process::Command::new(executable);
+    #[cfg(windows)]
+    let command = {
+        let mut command = command;
+        command.creation_flags(CREATE_NO_WINDOW);
+        command
+    };
+    command
+}
 
 #[cfg(windows)]
 mod windows_job {
@@ -65,15 +108,21 @@ mod windows_job {
         sync::{Mutex, MutexGuard, OnceLock},
     };
     use windows_sys::Win32::{
-        Foundation::{CloseHandle, HANDLE},
+        Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE},
         System::{
+            Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD,
+                THREADENTRY32,
+            },
             JobObjects::{
                 AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-                SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+                SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
                 JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
                 JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
             },
-            Threading::GetCurrentProcess,
+            Threading::{
+                GetCurrentProcess, GetProcessId, OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
+            },
         },
     };
 
@@ -90,6 +139,30 @@ mod windows_job {
             }
             let job = Self(handle);
             job.set_silent_breakaway(false)?;
+            Ok(job)
+        }
+
+        pub(super) fn new_child() -> io::Result<Self> {
+            let handle = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
+            if handle.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            let job = Self(handle);
+            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            // No breakaway permission: Node, its IPC workers, and their descendants
+            // remain in this job even when libuv uses DETACHED_PROCESS.
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let ok = unsafe {
+                SetInformationJobObject(
+                    job.0,
+                    JobObjectExtendedLimitInformation,
+                    (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                    std::mem::size_of_val(&limits) as u32,
+                )
+            };
+            if ok == 0 {
+                return Err(io::Error::last_os_error());
+            }
             Ok(job)
         }
 
@@ -122,6 +195,54 @@ mod windows_job {
             }
             Ok(())
         }
+
+        pub(super) fn terminate(&self) -> io::Result<()> {
+            if unsafe { TerminateJobObject(self.0, 1) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
+    }
+
+    /// The std::process API exposes the process handle but not its primary
+    /// thread handle. A suspended child has not run any application code yet.
+    pub(super) fn resume_child(process: HANDLE) -> io::Result<()> {
+        let pid = unsafe { GetProcessId(process) };
+        if pid == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+        if snapshot == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+        struct Snapshot(HANDLE);
+        impl Drop for Snapshot {
+            fn drop(&mut self) {
+                unsafe { CloseHandle(self.0) };
+            }
+        }
+        let _snapshot = Snapshot(snapshot);
+        let mut entry = THREADENTRY32 {
+            dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+            ..Default::default()
+        };
+        let mut found = unsafe { Thread32First(snapshot, &mut entry) } != 0;
+        while found {
+            if entry.th32OwnerProcessID == pid {
+                let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+                if thread.is_null() {
+                    return Err(io::Error::last_os_error());
+                }
+                let result = unsafe { ResumeThread(thread) };
+                unsafe { CloseHandle(thread) };
+                if result == u32::MAX {
+                    return Err(io::Error::last_os_error());
+                }
+                return Ok(());
+            }
+            found = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
+        }
+        Err(io::Error::other("suspended child thread was not found"))
     }
 
     impl Drop for Job {
@@ -245,19 +366,47 @@ pub fn spawn_async(command: tokio::process::Command) -> io::Result<AsyncChild> {
 }
 
 pub fn spawn_sync(command: std::process::Command) -> io::Result<SyncChild> {
-    use process_wrap::std::*;
-    let mut wrapped = CommandWrap::from(command);
-    #[cfg(unix)]
-    wrapped.wrap(ProcessGroup::leader());
     #[cfg(windows)]
     {
+        use std::os::{windows::io::AsRawHandle, windows::process::CommandExt};
         windows_job::install_host();
-        let mut flags = CreationFlags(Default::default());
-        flags.0 .0 = CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB;
-        wrapped.wrap(flags).wrap(JobObject);
+        let mut command = command;
+        // Suspend before assignment so an early IPC fork cannot escape the job.
+        // CREATE_NO_WINDOW is ignored with DETACHED_PROCESS, which gives Node
+        // no inherited console at all.
+        command
+            .creation_flags(WINDOWLESS_NODE_FLAGS | CREATE_BREAKAWAY_FROM_JOB | CREATE_SUSPENDED);
+        let mut child = command.spawn()?;
+        let handle = child.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
+        let job = match windows_job::Job::new_child().and_then(|job| {
+            job.assign(handle)?;
+            Ok(job)
+        }) {
+            Ok(job) => job,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        };
+        if let Err(error) = windows_job::resume_child(handle) {
+            drop(job);
+            let _ = child.wait();
+            return Err(error);
+        }
+        return Ok(SyncChild {
+            inner: Box::new(child),
+            job,
+        });
     }
-    let inner = wrapped.spawn()?;
-    Ok(SyncChild { inner })
+    #[cfg(not(windows))]
+    {
+        use process_wrap::std::*;
+        let mut wrapped = CommandWrap::from(command);
+        wrapped.wrap(ProcessGroup::leader());
+        let inner = wrapped.spawn()?;
+        Ok(SyncChild { inner })
+    }
 }
 
 pub async fn stop_async(child: &mut AsyncChild) -> Option<ExitStatus> {
@@ -363,11 +512,17 @@ mod windows_tests {
             return;
         };
         let marker = std::env::var("ECHO_SUPERVISOR_MARKER").unwrap();
-        if mode == "grandchild" || mode == "deferred_grandchild" {
+        if mode == "background_cli" {
+            let console = unsafe { windows_sys::Win32::System::Console::GetConsoleWindow() };
+            let visible = !console.is_null()
+                && unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible(console) }
+                    != 0;
+            std::fs::write(marker, if visible { "visible" } else { "hidden" }).unwrap();
+        } else if mode == "grandchild" || mode == "deferred_grandchild" {
             std::fs::write(format!("{marker}.ready"), b"ready").unwrap();
             if mode == "deferred_grandchild" {
                 let go = format!("{marker}.go");
-                let deadline = Instant::now() + Duration::from_secs(5);
+                let deadline = Instant::now() + Duration::from_secs(30);
                 while !std::path::Path::new(&go).exists() && Instant::now() < deadline {
                     std::thread::sleep(Duration::from_millis(10));
                 }
@@ -376,7 +531,26 @@ mod windows_tests {
                 std::thread::sleep(Duration::from_secs(1));
             }
             std::fs::write(marker, b"late").unwrap();
+        } else if mode == "owned_job_owner" {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "process_supervisor::windows_tests::tree_helper",
+                    "--nocapture",
+                ])
+                .env("ECHO_SUPERVISOR_HELPER", "detached_parent")
+                .env("ECHO_SUPERVISOR_MARKER", &marker)
+                .stdout(std::process::Stdio::null());
+            let _child = spawn_sync(command).unwrap();
+            std::fs::write(format!("{marker}.owner_ready"), b"ready").unwrap();
+            std::thread::sleep(Duration::from_secs(30));
         } else {
+            if mode == "detached_parent" {
+                assert!(
+                    unsafe { windows_sys::Win32::System::Console::GetConsoleWindow() }.is_null()
+                );
+            }
             if mode == "parent" {
                 let go = format!("{marker}.go");
                 for _ in 0..500 {
@@ -397,6 +571,8 @@ mod windows_tests {
                     "ECHO_SUPERVISOR_HELPER",
                     if mode == "parent" || mode == "eager_parent" {
                         "worker"
+                    } else if mode == "detached_parent" {
+                        "deferred_grandchild"
                     } else {
                         "grandchild"
                     },
@@ -404,6 +580,39 @@ mod windows_tests {
                 .spawn()
                 .unwrap();
             let _ = child.wait();
+        }
+    }
+
+    #[tokio::test]
+    async fn background_cli_commands_have_no_visible_console() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = std::env::current_exe().unwrap();
+        for asynchronous in [false, true] {
+            let marker = dir.path().join(if asynchronous { "async" } else { "sync" });
+            let args = [
+                "--exact",
+                "process_supervisor::windows_tests::tree_helper",
+                "--nocapture",
+            ];
+            if asynchronous {
+                let output = background_async_command(&exe)
+                    .args(args)
+                    .env("ECHO_SUPERVISOR_HELPER", "background_cli")
+                    .env("ECHO_SUPERVISOR_MARKER", &marker)
+                    .output()
+                    .await
+                    .unwrap();
+                assert!(output.status.success());
+            } else {
+                let output = background_sync_command(&exe)
+                    .args(args)
+                    .env("ECHO_SUPERVISOR_HELPER", "background_cli")
+                    .env("ECHO_SUPERVISOR_MARKER", &marker)
+                    .output()
+                    .unwrap();
+                assert!(output.status.success());
+            }
+            assert_eq!(std::fs::read(marker).unwrap(), b"hidden");
         }
     }
     #[tokio::test]
@@ -494,6 +703,44 @@ mod windows_tests {
         drop(child);
         std::thread::sleep(Duration::from_millis(1100));
         assert!(!marker.exists());
+    }
+
+    #[test]
+    fn windows_sync_job_reclaims_tree_when_owner_is_force_killed() {
+        use std::os::windows::process::CommandExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("late");
+        let mut owner = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "process_supervisor::windows_tests::tree_helper",
+                "--nocapture",
+            ])
+            .env("ECHO_SUPERVISOR_HELPER", "owned_job_owner")
+            .env("ECHO_SUPERVISOR_MARKER", &marker)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let owner_ready = format!("{}.owner_ready", marker.display());
+        wait_for_marker_ready(&marker.display().to_string());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !std::path::Path::new(&owner_ready).exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(std::path::Path::new(&owner_ready).exists());
+
+        // Do not use /T: only the Job may kill the descendants.
+        let killed = std::process::Command::new("taskkill.exe")
+            .args(["/PID", &owner.id().to_string(), "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .unwrap();
+        assert!(killed.success());
+        let _ = owner.wait();
+        std::fs::write(format!("{}.go", marker.display()), b"go").unwrap();
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(!marker.exists(), "a Node descendant outlived its owner");
     }
 
     #[test]

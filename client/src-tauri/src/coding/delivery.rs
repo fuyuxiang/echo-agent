@@ -581,7 +581,7 @@ fn current_review<'a>(
 }
 
 async fn git(root: &PathBuf, arguments: &[&str]) -> Result<String, String> {
-    let output = tokio::process::Command::new("git")
+    let output = crate::process_supervisor::background_async_command("git")
         .args(arguments)
         .current_dir(root)
         .output()
@@ -598,7 +598,7 @@ async fn git_with_index(
     index: &Path,
     arguments: &[&str],
 ) -> Result<String, String> {
-    let output = tokio::process::Command::new("git")
+    let output = crate::process_supervisor::background_async_command("git")
         .args(arguments)
         .env("GIT_INDEX_FILE", index)
         .current_dir(root)
@@ -685,7 +685,7 @@ pub async fn coding_delivery_commit_hunks(
 }
 
 async fn git_bytes(root: &Path, arguments: &[&str]) -> Result<Vec<u8>, String> {
-    let output = tokio::process::Command::new("git")
+    let output = crate::process_supervisor::background_async_command("git")
         .args(arguments)
         .current_dir(root)
         .output()

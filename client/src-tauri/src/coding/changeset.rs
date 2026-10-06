@@ -336,7 +336,7 @@ fn hash_bytes(bytes: &[u8]) -> String {
 }
 
 fn git_head(root: &Path) -> Result<String, String> {
-    let repository = std::process::Command::new("git")
+    let repository = crate::process_supervisor::background_sync_command("git")
         .args(["rev-parse", "--is-inside-work-tree"])
         .current_dir(root)
         .output()
@@ -365,7 +365,7 @@ fn git_head(root: &Path) -> Result<String, String> {
         );
     }
 
-    let output = std::process::Command::new("git")
+    let output = crate::process_supervisor::background_sync_command("git")
         .args(["rev-parse", "--verify", "HEAD"])
         .current_dir(root)
         .output()
@@ -564,7 +564,7 @@ fn checkpoint_baseline(
 }
 
 fn git_tracked_paths(root: &Path) -> Result<BTreeSet<String>, String> {
-    let output = std::process::Command::new("git")
+    let output = crate::process_supervisor::background_sync_command("git")
         .args(["ls-files", "--cached", "-z"])
         .current_dir(root)
         .output()
@@ -584,7 +584,7 @@ fn git_tracked_paths(root: &Path) -> Result<BTreeSet<String>, String> {
 }
 
 fn git_dirty_paths(root: &Path) -> Result<Vec<String>, String> {
-    let output = std::process::Command::new("git")
+    let output = crate::process_supervisor::background_sync_command("git")
         .args([
             "status",
             "--porcelain=v1",
@@ -851,7 +851,7 @@ fn mark_reviewed_if_current(
 }
 
 async fn current_head(root: &Path) -> Result<String, String> {
-    let output = tokio::process::Command::new("git")
+    let output = crate::process_supervisor::background_async_command("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(root)
         .output()
@@ -928,7 +928,7 @@ async fn baseline_from_git(
         });
     }
     let spec = format!("{head}:{}", live.path);
-    let output = tokio::process::Command::new("git")
+    let output = crate::process_supervisor::background_async_command("git")
         .args(["show", "--no-ext-diff", &spec])
         .current_dir(root)
         .output()

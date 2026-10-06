@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { resolve, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { patchNodePtyConsoleHelper, patchNodePtyPipeErrors, ensureNodePtyConptySourceUnmodified, syncNodePtyPrebuilds, markNodePtyConptyRebuilt } from "./patch-theia-node-pty.mjs";
+import { patchTheiaWindowlessHelpers, isTheiaWindowlessRuntime } from "./patch-theia-windowless-helpers.mjs";
 
 const major = Number(process.versions.node.split(".")[0]);
 if (major !== 22 && major !== 24) {
@@ -37,6 +38,7 @@ if (!existsSync(nodeModules) || installedFingerprint !== installFingerprint) {
   writeFileSync(installMarker, `${installFingerprint}\n`);
 }
 patchNodePtyConsoleHelper(sourceRoot);
+patchTheiaWindowlessHelpers(sourceRoot);
 if (process.platform === "win32") {
   patchNodePtyPipeErrors(sourceRoot);
   ensureNodePtyConptySourceUnmodified(sourceRoot);
@@ -51,6 +53,9 @@ if (plugins.status !== 0) throw new Error("Failed to stage vendored Theia VSIX p
 // Filesystem and other packages import these during TypeScript compilation.
 run(["exec", "--", "theia-re-exports", "generate", "@theia/core"]);
 run(["run", "compile"]);
+if (!isTheiaWindowlessRuntime(sourceRoot)) {
+  throw new Error("Theia background workers were compiled without windowless Windows spawn options.");
+}
 // The vendored source keeps the pinned JSON Schema catalog as a static asset;
 // TypeScript does not copy JSON inputs to lib/. The browser bundle requires it.
 copyFileSync(

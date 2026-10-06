@@ -1,7 +1,6 @@
 //! Application-managed Git worktrees for concurrent coding tasks.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -26,7 +25,7 @@ fn worktrees_dir() -> PathBuf {
 }
 
 fn git(root: &Path, arguments: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
+    let output = crate::process_supervisor::background_sync_command("git")
         .arg("-C")
         .arg(root)
         .args(arguments)

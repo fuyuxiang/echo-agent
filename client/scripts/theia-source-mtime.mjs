@@ -27,8 +27,9 @@ export function latestTheiaSourceMtime(sourceRoot) {
     join(projectRoot, "scripts/build-theia.mjs"),
     join(projectRoot, "scripts/stage-theia-runtime.mjs"),
     join(projectRoot, "scripts/patch-theia-node-pty.mjs"),
+    join(projectRoot, "scripts/patch-theia-windowless-helpers.mjs"),
     join(projectRoot, "scripts/theia-runtime-package-lock.json"),
-    join(projectRoot, "vendor/nodejs/LICENSE-24.21.0"),
+    join(projectRoot, "vendor/nodejs"),
   ]) visit(path);
   return latest;
 }

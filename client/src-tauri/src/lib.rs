@@ -57,9 +57,56 @@ mod weixin;
 use bridge::{FolderTrusts, Permissions, PlanApprovals, Questions};
 use commands::AppState;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use tauri::Manager;
 
 static EXIT_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+const SHUTDOWN_STEP_TIMEOUT: Duration = Duration::from_secs(2);
+#[cfg(windows)]
+const THEIA_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(7);
+
+async fn bounded_shutdown<F: std::future::Future<Output = ()>>(step: F, name: &'static str) {
+    if tokio::time::timeout(SHUTDOWN_STEP_TIMEOUT, step)
+        .await
+        .is_err()
+    {
+        tracing::warn!(subsystem = name, "shutdown timed out");
+    }
+}
+
+async fn stop_theia_for_exit(app: &tauri::AppHandle) {
+    app.state::<theia::TheiaServer>().begin_shutdown();
+    let handle = app.clone();
+    let stop = tauri::async_runtime::spawn_blocking(move || {
+        handle.state::<theia::TheiaServer>().stop();
+    });
+    #[cfg(windows)]
+    match tokio::time::timeout(THEIA_SHUTDOWN_TIMEOUT, stop).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::warn!(%error, "Theia shutdown task failed"),
+        Err(_) => {
+            // A concurrent IDE start can hold TheiaServer's lock. The
+            // kill-on-close Job still reaps its Node tree when the app exits.
+            tracing::warn!("Theia shutdown timed out; Windows Job will close on exit");
+        }
+    }
+    #[cfg(not(windows))]
+    if let Err(error) = stop.await {
+        tracing::warn!(%error, "Theia shutdown task failed");
+    }
+}
+
+async fn shutdown_before_exit(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    // Start the runtime's session flush immediately. It has its own 12-second
+    // bound; a second two-second timeout would cancel it before persistence.
+    tokio::join!(
+        stop_theia_for_exit(app),
+        bounded_shutdown(automation::shutdown_all(), "automation"),
+        bounded_shutdown(weixin::shutdown(app), "weixin"),
+        commands::stop_agent_runtime(&state),
+    );
+}
 
 fn try_begin_exit(flag: &AtomicBool) -> bool {
     flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -71,13 +118,7 @@ fn request_graceful_exit(app: tauri::AppHandle) {
         return;
     }
     tauri::async_runtime::spawn(async move {
-        use tauri::Manager;
-
-        let state = app.state::<AppState>();
-        automation::shutdown_all().await;
-        weixin::shutdown(&app).await;
-        app.state::<theia::TheiaServer>().stop();
-        commands::stop_agent_runtime(&state).await;
+        shutdown_before_exit(&app).await;
         app.exit(0);
     });
 }
@@ -91,10 +132,7 @@ fn request_graceful_restart(app: tauri::AppHandle) -> Result<(), String> {
         return Err(format!("无法重启应用：{error}"));
     }
     tauri::async_runtime::spawn(async move {
-        automation::shutdown_all().await;
-        weixin::shutdown(&app).await;
-        app.state::<theia::TheiaServer>().stop();
-        commands::stop_agent_runtime(&app.state::<AppState>()).await;
+        shutdown_before_exit(&app).await;
         app.restart();
     });
     Ok(())
