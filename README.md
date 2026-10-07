@@ -170,6 +170,7 @@ Echo Agent Runtime 还提供以下扩展点：
 | --- | --- | --- |
 | Tools | 增加原生执行能力 | [工具参考](https://fuyuxiang.github.io/echo-agent/reference/tools/) |
 | MCP | 连接外部工具服务 | [MCP 集成](https://fuyuxiang.github.io/echo-agent/integrations/mcp/) |
+| A2A | 接收入站任务；当前 Agent 运行时不提供 A2A 出站委派入口 | [A2A 集成](https://fuyuxiang.github.io/echo-agent/integrations/a2a/) |
 | Skills 与 Plugins | 复用工作流、扩展运行行为 | [Skills](https://fuyuxiang.github.io/echo-agent/integrations/skills/using-skills/) · [Plugins](https://fuyuxiang.github.io/echo-agent/integrations/plugins/using-plugins/) |
 | Models | 接入模型服务 | [模型接入](https://fuyuxiang.github.io/echo-agent/guides/models/) |
 | Channels | 增加消息入口 | [消息通道](https://fuyuxiang.github.io/echo-agent/integrations/channels/) |

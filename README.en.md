@@ -170,6 +170,7 @@ Echo Agent Runtime also offers these extension points:
 | --- | --- | --- |
 | Tools | Add native execution capabilities | [Tool reference](https://fuyuxiang.github.io/echo-agent/en/reference/tools/) |
 | MCP | Connect external tool services | [MCP integration](https://fuyuxiang.github.io/echo-agent/en/integrations/mcp/) |
+| A2A | Accept inbound tasks; the Agent runtime has no outbound A2A delegation entry point | [A2A integration](https://fuyuxiang.github.io/echo-agent/en/integrations/a2a/) |
 | Skills and Plugins | Reuse workflows and extend runtime behavior | [Skills](https://fuyuxiang.github.io/echo-agent/en/integrations/skills/using-skills/) · [Plugins](https://fuyuxiang.github.io/echo-agent/en/integrations/plugins/using-plugins/) |
 | Models | Connect model services | [Model providers](https://fuyuxiang.github.io/echo-agent/en/guides/models/) |
 | Channels | Add messaging entry points | [Messaging channels](https://fuyuxiang.github.io/echo-agent/en/integrations/channels/) |
