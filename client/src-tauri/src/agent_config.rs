@@ -151,8 +151,6 @@ pub struct MemoryConfig {
     pub watcher_enabled: bool,
     pub auto_flush_enabled: bool,
     pub dream_enabled: bool,
-    pub retrieval_mode: String,
-    pub retrieval_summary: String,
     pub revision: String,
 }
 
@@ -165,7 +163,6 @@ pub struct MemoryConfigPatch {
     pub watcher_enabled: Option<bool>,
     pub auto_flush_enabled: Option<bool>,
     pub dream_enabled: Option<bool>,
-    pub retrieval_mode: Option<String>,
 }
 
 impl Default for MemoryConfig {
@@ -177,8 +174,6 @@ impl Default for MemoryConfig {
             watcher_enabled: true,
             auto_flush_enabled: true,
             dream_enabled: true,
-            retrieval_mode: "local".into(),
-            retrieval_summary: "仅在本机进行全文检索；摘要和整理仍使用会话模型".into(),
             revision: String::new(),
         }
     }
@@ -209,25 +204,6 @@ fn memory_revision(config: &Value) -> String {
     let parts = ["memory", "compaction"].map(|key| config.get(key).cloned());
     let digest = Sha256::digest(serde_json::to_vec(&parts).unwrap_or_default());
     format!("{digest:x}")
-}
-
-fn memory_retrieval_mode(config: &Value) -> &str {
-    let memory = config.get("memory");
-    memory
-        .and_then(|v| v.get("retrieval_mode"))
-        .and_then(Value::as_str)
-        .unwrap_or_else(|| {
-            if memory.and_then(|v| v.get("embedding")).is_some()
-                || memory
-                    .and_then(|v| v.get("search"))
-                    .and_then(|v| v.get("reranker"))
-                    .is_some()
-            {
-                "configured"
-            } else {
-                "local"
-            }
-        })
 }
 
 pub(crate) fn resolved_memory_config(config: &Value) -> MemoryConfig {
@@ -262,17 +238,6 @@ pub(crate) fn resolved_memory_config(config: &Value) -> MemoryConfig {
             "enabled",
             defaults.auto_flush_enabled,
         ),
-        retrieval_mode: memory_retrieval_mode(config).into(),
-        retrieval_summary: match memory_retrieval_mode(config) {
-            "builtin" => format!(
-                "查询与记忆片段将发送至 {}（明文 HTTP）",
-                crate::agent_runtime::OJLAB_BASE_URL
-            ),
-            "configured" => {
-                "使用 config.toml 中的检索配置；远端向量化／重排会发送查询与记忆片段".into()
-            }
-            _ => MemoryConfig::default().retrieval_summary,
-        },
         revision: memory_revision(config),
         dream_enabled: doubly_nested_bool(
             config,
@@ -366,29 +331,6 @@ fn apply_memory_patch(
             set_nested_bool(config, table, nested, key, value)?;
         }
     }
-    if let Some(mode) = memory.retrieval_mode {
-        if !["local", "configured", "builtin"].contains(&mode.as_str()) {
-            return Err("未知的记忆检索方式".into());
-        }
-        if mode == "configured"
-            && config.get("memory").is_none_or(|value| {
-                value.get("embedding").is_none()
-                    && value
-                        .get("search")
-                        .and_then(|search| search.get("reranker"))
-                        .is_none()
-            })
-        {
-            return Err("尚未配置自定义检索服务，请先在 config.toml 配置 memory.embedding 或 memory.search.reranker，或选择本机全文检索".into());
-        }
-        let root = config.as_table_mut().ok_or("配置格式无效")?;
-        let section = root
-            .entry("memory")
-            .or_insert_with(|| Value::Table(Default::default()))
-            .as_table_mut()
-            .ok_or("记忆配置格式无效")?;
-        section.insert("retrieval_mode".into(), Value::String(mode));
-    }
     Ok(resolved_memory_config(config))
 }
 
@@ -421,20 +363,6 @@ mod memory_tests {
         assert_eq!(config, before);
         let wire = serde_json::to_value(saved).unwrap();
         assert!(wire["revision"].is_string());
-        assert_eq!(wire["retrievalMode"], "configured");
-    }
-    #[test]
-    fn configured_mode_requires_an_explicit_service() {
-        let mut config = Value::Table(Default::default());
-        assert!(apply_memory_patch(
-            &mut config,
-            MemoryConfigPatch {
-                retrieval_mode: Some("configured".into()),
-                ..Default::default()
-            },
-            None
-        )
-        .is_err());
     }
 
     #[test]

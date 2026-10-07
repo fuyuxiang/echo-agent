@@ -1296,8 +1296,6 @@ export interface MemoryConfig {
   watcherEnabled: boolean;
   autoFlushEnabled: boolean;
   dreamEnabled: boolean;
-  retrievalMode?: "local" | "configured" | "builtin";
-  retrievalSummary?: string;
   revision?: string;
 }
 

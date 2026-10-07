@@ -5,7 +5,7 @@
  * 每个分区对接 EchoAgent 已有的能力：
  *  - personalize: 主题（接 ThemeProvider）+ 字号
  *  - shortcuts: 当前版本真实生效的快捷键说明
- *  - memory: 记忆配置与检索方式
+ *  - memory: 记忆行为配置
  *  - help: 版本更新、文档与排查说明
  *  - security: 系统授权、工具规则与诊断
  *  - data: 备份恢复与本地数据目录
@@ -277,7 +277,6 @@ export function MemorySettingsPanel() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [reload, setReload] = useState(0);
-  const { requestConfirmation, dialog } = useAppDialog("memory-settings");
 
   useEffect(() => {
     let cancelled = false;
@@ -298,7 +297,7 @@ export function MemorySettingsPanel() {
     };
   }, [reload]);
 
-  const updateConfig = async (key: keyof MemoryConfig, value: boolean | string) => {
+  const updateConfig = async (key: keyof MemoryConfig, value: boolean) => {
     if (loading || loadError || busy) return;
     const previous = config;
     setConfig({ ...config, [key]: value });
@@ -335,22 +334,6 @@ export function MemorySettingsPanel() {
       desc="跨会话记忆保存在本机，可随时审阅。会话摘要是自动提取的中间资料，不是完整聊天记录。"
     >
       {loadError && <div role="alert" className="settings-hint">配置未加载，暂时无法修改。<button className="btn-secondary" onClick={() => setReload((n) => n + 1)}>重新加载</button></div>}
-      <SettingsGroup title="检索与数据来源">
-        <label className="settings-row settings-row--retrieval"><span className="settings-row__name">检索方式</span>
-          <select className="form-control" aria-label="记忆检索方式" aria-describedby="memory-retrieval-description" disabled={loading || loadError || busy} value={config.retrievalMode ?? "local"} onChange={(event) => {
-            const mode = event.target.value;
-            if (mode === "builtin") {
-              requestConfirmation({ title: "启用远端记忆检索？", description: "查询与记忆片段会发送至 http://123.56.188.16:8088/v1。该服务使用明文 HTTP，请勿用于敏感资料。修改在重启 Agent 后生效。", confirmLabel: "确认使用此服务", action: () => updateConfig("retrievalMode", mode) });
-            } else { void updateConfig("retrievalMode", mode); }
-          }}>
-            <option value="local">本机全文检索</option>
-            <option value="configured">使用配置文件中的检索服务</option>
-            <option value="builtin">内置远端服务（HTTP）</option>
-          </select>
-        </label>
-        <p id="memory-retrieval-description" className="settings-field-help">{config.retrievalSummary ?? "本机检索不会向独立的向量化或重排服务发送内容。"}</p>
-        <p className="settings-field-help">修改后重启 Agent 生效；重启前，已有会话继续使用原配置。</p>
-      </SettingsGroup>
       <SettingsGroup title="记忆能力" desc="提取摘要和整理内容会使用当前会话的模型服务。">
         {toggles.map((toggle) => (
           <div className="settings-row settings-row--comfortable" key={toggle.key}>
@@ -381,7 +364,6 @@ export function MemorySettingsPanel() {
         </div>
       </SettingsGroup>
       {msg && <p className="settings-msg">{msg}</p>}
-      {dialog}
     </SectionShell>
   );
 }

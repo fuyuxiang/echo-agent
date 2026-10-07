@@ -45,6 +45,9 @@ pub use observation::*;
 pub use storage::{MemoryScope, MemoryStorage};
 
 pub(crate) const MEMORY_LOG_TARGET: &str = "echo_agent_memory";
+pub(crate) const EMBEDDING_BATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+pub(crate) const QUERY_EMBEDDING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+pub(crate) const RERANK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Embed all chunks that don't have embeddings yet.
 ///
@@ -84,8 +87,8 @@ pub async fn embed_missing_chunks(
     // Batch in groups of 32 (provider's typical max batch size)
     for batch in chunks.chunks(32) {
         let texts: Vec<&str> = batch.iter().map(|(_, text)| text.as_str()).collect();
-        match provider.embed_batch(&texts).await {
-            Ok(embeddings) => {
+        match tokio::time::timeout(EMBEDDING_BATCH_TIMEOUT, provider.embed_batch(&texts)).await {
+            Ok(Ok(embeddings)) => {
                 if let Err(error) = embedding::validate_embedding_batch(
                     &embeddings,
                     batch.len(),
@@ -96,7 +99,7 @@ pub async fn embed_missing_chunks(
                         %error,
                         "embedding provider returned an invalid batch"
                     );
-                    continue;
+                    break;
                 }
                 for ((chunk_id, _), embedding) in batch.iter().zip(embeddings.iter()) {
                     if let Err(e) = index.upsert_embedding(chunk_id, embedding) {
@@ -111,13 +114,22 @@ pub async fn embed_missing_chunks(
                     }
                 }
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 tracing::warn!(
                     target: MEMORY_LOG_TARGET,
                     error = %e,
                     batch_size = texts.len(),
-                    "embedding batch failed, skipping"
+                    "embedding batch failed, deferring remaining chunks"
                 );
+                break;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    target: MEMORY_LOG_TARGET,
+                    batch_size = texts.len(),
+                    "embedding batch timed out, deferring remaining chunks"
+                );
+                break;
             }
         }
     }

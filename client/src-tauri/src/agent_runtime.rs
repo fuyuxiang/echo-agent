@@ -53,25 +53,18 @@ pub(crate) const MEMORY_EMBEDDING_DIMENSIONS: usize = 1024;
 pub(crate) const MEMORY_RERANK_ENDPOINT: &str = "http://123.56.188.16:8088/v1/rerank";
 pub(crate) const MEMORY_RERANK_MODEL: &str = "rerank-pro";
 
-fn configure_memory_retrieval(cfg: &mut AgentConfig, mode: &str) {
+fn configure_memory_retrieval(cfg: &mut AgentConfig) {
     let Some(memory) = cfg.memory_config.as_mut() else {
         return;
     };
 
-    if mode == "configured" {
-        return;
-    }
-    if mode != "builtin" {
-        memory.embedding.provider = "local".into();
-        memory.embedding.model = None;
-        memory.search.reranker.enabled = false;
-        return;
-    }
     memory.embedding.provider = "api".to_owned();
     memory.embedding.model = Some(MEMORY_EMBEDDING_MODEL.to_owned());
     memory.embedding.dimensions = MEMORY_EMBEDDING_DIMENSIONS;
     memory.embedding.endpoint = Some(MEMORY_EMBEDDING_ENDPOINT.to_owned());
-    memory.embedding.api_key = None;
+    // Session startup falls back to the chat model's API key when this is None.
+    // An explicit empty key keeps the built-in embedding service keyless.
+    memory.embedding.api_key = Some(String::new());
     memory.embedding.send_dimensions = false;
 
     // The model-based reranker becomes the final ordering stage. The runtime's
@@ -203,37 +196,7 @@ pub fn spawn_agent_runtime(_cwd: PathBuf) -> Result<AgentHandle> {
         laziness_debug_log: None,
         storage_mode: None,
     });
-    let memory = raw.get("memory");
-    let mode = memory
-        .and_then(|v| v.get("retrieval_mode"))
-        .and_then(|v| v.as_str())
-        .unwrap_or_else(|| {
-            if memory.and_then(|v| v.get("embedding")).is_some()
-                || memory
-                    .and_then(|v| v.get("search"))
-                    .and_then(|v| v.get("reranker"))
-                    .is_some()
-            {
-                "configured"
-            } else {
-                "local"
-            }
-        });
-    let configured = memory.is_some_and(|value| {
-        value.get("embedding").is_some()
-            || value
-                .get("search")
-                .and_then(|search| search.get("reranker"))
-                .is_some()
-    });
-    configure_memory_retrieval(
-        &mut cfg,
-        if mode == "configured" && !configured {
-            "local"
-        } else {
-            mode
-        },
-    );
+    configure_memory_retrieval(&mut cfg);
     tracing::info!(
         permission_mode,
         default_yolo_mode = cfg.default_yolo_mode,
@@ -1355,8 +1318,9 @@ mod byok_isolation_tests {
 #[cfg(test)]
 mod memory_retrieval_tests {
     use super::*;
+
     #[test]
-    fn retrieval_modes_preserve_custom_config_and_default_to_no_remote_retrieval() {
+    fn retrieval_always_uses_builtin_service() {
         let raw = serde_json::from_value(serde_json::json!({})).unwrap();
         let mut config = AgentConfig::new_from_toml_cfg(&raw).unwrap();
         config.memory_config = Some(Default::default());
@@ -1367,24 +1331,85 @@ mod memory_retrieval_tests {
         memory.embedding.model = Some("custom-model".into());
         memory.search.reranker.enabled = true;
         memory.search.reranker.endpoint = Some("https://custom.example/rerank".into());
-        let before = format!("{:?}", config.memory_config);
-        configure_memory_retrieval(&mut config, "configured");
-        assert_eq!(format!("{:?}", config.memory_config), before);
-        configure_memory_retrieval(&mut config, "local");
+        configure_memory_retrieval(&mut config);
         let memory = config.memory_config.as_ref().unwrap();
-        assert_eq!(memory.embedding.provider, "local");
-        assert!(!memory.search.reranker.enabled);
-        assert_eq!(memory.embedding.api_key.as_deref(), Some("preserve-key"));
-        configure_memory_retrieval(&mut config, "builtin");
+        assert_eq!(memory.embedding.provider, "api");
+        assert_eq!(memory.embedding.api_key.as_deref(), Some(""));
         assert_eq!(
-            config
-                .memory_config
-                .as_ref()
-                .unwrap()
-                .embedding
-                .endpoint
-                .as_deref(),
+            memory.embedding.endpoint.as_deref(),
             Some(MEMORY_EMBEDDING_ENDPOINT)
         );
+        assert_eq!(
+            memory.embedding.model.as_deref(),
+            Some(MEMORY_EMBEDDING_MODEL)
+        );
+        assert_eq!(memory.embedding.dimensions, MEMORY_EMBEDDING_DIMENSIONS);
+        assert!(memory.search.reranker.enabled);
+        assert_eq!(
+            memory.search.reranker.endpoint.as_deref(),
+            Some(MEMORY_RERANK_ENDPOINT)
+        );
+        assert_eq!(
+            memory.search.reranker.model.as_deref(),
+            Some(MEMORY_RERANK_MODEL)
+        );
+    }
+
+    #[tokio::test]
+    async fn builtin_embedding_does_not_send_the_chat_model_key() {
+        use echo_agent_memory::embedding::{ApiEmbeddingProvider, EmbeddingProvider};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let raw = serde_json::from_value(serde_json::json!({})).unwrap();
+        let mut config = AgentConfig::new_from_toml_cfg(&raw).unwrap();
+        config.memory_config = Some(Default::default());
+        configure_memory_retrieval(&mut config);
+        let embedding = &config.memory_config.as_ref().unwrap().embedding;
+        let embedding_key = embedding
+            .api_key
+            .clone()
+            .or_else(|| Some("model-secret".to_owned()))
+            .unwrap();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/v1/embeddings", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0; 4096];
+            loop {
+                let count = stream.read(&mut buffer).await.unwrap();
+                if count == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..count]);
+                if request.windows(4).any(|part| part == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            String::from_utf8(request).unwrap()
+        });
+
+        let provider =
+            ApiEmbeddingProvider::from_session(embedding, endpoint, embedding_key).unwrap();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            provider.embed_batch(&["private memory"]),
+        )
+        .await
+        .unwrap();
+        assert!(result.is_err());
+        let request = tokio::time::timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!request.to_ascii_lowercase().contains("authorization:"));
+        assert!(!request.contains("model-secret"));
     }
 }

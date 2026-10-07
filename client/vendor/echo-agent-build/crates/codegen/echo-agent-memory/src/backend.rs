@@ -470,14 +470,20 @@ impl MemoryBackend for MemoryBackendImpl {
             }
         }
         let mut embedded_count: usize = 0;
+        let mut embedding_sync_failed = false;
         if !reindex_chunks.is_empty()
             && let Some(ref provider) = provider
         {
             let mut upserts: Vec<(String, Vec<f32>)> = Vec::new();
             for batch in reindex_chunks.chunks(32) {
                 let texts: Vec<&str> = batch.iter().map(|(_, t)| t.as_str()).collect();
-                match provider.embed_batch(&texts).await {
-                    Ok(embeddings) => {
+                match tokio::time::timeout(
+                    super::EMBEDDING_BATCH_TIMEOUT,
+                    provider.embed_batch(&texts),
+                )
+                .await
+                {
+                    Ok(Ok(embeddings)) => {
                         if let Err(error) = super::embedding::validate_embedding_batch(
                             &embeddings,
                             batch.len(),
@@ -488,18 +494,29 @@ impl MemoryBackend for MemoryBackendImpl {
                                 %error,
                                 "embedding provider returned an invalid sync batch"
                             );
-                            continue;
+                            embedding_sync_failed = true;
+                            break;
                         }
                         for ((chunk_id, _), emb) in batch.iter().zip(embeddings.into_iter()) {
                             upserts.push((chunk_id.clone(), emb));
                         }
                     }
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         tracing::warn!(
                             target: crate::MEMORY_LOG_TARGET,
                             error = %e,
-                            "embedding batch failed during sync-on-search, skipping"
+                            "embedding batch failed during sync-on-search, deferring remaining chunks"
                         );
+                        embedding_sync_failed = true;
+                        break;
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            target: crate::MEMORY_LOG_TARGET,
+                            "embedding batch timed out during sync-on-search, deferring remaining chunks"
+                        );
+                        embedding_sync_failed = true;
+                        break;
                     }
                 }
             }
@@ -554,14 +571,18 @@ impl MemoryBackend for MemoryBackendImpl {
         );
 
         // ── Async phase: embed query for vector search (no &index borrow) ──
-        let query_embedding = super::search::resolve_query_embedding(
-            provider
-                .as_ref()
-                .map(|provider| provider as &dyn super::embedding::EmbeddingProvider),
-            index.vec_available(),
-            query,
-        )
-        .await;
+        let query_embedding = if embedding_sync_failed {
+            super::search::QueryEmbedding::EmbeddingFallback
+        } else {
+            super::search::resolve_query_embedding(
+                provider
+                    .as_ref()
+                    .map(|provider| provider as &dyn super::embedding::EmbeddingProvider),
+                index.vec_available(),
+                query,
+            )
+            .await
+        };
 
         // ── Sync phase 3: vector search + scoring + merge (borrows &index) ──
         let merged = super::search::hybrid_search_merge(
@@ -582,13 +603,32 @@ impl MemoryBackend for MemoryBackendImpl {
         };
         let error_class = select_search_error_class(fts_error_class, merged.is_vector_degraded);
         let mut results = merged.results;
-        if let Some(reranker) = reranker.filter(|_| results.len() > 1) {
-            match reranker.rerank(query, &results, max_results).await {
-                Ok(reranked) => results = reranked,
-                Err(error) => {
+        if matches!(
+            query_embedding,
+            super::search::QueryEmbedding::EmbeddingFallback
+        ) {
+            // A failed embedding request means the default remote retrieval path
+            // is unavailable. Finish this search entirely on device.
+            let relevance: Vec<f64> = results.iter().map(|result| result.score).collect();
+            super::mmr::mmr_rerank(&mut results, &relevance, &mmr_fallback_config);
+            results.truncate(max_results);
+        } else if let Some(reranker) = reranker.filter(|_| results.len() > 1) {
+            match tokio::time::timeout(
+                super::RERANK_TIMEOUT,
+                reranker.rerank(query, &results, max_results),
+            )
+            .await
+            {
+                Ok(Ok(reranked)) => results = reranked,
+                failed => {
+                    let failure = match failed {
+                        Ok(Err(error)) => error.to_string(),
+                        Err(_) => "request timed out".to_owned(),
+                        Ok(Ok(_)) => unreachable!(),
+                    };
                     tracing::warn!(
                         target: crate::MEMORY_LOG_TARGET,
-                        %error,
+                        %failure,
                         "API reranking failed; using coarse memory ranking"
                     );
                     let relevance: Vec<f64> = results.iter().map(|result| result.score).collect();

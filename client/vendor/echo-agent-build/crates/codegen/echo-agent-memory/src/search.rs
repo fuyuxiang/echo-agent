@@ -55,13 +55,22 @@ pub(super) async fn resolve_query_embedding(
     let Some(provider) = provider.filter(|_| is_vector_index_available) else {
         return QueryEmbedding::FtsOnly;
     };
-    match provider.embed_batch(&[query]).await {
-        Ok(embeddings) => embeddings
+    match tokio::time::timeout(
+        super::QUERY_EMBEDDING_TIMEOUT,
+        provider.embed_batch(&[query]),
+    )
+    .await
+    {
+        Ok(Ok(embeddings)) => embeddings
             .into_iter()
             .next()
             .map_or(QueryEmbedding::EmbeddingFallback, QueryEmbedding::Hybrid),
-        Err(error) => {
+        Ok(Err(error)) => {
             tracing::warn!(target: crate::MEMORY_LOG_TARGET, %error, "embedding query failed");
+            QueryEmbedding::EmbeddingFallback
+        }
+        Err(_) => {
+            tracing::warn!(target: crate::MEMORY_LOG_TARGET, "embedding query timed out");
             QueryEmbedding::EmbeddingFallback
         }
     }

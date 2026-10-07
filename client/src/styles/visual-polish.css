@@ -4101,8 +4101,6 @@ button,
   margin: 8px 4px;
 }
 
-.settings-row--retrieval { flex-wrap: wrap; }
-.settings-row--retrieval > select { width: min(100%, 310px); }
 .settings-field-help {
   margin: 0;
   padding: 0 12px 10px;

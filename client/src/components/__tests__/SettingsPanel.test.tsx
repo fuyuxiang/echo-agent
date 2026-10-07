@@ -395,6 +395,7 @@ describe("SettingsPanel", () => {
     );
 
     const autoFlush = await screen.findByRole("checkbox", { name: "自动提取" });
+    expect(screen.queryByLabelText("记忆检索方式")).not.toBeInTheDocument();
     expect(autoFlush).toBeChecked();
     fireEvent.click(autoFlush);
 
