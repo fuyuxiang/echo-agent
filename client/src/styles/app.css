@@ -303,6 +303,17 @@
   border-top-right-radius: 12px;
   overflow: hidden;
 }
+
+.app__coding-surface {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+.app__coding-surface[hidden] {
+  display: none;
+}
+
 .app__notice {
   margin: auto;
   padding: 24px;

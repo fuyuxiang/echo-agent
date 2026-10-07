@@ -246,6 +246,7 @@ function Shell() {
   const notificationAutomationSequenceRef = useRef(0);
   const [commandRefreshKey, setCommandRefreshKey] = useState(0);
   const [placeholderView, setPlaceholderView] = useState<string | null>(null);
+  const [hasOpenedCodingWorkspace, setHasOpenedCodingWorkspace] = useState(false);
   const [createExpertRequested, setCreateExpertRequested] = useState(false);
   const [meetingLaunchModelId, setMeetingLaunchModelId] = useState<string | undefined>();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -2587,6 +2588,58 @@ function Shell() {
     : null;
 
   const codingWorkspaceActive = placeholderView === "代码开发";
+  useEffect(() => {
+    if (codingWorkspaceActive) setHasOpenedCodingWorkspace(true);
+  }, [codingWorkspaceActive]);
+  const codingCwd = activeCodingWorkspaceCwd || codingWorkspaceCwd
+    || (codingWorkspaceActive ? activeSessionCwd || newSessionTargetCwd : "");
+  const placeholderProps = {
+    onNavigate: handleNavigate,
+    onOpenSession: handleSelectSession,
+    onGoHome: handleGoHome,
+    createExpertRequested,
+    onCreateExpertRequestHandled: () => setCreateExpertRequested(false),
+    onStartOrganizationConversation: handleStartOrganizationConversation,
+    onToast: showToast,
+    codingWorkspaces,
+    activeCodingWorkspaceCwd,
+    onCloseCodingWorkspace: handleCloseCodingWorkspace,
+    workspaces,
+    sessionId: currentSessionId ?? undefined,
+    notificationAutomationId: notificationAutomationOpen?.id,
+    notificationAutomationSequence: notificationAutomationOpen?.sequence,
+    codingApiReady: !!init?.auth.ready && !!newSessionModelId,
+    codingModels: models,
+    codingModelId: activeSessionModelId ?? newSessionModelId,
+    projectModels: models,
+    projectDefaultModelId: newSessionModelId,
+    meetingModelId: meetingLaunchModelId ?? activeSessionModelId ?? newSessionModelId,
+    meetingModels: models,
+    onOpenMeetingMinutes: (modelId?: string) => {
+      setMeetingLaunchModelId(modelId);
+      handleNavigate("录音转写");
+    },
+    onOpenModelSettings: () => openSettings("model"),
+    onClientSlashCommand: handleClientSlashCommand,
+    onExitCodingWorkspace: () => {
+      setPlaceholderView(null);
+      setSidebarCollapsed(false);
+    },
+    onRegisterCodingLeaveGuard: registerCodingLeaveGuard,
+    onStartCodingRun: handleStartCodingRun,
+    onActivateCodingSession: (targetSessionId: string, targetCwd: string) =>
+      handleSelectSession(targetSessionId, targetCwd, true),
+    onChangeCodingModel: handleModelChange,
+    onSendCodingMessage: (value: string, promptTextOverride?: string) =>
+      handleSendCurrent(value, [], undefined, promptTextOverride),
+    onCancelCodingRun: () => handleCancel("stop"),
+    onStartProject: handleStartProject,
+    onStartProjectConversation: handleStartProjectConversation,
+    onRenameSession: handleRenameSession,
+    onArchiveSession: handleArchiveSession,
+    onDeleteSession: handleDeleteSession,
+    automationRefreshSignal,
+  };
 
   return (
     <div className={`app${IS_MACOS ? " app--macos" : ""}${codingWorkspaceActive ? " app--coding" : ""}`}>
@@ -2714,6 +2767,18 @@ function Shell() {
               </button>
             </div>
           )}
+          {init?.ok && (codingWorkspaceActive || hasOpenedCodingWorkspace) && (
+            <div className="app__coding-surface" hidden={!codingWorkspaceActive}>
+              <Suspense fallback={<div className="app__notice" role="status">正在加载界面…</div>}>
+                <PlaceholderPage
+                  {...placeholderProps}
+                  label="代码开发"
+                  cwd={codingCwd}
+                  onSelectWorkspace={handleSelectCodingWorkspace}
+                />
+              </Suspense>
+            </div>
+          )}
           {initError ? (
             <div className="app__notice app__notice--err">
               初始化失败:{initError}
@@ -2738,63 +2803,14 @@ function Shell() {
               <br />
               请在「设置 → 模型」配置模型厂商和 API Key。
             </div>
-          ) : (
+          ) : codingWorkspaceActive ? null : (
             <Suspense fallback={<div className="app__notice" role="status">正在加载界面…</div>}>
               {placeholderView ? (
                 <PlaceholderPage
+                  {...placeholderProps}
                   label={placeholderView}
-                  onNavigate={handleNavigate}
-                  onOpenSession={handleSelectSession}
-                  onGoHome={handleGoHome}
-                  createExpertRequested={createExpertRequested}
-                  onCreateExpertRequestHandled={() => setCreateExpertRequested(false)}
-                  onStartOrganizationConversation={handleStartOrganizationConversation}
-                  onToast={showToast}
-                  cwd={placeholderView === "代码开发"
-                      ? activeCodingWorkspaceCwd || codingWorkspaceCwd || activeSessionCwd || newSessionTargetCwd
-                      : newSessionTargetCwd}
-                  onSelectWorkspace={placeholderView === "代码开发"
-                    ? handleSelectCodingWorkspace
-                    : handleSelectWorkspace}
-                  codingWorkspaces={codingWorkspaces}
-                  activeCodingWorkspaceCwd={activeCodingWorkspaceCwd}
-                  onCloseCodingWorkspace={handleCloseCodingWorkspace}
-                  workspaces={workspaces}
-                  sessionId={currentSessionId ?? undefined}
-                  notificationAutomationId={notificationAutomationOpen?.id}
-                  notificationAutomationSequence={notificationAutomationOpen?.sequence}
-                  codingApiReady={!!init.auth.ready && !!newSessionModelId}
-                  codingModels={models}
-                  codingModelId={activeSessionModelId ?? newSessionModelId}
-                  projectModels={models}
-                  projectDefaultModelId={newSessionModelId}
-                  meetingModelId={meetingLaunchModelId ?? activeSessionModelId ?? newSessionModelId}
-                  meetingModels={models}
-                  onOpenMeetingMinutes={(modelId) => {
-                    setMeetingLaunchModelId(modelId);
-                    handleNavigate("录音转写");
-                  }}
-                  onOpenModelSettings={() => openSettings("model")}
-                  onClientSlashCommand={handleClientSlashCommand}
-                  onExitCodingWorkspace={() => {
-                    setPlaceholderView(null);
-                    setSidebarCollapsed(false);
-                  }}
-                  onRegisterCodingLeaveGuard={registerCodingLeaveGuard}
-                  onStartCodingRun={handleStartCodingRun}
-                  onActivateCodingSession={(targetSessionId, targetCwd) =>
-                    handleSelectSession(targetSessionId, targetCwd, true)
-                  }
-                  onChangeCodingModel={handleModelChange}
-                  onSendCodingMessage={(text, promptTextOverride) =>
-                    handleSendCurrent(text, [], undefined, promptTextOverride)}
-                  onCancelCodingRun={() => handleCancel("stop")}
-                  onStartProject={handleStartProject}
-                  onStartProjectConversation={handleStartProjectConversation}
-                  onRenameSession={handleRenameSession}
-                  onArchiveSession={handleArchiveSession}
-                  onDeleteSession={handleDeleteSession}
-                  automationRefreshSignal={automationRefreshSignal}
+                  cwd={newSessionTargetCwd}
+                  onSelectWorkspace={handleSelectWorkspace}
                 />
               ) : currentSessionId ? (
                 <ChatView
