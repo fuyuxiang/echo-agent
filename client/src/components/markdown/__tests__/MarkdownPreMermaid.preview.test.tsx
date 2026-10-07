@@ -3,9 +3,11 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { isTauri, invoke } from "@tauri-apps/api/core";
 import mermaid from "mermaid";
 import { MarkdownPreMermaid } from "../MarkdownPreMermaid";
+import { normalizeStandaloneMermaidSvg } from "../mermaid-svg";
 
 const graph = "flowchart LR\nA-->B";
 const svg = '<svg viewBox="0 0 2400 400" xmlns="http://www.w3.org/2000/svg"></svg>';
+const standaloneSvg = normalizeStandaloneMermaidSvg(svg);
 
 vi.mock("mermaid", () => ({
   default: {
@@ -68,7 +70,7 @@ describe("Mermaid 图表预览", () => {
     render(<MarkdownPreMermaid content={graph} onPreviewMermaid={onPreviewMermaid} />);
     await screen.findByRole("button", { name: "放大预览图表" });
     fireEvent.click(screen.getByRole("button", { name: "放大" }));
-    expect(onPreviewMermaid).toHaveBeenCalledWith(svg, graph);
+    expect(onPreviewMermaid).toHaveBeenCalledWith(standaloneSvg, graph);
     expect(screen.queryByRole("dialog", { name: "图表预览" })).toBeNull();
   });
 
@@ -92,7 +94,7 @@ describe("Mermaid 图表预览", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("export_text_file", {
       suggestedName: "diagram.svg",
       extension: "svg",
-      content: svg,
+      content: standaloneSvg,
     }));
     expect(await screen.findByRole("status")).toHaveTextContent("已保存：/tmp/diagram.svg");
   });

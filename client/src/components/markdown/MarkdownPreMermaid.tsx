@@ -2,6 +2,11 @@ import { isTauri, invoke } from "@tauri-apps/api/core";
 import { memo, useEffect, useId, useState, type ReactNode } from "react";
 import { CodeBlockActions } from "./CodeBlockActions";
 import { MarkdownPreviewImage } from "./MarkdownPreviewImage";
+import {
+  createMermaidConfig,
+  detectMermaidDiagramKind,
+  normalizeStandaloneMermaidSvg,
+} from "./mermaid-svg";
 import type { MarkdownConfig } from "./types";
 
 type Props = {
@@ -46,6 +51,7 @@ export const MarkdownPreMermaid = memo(function MarkdownPreMermaid({
   const [downloading, setDownloading] = useState(false);
 
   const code = content || "";
+  const diagramKind = detectMermaidDiagramKind(code);
 
   useEffect(() => {
     if (!complete || mode !== "diagram" || !code.trim()) {
@@ -64,25 +70,12 @@ export const MarkdownPreMermaid = memo(function MarkdownPreMermaid({
       try {
         const mermaid = (await import("mermaid")).default;
         const secure = new Set(mermaid.mermaidAPI.getConfig().secure ?? []);
-        secure.add("htmlLabels");
-        secure.add("fontFamily");
-        mermaid.initialize({
-          startOnLoad: false,
-          securityLevel: "strict",
-          // Agent-authored init directives must not switch standalone SVGs
-          // back to HTML labels or inherited fonts.
-          secure: [...secure],
-          theme: theme === "dark" ? "dark" : "default",
-          // The result is displayed as a standalone SVG image. HTML labels and
-          // inherited fonts can measure differently in the page and the image,
-          // clipping Chinese text inside flowchart nodes and edge labels.
-          htmlLabels: false,
-          fontFamily: '"PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif',
-        });
+        mermaid.initialize(createMermaidConfig(diagramKind, theme, [...secure]));
         const id = `md-mermaid-${reactId}-${Date.now()}`;
         const { svg: rendered } = await mermaid.render(id, code);
+        const standaloneSvg = normalizeStandaloneMermaidSvg(rendered);
         if (!cancelled) {
-          setSvg(rendered);
+          setSvg(standaloneSvg);
           setError(null);
         }
       } catch (err) {

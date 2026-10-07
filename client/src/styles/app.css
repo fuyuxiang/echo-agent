@@ -2899,8 +2899,10 @@ button.knowledge-trace__item:hover {
 }
 .md-mermaid-diagram svg,
 .md-mermaid-diagram img {
+  display: block;
   max-width: 100%;
   height: auto;
+  margin: 0 auto;
 }
 .md-previewable-image {
   cursor: zoom-in;
