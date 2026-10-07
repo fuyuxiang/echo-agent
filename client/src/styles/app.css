@@ -21,13 +21,13 @@
   min-height: 0;
   position: relative;
 }
-/* Sidebar collapsed: hide the aside; chat topbar / float controls carry expand +
+/* Sidebar collapsed: hide the aside; chat topbar / page controls carry expand +
  * new-task affordances. */
 .app__body--collapsed .sidebar {
   display: none;
 }
 /* Chat-only top bar: in-flow header so it reserves height and pushes content
- * down. Other pages hide it entirely and stick their own headers to the top. */
+ * down. Other pages use the compact controls below when the sidebar closes. */
 .main-topbar {
   flex: none;
   height: 48px;
@@ -38,21 +38,23 @@
   /* Empty area drags the window, like the title bar; interactive children opt out. */
   -webkit-app-region: drag;
 }
-/* Floating expand/new controls when sidebar is collapsed on non-chat pages.
- * Absolute so it does not push page content down. */
-.main-topbar-float {
-  position: absolute;
-  top: 8px;
-  left: 12px;
-  z-index: 40;
+/* Reserve a narrow row for global controls instead of covering page headers. */
+.main-page-controls {
+  flex: 0 0 40px;
+  min-height: 40px;
   display: flex;
   align-items: center;
   gap: 4px;
+  padding: 0 12px;
+  box-sizing: border-box;
+  -webkit-app-region: drag;
+}
+.main-page-controls .main-topbar__btn {
   -webkit-app-region: no-drag;
 }
-.app--macos .app__body--collapsed .main-topbar-float {
+.app--macos .app__body--collapsed .main-page-controls {
   /* 三个红绿灯总宽约 70px,左侧留 84px */
-  left: 84px;
+  padding-left: 84px;
 }
 .main-topbar__left {
   display: flex;
@@ -293,7 +295,7 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  position: relative; /* anchor for .main-topbar-float when sidebar is collapsed */
+  position: relative;
   /* EchoAgent: main-content bg = --echo-home-bg-secondary (#fafafa light) */
   background: var(--echo-home-bg-secondary);
   /* EchoAgent: non-Mac border-top-radius 12px */

@@ -31,6 +31,30 @@ try {
   let layouts = 0;
   page.on("pageerror", error => errors.push(error.message));
   const surfaces = ["memory", "personal-memory", "security", "cloud-storage", "notify-channels", "weixin-connected", "weixin-offline", "weixin-unconnected", "capabilities", "coding", "permission-picker", "organization", "conversation", "meeting"];
+  for (const surface of ["collapsed-project", "collapsed-capabilities"]) {
+    for (const platform of ["mac", "other"]) {
+      for (const width of [1440, 768]) {
+        await page.setViewportSize({ width, height: 720 });
+        await page.goto(`http://127.0.0.1:1439/__ui-review?surface=${surface}&platform=${platform}`);
+        await page.locator(surface === "collapsed-project" ? ".pd-crumb" : ".panel-navigation > strong").waitFor();
+        const layout = await page.evaluate((surface) => {
+          const box = (selector) => document.querySelector(selector).getBoundingClientRect();
+          const controls = box(".main-page-controls");
+          const heading = box(surface === "collapsed-project" ? ".pd-crumb" : ".panel-navigation > strong");
+          const content = box(surface === "collapsed-project" ? ".pd-page" : ".panel-section");
+          const main = box(".app__main");
+          const buttons = [...document.querySelectorAll(".main-page-controls button")].map((element) => element.getBoundingClientRect());
+          return { controls: { top: controls.top, bottom: controls.bottom }, heading: { top: heading.top }, content: { top: content.top, bottom: content.bottom }, main: { bottom: main.bottom }, buttons: buttons.map(({ left, right }) => ({ left, right })) };
+        }, surface);
+        assert.ok(layout.content.top >= layout.controls.bottom - 1, `${surface} ${platform} ${width}: page starts behind controls`);
+        assert.ok(layout.heading.top >= layout.controls.bottom - 1, `${surface} ${platform} ${width}: heading overlaps controls`);
+        assert.ok(layout.content.bottom <= layout.main.bottom + 1, `${surface} ${platform} ${width}: page extends below main`);
+        assert.ok(layout.buttons[0].left >= (platform === "mac" ? 84 : 12), `${surface} ${platform} ${width}: controls overlap window chrome`);
+        assert.ok(layout.buttons[1].left >= layout.buttons[0].right, `${surface} ${platform} ${width}: controls overlap each other`);
+        layouts += 1;
+      }
+    }
+  }
   for (const [width, height, theme] of [[1440, 900, "light"], [1024, 768, "dark"], [768, 720, "light"]]) {
     await page.setViewportSize({ width, height });
     for (const surface of surfaces) {

@@ -2624,9 +2624,8 @@ function Shell() {
           activeNav={activeNav}
         />
         <main className="app__main">
-          {/* 全局 topbar 仅对话页需要：会话标题 +（侧栏折叠时）展开/新建。
-              首页、项目、自动化等其它页面不占 48px，各自顶栏贴顶即可。
-              侧栏折叠且非对话页时，用悬浮按钮提供展开入口。
+          {/* 对话页使用会话顶栏。侧栏折叠后的其它页面使用占位的紧凑工具栏，
+              避免展开/新建按钮覆盖各页面自己的标题和导航。
               注:Tauri 2 只认 data-tauri-drag-region(CSS 的 -webkit-app-region
               不生效);按钮等子元素不是拖拽目标,不影响点击。 */}
           {!placeholderView && currentSessionId ? (
@@ -2687,7 +2686,7 @@ function Shell() {
             </header>
           ) : (
             sidebarCollapsed && !codingWorkspaceActive && (
-              <div className="main-topbar-float">
+              <header className="main-page-controls" data-tauri-drag-region>
                 <button
                   className="main-topbar__btn"
                   aria-label="展开侧边栏"
@@ -2704,7 +2703,7 @@ function Shell() {
                 >
                   <EchoNewTaskIcon size="md" />
                 </button>
-              </div>
+              </header>
             )
           )}
           {init?.ok && modelCatalogError && (

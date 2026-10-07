@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { ThemeProvider } from "../../src/components/ThemeProvider";
 import { SettingsPanel, type SettingsSectionId } from "../../src/components/SettingsPanel";
 import { PlaceholderPage } from "../../src/components/PlaceholderPage";
+import { ProjectDetailView } from "../../src/components/ProjectDetailView";
 import { WorkbenchIdentity } from "../../src/features/coding/shell/WorkbenchIdentity";
 import { ProjectSwitcher } from "../../src/features/coding/shell/ProjectSwitcher";
 import { TaskSwitcher } from "../../src/features/coding/shell/TaskSwitcher";
@@ -210,6 +211,25 @@ function Fixture() {
   const [automationDraft, setAutomationDraft] = useState(() => buildDraft(
     createAutomationTemplates()[0], "/Users/review/Documents/EchoAgent",
   ));
+  if (surface === "collapsed-project" || surface === "collapsed-capabilities") {
+    const project = {
+      id: "review-project", name: "SKILL安装", createdAt: new Date().toISOString(),
+      connectors: [], experts: [], skills: [], plans: [], tasks: [], assets: [], members: [], conversations: [],
+    };
+    return <div className={`app${query.get("platform") === "mac" ? " app--macos" : ""}`}>
+      <div className="app__body app__body--collapsed">
+        <main className="app__main">
+          <header className="main-page-controls" data-tauri-drag-region>
+            <button className="main-topbar__btn" aria-label="展开侧边栏">☰</button>
+            <button className="main-topbar__btn" aria-label="新建任务">＋</button>
+          </header>
+          {surface === "collapsed-project"
+            ? <ProjectDetailView project={project} onBack={() => {}} picker={{ options: { connectors: [], experts: [], skills: [] }, loading: false, error: null }} />
+            : <PlaceholderPage label="专家·技能·连接器" />}
+        </main>
+      </div>
+    </div>;
+  }
   if (surface === "automation-edit") return <div className="automation-panel echo-agent-automation"><AutomationEditPage
     mode="create" draft={automationDraft} setDraft={setAutomationDraft}
     saving={false} workspaces={[{ cwd: "/Users/review/Documents/EchoAgent", sessionCount: 9 }]}
