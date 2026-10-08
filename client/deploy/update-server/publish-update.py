@@ -46,7 +46,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--base-url",
-        default="https://10.132.19.82:8787/desktop-updates",
+        default="https://123.56.188.16:8787/desktop-updates",
     )
     return parser.parse_args()
 

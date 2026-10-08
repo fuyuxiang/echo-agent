@@ -8,7 +8,7 @@ if [[ "${ECHOAGENT_BATCH_PUBLISH:-}" != "1" ]]; then
   exit 2
 fi
 
-HOST="root@10.132.19.82"
+HOST="root@123.56.188.16"
 VERSION=""
 TARGET=""
 ARTIFACT=""
@@ -89,4 +89,4 @@ if [[ $MANDATORY -eq 1 ]]; then REMOTE_MANDATORY="--mandatory"; fi
 ssh "$HOST" \
   "/usr/local/sbin/echoagent-publish-update --version '$VERSION' --target '$TARGET' --artifact '$REMOTE_ARTIFACT' --signature '$REMOTE_SIGNATURE' $REMOTE_NOTES $REMOTE_MANDATORY"
 
-echo "Published manifest: https://10.132.19.82:8787/desktop-updates/stable/$TARGET.json"
+echo "Published manifest: https://123.56.188.16:8787/desktop-updates/stable/$TARGET.json"

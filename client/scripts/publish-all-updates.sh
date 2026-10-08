@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-HOST="root@10.132.19.82"
+HOST="root@123.56.188.16"
 ARTIFACTS_DIR=""
 NOTES_FILE=""
 MANDATORY=0

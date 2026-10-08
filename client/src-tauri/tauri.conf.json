@@ -59,7 +59,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJFRjEzQTM3RTc0OTBERUMKUldUc0RVbm5OenJ4TGhzeHowcWVUUnJGMmREc1lNdlcwNTlESm5Bd05iYmRZZXZGMnFlV291MTUK",
       "endpoints": [
-        "https://10.132.19.82:8787/desktop-updates/stable/{{target}}-{{arch}}.json"
+        "https://123.56.188.16:8787/desktop-updates/stable/{{target}}-{{arch}}.json"
       ],
       "windows": {
         "installMode": "passive"

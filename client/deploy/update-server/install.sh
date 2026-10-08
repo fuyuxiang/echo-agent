@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the EchoAgent desktop updater static server on 10.132.19.82.
+# Install the EchoAgent desktop updater static server on 123.56.188.16.
 set -euo pipefail
 
 NGINX_SITE="/etc/nginx/sites-enabled/echo-agent-server-https"
