@@ -2,11 +2,7 @@ import { isTauri, invoke } from "@tauri-apps/api/core";
 import { memo, useEffect, useId, useState, type ReactNode } from "react";
 import { CodeBlockActions } from "./CodeBlockActions";
 import { MarkdownPreviewImage } from "./MarkdownPreviewImage";
-import {
-  createMermaidConfig,
-  detectMermaidDiagramKind,
-  normalizeStandaloneMermaidSvg,
-} from "./mermaid-svg";
+import { renderStandaloneMermaid } from "./mermaid-render";
 import type { MarkdownConfig } from "./types";
 
 type Props = {
@@ -51,7 +47,6 @@ export const MarkdownPreMermaid = memo(function MarkdownPreMermaid({
   const [downloading, setDownloading] = useState(false);
 
   const code = content || "";
-  const diagramKind = detectMermaidDiagramKind(code);
 
   useEffect(() => {
     if (!complete || mode !== "diagram" || !code.trim()) {
@@ -68,12 +63,8 @@ export const MarkdownPreMermaid = memo(function MarkdownPreMermaid({
 
     (async () => {
       try {
-        const mermaid = (await import("mermaid")).default;
-        const secure = new Set(mermaid.mermaidAPI.getConfig().secure ?? []);
-        mermaid.initialize(createMermaidConfig(diagramKind, theme, [...secure]));
         const id = `md-mermaid-${reactId}-${Date.now()}`;
-        const { svg: rendered } = await mermaid.render(id, code);
-        const standaloneSvg = normalizeStandaloneMermaidSvg(rendered);
+        const standaloneSvg = await renderStandaloneMermaid(id, code, theme);
         if (!cancelled) {
           setSvg(standaloneSvg);
           setError(null);

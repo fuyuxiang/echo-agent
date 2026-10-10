@@ -7,12 +7,10 @@
 export type MermaidDiagramKind = "mindmap" | "flowchart" | "other";
 
 export function detectMermaidDiagramKind(source: string): MermaidDiagramKind {
-  const firstLine = source
-    .replace(/^\s*%%\{[\s\S]*?\}%%\s*/u, "")
-    .split(/\r?\n/u)
-    .find((line) => line.trim() && !line.trimStart().startsWith("%%"))
-    ?.trim()
-    .toLowerCase() ?? "";
+  const firstLine = source.trimStart()
+    .replace(/^---\s*\r?\n[\s\S]*?\r?\n---\s*(?:\r?\n|$)/u, "")
+    .replace(/^(?:\s*%%\{[\s\S]*?\}%%\s*|\s*%%[^\r\n]*(?:\r?\n|$))*/u, "")
+    .trimStart().split(/\r?\n/u)[0]?.trim().toLowerCase() ?? "";
 
   if (firstLine.startsWith("mindmap")) return "mindmap";
   if (firstLine.startsWith("flowchart") || firstLine.startsWith("graph ")) return "flowchart";
@@ -25,11 +23,12 @@ export function createMermaidConfig(
   secure: string[],
 ) {
   const protectedKeys = new Set(secure);
-  const mermaidTheme: "dark" | "default" = theme === "dark" ? "dark" : "default";
+  const mermaidTheme: "base" | "dark" | "default" = kind === "mindmap" ? "base" : theme === "dark" ? "dark" : "default";
   // These values must remain stable because the output is decoded outside the
   // application DOM. Agent supplied init directives cannot switch them back to
   // percentage sizing or a different font after initialization.
   protectedKeys.add("htmlLabels");
+  protectedKeys.add("securityLevel");
   protectedKeys.add("fontFamily");
   protectedKeys.add("useMaxWidth");
 
@@ -38,6 +37,7 @@ export function createMermaidConfig(
     securityLevel: "strict" as const,
     secure: [...protectedKeys],
     theme: mermaidTheme,
+    ...(kind === "mindmap" ? createMindmapTheme(theme) : {}),
     // Flowchart labels are kept as SVG text so the downloaded file has no
     // foreignObject dependency. Mindmaps need HTML labels for reliable wrapping
     // of long mixed Chinese/Latin labels.
@@ -50,9 +50,37 @@ export function createMermaidConfig(
     },
     mindmap: {
       useMaxWidth: false,
-      maxNodeWidth: 320,
-      padding: 24,
+      maxNodeWidth: 240,
+      padding: 12,
     },
+  };
+}
+
+function createMindmapTheme(theme: "light" | "dark") {
+  const dark = theme === "dark";
+  const text = dark ? "#e6edf5" : "#203247";
+  const colors = dark
+    ? ["#244058", "#243c57", "#25463c", "#3b3154", "#4d3f27", "#4d2e41", "#25464c", "#443b2d", "#303953"]
+    : ["#d9edff", "#e4efff", "#e2f4eb", "#ede7fb", "#fff2d8", "#fbe5ef", "#dff3f5", "#ffebdc", "#e8ecfa"];
+  const accents = dark
+    ? ["#78b1f0", "#6fc79a", "#af98eb", "#dec180", "#e79fbf", "#7bc4cc", "#e8b589", "#96aae5"]
+    : ["#75a1d9", "#72b795", "#a08bd0", "#d6b66e", "#d996b5", "#70b4bd", "#d9a078", "#8d9fce"];
+  const themeVariables: Record<string, string | boolean> = {
+    darkMode: dark, fontSize: "16px", textColor: text, primaryTextColor: text,
+    git0: colors[0], gitBranchLabel0: text,
+  };
+  for (let index = 0; index < 12; index += 1) {
+    themeVariables[`cScale${index}`] = colors[index % colors.length];
+    themeVariables[`cScaleLabel${index}`] = text;
+    themeVariables[`cScaleInv${index}`] = accents[(index + accents.length - 1) % accents.length];
+  }
+  return {
+    layout: "echo-mindmap",
+    themeVariables,
+    themeCSS: accents.map((color, index) => `.section-edge-${index}{stroke:${color};}
+      .mindmap-node.section-${index} rect,.mindmap-node.section-${index} path{stroke:${color};stroke-width:1px;}`)
+      .join("\n") + `\n.edge{stroke-width:1.8px;}.edge-depth-1{stroke-width:3px;}
+      .section-root .nodeLabel{font-weight:600;}`,
   };
 }
 

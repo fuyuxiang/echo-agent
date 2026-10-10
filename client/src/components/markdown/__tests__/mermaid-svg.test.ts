@@ -8,6 +8,7 @@ import {
 describe("Mermaid standalone SVG", () => {
   it("detects diagram kinds after init directives and comments", () => {
     expect(detectMermaidDiagramKind('%%{init: {"theme":"neutral"}}%%\n%% comment\nmindmap')).toBe("mindmap");
+    expect(detectMermaidDiagramKind('---\nconfig:\n  theme: neutral\n---\n%% comment\n%%{init: {"fontSize": 18}}%%\nmindmap')).toBe("mindmap");
     expect(detectMermaidDiagramKind("flowchart LR\nA-->B")).toBe("flowchart");
     expect(detectMermaidDiagramKind("sequenceDiagram\nA->>B: hello")).toBe("other");
   });
@@ -25,7 +26,8 @@ describe("Mermaid standalone SVG", () => {
     const config = createMermaidConfig("mindmap", "light", ["securityLevel"]);
     expect(config.htmlLabels).toBe(true);
     expect(config.useMaxWidth).toBe(false);
-    expect(config.mindmap).toEqual({ useMaxWidth: false, maxNodeWidth: 320, padding: 24 });
+    expect(config.mindmap).toEqual({ useMaxWidth: false, maxNodeWidth: 240, padding: 12 });
+    expect(config.layout).toBe("echo-mindmap");
     expect(config.secure).toEqual(expect.arrayContaining(["securityLevel", "htmlLabels", "fontFamily", "useMaxWidth"]));
   });
 });
