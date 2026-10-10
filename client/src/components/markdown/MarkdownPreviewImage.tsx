@@ -1,5 +1,5 @@
 import {
-  useLayoutEffect,
+  useId,
   useRef,
   useState,
   type CSSProperties,
@@ -9,8 +9,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useModalFocus } from "@/lib/use-modal-focus";
-
-type ImageSize = { width: number; height: number };
+import { useImagePreviewViewport, validImageSize, type ImageSize } from "./use-image-preview-viewport";
 
 type PreviewableImageProps = Omit<ImgHTMLAttributes<HTMLImageElement>, "src" | "alt"> & {
   src: string;
@@ -22,9 +21,6 @@ type PreviewableImageProps = Omit<ImgHTMLAttributes<HTMLImageElement>, "src" | "
   previewOpen?: boolean;
   onPreviewOpenChange?: (open: boolean) => void;
 };
-
-const MIN_ZOOM = 0.02;
-const MAX_ZOOM = 4;
 
 function ImagePreviewDialog({
   src,
@@ -39,53 +35,25 @@ function ImagePreviewDialog({
 }) {
   const dialogRef = useModalFocus<HTMLDivElement>(true, onClose);
   const stageRef = useRef<HTMLDivElement>(null);
-  const [stageSize, setStageSize] = useState<ImageSize>({ width: 0, height: 0 });
   const [loadedSize, setLoadedSize] = useState<ImageSize | null>(null);
   const [loadError, setLoadError] = useState(false);
-  const [zoom, setZoom] = useState<number | null>(null);
-
-  useLayoutEffect(() => {
-    const stage = stageRef.current;
-    if (!stage) return;
-    const measure = () => {
-      setStageSize({ width: stage.clientWidth, height: stage.clientHeight });
-    };
-    measure();
-    if (typeof ResizeObserver !== "undefined") {
-      const observer = new ResizeObserver(measure);
-      observer.observe(stage);
-      return () => observer.disconnect();
-    }
-    window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
-  }, []);
-
-  const imageSize = intrinsicSize ?? loadedSize;
-  const fitScale = imageSize && stageSize.width > 0 && stageSize.height > 0
-    ? Math.min(
-      1,
-      Math.max(1, stageSize.width - 48) / imageSize.width,
-      Math.max(1, stageSize.height - 48) / imageSize.height,
-    )
-    : null;
-  const scale = zoom ?? fitScale;
+  const hintId = useId();
+  const imageSize = loadError ? null : validImageSize(intrinsicSize) ? intrinsicSize : loadedSize;
+  const viewport = useImagePreviewViewport(stageRef, imageSize);
+  const { scale, zoom, ready } = viewport;
   const imageStyle: CSSProperties = imageSize && scale !== null
     ? { width: imageSize.width * scale, height: imageSize.height * scale }
     : { maxWidth: "100%", maxHeight: "100%" };
 
-  const changeZoom = (factor: number) => {
-    setZoom((current) => {
-      const next = (current ?? fitScale ?? 1) * factor;
-      return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.round(next * 1000) / 1000));
-    });
-  };
-
   return createPortal(
     <div
       className="md-image-preview__overlay"
+      onPointerDownCapture={(event) => {
+        if (event.target === event.currentTarget) viewport.resetClickSuppression();
+      }}
       onClick={(event) => {
         event.stopPropagation();
-        if (event.target === event.currentTarget) onClose();
+        if (event.target === event.currentTarget && !viewport.suppressClick()) onClose();
       }}
     >
       <div
@@ -99,15 +67,29 @@ function ImagePreviewDialog({
         <div className="md-image-preview__toolbar">
           <span className="md-image-preview__title" title={title}>{title}</span>
           <div className="md-image-preview__actions">
-            <button type="button" onClick={() => changeZoom(0.8)} disabled={scale !== null && scale <= MIN_ZOOM} aria-label="缩小图片">−</button>
-            <span className="md-image-preview__scale" aria-live="polite">{scale === null ? "适应窗口" : `${Math.round(scale * 100)}%`}</span>
-            <button type="button" onClick={() => changeZoom(1.25)} disabled={scale !== null && scale >= MAX_ZOOM} aria-label="放大图片">+</button>
-            <button type="button" onClick={() => setZoom(null)} aria-pressed={zoom === null}>适应窗口</button>
-            <button type="button" onClick={() => setZoom(1)} aria-pressed={zoom === 1}>原始大小</button>
+            <button type="button" onClick={() => viewport.changeZoom(0.8)} disabled={!ready || scale! <= viewport.minScale} aria-label="缩小图片">−</button>
+            <span className="md-image-preview__scale">{scale === null ? "适应窗口" : scale < 0.01 ? "<1%" : `${Math.round(scale * 100)}%`}</span>
+            <button type="button" onClick={() => viewport.changeZoom(1.25)} disabled={!ready || scale! >= viewport.maxScale} aria-label="放大图片">+</button>
+            <button type="button" onClick={() => viewport.zoomAt(null)} disabled={!ready} aria-pressed={zoom === null}>适应窗口</button>
+            <button type="button" onClick={() => viewport.zoomAt(1)} disabled={!ready} aria-pressed={zoom === 1}>原始大小</button>
+            <button type="button" onClick={() => viewport.setWheelPan(!viewport.wheelPan)} disabled={!ready} aria-label={viewport.wheelPan ? "切换为滚轮缩放" : "切换为滚轮平移"} aria-pressed={viewport.wheelPan} title="切换滚轮操作；触控板可选平移，捏合始终缩放">{viewport.wheelPan ? "滚轮平移" : "滚轮缩放"}</button>
             <button type="button" className="md-image-preview__close" onClick={onClose} aria-label="关闭图片预览">✕</button>
           </div>
         </div>
-        <div ref={stageRef} className="md-image-preview__stage">
+        <div
+          ref={stageRef}
+          className="md-image-preview__stage"
+          role="region"
+          aria-label="图片预览画布"
+          aria-describedby={hintId}
+          data-modal-initial-focus
+          tabIndex={0}
+          data-pannable={viewport.canPan || undefined}
+          data-dragging={viewport.dragging || undefined}
+          onPointerDown={viewport.onPointerDown}
+          onDoubleClick={viewport.onDoubleClick}
+          onKeyDown={viewport.onKeyDown}
+        >
           <div className="md-image-preview__canvas">
             {loadError ? (
               <div className="md-image-preview__error" role="alert">图片无法加载，资源可能已失效。</div>
@@ -116,9 +98,11 @@ function ImagePreviewDialog({
                 src={src}
                 alt={title}
                 style={imageStyle}
+                draggable={false}
+                onDragStart={(event) => event.preventDefault()}
                 onError={() => setLoadError(true)}
                 onLoad={(event) => {
-                  if (intrinsicSize) return;
+                  if (validImageSize(intrinsicSize)) return;
                   const image = event.currentTarget;
                   if (image.naturalWidth > 0 && image.naturalHeight > 0) {
                     setLoadedSize({ width: image.naturalWidth, height: image.naturalHeight });
@@ -127,6 +111,10 @@ function ImagePreviewDialog({
               />
             )}
           </div>
+        </div>
+        <div id={hintId} className="md-image-preview__hint">
+          <span>{viewport.wheelPan ? "滚轮平移 · 捏合缩放" : "滚轮缩放 · Shift+滚轮平移"} · 拖拽移动 · 双击查看细节</span>
+          <span>键盘：+/− 缩放，0 适应，1 原始大小，方向键移动</span>
         </div>
       </div>
     </div>,
@@ -189,7 +177,7 @@ export function MarkdownPreviewImage({
         onClick={handleClick}
         onKeyDown={handleKeyDown}
       />
-      {open && <ImagePreviewDialog src={src} title={title} intrinsicSize={intrinsicSize} onClose={() => setOpen(false)} />}
+      {open && <ImagePreviewDialog key={src} src={src} title={title} intrinsicSize={intrinsicSize} onClose={() => setOpen(false)} />}
     </>
   );
 }

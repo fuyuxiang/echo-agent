@@ -3007,12 +3007,14 @@ button.knowledge-trace__item:hover {
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
 }
 .md-image-preview__toolbar {
+  position: relative;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
   min-height: 52px;
-  padding: 8px 16px;
+  padding: 8px 56px 8px 16px;
   border-bottom: 1px solid var(--echo-border-default);
   box-sizing: border-box;
 }
@@ -3025,9 +3027,11 @@ button.knowledge-trace__item:hover {
 }
 .md-image-preview__actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: center;
   gap: 6px;
-  flex-shrink: 0;
+  min-width: 0;
 }
 .md-image-preview__actions button {
   min-width: 32px;
@@ -3047,6 +3051,11 @@ button.knowledge-trace__item:hover {
   opacity: 0.4;
   cursor: default;
 }
+.md-image-preview__close {
+  position: absolute;
+  top: 10px;
+  right: 16px;
+}
 .md-image-preview__scale {
   min-width: 62px;
   text-align: center;
@@ -3058,6 +3067,26 @@ button.knowledge-trace__item:hover {
   min-height: 0;
   overflow: auto;
   background: var(--echo-bg-secondary);
+  overscroll-behavior: contain;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.md-image-preview__stage:focus-visible {
+  outline: 2px solid var(--echo-brand);
+  outline-offset: -2px;
+}
+.md-image-preview__stage[data-pannable] { cursor: grab; }
+.md-image-preview__stage[data-dragging] { cursor: grabbing; }
+.md-image-preview__hint {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 16px;
+  padding: 6px 16px;
+  color: var(--echo-text-medium);
+  font-size: 0.6875rem;
+  border-top: 1px solid var(--echo-border-default);
 }
 .md-image-preview__canvas {
   display: flex;
@@ -3075,6 +3104,8 @@ button.knowledge-trace__item:hover {
   max-width: none;
   max-height: none;
   margin: 0;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 .md-image-preview__error {
   color: var(--echo-text-medium);
@@ -3082,8 +3113,8 @@ button.knowledge-trace__item:hover {
 }
 @media (max-width: 650px) {
   .md-image-preview__overlay { padding: 8px; }
-  .md-image-preview__toolbar { flex-wrap: wrap; gap: 4px; }
-  .md-image-preview__title { width: 100%; }
+  .md-image-preview__toolbar { flex-wrap: wrap; gap: 4px; padding-right: 16px; }
+  .md-image-preview__title { width: 100%; min-height: 32px; line-height: 32px; padding-right: 40px; box-sizing: border-box; }
   .md-image-preview__actions { width: 100%; flex-wrap: wrap; justify-content: flex-end; }
   .md-image-preview__scale { min-width: 45px; }
 }

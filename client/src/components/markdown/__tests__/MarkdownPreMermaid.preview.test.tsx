@@ -31,10 +31,18 @@ describe("Mermaid 图表预览", () => {
     vi.mocked(isTauri).mockReturnValue(false);
     Object.defineProperty(URL, "createObjectURL", { configurable: true, value: vi.fn(() => "blob:diagram") });
     Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
+    // jsdom has no layout; provide a measurable preview viewport.
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains("md-image-preview__stage") ? 800 : 0;
+    });
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains("md-image-preview__stage") ? 600 : 0;
+    });
   });
 
   afterEach(() => {
     cleanup();
+    vi.restoreAllMocks();
     if (originalCreate) Object.defineProperty(URL, "createObjectURL", originalCreate);
     else Reflect.deleteProperty(URL, "createObjectURL");
     if (originalRevoke) Object.defineProperty(URL, "revokeObjectURL", originalRevoke);
