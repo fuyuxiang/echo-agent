@@ -40,6 +40,15 @@ const defaults = {
   rememberToolApprovals: null,
 };
 
+const importProvider = {
+  id: "personal",
+  providerKind: "custom" as const,
+  label: "工作连接",
+  source: "personal" as const,
+  baseUrl: "https://example.test/v1",
+  credentialConfigured: true,
+};
+
 describe("ModelConnectionsPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -50,6 +59,103 @@ describe("ModelConnectionsPanel", () => {
     mocks.internalReload.mockResolvedValue(undefined);
     mocks.orgSession.mockResolvedValue({ loggedIn: false });
     mocks.listenOrgModelsChanged.mockResolvedValue(() => {});
+  });
+
+  it("中文输入 Model ID 时 Enter 不添加，关闭草稿先确认", async () => {
+    render(<ModelConnectionsPanel />);
+    await screen.findByText("还没有可用模型");
+    const opener = screen.getAllByRole("button", { name: "添加个人连接" })[0];
+    opener.focus();
+    fireEvent.click(opener);
+    const dialog = screen.getByRole("dialog", { name: "添加个人连接" });
+    const input = within(dialog).getByLabelText("模型名称 / ID");
+    fireEvent.change(input, { target: { value: "候选模型" } });
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    expect(input).toHaveValue("候选模型");
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 229 });
+    expect(input).toHaveValue("候选模型");
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(input).toHaveValue("");
+    expect(within(dialog).getByText("候选模型")).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.getByRole("alertdialog", { name: "舍弃未保存的修改？" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "继续编辑" }));
+    expect(within(dialog).getByText("候选模型")).toBeInTheDocument();
+    expect(mocks.providersSaveConnection).not.toHaveBeenCalled();
+  });
+
+  it("同步模型读取失败可就地重试，等待时不重复读取或保存", async () => {
+    mocks.providersList.mockResolvedValue({ providers: [importProvider], models: [] });
+    let resolveModels!: (models: Array<{ id: string }>) => void;
+    mocks.providersFetchModelsForProvider.mockReset()
+      .mockRejectedValueOnce(new Error("连接中断"))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveModels = resolve; }));
+    mocks.providersSaveConnection.mockReset();
+    render(<ModelConnectionsPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: "同步模型" }));
+    const dialog = screen.getByRole("dialog", { name: "同步模型" });
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("读取模型列表失败：连接中断");
+    expect(within(dialog).getByRole("button", { name: /^添加.*个模型$/ })).toBeDisabled();
+
+    const retry = within(dialog).getByRole("button", { name: "重试获取模型" });
+    fireEvent.click(retry);
+    fireEvent.click(retry);
+    expect(within(dialog).getByRole("status")).toHaveTextContent("正在获取模型列表");
+    expect(mocks.providersFetchModelsForProvider).toHaveBeenCalledTimes(2);
+    expect(mocks.providersSaveConnection).not.toHaveBeenCalled();
+
+    await act(async () => { resolveModels([{ id: "model-a" }]); });
+    expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
+    const model = within(dialog).getByRole("checkbox", { name: "model-a" });
+    expect(model).toBeEnabled();
+    fireEvent.click(model);
+    expect(within(dialog).getByRole("button", { name: "添加 1 个模型" })).toBeEnabled();
+  });
+
+  it("同步模型保存失败保留列表和勾选，调整选择后可再保存且pending防重", async () => {
+    mocks.providersList.mockResolvedValue({
+      providers: [importProvider],
+      models: [{ modelId: "personal/configured", remoteModelId: "configured", providerId: "personal" }],
+    });
+    mocks.providersFetchModelsForProvider.mockReset().mockResolvedValue([
+      { id: "configured" }, { id: "model-a" }, { id: "model-b" },
+    ]);
+    let resolveSave!: (result: { providerId: string; modelIds: string[] }) => void;
+    mocks.providersSaveConnection.mockReset()
+      .mockRejectedValueOnce(new Error("暂时无法写入配置"))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveSave = resolve; }));
+    render(<ModelConnectionsPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: "同步模型" }));
+    const dialog = screen.getByRole("dialog", { name: "同步模型" });
+    const firstModel = await within(dialog).findByRole("checkbox", { name: "model-a" });
+    const secondModel = within(dialog).getByRole("checkbox", { name: "model-b" });
+    const configured = within(dialog).getByRole("checkbox", { name: /configured/ });
+    expect(configured).toBeChecked();
+    expect(configured).toBeDisabled();
+    fireEvent.click(firstModel);
+    fireEvent.click(secondModel);
+    fireEvent.click(within(dialog).getByRole("button", { name: "添加 2 个模型" }));
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("保存模型失败：暂时无法写入配置");
+    expect(firstModel).toBeChecked();
+    expect(firstModel).toBeEnabled();
+    expect(secondModel).toBeChecked();
+    fireEvent.click(firstModel);
+    expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
+    const retry = within(dialog).getByRole("button", { name: "添加 1 个模型" });
+    fireEvent.click(retry);
+    fireEvent.click(retry);
+    expect(secondModel).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "取消" })).toBeDisabled();
+    expect(mocks.providersSaveConnection).toHaveBeenCalledTimes(2);
+    expect(mocks.providersSaveConnection).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: "personal", apiKey: undefined }),
+      [{ modelId: "", remoteModelId: "model-b", providerId: "personal" }],
+    );
+
+    await act(async () => { resolveSave({ providerId: "personal", modelIds: ["model-b"] }); });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "同步模型" })).not.toBeInTheDocument());
+    expect(await screen.findByText("已添加 1 个模型。")).toBeInTheDocument();
   });
 
   it("明确展示组织托管来源且不提供编辑或删除入口", async () => {

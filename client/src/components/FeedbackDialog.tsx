@@ -40,13 +40,14 @@ export function FeedbackDialog({
   const [hover, setHover] = useState(0);
   const [note, setNote] = useState("");
 
-  // 打开时重置为空(让用户每次重新选);保留 rating 方向。
+  // Keep the local draft across dismiss/reopen; it belongs to this message.
   useEffect(() => {
-    if (open) {
-      setStars(0);
-      setHover(0);
-      setNote("");
-    }
+    setStars(0);
+    setHover(0);
+    setNote("");
+  }, [sessionId, messageId]);
+  useEffect(() => {
+    if (!open) setHover(0);
   }, [open]);
   const dialogRef = useModalFocus<HTMLDivElement>(open, onClose);
 

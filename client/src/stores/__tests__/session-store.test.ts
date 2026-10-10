@@ -24,6 +24,7 @@ const resetStore = () => {
     streamingMessageId: null,
     usage: {},
     plan: null,
+    planRevisionDirty: false,
     planApproval: null,
     control: undefined,
     error: null,
@@ -265,6 +266,42 @@ describe("session-store transcripts", () => {
       __sessionId: "A",
     } as never);
     expect(useSessionStore.getState().planApproval).toBeNull();
+  });
+
+  it("本地计划修订跟随会话缓存，初始化不标脏且丢弃缓存会清理", () => {
+    const store = useSessionStore.getState();
+    const plan = { entries: [{ content: "本地步骤", priority: "medium", status: "pending" }] } as const;
+    store.setSession("A");
+    store.setPlan({ entries: [...plan.entries] });
+    expect(useSessionStore.getState().planRevisionDirty).toBe(false);
+    store.setPlan({ entries: [...plan.entries] }, { localRevision: true });
+    expect(useSessionStore.getState().planRevisionDirty).toBe(true);
+    store.setSession("B");
+    expect(useSessionStore.getState().planRevisionDirty).toBe(false);
+    expect(useSessionStore.getState().transcripts.A.planRevisionDirty).toBe(true);
+    store.setSession("A");
+    expect(useSessionStore.getState().planRevisionDirty).toBe(true);
+    store.dropSessionCache("A");
+    expect(useSessionStore.getState().planRevisionDirty).toBe(false);
+    expect(useSessionStore.getState().transcripts.A).toBeUndefined();
+  });
+
+  it("晚到计划同步确认只清除所属会话的同一修订", () => {
+    const store = useSessionStore.getState();
+    const first = { entries: [{ content: "修订一", priority: "medium", status: "pending" }] } as const;
+    const second = { entries: [{ content: "修订二", priority: "high", status: "pending" }] } as const;
+    const submitted = { entries: [...first.entries] };
+    const latest = { entries: [...second.entries] };
+    store.setSession("A");
+    store.setPlan(submitted, { localRevision: true });
+    store.setPlan(latest, { localRevision: true });
+    store.markPlanRevisionSynced(submitted, "A");
+    expect(useSessionStore.getState().planRevisionDirty).toBe(true);
+    store.setSession("B");
+    store.setPlan(submitted, { localRevision: true });
+    store.markPlanRevisionSynced(latest, "A");
+    expect(useSessionStore.getState().transcripts.A.planRevisionDirty).toBe(false);
+    expect(useSessionStore.getState().planRevisionDirty).toBe(true);
   });
 
   it("切离再切回保留本地 pushUser 的用户消息", () => {

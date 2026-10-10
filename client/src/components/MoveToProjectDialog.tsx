@@ -62,7 +62,10 @@ export function MoveToProjectDialog({
         tabIndex={-1}
         onClick={(event) => event.stopPropagation()}
       >
-        <h2 id={titleId} className="app-dialog__title">移入项目</h2>
+        <div className="app-dialog__header">
+          <h2 id={titleId} className="app-dialog__title">移入项目</h2>
+        </div>
+        <div className="app-dialog__body">
         <p id={descriptionId} className="app-dialog__description">
           选择“{sessionTitle}”要移入的项目。对话历史和原工作目录会保留。
         </p>
@@ -106,6 +109,7 @@ export function MoveToProjectDialog({
           </p>
         )}
         {error && <div id={errorId} className="app-dialog__error" role="alert">{error}</div>}
+        </div>
         <div className="app-dialog__actions">
           <button type="button" className="app-dialog__button app-dialog__button--cancel" onClick={close} disabled={busy}>取消</button>
           <button type="button" className="app-dialog__button app-dialog__button--primary" onClick={() => void move()} disabled={busy || !selectedId}>

@@ -12,6 +12,24 @@ vi.mock("@/lib/agent-client", () => ({
 }));
 
 describe("从对话创建专家", () => {
+  it("从已有专家雇佣后将新草稿填入当前编辑器并回到名称字段", async () => {
+    vi.mocked(agentsList).mockResolvedValue([{
+      name: "模板专家", path: "/agents/template.md", scope: "user",
+      description: "模板说明", raw: "模板提示词", modelTags: ["default"],
+    }]);
+    function Harness() {
+      const [requested, setRequested] = useState(true);
+      return <ExpertsTab pills={null} createExpertRequested={requested} onCreateExpertRequestHandled={() => setRequested(false)} />;
+    }
+    render(<Harness />);
+    await screen.findByRole("dialog", { name: "创建专家" });
+    fireEvent.click(await screen.findByRole("button", { name: "从专家雇佣" }));
+    fireEvent.click(screen.getByRole("button", { name: /模板专家.*模板说明/ }));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "专家名称" })).toHaveValue("模板专家（副本）"));
+    expect(screen.getByRole("textbox", { name: "专家 System Prompt" })).toHaveValue("模板提示词");
+    expect(screen.getByRole("textbox", { name: "专家名称" })).toHaveFocus();
+  });
+
   it("进入我的专家后直接打开编辑器，保存后显示新专家", async () => {
     let saved = false;
     vi.mocked(agentsList).mockImplementation(async () => saved ? [{

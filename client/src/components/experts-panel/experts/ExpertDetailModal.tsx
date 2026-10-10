@@ -27,7 +27,7 @@ export function ExpertDetailModal({ expert, onClose, onSummon }: Props) {
       className="ec-modal-overlay"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div ref={dialogRef} className="ec-modal" role="dialog" aria-modal="true" aria-label={`${title} 专家详情`} tabIndex={-1}>
+      <div ref={dialogRef} className="ec-modal ec-modal--managed" role="dialog" aria-modal="true" aria-label={`${title} 专家详情`} tabIndex={-1}>
         <button className="ec-modal-close" onClick={onClose} aria-label="关闭" data-modal-initial-focus>×</button>
 
         {/* Header: avatar + name + profession + category */}
@@ -49,6 +49,7 @@ export function ExpertDetailModal({ expert, onClose, onSummon }: Props) {
           </div>
         </div>
 
+        <div className="ec-modal-body">
         {/* Ability intro */}
         {expert.desc && (
           <div className="ec-modal-section">
@@ -88,6 +89,8 @@ export function ExpertDetailModal({ expert, onClose, onSummon }: Props) {
           </div>
         )}
 
+        </div>
+        <div className="ec-modal-footer">
         {/* Summon button */}
         <button
           className="ec-modal-summon-btn"
@@ -95,6 +98,7 @@ export function ExpertDetailModal({ expert, onClose, onSummon }: Props) {
         >
           召唤 {title}
         </button>
+        </div>
       </div>
     </div>
   );

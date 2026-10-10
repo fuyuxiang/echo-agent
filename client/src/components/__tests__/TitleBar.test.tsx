@@ -1,20 +1,71 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, within } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom/vitest";
 
 const minimize = vi.fn();
 const toggleMaximize = vi.fn();
 const close = vi.fn();
+const isMaximized = vi.fn();
+const onResized = vi.fn();
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ minimize, toggleMaximize, close }),
+  getCurrentWindow: () => ({ minimize, toggleMaximize, close, isMaximized, onResized }),
 }));
 
 import { TitleBar } from "../TitleBar";
 
 describe("TitleBar", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    isMaximized.mockReset().mockRejectedValue(new Error("浏览器预览无原生窗口"));
+    onResized.mockReset().mockResolvedValue(vi.fn());
+  });
+
+  it("窗口最大化状态持续更新并在卸载时释放 resize 监听", async () => {
+    isMaximized.mockResolvedValue(false);
+    const unlisten = vi.fn();
+    let resize: (() => Promise<void>) | undefined;
+    onResized.mockImplementation(async (callback: () => Promise<void>) => {
+      resize = callback;
+      return unlisten;
+    });
+    const { unmount } = render(<TitleBar onPlaceholder={() => {}} />);
+    await waitFor(() => expect(onResized).toHaveBeenCalledOnce());
+    isMaximized.mockResolvedValue(true);
+    await act(async () => { await resize?.(); });
+    expect(screen.getByTitle("还原")).toBeInTheDocument();
+
+    unmount();
+    expect(unlisten).toHaveBeenCalledOnce();
+    const callsAfterUnmount = isMaximized.mock.calls.length;
+    await act(async () => { await resize?.(); });
+    expect(isMaximized).toHaveBeenCalledTimes(callsAfterUnmount);
+  });
+
+  it("resize 订阅在卸载后才返回时立即释放监听", async () => {
+    isMaximized.mockResolvedValue(false);
+    const unlisten = vi.fn();
+    let resolveSubscription: ((stop: () => void) => void) | undefined;
+    onResized.mockImplementation(() => new Promise<() => void>((resolve) => { resolveSubscription = resolve; }));
+    const { unmount } = render(<TitleBar onPlaceholder={() => {}} />);
+    await waitFor(() => expect(onResized).toHaveBeenCalledOnce());
+    unmount();
+    expect(unlisten).not.toHaveBeenCalled();
+
+    await act(async () => { resolveSubscription?.(unlisten); });
+    expect(unlisten).toHaveBeenCalledOnce();
+  });
+
+  it("初始窗口状态在卸载后返回不会创建 resize 监听", async () => {
+    let resolveMaximized: ((value: boolean) => void) | undefined;
+    isMaximized.mockImplementation(() => new Promise<boolean>((resolve) => { resolveMaximized = resolve; }));
+    const { unmount } = render(<TitleBar onPlaceholder={() => {}} />);
+    unmount();
+
+    await act(async () => { resolveMaximized?.(true); });
+    expect(onResized).not.toHaveBeenCalled();
+  });
 
   it("渲染品牌与三个菜单", () => {
     render(<TitleBar onPlaceholder={() => {}} />);

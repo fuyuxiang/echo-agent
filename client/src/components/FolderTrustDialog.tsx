@@ -117,60 +117,67 @@ export function FolderTrustDialog({ request, onResolve, onToast }: FolderTrustDi
         role="alertdialog"
         aria-modal="true"
         aria-label="文件夹信任"
+        aria-busy={busy || loading}
         ref={modalRef}
         tabIndex={-1}
       >
-        <div className="trust-dialog__icon">
-          <ShieldAlertIcon size="lg" />
-        </div>
-        <h2 className="trust-dialog__title">信任此工作区？</h2>
-        <p className="trust-dialog__desc">
-          该目录包含项目级配置。仅当你信任仓库内容时，才允许 EchoAgent
-          加载并运行这些配置。
-        </p>
-        <div className="trust-dialog__path" title={displayPath}>
-          <code>{displayPath}</code>
-        </div>
-        {current && current.configKinds.length > 0 && (
-          <p className="trust-dialog__reason">
-            将启用：{current.configKinds.join("、")}
+        <header className="trust-dialog__header">
+          <div className="trust-dialog__icon">
+            <ShieldAlertIcon size="lg" />
+          </div>
+          <h2 className="trust-dialog__title">信任此工作区？</h2>
+        </header>
+        <div className="trust-dialog__body">
+          <p className="trust-dialog__desc">
+            该目录包含项目级配置。仅当你信任仓库内容时，才允许 EchoAgent
+            加载并运行这些配置。
           </p>
-        )}
-        {current && queue.length > 1 && (
-          <p className="trust-dialog__reason">还有 {queue.length - 1} 个信任请求等待处理</p>
-        )}
-        {loading && !current && <p className="trust-dialog__reason" role="status">正在读取信任请求…</p>}
-        {error && <p className="trust-dialog__reason" role="alert">{error}</p>}
-        {current ? (
-          <div className="trust-dialog__actions">
-            <button
-              className="btn btn--ghost"
-              onClick={() => void respond(false)}
-              disabled={busy}
-              data-modal-initial-focus
-            >
-              不信任
-            </button>
-            <button className="btn btn--primary" onClick={() => void respond(true)} disabled={busy}>
-              <ShieldCheckIcon size="sm" /> 信任并加载
-            </button>
+          <div className="trust-dialog__path" title={displayPath}>
+            <code>{displayPath}</code>
           </div>
-        ) : error ? (
-          <div className="trust-dialog__actions">
-            <button
-              className="btn btn--primary"
-              type="button"
-              onClick={() => void refresh()}
-              disabled={loading}
-              data-modal-initial-focus
-            >
-              {loading ? "重试中…" : "重试"}
-            </button>
-          </div>
-        ) : null}
-        <p className="trust-dialog__hint">
-          信任按工作区生效；项目 MCP、插件与 hooks 会随即重载。
-        </p>
+          {current && current.configKinds.length > 0 && (
+            <p className="trust-dialog__reason">
+              将启用：{current.configKinds.join("、")}
+            </p>
+          )}
+          {current && queue.length > 1 && (
+            <p className="trust-dialog__reason">还有 {queue.length - 1} 个信任请求等待处理</p>
+          )}
+          {loading && !current && <p className="trust-dialog__reason" role="status">正在读取信任请求…</p>}
+          {error && <p className="trust-dialog__error" role="alert">{error}</p>}
+        </div>
+        <footer className="trust-dialog__footer">
+          {current ? (
+            <div className="trust-dialog__actions">
+              <button
+                className="btn btn--ghost"
+                onClick={() => void respond(false)}
+                disabled={busy}
+                data-modal-initial-focus
+              >
+                不信任
+              </button>
+              <button className="btn btn--primary" onClick={() => void respond(true)} disabled={busy}>
+                <ShieldCheckIcon size="sm" /> 信任并加载
+              </button>
+            </div>
+          ) : error ? (
+            <div className="trust-dialog__actions">
+              <button
+                className="btn btn--primary"
+                type="button"
+                onClick={() => void refresh()}
+                disabled={loading}
+                data-modal-initial-focus
+              >
+                {loading ? "重试中…" : "重试"}
+              </button>
+            </div>
+          ) : null}
+          <p className="trust-dialog__hint">
+            信任按工作区生效；项目 MCP、插件与 hooks 会随即重载。
+          </p>
+        </footer>
       </div>
     </div>
   );

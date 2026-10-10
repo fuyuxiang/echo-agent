@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 const mocks = vi.hoisted(() => ({
   inspect: vi.fn(),
@@ -364,6 +364,33 @@ describe("本地 Skills / MCP 完整流程", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("MCP 配置预览加载失败：配置文件损坏");
     fireEvent.click(screen.getByRole("button", { name: "重试加载配置" }));
     expect(await screen.findByText(/mcpServers/)).toBeInTheDocument();
+  });
+
+  it("Token 提交防重复并保留失败输入，未保存关闭可继续编辑", async () => {
+    let reject!: (reason: Error) => void;
+    const submit = vi.fn().mockImplementationOnce(() => new Promise<void>((_, fail) => { reject = fail; }));
+    const close = vi.fn();
+    render(<ConnectorTokenForm connector={{
+      id: "token-focus", name: "Token Focus", desc: "Demo", source: "test", kind: "mcp", examplesZh: [], cat: "other",
+      tokenSchema: { fields: [{ key: "TOKEN", label: "Token", required: true }] },
+    }} onClose={close} onSubmit={submit} />);
+    const form = screen.getByRole("dialog", { name: "Token Focus 授权" });
+    const token = within(form).getByRole("textbox");
+    fireEvent.change(token, { target: { value: "test-token" } });
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(close).not.toHaveBeenCalled();
+    expect(within(form).getByRole("button", { name: "关闭" })).toBeDisabled();
+    await act(async () => { reject(new Error("服务暂不可用")); });
+    expect(await screen.findByRole("alert")).toHaveTextContent("连接失败：服务暂不可用");
+    expect(token).toHaveValue("test-token");
+    fireEvent.click(within(form).getByRole("button", { name: "关闭" }));
+    expect(screen.getByRole("alertdialog", { name: "舍弃未保存的修改？" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "继续编辑" }));
+    expect(token).toHaveValue("test-token");
+    expect(close).not.toHaveBeenCalled();
   });
 
   it("Token 帮助链接通过受控后端打开，失败时在弹窗内提示", async () => {

@@ -16,6 +16,7 @@ import {
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import { createPortal } from "react-dom";
 import type { UnifiedTab } from "@/lib/use-unified-tabs";
@@ -219,10 +220,50 @@ export function ArtifactTabsBar({
   const handleClose = useCallback(
     (e: React.MouseEvent, id: string) => {
       e.stopPropagation();
+      const restoreKeyboardFocus = e.detail === 0 && document.activeElement === e.currentTarget;
+      const index = renderedTabs.findIndex((tab) => tab.id === id);
+      const next = id === activeTabIdForRender
+        ? renderedTabs[index + 1] ?? renderedTabs[index - 1]
+        : renderedTabs.find((tab) => tab.id === activeTabIdForRender);
       onClose(id);
+      if (restoreKeyboardFocus && next) {
+        if (id === activeTabIdForRender) onSelect(next.id);
+        tabRefs.current.get(next.id)?.focus();
+      }
     },
-    [onClose],
+    [onClose, onSelect, renderedTabs, activeTabIdForRender],
   );
+
+  const handleTabKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>, id: string) => {
+    // A close button is a separate control; its keyboard event must not select a tab.
+    if (event.target !== event.currentTarget) return;
+    const index = renderedTabs.findIndex((tab) => tab.id === id);
+    let nextIndex: number | undefined;
+    if (event.key === "ArrowRight") nextIndex = (index + 1) % renderedTabs.length;
+    else if (event.key === "ArrowLeft") nextIndex = (index - 1 + renderedTabs.length) % renderedTabs.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = renderedTabs.length - 1;
+    else if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      handleSelect(id);
+      return;
+    } else if (event.key === "Delete") {
+      event.preventDefault();
+      const adjacent = renderedTabs[index + 1] ?? renderedTabs[index - 1];
+      onClose(id);
+      if (adjacent) {
+        onSelect(adjacent.id);
+        tabRefs.current.get(adjacent.id)?.focus();
+      }
+      return;
+    }
+    if (nextIndex !== undefined) {
+      event.preventDefault();
+      const next = renderedTabs[nextIndex];
+      handleSelect(next.id);
+      tabRefs.current.get(next.id)?.focus();
+    }
+  };
 
   const clearDrag = useCallback(() => {
     dragStateRef.current = null;
@@ -354,6 +395,7 @@ export function ArtifactTabsBar({
     <div
       className="artifact-tabs"
       role="tablist"
+      aria-label="工作区文件和预览标签"
       {...(IS_MACOS ? { "data-tauri-drag-region": true } : {})}
     >
       <div
@@ -376,8 +418,10 @@ export function ArtifactTabsBar({
             }
             onClick={() => handleSelect(tab.id)}
             onPointerDown={(e) => handlePointerDown(e, tab.id)}
+            onKeyDown={(e) => handleTabKeyDown(e, tab.id)}
             role="tab"
             aria-selected={tab.id === activeTabIdForRender}
+            tabIndex={tab.id === (activeTabIdForRender ?? renderedTabs[0]?.id) ? 0 : -1}
             title={tab.subtitle ?? tab.label}
           >
             <span className="artifact-tab__icon">{pickTabIcon(tab)}</span>
@@ -387,7 +431,7 @@ export function ArtifactTabsBar({
               className="artifact-tab__close"
               onClick={(e) => handleClose(e, tab.id)}
               onMouseDown={(e) => e.stopPropagation()}
-              aria-label="关闭标签"
+              aria-label={`关闭标签 ${tab.label}`}
             >
               ×
             </button>

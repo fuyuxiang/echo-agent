@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { useAnchoredFloating } from "@/lib/use-anchored-floating";
 import { BookOpen, Building2, Check, ChevronDown, FolderOpen } from "lucide-react";
 import { agentSetKnowledgeSources } from "@/lib/agent-client";
 import { listKbProviders } from "@/lib/knowledge-base";
@@ -7,6 +9,28 @@ import {
   organizationKnowledgeAvailability,
   useOrgSessionStore,
 } from "@/stores/org-session-store";
+
+interface InFlightKnowledgeSync {
+  latestToken: symbol;
+  latestFailed: boolean;
+  requestSequence: number;
+  confirmedSequence: number;
+  confirmedSources: KnowledgeSource[];
+  confirmedOrganizationScopeIds: string[];
+  pendingRequests: number;
+}
+
+// Ownership and the confirmed rollback baseline outlive picker instances.
+// Native transactions run in order, but an optimistic selection is not a
+// successful transaction. Keep one constant-size record per in-flight session
+// and remove it after all its requests settle; no completed history accumulates.
+const inFlightSessionSyncs = new Map<string, InFlightKnowledgeSync>();
+
+function restoreConfirmedSelection(sessionId: string, sync: InFlightKnowledgeSync) {
+  const state = useKnowledgeStore.getState();
+  state.setSessionSources(sessionId, [...sync.confirmedSources]);
+  state.setSessionOrganizationScopeIds(sessionId, [...sync.confirmedOrganizationScopeIds]);
+}
 
 function sourceLabel(sources: KnowledgeSource[]): string {
   if (sources.length === 0) return "知识来源";
@@ -31,6 +55,11 @@ export function KnowledgePicker({
   const [syncing, setSyncing] = useState(false);
   const syncingRef = useRef(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuId = useId();
+  const syncGenerationRef = useRef(0);
+  const floating = useAnchoredFloating(triggerRef, menuRef, open, { width: 332, estimatedHeight: 340 });
   const sourceCount = useKnowledgeStore((state) => state.sourceCount);
   const defaultSources = useKnowledgeStore((state) => state.defaultSources);
   const sessionSources = useKnowledgeStore((state) => sessionId ? state.sessionSources[sessionId] : undefined);
@@ -53,16 +82,30 @@ export function KnowledgePicker({
   const organizationReason = organizationAvailability.reason;
 
   useEffect(() => {
+    syncGenerationRef.current += 1;
+    syncingRef.current = false;
+    setSyncing(false);
+    setOpen(false);
+    return () => { syncGenerationRef.current += 1; };
+  }, [sessionId]);
+
+  useEffect(() => {
     if (!open) return;
     const closeOnOutside = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+      if (!rootRef.current?.contains(event.target as Node) && !menuRef.current?.contains(event.target as Node)) setOpen(false);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape" && !event.isComposing && event.keyCode !== 229) {
+        event.stopPropagation();
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
     };
+    const frame = requestAnimationFrame(() => menuRef.current?.querySelector<HTMLButtonElement>("button:not([disabled])")?.focus());
     document.addEventListener("pointerdown", closeOnOutside);
     document.addEventListener("keydown", closeOnEscape);
     return () => {
+      cancelAnimationFrame(frame);
       document.removeEventListener("pointerdown", closeOnOutside);
       document.removeEventListener("keydown", closeOnEscape);
     };
@@ -79,18 +122,52 @@ export function KnowledgePicker({
       state.setSessionSources(sessionId, next);
       syncingRef.current = true;
       setSyncing(true);
+      const generation = ++syncGenerationRef.current;
+      const sessionToken = Symbol(sessionId);
       const previousOrganizationScopeIds = [...organizationScopeIds];
+      const sync = inFlightSessionSyncs.get(sessionId) ?? {
+        latestToken: sessionToken,
+        latestFailed: false,
+        requestSequence: 0,
+        confirmedSequence: 0,
+        confirmedSources: previous,
+        confirmedOrganizationScopeIds: previousOrganizationScopeIds,
+        pendingRequests: 0,
+      };
+      sync.latestToken = sessionToken;
+      sync.latestFailed = false;
+      const sequence = ++sync.requestSequence;
+      sync.pendingRequests += 1;
+      inFlightSessionSyncs.set(sessionId, sync);
       state.setSessionOrganizationScopeIds(sessionId, appliedOrganizationScopeIds);
       void agentSetKnowledgeSources(sessionId, next, appliedOrganizationScopeIds)
+        .then(() => {
+          if (sequence > sync.confirmedSequence) {
+            sync.confirmedSequence = sequence;
+            sync.confirmedSources = [...next];
+            sync.confirmedOrganizationScopeIds = [...appliedOrganizationScopeIds];
+          }
+          // A delayed earlier ACK can establish the valid rollback baseline
+          // after the latest failure was delivered. Reflect that confirmation.
+          if (sync.latestFailed) restoreConfirmedSelection(sessionId, sync);
+        })
         .catch((error) => {
+          // A task may be revisited and edited while its earlier request is
+          // still pending. Only the latest request for that task owns rollback.
+          if (sync.latestToken !== sessionToken) return;
           // Native reconciliation is transactional; mirror that behaviour in
           // the picker so the checkmarks always describe the capabilities the
           // Runtime actually owns.
-          useKnowledgeStore.getState().setSessionSources(sessionId, previous);
-          useKnowledgeStore.getState().setSessionOrganizationScopeIds(sessionId, previousOrganizationScopeIds);
+          sync.latestFailed = true;
+          restoreConfirmedSelection(sessionId, sync);
           onToast?.(`知识来源同步失败，已恢复上一选择：${String(error).replace(/^Error:\s*/, "")}`);
         })
         .finally(() => {
+          sync.pendingRequests -= 1;
+          if (sync.pendingRequests === 0 && inFlightSessionSyncs.get(sessionId) === sync) {
+            inFlightSessionSyncs.delete(sessionId);
+          }
+          if (syncGenerationRef.current !== generation) return;
           syncingRef.current = false;
           setSyncing(false);
         });
@@ -138,16 +215,21 @@ export function KnowledgePicker({
   return (
     <div className="knowledge-picker" ref={rootRef}>
       <button
+        ref={triggerRef}
         type="button"
         className={`knowledge-picker__trigger${selected.length > 0 ? " is-active" : ""}${hasUnavailableSelection ? " is-error" : ""}`}
         onClick={(event) => {
           event.stopPropagation();
           setOpen((value) => !value);
         }}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setOpen(true); }
+        }}
         disabled={disabled}
         aria-busy={syncing}
         aria-haspopup="menu"
         aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
         aria-label={`${label}${selected.length === 0 ? "，未选择" : ""}`}
         title={detail}
       >
@@ -156,8 +238,18 @@ export function KnowledgePicker({
         <ChevronDown size={13} />
       </button>
 
-      {open && (
-        <div className="knowledge-picker__menu" role="menu" aria-label="选择知识来源" aria-busy={syncing}>
+      {open && createPortal(
+        <div id={menuId} ref={menuRef} className="knowledge-picker__menu" style={floating.style} role="menu" aria-label="选择知识来源" aria-busy={syncing}
+          onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing || event.target instanceof HTMLSelectElement) return;
+            if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+            const items = [...(menuRef.current?.querySelectorAll<HTMLElement>("button:not([disabled]),select:not([disabled])") ?? [])];
+            if (!items.length) return;
+            event.preventDefault();
+            const current = items.indexOf(document.activeElement as HTMLElement);
+            const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (current + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+            items[next].focus();
+          }}>
           <div className="knowledge-picker__heading">知识来源</div>
           <div className="knowledge-picker__hint">
             可多选。未选择时不会读取任何知识库；选择只作用于当前任务。
@@ -290,7 +382,7 @@ export function KnowledgePicker({
             )}
           </div>
         </div>
-      )}
+      , document.body)}
     </div>
   );
 }

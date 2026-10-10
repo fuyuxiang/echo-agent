@@ -174,4 +174,37 @@ describe("QueuePanel", () => {
     await waitFor(() => expect(useMessageQueueStore.getState().getQueue("s1")[0])
       .toMatchObject({ id, attachments: ["/tmp/方案.docx"], status: "sending" }));
   });
+
+  it("中文组合输入的回车和 Escape 保留队列编辑", () => {
+    useMessageQueueStore.getState().enqueue("s1", "原文");
+    render(<QueuePanel sessionId="s1" />);
+    fireEvent.click(screen.getByText("原文"));
+    const edit = screen.getByRole("textbox");
+    fireEvent.change(edit, { target: { value: "中文修改" } });
+    fireEvent.keyDown(edit, { key: "Enter", isComposing: true });
+    fireEvent.keyDown(edit, { key: "Escape", isComposing: true });
+    expect(screen.getByRole("textbox")).toHaveValue("中文修改");
+    expect(useMessageQueueStore.getState().getQueue("s1")[0].text).toBe("原文");
+    fireEvent.keyDown(edit, { key: "Enter" });
+    expect(useMessageQueueStore.getState().getQueue("s1")[0].text).toBe("中文修改");
+  });
+
+  it("不同会话的发送等待互不阻塞，也不会被旧会话完成事件提前解除", async () => {
+    useMessageQueueStore.getState().enqueue("s1", "第一会话");
+    useMessageQueueStore.getState().enqueue("s2", "第二会话");
+    let finishFirst!: () => void;
+    let finishSecond!: () => void;
+    const onSendNow = vi.fn()
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { finishFirst = resolve; }))
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { finishSecond = resolve; }));
+    const { rerender } = render(<QueuePanel sessionId="s1" onSendNow={onSendNow} />);
+    fireEvent.click(screen.getByRole("button", { name: "立即发送" }));
+    rerender(<QueuePanel sessionId="s2" onSendNow={onSendNow} />);
+    expect(screen.getByRole("button", { name: "立即发送" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "立即发送" }));
+    await act(async () => finishFirst());
+    expect(screen.getByRole("button", { name: "立即发送" })).toBeDisabled();
+    await act(async () => finishSecond());
+    expect(screen.getByRole("button", { name: "立即发送" })).toBeEnabled();
+  });
 });

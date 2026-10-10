@@ -40,6 +40,7 @@ import {
   type ProviderListModel,
 } from "@/lib/agent-client";
 import { useModalFocus } from "@/lib/use-modal-focus";
+import { useUnsavedClose } from "@/lib/use-unsaved-close";
 import { listenOrgModelsChanged, orgSyncModelConfig } from "@/lib/org-client";
 import type { AgentDefaults } from "@/lib/types";
 import { useOrgSessionStore } from "@/stores/org-session-store";
@@ -716,7 +717,17 @@ function ConnectionEditor({
   const [error, setError] = useState<string | null>(null);
   const [discoveryMessage, setDiscoveryMessage] = useState<PanelMessage | null>(null);
   const preset = PROVIDER_PRESETS[draft.providerKind];
-  const dialogRef = useModalFocus<HTMLDivElement>(true, onCancel);
+  const initialDraft = useRef(JSON.stringify(draft));
+  const initialModelIds = useRef([...modelIds].sort().join("\n"));
+  const operationRef = useRef(false);
+  const { requestClose, closeDialog } = useUnsavedClose({
+    dirty: JSON.stringify(draft) !== initialDraft.current || Boolean(modelInput)
+      || [...modelIds].sort().join("\n") !== initialModelIds.current,
+    busy: saving || testing || discovering,
+    onClose: onCancel,
+  });
+  const cancel = () => { if (!operationRef.current) requestClose(); };
+  const dialogRef = useModalFocus<HTMLDivElement>(true, cancel);
 
   const handleKindChange = (providerKind: ProviderKind) => {
     const next = PROVIDER_PRESETS[providerKind];
@@ -782,8 +793,10 @@ function ConnectionEditor({
   );
 
   const handleDiscover = async () => {
+    if (operationRef.current) return;
     const validation = validate();
     if (validation) { setDiscoveryMessage(null); setError(validation); return; }
+    operationRef.current = true;
     setDiscovering(true);
     setError(null);
     setDiscoveryMessage(null);
@@ -807,15 +820,18 @@ function ConnectionEditor({
         text: `无法获取模型列表：${String(requestError)}。这不影响手动填写、测试和保存。`,
       });
     } finally {
+      operationRef.current = false;
       setDiscovering(false);
     }
   };
 
   const handleSave = async () => {
+    if (operationRef.current) return;
     const validation = validate();
     if (validation) { setError(validation); return; }
     const ids = requireModelIds();
     if (!ids) return;
+    operationRef.current = true;
     setSaving(true);
     setError(null);
     try {
@@ -824,22 +840,26 @@ function ConnectionEditor({
     } catch (saveError) {
       setError(String(saveError));
     } finally {
+      operationRef.current = false;
       setSaving(false);
     }
   };
 
   const handleTestAndSave = async () => {
+    if (operationRef.current) return;
     const validation = validate();
     if (validation) { setError(validation); return; }
     const ids = requireModelIds();
     if (!ids) return;
     const target = parsedInputModels()[0] ?? ids[0];
+    operationRef.current = true;
     setTesting(true);
     setError(null);
     try {
       await providersTestModelConnection(draftProvider(original, draft), target);
     } catch (testError) {
       setError(`测试失败，尚未保存：${String(testError)}。如果服务需要特殊参数，可确认后选择“直接保存”。`);
+      operationRef.current = false;
       setTesting(false);
       return;
     }
@@ -851,6 +871,7 @@ function ConnectionEditor({
     } catch (saveError) {
       setError(`模型测试通过，但保存失败：${String(saveError)}`);
     } finally {
+      operationRef.current = false;
       setSaving(false);
     }
   };
@@ -870,10 +891,11 @@ function ConnectionEditor({
               : original
                 ? "填写 Base URL 和 Model ID；如服务需要鉴权，请填写 API Key。"
                 : "填写 Base URL、Model ID 和 API Key。"}</div></div>
-          <button className="echo-button echo-button--ghost echo-button--small echo-button--icon-only" onClick={onCancel} aria-label="关闭"><X size={14} /></button>
+          <button className="echo-button echo-button--ghost echo-button--small echo-button--icon-only" onClick={cancel} disabled={saving || testing || discovering} aria-label="关闭"><X size={14} /></button>
         </header>
 
         <div className="model-connection-editor__body">
+        <fieldset className="model-connection-editor__fields" disabled={saving || testing || discovering}>
           <section className="model-connection-editor__section">
             <div className="model-connection-editor__section-title"><span>连接信息</span><small>{isOjlabBaseUrl(draft.baseUrl) ? "此服务无需 API Key" : original?.credentialConfigured ? "Base URL 必填 · API Key 可留空复用" : original ? "Base URL 必填 · API Key 按服务要求填写" : "Base URL 与 API Key 必填"}</small></div>
             <div className="models-settings-panel__field">
@@ -926,7 +948,7 @@ function ConnectionEditor({
             <div className="models-settings-panel__field">
               <label className="models-settings-panel__label" htmlFor="model-id-input">模型名称 / ID</label>
               <div className="model-connection-editor__manual-inline">
-                <input id="model-id-input" className="models-settings-panel__input" value={modelInput} onChange={(event) => setModelInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addInputModels(); } }} placeholder="例如 gpt-4o、deepseek-chat、MiniMax-M3" autoComplete="off" />
+                <input id="model-id-input" className="models-settings-panel__input" value={modelInput} onChange={(event) => setModelInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.nativeEvent.isComposing && event.keyCode !== 229) { event.preventDefault(); addInputModels(); } }} placeholder="例如 gpt-4o、deepseek-chat、MiniMax-M3" autoComplete="off" />
                 <button className="echo-button echo-button--secondary echo-button--small" type="button" onClick={addInputModels}>加入</button>
               </div>
               <span className="model-connection-editor__help">必须与请求参数 model 完全一致；可用逗号一次填写多个。测试时优先使用输入框中的第一个模型。</span>
@@ -951,7 +973,7 @@ function ConnectionEditor({
 
           <section className="model-connection-editor__discovery">
             <div><strong>不知道 Model ID？</strong><span>可尝试读取服务的 /models；不支持时仍可手动配置。</span></div>
-            <button className="echo-button echo-button--ghost echo-button--small" type="button" onClick={() => void handleDiscover()} disabled={discovering}>
+            <button className="echo-button echo-button--ghost echo-button--small" type="button" onClick={() => void handleDiscover()} disabled={discovering || testing || saving}>
               <span className="echo-button__content">{discovering ? <Loader2 className="models-settings-panel__spin" size={13} /> : <CloudDownload size={13} />}{discovering ? "正在获取…" : "获取模型列表（可选）"}</span>
             </button>
           </section>
@@ -971,17 +993,19 @@ function ConnectionEditor({
             </div>
           )}
           {error && <div className="models-settings-panel__editor-error">{error}</div>}
+        </fieldset>
         </div>
 
         <footer className="models-settings-panel__editor-footer model-connection-editor__footer">
           <p className="model-connection-editor__test-note">测试会向所选模型发送一条极短请求，可能产生少量 API 用量；直接保存不会发起请求。</p>
-          <button className="echo-button echo-button--secondary echo-button--medium" onClick={onCancel}>取消</button>
+          <button className="echo-button echo-button--secondary echo-button--medium" onClick={cancel} disabled={saving || testing || discovering}>取消</button>
           <div className="model-connection-editor__footer-actions">
-            <button className="echo-button echo-button--secondary echo-button--medium" onClick={() => void handleSave()} disabled={saving || testing}>{saving ? "保存中…" : "直接保存"}</button>
-            <button className="echo-button echo-button--primary echo-button--medium" onClick={() => void handleTestAndSave()} disabled={saving || testing}><span className="echo-button__content">{testing || saving ? <Loader2 className="models-settings-panel__spin" size={13} /> : <Check size={13} />}{testing ? "正在测试模型…" : saving ? "保存中…" : "测试并保存"}</span></button>
+            <button className="echo-button echo-button--secondary echo-button--medium" onClick={() => void handleSave()} disabled={saving || testing || discovering}>{saving ? "保存中…" : "直接保存"}</button>
+            <button className="echo-button echo-button--primary echo-button--medium" onClick={() => void handleTestAndSave()} disabled={saving || testing || discovering}><span className="echo-button__content">{testing || saving ? <Loader2 className="models-settings-panel__spin" size={13} /> : <Check size={13} />}{testing ? "正在测试模型…" : saving ? "保存中…" : "测试并保存"}</span></button>
           </div>
         </footer>
       </div>
+      {closeDialog}
     </div>
   );
 }
@@ -993,15 +1017,25 @@ function ManualModelEditor({ provider, original, onCancel, onSaved }: { provider
   const [maxOutputTokens, setMaxOutputTokens] = useState(original?.maxOutputTokens ? String(original.maxOutputTokens) : "");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const dialogRef = useModalFocus<HTMLDivElement>(true, onCancel);
+  const initialDraft = useRef(JSON.stringify({ remoteModelId, name, contextWindow, maxOutputTokens }));
+  const savingRef = useRef(false);
+  const { requestClose, closeDialog } = useUnsavedClose({
+    dirty: JSON.stringify({ remoteModelId, name, contextWindow, maxOutputTokens }) !== initialDraft.current,
+    busy: saving,
+    onClose: onCancel,
+  });
+  const cancel = () => { if (!savingRef.current) requestClose(); };
+  const dialogRef = useModalFocus<HTMLDivElement>(true, cancel);
 
   const save = async () => {
+    if (savingRef.current) return;
     if (!remoteModelId.trim()) { setError("请填写远端模型 ID。"); return; }
     const parsedContext = contextWindow.trim() ? Number(contextWindow) : undefined;
     const parsedMaxOutput = maxOutputTokens.trim() ? Number(maxOutputTokens) : undefined;
     if (parsedContext !== undefined && (!Number.isSafeInteger(parsedContext) || parsedContext <= 0)) { setError("上下文窗口必须是大于 0 的整数。"); return; }
     if (parsedMaxOutput !== undefined && (!Number.isInteger(parsedMaxOutput) || parsedMaxOutput <= 0 || parsedMaxOutput > 0xffffffff)) { setError("最大输出必须是大于 0 的整数，且不超过 4,294,967,295。"); return; }
     if (parsedMaxOutput !== undefined && parsedMaxOutput > (parsedContext ?? provider.contextWindow ?? Infinity)) { setError("最大输出不能超过上下文窗口。"); return; }
+    savingRef.current = true;
     setSaving(true);
     try {
       await providersSaveConnection(
@@ -1020,6 +1054,7 @@ function ManualModelEditor({ provider, original, onCancel, onSaved }: { provider
     } catch (saveError) {
       setError(String(saveError));
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -1027,16 +1062,19 @@ function ManualModelEditor({ provider, original, onCancel, onSaved }: { provider
   return (
     <div ref={dialogRef} className="models-settings-panel__editor-overlay" role="dialog" aria-modal="true" aria-label={original ? "编辑模型" : "手动添加模型"} tabIndex={-1}>
       <div className="models-settings-panel__editor models-settings-panel__editor--narrow">
-        <header className="models-settings-panel__editor-header"><div><div className="models-settings-panel__editor-title">{original ? "编辑模型" : "手动添加模型"}</div><div className="models-settings-panel__editor-note">连接：{connectionName(provider)}</div></div><button className="echo-button echo-button--ghost echo-button--small echo-button--icon-only" onClick={onCancel} aria-label="关闭"><X size={14} /></button></header>
+        <header className="models-settings-panel__editor-header"><div><div className="models-settings-panel__editor-title">{original ? "编辑模型" : "手动添加模型"}</div><div className="models-settings-panel__editor-note">连接：{connectionName(provider)}</div></div><button className="echo-button echo-button--ghost echo-button--small echo-button--icon-only" onClick={cancel} disabled={saving} aria-label="关闭"><X size={14} /></button></header>
         <div className="models-settings-panel__editor-body">
-          <div className="models-settings-panel__field"><label className="models-settings-panel__label">远端模型 ID</label><input className="models-settings-panel__input" value={remoteModelId} onChange={(event) => setRemoteModelId(event.target.value)} placeholder="例如 MiniMax-M3、gpt-5" data-modal-initial-focus /><span className="model-connection-editor__help">必须与 API 请求中使用的 model 值完全一致。</span></div>
-          <div className="models-settings-panel__field"><label className="models-settings-panel__label">显示名称（可选）</label><input className="models-settings-panel__input" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 工作用 MiniMax" /></div>
-          <div className="models-settings-panel__field"><label className="models-settings-panel__label">上下文窗口（可选）</label><input className="models-settings-panel__input" type="number" min={1} value={contextWindow} onChange={(event) => setContextWindow(event.target.value)} placeholder="留空使用连接默认值" /></div>
+        <fieldset className="models-settings-panel__editor-fields" disabled={saving}>
+          <div className="models-settings-panel__field"><label className="models-settings-panel__label" htmlFor="manual-model-id">远端模型 ID</label><input id="manual-model-id" className="models-settings-panel__input" value={remoteModelId} onChange={(event) => setRemoteModelId(event.target.value)} placeholder="例如 MiniMax-M3、gpt-5" data-modal-initial-focus /><span className="model-connection-editor__help">必须与 API 请求中使用的 model 值完全一致。</span></div>
+          <div className="models-settings-panel__field"><label className="models-settings-panel__label" htmlFor="manual-model-name">显示名称（可选）</label><input id="manual-model-name" className="models-settings-panel__input" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 工作用 MiniMax" /></div>
+          <div className="models-settings-panel__field"><label className="models-settings-panel__label" htmlFor="manual-model-context-window">上下文窗口（可选）</label><input id="manual-model-context-window" className="models-settings-panel__input" type="number" min={1} value={contextWindow} onChange={(event) => setContextWindow(event.target.value)} placeholder="留空使用连接默认值" /></div>
           <div className="models-settings-panel__field"><label className="models-settings-panel__label" htmlFor="manual-model-max-output">最大输出 tokens（可选）</label><input id="manual-model-max-output" className="models-settings-panel__input" type="number" min={1} step={1} max={4294967295} value={maxOutputTokens} onChange={(event) => setMaxOutputTokens(event.target.value)} placeholder="留空使用模型默认值" /></div>
           {error && <div className="models-settings-panel__editor-error">{error}</div>}
+        </fieldset>
         </div>
-        <footer className="models-settings-panel__editor-footer"><button className="echo-button echo-button--secondary echo-button--medium" onClick={onCancel}>取消</button><button className="echo-button echo-button--primary echo-button--medium" onClick={() => void save()} disabled={saving}>{saving ? "保存中…" : "保存模型"}</button></footer>
+        <footer className="models-settings-panel__editor-footer"><button className="echo-button echo-button--secondary echo-button--medium" onClick={cancel} disabled={saving}>取消</button><button className="echo-button echo-button--primary echo-button--medium" onClick={() => void save()} disabled={saving}>{saving ? "保存中…" : "保存模型"}</button></footer>
       </div>
+      {closeDialog}
     </div>
   );
 }
@@ -1046,19 +1084,53 @@ function ModelImportDialog({ provider, existingModels, onCancel, onSaved }: { pr
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const dialogRef = useModalFocus<HTMLDivElement>(true, onCancel);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const loadGenerationRef = useRef(0);
+  const loadingRef = useRef(false);
+  const savingRef = useRef(false);
+  const { requestClose, closeDialog } = useUnsavedClose({ dirty: selected.size > 0, busy: saving, onClose: onCancel });
+  const cancel = () => { if (!savingRef.current) requestClose(); };
+  const dialogRef = useModalFocus<HTMLDivElement>(true, cancel);
   const existing = useMemo(() => new Set(existingModels.map(modelRemoteId)), [existingModels]);
 
-  useEffect(() => {
-    void providersFetchModelsForProvider(provider.id)
-      .then(setModels)
-      .catch((requestError) => setError(String(requestError)))
-      .finally(() => setLoading(false));
+  const loadModels = useCallback(async () => {
+    if (loadingRef.current) return;
+    loadingRef.current = true;
+    const generation = ++loadGenerationRef.current;
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const fetched = await providersFetchModelsForProvider(provider.id);
+      if (loadGenerationRef.current === generation) setModels(fetched);
+    } catch (requestError) {
+      if (loadGenerationRef.current === generation) {
+        setLoadError(`读取模型列表失败：${String(requestError).replace(/^Error:\s*/, "")}`);
+      }
+    } finally {
+      if (loadGenerationRef.current === generation) {
+        loadingRef.current = false;
+        setLoading(false);
+      }
+    }
   }, [provider.id]);
 
+  useEffect(() => {
+    setModels([]);
+    setSelected(new Set());
+    setSaveError(null);
+    void loadModels();
+    return () => {
+      loadGenerationRef.current += 1;
+      loadingRef.current = false;
+    };
+  }, [loadModels]);
+
   const save = async () => {
+    if (savingRef.current || loadingRef.current || loadError || selected.size === 0) return;
+    savingRef.current = true;
     setSaving(true);
+    setSaveError(null);
     try {
       await providersSaveConnection(
         { ...provider, apiKey: undefined },
@@ -1070,8 +1142,9 @@ function ModelImportDialog({ provider, existingModels, onCancel, onSaved }: { pr
       );
       await onSaved(selected.size);
     } catch (saveError) {
-      setError(String(saveError));
+      setSaveError(`保存模型失败：${String(saveError).replace(/^Error:\s*/, "")}`);
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -1079,20 +1152,27 @@ function ModelImportDialog({ provider, existingModels, onCancel, onSaved }: { pr
   return (
     <div ref={dialogRef} className="models-settings-panel__editor-overlay" role="dialog" aria-modal="true" aria-label="同步模型" tabIndex={-1}>
       <div className="models-settings-panel__editor">
-        <header className="models-settings-panel__editor-header"><div><div className="models-settings-panel__editor-title">同步模型</div><div className="models-settings-panel__editor-note">直接使用「{connectionName(provider)}」中已保存的密钥</div></div><button className="echo-button echo-button--ghost echo-button--small echo-button--icon-only" onClick={onCancel} aria-label="关闭" data-modal-initial-focus><X size={14} /></button></header>
+        <header className="models-settings-panel__editor-header"><div><div className="models-settings-panel__editor-title">同步模型</div><div className="models-settings-panel__editor-note">直接使用「{connectionName(provider)}」中已保存的密钥</div></div><button className="echo-button echo-button--ghost echo-button--small echo-button--icon-only" onClick={cancel} disabled={saving} aria-label="关闭" data-modal-initial-focus><X size={14} /></button></header>
         <div className="models-settings-panel__editor-body">
-          {loading ? <div className="model-connections__empty"><Loader2 className="models-settings-panel__spin" size={18} />正在获取模型列表…</div> : error ? <div className="models-settings-panel__editor-error">{error}</div> : (
+          {loading ? <div className="model-connections__empty" role="status"><Loader2 className="models-settings-panel__spin" size={18} />正在获取模型列表…</div> : loadError ? (
+            <div className="models-settings-panel__editor-error" role="alert">
+              <p>{loadError}</p>
+              <button type="button" className="echo-button echo-button--secondary echo-button--small" onClick={() => void loadModels()}>重试获取模型</button>
+            </div>
+          ) : (
             <div className="model-connection-editor__model-picker">
               {models.map((model) => {
                 const configured = existing.has(model.id);
-                return <label key={model.id} className={configured ? "disabled" : ""}><input type="checkbox" checked={configured || selected.has(model.id)} disabled={configured} onChange={() => setSelected((current) => { const next = new Set(current); if (next.has(model.id)) next.delete(model.id); else next.add(model.id); return next; })} /><span><strong>{model.id}</strong>{model.ownedBy && <small>{model.ownedBy}</small>}</span>{configured && <em>已配置</em>}</label>;
+                return <label key={model.id} className={configured ? "disabled" : ""}><input type="checkbox" checked={configured || selected.has(model.id)} disabled={configured || saving} onChange={() => { setSaveError(null); setSelected((current) => { const next = new Set(current); if (next.has(model.id)) next.delete(model.id); else next.add(model.id); return next; }); }} /><span><strong>{model.id}</strong>{model.ownedBy && <small>{model.ownedBy}</small>}</span>{configured && <em>已配置</em>}</label>;
               })}
               {models.length === 0 && <div className="model-connections__models-empty">服务端没有返回模型，请关闭后使用“手动添加”。</div>}
             </div>
           )}
+          {saveError && <div className="models-settings-panel__editor-error" role="alert">{saveError}</div>}
         </div>
-        <footer className="models-settings-panel__editor-footer"><button className="echo-button echo-button--secondary echo-button--medium" onClick={onCancel}>取消</button><button className="echo-button echo-button--primary echo-button--medium" onClick={() => void save()} disabled={saving || selected.size === 0}>{saving ? "保存中…" : `添加 ${selected.size || ""} 个模型`}</button></footer>
+        <footer className="models-settings-panel__editor-footer"><button className="echo-button echo-button--secondary echo-button--medium" onClick={cancel} disabled={saving}>取消</button><button className="echo-button echo-button--primary echo-button--medium" onClick={() => void save()} disabled={loading || Boolean(loadError) || saving || selected.size === 0}>{saving ? "保存中…" : `添加 ${selected.size || ""} 个模型`}</button></footer>
       </div>
+      {closeDialog}
     </div>
   );
 }

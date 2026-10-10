@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MessageItem } from "../MessageItem";
 import { ThemeProvider } from "../ThemeProvider";
 import type { ChatMessage } from "@/stores/session-store";
+import { useFeedbackStore } from "@/stores/feedback-store";
 
 const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
 
@@ -34,6 +35,24 @@ describe("assistant message actions", () => {
     } else {
       Reflect.deleteProperty(navigator, "clipboard");
     }
+  });
+
+  it("真实消息反馈关闭重开保留草稿，并使用重新选择的方向提交", () => {
+    useFeedbackStore.getState().__replace({});
+    renderMessage(completedMessage, { latest: true, sessionId: "feedback-session" });
+    fireEvent.click(screen.getByRole("button", { name: "赞" }));
+    fireEvent.click(screen.getByLabelText("4 星"));
+    fireEvent.change(screen.getByPlaceholderText("补充说明(可选)"), { target: { value: "这段备注仍可继续编辑" } });
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "踩" }));
+    expect(screen.getByText(/这条回复有待改进/)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("补充说明(可选)")).toHaveValue("这段备注仍可继续编辑");
+    expect(screen.getByText("较好")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "提交" }));
+    expect(useFeedbackStore.getState().getRating("feedback-session", completedMessage.id)).toMatchObject({
+      rating: "down", stars: 4, note: "这段备注仍可继续编辑",
+    });
   });
 
   it("把完成后的操作栏放在回复正文之后", () => {

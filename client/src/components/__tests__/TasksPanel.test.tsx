@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 
 vi.mock("@/lib/agent-client", () => ({
@@ -119,5 +119,37 @@ describe("TasksPanel", () => {
 
     expect(await screen.findByText("新会话任务")).toBeInTheDocument();
     expect(screen.queryByText("旧会话任务")).not.toBeInTheDocument();
+  });
+
+  it("切换会话后旧终止请求的 ACK 不重读或覆盖新会话任务", async () => {
+    vi.mocked(tasksList).mockImplementation(async (sessionId) => [{
+      id: `task-${sessionId}`, source: "task", description: `${sessionId} 的任务`, sessionId,
+    }]);
+    let finishKill!: () => void;
+    vi.mocked(taskKill).mockImplementation(() => new Promise<void>((resolve) => { finishKill = resolve; }));
+    const { rerender } = render(<TasksPanel sessionId="session-1" />);
+    fireEvent.click(await screen.findByRole("button", { name: "终止任务：session-1 的任务" }));
+    rerender(<TasksPanel sessionId="session-2" />);
+    expect(await screen.findByText("session-2 的任务")).toBeInTheDocument();
+    await act(async () => finishKill());
+    expect(screen.getByText("session-2 的任务")).toBeInTheDocument();
+    expect(tasksList).toHaveBeenCalledTimes(2);
+  });
+
+  it("两个任务并行终止时各自保留等待状态", async () => {
+    const secondTask = { id: "second", source: "task" as const, description: "第二任务", sessionId: "s1" };
+    vi.mocked(tasksList)
+      .mockResolvedValueOnce([{ id: "first", source: "task", description: "第一任务", sessionId: "s1" }, secondTask])
+      .mockResolvedValue([secondTask]);
+    const finishes: Array<() => void> = [];
+    vi.mocked(taskKill).mockImplementation(() => new Promise<void>((resolve) => { finishes.push(resolve); }));
+    render(<TasksPanel sessionId="s1" />);
+    fireEvent.click(await screen.findByRole("button", { name: "终止任务：第一任务" }));
+    fireEvent.click(screen.getByRole("button", { name: "终止任务：第二任务" }));
+    expect(screen.getByRole("button", { name: "终止任务：第一任务" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "终止任务：第二任务" })).toBeDisabled();
+    await act(async () => finishes[0]());
+    expect(screen.getByRole("button", { name: "终止任务：第二任务" })).toBeDisabled();
+    await act(async () => finishes[1]());
   });
 });

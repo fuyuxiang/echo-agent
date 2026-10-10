@@ -51,9 +51,13 @@ describe("FolderTrustDialog", () => {
     render(<FolderTrustDialog request={{ cwd: first.cwd }} onResolve={onResolve} />);
 
     expect(await screen.findByRole("alert")).toHaveTextContent("读取待处理信任请求失败：通道断开");
-    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    const retry = screen.getByRole("button", { name: "重试" });
+    expect(retry).toHaveFocus();
+    expect(screen.getByRole("alertdialog")).toHaveAttribute("aria-busy", "false");
+    fireEvent.click(retry);
 
     expect(await screen.findByText("/work/one")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "不信任" })).toHaveFocus();
     expect(onResolve).not.toHaveBeenCalled();
     expect(errorSpy).toHaveBeenCalledWith(
       "list pending folder trust requests failed",

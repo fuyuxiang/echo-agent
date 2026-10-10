@@ -120,6 +120,8 @@ export interface SessionTranscript {
   pendingSendNowPromptId: string | null;
   usage: Usage;
   plan: Plan | null;
+  /** Local plan edits awaiting submission. Lives with the cached transcript. */
+  planRevisionDirty?: boolean;
   /** Authoritative mode from ACP CurrentModeUpdate. */
   planMode: boolean;
   /** Full authoritative mode, including Browser Use and Computer Use. */
@@ -151,6 +153,7 @@ interface SessionState {
   streamingMessageId: string | null;
   usage: Usage;
   plan: Plan | null;
+  planRevisionDirty: boolean;
   planApproval: PlanApprovalRequest | null;
   /** Focused session's pause/stop state. Kept outside ChatView so navigation
    * and background automation cannot discard or overwrite it. */
@@ -230,8 +233,10 @@ interface SessionState {
   applyUpdate: (u: SessionUpdate & { __sessionId?: string }) => void;
   /** Bulk-replace the focused session's messages (history load fallback). */
   setMessages: (msgs: ChatMessage[]) => void;
-  /** Replace the focused session's plan. */
-  setPlan: (plan: Plan | null) => void;
+  /** Replace a plan; only explicit local revisions need submission. */
+  setPlan: (plan: Plan | null, options?: { sessionId?: string; localRevision?: boolean }) => void;
+  /** Clear only the submitted revision, preserving edits made during the ACK. */
+  markPlanRevisionSynced: (plan: Plan, sessionId?: string) => void;
   /** Apply an authoritative mode value to a session (focused by default). */
   setPlanMode: (enabled: boolean, sessionId?: string) => void;
   setAgentMode: (mode: AgentMode, sessionId?: string) => void;
@@ -814,6 +819,7 @@ function mirrorOf(t: SessionTranscript | undefined) {
     sendNowPending: (t?.pendingSendNowPromptId ?? null) != null,
     usage: t?.usage ?? {},
     plan: t?.plan ?? null,
+    planRevisionDirty: t?.planRevisionDirty ?? false,
     planMode: t?.planMode ?? false,
     agentMode: t?.agentMode ?? (t?.planMode ? "plan" : "default"),
     planApproval: t?.planApprovals?.[0] ?? null,
@@ -856,6 +862,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
     streamingMessageId: null,
     usage: {},
     plan: null,
+    planRevisionDirty: false,
     planApproval: null,
     control: undefined,
     error: null,
@@ -1540,7 +1547,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
           }
           case "plan": {
             const uu = u as unknown as PlanUpdate;
-            return { ...tr, plan: uu.plan ?? null };
+            return { ...tr, plan: uu.plan ?? null, planRevisionDirty: false };
           }
           case "current_mode_update": {
             const raw = u as unknown as Record<string, unknown>;
@@ -1561,7 +1568,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
             const request = u as unknown as PlanApprovalRequest;
             const existing = tr.planApprovals ?? [];
             if (existing.some((item) => item.requestId === request.requestId)) return tr;
-            return { ...tr, planApprovals: [...existing, request] };
+            return { ...tr, planApprovals: [...existing, request], planRevisionDirty: false };
           }
           case "plan_approval_resolved": {
             const requestId = (u as unknown as { requestId?: string }).requestId;
@@ -1611,10 +1618,18 @@ export const useSessionStore = create<SessionState>((set, get) => {
       applyToTranscript(sid, (t) => ({ ...t, messages: msgs }));
     },
 
-    setPlan: (plan) => {
-      const sid = get().sessionId;
+    setPlan: (plan, options) => {
+      const sid = options?.sessionId ?? get().sessionId;
       if (!sid) return;
-      applyToTranscript(sid, (t) => ({ ...t, plan }));
+      applyToTranscript(sid, (t) => ({ ...t, plan, planRevisionDirty: Boolean(plan && options?.localRevision) }));
+    },
+
+    markPlanRevisionSynced: (plan, sessionId) => {
+      const sid = sessionId ?? get().sessionId;
+      if (!sid) return;
+      applyToTranscript(sid, (t) => t.plan === plan && t.planRevisionDirty
+        ? { ...t, planRevisionDirty: false }
+        : t);
     },
 
     setPlanMode: (enabled, sessionId) => {
@@ -1648,7 +1663,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
       applyToTranscript(request.sessionId, (transcript) => {
         const pending = transcript.planApprovals ?? [];
         if (pending.some((item) => item.requestId === request.requestId)) return transcript;
-        return { ...transcript, planApprovals: [...pending, request] };
+        return { ...transcript, planApprovals: [...pending, request], planRevisionDirty: false };
       });
     },
 

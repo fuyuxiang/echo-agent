@@ -50,6 +50,7 @@ export function SearchOverlay({
       setQuery("");
       setRemoteHits([]);
       setSearchError(null);
+      setSearching(false);
       setOpeningId(null);
       return () => {
         searchGenerationRef.current += 1;
@@ -86,11 +87,22 @@ export function SearchOverlay({
   }, []);
 
   useEffect(() => {
+    // Invalidate immediately when the query changes, including the debounce
+    // interval. A response for the previous text must never become clickable.
+    searchGenerationRef.current += 1;
     if (!open) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
+    setRemoteHits([]);
+    setSearchError(null);
+    if (query.trim().length < 2) {
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
     debounceRef.current = setTimeout(() => runRemoteSearch(query), 250);
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
+      searchGenerationRef.current += 1;
     };
   }, [query, open, runRemoteSearch]);
 
@@ -172,7 +184,13 @@ export function SearchOverlay({
             placeholder="搜索会话标题或内容…"
             aria-label="搜索会话标题或内容"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              searchGenerationRef.current += 1;
+              setRemoteHits([]);
+              setSearchError(null);
+              setSearching(e.target.value.trim().length >= 2);
+              setQuery(e.target.value);
+            }}
           />
           {searching && (
             <span className="conversation-search-modal__spinner" role="status" aria-live="polite">搜索中…</span>

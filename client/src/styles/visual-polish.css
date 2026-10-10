@@ -468,6 +468,18 @@
   padding: 16px 18px;
 }
 
+.model-connection-editor__fields,
+.models-settings-panel__editor-fields {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  gap: 13px;
+}
+.models-settings-panel__editor-fields { gap: 12px; }
+
 .model-connection-editor__section {
   display: flex;
   flex-direction: column;

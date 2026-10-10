@@ -21,6 +21,7 @@ import {
 } from "@/lib/agent-client";
 import type { MemoryEntry } from "@/lib/types";
 import { useModalFocus } from "@/lib/use-modal-focus";
+import { useUnsavedClose } from "@/lib/use-unsaved-close";
 import { useAppDialog } from "./AppDialog";
 
 interface ResourcesPanelProps {
@@ -483,22 +484,28 @@ function MemoryEditor({
   onRewrite: () => void;
   onSave: () => void;
 }) {
-  const dialogRef = useModalFocus<HTMLDivElement>(true, onCancel);
+  const initialDraft = useRef({ content: draft.content, scope: draft.scope });
+  const { requestClose, closeDialog } = useUnsavedClose({
+    dirty: !draft.readOnly && (draft.content !== initialDraft.current.content || draft.scope !== initialDraft.current.scope),
+    busy,
+    onClose: onCancel,
+  });
+  const dialogRef = useModalFocus<HTMLDivElement>(true, requestClose);
   const dialogLabel = draft.isNew ? "追加记忆到文档" : `${draft.readOnly ? "查看" : "编辑"} ${draft.path}`;
 
   return (
-    <div className="modal-overlay memory-editor__overlay" onClick={onCancel}>
+    <div className="modal-overlay memory-editor__overlay" onClick={requestClose}>
       <div ref={dialogRef} className="memory-editor" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label={dialogLabel} tabIndex={-1}>
         <div className="memory-editor__header">
           <h3>{draft.isNew ? "追加记忆到文档" : `${draft.readOnly ? "查看" : "编辑"} ${draft.path}`}</h3>
-          <button className="memory-editor__close" onClick={onCancel} aria-label="关闭">✕</button>
+          <button className="memory-editor__close" disabled={busy} onClick={requestClose} aria-label="关闭">✕</button>
         </div>
         <div className="memory-editor__meta">
           <label>
             范围
             <select
               value={draft.scope}
-              disabled={!draft.isNew}
+              disabled={!draft.isNew || busy}
               onChange={(event) => onChange({ ...draft, scope: event.target.value as EditorState["scope"] })}
             >
               <option value="global">全局记忆</option>
@@ -515,14 +522,14 @@ function MemoryEditor({
           className="memory-editor__content"
           aria-label={draft.isNew ? "记忆内容" : `记忆内容 ${draft.path}`}
           value={draft.content}
-          readOnly={draft.readOnly}
+          readOnly={draft.readOnly || busy}
           onChange={(event) => onChange({ ...draft, content: event.target.value })}
           placeholder={draft.isNew ? "例如：代码示例优先使用 TypeScript，并说明关键设计取舍。" : undefined}
           spellCheck={false}
           data-modal-initial-focus
         />
         <div className="memory-editor__footer">
-          <button className="btn btn--ghost" onClick={onCancel}>{draft.readOnly ? "关闭" : "取消"}</button>
+          <button className="btn btn--ghost" disabled={busy} onClick={requestClose}>{draft.readOnly ? "关闭" : "取消"}</button>
           {!draft.readOnly && (
             <>
               <button className="btn btn--ghost" disabled={busy || !canRewrite || !draft.content.trim()} onClick={onRewrite} title={canRewrite ? "使用当前会话模型整理这份文本" : "需要一个已打开的会话"}>
@@ -535,6 +542,7 @@ function MemoryEditor({
           )}
         </div>
       </div>
+      {closeDialog}
     </div>
   );
 }

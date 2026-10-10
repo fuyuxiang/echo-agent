@@ -157,10 +157,23 @@ function AppActionDialog({
       ? Object.fromEntries(request.fields.map((field) => [field.name, field.defaultValue ?? ""]))
       : {},
   );
+  const { requestConfirmation: confirmDiscard, dialog: discardDialog } = useAppDialog();
 
   const cancel = useCallback(() => {
-    if (!submittingRef.current) onClose(false);
-  }, [onClose]);
+    if (submittingRef.current) return;
+    if (request.kind === "prompt" && request.fields.some((field) => values[field.name] !== (field.defaultValue ?? ""))) {
+      confirmDiscard({
+        title: "舍弃未保存的修改？",
+        description: "当前输入尚未保存。关闭后将丢失这些修改。",
+        cancelLabel: "继续编辑",
+        confirmLabel: "舍弃修改",
+        danger: true,
+        action: () => onClose(false),
+      });
+      return;
+    }
+    onClose(false);
+  }, [confirmDiscard, onClose, request, values]);
   const dialogRef = useModalFocus<HTMLDivElement>(true, cancel, request.returnFocus);
 
   const execute = async () => {
@@ -209,6 +222,7 @@ function AppActionDialog({
     .join(" ") || undefined;
 
   return (
+    <>
     <div
       className="app-dialog-overlay"
       onClick={(event) => {
@@ -220,7 +234,7 @@ function AppActionDialog({
     >
       <div
         ref={dialogRef}
-        className={`app-dialog${request.danger ? " app-dialog--danger" : ""}`}
+        className={`app-dialog${request.kind === "prompt" ? " app-dialog--prompt" : ""}${request.danger ? " app-dialog--danger" : ""}`}
         role={request.danger ? "alertdialog" : "dialog"}
         aria-modal="true"
         aria-labelledby={titleId}
@@ -234,6 +248,7 @@ function AppActionDialog({
             && event.key === "Enter"
             && !event.shiftKey
             && !event.nativeEvent.isComposing
+            && event.nativeEvent.keyCode !== 229
             // Enter on the cancel/confirm buttons must retain native button
             // semantics. Only a single-line field opts into quick submit.
             && event.target instanceof HTMLInputElement
@@ -243,7 +258,11 @@ function AppActionDialog({
           }
         }}
       >
-        <h2 id={titleId} className="app-dialog__title">{request.title}</h2>
+        <header className="app-dialog__header">
+          <h2 id={titleId} className="app-dialog__title">{request.title}</h2>
+          <button type="button" className="app-dialog__close" aria-label="关闭对话框" onClick={cancel} disabled={busy}>×</button>
+        </header>
+        <div className="app-dialog__body">
         {request.description && (
           <div id={descriptionId} className="app-dialog__description">{request.description}</div>
         )}
@@ -280,6 +299,7 @@ function AppActionDialog({
         )}
 
         {error && <div id={errorId} className="app-dialog__error" role="alert">{error}</div>}
+        </div>
 
         <div className="app-dialog__actions">
           <button
@@ -302,5 +322,7 @@ function AppActionDialog({
         </div>
       </div>
     </div>
+    {discardDialog}
+    </>
   );
 }

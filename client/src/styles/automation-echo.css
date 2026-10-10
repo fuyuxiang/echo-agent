@@ -359,8 +359,8 @@
   transition: background 0.15s;
 }
 .atm-batch-action:hover { background: var(--atm-surface-hover); }
-.atm-batch-action.atm-batch-delete { background: var(--echo-status-error); color: var(--echo-text-on-primary, #fff); }
-.atm-batch-action.atm-batch-delete:hover:not(:disabled) { background: var(--echo-status-error); filter: brightness(0.92); }
+.atm-batch-action.atm-batch-delete { background: var(--echo-button-danger-bg); color: var(--echo-button-danger-fg-on-solid, #fff); }
+.atm-batch-action.atm-batch-delete:hover:not(:disabled) { background: var(--echo-button-danger-bg-hover); }
 .atm-batch-action.atm-batch-delete:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ---------- 空状态（截图 1 / 3） ---------- */

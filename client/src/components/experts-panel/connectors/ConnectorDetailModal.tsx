@@ -3,13 +3,14 @@
  * Shows the icon, name, description, example prompts, the bundled mcp.json
  * config (when present), and a "配置连接" button that opens the MCP 管理 modal.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ConnectorItem } from "@/lib/types";
 import { connectorsReadMcpConfig } from "@/lib/agent-client";
 import { ConnectorIcon } from "../shared/ConnectorIcon";
 import { ConfigureIcon } from "@/foundation/components/Icon/icons";
 import type { ConnectorAuthState } from "./ConnectorsTab";
 import { useModalFocus } from "@/lib/use-modal-focus";
+import { copyShareText } from "@/lib/share";
 
 interface Props {
   connector: ConnectorItem;
@@ -38,7 +39,37 @@ export function ConnectorDetailModal({
   const [mcpConfig, setMcpConfig] = useState<string>("");
   const [configError, setConfigError] = useState<string | null>(null);
   const [configReloadKey, setConfigReloadKey] = useState(0);
+  const [copyingPrompt, setCopyingPrompt] = useState<number | null>(null);
+  const copyPendingRef = useRef(false);
+  const copyGenerationRef = useRef(0);
   const dialogRef = useModalFocus<HTMLDivElement>(true, onClose);
+
+  useEffect(() => {
+    copyGenerationRef.current += 1;
+    copyPendingRef.current = false;
+    setCopyingPrompt(null);
+    return () => {
+      copyGenerationRef.current += 1;
+      copyPendingRef.current = false;
+    };
+  }, [connector.id]);
+
+  const copyExample = async (prompt: string, index: number) => {
+    if (copyPendingRef.current) return;
+    copyPendingRef.current = true;
+    setCopyingPrompt(index);
+    const generation = copyGenerationRef.current;
+    let copied = false;
+    try {
+      copied = await copyShareText(prompt);
+    } catch {
+      // A host without either clipboard path still needs retryable feedback.
+    }
+    if (generation !== copyGenerationRef.current) return;
+    copyPendingRef.current = false;
+    setCopyingPrompt(null);
+    onToast?.(copied ? "已复制到剪贴板" : "复制失败，请检查剪贴板权限");
+  };
 
   // Load the bundled mcp.json (if any) for the config preview.
   useEffect(() => {
@@ -70,7 +101,7 @@ export function ConnectorDetailModal({
       className="ec-modal-overlay"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div ref={dialogRef} className="ec-modal" role="dialog" aria-modal="true" aria-label={`${connector.name} 连接器详情`} tabIndex={-1}>
+      <div ref={dialogRef} className="ec-modal ec-modal--managed" role="dialog" aria-modal="true" aria-label={`${connector.name} 连接器详情`} tabIndex={-1}>
         <button className="ec-modal-close" onClick={onClose} aria-label="关闭" data-modal-initial-focus>×</button>
 
         <div className="ec-modal-header">
@@ -93,6 +124,7 @@ export function ConnectorDetailModal({
           </div>
         </div>
 
+        <div className="ec-modal-body">
         {connector.desc && (
           <div className="ec-modal-section">
             <div className="ec-modal-section-title">能力介绍</div>
@@ -107,15 +139,15 @@ export function ConnectorDetailModal({
               {examples.map((qp, i) => (
                 <button
                   key={i}
+                  type="button"
                   className="ec-modal-qp-btn"
-                  onClick={() => {
-                    navigator.clipboard?.writeText(qp).then(
-                      () => onToast?.("已复制到剪贴板"),
-                      () => { /* clipboard blocked — ignore */ },
-                    );
-                  }}
+                  disabled={copyingPrompt !== null}
+                  aria-busy={copyingPrompt === i}
+                  aria-label={`复制示例提问：${qp}`}
+                  title={copyingPrompt === i ? "正在复制…" : "复制示例提问"}
+                  onClick={() => void copyExample(qp, i)}
                 >
-                  <span className="ec-modal-qp-text">"{qp}"</span>
+                  <span className="ec-modal-qp-text">"{qp}"{copyingPrompt === i ? " · 复制中…" : ""}</span>
                 </button>
               ))}
             </div>
@@ -137,7 +169,8 @@ export function ConnectorDetailModal({
           </div>
         )}
 
-        <div className="cn-modal-actions">
+        </div>
+        <div className="ec-modal-footer cn-modal-actions">
           <button className="ec-modal-summon-btn" onClick={onConfigure}>
             <ConfigureIcon size="sm" /><span style={{ marginLeft: 6 }}>{primaryLabel}</span>
           </button>

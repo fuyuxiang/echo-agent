@@ -120,6 +120,46 @@ describe("OrganizationMemoryPanel", () => {
     expect(screen.getByText("团队文档")).toBeInTheDocument();
   });
 
+  it("文档预览、发布与移除圈定焦点，Escape 恢复入口且不执行动作", async () => {
+    api.orgPreviewDocument.mockResolvedValue({ kind: "text", content: "# 文档内容" });
+    api.orgDocumentSubmissionsMinePage.mockResolvedValue({
+      items: [{ id: "focus-submission", title: "待移除文档", sourceType: "md", byteSize: 128,
+        scopeId: teamScope.id, scopeName: teamScope.name, scopeKind: teamScope.kind,
+        state: "approved", scanStatus: "passed", resultDocumentId: "d2", createdAt: 1 }],
+      total: 1, page: 1, size: 20,
+    });
+    render(<OrganizationMemoryPanel />);
+    await screen.findByText("Alice · https://memory.example.com");
+    fireEvent.click(screen.getByRole("button", { name: /^文档/ }));
+    const view = screen.getAllByRole("button", { name: "查看" })[0];
+    view.focus();
+    fireEvent.click(view);
+    const preview = await screen.findByRole("dialog", { name: /查看文档/ });
+    expect(within(preview).getByRole("button", { name: "关闭预览" })).toHaveFocus();
+    fireEvent.keyDown(globalThis.document, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(view).toHaveFocus();
+    const publish = screen.getByRole("button", { name: "发布副本" });
+    publish.focus();
+    fireEvent.click(publish);
+    const confirmation = screen.getByRole("dialog", { name: "发布文档副本" });
+    const cancel = within(confirmation).getByRole("button", { name: "取消" });
+    expect(cancel).toHaveFocus();
+    fireEvent.keyDown(globalThis.document, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(publish).toHaveFocus();
+    const remove = screen.getAllByRole("button", { name: "删除" })[0];
+    remove.focus();
+    fireEvent.click(remove);
+    const removeDialog = screen.getByRole("alertdialog", { name: "确认删除文档" });
+    expect(within(removeDialog).getByRole("button", { name: "取消" })).toHaveFocus();
+    fireEvent.keyDown(globalThis.document, { key: "Escape" });
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(remove).toHaveFocus();
+    expect(api.orgPublishDocument).not.toHaveBeenCalled();
+    expect(api.orgArchiveDocument).not.toHaveBeenCalled();
+  });
+
   it("写入范围为团队时仍可为个人文档选择副本发布目标", async () => {
     api.orgPublishDocument.mockResolvedValue({ state: "approved" });
     render(<OrganizationMemoryPanel />);

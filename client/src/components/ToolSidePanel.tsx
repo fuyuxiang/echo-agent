@@ -24,6 +24,7 @@ import {
 import { ToolCallDetailBody } from "./ToolCallCard";
 import { openLocalPath } from "@/lib/markdown-host";
 import { FilePreview as RichFilePreview } from "./FilePreview";
+import { copyShareText } from "@/lib/share";
 import { detectPreviewKind, type PreviewKind } from "@/lib/file-kind";
 import {
   authorizeArtifactFile,
@@ -422,9 +423,11 @@ export function ToolSidePanel({
               browserUrl={browserUrl}
               onArtifactSelect={(a) => {
                 const tc = findToolCall?.(a.toolCallId);
-                if (tc) onSelectTool(tc);
-                onSelectArtifact(a);
-                handleArtifactSelect(a.id);
+                if (tc) {
+                  onSelectTool(tc);
+                } else {
+                  onToast?.("关联工具记录已不可用，可继续预览文件内容");
+                }
               }}
               onBrowserUrlChange={setBrowserUrl}
               onOpenOs={(path) => openLocalPath(path, {
@@ -780,14 +783,10 @@ function ArtifactFilePreview({
           filename={basename(path)}
           content={state.content}
           onCopyText={(content) => {
-            if (!navigator.clipboard?.writeText) {
-              onToast?.("当前环境不支持复制到剪贴板");
-              return;
-            }
-            void navigator.clipboard.writeText(content).then(
-              () => onToast?.("已复制文件内容"),
-              () => onToast?.("复制失败，请检查剪贴板权限"),
-            );
+            return copyShareText(content).then((ok) => {
+              onToast?.(ok ? "已复制文件内容" : "复制失败，请检查剪贴板权限");
+              return ok;
+            });
           }}
         />
       )}

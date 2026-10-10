@@ -240,6 +240,14 @@ export const MessageItem = memo(function MessageItem({
   /** Preserve Markdown syntax, but don't leak hidden process details into a normal copy. */
   const markdownText = answerParts.map((part) => part.text).join("\n\n");
   const hasAnswerText = plainText.trim().length > 0;
+  // A preserved partial response can be commentary before later reasoning or
+  // tools. Only trailing answer text signals that the model has moved on to
+  // the final response; do not treat that compatibility fallback as completion.
+  const lastMeaningfulPart = [...message.parts].reverse().find((part) =>
+    part.kind === "tool_call" || part.text.trim().length > 0,
+  );
+  const hasFinalAnswer = lastMeaningfulPart?.kind === "text"
+    && Boolean(assistantGroups?.responseParts.some((part) => part.text.trim()));
   const hasTerminalProcessStatus = Boolean(
     message.complete
       && message.stopReason
@@ -415,7 +423,7 @@ export const MessageItem = memo(function MessageItem({
                 cancelTrigger={message.cancelTrigger}
                 cancellationCategory={message.cancellationCategory}
                 agentResult={message.agentResult}
-                hasFinalAnswer={hasAnswerText}
+                hasFinalAnswer={hasFinalAnswer}
                 markdownConfig={markdownConfig}
                 onOpenTool={onOpenTool}
                 knowledgeTrace={knowledgeTrace}
@@ -691,15 +699,13 @@ function FeedbackButtons({
       >
         <ThumbsDown size={14} fill={current === "down" ? "currentColor" : "none"} />
       </button>
-      {dialogOpen && (
-        <FeedbackDialog
-          open={dialogOpen !== null}
-          sessionId={sessionId}
-          messageId={messageId}
-          rating={dialogOpen}
-          onClose={() => setDialogOpen(null)}
-        />
-      )}
+      <FeedbackDialog
+        open={dialogOpen !== null}
+        sessionId={sessionId}
+        messageId={messageId}
+        rating={dialogOpen ?? current ?? "up"}
+        onClose={() => setDialogOpen(null)}
+      />
     </span>
   );
 }

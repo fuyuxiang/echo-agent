@@ -34,7 +34,11 @@ export function TasksPanel({ sessionId, refreshSignal, onToast }: TasksPanelProp
   const [error, setError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   const [dismissed, setDismissed] = useState(false);
-  const [killingTaskKey, setKillingTaskKey] = useState<string | null>(null);
+  const [killingTaskKeys, setKillingTaskKeys] = useState<Set<string>>(() => new Set());
+  const killingTaskKeysRef = useRef(new Set<string>());
+  const sessionEpochRef = useRef(0);
+  const currentSessionRef = useRef(sessionId);
+  currentSessionRef.current = sessionId;
   const [dockStyle, setDockStyle] = useState<CSSProperties>();
   const reloadGenerationRef = useRef(0);
   const lastRefreshSignalRef = useRef(refreshSignal);
@@ -121,11 +125,14 @@ export function TasksPanel({ sessionId, refreshSignal, onToast }: TasksPanelProp
     setError(null);
     setCollapsed(false);
     setDismissed(false);
-    setKillingTaskKey(null);
+    sessionEpochRef.current += 1;
+    killingTaskKeysRef.current = new Set();
+    setKillingTaskKeys(new Set());
     setLoading(false);
     if (sessionId) void reload();
     return () => {
       reloadGenerationRef.current += 1;
+      sessionEpochRef.current += 1;
     };
   }, [reload, sessionId]);
 
@@ -143,18 +150,26 @@ export function TasksPanel({ sessionId, refreshSignal, onToast }: TasksPanelProp
     async (task: RunningTask) => {
       if (!sessionId) return;
       const taskKey = `${task.source}:${task.id}`;
-      setKillingTaskKey(taskKey);
+      if (killingTaskKeysRef.current.has(taskKey)) return;
+      const epoch = sessionEpochRef.current;
+      const isCurrentSession = () => currentSessionRef.current === sessionId && sessionEpochRef.current === epoch;
+      killingTaskKeysRef.current.add(taskKey);
+      setKillingTaskKeys(new Set(killingTaskKeysRef.current));
       try {
         await taskKill(sessionId, task.id, task.source);
+        if (!isCurrentSession()) return;
         setTasks((current) => current.filter(
           (entry) => entry.id !== task.id || entry.source !== task.source,
         ));
         onToast?.("已终止任务");
         void reload();
       } catch (e) {
-        onToast?.(`终止失败：${String(e).replace(/^Error:\s*/, "")}`);
+        if (isCurrentSession()) onToast?.(`终止失败：${String(e).replace(/^Error:\s*/, "")}`);
       } finally {
-        setKillingTaskKey((current) => current === taskKey ? null : current);
+        if (isCurrentSession()) {
+          killingTaskKeysRef.current.delete(taskKey);
+          setKillingTaskKeys(new Set(killingTaskKeysRef.current));
+        }
       }
     },
     [onToast, reload, sessionId],
@@ -215,7 +230,7 @@ export function TasksPanel({ sessionId, refreshSignal, onToast }: TasksPanelProp
           <ul className="tasks-panel__list">
             {tasks.map((task) => {
               const taskKey = `${task.source}:${task.id}`;
-              const killing = killingTaskKey === taskKey;
+              const killing = killingTaskKeys.has(taskKey);
               return (
                 <li key={taskKey} className="tasks-panel__item">
                   <div className="tasks-panel__item-icon">

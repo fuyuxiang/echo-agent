@@ -146,21 +146,37 @@ export function TitleBar({
   const pendingKeyboardFocus = useRef<{ name: string; edge: "first" | "last" } | null>(null);
 
   useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
     const checkMaximized = async () => {
       try {
         const w = getCurrentWindow();
-        setIsMaximized(await w.isMaximized());
+        const maximized = await w.isMaximized();
+        if (disposed) return;
+        setIsMaximized(maximized);
 
         // 监听窗口状态变化
-        const unlisten = await w.onResized(async () => {
-          setIsMaximized(await w.isMaximized());
+        const stop = await w.onResized(async () => {
+          if (disposed) return;
+          try {
+            const nextMaximized = await w.isMaximized();
+            if (!disposed) setIsMaximized(nextMaximized);
+          } catch {
+            // 窗口已关闭或预览环境无原生窗口。
+          }
         });
-        return unlisten;
+        // Subscription can resolve after the component has already unmounted.
+        if (disposed) stop();
+        else unlisten = stop;
       } catch {
         // 预览模式
       }
     };
-    checkMaximized();
+    void checkMaximized();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, []);
 
   useEffect(() => {

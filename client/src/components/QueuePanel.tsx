@@ -45,7 +45,8 @@ export function QueuePanel({
   const setStatus = useMessageQueueStore((s) => s.setStatus);
   const update = useMessageQueueStore((s) => s.update);
   const { requestConfirmation, dialog } = useAppDialog(sessionId);
-  const [sendingId, setSendingId] = useState<string | null>(null);
+  const [sendingBySession, setSendingBySession] = useState<Record<string, string>>({});
+  const sendingId = sendingBySession[sessionId] ?? null;
 
   if (queue.length === 0) return null;
 
@@ -59,7 +60,7 @@ export function QueuePanel({
       {queue.some((item) => item.recovery) && <p role="status" className="queue-panel__hint">已恢复上次保留的消息，暂未发送。请检查会话记录后逐条恢复。</p>}
       {queue.map((item, idx) => (
         <QueueRow
-          key={item.id}
+          key={`${sessionId}:${item.id}`}
           sessionId={sessionId}
           item={item}
           index={idx}
@@ -94,13 +95,18 @@ export function QueuePanel({
           }
           onSendNow={async () => {
             if (!onSendNow || sendingId !== null) return;
-            setSendingId(item.id);
+            setSendingBySession((current) => ({ ...current, [sessionId]: item.id }));
             try {
               await onSendNow(item.text, item.attachments ?? [], item.id);
             } catch {
               // Sending failed: retain the item so the user can retry or edit it.
             } finally {
-              setSendingId(null);
+              setSendingBySession((current) => {
+                if (current[sessionId] !== item.id) return current;
+                const next = { ...current };
+                delete next[sessionId];
+                return next;
+              });
             }
           }}
         />
@@ -169,6 +175,7 @@ function QueueRow({
           onChange={(e) => setDraft(e.target.value)}
           onBlur={commit}
           onKeyDown={(e) => {
+            if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               commit();

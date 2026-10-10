@@ -149,9 +149,18 @@ export function ExecutionProcess({
     [active, cancellationCategory, cancelTrigger, parts, stopReason],
   );
   const needsAttention = summary.state === "attention" || summary.state === "stopped";
+  const hasUnfinishedTools = parts.some((part) =>
+    part.kind === "tool_call" && part.toolCall.status === "in_progress",
+  );
+  // The answer can contain interim text while parallel tools are still active.
+  // Keep both the status and automatic disclosure live until those operations
+  // have ended, even if an embedding caller reports visible answer text.
+  const finalAnswerStarted = hasFinalAnswer
+    && !hasUnfinishedTools
+    && knowledgeTrace?.personal?.state !== "searching";
   // Show work while it is happening. Completed turns stay compact, including
   // tool-only and failed turns; their status remains visible in the header.
-  const shouldOpenAutomatically = active && !hasFinalAnswer;
+  const shouldOpenAutomatically = active && !finalAnswerStarted;
   const savedChoice = getExecutionDisclosureChoice(sessionId, messageId);
   const [open, setOpen] = useState(savedChoice ?? shouldOpenAutomatically);
   const [now, setNow] = useState(() => Date.now());
@@ -208,12 +217,12 @@ export function ExecutionProcess({
   const knowledgeOnly = parts.length === 0 && Boolean(knowledgeTrace);
   const title = knowledgeTrace?.personal?.state === "searching"
     ? "正在检索个人知识库"
-    : active && hasFinalAnswer && !needsAttention
+    : active && finalAnswerStarted && !needsAttention
       ? summary.toolCount > 0 ? "已完成执行过程" : "已完成思考"
     : knowledgeOnly && !active
       ? "知识检索完成"
       : summary.title;
-  const displayState = active && hasFinalAnswer && summary.state === "running"
+  const displayState = active && finalAnswerStarted && summary.state === "running"
     ? "complete"
     : summary.state;
 
@@ -276,7 +285,7 @@ export function ExecutionProcess({
                 key={`reasoning-${index}`}
                 parts={row.parts}
                 active={active}
-                hasFinalAnswer={hasFinalAnswer}
+                hasFinalAnswer={finalAnswerStarted}
                 markdownConfig={markdownConfig}
                 theme={theme}
               />

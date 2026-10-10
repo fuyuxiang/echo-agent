@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   useQuestionStore,
   selectQuestionForSession,
@@ -19,13 +19,17 @@ export function QuestionInlineCard({ sessionId }: { sessionId: string | null }) 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [remainingSeconds, setRemainingSeconds] = useState<number | null>(null);
+  const requestScope = head ? `${head.sessionId}:${head.requestId}` : null;
+  const currentScopeRef = useRef(requestScope);
+  currentScopeRef.current = requestScope;
+  const resolvingScopesRef = useRef(new Set<string>());
 
   useEffect(() => {
     setSelections({});
     setCustomInputs({});
-    setBusy(false);
+    setBusy(requestScope !== null && resolvingScopesRef.current.has(requestScope));
     setError(null);
-  }, [head?.requestId]);
+  }, [requestScope]);
 
   useEffect(() => {
     if (!head || head.timeout == null) {
@@ -141,9 +145,10 @@ export function QuestionInlineCard({ sessionId }: { sessionId: string | null }) 
   };
 
   const resolve = async (payload: Parameters<typeof agentResolveQuestion>[1]) => {
-    if (busy || remainingSeconds === 0) return;
+    if (!requestScope || resolvingScopesRef.current.has(requestScope) || remainingSeconds === 0) return;
     const requestId = head.requestId;
     const ownerSessionId = head.sessionId;
+    resolvingScopesRef.current.add(requestScope);
     setBusy(true);
     setError(null);
     try {
@@ -152,9 +157,12 @@ export function QuestionInlineCard({ sessionId }: { sessionId: string | null }) 
       dismiss(requestId, ownerSessionId);
     } catch (cause) {
       console.error("resolve question failed", cause);
-      setError(String(cause).replace(/^Error:\s*/, ""));
+      if (currentScopeRef.current === requestScope) {
+        setError(String(cause).replace(/^Error:\s*/, ""));
+      }
     } finally {
-      setBusy(false);
+      resolvingScopesRef.current.delete(requestScope);
+      if (currentScopeRef.current === requestScope) setBusy(false);
     }
   };
 
@@ -235,7 +243,9 @@ export function QuestionInlineCard({ sessionId }: { sessionId: string | null }) 
               value={customInputs[question.id] ?? ""}
               onChange={(event) => handleCustomInput(question, event.target.value)}
               onKeyDown={(event) => {
+                if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
                 if (event.key === "Enter" && hasAnswer && !busy && !expired) {
+                  event.preventDefault();
                   void resolve({ outcome: "accepted", ...buildAccepted() });
                 }
               }}

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { SearchOverlay } from "../SearchOverlay";
 import { useSessionsStore } from "@/stores/sessions-store";
 
@@ -152,5 +152,30 @@ describe("SearchOverlay", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("请从所属主任务的子代理面板打开");
     expect(onSelect).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("新查询的防抖窗口内不显示旧请求晚到的全文命中", async () => {
+    vi.useFakeTimers();
+    try {
+      let finishOld!: (hits: Awaited<ReturnType<typeof sessionSearch>>) => void;
+      vi.mocked(sessionSearch)
+        .mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }))
+        .mockResolvedValueOnce([{ sessionId: "new", title: "新查询结果", cwd: "/new" }]);
+      render(<SearchOverlay open onClose={vi.fn()} onSelect={vi.fn()} />);
+      const input = screen.getByRole("textbox", { name: "搜索会话标题或内容" });
+      fireEvent.change(input, { target: { value: "旧查询" } });
+      await act(async () => vi.advanceTimersByTime(250));
+      fireEvent.change(input, { target: { value: "新查询" } });
+      await act(async () => finishOld([{ sessionId: "old", title: "旧查询结果", cwd: "/old" }]));
+      expect(screen.queryByText("旧查询结果")).not.toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent("搜索中");
+      await act(async () => vi.advanceTimersByTime(250));
+      expect(screen.getByText("新查询结果")).toBeInTheDocument();
+      fireEvent.change(input, { target: { value: "" } });
+      expect(screen.queryByText("新查询结果")).not.toBeInTheDocument();
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

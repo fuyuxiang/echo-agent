@@ -34,6 +34,7 @@ import {
 } from "@/lib/agent-client";
 import type { AgentEntry } from "@/lib/types";
 import { useModalFocus } from "@/lib/use-modal-focus";
+import { useUnsavedClose } from "@/lib/use-unsaved-close";
 import { useAppDialog } from "./AppDialog";
 
 const AVATAR_PRESETS: { bg: string; emoji: string }[] = [
@@ -553,13 +554,26 @@ function CreateColleagueDialog({
   onHireExpert: (agent: AgentEntry) => void;
 }) {
   const [d, setD] = useState<EditorDraft>(draft);
-  const [tab, setTab] = useState<"create" | "hire">(draft.isNew && !draft.name ? "create" : "create");
+  const [tab, setTab] = useState<"create" | "hire">("create");
+  useEffect(() => {
+    // Hiring a template replaces the draft while this editor remains mounted.
+    setD(draft);
+    setTab("create");
+  }, [draft]);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
+  const { requestClose, closeDialog } = useUnsavedClose({
+    dirty: JSON.stringify(d) !== JSON.stringify(draft),
+    busy: saving,
+    onClose: onCancel,
+  });
   const cancel = () => {
-    if (!savingRef.current) onCancel();
+    if (!savingRef.current) requestClose();
   };
   const dialogRef = useModalFocus<HTMLDivElement>(true, cancel);
+  useEffect(() => {
+    if (tab === "create") dialogRef.current?.querySelector<HTMLElement>("[data-modal-initial-focus]")?.focus();
+  }, [draft, tab]);
   const set = <K extends keyof EditorDraft>(k: K, v: EditorDraft[K]) =>
     setD((prev) => ({ ...prev, [k]: v }));
 
@@ -747,6 +761,7 @@ function CreateColleagueDialog({
           )}
         </div>
       </div>
+      {closeDialog}
     </div>
   );
 }

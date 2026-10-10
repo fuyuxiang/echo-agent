@@ -5,9 +5,9 @@
  * 与 SubagentPanel（展示子代理运行时进度）互补：本视图展示「有哪些团队」，
  * SubagentPanel 展示「团队派发的子任务在跑成什么样」。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { teamSnapshot, type RuntimeTeamInfo } from "@/lib/agent-client";
-import { deriveTeams, teamStats, type TeamInfo } from "@/lib/team-derive";
+import { deriveTeams, isCreateTeamTool, teamStats, type TeamInfo } from "@/lib/team-derive";
 import type { ChatMessage } from "@/stores/session-store";
 
 interface TeamStatusViewProps {
@@ -29,24 +29,42 @@ export function TeamStatusView({ messages }: TeamStatusViewProps) {
   const [loaded, setLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const refreshGenerationRef = useRef(0);
+  // The persisted registry changes with team tools, not with every streamed
+  // text token. Watch lifecycle transitions while keeping manual refresh.
+  const teamLifecycle = useMemo(() => JSON.stringify((messages ?? []).flatMap((message) =>
+    message.parts.flatMap((part) => {
+      if (part.kind !== "tool_call") return [];
+      const tool = part.toolCall;
+      if (!isCreateTeamTool(tool) && !/team_(?:delete|status)/i.test(`${tool.kind} ${tool.title}`)) return [];
+      return [[tool.toolCallId, tool.kind, tool.status]];
+    }),
+  )), [messages]);
 
   const refresh = useCallback((): Promise<void> => {
+    const generation = ++refreshGenerationRef.current;
     setLoading(true);
     return teamSnapshot()
       .then((snapshot) => {
+        if (refreshGenerationRef.current !== generation) return;
         setRuntimeTeams(snapshot);
         setLoaded(true);
         setError(null);
       })
       .catch((cause) => {
+        if (refreshGenerationRef.current !== generation) return;
         setError(String(cause).replace(/^Error:\s*/, ""));
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (refreshGenerationRef.current === generation) setLoading(false);
+      });
   }, []);
 
   useEffect(() => {
     void refresh().catch(() => {});
-  }, [refresh, messages]);
+  }, [refresh, teamLifecycle]);
+
+  useEffect(() => () => { refreshGenerationRef.current += 1; }, []);
 
   const teams = useMemo<TeamInfo[]>(() => {
     if (!loaded) return transcriptTeams;
@@ -81,14 +99,14 @@ export function TeamStatusView({ messages }: TeamStatusViewProps) {
           </button>
         </div>
       </div>
-      {error && !loaded && (
-        <div className="runtime-panel-empty runtime-panel-empty--error">
-          团队运行时读取失败：{error}
+      {error && (
+        <div className="runtime-panel-empty runtime-panel-empty--error" role="alert">
+          团队运行时读取失败：{error}{loaded ? "。已保留上次结果，可重新刷新。" : "。请重试刷新。"}
         </div>
       )}
       {teams.length === 0 ? (
         !error && (
-        <div className="runtime-panel-empty">当前没有活动团队。Agent 创建团队后，成员和状态会在这里持久展示。</div>
+        <div className="runtime-panel-empty" role={loading && !loaded ? "status" : undefined}>{loading && !loaded ? "正在读取团队状态…" : "当前没有活动团队。Agent 创建团队后，成员和状态会在这里持久展示。"}</div>
         )
       ) : (
         <ul className="team-status-view__list">

@@ -25,13 +25,14 @@ import {
   getTemplate,
   ConfigRow,
   RefPickerDialog,
-  useOutsideClose,
   useProjectPickerOptions,
   type ProjectPickerOptions,
 } from "./project-picker";
 import { ProjectDetailView } from "./ProjectDetailView";
 import { projectAssetsRemoveAll } from "@/lib/agent-client";
 import { useModalFocus } from "@/lib/use-modal-focus";
+import { useUnsavedClose } from "@/lib/use-unsaved-close";
+import { useAnchoredFloating } from "@/lib/use-anchored-floating";
 import { useAppDialog } from "./AppDialog";
 import type { ModelOption } from "./ModelSelector";
 import type { SlashCommandInvocation } from "@/lib/slash-commands";
@@ -576,14 +577,51 @@ function CreateProjectDialog({
   });
   const [pickerFor, setPickerFor] = useState<null | "connectors" | "experts" | "skills">(null);
   const [tplOpen, setTplOpen] = useState(false);
-  const tplRef = useOutsideClose<HTMLDivElement>(tplOpen, () => setTplOpen(false));
-  const dialogRef = useModalFocus<HTMLDivElement>(true, onCancel);
+  const tplRef = useRef<HTMLDivElement>(null);
+  const tplTriggerRef = useRef<HTMLButtonElement>(null);
+  const tplMenuRef = useRef<HTMLDivElement>(null);
+  const tplMenuId = `project-template-${useId().replace(/:/g, "")}`;
+  const tplFloating = useAnchoredFloating(tplTriggerRef, tplMenuRef, tplOpen, {
+    preferredPlacement: "bottom", align: "end", width: 208,
+    estimatedHeight: 244, maxHeight: 320, offset: 4,
+    zIndex: "var(--echo-layer-dialog-local)",
+  });
+  const closeTemplate = () => { setTplOpen(false); tplTriggerRef.current?.focus(); };
+  useEffect(() => {
+    if (!tplOpen) return;
+    (tplMenuRef.current?.querySelector<HTMLButtonElement>('[aria-checked="true"]') ?? tplMenuRef.current?.querySelector<HTMLButtonElement>("button"))?.focus();
+    const outside = (event: MouseEvent) => {
+      if (!tplRef.current?.contains(event.target as Node) && !tplMenuRef.current?.contains(event.target as Node)) setTplOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !event.isComposing && event.keyCode !== 229) {
+        event.preventDefault();
+        closeTemplate();
+      }
+    };
+    document.addEventListener("mousedown", outside);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("mousedown", outside);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [tplOpen]);
+  const initialDraft = useRef(JSON.stringify({ instructions, templateId, connectors, experts, skills }));
+  const initialModelId = useRef(modelId);
+  const { requestClose, closeDialog } = useUnsavedClose({
+    dirty: Boolean(name) || modelId !== initialModelId.current
+      || JSON.stringify({ instructions, templateId, connectors, experts, skills }) !== initialDraft.current,
+    onClose: onCancel,
+  });
+  const cancel = requestClose;
+  const dialogRef = useModalFocus<HTMLDivElement>(true, cancel);
 
   useEffect(() => {
     if (modelId && models.some((model) => model.id === modelId)) return;
     const next = defaultModelId && models.some((model) => model.id === defaultModelId)
       ? defaultModelId
       : models[0]?.id;
+    initialModelId.current = next;
     setModelId(next);
   }, [defaultModelId, modelId, models]);
 
@@ -594,7 +632,7 @@ function CreateProjectDialog({
     setConnectors(t?.connectors ?? []);
     setExperts(t?.experts ?? []);
     setSkills(t?.skills ?? []);
-    setTplOpen(false);
+    closeTemplate();
   };
 
   const currentTpl = getTemplate(templateId);
@@ -620,7 +658,7 @@ function CreateProjectDialog({
   };
 
   return (
-    <div className="modal-overlay create-colleague-overlay" onClick={onCancel}>
+    <div className="modal-overlay create-colleague-overlay" onClick={cancel}>
       <div
         ref={dialogRef}
         className="create-colleague-dialog create-project-dialog"
@@ -632,13 +670,14 @@ function CreateProjectDialog({
       >
         <div className="create-colleague-header">
           <h3>新建项目</h3>
-          <button className="create-colleague-close" onClick={onCancel} aria-label="关闭">×</button>
+          <button className="create-colleague-close" onClick={cancel} aria-label="关闭">×</button>
         </div>
 
         <div className="create-colleague-body">
           <div className="create-colleague-field">
-            <label className="create-colleague-label">项目名称</label>
+            <label className="create-colleague-label" htmlFor="create-project-name">项目名称</label>
             <input
+              id="create-project-name"
               type="text"
               className="create-colleague-input"
               value={name}
@@ -677,29 +716,39 @@ function CreateProjectDialog({
 
           <div className="create-colleague-field">
             <div className="proj-field-head">
-              <label className="create-colleague-label">指令</label>
+              <label className="create-colleague-label" htmlFor="create-project-instructions">指令</label>
               <div className="proj-tpl-select" ref={tplRef}>
-                <button type="button" className="proj-tpl-select__btn" onClick={() => setTplOpen((v) => !v)}>
+                <button type="button" ref={tplTriggerRef} className="proj-tpl-select__btn" aria-expanded={tplOpen} aria-haspopup="menu" aria-controls={tplMenuId} onKeyDown={(event) => { if (["ArrowDown", "ArrowUp"].includes(event.key) && !event.nativeEvent.isComposing) { event.preventDefault(); setTplOpen(true); } }} onClick={() => setTplOpen((v) => !v)}>
                   {currentTpl && currentTpl.id !== "custom" ? currentTpl.title : "选择模板"}
                   <ChevronDownIcon size="sm" />
                 </button>
-                {tplOpen && (
-                  <div className="proj-tpl-select__menu">
+                {tplOpen && createPortal(
+                  <div id={tplMenuId} ref={tplMenuRef} className="proj-tpl-select__menu" style={tplFloating.style} role="menu" aria-label="项目模板" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => {
+                    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+                    if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeTemplate(); return; }
+                    const buttons = Array.from(tplMenuRef.current?.querySelectorAll<HTMLButtonElement>("button") ?? []);
+                    const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+                    const next = event.key === "ArrowDown" ? (index + 1) % buttons.length : event.key === "ArrowUp" ? (index - 1 + buttons.length) % buttons.length : event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : -1;
+                    if (next >= 0) { event.preventDefault(); buttons[next]?.focus(); }
+                  }}>
                     {TEMPLATE_OPTIONS.map((t) => (
                       <button
                         key={t.id}
                         type="button"
+                        role="menuitemradio"
+                        aria-checked={t.id === (templateId ?? "custom")}
                         className={`proj-tpl-select__item${t.id === templateId ? " proj-tpl-select__item--on" : ""}`}
                         onClick={() => applyTemplate(t.id)}
                       >
                         {t.title}
                       </button>
                     ))}
-                  </div>
+                  </div>, document.body,
                 )}
               </div>
             </div>
             <textarea
+              id="create-project-instructions"
               className="create-colleague-textarea"
               value={instructions}
               onChange={(e) => setInstructions(e.target.value)}
@@ -715,11 +764,12 @@ function CreateProjectDialog({
 
         <div className="create-colleague-footer create-project-footer">
           <span className="proj-version-note">切换模板将替换指令及连接器、专家和技能配置。</span>
-          <button className="btn btn--ghost" onClick={onCancel}>取消</button>
+          <button className="btn btn--ghost" onClick={cancel}>取消</button>
           <button className="btn btn--primary" onClick={submit} disabled={!name.trim()}>确定</button>
         </div>
       </div>
 
+      {closeDialog}
       {pickerFor && (
         <RefPickerDialog
           title={pickerFor === "connectors" ? "连接器" : pickerFor === "experts" ? "专家" : "技能"}

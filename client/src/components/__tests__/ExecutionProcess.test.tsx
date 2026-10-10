@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { MessageItem } from "../MessageItem";
+import { ExecutionProcess } from "../ExecutionProcess";
 import { ThemeProvider } from "../ThemeProvider";
 import type { ChatMessage, ToolCallView } from "@/stores/session-store";
 import { useKnowledgeStore } from "@/stores/knowledge-store";
@@ -228,6 +229,99 @@ describe("assistant execution process", () => {
     expect(screen.getByText("这是正式答案的第一部分。")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole("button", { name: /已完成思考/ }))
       .toHaveAttribute("aria-expanded", "false"));
+  });
+
+  it("规划文本之后继续思考和并行工具时保持运行中与默认展开", () => {
+    const liveMessage: ChatMessage = {
+      id: "preface-before-live-tools",
+      role: "assistant",
+      complete: false,
+      parts: [
+        { kind: "text", text: "我会先安排并行检查。" },
+        { kind: "thought", text: "正在继续检查界面。" },
+        { kind: "tool_call", toolCall: {
+          toolCallId: "live-edit", title: "Edit src/App.tsx", kind: "edit_file",
+          status: "in_progress", content: [],
+        } },
+        { kind: "tool_call", toolCall: {
+          toolCallId: "live-child", title: "检查产物交付", kind: "spawn_subagent",
+          status: "in_progress", content: [],
+        } },
+      ],
+    };
+    const { container, rerender } = render(
+      <ThemeProvider><MessageItem message={liveMessage} streaming /></ThemeProvider>,
+    );
+    expect(container.querySelector(".execution-process--running")).toBeInTheDocument();
+    const header = container.querySelector(".execution-process__header");
+    expect(header).toHaveAttribute("aria-expanded", "true");
+    expect(header).toHaveTextContent("0/2 项");
+    expect(header).not.toHaveTextContent("已完成");
+    expect(screen.getByText("深度思考").closest("details")).toHaveAttribute("open");
+
+    fireEvent.click(header!);
+    rerender(<ThemeProvider><MessageItem message={{ ...liveMessage, parts: [
+      ...liveMessage.parts, { kind: "thought", text: "并行检查仍在继续。" },
+    ] }} streaming /></ThemeProvider>);
+    expect(container.querySelector(".execution-process__header")).toHaveAttribute("aria-expanded", "false");
+    expect(container.querySelector(".execution-process--running")).toBeInTheDocument();
+  });
+
+  it("所有工具完成也需等真正的尾部答复才自动折叠过程", async () => {
+    const preface: ChatMessage = {
+      id: "preface-before-finished-tool",
+      role: "assistant", complete: false,
+      parts: [
+        { kind: "text", text: "我先检查项目。" },
+        { kind: "thought", text: "工具完成后还需整理结论。" },
+        message.parts[2],
+      ],
+    };
+    const { container, rerender } = render(
+      <ThemeProvider><MessageItem message={preface} streaming /></ThemeProvider>,
+    );
+    expect(screen.getByRole("button", { name: /正在分析任务/ })).toHaveAttribute("aria-expanded", "true");
+    expect(container.querySelector(".execution-process--running")).toBeInTheDocument();
+    rerender(<ThemeProvider><MessageItem message={{ ...preface, parts: [
+      ...preface.parts, { kind: "text", text: "这是工具完成后的最终答复。" },
+    ] }} streaming /></ThemeProvider>);
+    expect(screen.getByText("这是工具完成后的最终答复。")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: /已完成执行过程/ })).toHaveAttribute("aria-expanded", "false"));
+    expect(container.querySelector(".execution-process--complete")).toBeInTheDocument();
+  });
+
+  it("已有文本之后的新思考不被当作最终答复，用户选择保持不变", () => {
+    const liveMessage: ChatMessage = {
+      id: "preface-then-thought",
+      role: "assistant", complete: false,
+      parts: [
+        { kind: "text", text: "我先分析请求。" },
+        { kind: "thought", text: "当前仍在分析。" },
+      ],
+    };
+    const { container, rerender } = render(<ThemeProvider><MessageItem message={liveMessage} streaming /></ThemeProvider>);
+    const header = screen.getByRole("button", { name: /正在分析任务/ });
+    expect(header).toHaveAttribute("aria-expanded", "true");
+    expect(container.querySelector(".execution-process--running")).toBeInTheDocument();
+    fireEvent.click(header);
+    rerender(<ThemeProvider><MessageItem message={{ ...liveMessage, parts: [
+      ...liveMessage.parts, { kind: "text", text: "现在开始最终答复。" },
+    ] }} streaming /></ThemeProvider>);
+    expect(screen.getByRole("button", { name: /已完成思考/ })).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("调用者已有答案标志也不能覆盖未完成工具，终态仍显示需要注意", () => {
+    const parts: ChatMessage["parts"] = [{ kind: "tool_call", toolCall: {
+      toolCallId: "unfinished-tool-defense", kind: "read_file", title: "Read report.md",
+      status: "in_progress", content: [],
+    } }];
+    const { container, rerender } = render(<ThemeProvider><ExecutionProcess parts={parts} active hasFinalAnswer /></ThemeProvider>);
+    expect(container.querySelector(".execution-process--running")).toBeInTheDocument();
+    expect(container.querySelector(".execution-process__header")).toHaveAttribute("aria-expanded", "true");
+    expect(container.querySelector(".execution-process__header")).not.toHaveTextContent("已完成");
+    rerender(<ThemeProvider><ExecutionProcess parts={parts} active={false} hasFinalAnswer stopReason="end_turn" /></ThemeProvider>);
+    expect(container.querySelector(".execution-process--attention")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /执行已结束，但有操作未收尾/ })).toHaveAttribute("aria-expanded", "false");
   });
 
   it("用户手动展开后不被后续答案输出抢夺控制权", async () => {

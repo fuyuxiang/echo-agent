@@ -198,6 +198,11 @@ export function OrganizationMemoryPanel({
   const [previewLoading, setPreviewLoading] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<{ id: string; name: string; submission: boolean } | null>(null);
   const [publishDocumentTarget, setPublishDocumentTarget] = useState<OrgDocument | null>(null);
+  const previewDialogRef = useModalFocus<HTMLDivElement>(Boolean(preview), () => setPreview(null));
+  const closePublishDialog = () => { if (!busy) setPublishDocumentTarget(null); };
+  const closeRemoveDialog = () => { if (!busy) setRemoveTarget(null); };
+  const publishDialogRef = useModalFocus<HTMLDivElement>(Boolean(publishDocumentTarget), closePublishDialog);
+  const removeDialogRef = useModalFocus<HTMLDivElement>(Boolean(removeTarget), closeRemoveDialog);
   const [skills, setSkills] = useState<OrgSkill[]>([]);
   const [skillSubmissions, setSkillSubmissions] = useState<Submission[]>([]);
   const [showMemoryForm, setShowMemoryForm] = useState(false);
@@ -964,9 +969,9 @@ export function OrganizationMemoryPanel({
           <SubmissionList title="我的 Skill 提交" submissions={visibleSkillSubmissions} />
         </section>
       )}
-          {preview && <div className="org-document-modal" role="dialog" aria-modal="true" aria-label={`查看文档 ${preview.name}`}>
+          {preview && <div ref={previewDialogRef} tabIndex={-1} onClick={(event) => { if (event.target === event.currentTarget) setPreview(null); }} className="org-document-modal" role="dialog" aria-modal="true" aria-label={`查看文档 ${preview.name}`}>
             <div className="org-document-modal__panel">
-              <header><div><strong>{preview.name}</strong>{preview.parsed && <small>内容来自知识索引，原件排版请下载查看</small>}</div><div className="org-document-modal__header-actions">{!preview.unavailableReason && <button onClick={() => void downloadDocument(preview.resourceId, preview.name, preview.submission)}><Download size={14} />下载原件</button>}<button aria-label="关闭预览" onClick={() => setPreview(null)}><X size={18} /></button></div></header>
+              <header><div><strong>{preview.name}</strong>{preview.parsed && <small>内容来自知识索引，原件排版请下载查看</small>}</div><div className="org-document-modal__header-actions">{!preview.unavailableReason && <button onClick={() => void downloadDocument(preview.resourceId, preview.name, preview.submission)}><Download size={14} />下载原件</button>}<button data-modal-initial-focus aria-label="关闭预览" onClick={() => setPreview(null)}><X size={18} /></button></div></header>
               <div className="org-document-modal__body">{preview.unavailableReason
                 ? <div className="org-parsed-preview__unavailable"><FileText size={28} /><strong>暂时无法在线预览</strong><p>{preview.unavailableReason}</p><button className="org-memory__primary" onClick={() => void downloadDocument(preview.resourceId, preview.name, preview.submission)}><Download size={15} />下载原件</button></div>
                 : preview.parsed
@@ -975,14 +980,14 @@ export function OrganizationMemoryPanel({
               {preview.more && <footer><button onClick={() => void loadMorePreview()} disabled={previewLoading}>{previewLoading ? "加载中…" : "加载后续内容"}</button></footer>}
             </div>
           </div>}
-          {publishDocumentTarget && <div className="org-document-modal" role="dialog" aria-modal="true" aria-label="发布文档副本">
-            <div className="org-document-modal__confirm"><h3>发布文档副本</h3><p>将“{publishDocumentTarget.title}”发布到指定共享范围。原文档仍留在我的空间。</p><label className="org-document-publish__scope"><span>发布到</span><select aria-label="文档副本发布目标" value={publishScope} onChange={(event) => setPublishScope(event.target.value)}><option value="">选择共享范围</option>{scopes.filter((scope) => scope.kind !== "personal").map((scope) => <option key={scope.id} value={scope.id} disabled={scope.canPublishDocuments === false}>{scopeLabel(scope.kind)} · {scope.name}{scope.canPublishDocuments === false ? "（仅管理员可发布）" : ""}</option>)}</select></label><div><button onClick={() => setPublishDocumentTarget(null)} disabled={busy}>取消</button><button className="org-memory__primary" onClick={() => void publishDocument(publishDocumentTarget)} disabled={busy || !publishScope || scopes.find((scope) => scope.id === publishScope)?.canPublishDocuments === false}>{busy ? "发布中…" : "确认发布"}</button></div></div>
+          {publishDocumentTarget && <div ref={publishDialogRef} tabIndex={-1} onClick={(event) => { if (event.target === event.currentTarget) closePublishDialog(); }} aria-busy={busy} className="org-document-modal" role="dialog" aria-modal="true" aria-label="发布文档副本">
+            <div className="org-document-modal__confirm"><h3>发布文档副本</h3><p>将“{publishDocumentTarget.title}”发布到指定共享范围。原文档仍留在我的空间。</p><label className="org-document-publish__scope"><span>发布到</span><select aria-label="文档副本发布目标" value={publishScope} onChange={(event) => setPublishScope(event.target.value)}><option value="">选择共享范围</option>{scopes.filter((scope) => scope.kind !== "personal").map((scope) => <option key={scope.id} value={scope.id} disabled={scope.canPublishDocuments === false}>{scopeLabel(scope.kind)} · {scope.name}{scope.canPublishDocuments === false ? "（仅管理员可发布）" : ""}</option>)}</select></label><div><button data-modal-initial-focus onClick={closePublishDialog} disabled={busy}>取消</button><button className="org-memory__primary" onClick={() => void publishDocument(publishDocumentTarget)} disabled={busy || !publishScope || scopes.find((scope) => scope.id === publishScope)?.canPublishDocuments === false}>{busy ? "发布中…" : "确认发布"}</button></div></div>
           </div>}
           {uploadIntent && <div ref={uploadDialogRef} className="org-document-modal" role="dialog" aria-modal="true" aria-label="选择上传位置" tabIndex={-1}>
             <div className="org-document-modal__confirm"><h3>{uploadIntent === "folder" ? "上传文件夹" : "上传文档"}</h3><p>选择文档的可访问范围。上传后会自动安全扫描并建立索引。</p><label className="org-document-publish__scope"><span>上传到</span><select aria-label="文档上传范围" data-modal-initial-focus value={writeScope} onChange={(event) => setWriteScope(event.target.value)}><option value="">选择上传范围</option>{availableDocumentScopes.map((scope) => <option key={scope.id} value={scope.id}>{scopeLabel(scope.kind)} · {scope.name}</option>)}</select></label><div><button onClick={() => setUploadIntent(null)}>取消</button><button className="org-memory__primary" onClick={() => void startDocumentUpload()} disabled={!allowDocumentUpload}>{uploadIntent === "folder" ? "选择文件夹" : "选择文件"}</button></div></div>
           </div>}
-          {removeTarget && <div className="org-document-modal" role="alertdialog" aria-modal="true" aria-label="确认删除文档">
-            <div className="org-document-modal__confirm"><h3>移除文档？</h3><p>“{removeTarget.name}”会从共享列表和 Agent 检索中移除。服务器会保留已上传的原始文件内容。</p><div><button onClick={() => setRemoveTarget(null)} disabled={busy}>取消</button><button className="org-memory__primary" onClick={() => void removeOwnDocument()} disabled={busy}>{busy ? "处理中…" : "确认移除"}</button></div></div>
+          {removeTarget && <div ref={removeDialogRef} tabIndex={-1} onClick={(event) => { if (event.target === event.currentTarget) closeRemoveDialog(); }} aria-busy={busy} className="org-document-modal" role="alertdialog" aria-modal="true" aria-label="确认删除文档">
+            <div className="org-document-modal__confirm"><h3>移除文档？</h3><p>“{removeTarget.name}”会从共享列表和 Agent 检索中移除。服务器会保留已上传的原始文件内容。</p><div><button data-modal-initial-focus onClick={closeRemoveDialog} disabled={busy}>取消</button><button className="org-memory__primary" onClick={() => void removeOwnDocument()} disabled={busy}>{busy ? "处理中…" : "确认移除"}</button></div></div>
           </div>}
         </main>
       </div>

@@ -2713,7 +2713,7 @@ function Shell() {
                     <span>返回上级任务</span>
                   </button>
                 )}
-                <TopbarTitle title={currentTitle} onRename={handleRenameTitle} />
+                <TopbarTitle key={currentSessionId ?? "new"} title={currentTitle} onRename={handleRenameTitle} />
                 {currentEntry?.expertName && (
                   <span className="expert-badge" data-tip={`专家：${currentEntry.expertName}`}>
                     <ThumbImg name={currentEntry.expertName} local={currentEntry.expertAvatar} size={18} shape="circle" />

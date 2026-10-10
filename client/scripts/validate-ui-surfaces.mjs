@@ -1,8 +1,7 @@
 // Run with the same Node/Playwright installation as scripts/smoke-theia.mjs.
 // Screenshots and geometry checks use production components and CSS, with
 // native IPC replaced only in the development fixture.
-import { chromium } from "../vendor/theia-platform/node_modules/playwright/index.mjs";
-import { createServer } from "vite";
+import { createUiReviewServer, reviewChromium, reviewOutput } from "./ui-review-runtime.mjs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,23 +9,14 @@ import assert from "node:assert/strict";
 import { validateConversationLayout } from "./validate-conversation-layout.mjs";
 import { validateSidebarScroll } from "./validate-sidebar-scroll.mjs";
 
-const output = mkdtempSync(join(tmpdir(), "echo-ui-surfaces-"));
+const output = reviewOutput(mkdtempSync(join(tmpdir(), "echo-ui-surfaces-")));
 console.log(`UI screenshots: ${output}`);
-const server = await createServer({
-  server: { host: "127.0.0.1", port: 1439, strictPort: true },
-  plugins: [{ name: "isolated-ui-review", configureServer(server) {
-    server.middlewares.use((request, response, next) => {
-      if (!request.url?.startsWith("/__ui-review")) return next();
-      const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>*{box-sizing:border-box}html,body,#root{width:100%;height:100%;margin:0}body{overflow:hidden;background:var(--echo-bg-secondary);font:13px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}</style></head><body><div id="root"></div><script type="module" src="/scripts/fixtures/ui-surfaces.tsx"></script></body></html>`;
-      void server.transformIndexHtml(request.url, html).then(result => { response.setHeader("Content-Type", "text/html"); response.end(result); });
-    });
-  } }],
-});
+const server = await createUiReviewServer();
 let browser;
 try {
-  await server.listen();
-  browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME_BIN || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" });
+  browser = await (await reviewChromium()).launch({ headless: true, executablePath: process.env.CHROME_BIN || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" });
   const page = await browser.newPage();
+page.setDefaultNavigationTimeout(60000);
   const errors = [];
   let layouts = 0;
   page.on("pageerror", error => errors.push(error.message));
@@ -195,7 +185,8 @@ try {
       const controls = await page.locator("select.form-control").evaluateAll(elements => elements.map(element => ({ appearance: getComputedStyle(element).appearance, height: element.getBoundingClientRect().height })));
       for (const control of controls) { assert.equal(control.appearance, "none"); assert.ok(control.height >= 36, `${surface}: short select (${control.height}px)`); }
       if (surface === "memory") {
-        assert.ok(await page.locator(".settings-row--retrieval").evaluate(element => element.getBoundingClientRect().bottom <= element.nextElementSibling.getBoundingClientRect().top + 1), "memory hints overlap");
+        const rows = await page.locator(".settings-group__content .settings-row").evaluateAll(elements => elements.map(element => ({ top: element.getBoundingClientRect().top, bottom: element.getBoundingClientRect().bottom })));
+        assert.ok(rows.length >= 4 && rows.slice(1, 4).every((row, index) => row.top >= rows[index].bottom - 1), "memory settings rows overlap");
       }
       if (surface === "security") {
         await page.locator(".permission-rule-builder").scrollIntoViewIfNeeded();
@@ -274,8 +265,9 @@ try {
   await page.screenshot({ path: join(output, "organization-xlsx-preview.png") });
 
   await page.goto("http://127.0.0.1:1439/__ui-review?surface=memory");
-  await page.getByRole("combobox", { name: "记忆检索方式" }).selectOption("configured");
+  await page.getByRole("checkbox", { name: "自动整理", exact: true }).locator("..").click();
   await page.getByText("记忆配置已保存，重启 Agent 后对新会话生效。").waitFor();
+  assert.equal(await page.getByRole("checkbox", { name: "自动整理", exact: true }).isChecked(), false);
 
   await page.goto("http://127.0.0.1:1439/__ui-review?surface=notify-channels");
   await page.getByRole("textbox", { name: "通知渠道显示名" }).fill("测试渠道");

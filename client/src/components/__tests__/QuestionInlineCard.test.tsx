@@ -135,4 +135,37 @@ describe("QuestionInlineCard", () => {
     expect(screen.getByText("MVP scope?")).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Agent 问题列表" })).toHaveAttribute("tabindex", "0");
   });
+
+  it("does not submit while the user confirms a Chinese IME candidate", async () => {
+    clientMocks.resolve.mockResolvedValue(true);
+    render(<QuestionInlineCard sessionId="session-1" />);
+    const input = screen.getByPlaceholderText("输入补充回答…");
+    fireEvent.change(input, { target: { value: "中文回答" } });
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 229 });
+    expect(clientMocks.resolve).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(clientMocks.resolve).toHaveBeenCalledTimes(1));
+  });
+
+  it("does not put a late answer failure into another session's question", async () => {
+    const next = { ...request, requestId: "question-2", sessionId: "session-2", title: "Second question" };
+    clientMocks.list.mockResolvedValue({ ...pending(), questions: [request, next] });
+    let rejectAnswer!: (cause: Error) => void;
+    clientMocks.resolve.mockImplementation(() => new Promise((_resolve, reject) => { rejectAnswer = reject; }));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const { rerender } = render(<QuestionInlineCard sessionId="session-1" />);
+      fireEvent.click(screen.getByRole("button", { name: /React/ }));
+      fireEvent.click(screen.getByRole("button", { name: "提交" }));
+      act(() => useQuestionStore.getState().request(next));
+      rerender(<QuestionInlineCard sessionId="session-2" />);
+      await act(async () => rejectAnswer(new Error("旧请求失败")));
+      expect(screen.getByText("Second question")).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /React/ })).toBeEnabled();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
 });

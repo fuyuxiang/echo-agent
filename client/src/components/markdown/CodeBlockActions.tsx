@@ -1,5 +1,6 @@
-import { memo, useCallback, useEffect, useState, type ReactNode } from "react";
-import { Check, Copy } from "lucide-react";
+import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Check, Copy, AlertCircle } from "lucide-react";
+import { copyShareText } from "@/lib/share";
 import type { CodeBlockAction } from "./types";
 
 type Props = {
@@ -26,39 +27,45 @@ export const CodeBlockActions = memo(function CodeBlockActions({
   onAction,
   copyIconOnly = true,
 }: Props) {
-  const [copied, setCopied] = useState(false);
+  const [status, setStatus] = useState<"idle" | "copying" | "copied" | "failed">("idle");
+  const attempt = useRef(0);
+  const pending = useRef(false);
 
   useEffect(() => {
-    if (!copied) return;
-    const t = window.setTimeout(() => setCopied(false), 2000);
+    if (status !== "copied" && status !== "failed") return;
+    const t = window.setTimeout(() => setStatus("idle"), 2500);
     return () => window.clearTimeout(t);
-  }, [copied]);
+  }, [status]);
 
-  const handleCopy = useCallback(() => {
-    if (!code) return;
-    const done = () => {
-      setCopied(true);
-      onAction?.("copy", code, language, requestId);
-    };
-    if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(code).then(done).catch(() => {
-        // Fallback for restricted contexts
-        try {
-          const ta = document.createElement("textarea");
-          ta.value = code;
-          ta.style.position = "fixed";
-          ta.style.left = "-9999px";
-          document.body.appendChild(ta);
-          ta.select();
-          document.execCommand("copy");
-          document.body.removeChild(ta);
-          done();
-        } catch {
-          /* ignore */
-        }
-      });
+  useEffect(() => {
+    attempt.current += 1;
+    pending.current = false;
+    setStatus("idle");
+    return () => { attempt.current += 1; };
+  }, [code, requestId]);
+
+  const handleCopy = useCallback(async () => {
+    if (!code || pending.current) return;
+    pending.current = true;
+    const current = ++attempt.current;
+    setStatus("copying");
+    try {
+      let copied: boolean;
+      try { copied = await copyShareText(code); }
+      catch { copied = await copyShareText(code, { clipboard: null }); }
+      if (!copied) throw new Error("clipboard unavailable");
+      if (attempt.current === current) {
+        setStatus("copied");
+        onAction?.("copy", code, language, requestId);
+      }
+    } catch {
+      if (attempt.current === current) setStatus("failed");
+    } finally {
+      if (attempt.current === current) pending.current = false;
     }
   }, [code, language, onAction, requestId]);
+
+  const copyLabel = status === "copied" ? "已复制" : status === "failed" ? "复制失败，点击重试" : status === "copying" ? "复制中…" : "复制";
 
   const visibleActions = actions.filter((action) => {
     if (!action.condition) return true;
@@ -71,17 +78,21 @@ export const CodeBlockActions = memo(function CodeBlockActions({
         type="button"
         className="md-code-action"
         data-chat-copy="true"
-        onClick={handleCopy}
-        aria-label={copied ? "已复制" : "复制"}
-        title={copied ? "已复制" : "复制"}
+        onClick={() => void handleCopy()}
+        aria-label={copyLabel}
+        title={copyLabel}
+        disabled={!code || status === "copying"}
+        aria-busy={status === "copying"}
       >
-        {copied ? (
+        {status === "copied" ? (
           <Check size={14} className="md-code-action-icon md-code-action-icon--ok" />
+        ) : status === "failed" ? (
+          <AlertCircle size={14} className="md-code-action-icon md-code-action-icon--error" />
         ) : (
           <Copy size={14} className="md-code-action-icon" />
         )}
-        {!copyIconOnly && (
-          <span className="md-code-action-label">{copied ? "已复制" : "复制"}</span>
+        {(!copyIconOnly || status === "failed") && (
+          <span className="md-code-action-label" role={status === "failed" ? "alert" : undefined}>{status === "failed" ? "复制失败" : copyLabel}</span>
         )}
       </button>
       {visibleActions.map((action) => (

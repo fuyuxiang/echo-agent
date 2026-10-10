@@ -21,6 +21,12 @@ import { GlobalTooltip } from "../../src/components/GlobalTooltip";
 import { TasksPanel } from "../../src/components/TasksPanel";
 import { MeetingMinutesPanel } from "../../src/components/MeetingMinutesPanel";
 import { PermissionPicker } from "../../src/components/PermissionPicker";
+import { HomePage } from "../../src/components/HomePage";
+import ModalReview from "./modal-review";
+import ResultReviewFixture from "./result-review";
+import DetailReview from "./detail-review";
+import TrustReview, { trustReviewPending, trustReviewError } from "./trust-review";
+import ExecutionReviewFixture, { executionReviewTeamSnapshot, executionReviewFinalMarkdown } from "./execution-review";
 import { useSessionStore } from "../../src/stores/session-store";
 import { useSessionsStore } from "../../src/stores/sessions-store";
 import { useProjectsStore } from "../../src/stores/projects-store";
@@ -32,6 +38,7 @@ import "../../src/styles/form-controls.css";
 import "../../src/styles/coding-workbench.css";
 
 const query = new URLSearchParams(location.search);
+if (query.get("surface") === "runtime") query.set("executionView", "runtime");
 localStorage.setItem("echoagent.theme", query.get("theme") ?? "light");
 let memory = { enabled: true, initialInjectionEnabled: true, saveOnEnd: true, watcherEnabled: true,
   autoFlushEnabled: true, dreamEnabled: true, retrievalMode: "local", revision: "1",
@@ -110,6 +117,8 @@ if (query.get("surface") === "sidebar-scroll") {
   });
 }
 const callbacks = new Map();
+let trustResolved = false;
+let modelImportAttempts = 0;
 Object.assign(window, {
   __TAURI_INTERNALS__: {
     transformCallback: (callback: unknown) => { const id = callbacks.size + 1; callbacks.set(id, callback); return id; },
@@ -117,6 +126,43 @@ Object.assign(window, {
     metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
     invoke: async (command: string, args: any = {}) => {
       switch (command) {
+        case "team_snapshot": {
+          if (query.get("teamState") === "error") throw new Error("隔离验收：团队快照读取失败");
+          return executionReviewTeamSnapshot();
+        }
+        case "read_text_file": return executionReviewFinalMarkdown;
+        case "path_stat": return { path: args.path, absolute: args.path, exists: true, kind: "file" };
+        case "list_dir": return [];
+        case "agent_list_pending_interactions": {
+          const state = query.get("state") ?? "long";
+          if (query.get("surface") !== "trust" || trustResolved) return { permissions: [], questions: [], planApprovals: [], folderTrustRequests: [] };
+          if (state === "loading") return new Promise(() => {});
+          if (state === "error") throw new Error(trustReviewError);
+          return trustReviewPending(state as "short" | "long");
+        }
+        case "folder_trust_respond": trustResolved = true; return true;
+        case "providers_list": return { providers: query.has("modelState") ? [{
+          id: "review-model-provider", providerKind: "custom", label: "隔离模型连接",
+          source: "personal", baseUrl: "https://review.invalid/v1", apiBackend: "chat_completions",
+          authScheme: "bearer", credentialConfigured: true,
+        }] : [], models: [] };
+        case "providers_fetch_models_for_provider": {
+          modelImportAttempts += 1;
+          if (query.get("modelState") === "loading") return new Promise(() => {});
+          if (query.get("modelState") === "load-error" && modelImportAttempts === 1) throw new Error("隔离验证：模型目录暂不可用");
+          if (query.get("modelState") === "empty") return [];
+          return Array.from({ length: 36 }, (_, index) => ({ id: `review-model-${index + 1}`, ownedBy: "隔离供应商 · 无真实模型请求" }));
+        }
+        case "providers_save_connection": throw new Error("隔离验证：保存失败，未写入原生配置");
+        case "agents_defaults_get": return { defaultModel: "", defaultPermission: "ask", rememberToolApprovals: true };
+        case "agent_auth_status": return { ready: false, providers: [], runtimeReady: false, synchronized: true, runtimeModels: [], reason: "尚未配置可用模型" };
+        case "desktop_preferences_get": return { closeToTray: true, showNotificationTaskTitle: false };
+        case "subagents_config_get": return { maxDepth: 2 };
+        case "connectors_load": return { categories: [], connectors: [] };
+        case "experts_load": return { categories: [], experts: [] };
+        case "skills_catalog_load": return { categories: [], skills: [] };
+        case "automations_snapshot": return { automations: [], records: [] };
+        case "connectors_read_mcp_config": return "";
         case "memory_config_get": return memory;
         case "memory_list": return [
           { scope: "session", path: "2026-09-06-interval-01a074eb.md", content: "<think>The user is asking me to write a memory summary. Looking at this session, I was tasked with researching today's AI news focused on AI coding and embodied intelligence.", size: 180, revision: "r1", modifiedAt: "2026-09-06T10:00:00Z", readOnly: true },
@@ -204,7 +250,8 @@ function ConversationLayoutFixture() {
 
 function Fixture() {
   const surface = query.get("surface") ?? "memory";
-  const [label, setLabel] = useState("专家·技能·连接器");
+  const aliases: Record<string, string> = { "技能管理": "技能", "连接器管理": "连接器", "插件管理": "插件·市场" };
+  const [label, setLabel] = useState(aliases[query.get("label") ?? ""] ?? query.get("label") ?? "专家·技能·连接器");
   const [createExpertRequested, setCreateExpertRequested] = useState(false);
   const [expertPageOpen, setExpertPageOpen] = useState(false);
   const [cwd, setCwd] = useState("/review/EchoAgent");
@@ -259,6 +306,16 @@ function Fixture() {
     <main style={{ flex: 1, background: "var(--echo-bg-secondary)" }} />
   </div>;
   if (surface === "conversation-layout") return <ConversationLayoutFixture />;
+  if (surface.startsWith("modal-")) return <ModalReview variant={surface === "modal-short" ? "short" : surface === "modal-error" ? "error" : "long"} />;
+  if (surface === "results") return <ResultReviewFixture />;
+  if (surface === "details") return <DetailReview />;
+  if (surface === "trust") return <TrustReview variant={(query.get("state") ?? "long") as "short" | "long" | "loading" | "error"} />;
+  if (surface === "execution" || surface === "runtime") return <ExecutionReviewFixture />;
+  if (surface === "home") return <div style={{ display: "flex", height: "100%" }}>
+    <Sidebar activeNav="新建任务" onNewSession={() => {}} onSelect={() => {}} onNavigate={setLabel} onOpenSettings={() => {}} onOpenSearch={() => {}} />
+    <HomePage onSend={() => {}} streaming={false} apiReady={query.get("state") !== "unconfigured"} creatingSession={query.get("state") === "loading"} sendError={query.get("state") === "error" ? "会话创建失败，请重试" : null} onOpenSettings={() => {}} onPlaceholder={() => {}} models={[{ id: "review/model", label: "评审模型", providerId: "review", providerKind: "custom" }]} modelId="review/model" cwd="/review/EchoAgent" />
+  </div>;
+  if (surface === "page") return <PlaceholderPage label={label} onNavigate={setLabel} cwd="/review/EchoAgent" />;
   if (surface === "capabilities") return <PlaceholderPage label={label} onNavigate={setLabel} />;
   if (surface === "expert-entry") return <>
     {expertPageOpen ? (

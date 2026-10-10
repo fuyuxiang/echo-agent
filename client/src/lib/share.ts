@@ -112,20 +112,31 @@ export async function copyShareText(
 ): Promise<boolean> {
   const clipboard = "clipboard" in deps ? deps.clipboard : globalThis.navigator?.clipboard;
   if (clipboard?.writeText) {
-    await clipboard.writeText(text);
-    return true;
+    try {
+      await clipboard.writeText(text);
+      return true;
+    } catch {
+      // Some desktop webviews expose the API but deny it. Keep the same
+      // fallback path as webviews without the API.
+    }
   }
   const doc = "document" in deps ? deps.document : globalThis.document;
   if (!doc?.body || typeof doc.execCommand !== "function") return false;
   const textarea = doc.createElement("textarea");
+  const previousFocus = doc.activeElement as HTMLElement | null;
   textarea.value = text;
   textarea.style.position = "fixed";
   textarea.style.opacity = "0";
   doc.body.appendChild(textarea);
-  textarea.select();
-  const copied = doc.execCommand("copy");
-  doc.body.removeChild(textarea);
-  return copied;
+  try {
+    textarea.select();
+    return doc.execCommand("copy");
+  } catch {
+    return false;
+  } finally {
+    textarea.remove();
+    if (previousFocus?.isConnected && typeof previousFocus.focus === "function") previousFocus.focus({ preventScroll: true });
+  }
 }
 
 /** Use the operating system share sheet when the current webview exposes it. */

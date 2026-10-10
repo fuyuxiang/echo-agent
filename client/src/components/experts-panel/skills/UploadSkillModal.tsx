@@ -115,6 +115,8 @@ export function UploadSkillModal({
           <div className="sk-upload-note">
             上传内容会先经过服务器安全扫描。普通成员提交到团队或组织后，需要管理员审核才会对其他用户可见。
           </div>
+        </div>
+        <div className="sk-upload-footer">
           <button
             type="button"
             className="um-btn um-btn--primary sk-install-submit"

@@ -164,6 +164,28 @@ describe("ProjectsPanel 项目操作菜单", () => {
     expect(screen.queryByRole("menu")).toBeNull();
   });
 
+  it("项目模板通过 portal 展开，Escape 只关闭菜单，草稿关闭可继续编辑", async () => {
+    render(<ProjectsPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "新建项目" }));
+    const dialog = screen.getByRole("dialog", { name: "新建项目" });
+    const input = within(dialog).getByPlaceholderText("请输入项目名称");
+    fireEvent.change(input, { target: { value: "项目草稿" } });
+    const trigger = within(dialog).getByRole("button", { name: "选择模板" });
+    fireEvent.click(trigger);
+    const menu = screen.getByRole("menu", { name: "项目模板" });
+    expect(dialog.contains(menu)).toBe(false);
+    expect(within(menu).getByRole("menuitemradio", { name: "自定义" })).toHaveFocus();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("menu", { name: "项目模板" })).toBeNull();
+    expect(trigger).toHaveFocus();
+    expect(dialog).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.getByRole("alertdialog", { name: "舍弃未保存的修改？" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "继续编辑" }));
+    expect(input).toHaveValue("项目草稿");
+    expect(dialog).toBeInTheDocument();
+  });
+
   it("新建项目与内层资源拾取器按层级圈定焦点并逐层 Escape 恢复", async () => {
     render(<ProjectsPanel />);
     const create = screen.getByRole("button", { name: "新建项目" });

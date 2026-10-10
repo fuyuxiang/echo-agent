@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { FilePreview } from "../FilePreview";
 
 describe("FilePreview", () => {
@@ -8,6 +8,14 @@ describe("FilePreview", () => {
     expect(screen.getByText("readme.md")).toBeInTheDocument();
     expect(screen.getByText("Markdown")).toBeInTheDocument();
     expect(screen.getByText("标题")).toBeInTheDocument();
+  });
+
+  it("Markdown 文件复制保留原始语法", async () => {
+    const onCopyText = vi.fn(async () => true);
+    render(<FilePreview filename="readme.md" content={"# 标题\n\n- 交付结果"} onCopyText={onCopyText} />);
+    fireEvent.click(screen.getByRole("button", { name: "复制 Markdown 内容" }));
+    expect(await screen.findByText("已复制")).toBeInTheDocument();
+    expect(onCopyText).toHaveBeenCalledWith("# 标题\n\n- 交付结果");
   });
 
   it("image 渲染 <img>", () => {
@@ -23,7 +31,7 @@ describe("FilePreview", () => {
     expect(screen.getByRole("button", { name: "复制内容" })).toBeInTheDocument();
   });
 
-  it("复制按钮回调 onCopyText 并切换文案", () => {
+  it("复制按钮回调 onCopyText 并切换文案", async () => {
     const onCopyText = vi.fn();
     render(
       <FilePreview filename="a.txt" content="hello" onCopyText={onCopyText} />,
@@ -31,7 +39,7 @@ describe("FilePreview", () => {
     const btn = screen.getByRole("button", { name: "复制内容" });
     fireEvent.click(btn);
     expect(onCopyText).toHaveBeenCalledWith("hello");
-    expect(screen.getByText("已复制")).toBeInTheDocument();
+    expect(await screen.findByText("已复制")).toBeInTheDocument();
   });
 
   it("text 渲染 lang=text", () => {
@@ -78,7 +86,7 @@ describe("FilePreview", () => {
   it("docx 无 docExtractor 时显示降级占位", () => {
     render(<FilePreview filename="report.docx" content="binary" />);
     expect(screen.getByText("Word")).toBeInTheDocument();
-    expect(screen.getByText(/请下载原件后在本地打开/)).toBeInTheDocument();
+    expect(screen.getByText(/请用系统应用打开原件/)).toBeInTheDocument();
   });
 
   it("docx 有 docExtractor 时渲染提取的段落文本", () => {
@@ -130,7 +138,7 @@ describe("FilePreview", () => {
     expect(document.querySelector("table")).not.toBeNull();
   });
 
-  it("docx 复制文本按钮回调 onCopyText", () => {
+  it("docx 复制文本按钮回调 onCopyText", async () => {
     const onCopyText = vi.fn();
     const zip = {
       readText: () => `<w:p><w:r><w:t>内容</w:t></w:r></w:p>`,
@@ -146,6 +154,7 @@ describe("FilePreview", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "复制文本" }));
     expect(onCopyText).toHaveBeenCalledWith("内容");
+    expect(await screen.findByText("已复制")).toBeInTheDocument();
   });
 
   it("docx 默认解压器:从 data: URL(base64 zip)提取文本(运行时路径)", async () => {
@@ -179,5 +188,73 @@ describe("FilePreview", () => {
     render(<FilePreview filename="archive.zip" content="" />);
     expect(screen.getByText(/暂不支持内嵌预览/)).toBeInTheDocument();
     expect(screen.getByText("文件")).toBeInTheDocument();
+  });
+
+  it("复制等待回调完成并禁止重复提交", async () => {
+    let finish!: (value: boolean) => void;
+    const onCopyText = vi.fn(() => new Promise<boolean>((resolve) => { finish = resolve; }));
+    render(<FilePreview filename="a.txt" content="hello" onCopyText={onCopyText} />);
+    const button = screen.getByRole("button", { name: "复制内容" });
+    fireEvent.click(button);
+    expect(button).toBeDisabled();
+    expect(screen.queryByText("已复制")).not.toBeInTheDocument();
+    fireEvent.click(button);
+    expect(onCopyText).toHaveBeenCalledTimes(1);
+    finish(true);
+    expect(await screen.findByText("已复制")).toBeInTheDocument();
+    expect(button).toBeEnabled();
+  });
+
+  it.each(["false", "reject"])("复制回调 %s 时显示失败而不是成功", async (mode) => {
+    const onCopyText = mode === "false" ? vi.fn(async () => false) : vi.fn(async () => { throw new Error("denied"); });
+    render(<FilePreview filename="a.txt" content="hello" onCopyText={onCopyText} />);
+    fireEvent.click(screen.getByRole("button", { name: "复制内容" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("复制失败");
+    expect(screen.queryByText("已复制")).not.toBeInTheDocument();
+  });
+
+  it("无复制回调时实际复制到剪贴板", async () => {
+    const original = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    try {
+      render(<FilePreview filename="a.txt" content="hello" />);
+      fireEvent.click(screen.getByRole("button", { name: "复制内容" }));
+      await screen.findByText("已复制");
+      expect(writeText).toHaveBeenCalledWith("hello");
+    } finally {
+      if (original) Object.defineProperty(navigator, "clipboard", original);
+      else Reflect.deleteProperty(navigator, "clipboard");
+    }
+  });
+
+  it("切换文件不保留旧复制结果", async () => {
+    let finish!: (value: boolean) => void;
+    const onCopyText = vi.fn(() => new Promise<boolean>((resolve) => { finish = resolve; }));
+    const { rerender } = render(<FilePreview filename="a.txt" content="first" onCopyText={onCopyText} />);
+    fireEvent.click(screen.getByRole("button", { name: "复制内容" }));
+    rerender(<FilePreview filename="b.txt" content="second" onCopyText={onCopyText} />);
+    finish(true);
+    await waitFor(() => expect(screen.getByRole("button", { name: "复制内容" })).toBeEnabled());
+    expect(screen.queryByText("已复制")).not.toBeInTheDocument();
+  });
+
+  it("图片失败有可读反馈，重新选择资源后恢复预览", () => {
+    const { rerender } = render(<FilePreview filename="pic.png" content="bad" />);
+    fireEvent.error(screen.getByAltText("pic.png"));
+    expect(screen.getByRole("alert")).toHaveTextContent("无法加载预览");
+    rerender(<FilePreview filename="pic.png" content="data:image/png;base64,new" />);
+    expect(screen.getByRole("button", { name: "放大预览：pic.png" })).toBeInTheDocument();
+  });
+
+  it("音视频失败显示可读状态", () => {
+    const { container } = render(<FilePreview filename="clip.mp4" content="bad" />);
+    fireEvent.error(container.querySelector("video")!);
+    expect(screen.getByRole("alert")).toHaveTextContent("无法加载预览");
+  });
+
+  it("空文档说明没有可读文本", () => {
+    render(<FilePreview filename="empty.docx" content="binary" docExtractor={() => ({ readText: () => "<w:document />", listEntries: () => ["word/document.xml"] })} />);
+    expect(screen.getByText("未提取到可阅读的文本")).toBeInTheDocument();
   });
 });

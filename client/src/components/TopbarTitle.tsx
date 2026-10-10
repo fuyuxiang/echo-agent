@@ -20,7 +20,10 @@ export function TopbarTitle({
 }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(title);
+  const [saving, setSaving] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const editingRef = useRef(false);
+  const submittingRef = useRef(false);
 
   // Track external title updates (e.g. EchoAgent's LLM-generated summary arriving
   // via agent://summary) while we're not editing.
@@ -39,31 +42,41 @@ export function TopbarTitle({
   const startEdit = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation();
-      if (!title) return;
+      if (!title || submittingRef.current) return;
       setValue(title);
+      editingRef.current = true;
       setEditing(true);
     },
     [title],
   );
 
   const commit = useCallback(async () => {
+    if (!editingRef.current || submittingRef.current) return;
+    editingRef.current = false;
     setEditing(false);
     const trimmed = value.trim();
     if (trimmed && trimmed !== title) {
+      submittingRef.current = true;
+      setSaving(true);
       try {
         await onRename(trimmed);
       } catch {
         setValue(title); // revert the draft; the store keeps the old title
+      } finally {
+        submittingRef.current = false;
+        setSaving(false);
       }
     }
   }, [value, title, onRename]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
       if (e.key === "Enter") {
         e.preventDefault();
         void commit();
       } else if (e.key === "Escape") {
+        editingRef.current = false;
         setEditing(false);
         setValue(title);
       }
@@ -97,6 +110,7 @@ export function TopbarTitle({
           type="button"
           aria-label="编辑标题"
           data-tip="编辑标题"
+          disabled={saving}
           onClick={startEdit}
         >
           <EditToolIcon size="sm" />

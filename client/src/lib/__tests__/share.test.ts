@@ -142,6 +142,27 @@ describe("复制与系统分享", () => {
     await expect(systemShare(payload, "会话", share)).resolves.toBe(true);
     expect(share).toHaveBeenCalledWith(expect.objectContaining({ title: "会话", text: payload.content }));
   });
+  it("Clipboard API 被拒绝时回退，结束后移除临时控件并恢复焦点", async () => {
+    const button = document.createElement("button");
+    document.body.append(button);
+    button.focus();
+    const execCommand = vi.fn().mockReturnValue(true);
+    const original = document.execCommand;
+    Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
+    try {
+      await expect(copyShareText("fallback", { clipboard: { writeText: vi.fn().mockRejectedValue(new Error("denied")) }, document })).resolves.toBe(true);
+      expect(execCommand).toHaveBeenCalledWith("copy");
+      expect(document.querySelector("textarea")).toBeNull();
+      expect(document.activeElement).toBe(button);
+      execCommand.mockImplementation(() => { throw new Error("denied"); });
+      await expect(copyShareText("fallback", { clipboard: null, document })).resolves.toBe(false);
+      expect(document.querySelector("textarea")).toBeNull();
+      expect(document.activeElement).toBe(button);
+    } finally {
+      Object.defineProperty(document, "execCommand", { configurable: true, value: original });
+      button.remove();
+    }
+  });
 });
 
 describe("triggerDownload", () => {

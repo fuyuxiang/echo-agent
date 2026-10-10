@@ -89,6 +89,38 @@ function AwaitableConfirmHarness() {
 }
 
 describe("AppDialog", () => {
+  it("输入法候选 Enter 的 composing 或 229 不提交，普通 Enter 正常提交", async () => {
+    const action = vi.fn();
+    render(<PromptHarness action={action} />);
+    fireEvent.click(screen.getByRole("button", { name: "打开输入" }));
+    const input = screen.getByRole("textbox", { name: /文件名/ });
+    fireEvent.change(input, { target: { value: "draft.md" } });
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 229, isComposing: false });
+    expect(action).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(action).toHaveBeenCalledTimes(1));
+    expect(action).toHaveBeenCalledWith({ name: "draft.md", content: "" });
+  });
+
+  it("输入框修改后 Escape 只打开舍弃确认，继续编辑保留内容", async () => {
+    render(<PromptHarness action={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "打开输入" }));
+    const input = screen.getByRole("textbox", { name: /文件名/ });
+    fireEvent.change(input, { target: { value: "draft.md" } });
+    fireEvent.keyDown(input, { key: "Escape", isComposing: true });
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(screen.getByRole("button", { name: "继续编辑" })).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "继续编辑" }));
+    expect(input).toHaveValue("draft.md");
+    expect(input).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    fireEvent.click(screen.getByRole("button", { name: "舍弃修改" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
   it("可等待用户确认结果，并在取消时返回 false", async () => {
     render(<AwaitableConfirmHarness />);
     fireEvent.click(screen.getByRole("button", { name: "询问" }));

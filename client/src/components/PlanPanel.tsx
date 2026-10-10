@@ -8,7 +8,7 @@
  *  - 进度追踪：每个 in_progress 任务显示耗时
  *  - Plan mode 开关按钮
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useSessionStore } from "@/stores/session-store";
 import {
   agentResolvePlanApproval,
@@ -72,16 +72,39 @@ export function PlanPanel({
   const planApproval = useSessionStore((s) => s.planApproval);
   const dismissPlanApproval = useSessionStore((s) => s.dismissPlanApproval);
   const setPlan = useSessionStore((s) => s.setPlan);
+  const markPlanRevisionSynced = useSessionStore((s) => s.markPlanRevisionSynced);
+  const dirty = useSessionStore((s) => sessionId
+    ? s.transcripts[sessionId]?.planRevisionDirty ?? false
+    : s.planRevisionDirty);
 
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
   const [editText, setEditText] = useState("");
-  const [dirty, setDirty] = useState(false);
   const [elapsed, setElapsed] = useState<Record<number, number>>({});
   const [approvalBusy, setApprovalBusy] = useState(false);
   const [approvalError, setApprovalError] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Track when each task started (for elapsed time display).
   const startTimesRef = useRef<Record<number, number>>({});
+  const [newStep, setNewStep] = useState("");
+  const sessionEpochRef = useRef(0);
+  const currentSessionRef = useRef(sessionId);
+  currentSessionRef.current = sessionId;
+  const approvalPendingRef = useRef(false);
+  const currentApprovalRef = useRef(planApproval?.requestId);
+  currentApprovalRef.current = planApproval?.requestId;
+
+  useLayoutEffect(() => {
+    sessionEpochRef.current += 1;
+    approvalPendingRef.current = false;
+    setEditingIdx(null);
+    setEditText("");
+    setNewStep("");
+    setElapsed({});
+    startTimesRef.current = {};
+    setApprovalBusy(false);
+    setApprovalError(null);
+    return () => { sessionEpochRef.current += 1; };
+  }, [sessionId]);
 
   // Elapsed timer: tick every second while there are in_progress tasks.
   useEffect(() => {
@@ -119,6 +142,7 @@ export function PlanPanel({
   }, [plan?.entries.length]);
 
   useEffect(() => {
+    approvalPendingRef.current = false;
     setApprovalBusy(false);
     setApprovalError(null);
   }, [planApproval?.requestId]);
@@ -137,7 +161,13 @@ export function PlanPanel({
     outcome: "approved" | "cancelled" | "abandoned",
     feedback?: string,
   ) => {
-    if (!planApproval || approvalBusy) return false;
+    if (!planApproval || approvalPendingRef.current) return false;
+    const epoch = sessionEpochRef.current;
+    const requestId = planApproval.requestId;
+    const isCurrentSession = () => currentSessionRef.current === sessionId
+      && sessionEpochRef.current === epoch
+      && currentApprovalRef.current === requestId;
+    approvalPendingRef.current = true;
     setApprovalBusy(true);
     setApprovalError(null);
     let runtimeAcknowledged = false;
@@ -154,26 +184,31 @@ export function PlanPanel({
         plan?.entries.map((entry) => entry.content.trim()).filter(Boolean) ?? [],
       );
       dismissPlanApproval(planApproval.requestId, planApproval.sessionId);
+      if (plan) markPlanRevisionSynced(plan, planApproval.sessionId);
       return true;
     } catch (error) {
       const message = String(error).replace(/^Error:\s*/, "");
       if (runtimeAcknowledged) {
         await Promise.resolve(onApprovalSyncFailed?.(message)).catch(() => undefined);
       }
-      setApprovalError(message);
+      if (isCurrentSession()) setApprovalError(message);
       onToast?.(`审批失败：${message}`);
       return false;
     } finally {
-      setApprovalBusy(false);
+      if (isCurrentSession()) {
+        approvalPendingRef.current = false;
+        setApprovalBusy(false);
+      }
     }
   }, [
-    approvalBusy,
     dismissPlanApproval,
+    markPlanRevisionSynced,
     onApprovalResolved,
     onApprovalSyncFailed,
     onToast,
     plan,
     planApproval,
+    sessionId,
   ]);
 
   const syncPlan = useCallback(async (execute: boolean) => {
@@ -184,7 +219,6 @@ export function PlanPanel({
           ? await resolveApproval("approved")
           : await resolveApproval("cancelled", planRevisionPrompt(plan, false));
         if (accepted) {
-          setDirty(false);
           onToast?.(execute ? "计划已批准，开始执行" : "修订已送回 Agent 继续规划");
         }
         return;
@@ -195,17 +229,16 @@ export function PlanPanel({
         onToast?.("当前会话正在工作，修订计划尚未同步");
         return;
       }
-      setDirty(false);
+      markPlanRevisionSynced(plan, sessionId);
       onToast?.(execute ? "修订计划已同步，开始执行" : "修订计划已同步到 Agent");
     } catch (error) {
       onToast?.(`同步失败：${String(error).replace(/^Error:\s*/, "")}`);
     }
-  }, [onSend, onToast, plan, planApproval, resolveApproval]);
+  }, [markPlanRevisionSynced, onSend, onToast, plan, planApproval, resolveApproval, sessionId]);
 
   const updateLocalPlan = useCallback((next: NonNullable<typeof plan>) => {
-    setPlan(next);
-    setDirty(true);
-  }, [setPlan]);
+    setPlan(next, { sessionId, localRevision: true });
+  }, [sessionId, setPlan]);
 
   const handleApprove = useCallback(() => void resolveApproval("approved"), [resolveApproval]);
 
@@ -257,7 +290,6 @@ export function PlanPanel({
     },
     [plan, updateLocalPlan],
   );
-  const [newStep, setNewStep] = useState("");
   const handleAddStep = useCallback(() => {
     if (!plan || !newStep.trim()) return;
     updateLocalPlan(addPlanEntry(plan, newStep));
@@ -449,7 +481,11 @@ export function PlanPanel({
           value={newStep}
           onChange={(e) => setNewStep(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") handleAddStep();
+            if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
+            if (e.key === "Enter") {
+              e.preventDefault();
+              handleAddStep();
+            }
           }}
           placeholder="新增一个步骤…"
           aria-label="新增步骤"
@@ -531,6 +567,7 @@ function PlanRow({
               value={editText}
               onChange={(e) => onEditTextChange(e.target.value)}
               onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
                 if (e.key === "Enter") onSaveEdit();
                 if (e.key === "Escape") onCancelEdit();
               }}
@@ -557,13 +594,14 @@ function PlanRow({
           >
             {PRIORITY_LABEL[entry.priority]}
           </button>
-          <span
+          <button
+            type="button"
             className="plan-panel__row-status plan-panel__row-status--clickable"
             onClick={onCycleStatus}
             title="点击切换状态"
           >
             {STATUS_LABEL[entry.status]}
-          </span>
+          </button>
           {elapsed !== undefined && (
             <span className="plan-panel__row-elapsed">
               ⏱ {formatElapsed(elapsed)}

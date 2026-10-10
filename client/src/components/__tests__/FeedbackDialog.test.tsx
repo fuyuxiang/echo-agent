@@ -11,6 +11,27 @@ const resetStore = () => {
 describe("FeedbackDialog", () => {
   beforeEach(resetStore);
 
+  it("同一消息关闭再打开保留评分备注，切换消息或会话清空草稿", () => {
+    const view = (open: boolean, messageId = "m1", sessionId = "s1") => <FeedbackDialog
+      open={open} sessionId={sessionId} messageId={messageId} rating="up" onClose={vi.fn()}
+    />;
+    const { rerender } = render(view(true));
+    fireEvent.click(screen.getByLabelText("4 星"));
+    fireEvent.change(screen.getByPlaceholderText("补充说明(可选)"), { target: { value: "保留这段备注" } });
+    fireEvent.mouseEnter(screen.getByLabelText("5 星"));
+    rerender(view(false));
+    rerender(view(true));
+    expect(screen.getByPlaceholderText("补充说明(可选)")).toHaveValue("保留这段备注");
+    expect(screen.getByText("较好")).toBeInTheDocument();
+    expect(useFeedbackStore.getState().getRating("s1", "m1")).toBeNull();
+    rerender(view(true, "m2"));
+    expect(screen.getByPlaceholderText("补充说明(可选)")).toHaveValue("");
+    expect(screen.getByText("点击评分(可选)")).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText("补充说明(可选)"), { target: { value: "另一个会话的草稿" } });
+    rerender(view(true, "m2", "s2"));
+    expect(screen.getByPlaceholderText("补充说明(可选)")).toHaveValue("");
+  });
+
   it("open=false 时不渲染", () => {
     const { container } = render(
       <FeedbackDialog

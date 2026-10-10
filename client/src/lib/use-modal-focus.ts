@@ -58,8 +58,38 @@ export function useModalPresence(): boolean {
 
 function focusableElements(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
-    (element) => !element.hasAttribute("hidden") && element.getAttribute("aria-hidden") !== "true",
+    (element) => {
+      if (element.tabIndex < 0 || element.matches(':disabled, input[type="hidden"]')) return false;
+      if (element.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+      // Checking computed visibility also works in jsdom, unlike geometry
+      // alone. Opacity is intentionally ignored: custom checkboxes retain
+      // a transparent native input so keyboard users can still toggle them.
+      for (let current: HTMLElement | null = element; current; current = current.parentElement) {
+        const style = window.getComputedStyle(current);
+        if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse") return false;
+      }
+      return true;
+    },
   );
+}
+
+function ownedTransient(container: HTMLElement, target: EventTarget | null): {
+  surface: HTMLElement;
+  trigger: HTMLElement | null;
+} | null {
+  const targetSurface = target instanceof Element
+    ? target.closest<HTMLElement>('[role="menu"], [role="listbox"]')
+    : null;
+  const triggers = Array.from(container.querySelectorAll<HTMLElement>('[aria-expanded="true"][aria-controls]'));
+  for (const trigger of triggers) {
+    const surface = document.getElementById(trigger.getAttribute("aria-controls") ?? "");
+    if (surface && surface.matches('[role="menu"], [role="listbox"]') && (!targetSurface || surface.contains(targetSurface))) {
+      return { surface, trigger };
+    }
+  }
+  return targetSurface && container.contains(targetSurface)
+    ? { surface: targetSurface, trigger: null }
+    : null;
 }
 
 /**
@@ -102,7 +132,12 @@ export function useModalFocus<T extends HTMLElement>(
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (modalStack[modalStack.length - 1] !== container) return;
+      if (event.isComposing || event.keyCode === 229) return;
+      const transient = ownedTransient(container, event.target);
       if (event.key === "Escape") {
+        // A selector opened by this modal gets first refusal, including when
+        // its options live in a portal. One Escape dismisses only that layer.
+        if (transient) return;
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation();
@@ -120,6 +155,16 @@ export function useModalFocus<T extends HTMLElement>(
       const firstItem = items[0];
       const lastItem = items[items.length - 1];
       const active = document.activeElement;
+      if (transient?.trigger && !container.contains(active)) {
+        // Browser Tab order follows the portal at the end of body. Resume at
+        // the invoking selector's next/previous field in the modal instead.
+        event.preventDefault();
+        const triggerIndex = items.indexOf(transient.trigger);
+        const index = (triggerIndex + (event.shiftKey ? -1 : 1) + items.length) % items.length;
+        dismissTransientSurfaces();
+        items[index].focus();
+        return;
+      }
       if (event.shiftKey && (active === firstItem || !container.contains(active))) {
         event.preventDefault();
         lastItem.focus();
