@@ -11,7 +11,8 @@
  * 兼容性：保留原导出名 `ToolSidePanel` / `ToolSidePanelMode` 与 ChatView 的 props，
  * 新增内部状态管理视图/标签/宽度。原 "tool" 模式仍用于展示单个工具调用详情。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { SidebarLayoutContext } from "@/lib/sidebar-layout";
 import type { ToolCallView } from "@/stores/session-store";
 import type { SessionArtifact } from "@/lib/session-artifacts";
 import type { FileChange } from "@/lib/file-changes";
@@ -175,8 +176,9 @@ export function ToolSidePanel({
   });
 
   // ---- 面板布局状态 ----
+  const shellLayout = useContext(SidebarLayoutContext);
   const [viewportWidth, setViewportWidth] = useState(getViewportWidth);
-  const panelMaxWidth = getPanelMaxWidth(viewportWidth);
+  const panelMaxWidth = Math.min(getPanelMaxWidth(viewportWidth), shellLayout?.panelMaxWidth ?? Infinity);
   const [width, setWidth] = useState<number>(() => {
     return readStoredDimension(
       WIDTH_KEY,
@@ -196,6 +198,13 @@ export function ToolSidePanel({
   const [maximized, setMaximized] = useState(false);
   const [pinned, setPinned] = useState(false);
   const [navCollapsed, setNavCollapsed] = useState(false);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  const registerPanel = shellLayout?.registerPanel;
+  useLayoutEffect(() => {
+    registerPanel?.(open && !maximized ? { minimumWidth: MIN_WIDTH, close: () => closeRef.current() } : null);
+    return () => registerPanel?.(null);
+  }, [open, maximized, registerPanel]);
 
   const renderedPanelWidth = clamp(width, MIN_WIDTH, panelMaxWidth);
   const availablePanelWidth = maximized ? viewportWidth : renderedPanelWidth;
@@ -220,12 +229,14 @@ export function ToolSidePanel({
   }, []);
 
   useEffect(() => {
-    setWidth((current) => clamp(current, MIN_WIDTH, panelMaxWidth));
-  }, [panelMaxWidth]);
+    // Shell constraints are temporary; closing / resizing the left sidebar
+    // should restore the workspace panel's preferred width automatically.
+    if (!shellLayout) setWidth((current) => clamp(current, MIN_WIDTH, panelMaxWidth));
+  }, [panelMaxWidth, shellLayout]);
 
   useEffect(() => {
-    setNavWidth((current) => clamp(current, MIN_NAV_WIDTH, navMaxWidth));
-  }, [navMaxWidth]);
+    if (!shellLayout) setNavWidth((current) => clamp(current, MIN_NAV_WIDTH, navMaxWidth));
+  }, [navMaxWidth, shellLayout]);
 
   // 持久化经过校验的宽度；同时兼容无痕模式等 localStorage 不可写场景。
   useEffect(() => {

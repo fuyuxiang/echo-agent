@@ -873,16 +873,24 @@ button,
 }
 
 .sidebar {
-  width: 248px;
+  width: var(--app-sidebar-width, 264px);
   background: var(--ui-sidebar);
   padding: 0 8px 10px;
 }
 
 .sidebar__logo-row {
   height: 64px;
-  gap: 10px;
+  gap: 8px;
   padding-left: 20px;
   padding-right: 10px;
+}
+
+.sidebar__logo-col {
+  min-width: 0;
+}
+
+.sidebar__icon-btn {
+  flex: 0 0 32px;
 }
 
 .sidebar__brand-mark {
@@ -898,6 +906,10 @@ button,
   font-size: 0.8125rem;
   font-weight: 700;
   letter-spacing: -0.01em;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sidebar__version {
@@ -1500,6 +1512,18 @@ button,
 .chatview .echo-composer__footer .echo-composer__send {
   margin-left: auto;
   flex: none;
+}
+
+/* Narrow chat columns can wrap the footer. Keep the setup message in flow
+ * so it never covers those controls, while preserving any existing draft. */
+.chatview .echo-composer__setup-hint {
+  position: static;
+  min-height: 50px;
+  padding: 4px;
+}
+
+.chatview .echo-composer--disabled .echo-composer__input:placeholder-shown {
+  display: none;
 }
 
 .chatview__utility-bar .chatview__workspace-bar,
@@ -2755,7 +2779,7 @@ button,
   }
 }
 
-@container app-main (max-width: 760px) {
+@container chat-main (max-width: 760px) {
   .chatview__utility-bar {
     align-items: stretch;
     flex-direction: column;
@@ -2783,7 +2807,9 @@ button,
   .chatview__main > .findbar {
     top: 90px;
   }
+}
 
+@container app-main (max-width: 760px) {
   .home {
     padding: 28px 24px 44px;
   }
@@ -2895,7 +2921,7 @@ button,
   }
 
   .sidebar {
-    width: 248px;
+    width: var(--app-sidebar-width, 248px);
   }
 
   .home {
@@ -2936,7 +2962,7 @@ button,
   }
 
   .sidebar {
-    width: 232px;
+    width: var(--app-sidebar-width, 232px);
     padding-left: 6px;
     padding-right: 6px;
   }
@@ -3012,7 +3038,7 @@ button,
 
 @media (max-width: 760px) {
   .sidebar {
-    width: 220px;
+    width: var(--app-sidebar-width, 220px);
   }
 
   .home {

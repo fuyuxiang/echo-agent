@@ -5,6 +5,7 @@ import { Sidebar } from "../Sidebar";
 import { useSessionsStore } from "@/stores/sessions-store";
 import { useProjectsStore } from "@/stores/projects-store";
 import { resetOrgSessionMirror, useOrgSessionStore } from "@/stores/org-session-store";
+import { SidebarLayoutContext } from "@/lib/sidebar-layout";
 
 vi.mock("@/lib/agent-client", () => ({
   agentRenameSession: vi.fn().mockResolvedValue(undefined),
@@ -62,6 +63,18 @@ describe("Sidebar", () => {
       "新建任务", "项目", "组织", "扩展", "代码开发", "更多知识与工具",
     ]);
     expect(screen.queryByText("助理")).not.toBeInTheDocument();
+  });
+
+  it.each(["collapsed", "resizing"] as const)("侧栏 %s 时关闭更多浮层并阻止重新展开", async (state) => {
+    const layout = { collapsed: false, resizing: false, panelMaxWidth: 600, registerPanel: vi.fn(), expandSidebar: vi.fn() };
+    const { rerender } = render(<SidebarLayoutContext.Provider value={layout}><Sidebar {...base} /></SidebarLayoutContext.Provider>);
+    await userEvent.hover(screen.getByRole("button", { name: /更多/ }));
+    expect(screen.getByRole("menu", { name: "更多功能" })).toBeInTheDocument();
+    rerender(<SidebarLayoutContext.Provider value={{ ...layout, [state]: true }}><Sidebar {...base} /></SidebarLayoutContext.Provider>);
+    expect(screen.queryByRole("menu", { name: "更多功能" })).not.toBeInTheDocument();
+    fireEvent.mouseEnter(screen.getByRole("button", { name: /更多/ }));
+    fireEvent.keyDown(screen.getByRole("button", { name: /更多/ }), { key: "ArrowDown" });
+    expect(screen.queryByRole("menu", { name: "更多功能" })).not.toBeInTheDocument();
   });
 
   it("点击占位导航触发 onNavigate", () => {

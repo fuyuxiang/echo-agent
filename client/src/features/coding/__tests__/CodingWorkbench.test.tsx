@@ -90,6 +90,7 @@ import { codingTaskContextDraftKey, codingTaskDraftKey } from "../lib/task-draft
 import type { CodingTask } from "../lib/types";
 import { useAiDraftStore } from "../store/ai-draft-store";
 import { useTaskStore } from "../store/task-store";
+import { SidebarLayoutContext, useAppSidebarLayout } from "@/lib/sidebar-layout";
 
 function verificationTask(overrides: Partial<CodingTask> = {}): CodingTask {
   return {
@@ -134,6 +135,21 @@ describe("Theia workbench", () => {
       error: null,
     });
     useAiDraftStore.getState().clear();
+  });
+
+  it("restores the global sidebar from the coding header without leaving the workbench", () => {
+    function Shell() {
+      const layout = useAppSidebarLayout();
+      return <SidebarLayoutContext.Provider value={layout.context}>
+        <button onClick={() => layout.setCollapsed(true)}>收起全局导航</button>
+        <CodingWorkbench cwd="" models={[]} />
+      </SidebarLayoutContext.Provider>;
+    }
+    render(<Shell />);
+    fireEvent.click(screen.getByText("收起全局导航"));
+    fireEvent.click(screen.getByRole("button", { name: "展开侧边栏" }));
+    expect(screen.queryByRole("button", { name: "展开侧边栏" })).not.toBeInTheDocument();
+    expect(screen.getByText("打开代码库开始开发")).toBeInTheDocument();
   });
 
   it("keeps the Agent pane beside Theia and allows resizing independently", async () => {

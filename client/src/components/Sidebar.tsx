@@ -1,4 +1,5 @@
-import { useState, useCallback, useRef, useEffect, useMemo } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo, useContext, useLayoutEffect } from "react";
+import { SidebarLayoutContext } from "@/lib/sidebar-layout";
 import { useSessionsStore, selectHasFilter } from "@/stores/sessions-store";
 import { useProjectsStore } from "@/stores/projects-store";
 import { useOrgSessionStore } from "@/stores/org-session-store";
@@ -320,6 +321,8 @@ function MoreDropdown({
   onNavigate: (label: string) => void;
   activeNav: string;
 }) {
+  const layout = useContext(SidebarLayoutContext);
+  const unavailable = !!(layout?.collapsed || layout?.resizing);
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -341,9 +344,14 @@ function MoreDropdown({
   }, [clearCloseTimer]);
 
   const openMenu = useCallback(() => {
+    if (unavailable) return;
     clearCloseTimer();
     setOpen(true);
-  }, [clearCloseTimer]);
+  }, [clearCloseTimer, unavailable]);
+
+  useLayoutEffect(() => {
+    if (unavailable) closeMenu();
+  }, [unavailable, closeMenu]);
 
   const scheduleClose = useCallback(() => {
     clearCloseTimer();
@@ -384,6 +392,7 @@ function MoreDropdown({
   }, [open]);
 
   const openFromKeyboard = (edge: "first" | "last") => {
+    if (unavailable) return;
     clearCloseTimer();
     if (open) {
       focusMenuEdge(menuRef.current, edge);
@@ -543,6 +552,7 @@ export function Sidebar({
   onRetrySessions?: () => void;
   activeNav: string;
 }) {
+  const sidebarLayout = useContext(SidebarLayoutContext);
   const independent = useSessionsStore((s) => s.independent);
   const tasksOpen = useSessionsStore((s) => s.tasksOpen);
   const projectsOpen = useSessionsStore((s) => s.projectsOpen);
@@ -627,6 +637,14 @@ export function Sidebar({
   const sidebarRef = useRef<HTMLElement>(null);
   const skipMenuFocusRestoreRef = useRef(false);
   const { requestConfirmation, dialog } = useAppDialog("sidebar-session-actions");
+
+  useLayoutEffect(() => {
+    if (sidebarLayout?.collapsed || sidebarLayout?.resizing) {
+      pendingFilterFocus.current = null;
+      setFilterOpen(false);
+      setContextMenu(null);
+    }
+  }, [sidebarLayout?.collapsed, sidebarLayout?.resizing]);
 
   const allSessions = useMemo(
     () => independent.filter((session) => !session.hidden),
@@ -916,7 +934,7 @@ export function Sidebar({
   }, 0);
 
   return (
-    <aside ref={sidebarRef} className="sidebar">
+    <aside id="app-sidebar" ref={sidebarRef} className="sidebar">
       {/* macOS Overlay 标题栏:红绿灯悬浮在 logo 行左上,整行作为拖拽区
           (Windows 的窗口拖拽由自绘 TitleBar 负责,故仅在 mac 加属性)。 */}
       <div className="sidebar__logo-row" {...(IS_MACOS ? { "data-tauri-drag-region": true } : {})}>

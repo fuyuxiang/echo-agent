@@ -3,6 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { TitleBar } from "./components/TitleBar";
 import { Sidebar } from "./components/Sidebar";
+import { SidebarResizeHandle } from "./components/SidebarResizeHandle";
+import { SidebarLayoutContext, useAppSidebarLayout } from "./lib/sidebar-layout";
 import { HomePage } from "./components/HomePage";
 import { PlaceholderPage } from "./components/PlaceholderPage";
 import { Toast, type ToastAction } from "./components/Toast";
@@ -249,7 +251,8 @@ function Shell() {
   const [hasOpenedCodingWorkspace, setHasOpenedCodingWorkspace] = useState(false);
   const [createExpertRequested, setCreateExpertRequested] = useState(false);
   const [meetingLaunchModelId, setMeetingLaunchModelId] = useState<string | undefined>();
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const sidebarLayout = useAppSidebarLayout();
+  const { collapsed: sidebarCollapsed, setCollapsed: setSidebarCollapsed } = sidebarLayout;
   const [toasts, setToasts] = useState<ToastEntry[]>([]);
   const [currentModelId, setCurrentModelId] = useState<string | undefined>(undefined);
   const newSessionModelOverrideRef = useRef<string | undefined>(undefined);
@@ -2658,7 +2661,8 @@ function Shell() {
           hideMenus={IS_WINDOWS}
         />
       )}
-      <div className={"app__body" + (sidebarCollapsed ? " app__body--collapsed" : "")}>
+      <SidebarLayoutContext.Provider value={sidebarLayout.context}>
+      <div ref={sidebarLayout.bodyRef} style={sidebarLayout.style} className={"app__body" + (sidebarCollapsed ? " app__body--collapsed" : "") + (sidebarLayout.resizing ? " app__body--sidebar-resizing" : "")}>
         <Sidebar
           onNewSession={handleNewSession}
           onSelect={handleSelectSession}
@@ -2676,6 +2680,7 @@ function Shell() {
           onRetrySessions={() => void refreshSessionCatalog()}
           activeNav={activeNav}
         />
+        <SidebarResizeHandle layout={sidebarLayout} />
         <main className="app__main">
           {/* 对话页使用会话顶栏。侧栏折叠后的其它页面使用占位的紧凑工具栏，
               避免展开/新建按钮覆盖各页面自己的标题和导航。
@@ -2885,6 +2890,7 @@ function Shell() {
           )}
         </main>
       </div>
+      </SidebarLayoutContext.Provider>
       {toasts.map((toast, index) => (
         <Toast
           key={toast.id}

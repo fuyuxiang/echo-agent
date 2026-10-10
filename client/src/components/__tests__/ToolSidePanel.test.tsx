@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { ToolSidePanel, type ToolSidePanelMode } from "../ToolSidePanel";
+import { SidebarLayoutContext, useAppSidebarLayout } from "@/lib/sidebar-layout";
 import type { SessionArtifact } from "@/lib/session-artifacts";
 import type { ToolCallView } from "@/stores/session-store";
 
@@ -34,6 +35,37 @@ describe("ToolSidePanel navigation collapse", () => {
     localStorage.clear();
     vi.mocked(invoke).mockReset().mockResolvedValue([]);
     HTMLElement.prototype.scrollIntoView = vi.fn();
+  });
+
+  it("coordinates with the global sidebar without losing the user's preferred panel width", async () => {
+    const originalViewport = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
+    localStorage.setItem("app-sidebar-width", "400");
+    localStorage.setItem("tool-side-panel-width", "380");
+    function CoordinatedPanel() {
+      const layout = useAppSidebarLayout();
+      return <SidebarLayoutContext.Provider value={layout.context}>
+        <div ref={layout.bodyRef}>
+          <button onClick={() => layout.setCollapsed(true)}>隐藏全局导航</button>
+          <button onClick={() => layout.setCollapsed(false)}>恢复全局导航</button>
+          <ToolSidePanel open mode="artifacts" artifacts={[]} onClose={vi.fn()}
+            onSelectTool={vi.fn()} onSelectArtifact={vi.fn()} onOpenArtifacts={vi.fn()} />
+        </div>
+      </SidebarLayoutContext.Provider>;
+    }
+    try {
+      const { container } = render(<CoordinatedPanel />);
+      const panel = container.querySelector<HTMLElement>(".tool-side-panel")!;
+      expect(panel.style.width).toBe("280px");
+      expect(localStorage.getItem("tool-side-panel-width")).toBe("380");
+      fireEvent.click(screen.getByText("隐藏全局导航"));
+      await waitFor(() => expect(panel.style.width).toBe("380px"));
+      fireEvent.click(screen.getByText("恢复全局导航"));
+      await waitFor(() => expect(panel.style.width).toBe("280px"));
+      expect(localStorage.getItem("tool-side-panel-width")).toBe("380");
+    } finally {
+      Object.defineProperty(window, "innerWidth", { value: originalViewport });
+    }
   });
 
   it("replaces the full header with one accessible expand control", () => {

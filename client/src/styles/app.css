@@ -26,6 +26,53 @@
 .app__body--collapsed .sidebar {
   display: none;
 }
+.sidebar-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  z-index: 21;
+  cursor: ew-resize;
+  touch-action: none;
+  -webkit-app-region: no-drag;
+  outline: none;
+}
+.app--macos .sidebar-resize { top: 32px; }
+.app__body:has(.sidebar__more-wrap--open) .sidebar-resize:not(.sidebar-resize--active) {
+  z-index: 19;
+}
+.sidebar-resize::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 1px;
+  background: var(--echo-border-default);
+}
+.sidebar-resize:hover::after,
+.sidebar-resize:focus-visible::after,
+.sidebar-resize--active::after {
+  width: 2px;
+  background: var(--echo-brand);
+}
+.sidebar-resize__hint {
+  position: absolute;
+  top: 50%;
+  left: 12px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--echo-bg-primary);
+  border: 1px solid var(--echo-border-default);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.12);
+  color: var(--echo-text-strong);
+  font-size: .75rem;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.app__body--sidebar-resizing,
+.app__body--sidebar-resizing * { cursor: ew-resize !important; user-select: none !important; }
+.app__body--sidebar-resizing iframe { pointer-events: none; }
 /* Chat-only top bar: in-flow header so it reserves height and pushes content
  * down. Other pages use the compact controls below when the sidebar closes. */
 .main-topbar {
@@ -348,6 +395,8 @@
   min-height: 0;
   min-width: 0;
   position: relative;
+  container-type: inline-size;
+  container-name: chat-main;
 }
 .chatview__scroll-shell {
   flex: 1;
@@ -7664,7 +7713,7 @@ button.diff__path {
 
 /* ===== Sidebar (EchoAgent conversation-list,实测:264px,#F2F2F2) ===== */
 .sidebar {
-  width: 264px;
+  width: var(--app-sidebar-width, 264px);
   flex: none;
   /* EchoAgent: sidebar bg = --echo-sidebar-bg (= #F2F2F2 light) */
   background: var(--echo-sidebar-bg, var(--echo-home-bg-primary));
