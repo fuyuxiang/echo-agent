@@ -52,12 +52,13 @@ describe("FolderTrustDialog", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("读取待处理信任请求失败：通道断开");
     const retry = screen.getByRole("button", { name: "重试" });
-    expect(retry).toHaveFocus();
+    // DOM 更新可早于 useEffect 中的焦点转移，等待实际焦点状态。
+    await waitFor(() => expect(retry).toHaveFocus());
     expect(screen.getByRole("alertdialog")).toHaveAttribute("aria-busy", "false");
     fireEvent.click(retry);
 
     expect(await screen.findByText("/work/one")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "不信任" })).toHaveFocus();
+    await waitFor(() => expect(screen.getByRole("button", { name: "不信任" })).toHaveFocus());
     expect(onResolve).not.toHaveBeenCalled();
     expect(errorSpy).toHaveBeenCalledWith(
       "list pending folder trust requests failed",
@@ -75,8 +76,8 @@ describe("FolderTrustDialog", () => {
     render(<FolderTrustDialog request={{ cwd: first.cwd }} onResolve={onResolve} />);
 
     expect(await screen.findByText("/work/one")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "不信任" })).toHaveFocus());
     expect(screen.getByText("还有 1 个信任请求等待处理")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "不信任" })).toHaveFocus();
 
     fireEvent.click(screen.getByRole("button", { name: "不信任" }));
     expect(await screen.findByText("/work/two")).toBeInTheDocument();
@@ -93,7 +94,8 @@ describe("FolderTrustDialog", () => {
       .mockResolvedValueOnce(pending([first]))
       .mockResolvedValueOnce(pending([]));
     render(<FolderTrustDialog request={{ cwd: first.cwd }} onResolve={vi.fn()} />);
-    await screen.findByText("/work/one");
+    // 路径在查询完成前就由 request 提示展示，按钮出现才表示队列已就绪。
+    await screen.findByRole("button", { name: "不信任" });
 
     fireEvent.keyDown(document, { key: "Escape" });
     await waitFor(() => expect(folderTrustRespond).toHaveBeenCalledWith("trust-1", false));
@@ -121,9 +123,9 @@ describe("FolderTrustDialog", () => {
 
     rerender(<FolderTrustDialog request={{ cwd: first.cwd }} onResolve={vi.fn()} />);
     expect(await screen.findByText("/work/one")).toBeInTheDocument();
-    const deny = screen.getByRole("button", { name: "不信任" });
+    const deny = await screen.findByRole("button", { name: "不信任" });
     const trust = screen.getByRole("button", { name: /信任并加载/ });
-    expect(deny).toHaveFocus();
+    await waitFor(() => expect(deny).toHaveFocus());
     fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
     expect(trust).toHaveFocus();
   });
