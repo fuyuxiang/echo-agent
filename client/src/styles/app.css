@@ -7800,6 +7800,15 @@ button.diff__path {
   z-index: var(--echo-layer-popover);
   animation: sidebarMoreFadeIn 0.14s ease-out;
 }
+.sidebar__more-popover::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 100%;
+  /* Keep the pointer inside the flyout while crossing its 6px visual gap. */
+  width: 7px;
+}
 @keyframes sidebarMoreFadeIn {
   from {
     opacity: 0;

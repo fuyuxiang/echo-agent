@@ -309,7 +309,8 @@ function handleMenuKeyDown(
 
 /**
  * "更多" 侧栏按钮的弹出菜单 — 对齐 EchoAgent：
- * - 点击打开，向右浮出（不向下盖住会话列表）
+ * - 悬停打开，向右浮出；点击和键盘也可打开。
+ * - 离开时延迟关闭，允许鼠标跨过按钮和菜单之间的间隙。
  * - 展示知识库和定时任务；个人记忆由设置管理。
  */
 function MoreDropdown({
@@ -324,17 +325,47 @@ function MoreDropdown({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const pendingKeyboardFocus = useRef<"first" | "last" | null>(null);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearCloseTimer = useCallback(() => {
+    if (closeTimer.current !== null) {
+      clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+  }, []);
+
+  const closeMenu = useCallback(() => {
+    clearCloseTimer();
+    pendingKeyboardFocus.current = null;
+    setOpen(false);
+  }, [clearCloseTimer]);
+
+  const openMenu = useCallback(() => {
+    clearCloseTimer();
+    setOpen(true);
+  }, [clearCloseTimer]);
+
+  const scheduleClose = useCallback(() => {
+    clearCloseTimer();
+    closeTimer.current = setTimeout(() => {
+      closeTimer.current = null;
+      // Pointer movement must not dismiss a menu being used from the keyboard.
+      if (!menuRef.current?.contains(document.activeElement)) closeMenu();
+    }, 120);
+  }, [clearCloseTimer, closeMenu]);
+
+  useEffect(() => () => clearCloseTimer(), [clearCloseTimer]);
 
   useEffect(() => {
     if (!open) return;
     const handleClick = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false);
+        closeMenu();
       }
     };
     const handleEsc = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        setOpen(false);
+        closeMenu();
         triggerRef.current?.focus();
       }
     };
@@ -344,7 +375,7 @@ function MoreDropdown({
       document.removeEventListener("mousedown", handleClick);
       document.removeEventListener("keydown", handleEsc);
     };
-  }, [open]);
+  }, [open, closeMenu]);
 
   useEffect(() => {
     if (!open || !pendingKeyboardFocus.current) return;
@@ -353,6 +384,7 @@ function MoreDropdown({
   }, [open]);
 
   const openFromKeyboard = (edge: "first" | "last") => {
+    clearCloseTimer();
     if (open) {
       focusMenuEdge(menuRef.current, edge);
       return;
@@ -372,7 +404,7 @@ function MoreDropdown({
       label: "知识库",
       icon: <MoreMenuImaKnowledgeIcon size="md" />,
       action: () => {
-        setOpen(false);
+        closeMenu();
         onNavigate("知识库");
       },
     },
@@ -381,7 +413,7 @@ function MoreDropdown({
       label: "定时任务",
       icon: <EchoAutomationNavIcon size="md" />,
       action: () => {
-        setOpen(false);
+        closeMenu();
         onNavigate("自动化");
       },
     },
@@ -395,6 +427,12 @@ function MoreDropdown({
     <div
       className={"sidebar__more-wrap" + (open ? " sidebar__more-wrap--open" : "")}
       ref={containerRef}
+      onMouseEnter={openMenu}
+      onMouseLeave={scheduleClose}
+      onFocusCapture={clearCloseTimer}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) closeMenu();
+      }}
     >
       <button
         ref={triggerRef}
@@ -406,14 +444,14 @@ function MoreDropdown({
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={open ? "sidebar-more-menu" : undefined}
-        onClick={() => setOpen((o) => !o)}
+        onClick={openMenu}
         onKeyDown={(event) => {
           if (["Enter", " ", "ArrowDown", "ArrowUp"].includes(event.key)) {
             event.preventDefault();
             openFromKeyboard(event.key === "ArrowUp" ? "last" : "first");
           } else if (event.key === "Escape" && open) {
             event.preventDefault();
-            setOpen(false);
+            closeMenu();
           }
         }}
       >
@@ -429,7 +467,7 @@ function MoreDropdown({
           role="menu"
           aria-label="更多功能"
           onKeyDown={(event) => handleMenuKeyDown(event, () => {
-            setOpen(false);
+            closeMenu();
             triggerRef.current?.focus();
           })}
         >

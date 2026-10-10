@@ -1,5 +1,5 @@
-import { beforeEach, describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
+import { act, render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Sidebar } from "../Sidebar";
 import { useSessionsStore } from "@/stores/sessions-store";
@@ -27,6 +27,8 @@ const base = {
 };
 
 describe("Sidebar", () => {
+  afterEach(() => vi.useRealTimers());
+
   beforeEach(() => {
     resetOrgSessionMirror();
     useSessionsStore.setState({
@@ -310,14 +312,17 @@ describe("Sidebar", () => {
     await waitFor(() => expect(onDeleteSession).toHaveBeenCalledWith("project-session", "/workspace"));
   });
 
-  it("悬停后点击「更多」才展开，且只展示知识库和定时任务", () => {
+  it("悬停「更多」自动展开，只展示知识库和定时任务且不抢走焦点", async () => {
     const onNavigate = vi.fn();
+    const user = userEvent.setup();
     render(<Sidebar {...base} onNavigate={onNavigate} />);
-    fireEvent.mouseEnter(screen.getByText("更多").closest(".sidebar__more-wrap")!);
-    expect(screen.queryByRole("menu")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: /更多/ }));
+    const settings = screen.getByRole("button", { name: "设置" });
+    settings.focus();
+    await user.hover(screen.getByRole("button", { name: /更多/ }));
     const menu = screen.getByRole("menu");
     expect(menu).toBeInTheDocument();
+    expect(settings).toHaveFocus();
+    expect(onNavigate).not.toHaveBeenCalled();
     expect(within(menu).getByText("知识库")).toBeInTheDocument();
     expect(within(menu).getByRole("menuitem", { name: "定时任务" })).toBeInTheDocument();
     expect(within(menu).getAllByRole("menuitem")).toHaveLength(2);
@@ -327,6 +332,86 @@ describe("Sidebar", () => {
     for (const removed of ["灵感", "网页预览", "策略设置", "发现"]) {
       expect(within(menu).queryByText(removed)).not.toBeInTheDocument();
     }
+  });
+
+  it("悬停后再点击「更多」保持菜单展开", async () => {
+    const user = userEvent.setup();
+    render(<Sidebar {...base} />);
+    const trigger = screen.getByRole("button", { name: /更多/ });
+
+    await user.hover(trigger);
+    await user.click(trigger);
+
+    expect(screen.getByRole("menu", { name: "更多功能" })).toBeInTheDocument();
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("鼠标跨过按钮与弹层间隙时保持展开，离开菜单后延迟关闭", () => {
+    vi.useFakeTimers();
+    render(<Sidebar {...base} />);
+    const trigger = screen.getByRole("button", { name: /更多/ });
+    fireEvent.mouseEnter(trigger);
+    const menu = screen.getByRole("menu", { name: "更多功能" });
+
+    fireEvent.mouseLeave(trigger, { relatedTarget: document.body });
+    act(() => vi.advanceTimersByTime(60));
+    expect(menu).toBeInTheDocument();
+    fireEvent.mouseEnter(menu, { relatedTarget: document.body });
+    act(() => vi.advanceTimersByTime(120));
+    expect(menu).toBeInTheDocument();
+
+    fireEvent.mouseLeave(menu, { relatedTarget: document.body });
+    act(() => vi.advanceTimersByTime(119));
+    expect(menu).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.queryByRole("menu", { name: "更多功能" })).toBeNull();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("鼠标离开不会关闭正在用键盘操作的菜单，焦点离开后关闭", () => {
+    vi.useFakeTimers();
+    render(<Sidebar {...base} />);
+    const trigger = screen.getByRole("button", { name: /更多/ });
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "ArrowUp" });
+    const menu = screen.getByRole("menu", { name: "更多功能" });
+    const lastItem = within(menu).getByRole("menuitem", { name: "定时任务" });
+    expect(lastItem).toHaveFocus();
+
+    fireEvent.mouseLeave(menu, { relatedTarget: document.body });
+    act(() => vi.advanceTimersByTime(120));
+    expect(menu).toBeInTheDocument();
+    expect(lastItem).toHaveFocus();
+
+    act(() => screen.getByRole("button", { name: "设置" }).focus());
+    expect(screen.queryByRole("menu", { name: "更多功能" })).toBeNull();
+  });
+
+  it("悬停展开后可用 Escape 或点击外部关闭", async () => {
+    const user = userEvent.setup();
+    render(<Sidebar {...base} />);
+    const trigger = screen.getByRole("button", { name: /更多/ });
+
+    await user.hover(trigger);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu", { name: "更多功能" })).toBeNull();
+    expect(trigger).toHaveFocus();
+
+    await user.unhover(trigger);
+    await user.hover(trigger);
+    expect(screen.getByRole("menu", { name: "更多功能" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    expect(screen.queryByRole("menu", { name: "更多功能" })).toBeNull();
+  });
+
+  it("无悬停操作时仍可点击打开菜单", async () => {
+    const user = userEvent.setup({ skipHover: true });
+    render(<Sidebar {...base} />);
+
+    await user.click(screen.getByRole("button", { name: /更多/ }));
+    expect(screen.getByRole("menu", { name: "更多功能" })).toBeInTheDocument();
+    await user.click(screen.getByRole("menuitem", { name: "知识库" }));
+    expect(screen.queryByRole("menu", { name: "更多功能" })).toBeNull();
   });
 
   it.each(["专家·技能·连接器", "技能", "连接器", "插件·市场", "插件市场"])("扩展子页 %s 始终选中同一个侧栏入口", activeNav => {
@@ -339,7 +424,7 @@ describe("Sidebar", () => {
     const onNavigate = vi.fn();
     const user = userEvent.setup();
     render(<Sidebar {...base} onNavigate={onNavigate} onToast={vi.fn()} />);
-    await user.click(screen.getByRole("button", { name: /更多/ }));
+    await user.hover(screen.getByRole("button", { name: /更多/ }));
     const menu = await screen.findByRole("menu");
     expect(menu).toBeInTheDocument();
     fireEvent.click(screen.getByText("知识库"));
