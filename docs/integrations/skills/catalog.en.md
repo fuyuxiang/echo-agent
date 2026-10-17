@@ -1,6 +1,6 @@
 # Built-in Skill Catalog
 
-Echo Agent provides 35 built-in skills across 10 categories. This document lists all available skills and their descriptions.
+Echo Agent provides 36 built-in skills across 10 categories. This document lists all available skills and their descriptions.
 
 ## Overview
 
@@ -39,6 +39,7 @@ Software development assistance skills.
 | Skill | Description | Required Env Vars |
 |-------|-------------|-------------------|
 | code-runner | Run Python snippets with timeouts and limited pattern checks | — |
+| cohesivity | Provision a backend for the project through the Cohesivity API: hosting, Postgres, storage, and other services | Requires `npx`; no API key |
 | github-ops | Perform GitHub operations through the `gh` CLI | Requires `gh` with an authenticated account |
 | plan | Break down complex tasks into executable step-by-step plans | — |
 | skill-creator | Assist in creating new SKILL.md skill files | — |

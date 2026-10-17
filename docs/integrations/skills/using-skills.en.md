@@ -1,6 +1,6 @@
 # Skills System Guide
 
-Echo Agent ships with 35 built-in skills across 10 categories. Skills are pre-written instruction sets (SKILL.md files) that teach the agent how to perform specific tasks.
+Echo Agent ships with 36 built-in skills across 10 categories. Skills are pre-written instruction sets (SKILL.md files) that teach the agent how to perform specific tasks.
 
 ## What Is a Skill
 

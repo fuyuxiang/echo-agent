@@ -9,7 +9,7 @@ Echo Agent integrates with external systems through a multi-layer extension arch
 │                  Echo Agent Core                  │
 ├──────────┬──────────┬──────────┬────────────────┤
 │ Channels │ Gateway  │  Skills  │    Plugins     │
-│  (14)    │ HTTP/WS  │  (35)    │  plugin.yaml   │
+│  (14)    │ HTTP/WS  │  (36)    │  plugin.yaml   │
 ├──────────┴──────────┴──────────┴────────────────┤
 │       MCP (Tool Extension) │ A2A (Inbound Tasks) │
 └─────────────────────────────────────────────────┘
@@ -21,7 +21,7 @@ Echo Agent integrates with external systems through a multi-layer extension arch
 |--------|-------------|---------------|
 | [Channels](channels/index.md) | 14 platform adapters covering IM, email, webhook, CLI | Configuration & capability matrix |
 | [Gateway](gateway/index.md) | HTTP/WebSocket API gateway with auth, rate limiting, sessions | Auth modes & reverse proxy |
-| [Skills](skills/using-skills.md) | 35 built-in skills organized by category | Usage & catalog |
+| [Skills](skills/using-skills.md) | 36 built-in skills organized by category | Usage & catalog |
 | [Plugins](plugins/using-plugins.md) | Extension mechanism based on plugin.yaml | Usage & development |
 | [MCP](mcp.md) | Model Context Protocol client for external tool servers | Configuration & usage |
 | [A2A](a2a.md) | Inbound Agent-to-Agent protocol for text tasks delegated to Echo Agent by external peers | Protocol & integration |

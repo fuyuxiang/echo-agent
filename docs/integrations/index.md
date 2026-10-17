@@ -9,7 +9,7 @@ Echo Agent 通过多层扩展体系与外部系统集成，覆盖消息通道、
 │                  Echo Agent Core                  │
 ├──────────┬──────────┬──────────┬────────────────┤
 │ Channels │ Gateway  │  Skills  │    Plugins     │
-│ (14 个)  │ HTTP/WS  │ (35 个)  │  plugin.yaml   │
+│ (14 个)  │ HTTP/WS  │ (36 个)  │  plugin.yaml   │
 ├──────────┴──────────┴──────────┴────────────────┤
 │         MCP (工具扩展)  │  A2A (入站任务服务)    │
 └─────────────────────────────────────────────────┘
@@ -21,7 +21,7 @@ Echo Agent 通过多层扩展体系与外部系统集成，覆盖消息通道、
 |------|------|------|
 | [消息通道](channels/index.md) | 14 个平台适配器，覆盖 IM、邮件、Webhook、CLI | 通道配置与能力矩阵 |
 | [Gateway](gateway/index.md) | HTTP/WebSocket API 网关，提供认证、限流、会话管理 | 认证模式与反向代理 |
-| [技能系统](skills/using-skills.md) | 35 个内置技能，按类别组织 | 使用与目录 |
+| [技能系统](skills/using-skills.md) | 36 个内置技能，按类别组织 | 使用与目录 |
 | [插件系统](plugins/using-plugins.md) | 基于 plugin.yaml 的扩展机制 | 使用与开发 |
 | [MCP](mcp.md) | Model Context Protocol 客户端，连接外部工具服务器 | 配置与使用 |
 | [A2A](a2a.md) | Agent-to-Agent 入站协议，接收外部 peer 委派给 Echo Agent 的文本任务 | 协议与集成 |
