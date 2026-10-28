@@ -58,6 +58,17 @@ def test_cheaperinference_uses_openai_compatible_endpoint():
     assert entry.fallback_models == ["gpt-5.4-mini"]
 
 
+def test_api_route_uses_openai_compatible_endpoint():
+    entry = p.find("api-route")
+
+    assert entry.dialect == "openai"
+    assert entry.group == "aggregator"
+    assert entry.api_base == "https://global.api-route.com/v1"
+    assert entry.models_endpoint == "https://global.api-route.com/v1/models"
+    assert entry.api_key_env_vars == ("API_ROUTE_API_KEY",)
+    assert entry.fallback_models == ["gpt-6.1-sol"]
+
+
 def test_grouped_preserves_all_entries_and_order():
     groups = p.grouped_catalog()
     flat = [e.id for _label, entries in groups for e in entries]

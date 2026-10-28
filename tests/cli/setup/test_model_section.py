@@ -58,6 +58,22 @@ def test_model_section_cheaperinference_prefills_dialect_base_and_model():
     assert cfg["models"]["defaultModel"] == "gpt-5.4-mini"
 
 
+def test_model_section_api_route_prefills_dialect_base_and_model():
+    cfg = {}
+    with patch(f"{_S}.ui.select_grouped", return_value="api-route"), \
+         patch(f"{_S}.ui.password", return_value="route-key"), \
+         patch(f"{_S}.ui.select", return_value="gpt-6.1-sol"), \
+         patch(f"{_S}.list_models", return_value=[]), \
+         patch(f"{_S}.verify_model", return_value=mv.VerifyResult("ok")):
+        setup_mod.setup_model(cfg)
+
+    prov = cfg["models"]["providers"][0]
+    assert prov["name"] == "openai"
+    assert prov["apiBase"] == "https://global.api-route.com/v1"
+    assert prov["apiKey"] == "route-key"
+    assert cfg["models"]["defaultModel"] == "gpt-6.1-sol"
+
+
 def test_model_section_uses_dynamic_list_when_available():
     cfg = {}
     with patch(f"{_S}.ui.select_grouped", return_value="openai"), \

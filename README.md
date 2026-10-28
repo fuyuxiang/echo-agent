@@ -41,6 +41,8 @@ echo-agent run
 
 中国大陆网络环境可指定 PyPI 镜像：`pip install "echo-agent[all]" -i https://mirrors.aliyun.com/pypi/simple/`。Windows 可在 PowerShell 中运行上述命令，平台依赖与限制见 [安装指南](https://fuyuxiang.github.io/echo-agent/getting-started/installation/)。
 
+使用 [API Route](https://www.api-route.com/en/docs/quickstart) 时，在配置向导的聚合服务分组中选择 **API Route**，输入自己的密钥（或设置 `API_ROUTE_API_KEY`）。向导会从服务获取可用模型；获取失败时提供 `gpt-6.1-sol` 作为备选。
+
 <details>
 <summary>源码安装脚本（Linux / macOS / WSL2）</summary>
 

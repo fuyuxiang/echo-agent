@@ -41,6 +41,8 @@ echo-agent run
 
 If access to PyPI is slow in mainland China, you can use a mirror: `pip install "echo-agent[all]" -i https://mirrors.aliyun.com/pypi/simple/`. The same commands work in Windows PowerShell; see the [installation guide](https://fuyuxiang.github.io/echo-agent/en/getting-started/installation/) for platform dependencies and limitations.
 
+To use [API Route](https://www.api-route.com/en/docs/quickstart), select **API Route** in the setup wizard's aggregator group and enter your own key (or set `API_ROUTE_API_KEY`). The wizard discovers available models from the service, with `gpt-6.1-sol` as a fallback if discovery is unavailable.
+
 <details>
 <summary>Source installation script (Linux / macOS / WSL2)</summary>
 

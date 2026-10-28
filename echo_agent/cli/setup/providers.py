@@ -111,6 +111,13 @@ CATALOG: list[ProviderCatalogEntry] = [
         fallback_models=["gpt-5.4-mini"],
         models_endpoint="https://api.cheaperinference.com/v1/models",
     ),
+    ProviderCatalogEntry(
+        id="api-route", label="API Route", group="aggregator", dialect="openai",
+        api_base="https://global.api-route.com/v1",
+        api_key_env_vars=("API_ROUTE_API_KEY",),
+        fallback_models=["gpt-6.1-sol"],
+        models_endpoint="https://global.api-route.com/v1/models",
+    ),
     # ── local ──
     ProviderCatalogEntry(
         id="ollama", label="Ollama", group="local", dialect="openai",
