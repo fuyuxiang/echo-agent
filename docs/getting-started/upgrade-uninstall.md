@@ -19,8 +19,12 @@
     ```bash
     cd echo-agent
     git pull origin master
+    cd echo-agent-runtime
+    (cd web && pnpm install --frozen-lockfile && pnpm build)
     pip install -e ".[all]"
     ```
+
+只下载了 Runtime 源码或发布压缩包时，保留独立工作区和配置，替换源码后重新安装；没有 `.git` 的解压目录不执行 `git pull`。正式发布压缩包已带 Dashboard，跳过前端构建。
 
 ---
 
@@ -29,7 +33,7 @@
 !!! warning "升级注意事项"
     Beta 阶段版本间可能存在破坏性变更。升级前请：
 
-    1. 阅读 [CHANGELOG](https://github.com/fuyuxiang/echo-agent/blob/master/CHANGELOG.md) 了解变更内容
+    1. 阅读 [CHANGELOG](https://github.com/fuyuxiang/echo-agent/blob/master/echo-agent-runtime/CHANGELOG.md) 了解变更内容
     2. 备份数据目录
     3. 停止服务后备份完整工作区，再升级并验证配置
 
@@ -109,7 +113,7 @@ Playwright 浏览器缓存可能由其他项目共用；清理前先查看当前
 如果从源码安装并构建了前端：
 
 ```bash
-cd echo-agent/web
+cd echo-agent/echo-agent-runtime/web
 rm -rf node_modules dist
 ```
 

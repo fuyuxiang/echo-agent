@@ -74,7 +74,7 @@
     - 插件 / 技能 API 接口
     - 数据库表结构（连接初始化时自动迁移；`echo-agent migrate` 只处理记忆数据）
 
-    建议在升级前阅读 [CHANGELOG](https://github.com/fuyuxiang/echo-agent/blob/master/CHANGELOG.md) 并做好数据备份。
+    建议在升级前阅读 [CHANGELOG](https://github.com/fuyuxiang/echo-agent/blob/master/echo-agent-runtime/CHANGELOG.md) 并做好数据备份。
 
 ---
 

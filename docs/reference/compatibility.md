@@ -1,6 +1,6 @@
 # 兼容性参考
 
-本页以 `pyproject.toml` 和当前 CI 配置为准。项目处于 `0.x` Beta 阶段；升级前应阅读[更新记录](https://github.com/fuyuxiang/echo-agent/blob/master/CHANGELOG.md)并备份工作区。
+本页以 `pyproject.toml` 和当前 CI 配置为准。项目处于 `0.x` Beta 阶段；升级前应阅读[更新记录](https://github.com/fuyuxiang/echo-agent/blob/master/echo-agent-runtime/CHANGELOG.md)并备份工作区。
 
 ## Python 与平台
 

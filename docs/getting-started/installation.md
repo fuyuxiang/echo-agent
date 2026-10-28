@@ -48,9 +48,14 @@
 === "源码安装"
 
     ```bash
-    git clone https://github.com/fuyuxiang/echo-agent.git
+    git clone --filter=blob:none --sparse https://github.com/fuyuxiang/echo-agent.git
     cd echo-agent
-    pip install -e ".[all]"
+    git sparse-checkout set echo-agent-runtime
+    cd echo-agent-runtime
+    python3 -m venv .venv
+    source .venv/bin/activate
+    (cd web && pnpm install --frozen-lockfile && pnpm build)
+    pip install ".[all]"
     ```
 
     开发模式额外安装开发依赖：
@@ -58,6 +63,8 @@
     ```bash
     pip install -e ".[all,dev]"
     ```
+
+    本目录包含完整 Dashboard 源码及锁文件。已单独下载 `echo-agent-runtime/` 时直接进入它执行安装，无需 Git。正式 `echo-agent-runtime-<version>.tar.gz` 已含前端产物，可跳过 Node/pnpm 和前端构建；Python 依赖仍需安装。
 
 === "一键安装脚本"
 
@@ -67,12 +74,14 @@
     curl -fsSL https://raw.githubusercontent.com/fuyuxiang/echo-agent/master/scripts/install.sh | bash
     ```
 
-    脚本会检测环境，在需要时准备 Python 和 `uv`，并在源码目录的虚拟环境中安装项目及所选依赖。
+    脚本会检测环境，在需要时准备 Python 和 `uv`，安装 Runtime 依赖并准备 Dashboard。已有源码时进入 `echo-agent-runtime/` 运行 `bash scripts/install.sh --source .`，不会克隆或更新 Git；预构建资源存在时不需要 Node。
 
     !!! note "脚本行为"
         - 检测 Python 3.11+，按平台提供安装或选择流程
         - 默认将源码安装到 `~/.echo-agent/echo-agent`，虚拟环境在其 `venv/` 下；可用 `ECHO_INSTALL_DIR` 改写
-        - 使用 `uv` 将项目安装到虚拟环境；选用的 extra 取决于安装流程
+        - 远程安装只检出 Runtime；本地源码和解压目录使用 `--source PATH`
+        - 使用 `uv` 将 Runtime 安装到虚拟环境；选用的 extra 取决于安装流程
+        - 默认构建并检查 Dashboard；`--skip-dashboard` 明确跳过，之后可手动构建
         - 将 `echo-agent` 命令链接到 `~/.local/bin`
 
 ---
@@ -134,8 +143,8 @@
 
 ```bash
 # 安装 Node.js 依赖
-cd web
-pnpm install
+cd echo-agent-runtime/web
+pnpm install --frozen-lockfile
 
 # 构建前端
 pnpm build

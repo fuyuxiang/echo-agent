@@ -1,5 +1,7 @@
 # Dashboard 开发
 
+以下命令和源码路径相对于 `echo-agent-runtime/`；先进入该目录。
+
 Echo Agent Dashboard 前端开发指南。
 
 ---

@@ -81,7 +81,7 @@ Repository = "https://github.com/fuyuxiang/echo-agent"
 Issues = "https://github.com/fuyuxiang/echo-agent/issues"
 Discussions = "https://github.com/fuyuxiang/echo-agent/discussions"
 Documentation = "https://fuyuxiang.github.io/echo-agent"
-Changelog = "https://github.com/fuyuxiang/echo-agent/blob/master/CHANGELOG.md"
+Changelog = "https://github.com/fuyuxiang/echo-agent/blob/master/echo-agent-runtime/CHANGELOG.md"
 
 [project.optional-dependencies]
 openai = ["openai>=1.30", "httpx[socks]>=0.23"]
@@ -202,7 +202,22 @@ include = [
     # copies, and bare "skills/" matched @reduxjs/toolkit's own skills/ dir.
     "/echo_agent/",
     "/skills/",
-    "/scripts/install.sh",
+    "/scripts/",
+    "/deploy/",
+    "/data/eval/",
+    "/web/index.html",
+    "/web/package.json",
+    "/web/pnpm-lock.yaml",
+    "/web/pnpm-workspace.yaml",
+    "/web/tsconfig.json",
+    "/web/vite.config.ts",
+    "/web/src/",
+    "/web/scripts/",
+    "/tests/",
+    "/README.en.md",
+    "/CHANGELOG.md",
+    "/.gitignore",
+    "/.dockerignore",
     "/README.md",
     "/LICENSE",
     "/pyproject.toml",

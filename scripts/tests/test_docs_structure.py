@@ -10,7 +10,9 @@ from pathlib import Path
 
 import pytest
 
-DOCS_DIR = Path(__file__).resolve().parent.parent / "docs"
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+RUNTIME_ROOT = REPOSITORY_ROOT / "echo-agent-runtime"
+DOCS_DIR = REPOSITORY_ROOT / "docs"
 
 REQUIRED_SECTIONS = [
     "index.md",
@@ -361,7 +363,7 @@ def test_documented_cli_commands_are_real():
     the word "echo-agent" followed by other words.
     """
     main_src = (
-        Path(__file__).resolve().parent.parent / "echo_agent" / "__main__.py"
+        RUNTIME_ROOT / "echo_agent" / "__main__.py"
     ).read_text(encoding="utf-8")
     real = set(re.findall(r'add_parser\(\s*"([a-z][a-z0-9_-]*)"', main_src))
     assert real, "could not parse any subcommand from __main__.py"
@@ -473,7 +475,7 @@ def test_docs_avoid_hedged_defaults():
 # drift the docs are now guarded against has to be caught here explicitly.
 # --------------------------------------------------------------------------
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = REPOSITORY_ROOT
 README_ZH = ROOT / "README.md"
 README_EN = ROOT / "README.en.md"
 
@@ -556,7 +558,7 @@ def test_readme_config_references_exist():
 
 def test_readme_cli_commands_are_real():
     """`echo-agent <cmd>` in README shell blocks must be a real subcommand."""
-    main_src = (ROOT / "echo_agent" / "__main__.py").read_text(encoding="utf-8")
+    main_src = (RUNTIME_ROOT / "echo_agent" / "__main__.py").read_text(encoding="utf-8")
     real = set(re.findall(r'add_parser\(\s*"([a-z][a-z0-9_-]*)"', main_src))
     assert real, "could not parse any subcommand from __main__.py"
 

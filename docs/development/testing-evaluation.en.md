@@ -1,5 +1,7 @@
 # Testing & Evaluation
 
+Commands and source paths below are relative to `echo-agent-runtime/`; enter that directory first.
+
 Testing strategy and evaluation framework for Echo Agent.
 
 ---

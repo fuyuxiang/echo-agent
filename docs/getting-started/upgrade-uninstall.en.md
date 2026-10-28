@@ -19,8 +19,12 @@
     ```bash
     cd echo-agent
     git pull origin master
+    cd echo-agent-runtime
+    (cd web && pnpm install --frozen-lockfile && pnpm build)
     pip install -e ".[all]"
     ```
+
+For separately downloaded Runtime sources or release archives, preserve the workspace/config, replace sources and reinstall. Extracted directories without `.git` do not use `git pull`. Official release archives include the Dashboard and skip the frontend build.
 
 ---
 
@@ -29,7 +33,7 @@
 !!! warning "Upgrade Notes"
     Breaking changes may occur between Beta versions. Before upgrading:
 
-    1. Read the [CHANGELOG](https://github.com/fuyuxiang/echo-agent/blob/master/CHANGELOG.md) for details on changes
+    1. Read the [CHANGELOG](https://github.com/fuyuxiang/echo-agent/blob/master/echo-agent-runtime/CHANGELOG.md) for details on changes
     2. Back up your data directory
     3. Stop the service, back up the full workspace, then upgrade and validate the configuration
 
@@ -109,7 +113,7 @@ Playwright browser caches may be shared with other projects. Check the managemen
 If you installed from source and built the frontend:
 
 ```bash
-cd echo-agent/web
+cd echo-agent/echo-agent-runtime/web
 rm -rf node_modules dist
 ```
 

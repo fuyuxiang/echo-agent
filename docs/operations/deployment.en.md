@@ -1,5 +1,7 @@
 # Deployment
 
+The standalone `echo-agent-runtime/` project includes complete Dashboard sources, bundled skills and `deploy/` templates. Pure sources require a frontend build; official Runtime archives and Python packages include prebuilt assets. See the [Runtime README](https://github.com/fuyuxiang/echo-agent/blob/master/echo-agent-runtime/README.en.md).
+
 Echo Agent can run in the foreground or as a registered Gateway service. The default workspace is `~/.echo-agent`; use `echo-agent config dump` to inspect the effective paths.
 
 ## Local process

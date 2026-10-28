@@ -52,7 +52,7 @@ less install.sh
 bash install.sh
 ```
 
-Run `bash install.sh --help` for all options.
+Run `bash install.sh --help` for all options. With local sources, enter `echo-agent-runtime/` and run `bash scripts/install.sh --source .` without cloning. Pure sources include the complete Dashboard project and require a frontend build; Runtime release archives include prebuilt assets and need no Node/pnpm on the server. See the [Runtime README](echo-agent-runtime/README.en.md).
 
 </details>
 
@@ -200,17 +200,17 @@ Full documentation: [fuyuxiang.github.io/echo-agent/en](https://fuyuxiang.github
 
 ## Development and Contributing
 
-In this repository, `echo_agent/` contains the core code for terminal and Gateway use, `web/` is the Dashboard frontend, `client/` contains the desktop app, and `skills/` contains built-in Skills. See the [repository map](https://fuyuxiang.github.io/echo-agent/en/development/repository-map/) for the full layout.
+[echo-agent-runtime/](echo-agent-runtime/README.en.md) is independently downloadable, buildable and deployable. It contains the Python package, Dashboard `web/` sources, bundled `skills/`, tests and deployment templates. `client/` is the desktop app and `docs/` is the documentation site. See the [repository map](https://fuyuxiang.github.io/echo-agent/en/development/repository-map/) for the full layout.
 
 On macOS or Linux, set up a development environment and run checks:
 
 ```bash
 git clone https://github.com/fuyuxiang/echo-agent.git
-cd echo-agent
+cd echo-agent/echo-agent-runtime
 uv venv venv --python 3.11
 source venv/bin/activate
 uv pip install -e ".[all,dev]"
-ruff check . --extend-exclude client
+ruff check .
 pytest
 ```
 
@@ -231,4 +231,4 @@ Echo Agent was co-founded by **Yuxiang Fu** and **Yanrong Gao**.
 
 Echo Agent is open source under the [MIT License](LICENSE). See the [third-party notices](client/THIRD_PARTY_NOTICES.md) for licenses of components included in the desktop app.
 
-The FastEmbed compatibility copy bundled with the Runtime is licensed under Apache-2.0. See its [maintenance notes](echo_agent/_vendor/fastembed/VENDOR.md) for the source and Pillow 13 compatibility changes.
+The FastEmbed compatibility copy bundled with the Runtime is licensed under Apache-2.0. See its [maintenance notes](echo-agent-runtime/echo_agent/_vendor/fastembed/VENDOR.md) for the source and Pillow 13 compatibility changes.

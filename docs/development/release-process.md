@@ -1,78 +1,41 @@
 # 发布流程
 
-Echo Agent 的版本发布流程。
+Runtime 的以下命令均在 `echo-agent-runtime/` 内执行；桌面端继续使用 `client/` 的独立发布流程。
 
----
+## 准备
 
-## 版本策略
+- 更新 Runtime 的 `CHANGELOG.md` 和 `pyproject.toml` 版本。
+- 检查中英文文档、模型与存储兼容性说明。
+- 确认 Python 测试、Dashboard 测试、文档和打包 CI 通过。
 
-Echo Agent 使用 [SemVer](https://semver.org/) 语义化版本，当前处于 Beta 阶段（0.x.y）。
-
-## 发布步骤
-
-### 1. 准备
-
-- [ ] 所有 CI 检查通过
-- [ ] 更新 `CHANGELOG.md`
-- [ ] 更新 `pyproject.toml` 版本号
-- [ ] 确认文档与代码一致
-
-### 2. 构建
+## 构建和验收
 
 ```bash
-# 构建 Dashboard
-cd web && pnpm install --frozen-lockfile && pnpm build && cd ..
-
-# 验证 Dashboard 产物
-test -f web/dist/index.html
-
-# 构建 Python 包
-hatch build
+python -m pip install build
+bash scripts/build.sh
 ```
 
-### 3. 验证
+该命令不发布。它从锁文件构建 Dashboard，运行 sdist → wheel 构建，生成独立 Runtime 压缩包，并验证三个产物中的资源：
+
+- `dist/echo_agent-<version>-py3-none-any.whl`：已打包 Runtime、Dashboard、技能和配置。
+- `dist/echo_agent-<version>.tar.gz`：Python sdist，含预构建 Dashboard、完整前端源码和部署模板。
+- `dist/echo-agent-runtime-<version>.tar.gz`：解压为 `echo-agent-runtime/`，含源码及预构建 `web/dist/`，可直接在服务器安装，无需 Node/pnpm。
+
+已有可信前端产物时可运行 `bash scripts/build.sh --prebuilt-dashboard`。缺少前端产物会失败，不能用 `ECHO_ALLOW_NO_DASHBOARD` 发布。
+
+CI 将 Runtime 单独复制到仓库外构建；在独立环境安装 wheel 和解压的 Runtime 源码包，检查资源、版本、CLI 和真实 Gateway 进程。发布前还需在目标服务器环境验证所用模型、通道及外部工具。
+
+## 发布
 
 ```bash
-# 在隔离环境安装测试
-python -m venv /tmp/smoke
-/tmp/smoke/bin/pip install dist/*.whl
-/tmp/smoke/bin/echo-agent --version
-/tmp/smoke/bin/echo-agent --help
+python -m pip install twine
+bash scripts/publish.sh
 ```
 
-### 4. 发布
+脚本构建并验证后只向 PyPI 上传 wheel/sdist。独立 Runtime 压缩包作为单独下载附件发布，不上传到 PyPI。按版本策略创建 Git tag，并更新下载入口。
 
-```bash
-hatch publish
-```
+## 文档站
 
-### 5. 打 Tag
+文档站位于仓库根目录 `docs/`，配置为根目录 `mkdocs.yml`；安装文档依赖时使用 `pip install -e "./echo-agent-runtime[docs]"`，随后从仓库根目录运行文档生成和 MkDocs。线上文档随 master 更新，不做多版本化。
 
-```bash
-git tag v0.3.x
-git push origin v0.3.x
-```
-
-## 自动化
-
-`scripts/publish.sh` 封装了上述步骤 2-4。
-
-## 发布检查清单
-
-- [ ] Dashboard 已构建且包含在 wheel 中
-- [ ] `echo_agent/_bundled/dashboard/index.html` 存在于产物中
-- [ ] 安装后 `echo-agent --help` 正常运行
-- [ ] 版本号正确
-- [ ] CHANGELOG 已更新
-- [ ] Git tag 已创建
-
-### 文档站的版本标记
-
-文档站不做多版本化（未使用 mike 等版本化插件），线上始终只有 master 的一份文档，`docs.yml` 在推送到 master 时自动重新部署。因此发布本身不需要额外的部署动作。
-
-但有几处版本号是手写在正文里的，发版时需一并更新：
-
-- `docs/index.md` 与 `docs/index.en.md` 的项目状态块
-- `docs/operations/upgrade-migrations.md` 与英文版中的升级命令和迁移范围（若本次发布有变化）
-
-改完这些页面的推送会触发 `docs.yml` 重新部署，无需手动干预。
+涉及版本或升级行为时同步更新 `docs/index.md`、英文版及 `docs/operations/upgrade-migrations.md`、英文版。

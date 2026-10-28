@@ -13,8 +13,10 @@ How to contribute to Echo Agent documentation.
 
 ## Local Preview
 
+Run these commands from the repository root.
+
 ```bash
-pip install -e ".[docs]"
+pip install -e "./echo-agent-runtime[docs]"
 mkdocs serve
 ```
 

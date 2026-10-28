@@ -8,7 +8,7 @@ Thanks for taking the time to contribute to Echo Agent. Bug fixes, features and 
 
 ```bash
 git clone https://github.com/fuyuxiang/echo-agent.git   # mirror: https://gitee.com/fuyuxiang/echo-agent.git
-cd echo-agent
+cd echo-agent/echo-agent-runtime
 uv venv venv --python 3.11 && source venv/bin/activate
 uv pip install -e ".[all,dev]"
 ```
@@ -25,7 +25,7 @@ pip install -e ".[all,dev]"
 Make sure lint and tests pass before opening a PR — CI runs the same checks on every PR:
 
 ```bash
-ruff check . --extend-exclude client
+ruff check .
 pytest
 ```
 
@@ -53,3 +53,12 @@ Not sure where to start? These areas could use a hand:
 - [GitHub Discussions](https://github.com/fuyuxiang/echo-agent/discussions) — design discussion, usage questions
 - [GitHub Issues](https://github.com/fuyuxiang/echo-agent/issues) — bugs and feature requests
 - QQ group: [47572014](https://qm.qq.com/q/JWOPDBNssw)
+
+Runtime sources, Dashboard and bundled skills live in `echo-agent-runtime/`. Repository and documentation configuration stays at the root. Run documentation checks from the repository root:
+
+```bash
+python -m pip install -e "./echo-agent-runtime[docs,dev]"
+python -m pytest scripts/tests/
+python -m echo_agent.config.docgen --output-dir docs/reference --lang both
+mkdocs build --strict
+```

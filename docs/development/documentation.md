@@ -13,8 +13,10 @@
 
 ## 本地预览
 
+以下命令在仓库根目录执行。
+
 ```bash
-pip install -e ".[docs]"
+pip install -e "./echo-agent-runtime[docs]"
 mkdocs serve
 ```
 

@@ -1,6 +1,6 @@
 # 仓库地图
 
-以下路径以当前仓库为准。后端为 `echo_agent/` Python 包，Dashboard 源码在 `web/`，内置技能在 `skills/`。
+服务端是 `echo-agent-runtime/` 下的独立工程，单独下载即包含 Python 源码、Dashboard 源码、内置技能、构建脚本和部署模板。桌面端 `client/`、文档 `docs/` 和仓库工作流位于根目录。下表除明确标注的仓库级条目外，路径均相对于 `echo-agent-runtime/`。
 
 | 路径 | 职责 |
 |---|---|
@@ -37,7 +37,9 @@
 | `web/src/` | Dashboard React 前端源码 |
 | `skills/` | 按领域组织的内置 SKILL.md 文件与脚本 |
 | `tests/` | pytest 测试 |
-| `docs/` | MkDocs 文档 |
+| 仓库根目录 `docs/` | MkDocs 文档 |
+| 仓库根目录 `scripts/tests/` | 文档与代码一致性检查 |
+| `deploy/` | 独立服务端配置和容器模板 |
 | `scripts/` | 安装、构建与发布脚本 |
 
 ## 关键关系

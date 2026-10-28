@@ -1,6 +1,6 @@
 # 升级与数据迁移
 
-升级前阅读 [Changelog](https://github.com/fuyuxiang/echo-agent/blob/master/CHANGELOG.md)，确认兼容性变化，并备份工作区。下列命令以默认工作区 `~/.echo-agent` 和已安装的用户级 Gateway 服务为例。使用自定义 `--workspace` 或 `--config` 时，应替换为实际路径。
+升级前阅读 [Changelog](https://github.com/fuyuxiang/echo-agent/blob/master/echo-agent-runtime/CHANGELOG.md)，确认兼容性变化，并备份工作区。下列命令以默认工作区 `~/.echo-agent` 和已安装的用户级 Gateway 服务为例。使用自定义 `--workspace` 或 `--config` 时，应替换为实际路径。
 
 ## 升级已安装的包
 

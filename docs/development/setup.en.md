@@ -15,7 +15,7 @@
 
 ```bash
 git clone https://github.com/fuyuxiang/echo-agent.git
-cd echo-agent
+cd echo-agent/echo-agent-runtime
 ```
 
 ### 2. Create a Virtual Environment (Recommended)
@@ -54,7 +54,7 @@ Available extras:
 
 ```bash
 # Lint check
-ruff check . --extend-exclude client
+ruff check .
 
 # Run tests
 python -m pytest tests/ -v --cov

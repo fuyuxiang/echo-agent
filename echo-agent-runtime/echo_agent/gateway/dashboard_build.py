@@ -85,7 +85,7 @@ class BuildOutcome:
 
 
 def _repo_root() -> Path:
-    """Repo root for a source checkout: .../echo_agent/gateway/ -> two up."""
+    """Runtime project root (also valid outside the parent repository)."""
     return Path(__file__).resolve().parent.parent.parent
 
 

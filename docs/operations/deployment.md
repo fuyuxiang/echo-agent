@@ -1,5 +1,7 @@
 # 部署方案
 
+源码部署工程位于 `echo-agent-runtime/`，包括 Dashboard 的完整 `web/`、内置技能及 `deploy/` 模板，可以单独下载。纯源码需先构建前端；正式 Runtime 压缩包和 Python 安装包已附带前端产物。独立安装步骤见 [Runtime README](https://github.com/fuyuxiang/echo-agent/blob/master/echo-agent-runtime/README.md)。
+
 Echo Agent 可前台运行，也可将 Gateway 注册为系统服务。默认工作区为 `~/.echo-agent`；实际配置和数据位置以 `echo-agent config dump` 为准。
 
 ## 本机运行

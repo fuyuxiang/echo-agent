@@ -23,7 +23,7 @@ Welcome to Echo Agent development! This section covers everything from environme
 ```bash
 # Clone the repository
 git clone https://github.com/fuyuxiang/echo-agent.git
-cd echo-agent
+cd echo-agent/echo-agent-runtime
 
 # Backend: install all dependencies (including dev tools)
 pip install -e ".[all,dev]"
@@ -32,7 +32,7 @@ pip install -e ".[all,dev]"
 cd web && pnpm install --frozen-lockfile && cd ..
 
 # Verify environment
-ruff check . --extend-exclude client
+ruff check .
 python -m pytest tests/ -v --cov
 cd web && pnpm build && pnpm test --run
 ```

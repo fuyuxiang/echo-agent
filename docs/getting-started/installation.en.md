@@ -48,9 +48,14 @@
 === "From Source"
 
     ```bash
-    git clone https://github.com/fuyuxiang/echo-agent.git
+    git clone --filter=blob:none --sparse https://github.com/fuyuxiang/echo-agent.git
     cd echo-agent
-    pip install -e ".[all]"
+    git sparse-checkout set echo-agent-runtime
+    cd echo-agent-runtime
+    python3 -m venv .venv
+    source .venv/bin/activate
+    (cd web && pnpm install --frozen-lockfile && pnpm build)
+    pip install ".[all]"
     ```
 
     For development, also install dev dependencies:
@@ -58,6 +63,8 @@
     ```bash
     pip install -e ".[all,dev]"
     ```
+
+    This directory includes the complete Dashboard sources and lockfile. A separately downloaded `echo-agent-runtime/` needs no Git. Official `echo-agent-runtime-<version>.tar.gz` archives include prebuilt frontend assets: skip Node/pnpm and the frontend build, but install Python dependencies.
 
 === "One-line Install Script"
 
@@ -67,12 +74,13 @@
     curl -fsSL https://raw.githubusercontent.com/fuyuxiang/echo-agent/master/scripts/install.sh | bash
     ```
 
-    The script checks the environment, prepares Python and `uv` when needed, and installs the project and selected dependencies into a virtual environment inside its source checkout.
+    The script prepares dependencies and the Dashboard. With local sources, enter `echo-agent-runtime/` and run `bash scripts/install.sh --source .` without cloning or Git updates. Remote installs use a sparse Runtime checkout. Prebuilt archives need no Node.
 
     !!! note "Script Behavior"
         - Checks for Python 3.11+ and follows platform-specific installation or selection steps
         - Installs source to `~/.echo-agent/echo-agent` by default, with `venv/` inside it; `ECHO_INSTALL_DIR` can change this
-        - Uses `uv` to install the project into the virtual environment; selected extras depend on the installation flow
+        - Uses `uv` to install Runtime into the virtual environment; selected extras depend on the installation flow
+        - Prepares and checks the Dashboard by default; `--skip-dashboard` explicitly defers this step
         - Symlinks the `echo-agent` command to `~/.local/bin`
 
 ---
@@ -134,8 +142,8 @@ Wheels built by the release process contain Dashboard assets; installing the `[a
 
 ```bash
 # Install Node.js dependencies
-cd web
-pnpm install
+cd echo-agent-runtime/web
+pnpm install --frozen-lockfile
 
 # Build frontend
 pnpm build

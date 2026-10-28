@@ -1,0 +1,21 @@
+services:
+  echo-agent:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?Set OPENAI_API_KEY in the service environment}
+    ports:
+      - "127.0.0.1:58123:58123"
+    volumes:
+      - echo-agent-data:/data/workspace
+      - ./echo-agent.yaml:/data/echo-agent.yaml:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:58123/api/v1/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+volumes:
+  echo-agent-data:

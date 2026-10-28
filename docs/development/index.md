@@ -23,7 +23,7 @@
 ```bash
 # 克隆仓库
 git clone https://github.com/fuyuxiang/echo-agent.git
-cd echo-agent
+cd echo-agent/echo-agent-runtime
 
 # 后端：安装全部依赖（含 dev 工具）
 pip install -e ".[all,dev]"
@@ -32,7 +32,7 @@ pip install -e ".[all,dev]"
 cd web && pnpm install --frozen-lockfile && cd ..
 
 # 验证环境
-ruff check . --extend-exclude client
+ruff check .
 python -m pytest tests/ -v --cov
 cd web && pnpm build && pnpm test --run
 ```

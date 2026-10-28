@@ -15,7 +15,7 @@
 
 ```bash
 git clone https://github.com/fuyuxiang/echo-agent.git
-cd echo-agent
+cd echo-agent/echo-agent-runtime
 ```
 
 ### 2. 创建虚拟环境（推荐）
@@ -54,7 +54,7 @@ pip install -e ".[all,dev]"
 
 ```bash
 # 代码检查
-ruff check . --extend-exclude client
+ruff check .
 
 # 运行测试
 python -m pytest tests/ -v --cov

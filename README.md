@@ -44,7 +44,7 @@ echo-agent run
 <details>
 <summary>源码安装脚本（Linux / macOS / WSL2）</summary>
 
-安装脚本会克隆源码、创建独立环境并运行配置向导。建议先下载并查看脚本，再执行：
+单独下载的安装脚本会获取 Runtime 的稀疏源码、创建独立环境、准备 Dashboard 并运行配置向导。建议先下载并查看脚本，再执行：
 
 ```bash
 curl -fsSL -o install.sh https://raw.githubusercontent.com/fuyuxiang/echo-agent/master/scripts/install.sh
@@ -52,7 +52,7 @@ less install.sh
 bash install.sh
 ```
 
-可用 `bash install.sh --help` 查看选项。
+可用 `bash install.sh --help` 查看选项。已有源码时进入 `echo-agent-runtime/` 执行 `bash scripts/install.sh --source .`，不会重新克隆。纯源码包含 Dashboard 的完整 `web/`，需要前端构建；正式 Runtime 压缩包内置前端产物，服务器无需 Node/pnpm。完整步骤见 [Runtime 安装说明](echo-agent-runtime/README.md)。
 
 </details>
 
@@ -200,17 +200,17 @@ Echo Agent 可部署在自有设备或服务器。会话、记忆和配置等状
 
 ## 开发与贡献
 
-仓库中的 `echo_agent/` 提供终端与 Gateway 的核心代码，`web/` 是 Dashboard 前端，`client/` 是桌面端源码，`skills/` 提供内置 Skills。完整目录说明见 [代码地图](https://fuyuxiang.github.io/echo-agent/development/repository-map/)。
+[echo-agent-runtime/](echo-agent-runtime/README.md) 是可单独下载、构建和部署的服务端工程，包含 `echo_agent/`、Dashboard 源码 `web/`、内置 `skills/`、测试及部署模板；`client/` 是独立桌面端，`docs/` 是文档站。完整目录说明见 [代码地图](https://fuyuxiang.github.io/echo-agent/development/repository-map/)。
 
 在 macOS 或 Linux 上准备开发环境并运行检查：
 
 ```bash
 git clone https://github.com/fuyuxiang/echo-agent.git
-cd echo-agent
+cd echo-agent/echo-agent-runtime
 uv venv venv --python 3.11
 source venv/bin/activate
 uv pip install -e ".[all,dev]"
-ruff check . --extend-exclude client
+ruff check .
 pytest
 ```
 
@@ -231,4 +231,4 @@ Echo Agent 由 **付玉祥**、**高延荣** 共同发起。
 
 Echo Agent 基于 [MIT License](LICENSE) 开源。桌面端所含第三方组件的许可信息见 [第三方许可说明](client/THIRD_PARTY_NOTICES.md)。
 
-Runtime 内置的 FastEmbed 兼容副本使用 Apache-2.0 许可证，来源及 Pillow 13 兼容修改见 [维护说明](echo_agent/_vendor/fastembed/VENDOR.md)。
+Runtime 内置的 FastEmbed 兼容副本使用 Apache-2.0 许可证，来源及 Pillow 13 兼容修改见 [维护说明](echo-agent-runtime/echo_agent/_vendor/fastembed/VENDOR.md)。

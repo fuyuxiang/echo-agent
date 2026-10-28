@@ -8,7 +8,7 @@
 
 ```bash
 git clone https://github.com/fuyuxiang/echo-agent.git   # 国内可用 https://gitee.com/fuyuxiang/echo-agent.git
-cd echo-agent
+cd echo-agent/echo-agent-runtime
 uv venv venv --python 3.11 && source venv/bin/activate
 uv pip install -e ".[all,dev]"
 ```
@@ -25,7 +25,7 @@ pip install -e ".[all,dev]"
 PR 前请确保 lint 和测试都通过，CI 会在每个 PR 上跑同样的检查：
 
 ```bash
-ruff check . --extend-exclude client
+ruff check .
 pytest
 ```
 
@@ -53,3 +53,12 @@ pytest
 - QQ 群：[47572014](https://qm.qq.com/q/JWOPDBNssw)
 - [GitHub Issues](https://github.com/fuyuxiang/echo-agent/issues) — bug 反馈与功能建议
 - [GitHub Discussions](https://github.com/fuyuxiang/echo-agent/discussions) — 设计讨论与使用问题
+
+服务端源码、Dashboard 和内置技能都位于 `echo-agent-runtime/`。根目录保留仓库协作与文档配置。文档检查从仓库根目录执行：
+
+```bash
+python -m pip install -e "./echo-agent-runtime[docs,dev]"
+python -m pytest scripts/tests/
+python -m echo_agent.config.docgen --output-dir docs/reference --lang both
+mkdocs build --strict
+```

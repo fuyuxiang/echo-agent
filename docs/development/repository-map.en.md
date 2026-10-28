@@ -1,6 +1,6 @@
 # Repository Map
 
-These paths follow the current repository. The backend is the `echo_agent/` Python package, Dashboard source is under `web/`, and bundled skills are under `skills/`.
+The server is an independent project under `echo-agent-runtime/`. Downloading that directory includes Python sources, Dashboard sources, bundled skills, build scripts and deployment templates. The desktop app (`client/`), documentation (`docs/`) and repository workflows remain at the root. Table paths below are relative to `echo-agent-runtime/`, except the explicitly marked repository-level entries.
 
 | Path | Responsibility |
 |---|---|
@@ -37,7 +37,9 @@ These paths follow the current repository. The backend is the `echo_agent/` Pyth
 | `web/src/` | Dashboard React source |
 | `skills/` | Bundled domain-organized SKILL.md files and scripts |
 | `tests/` | pytest tests |
-| `docs/` | MkDocs documentation |
+| repository root `docs/` | MkDocs documentation |
+| repository root `scripts/tests/` | Documentation/code consistency checks |
+| `deploy/` | Standalone server configuration and container templates |
 | `scripts/` | Installation, build, and release scripts |
 
 ## Key relationships

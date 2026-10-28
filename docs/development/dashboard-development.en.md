@@ -1,5 +1,7 @@
 # Dashboard Development
 
+Commands and source paths below are relative to `echo-agent-runtime/`; enter that directory first.
+
 Frontend development guide for Echo Agent Dashboard.
 
 ---

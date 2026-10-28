@@ -14,6 +14,7 @@ import json
 from importlib.util import find_spec
 import os
 from pathlib import Path
+import re
 import signal
 import sys
 import tempfile
@@ -26,6 +27,23 @@ import yaml
 async def main(output: Path) -> None:
     output.mkdir(parents=True, exist_ok=True)
     model_requests = []
+    from echo_agent.runtime_paths import bundled_skills_dir
+    from echo_agent.skills.store import SkillStore
+
+    builtin = bundled_skills_dir()
+    assert builtin is not None, 'installed Runtime has no bundled skills'
+    skills = SkillStore(user_dir=output / 'skill-check', builtin_dir=builtin).list_all()
+    assert any(skill.name == 'calendar' for skill in skills), 'bundled calendar skill cannot be loaded'
+
+    # These executables would fail and leave evidence if Runtime tried to
+    # compile frontend/desktop sources on the server.
+    blockers = output / 'blocked-toolchain'
+    blockers.mkdir(exist_ok=True)
+    toolchain_calls = output / 'unexpected-toolchain-calls.log'
+    for command in ('node', 'npm', 'pnpm', 'npx', 'corepack', 'cargo', 'rustc'):
+        executable = blockers / command
+        executable.write_text('#!/bin/sh\nprintf "%s\\n" "$0" >> "$ECHO_SMOKE_TOOLCHAIN_CALLS"\nexit 97\n')
+        executable.chmod(0o755)
 
     async def completion(request):
         body = await request.json()
@@ -76,7 +94,8 @@ async def main(output: Path) -> None:
     environment = {k: v for k, v in os.environ.items() if not k.startswith(('ECHO_AGENT_', 'GOOGLE_', 'GEMINI_'))}
     for inherited in ('PYTHONPATH', 'PYTHONHOME', 'DISPLAY', 'WAYLAND_DISPLAY', 'DBUS_SESSION_BUS_ADDRESS'):
         environment.pop(inherited, None)
-    environment['PATH'] = str(Path(sys.executable).parent) + os.pathsep + os.defpath
+    environment['PATH'] = str(blockers) + os.pathsep + str(Path(sys.executable).parent) + os.pathsep + os.defpath
+    environment['ECHO_SMOKE_TOOLCHAIN_CALLS'] = str(toolchain_calls)
     environment.update({'_ECHO_AGENT_SUPERVISED': '1', 'ECHO_AGENT_DISABLE_LAZY_INSTALLS': '1',
                         'HF_HUB_OFFLINE': '1', 'NO_PROXY': '127.0.0.1,localhost', 'PYTHONUNBUFFERED': '1'})
     clean_home = output / 'home'
@@ -140,7 +159,16 @@ async def main(output: Path) -> None:
                         assert response.status == (200 if configured else 503), await response.text()
                     async with client.get(base + '/') as response:
                         assert response.status == 200
-                        assert '<html' in (await response.text()).lower()
+                        page = await response.text()
+                        assert '<html' in page.lower()
+                        scripts = re.findall(r'<script[^>]+src="([^"]+)"', page)
+                        assets = [path for path in scripts if path.startswith('/assets/') and path.endswith('.js')]
+                        assert assets, 'Gateway served a fallback page instead of the compiled Dashboard'
+                    for asset in assets:
+                        async with client.get(base + asset) as response:
+                            assert response.status == 200, asset
+                            assert 'javascript' in response.headers.get('Content-Type', ''), asset
+                            assert (await response.read()), asset
                     body = {'platform': 'api', 'user_id': 'smoke', 'chat_id': 'smoke',
                             'session_key': 'cli:installed-smoke', 'text': 'Create and read a harmless result file',
                             'wait': True, 'timeout_seconds': 25}
@@ -204,9 +232,11 @@ async def main(output: Path) -> None:
             finally:
                 await stop(proc)
                 logfile.close()
+        assert not toolchain_calls.exists(), 'installed Runtime invoked a frontend/desktop toolchain'
         (output / 'process-results.json').write_text(json.dumps({'python': sys.executable,
             'platform': sys.platform, 'package_origin': find_spec('echo_agent').origin, 'model': 'local controlled OpenAI-compatible endpoint',
-            'real_external_model': False, 'provider_requests': len(model_requests), 'cases': checks}, indent=2))
+            'real_external_model': False, 'bundled_skills': len(skills), 'frontend_toolchain_invoked': False,
+            'provider_requests': len(model_requests), 'cases': checks}, indent=2))
         print(json.dumps({'result': 'passed', 'cases': len(checks), 'evidence': str(output)}, ensure_ascii=False))
     finally:
         await runner.cleanup()

@@ -6,14 +6,18 @@ on:
     paths:
       - "docs/**"
       - "mkdocs.yml"
-      - "echo_agent/config/schema.py"
-      - "echo_agent/config/docgen.py"
+      - "echo-agent-runtime/pyproject.toml"
+      - ".github/workflows/docs.yml"
+      - "echo-agent-runtime/echo_agent/config/schema.py"
+      - "echo-agent-runtime/echo_agent/config/docgen.py"
   pull_request:
     paths:
       - "docs/**"
       - "mkdocs.yml"
-      - "echo_agent/config/schema.py"
-      - "echo_agent/config/docgen.py"
+      - "echo-agent-runtime/pyproject.toml"
+      - ".github/workflows/docs.yml"
+      - "echo-agent-runtime/echo_agent/config/schema.py"
+      - "echo-agent-runtime/echo_agent/config/docgen.py"
 
 permissions:
   contents: read
@@ -35,7 +39,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install docs dependencies
-        run: pip install -e ".[docs]"
+        run: pip install -e "./echo-agent-runtime[docs]"
 
       - name: Generate config reference
         run: python -m echo_agent.config.docgen --output-dir docs/reference --lang both

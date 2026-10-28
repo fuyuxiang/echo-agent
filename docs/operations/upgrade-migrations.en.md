@@ -1,6 +1,6 @@
 # Upgrade and Data Migration
 
-Read the [Changelog](https://github.com/fuyuxiang/echo-agent/blob/master/CHANGELOG.md), check compatibility changes, and back up the workspace before upgrading. The commands below assume the default `~/.echo-agent` workspace and an installed user-level Gateway service. Use the actual paths for deployments with a custom `--workspace` or `--config`.
+Read the [Changelog](https://github.com/fuyuxiang/echo-agent/blob/master/echo-agent-runtime/CHANGELOG.md), check compatibility changes, and back up the workspace before upgrading. The commands below assume the default `~/.echo-agent` workspace and an installed user-level Gateway service. Use the actual paths for deployments with a custom `--workspace` or `--config`.
 
 ## Upgrade an installed package
 
