@@ -130,6 +130,7 @@ async fn create_test_actor(
             cancel: Default::default(),
         },
         memory: crate::session::memory_state::SessionMemory {
+            jobs: Default::default(),
             flush_config: crate::config::MemoryFlushConfig::default(),
             is_flushing: std::sync::atomic::AtomicBool::new(false),
             last_flush_compaction: std::sync::atomic::AtomicU64::new(0),
@@ -1434,6 +1435,7 @@ async fn create_test_actor_with_memory(
     )
     .await;
     actor.memory = crate::session::memory_state::SessionMemory {
+        jobs: Default::default(),
         flush_config: memory_config
             .as_ref()
             .map_or_else(Default::default, |mc| mc.flush.clone()),

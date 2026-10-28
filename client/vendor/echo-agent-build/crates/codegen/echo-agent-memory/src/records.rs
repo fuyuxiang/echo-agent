@@ -252,25 +252,30 @@ impl std::fmt::Display for MemoryProjectionError {
 }
 impl std::error::Error for MemoryProjectionError {}
 
+fn projection_document(ledger: &Ledger) -> String {
+    let mut document = String::from("# Saved memories\n\n");
+    for record in &ledger.records {
+        if active(record) {
+            document.push_str(&format!(
+                "## {} · {}\n\n{}\n\nSource: {}\nUpdated: {}\n\n",
+                record.kind,
+                record.key,
+                record.content,
+                record.sources.join(", "),
+                record.updated_at
+            ));
+        }
+    }
+    document
+}
+
 fn save(storage: &MemoryStorage, scope: &str, ledger: &Ledger) -> io::Result<()> {
     let dir = root(storage, scope)?;
     // Commit truth first. Search filters against this ledger even if projection
     // writing fails; the next index refresh regenerates it.
     write_json(&dir.join("records.json"), ledger)?;
     (|| -> io::Result<()> {
-        let mut document = String::from("# Saved memories\n\n");
-        for record in &ledger.records {
-            if active(record) {
-                document.push_str(&format!(
-                    "## {} · {}\n\n{}\n\nSource: {}\nUpdated: {}\n\n",
-                    record.kind,
-                    record.key,
-                    record.content,
-                    record.sources.join(", "),
-                    record.updated_at
-                ));
-            }
-        }
+        let document = projection_document(ledger);
         let path = dir.join(RECORD_DOCUMENT);
         if std::fs::symlink_metadata(&path)
             .is_ok_and(|m| m.file_type().is_symlink() || !m.is_file())
@@ -326,6 +331,43 @@ pub fn source_blocked(storage: &MemoryStorage, session_id: &str) -> io::Result<b
 pub struct RecallRules {
     replaced: Vec<String>,
     forgotten: Vec<RecallTopic>,
+    blocked_sessions: HashSet<String>,
+    projections: std::collections::HashMap<PathBuf, RecallProjection>,
+}
+
+#[derive(Clone, Debug)]
+struct RecallProjection {
+    document: String,
+    chunks: std::sync::Arc<
+        std::sync::Mutex<std::collections::HashMap<(usize, usize), HashSet<String>>>,
+    >,
+}
+
+impl RecallProjection {
+    fn contains(&self, content: &str, config: &echo_agent_config_types::MemoryIndexConfig) -> bool {
+        let content = content.trim();
+        if content.is_empty() {
+            return false;
+        }
+        if self.document.contains(content) {
+            return true;
+        }
+        // Chunking adds ancestor headers and overlap. Validate those exact
+        // derived chunks rather than stripping arbitrary caller-supplied text.
+        let mut cache = self
+            .chunks
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        cache
+            .entry((config.max_chunk_chars, config.chunk_overlap_chars))
+            .or_insert_with(|| {
+                crate::chunker::chunk_markdown(&self.document, config)
+                    .into_iter()
+                    .map(|chunk| chunk.text.trim().to_owned())
+                    .collect()
+            })
+            .contains(content)
+    }
 }
 #[derive(Clone, Debug)]
 struct RecallTopic {
@@ -354,6 +396,14 @@ impl RecallRules {
                 continue;
             }
             let ledger = load(storage, scope)?;
+            rules.projections.insert(
+                root(storage, scope)?.join(RECORD_DOCUMENT),
+                RecallProjection {
+                    document: projection_document(&ledger),
+                    chunks: Default::default(),
+                },
+            );
+            rules.blocked_sessions.extend(ledger.blocked_sessions);
             rules
                 .replaced
                 .extend(ledger.replaced.into_iter().map(|text| normalized(&text)));
@@ -378,11 +428,15 @@ impl RecallRules {
         if self.replaced.iter().any(|old| normalized.contains(old)) {
             return false;
         }
+        self.permits_forgotten(content, &normalized)
+    }
+
+    fn permits_forgotten(&self, content: &str, normalized: &str) -> bool {
         let length = normalized.chars().count();
         if self.forgotten.iter().any(|topic| {
             topic.length >= 3
                 && (normalized.contains(&topic.normalized)
-                    || length >= 3 && topic.normalized.contains(&normalized))
+                    || length >= 3 && topic.normalized.contains(normalized))
         }) {
             return false;
         }
@@ -394,6 +448,37 @@ impl RecallRules {
             let common = topic.terms.intersection(&content_terms).count();
             common >= 2
                 && common as f64 / topic.terms.len().min(content_terms.len()).max(1) as f64 >= 0.65
+        })
+    }
+
+    pub fn permits_candidate(&self, path: &Path, content: &str) -> bool {
+        self.permits_candidate_with_config(path, content, &Default::default())
+    }
+
+    pub(crate) fn permits_candidate_with_config(
+        &self,
+        path: &Path,
+        content: &str,
+        config: &echo_agent_config_types::MemoryIndexConfig,
+    ) -> bool {
+        if !self.permits_path(path) {
+            return false;
+        }
+        if let Some(current) = self.projections.get(path) {
+            // Explicit current facts may extend corrected text. Only the
+            // authoritative projection gets this exception; legacy text does not.
+            return current.contains(content, config)
+                && self.permits_forgotten(content, &normalized(content));
+        }
+        self.permits(content)
+    }
+
+    pub fn permits_path(&self, path: &Path) -> bool {
+        let Some(stem) = path.file_stem().and_then(|name| name.to_str()) else {
+            return false;
+        };
+        !self.blocked_sessions.iter().any(|sid| {
+            sid.chars().count() >= 8 && stem.ends_with(&sid.chars().take(8).collect::<String>())
         })
     }
 }
@@ -780,6 +865,22 @@ pub fn activity(storage: &MemoryStorage) -> MemoryActivity {
 pub fn set_activity(storage: &MemoryStorage, value: &MemoryActivity) -> io::Result<()> {
     write_json(&storage.workspace_dir().join("activity.json"), value)
 }
+
+pub fn defer_extraction(storage: &MemoryStorage) {
+    let owners = extraction_owners()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if !owners.contains(storage.workspace_dir()) {
+        let _ = set_activity(
+            storage,
+            &MemoryActivity {
+                outcome: "queued".into(),
+                detail: "待整理内容已保存在本机，将在工作区可用时继续处理".into(),
+                ..activity(storage)
+            },
+        );
+    }
+}
 fn extraction_owners() -> &'static std::sync::Mutex<HashSet<PathBuf>> {
     static OWNERS: std::sync::OnceLock<std::sync::Mutex<HashSet<PathBuf>>> =
         std::sync::OnceLock::new();
@@ -787,6 +888,16 @@ fn extraction_owners() -> &'static std::sync::Mutex<HashSet<PathBuf>> {
 }
 
 pub struct ExtractionActivityGuard(MemoryStorage);
+
+fn has_pending_extractions(storage: &MemoryStorage) -> bool {
+    std::fs::read_dir(storage.workspace_dir().join("pending")).is_ok_and(|entries| {
+        entries.flatten().any(|entry| {
+            entry.file_type().is_ok_and(|kind| kind.is_file())
+                && entry.path().extension().is_some_and(|ext| ext == "json")
+        })
+    })
+}
+
 impl Drop for ExtractionActivityGuard {
     fn drop(&mut self) {
         let mut owners = extraction_owners()
@@ -794,11 +905,17 @@ impl Drop for ExtractionActivityGuard {
             .unwrap_or_else(|e| e.into_inner());
         let current = activity(&self.0);
         if current.outcome == "running" {
+            let pending = has_pending_extractions(&self.0);
             let _ = set_activity(
                 &self.0,
                 &MemoryActivity {
-                    outcome: "failed".into(),
-                    detail: "提取已中断，待处理内容会在后续恢复时重试".into(),
+                    outcome: if pending { "queued" } else { "failed" }.into(),
+                    detail: if pending {
+                        "待整理内容已保存在本机，将在工作区可用时继续处理"
+                    } else {
+                        "提取已中断，请重试"
+                    }
+                    .into(),
                     ..current
                 },
             );
@@ -852,11 +969,17 @@ pub fn recover_extraction_activity(storage: &MemoryStorage) {
         .unwrap_or_else(|e| e.into_inner());
     let current = activity(storage);
     if !owners.contains(storage.workspace_dir()) && current.outcome == "running" {
+        let pending = has_pending_extractions(storage);
         let _ = set_activity(
             storage,
             &MemoryActivity {
-                outcome: "failed".into(),
-                detail: "上次提取已中断，待处理内容会保留并重试".into(),
+                outcome: if pending { "queued" } else { "failed" }.into(),
+                detail: if pending {
+                    "上次待整理内容已保存在本机，将自动继续处理"
+                } else {
+                    "上次提取已中断，请重试"
+                }
+                .into(),
                 ..current
             },
         );
@@ -1114,17 +1237,21 @@ mod tests {
         let projection = storage.global_dir().join(RECORD_DOCUMENT);
         std::fs::create_dir_all(&projection).unwrap();
         let json = r#"{"memories":[{"scope":"global","kind":"user","key":"first","content":"first fact","evidence":"first fact"}]}"#;
-        assert!(apply_extraction_at(&storage, json, "source", 123)
-            .unwrap_err()
-            .to_string()
-            .contains("已保存 1 条"));
+        assert!(
+            apply_extraction_at(&storage, json, "source", 123)
+                .unwrap_err()
+                .to_string()
+                .contains("已保存 1 条")
+        );
         assert_eq!(activity(&storage).records_written, 1);
         std::fs::remove_dir(&projection).unwrap();
         apply_extraction_at(&storage, json, "source", 123).unwrap();
         assert_eq!(list(&storage, true).unwrap().len(), 1);
-        assert!(std::fs::read_to_string(projection)
-            .unwrap()
-            .contains("first fact"));
+        assert!(
+            std::fs::read_to_string(projection)
+                .unwrap()
+                .contains("first fact")
+        );
     }
 
     #[test]
@@ -1142,9 +1269,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(retried.revision, committed.revision);
-        assert!(std::fs::read_to_string(projection)
-            .unwrap()
-            .contains("manual fact"));
+        assert!(
+            std::fs::read_to_string(projection)
+                .unwrap()
+                .contains("manual fact")
+        );
     }
 
     #[cfg(unix)]

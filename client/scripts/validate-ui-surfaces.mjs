@@ -69,6 +69,18 @@ page.setDefaultNavigationTimeout(60000);
         assert.equal(await page.getByLabel("主题（可选）").isVisible(), false, "advanced fields should be collapsed");
         await page.screenshot({ path: join(output, `personal-memory-${width}-${theme}.png`) });
         layouts += 1;
+        await page.getByText("记忆状态与排查", { exact: true }).click();
+        const recovery = page.getByRole("note").filter({ hasText: "已隔离 2 项损坏的待整理内容" });
+        await recovery.scrollIntoViewIfNeeded();
+        assert.ok(await recovery.isVisible(), "isolated checkpoint recovery must remain understandable");
+        const recoveryOverflow = await recovery.evaluate(element => element.scrollWidth > element.clientWidth + 1);
+        assert.equal(recoveryOverflow, false, "checkpoint recovery instructions overflow the memory panel");
+        const statusRows = await page.locator(".personal-memory__health > div > span").evaluateAll(elements => elements.map(element => {
+          const rect = element.getBoundingClientRect(); return { top: rect.top, bottom: rect.bottom };
+        }));
+        assert.ok(statusRows.every((row, index) => index === 0 || row.top >= statusRows[index - 1].bottom), "memory status, completion date and pending count must remain separate readable rows");
+        await page.screenshot({ path: join(output, `personal-memory-recovery-${width}-${theme}.png`) });
+        layouts += 1;
         continue;
       }
       if (surface === "permission-picker") {

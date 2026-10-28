@@ -1022,6 +1022,8 @@ pub struct PersonalMemorySnapshot {
     extraction: echo_agent_memory::records::MemoryActivity,
     retrieval: echo_agent_memory::records::RetrievalActivity,
     pending_count: usize,
+    quarantined_count: usize,
+    auto_processing_enabled: bool,
     enabled: bool,
 }
 
@@ -1045,6 +1047,7 @@ pub fn memory_records_get(
                 .count()
         })
         .unwrap_or(0);
+    let config = crate::agent_config::memory_config_get()?;
     Ok(PersonalMemorySnapshot {
         records,
         extraction: {
@@ -1053,7 +1056,16 @@ pub fn memory_records_get(
         },
         retrieval: echo_agent_memory::records::retrieval(&storage),
         pending_count,
-        enabled: crate::agent_config::memory_config_get()?.enabled,
+        quarantined_count: std::fs::read_dir(storage.workspace_dir().join("pending/quarantine"))
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+                    .count()
+            })
+            .unwrap_or(0),
+        auto_processing_enabled: config.auto_flush_enabled,
+        enabled: config.enabled,
     })
 }
 

@@ -40,6 +40,7 @@
     "git:push:tags": "bash scripts/git-push.sh --tags",
     "test:rust": "node scripts/test-rust-desktop.mjs",
     "test:runtime-smoke": "node scripts/test-runtime-smoke.mjs",
+    "test:memory-shutdown": "node scripts/test-memory-shutdown.mjs",
     "test:desktop-native": "cargo test --locked --manifest-path scripts/desktop-native-check/Cargo.toml",
     "test:stability": "cargo test --locked --manifest-path scripts/stability-check/Cargo.toml",
     "test:stability:native": "node scripts/validate-native-stability.mjs",

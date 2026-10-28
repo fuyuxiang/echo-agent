@@ -82,7 +82,11 @@ export function PersonalMemoryPanel({ cwd, sessionId, onToast, onOpenSession, on
   const filtered = records.filter((record) => (tab === "inactive" ? !active(record) : active(record) && (tab !== "tasks" || record.kind === "task"))
     && (!query.trim() || `${record.key} ${record.content} ${kinds[record.kind]}`.toLowerCase().includes(query.toLowerCase().trim())));
   const extraction = snapshot?.extraction;
-  const extractionSummary = extraction?.outcome === "running" ? "正在提取记忆…"
+  const autoProcessing = !!snapshot?.enabled && snapshot.autoProcessingEnabled !== false;
+  const extractionSummary = extraction?.outcome === "queued" ? (!snapshot?.enabled ? (snapshot?.autoProcessingEnabled === false ? "待整理内容已保存在本机，开启记忆并恢复自动整理后继续处理" : "待整理内容已保存在本机，开启记忆后继续处理")
+    : !autoProcessing ? "待整理内容已保存在本机，自动整理已暂停，可恢复推荐策略后继续处理"
+    : "待整理内容已保存在本机，将自动继续处理")
+    : extraction?.outcome === "running" ? "正在提取记忆…"
     : extraction?.outcome === "failed" ? "最近一次提取未完成"
     : extraction?.outcome === "unchanged" ? "最近一次提取没有新增内容，现有记忆保持不变"
     : extraction?.outcome === "saved" ? "最近一次提取已保存记忆"
@@ -142,11 +146,12 @@ export function PersonalMemoryPanel({ cwd, sessionId, onToast, onOpenSession, on
     {exportText && <label>导出内容（可复制保存）<textarea className="form-control" rows={8} readOnly value={exportText} onFocus={(e) => e.target.select()} /><Button onClick={() => setExportText("")}>关闭导出</Button></label>}
     <details className="personal-memory__health"><summary>记忆状态与排查</summary><div aria-live="polite"><span>{extractionSummary}</span>
       {!!extraction?.succeededAt && <span>上次完成时间：{date(extraction.succeededAt)}</span>}
-      {!!snapshot?.pendingCount && <span>{snapshot.pendingCount} 个会话待处理，打开工作区后自动重试</span>}
+      {!!snapshot?.pendingCount && <span>{snapshot.pendingCount} 项内容待整理，{autoProcessing ? "打开工作区后自动继续" : "已暂停自动整理"}；不影响已保存的聊天记录</span>}
+      {!!snapshot?.quarantinedCount && <p role="note">已隔离 {snapshot.quarantinedCount} 项损坏的待整理内容，原件已保留在本机，不影响其他内容整理和应用退出。损坏部分未完成提取，可打开原对话重新提取；已保存的聊天记录不受影响。</p>}
       {sessionId && <Button size="compact" disabled={busy || !snapshot?.enabled} onClick={() => void retry()}>立即提取</Button>}
       {extraction?.outcome === "failed" && <details><summary>查看原因</summary><p>{extraction.detail}</p></details>}
     </div></details>
-    {!!snapshot?.retrieval.at && <details className="personal-memory__health"><summary>最近一次检索参考了 {snapshot.retrieval.count} 处记忆 · {date(snapshot.retrieval.at)}</summary><ul>{snapshot.retrieval.sources.map((source) => <li key={source}><code>{source}</code></li>)}</ul><span>{snapshot.retrieval.mode === "Hybrid" ? "语义与关键词检索" : "关键词检索（语义服务不可用时仍可使用）"}</span></details>}
+    {!!snapshot?.retrieval.at && <details className="personal-memory__health"><summary>最近一次检索参考了 {snapshot.retrieval.count} 处记忆 · {date(snapshot.retrieval.at)}</summary><ul>{snapshot.retrieval.sources.map((source) => <li key={source}><code>{source}</code></li>)}</ul><span>{snapshot.retrieval.mode === "Hybrid" ? "语义与关键词检索" : "关键词检索（语义检索暂不可用，已有记忆仍可参考）"}</span></details>}
     <details className="personal-memory__legacy" onToggle={(event) => setLegacyOpen(event.currentTarget.open)}><summary>高级：记忆文档与会话摘要</summary>{legacyOpen && <ResourcesPanel cwd={cwd} sessionId={sessionId} onToast={onToast} />}</details>
     {dialog}{closeDialog}
   </section>;

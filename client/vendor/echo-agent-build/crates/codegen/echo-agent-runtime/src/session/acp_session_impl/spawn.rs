@@ -839,6 +839,7 @@ pub(crate) async fn spawn_session_actor(
             api_key_provider.clone(),
         );
         let params = crate::session::memory::MemoryBackendParams {
+            embedding_maintenance: Default::default(),
             session_id: session_info.id.to_string(),
             embed_config: memory_config.as_ref().map(|mc| mc.embedding.clone()),
             embed_base_url: embed_base_url.clone(),
@@ -1656,6 +1657,7 @@ pub(crate) async fn spawn_session_actor(
             cancel: Default::default(),
         },
         memory: super::memory_state::SessionMemory {
+            jobs: Default::default(),
             flush_config: memory_config.as_ref().map_or_else(
                 || crate::config::MemoryFlushConfig {
                     enabled: false,
@@ -1950,8 +1952,9 @@ pub(crate) async fn spawn_session_actor(
             tracing::warn!(%error, "memory tools could not be registered");
         }
         let actor = session.clone();
-        tokio::task::spawn_local(async move {
+        session.memory.jobs.spawn(async move {
             actor.recover_pending_memories().await;
+            actor.maybe_run_dream().await;
         });
     }
     if let Some(storage) = session.memory.storage().filter(|storage| storage.enabled()) {
@@ -1968,7 +1971,7 @@ pub(crate) async fn spawn_session_actor(
         let sampling_api_key = embed_api_key.clone();
         let session_id_for_reindex = session_info.id.to_string();
         let chunks_added_counter = session.memory.chunks_added.clone();
-        tokio::task::spawn_local(async move {
+        session.memory.jobs.spawn(async move {
             let db_path = storage.workspace_dir().join("index.sqlite");
             if let Ok(mut index) = crate::session::memory::MemoryIndex::open_or_create(
                 &db_path,
@@ -2013,7 +2016,6 @@ pub(crate) async fn spawn_session_actor(
                             api_key,
                         )
                     {
-                        let provider = provider.with_request_permit(storage.request_permit());
                         crate::session::memory::embed_missing_chunks(&index, &provider).await
                     } else {
                         0

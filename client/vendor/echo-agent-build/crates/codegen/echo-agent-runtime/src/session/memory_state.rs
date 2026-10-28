@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64};
 
 /// Memory subsystem state for a session.
 pub(crate) struct SessionMemory {
+    pub jobs: crate::session::memory::background::MemoryJobs,
     /// Memory storage handle for writing flush output (None when memory disabled).
     /// Wrapped in `RefCell` to allow `/memory on|off` toggle from `&Arc<SessionActor>`.
     pub storage: RefCell<Option<crate::session::memory::MemoryStorage>>,
@@ -65,12 +66,21 @@ pub(crate) struct SessionMemory {
 }
 
 impl SessionMemory {
+    pub(crate) async fn stop_jobs(&self) {
+        self.jobs.stop().await;
+        if let Some(params) = &self.backend_params {
+            params.embedding_maintenance.shutdown().await;
+        }
+    }
+
     /// Whether memory is enabled for this session.
     pub(crate) fn is_enabled(&self) -> bool {
-        self.storage
-            .borrow()
-            .as_ref()
-            .is_some_and(|storage| storage.enabled())
+        !self.jobs.is_stopping()
+            && self
+                .storage
+                .borrow()
+                .as_ref()
+                .is_some_and(|storage| storage.enabled())
     }
 
     pub(crate) fn setting(
@@ -173,6 +183,9 @@ impl SessionMemory {
 
     /// Reindex a file and embed new chunks when embedding is configured.
     pub(crate) async fn reindex_and_embed(&self, path: &std::path::Path, source: &str) {
+        if !self.is_enabled() {
+            return;
+        }
         let Some(storage) = self.storage.borrow().clone() else {
             return;
         };
@@ -181,7 +194,6 @@ impl SessionMemory {
             if let Some(ref params) = self.backend_params
                 && let Some(provider) = params.make_embedding_provider().await
             {
-                let provider = provider.with_request_permit(storage.request_permit());
                 crate::session::memory::embed_missing_chunks(&index, &provider).await;
             }
         }

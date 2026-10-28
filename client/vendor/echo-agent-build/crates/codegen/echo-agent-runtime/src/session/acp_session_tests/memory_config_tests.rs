@@ -15,6 +15,7 @@ fn first_turn_memory_visibility_matches_displayed_score() {
 #[test]
 fn initial_injection_backend_params_use_override_min_score() {
     let params = crate::session::memory::MemoryBackendParams {
+        embedding_maintenance: Default::default(),
         session_id: "test-session".to_owned(),
         embed_config: None,
         embed_base_url: "http://localhost".to_owned(),
@@ -44,6 +45,7 @@ fn initial_injection_backend_params_use_override_min_score() {
 #[test]
 fn initial_injection_backend_params_preserve_default_zero_min_score() {
     let params = crate::session::memory::MemoryBackendParams {
+        embedding_maintenance: Default::default(),
         session_id: "test-session".to_owned(),
         embed_config: None,
         embed_base_url: "http://localhost".to_owned(),
@@ -191,6 +193,7 @@ async fn create_test_actor_with_memory(
             cancel: Default::default(),
         },
         memory: crate::session::memory_state::SessionMemory {
+            jobs: Default::default(),
             flush_config: memory_config
                 .as_ref()
                 .map_or_else(Default::default, |mc| mc.flush.clone()),
@@ -555,6 +558,7 @@ async fn create_injection_ready_actor(
     actor.memory.storage = std::cell::RefCell::new(Some(storage));
     std::mem::forget(tmp);
     actor.memory.backend_params = Some(crate::session::memory::MemoryBackendParams {
+        embedding_maintenance: Default::default(),
         session_id: "test-memory".to_owned(),
         embed_config: None,
         embed_base_url: "http://localhost".to_owned(),

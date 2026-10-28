@@ -109,12 +109,66 @@ impl MemoryStorage {
     }
 
     pub fn request_permit(&self) -> crate::embedding::MemoryRequestPermit {
+        self.request_permit_for_paths(Vec::new())
+    }
+
+    pub fn request_permit_for_paths(
+        &self,
+        paths: Vec<PathBuf>,
+    ) -> crate::embedding::MemoryRequestPermit {
+        self.request_permit_for_chunk_paths(
+            paths
+                .into_iter()
+                .map(|path| (path, Default::default()))
+                .collect(),
+        )
+    }
+
+    pub(crate) fn request_permit_for_candidates(
+        &self,
+        candidates: &[&crate::index::EmbeddingCandidate],
+    ) -> crate::embedding::MemoryRequestPermit {
+        self.request_permit_for_chunk_paths(
+            candidates
+                .iter()
+                .map(|candidate| {
+                    (
+                        PathBuf::from(&candidate.path),
+                        candidate.chunk_config.clone(),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    fn request_permit_for_chunk_paths(
+        &self,
+        paths: Vec<(PathBuf, echo_agent_config_types::MemoryIndexConfig)>,
+    ) -> crate::embedding::MemoryRequestPermit {
         let storage = self.clone();
         std::sync::Arc::new(move |texts| {
-            storage.enabled()
-                && texts
-                    .iter()
-                    .all(|text| crate::records::permitted(&storage, text).unwrap_or(false))
+            let rules = storage.recall_rules()?;
+            if (paths.is_empty() && texts.iter().all(|text| rules.permits(text)))
+                || (paths.len() == texts.len()
+                    && paths.iter().zip(texts).all(|((path, config), text)| {
+                        rules.permits_candidate_with_config(path, text, config)
+                    }))
+            {
+                Ok(())
+            } else {
+                Err(crate::embedding::MemoryPolicyError::ContentVetoed)
+            }
+        })
+    }
+
+    pub(crate) fn recall_rules(
+        &self,
+    ) -> Result<crate::records::RecallRules, crate::embedding::MemoryPolicyError> {
+        if !self.enabled() {
+            return Err(crate::embedding::MemoryPolicyError::Disabled);
+        }
+        crate::records::RecallRules::load(self).map_err(|error| {
+            crate::embedding::MemoryPolicyError::LedgerUnavailable(error.to_string())
         })
     }
     pub fn setting(&self, section: &str, child: Option<&str>, key: &str, fallback: bool) -> bool {

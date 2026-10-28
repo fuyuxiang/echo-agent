@@ -27,8 +27,10 @@ pub mod chunker;
 pub mod dream;
 pub mod dream_lock;
 pub mod embedding;
+mod embedding_sync;
 pub mod flush;
 pub mod index;
+pub mod maintenance;
 pub mod mmr;
 pub mod observation;
 pub mod query_expansion;
@@ -42,6 +44,7 @@ pub mod watcher;
 
 pub use backend::{EndpointScopedCredentials, MemoryBackendImpl, MemoryBackendParams};
 pub use index::{MemoryIndex, init_sqlite_vec};
+pub use maintenance::EmbeddingMaintenance;
 pub use observation::*;
 pub use storage::{MemoryScope, MemoryStorage};
 
@@ -69,7 +72,7 @@ pub async fn embed_missing_chunks(
         );
         return 0;
     }
-    let chunks = match index.chunks_without_embeddings() {
+    let chunks = match index.embedding_candidates() {
         Ok(c) if c.is_empty() => return 0,
         Ok(c) => c,
         Err(e) => {
@@ -83,57 +86,8 @@ pub async fn embed_missing_chunks(
     };
 
     let total = chunks.len();
-    let mut embedded = 0;
-
-    // Batch in groups of 32 (provider's typical max batch size)
-    for batch in chunks.chunks(32) {
-        let texts: Vec<&str> = batch.iter().map(|(_, text)| text.as_str()).collect();
-        match tokio::time::timeout(EMBEDDING_BATCH_TIMEOUT, provider.embed_batch(&texts)).await {
-            Ok(Ok(embeddings)) => {
-                if let Err(error) = embedding::validate_embedding_batch(
-                    &embeddings,
-                    batch.len(),
-                    provider.dimensions(),
-                ) {
-                    tracing::warn!(
-                        target: MEMORY_LOG_TARGET,
-                        %error,
-                        "embedding provider returned an invalid batch"
-                    );
-                    break;
-                }
-                for ((chunk_id, _), embedding) in batch.iter().zip(embeddings.iter()) {
-                    if let Err(e) = index.upsert_embedding(chunk_id, embedding) {
-                        tracing::warn!(
-                            target: MEMORY_LOG_TARGET,
-                            chunk_id,
-                            error = %e,
-                            "failed to upsert embedding"
-                        );
-                    } else {
-                        embedded += 1;
-                    }
-                }
-            }
-            Ok(Err(e)) => {
-                tracing::warn!(
-                    target: MEMORY_LOG_TARGET,
-                    error = %e,
-                    batch_size = texts.len(),
-                    "embedding batch failed, deferring remaining chunks"
-                );
-                break;
-            }
-            Err(_) => {
-                tracing::warn!(
-                    target: MEMORY_LOG_TARGET,
-                    batch_size = texts.len(),
-                    "embedding batch timed out, deferring remaining chunks"
-                );
-                break;
-            }
-        }
-    }
+    let progress = embedding_sync::embed_candidates(&index.storage, provider, &chunks).await;
+    let embedded = embedding_sync::commit_embeddings(index, provider, progress);
 
     if embedded > 0 {
         tracing::info!(

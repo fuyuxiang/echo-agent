@@ -330,7 +330,7 @@ export function MemorySettingsPanel({ compact = false }: { compact?: boolean }) 
       <label className="sk-toggle"><input type="checkbox" aria-label="记住并参考对话信息" checked={config.enabled} disabled={loading || loadError || busy} onChange={(event) => void updateConfig("enabled", event.target.checked)} /><span className="sk-toggle-track"><span className="sk-toggle-thumb" /></span></label>
     </div>
     {!loading && !loadError && legacyPolicyChanged && <p className="settings-hint" role="note">你在旧版中关闭了部分记忆策略，自动学习或参考记忆可能受限。<button className="settings-btn" disabled={busy} onClick={() => void restorePolicy()}>恢复推荐策略</button></p>}
-    <p className="settings-hint">自动整理偏好、项目事实和近期事项。提取使用已配置的模型服务。你可以随时查看、更正或忘记已保存的内容。</p>
+    <p className="settings-hint">自动整理偏好、项目事实和近期事项，提取使用已配置的模型服务。开启自动整理后，会保存尚未处理的内容，并在下次打开工作区继续整理。你可以随时查看、更正或忘记已保存的内容。</p>
     {msg && <p className="settings-msg" role="status">{msg}</p>}
   </>;
   return compact ? <div className="personal-memory__switch">{controls}</div> : <SettingsSection title="记忆" desc="管理 Echo 对你的了解。">{controls}</SettingsSection>;

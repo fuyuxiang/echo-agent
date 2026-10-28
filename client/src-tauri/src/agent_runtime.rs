@@ -1488,6 +1488,153 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "explicit isolated home and stalled loopback model; run scripts/test-memory-shutdown.mjs"]
+    async fn memory_shutdown_checkpoints_and_cancels_a_stalled_model() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        assert_eq!(
+            std::env::var("ECHO_AGENT_REVIEW_ISOLATED").as_deref(),
+            Ok("1")
+        );
+        let home = crate::paths::redirected_data_home().expect("isolated data home");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let config_path = home.join("config.toml");
+        let config = std::fs::read_to_string(&config_path).unwrap();
+        assert!(config.contains("synthetic-no-model-calls"));
+        std::fs::write(
+            &config_path,
+            config.replace(
+                "http://127.0.0.1:9/v1",
+                &format!("http://{}/v1", listener.local_addr().unwrap()),
+            ),
+        )
+        .unwrap();
+        let (started, request_started) = tokio::sync::oneshot::channel();
+        let stalled = tokio::spawn(async move {
+            let mut extraction_attempts = 0;
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut bytes = [0u8; 4096];
+                loop {
+                    let n = socket.read(&mut bytes).await.unwrap();
+                    if n == 0 { break; }
+                    request.extend_from_slice(&bytes[..n]);
+                    assert!(request.len() < 1024 * 1024);
+                    if let Some(end) = request.windows(4).position(|v| v == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&request[..end]);
+                        let length = headers.lines().find_map(|line| {
+                            let (key, value) = line.split_once(':')?;
+                            key.eq_ignore_ascii_case("content-length").then(|| value.trim().parse::<usize>().unwrap())
+                        }).unwrap_or(0);
+                        if request.len() >= end + 4 + length { break; }
+                    }
+                }
+                if String::from_utf8_lossy(&request).contains("Now write the memory summary") {
+                    extraction_attempts += 1;
+                    if extraction_attempts == 1 {
+                        // A completed model response with invalid extraction data
+                        // fails the job without provoking HTTP/provider retries.
+                        let body = concat!(
+                            "data: {\"id\":\"review\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"invalid memory extraction\"},\"finish_reason\":null}]}\n\n",
+                            "data: {\"id\":\"review\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                            "data: [DONE]\n\n"
+                        );
+                        socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+                        continue;
+                    }
+                    let _ = started.send(());
+                    // Stall the idle retry: this session received no new chat.
+                    while socket.read(&mut bytes).await.unwrap_or(0) > 0 {}
+                    break;
+                }
+                socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"data\":[]}").await.unwrap();
+            }
+        });
+        // Memory skips ephemeral CWDs. Keep only this synthetic workspace in
+        // the repository's ignored Cargo target; all agent data uses TempDir.
+        let target = std::env::current_dir().unwrap().join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        let workspace = tempfile::Builder::new()
+            .prefix("memory-shutdown-")
+            .tempdir_in(target)
+            .unwrap();
+        let cwd = workspace.path();
+        crate::team_mcp::serve();
+        let launch = || {
+            let cwd = cwd.to_path_buf();
+            tokio::task::spawn_blocking(move || spawn_agent_runtime(cwd))
+        };
+        let mut first = launch().await.unwrap().unwrap();
+        let init = initialize(&first.tx).await.unwrap();
+        let sid =
+            new_session_with_options(&first.tx, cwd, init.default_model_id.as_deref(), None, None)
+                .await
+                .unwrap();
+        first.cancel.cancel();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            first.shutdown_complete.wait_for(|done| *done),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        if let Some(thread) = first.thread.take() {
+            tokio::task::spawn_blocking(move || thread.join().unwrap().unwrap())
+                .await
+                .unwrap();
+        }
+        let storage = echo_agent_memory::MemoryStorage::new(cwd, None);
+        assert!(!storage.is_ephemeral());
+        let job = echo_agent_runtime::session::memory::pending::PendingMemory {
+            source_id: sid.clone(),
+            history: vec![echo_agent_runtime::sampling::ConversationItem::user(
+                "Remember this synthetic project preference for the shutdown regression.",
+            )],
+            conversation_len: 1,
+            queued_at: chrono::Utc::now().timestamp(),
+        };
+        echo_agent_runtime::session::memory::pending::checkpoint(&storage, &job).unwrap();
+        let mut second = launch().await.unwrap().unwrap();
+        initialize(&second.tx).await.unwrap();
+        load_session(&second.tx, &sid, cwd, "default")
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), request_started)
+            .await
+            .expect("failed recovery was not retried in an unchanged session")
+            .unwrap();
+        let started = std::time::Instant::now();
+        second.cancel.cancel();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            second.shutdown_complete.wait_for(|done| *done),
+        )
+        .await
+        .expect("shutdown waited for the stalled memory model")
+        .unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+        if let Some(thread) = second.thread.take() {
+            tokio::task::spawn_blocking(move || thread.join().unwrap().unwrap())
+                .await
+                .unwrap();
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(2), stalled)
+            .await
+            .expect("memory HTTP request survived Runtime shutdown")
+            .unwrap();
+        assert_eq!(
+            std::fs::read_dir(storage.workspace_dir().join("pending"))
+                .unwrap()
+                .count(),
+            1
+        );
+        assert_eq!(
+            echo_agent_memory::records::activity(&storage).outcome,
+            "queued"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore = "requires an explicit isolated ECHO_AGENT_HOME and local MCP port (~10s)"]
     async fn spawn_smoke_spawn_initialize_new_session() {
         assert!(

@@ -1228,6 +1228,8 @@ export interface PersonalMemorySnapshot {
   records: PersonalMemoryRecord[];
   enabled: boolean;
   pendingCount: number;
+  quarantinedCount?: number;
+  autoProcessingEnabled?: boolean;
   extraction: { attemptedAt: number | null; succeededAt: number | null; outcome: string; detail: string; recordsWritten: number };
   retrieval: { at: number; mode: string; count: number; sources: string[]; durationMs: number };
 }

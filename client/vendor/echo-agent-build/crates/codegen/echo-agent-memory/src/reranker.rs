@@ -68,12 +68,8 @@ impl ApiReranker {
                 tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
             }
 
-            if self
-                .request_permit
-                .as_ref()
-                .is_some_and(|permit| !permit(&documents))
-            {
-                return Err("Memory changed or was disabled before reranking".into());
+            if let Some(permit) = &self.request_permit {
+                permit(&documents)?;
             }
             let mut request =
                 echo_agent_http::shared_client().post(self.endpoint.trim_end_matches('/'));

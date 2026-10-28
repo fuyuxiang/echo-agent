@@ -1026,7 +1026,7 @@ pub async fn agent_init(
     if let Some(scheduler) = state.automation_scheduler.lock().unwrap().take() {
         scheduler.abort();
     }
-    stop_agent_runtime_wait(&state, std::time::Duration::from_secs(12)).await?;
+    stop_agent_runtime_wait(&state, RUNTIME_SHUTDOWN_GRACE).await?;
     crate::automations::clear_runtime_sessions();
     state.clear_orphaned_sessions();
     state.clear_session_workspaces();
@@ -1812,7 +1812,7 @@ pub async fn agent_shutdown(
     // Trigger the cancel token so the agent thread's `cancelled().await` resolves.
     let _init_guard = state.init_lock.lock().await;
     crate::automation::shutdown_all().await?;
-    stop_agent_runtime_wait(&state, std::time::Duration::from_secs(12)).await?;
+    stop_agent_runtime_wait(&state, RUNTIME_SHUTDOWN_GRACE).await?;
     if let Some(scheduler) = state.automation_scheduler.lock().unwrap().take() {
         scheduler.abort();
     }
@@ -1836,24 +1836,27 @@ pub async fn agent_shutdown(
     Ok(())
 }
 
+// Shared across exit, restart and re-init. Network memory work is checkpointed.
+const RUNTIME_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Stop the embedded Runtime without dropping session-end persistence hooks.
 /// Shared by the frontend restart command and the native tray Quit action.
 pub(crate) async fn stop_agent_runtime(state: &AppState) -> Result<(), String> {
-    // SessionEnd includes model-assisted memory consolidation before the final
-    // disk ACK. Real provider calls can outlast 12 seconds even with idle tasks.
-    // Keep the persistence barrier and recoverable failure, but allow this work
-    // to finish before offering a runtime restart that would cancel it.
-    stop_agent_runtime_with_grace(state, std::time::Duration::from_secs(60)).await
+    stop_agent_runtime_with_grace(state, RUNTIME_SHUTDOWN_GRACE).await
 }
 
 async fn stop_agent_runtime_with_grace(
     state: &AppState,
     grace: std::time::Duration,
 ) -> Result<(), String> {
-    let _init_guard = tokio::time::timeout(grace, state.init_lock.lock())
+    let deadline = tokio::time::Instant::now() + grace;
+    let _init_guard = tokio::time::timeout_at(deadline, state.init_lock.lock())
         .await
         .map_err(|_| "AI 引擎仍在初始化，应用已保留，请稍后重试退出".to_string())?;
-    stop_agent_runtime_wait(state, grace).await
+    stop_agent_runtime_wait(
+        state,
+        deadline.saturating_duration_since(tokio::time::Instant::now()),
+    ).await
 }
 
 async fn stop_agent_runtime_wait(

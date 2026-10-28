@@ -7,6 +7,8 @@
 .personal-memory__context code { display:block; overflow-wrap:anywhere; margin-top:4px; }
 .personal-memory__health, .personal-memory__notice { padding:12px 14px; background:var(--echo-bg-secondary); border:1px solid var(--echo-border-default); border-radius:10px; display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
 .personal-memory__health details { width:100%; }
+.personal-memory__health > div { display:flex; flex-direction:column; align-items:flex-start; width:100%; min-width:0; gap:8px; }
+.personal-memory__health > div > p { margin:0; line-height:1.6; }
 .personal-memory__toolbar [role=tablist] { display:flex; gap:3px; flex:1; }
 .personal-memory__toolbar [role=tab] { padding:7px 10px; border:0; border-radius:7px; background:transparent; color:var(--echo-text-medium); cursor:pointer; white-space:nowrap; }
 .personal-memory__toolbar [aria-selected=true] { background:var(--echo-bg-tertiary); color:var(--echo-text-strong); font-weight:600; }

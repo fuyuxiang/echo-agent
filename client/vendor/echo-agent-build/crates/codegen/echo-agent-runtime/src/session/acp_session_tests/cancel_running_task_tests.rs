@@ -178,6 +178,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                     cancel: Default::default(),
                 },
                 memory: crate::session::memory_state::SessionMemory {
+                    jobs: Default::default(),
                     flush_config: crate::config::MemoryFlushConfig::default(),
                     is_flushing: std::sync::atomic::AtomicBool::new(false),
                     last_flush_compaction: std::sync::atomic::AtomicU64::new(0),
@@ -590,6 +591,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 crate::session::memory::MemoryStorage::new(session_dir.path(), None);
             memory_storage.ensure_initialized().unwrap();
             let memory_backend_params = crate::session::memory::MemoryBackendParams {
+                embedding_maintenance: Default::default(),
                 session_id: session_info.id.to_string(),
                 embed_config: None,
                 embed_base_url: "http://localhost".to_string(),
@@ -669,6 +671,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                     cancel: Default::default(),
                 },
                 memory: crate::session::memory_state::SessionMemory {
+                    jobs: Default::default(),
                     flush_config: crate::config::MemoryFlushConfig::default(),
                     is_flushing: std::sync::atomic::AtomicBool::new(false),
                     last_flush_compaction: std::sync::atomic::AtomicU64::new(0),
@@ -980,6 +983,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                     cancel: Default::default(),
                 },
                 memory: crate::session::memory_state::SessionMemory {
+                    jobs: Default::default(),
                     flush_config: crate::config::MemoryFlushConfig::default(),
                     is_flushing: std::sync::atomic::AtomicBool::new(false),
                     last_flush_compaction: std::sync::atomic::AtomicU64::new(0),
@@ -2524,6 +2528,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                     cancel: Default::default(),
                 },
                 memory: crate::session::memory_state::SessionMemory {
+                    jobs: Default::default(),
                     flush_config: crate::config::MemoryFlushConfig::default(),
                     is_flushing: std::sync::atomic::AtomicBool::new(false),
                     last_flush_compaction: std::sync::atomic::AtomicU64::new(0),

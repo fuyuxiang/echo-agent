@@ -9,7 +9,9 @@
 //! `crate::sampling` and `crate::session::helpers::session_compact`) and is
 //! not part of the relocatable core engine.
 
+pub mod background;
 pub mod hooks;
+pub mod pending;
 
 pub use echo_agent_memory::{
     EndpointScopedCredentials, MemoryBackendImpl, MemoryBackendParams, MemoryIndex, MemoryScope,

@@ -16,20 +16,27 @@ impl Drop for FlushLockGuard<'_> {
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-struct PendingMemory {
-    source_id: String,
-    history: Vec<ConversationItem>,
-    #[serde(default)]
-    conversation_len: usize,
-    #[serde(default)]
-    queued_at: i64,
-}
+use crate::session::memory::pending::{PendingMemory, recover_pending_jobs};
 
 impl SessionActor {
     /// Persist the work before starting the model call. A quick quit, provider
     /// error or crash leaves a bounded, retryable job in this workspace.
     pub(super) async fn queue_memory_extraction(self: &std::sync::Arc<Self>) {
+        if self.memory.jobs.is_stopping() {
+            return;
+        }
+        if let Err(error) = self.checkpoint_memory_extraction().await {
+            tracing::warn!(%error, "could not checkpoint memory extraction");
+            return;
+        }
+        let actor = self.clone();
+        self.memory.jobs.spawn(async move {
+            actor.recover_pending_memories().await;
+        });
+    }
+
+    /// Local, durable work only. Shutdown can retry this without repeating hooks.
+    async fn checkpoint_memory_extraction(&self) -> Result<(), String> {
         use echo_agent_memory::records;
         if self.startup_hints.is_subagent
             || !self.memory.setting("memory", None, "enabled", true)
@@ -37,15 +44,21 @@ impl SessionActor {
                 .memory
                 .setting("compaction", Some("memory_flush"), "enabled", true)
         {
-            return;
+            return Ok(());
         }
         let Some(storage) = self.memory.storage() else {
-            return;
+            return Ok(());
         };
-        if storage.is_ephemeral() {
-            return;
+        if storage.is_ephemeral()
+            || records::source_blocked(&storage, &self.session_info.id.0)
+                .map_err(|e| format!("无法核对记忆来源：{e}"))?
+        {
+            return Ok(());
         }
         let snapshot = self.snapshot_memory_flush_state().await;
+        if crate::session::helpers::session_compact::extract_real_user_queries(&snapshot.chat_history).is_empty() {
+            return Ok(());
+        }
         let job = PendingMemory {
             queued_at: records::now(),
             source_id: self.session_info.id.to_string(),
@@ -55,25 +68,23 @@ impl SessionActor {
                 80,
             ),
         };
-        let name = blake3::hash(job.source_id.as_bytes()).to_hex().to_string();
-        if let Err(error) = records::write_json(
-            &storage
-                .workspace_dir()
-                .join("pending")
-                .join(format!("{name}.json")),
-            &job,
-        ) {
-            tracing::warn!(%error, "could not checkpoint memory extraction");
-            return;
+        if job.history.is_empty() {
+            return Ok(());
         }
-        let actor = self.clone();
-        tokio::task::spawn_local(async move {
-            actor.recover_pending_memories().await;
-        });
+        // History lengths shrink after compaction and can stay equal after an
+        // edit/retry. Only exact completed content is safe to skip.
+        if self.memory.jobs.completed(&job.identity().map_err(|e| e.to_string())?) {
+            return Ok(());
+        }
+        crate::session::memory::pending::checkpoint(&storage, &job)
+            .map_err(|e| format!("记忆待处理内容未能保存：{e}"))?;
+        records::defer_extraction(&storage);
+        Ok(())
     }
 
     pub(super) async fn recover_pending_memories(&self) {
-        if self.startup_hints.is_subagent
+        if self.memory.jobs.is_stopping()
+            || self.startup_hints.is_subagent
             || !self.memory.setting("memory", None, "enabled", true)
             || !self
                 .memory
@@ -94,6 +105,7 @@ impl SessionActor {
                         .load(std::sync::atomic::Ordering::Relaxed)
             },
             |job| async move {
+                let identity = job.identity().ok();
                 let counts = echo_agent_chat_state::ConversationCounts {
                     total: job.history.len(),
                     user: job
@@ -124,6 +136,7 @@ impl SessionActor {
                     )
                     .await;
                 if completed && job.source_id == self.session_info.id.to_string() {
+                    if let Some(identity) = identity { self.memory.jobs.mark_completed(identity); }
                     self.last_idle_flush_conversation_len
                         .store(job.conversation_len, std::sync::atomic::Ordering::Relaxed);
                 }
@@ -131,126 +144,6 @@ impl SessionActor {
             },
         )
         .await;
-    }
-}
-
-/// Durable checkpoint traversal is independent of a model/provider failure.
-async fn recover_pending_jobs<F, Fut>(
-    storage: &crate::session::memory::MemoryStorage,
-    allowed: impl Fn() -> bool,
-    mut run: F,
-) where
-    F: FnMut(PendingMemory) -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    use echo_agent_memory::records;
-    records::recover_extraction_activity(storage);
-    let mut attempted = std::collections::HashSet::new();
-    for _pass in 0..3 {
-        let entries = match std::fs::read_dir(storage.workspace_dir().join("pending")) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
-            Err(error) => {
-                tracing::warn!(%error, "memory checkpoint directory unavailable");
-                return;
-            }
-        };
-        let mut processed = 0;
-        for entry in entries.flatten() {
-            if !allowed() {
-                return;
-            }
-            let path = entry.path();
-            if !entry.file_type().is_ok_and(|kind| kind.is_file())
-                || path.extension().is_none_or(|v| v != "json")
-            {
-                continue;
-            }
-            if !entry
-                .metadata()
-                .is_ok_and(|meta| meta.len() <= 8 * 1024 * 1024)
-            {
-                continue;
-            }
-            let Ok(bytes) = std::fs::read(&path) else {
-                continue;
-            };
-            let identity = (path.clone(), blake3::hash(&bytes));
-            if attempted.contains(&identity) {
-                continue;
-            }
-            let job = match serde_json::from_slice::<PendingMemory>(&bytes) {
-                Ok(job) => job,
-                Err(error) => {
-                    attempted.insert(identity);
-                    tracing::warn!(%error, path = %path.display(), "invalid memory checkpoint retained");
-                    records::record_extraction_recovery_error(
-                        storage,
-                        format!("待提取记录损坏，原文件已保留：{}", path.display()),
-                    );
-                    continue;
-                }
-            };
-            if processed >= 32 {
-                break;
-            }
-            processed += 1;
-            attempted.insert(identity);
-            if run(job).await && std::fs::read(&path).is_ok_and(|current| current == bytes) {
-                // Completion cannot delete a newer turn's replacement checkpoint.
-                let _ = std::fs::remove_file(&path);
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod pending_recovery_tests {
-    use super::*;
-    #[tokio::test]
-    async fn corrupt_and_failed_jobs_do_not_starve_valid_or_newer_checkpoints() {
-        let dir = tempfile::tempdir().unwrap();
-        let storage = crate::session::memory::MemoryStorage::new_flat(dir.path(), dir.path());
-        let pending = dir.path().join("pending");
-        std::fs::create_dir_all(&pending).unwrap();
-        for n in 0..40 {
-            std::fs::write(pending.join(format!("corrupt-{n}.json")), b"invalid").unwrap();
-        }
-        for source in ["failed", "success", "updated"] {
-            std::fs::write(
-                pending.join(format!("{source}.json")),
-                serde_json::to_vec(&PendingMemory {
-                    source_id: source.into(),
-                    history: vec![],
-                    conversation_len: 0,
-                    queued_at: 1,
-                })
-                .unwrap(),
-            )
-            .unwrap();
-        }
-        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        recover_pending_jobs(
-            &storage,
-            || true,
-            |job| {
-                seen.lock().unwrap().push(job.source_id.clone());
-                if job.source_id == "updated" {
-                    std::fs::write(pending.join("updated.json"), b"new checkpoint").unwrap();
-                }
-                async move { job.source_id != "failed" }
-            },
-        )
-        .await;
-        let seen = seen.lock().unwrap();
-        assert_eq!(seen.iter().filter(|s| *s == "failed").count(), 1);
-        assert!(seen.contains(&"success".to_string()));
-        assert!(!pending.join("success.json").exists());
-        assert!(pending.join("failed.json").exists());
-        assert_eq!(
-            std::fs::read(pending.join("updated.json")).unwrap(),
-            b"new checkpoint"
-        );
     }
 }
 
@@ -288,7 +181,7 @@ impl SessionActor {
         echo_agent_telemetry::session_ctx::log_event(
             echo_agent_telemetry::memory_telemetry::MemorySessionSummary {
                 session_id: self.session_info.id.to_string(),
-                memory_enabled: self.memory.is_enabled(),
+                memory_enabled: self.memory.setting("memory", None, "enabled", true),
                 session_duration_secs: self.session_start.elapsed().as_secs(),
                 flush_count: telem.flush_count,
                 flush_success_count: telem.flush_success_count,
@@ -306,102 +199,54 @@ impl SessionActor {
         );
     }
 
-    /// Session-end memory save, empty-session-gated dream, and memory summary
-    /// telemetry. Shared by Shutdown and channel-closed so the dream gate cannot
-    /// drift between exit arms.
-    ///
-    /// `log_suffix` is appended to the `MEMORY_SESSION_END:` log line so each
-    /// arm keeps a distinct reason string in logs.
-    pub(super) async fn run_session_end_memory_pipeline(&self, log_suffix: &str) {
-        if !self.memory.setting("memory", None, "enabled", true) {
-            return;
+    /// Finish local memory writes only. Model extraction, embeddings and dream
+    /// are recovered in the next live session, never on the shutdown ACK path.
+    pub(super) async fn run_session_end_memory_pipeline(
+        &self,
+        log_suffix: &str,
+    ) -> Result<(), String> {
+        if self.startup_hints.is_subagent || !self.memory.setting("memory", None, "enabled", true) {
+            return Ok(());
         }
-        if !self.startup_hints.is_subagent
-            && self.memory.setting(
-                "memory",
-                Some("session"),
-                "save_on_end",
-                self.memory.save_on_end,
-            )
-        {
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(20),
-                self.run_memory_flush("session_end", None),
-            )
-            .await;
+        let save = self.memory.setting(
+            "memory",
+            Some("session"),
+            "save_on_end",
+            self.memory.save_on_end,
+        );
+        let Some(storage) = self.memory.storage() else {
+            return Ok(());
+        };
+        if save {
+            self.checkpoint_memory_extraction().await?;
         }
-        let mut session_end_result = "disabled";
-        let mut total_chunks_at_end = 0usize;
-        // Dream consolidates *prior* logs. Run after Written/Failed, or when
-        // save was Skipped for config (`save_on_end=false`) but the session
-        // still meets the size threshold. Empty/brief sessions stay off.
-        let mut run_exit_dream = false;
-        if !self.startup_hints.is_subagent {
-            if let Some(storage) = self.memory.storage() {
-                let conversation = self.chat_state_handle.get_conversation().await;
-                let result = crate::session::memory::hooks::on_session_end(
-                    &storage,
-                    &conversation,
-                    &self.session_info.id.0,
-                    self.memory.setting(
-                        "memory",
-                        Some("session"),
-                        "save_on_end",
-                        self.memory.save_on_end,
-                    ),
-                );
-                match &result {
-                    crate::session::memory::hooks::SessionEndResult::Written(path_str) => {
-                        session_end_result = "written";
-                        run_exit_dream = true;
-                        self.reindex_and_embed(std::path::Path::new(path_str), "session")
-                            .await;
-                        self.send_echo_agent_notification(
-                            EchoAgentSessionUpdate::MemorySessionSaved {
-                                path: path_str.clone(),
-                            },
-                        )
-                        .await;
-                    }
-                    crate::session::memory::hooks::SessionEndResult::Skipped => {
-                        session_end_result = "skipped";
-                        // `Skipped` also means save_on_end=false — still dream
-                        // when the conversation is substantial.
-                        run_exit_dream =
-                            crate::session::memory::hooks::queries_meeting_session_end_threshold(
-                                &conversation,
-                            )
-                            .is_some();
-                    }
-                    crate::session::memory::hooks::SessionEndResult::Failed(_) => {
-                        session_end_result = "failed";
-                        run_exit_dream = true;
-                    }
-                }
-                total_chunks_at_end = storage.total_chunk_count();
-                let telem = self.memory.telemetry_snapshot();
-                let msg = format!("MEMORY_SESSION_END: {log_suffix}");
-                tracing::info!(
-                    target: echo_agent_telemetry::memory_log::TARGET,
-                    result = ?result,
-                    tool_searches = telem.tool_search_count,
-                    injection_searches = telem.injection_count,
-                    recovery_searches = telem.compaction_recovery_count,
-                    "{msg}"
-                );
+        let conversation = self.chat_state_handle.get_conversation().await;
+        let result = crate::session::memory::hooks::on_session_end(
+            &storage,
+            &conversation,
+            &self.session_info.id.0,
+            save,
+        );
+        let outcome = match result {
+            crate::session::memory::hooks::SessionEndResult::Written(path) => {
+                self.send_echo_agent_notification(EchoAgentSessionUpdate::MemorySessionSaved {
+                    path,
+                })
+                .await;
+                "written"
             }
-        } else {
-            tracing::debug!(
-                target: echo_agent_telemetry::memory_log::TARGET,
-                "MEMORY_SUBAGENT_SKIP: skipping on_session_end for subagent session"
-            );
-            return;
-        }
-        if run_exit_dream {
-            self.maybe_run_dream().await;
-        }
-        let telem = self.memory.telemetry_snapshot();
-        self.emit_memory_session_summary(&telem, total_chunks_at_end, session_end_result);
+            crate::session::memory::hooks::SessionEndResult::Skipped => "skipped",
+            crate::session::memory::hooks::SessionEndResult::Failed(error) => {
+                return Err(format!("本地记忆摘要未能保存：{error}"));
+            }
+        };
+        tracing::info!(target: echo_agent_telemetry::memory_log::TARGET, outcome, "MEMORY_SESSION_END: {log_suffix}; network work deferred");
+        self.emit_memory_session_summary(
+            &self.memory.telemetry_snapshot(),
+            storage.total_chunk_count(),
+            outcome,
+        );
+        Ok(())
     }
 
     /// Reindex a single file and embed any new chunks.
@@ -436,7 +281,7 @@ impl SessionActor {
     /// Uses the same sampling client infrastructure as flush but sends
     /// the dream prompt instead. The model call has a 60s timeout.
     pub(super) async fn maybe_run_dream(&self) {
-        if !self.memory.setting("memory", None, "enabled", true)
+        if !self.memory.is_enabled()
             || !self.memory.setting(
                 "memory",
                 Some("dream"),
@@ -547,7 +392,7 @@ impl SessionActor {
     ) -> Result<bool, String> {
         use crate::session::memory::dream::*;
 
-        if !self.memory.setting("memory", None, "enabled", true) {
+        if !self.memory.is_enabled() {
             return Ok(false);
         }
         let existing_memory = std::fs::read_to_string(storage.workspace_memory_file()).ok();
@@ -612,7 +457,7 @@ impl SessionActor {
             }
         };
 
-        if !self.memory.setting("memory", None, "enabled", true)
+        if !self.memory.is_enabled()
             || !echo_agent_memory::records::permitted(storage, &model_response).unwrap_or(false)
         {
             return Ok(false);
@@ -752,7 +597,7 @@ impl SessionActor {
         let observed_at = source_at
             .filter(|at| *at > 0 && *at <= records::now())
             .unwrap_or_else(records::now);
-        if !self.memory.setting("memory", None, "enabled", true)
+        if !self.memory.is_enabled()
             || (trigger != "user_requested"
                 && trigger != "slash_command"
                 && !self
@@ -888,7 +733,7 @@ impl SessionActor {
         }
         .await;
 
-        if !self.memory.setting("memory", None, "enabled", true)
+        if !self.memory.is_enabled()
             || (trigger != "user_requested"
                 && trigger != "slash_command"
                 && !self

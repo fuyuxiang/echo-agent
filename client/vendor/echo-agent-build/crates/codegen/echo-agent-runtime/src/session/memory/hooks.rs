@@ -14,7 +14,7 @@
 //! - session date
 //!
 //! The runtime also queues source-attributed extraction after completed turns
-//! and attempts a bounded rich extraction before this shutdown fallback.
+//! and checkpoints unfinished extraction at shutdown for the next live session.
 //!
 //! ## Reliability
 //!

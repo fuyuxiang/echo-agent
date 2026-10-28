@@ -639,32 +639,20 @@ pub(super) async fn run_session(
                 biased;
                 // Idle flush timer fired — run background flush.
                 _ = &mut idle_flush_sleep, if session.idle_flush_timeout.is_some()
-                    && session.memory.is_enabled()
-                    && !session.memory.is_flushing.load(std::sync::atomic::Ordering::Relaxed) => {
-                    // Skip if no new messages since last idle flush
-                    let current_len = session.chat_state_handle.get_conversation_len().await;
-                    let last_len = session.last_idle_flush_conversation_len
-                        .load(std::sync::atomic::Ordering::Relaxed);
-                    if current_len > last_len {
-                        tracing::info!(target: echo_agent_telemetry::memory_log::TARGET,
-                            "MEMORY_IDLE_FLUSH: timer fired (conversation {last_len} → {current_len})");
-                        tokio::task::spawn_local({
+                    && session.memory.is_enabled() => {
+                    // Failed jobs must recover even in an unchanged/empty chat.
+                    // Exact checkpoint identities suppress completed work; history
+                    // length cannot identify edits or post-compaction content.
+                    tracing::debug!(target: echo_agent_telemetry::memory_log::TARGET,
+                        "MEMORY_IDLE_FLUSH: checkpointing current content and retrying pending work");
+                    // Keep polling the timer even during a request: a select!
+                    // branch disabled by a background-owned flag will not wake
+                    // when that flag changes without another actor command.
+                    if !session.memory.is_flushing.load(std::sync::atomic::Ordering::Relaxed) {
+                        session.memory.jobs.spawn({
                             let session = session.clone();
-                            async move {
-                                session.recover_pending_memories().await;
-                                if session.last_idle_flush_conversation_len.load(std::sync::atomic::Ordering::Relaxed) >= current_len { return; }
-                                if session.run_memory_flush("interval", None).await {
-                                    session.last_idle_flush_conversation_len
-                                        .store(current_len, std::sync::atomic::Ordering::Relaxed);
-                                } else {
-                                    tracing::info!(target: echo_agent_telemetry::memory_log::TARGET,
-                                        "MEMORY_IDLE_FLUSH: incomplete — retaining checkpoint for retry");
-                                }
-                            }
+                            async move { session.queue_memory_extraction().await; }
                         });
-                    } else {
-                        tracing::debug!(target: echo_agent_telemetry::memory_log::TARGET,
-                            "MEMORY_IDLE_FLUSH: skipped, no new messages since last flush (len={current_len})");
                     }
                     // Reset for next idle period
                     if let Some(timeout) = session.idle_flush_timeout {
@@ -676,7 +664,7 @@ pub(super) async fn run_session(
                     && session.memory.is_enabled() => {
                     tracing::debug!(target: echo_agent_telemetry::memory_log::TARGET,
                         "MEMORY_DREAM_CHECK: timer fired");
-                    tokio::task::spawn_local({
+                    session.memory.jobs.spawn({
                         let session = session.clone();
                         async move {
                             session.maybe_run_dream().await;
@@ -775,16 +763,15 @@ pub(super) async fn run_session(
                 }
                 maybe_cmd = cmd_rx.recv() => {
                     let Some(cmd) = maybe_cmd else {
+                        session.memory.stop_jobs().await;
                         // ── session_end (channel-closed path) ────────
                         // Queued reports first, so an earlier turn's report precedes the
                         // session-end `Stop`. Hooks fire BEFORE memory auto-save per plan contract.
                         turn_end_queue.flush().await;
                         fire_session_end_hooks(&session, "channel_closed").await;
-                        session
-                            .run_session_end_memory_pipeline(
-                                "channel closed, session summary saved",
-                            )
-                            .await;
+                        if let Err(error) = session.run_session_end_memory_pipeline("channel closed, session summary saved").await {
+                            tracing::warn!(%error, "local memory checkpoint failed after channel closure");
+                        }
                         if let Some(notification) = replay_buffer.flush() {
                             session.emit_buffered(notification).await;
                         }
@@ -1355,7 +1342,7 @@ pub(super) async fn run_session(
                         }
                         SessionCommand::FlushMemory { respond_to } => {
                             let s = session.clone();
-                            tokio::task::spawn_local(async move {
+                            session.memory.jobs.spawn(async move {
                                 if s.memory.is_enabled() {
                                     let did_flush = s.run_memory_flush("user_requested", None).await;
                                     let _ = respond_to.send(Ok(did_flush));
@@ -1369,7 +1356,7 @@ pub(super) async fn run_session(
                         }
                         SessionCommand::DreamMemory { respond_to } => {
                             let s = session.clone();
-                            tokio::task::spawn_local(async move {
+                            session.memory.jobs.spawn(async move {
                                 let result = s.run_dream_slash_command().await.map_err(|error| {
                                     acp::Error::internal_error().data(error)
                                 });
@@ -2440,6 +2427,7 @@ pub(super) async fn run_session(
                             );
                         }
                         SessionCommand::Shutdown(kind) => {
+                            session.memory.stop_jobs().await;
                             shutdown_workflows(&session).await;
                             // Flush the actor-owned replay buffer so any
                             // streamed chunks still pending at shutdown
@@ -2486,9 +2474,20 @@ pub(super) async fn run_session(
                             // Hooks fire BEFORE memory auto-save per plan contract.
                             turn_end_queue.flush().await;
                             fire_session_end_hooks(&session, "shutdown").await;
-                            session
-                                .run_session_end_memory_pipeline("session summary saved")
-                                .await;
+                            loop {
+                                match session.run_session_end_memory_pipeline("session summary saved").await {
+                                    Ok(()) => break,
+                                    Err(error) => {
+                                        if let Some(completion) = &checked_shutdown {
+                                            completion.send_replace(Some(Err(error)));
+                                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                        } else {
+                                            tracing::warn!(%error, "local memory checkpoint failed during shutdown");
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
                             log_session_ended(&session).await;
                             turn_end_queue.drain().await;
                             finish_session_exit_feedback(&session).await;

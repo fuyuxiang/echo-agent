@@ -312,6 +312,7 @@ pub(crate) async fn create_test_actor_with_terminal(
             cancel: Default::default(),
         },
         memory: crate::session::memory_state::SessionMemory {
+            jobs: Default::default(),
             flush_config: crate::config::MemoryFlushConfig::default(),
             is_flushing: std::sync::atomic::AtomicBool::new(false),
             last_flush_compaction: std::sync::atomic::AtomicU64::new(0),

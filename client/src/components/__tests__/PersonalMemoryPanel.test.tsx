@@ -21,6 +21,42 @@ beforeEach(() => {
 });
 
 describe("个人记忆管理", () => {
+  it("记忆和自动整理都关闭时明确提示两项都需要恢复", async () => {
+    api.memoryRecordsGet.mockResolvedValueOnce({ records: [], enabled: false, autoProcessingEnabled: false, pendingCount: 1,
+      extraction: { outcome: "queued", detail: "", succeededAt: null }, retrieval: { at: 0, sources: [] } });
+    render(<PersonalMemoryPanel cwd="/project-a" />);
+    expect(await screen.findByText("待整理内容已保存在本机，开启记忆并恢复自动整理后继续处理")).toBeInTheDocument();
+  });
+
+  it("损坏待办已隔离时说明原件保留和重新提取入口，不误报全部整理完成", async () => {
+    api.memoryRecordsGet.mockResolvedValueOnce({ records: [], enabled: true, pendingCount: 1, quarantinedCount: 2,
+      extraction: { outcome: "queued", detail: "", succeededAt: null }, retrieval: { at: 0, sources: [] } });
+    render(<PersonalMemoryPanel cwd="/project-a" />);
+    expect(await screen.findByText(/已隔离 2 项损坏的待整理内容/)).toHaveTextContent("损坏部分未完成提取，可打开原对话重新提取");
+  });
+  it("旧版关闭自动整理时不承诺开启记忆后自动处理", async () => {
+    api.memoryRecordsGet.mockResolvedValueOnce({ records: [], enabled: true, autoProcessingEnabled: false, pendingCount: 1,
+      extraction: { outcome: "queued", detail: "", succeededAt: null }, retrieval: { at: 0, sources: [] } });
+    render(<PersonalMemoryPanel cwd="/project-a" />);
+    expect(await screen.findByText("待整理内容已保存在本机，自动整理已暂停，可恢复推荐策略后继续处理")).toBeInTheDocument();
+    expect(screen.getByText("1 项内容待整理，已暂停自动整理；不影响已保存的聊天记录")).toBeInTheDocument();
+  });
+
+  it("记忆关闭时保留待整理内容，明确说明自动处理已暂停", async () => {
+    api.memoryRecordsGet.mockResolvedValueOnce({ records: [], enabled: false, pendingCount: 2,
+      extraction: { outcome: "queued", detail: "", succeededAt: null }, retrieval: { at: 0, sources: [] } });
+    render(<PersonalMemoryPanel cwd="/project-a" />);
+    expect(await screen.findByText("待整理内容已保存在本机，开启记忆后继续处理")).toBeInTheDocument();
+    expect(screen.getByText("2 项内容待整理，已暂停自动整理；不影响已保存的聊天记录")).toBeInTheDocument();
+  });
+  it("退出后待整理内容明确显示为本地已保存，不误报提取失败", async () => {
+    api.memoryRecordsGet.mockResolvedValueOnce({ records: [], enabled: true, pendingCount: 2,
+      extraction: { outcome: "queued", detail: "", succeededAt: null }, retrieval: { at: 0, sources: [] } });
+    render(<PersonalMemoryPanel cwd="/project-a" />);
+    expect(await screen.findByText("待整理内容已保存在本机，将自动继续处理")).toBeInTheDocument();
+    expect(screen.getByText("2 项内容待整理，打开工作区后自动继续；不影响已保存的聊天记录")).toBeInTheDocument();
+    expect(screen.queryByText("最近一次提取未完成")).toBeNull();
+  });
   it("处理状态明确说明没有新增内容，不把完成时间当成保存凭据", async () => {
     api.memoryRecordsGet.mockResolvedValueOnce({ records: [], enabled: true, pendingCount: 0,
       extraction: { outcome: "unchanged", detail: "", succeededAt: 2 }, retrieval: { at: 0, sources: [] } });

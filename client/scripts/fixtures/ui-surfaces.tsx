@@ -342,7 +342,7 @@ Object.assign(window, {
           automationFlowRemoved = false;
           return automationFlowTask;
         }
-        case "memory_records_get": return { enabled: memory.enabled, pendingCount: 1,
+        case "memory_records_get": return { enabled: memory.enabled, autoProcessingEnabled: memory.autoFlushEnabled, pendingCount: 1, quarantinedCount: 2,
           extraction: { attemptedAt: 1792320000, succeededAt: 1792320000, outcome: "saved", detail: "", recordsWritten: 2 },
           retrieval: { at: 1792320300, mode: "Hybrid", count: 1, sources: ["全局偏好 · 回答方式"], durationMs: 80 },
           records: [

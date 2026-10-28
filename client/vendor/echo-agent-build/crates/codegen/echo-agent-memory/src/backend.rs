@@ -127,6 +127,8 @@ impl EndpointScopedCredentials {
 /// `[memory.search]` config because no single place applied all builder methods.
 #[derive(Clone)]
 pub struct MemoryBackendParams {
+    /// One owner shared by all search backends in this session.
+    pub embedding_maintenance: Arc<crate::EmbeddingMaintenance>,
     pub session_id: String,
     /// Embedding provider config — `None` forces FTS-only fallback everywhere.
     pub embed_config: Option<echo_agent_config_types::MemoryEmbeddingConfig>,
@@ -229,6 +231,7 @@ async fn build_embedding_provider(
 /// Stores only `Send + Sync` config data. The `MemoryIndex` and
 /// `EmbeddingProvider` are constructed on demand per query.
 pub struct MemoryBackendImpl {
+    embedding_maintenance: Arc<crate::EmbeddingMaintenance>,
     db_path: PathBuf,
     storage: MemoryStorage,
     /// Embedding config — `None` disables vector search (FTS-only fallback).
@@ -262,6 +265,7 @@ impl MemoryBackendImpl {
     /// database created by `MemoryIndex::open_or_create()`.
     pub fn new(db_path: PathBuf, storage: MemoryStorage) -> Self {
         Self {
+            embedding_maintenance: Default::default(),
             db_path,
             storage,
             embed_config: None,
@@ -281,6 +285,12 @@ impl MemoryBackendImpl {
 
     pub fn with_session_id(mut self, session_id: String) -> Self {
         self.session_id = session_id;
+        self
+    }
+
+    /// Keep maintenance alive across temporary backends and join it at shutdown.
+    pub fn with_embedding_maintenance(mut self, owner: Arc<crate::EmbeddingMaintenance>) -> Self {
+        self.embedding_maintenance = owner;
         self
     }
 
@@ -338,14 +348,13 @@ impl MemoryBackendImpl {
             &self.embed_base_url,
         )
         .await
-        .map(|provider| provider.with_request_permit(self.request_permit()))
     }
 
     fn request_permit(&self) -> super::embedding::MemoryRequestPermit {
         if self.embed_chunks_on_search {
             self.storage.request_permit()
         } else {
-            std::sync::Arc::new(|_| true)
+            std::sync::Arc::new(|_| Ok(()))
         }
     }
 
@@ -368,6 +377,7 @@ impl MemoryBackendImpl {
             backend = backend.with_watcher(w.clone(), params.stale_claim_secs);
         }
         backend.embedding_credentials = params.embedding_credentials.clone();
+        backend.embedding_maintenance = params.embedding_maintenance.clone();
         backend
     }
 }
@@ -444,7 +454,7 @@ impl MemoryBackend for MemoryBackendImpl {
             }
         }
         // ── Sync phase 1: reindex dirty files, collect chunks needing embeddings ──
-        let mut reindex_chunks: Vec<(String, String)> = Vec::new();
+        let mut reindex_chunks = Vec::new();
         let mut needs_release = false;
         // Watcher-sync telemetry data (populated inside the claim guard below).
         let mut watcher_sync_stats: Option<(usize, usize, std::time::Instant)> = None;
@@ -486,7 +496,7 @@ impl MemoryBackend for MemoryBackendImpl {
                 }
             }
             if dirty_count > 0 {
-                reindex_chunks = index.chunks_without_embeddings().unwrap_or_default();
+                reindex_chunks = index.embedding_candidates().unwrap_or_default();
             }
             watcher_sync_stats = Some((dirty_count, changed_chunk_count, sync_start));
         }
@@ -496,7 +506,7 @@ impl MemoryBackend for MemoryBackendImpl {
         if let Some(ref provider) = provider {
             match index.ensure_embedding_fingerprint(&provider.fingerprint()) {
                 Ok(true) if self.embed_chunks_on_search => {
-                    reindex_chunks = index.chunks_without_embeddings().unwrap_or_default();
+                    reindex_chunks = index.embedding_candidates().unwrap_or_default();
                 }
                 Ok(_) => {}
                 Err(error) => tracing::warn!(
@@ -508,66 +518,20 @@ impl MemoryBackend for MemoryBackendImpl {
             // Desktop edits can reindex files while file watching is disabled.
             // Fill those new chunks on the next semantic search as well.
             if self.embed_chunks_on_search && reindex_chunks.is_empty() {
-                reindex_chunks = index.chunks_without_embeddings().unwrap_or_default();
+                reindex_chunks = index.embedding_candidates().unwrap_or_default();
             }
         }
-        let mut embedded_count: usize = 0;
-        let mut embedding_sync_failed = false;
+        let embedded_count = 0;
         if self.embed_chunks_on_search
             && !reindex_chunks.is_empty()
             && let Some(ref provider) = provider
         {
-            let mut upserts: Vec<(String, Vec<f32>)> = Vec::new();
-            for batch in reindex_chunks.chunks(32) {
-                let texts: Vec<&str> = batch.iter().map(|(_, t)| t.as_str()).collect();
-                match tokio::time::timeout(
-                    super::EMBEDDING_BATCH_TIMEOUT,
-                    provider.embed_batch(&texts),
-                )
-                .await
-                {
-                    Ok(Ok(embeddings)) => {
-                        if let Err(error) = super::embedding::validate_embedding_batch(
-                            &embeddings,
-                            batch.len(),
-                            provider.dimensions(),
-                        ) {
-                            tracing::warn!(
-                                target: crate::MEMORY_LOG_TARGET,
-                                %error,
-                                "embedding provider returned an invalid sync batch"
-                            );
-                            embedding_sync_failed = true;
-                            break;
-                        }
-                        for ((chunk_id, _), emb) in batch.iter().zip(embeddings.into_iter()) {
-                            upserts.push((chunk_id.clone(), emb));
-                        }
-                    }
-                    Ok(Err(e)) => {
-                        tracing::warn!(
-                            target: crate::MEMORY_LOG_TARGET,
-                            error = %e,
-                            "embedding batch failed during sync-on-search, deferring remaining chunks"
-                        );
-                        embedding_sync_failed = true;
-                        break;
-                    }
-                    Err(_) => {
-                        tracing::warn!(
-                            target: crate::MEMORY_LOG_TARGET,
-                            "embedding batch timed out during sync-on-search, deferring remaining chunks"
-                        );
-                        embedding_sync_failed = true;
-                        break;
-                    }
-                }
-            }
-            // Sync: upsert embeddings back (borrows &index, no await)
-            for (chunk_id, emb) in &upserts {
-                let _ = index.upsert_embedding(chunk_id, emb);
-            }
-            embedded_count = upserts.len();
+            self.embedding_maintenance.schedule(
+                self.db_path.clone(),
+                self.storage.clone(),
+                provider.clone(),
+                embed_dims,
+            );
         }
         if needs_release {
             index.release_claim();
@@ -582,6 +546,8 @@ impl MemoryBackend for MemoryBackendImpl {
                     });
             }
         }
+
+        let provider = provider.map(|provider| provider.with_request_permit(self.request_permit()));
 
         // ── Sync phase 2: FTS search ──
         let mut search_config = self.search_config.clone();
@@ -621,18 +587,16 @@ impl MemoryBackend for MemoryBackendImpl {
         );
 
         // ── Async phase: embed query for vector search (no &index borrow) ──
-        let query_embedding = if embedding_sync_failed {
-            super::search::QueryEmbedding::EmbeddingFallback
-        } else {
-            super::search::resolve_query_embedding(
-                provider
-                    .as_ref()
-                    .map(|provider| provider as &dyn super::embedding::EmbeddingProvider),
-                index.vec_available(),
-                query,
-            )
-            .await
-        };
+        // Index maintenance is independent of query embedding. A denied or
+        // failed document batch must not disable vectors already available.
+        let query_embedding = super::search::resolve_query_embedding(
+            provider
+                .as_ref()
+                .map(|provider| provider as &dyn super::embedding::EmbeddingProvider),
+            index.vec_available(),
+            query,
+        )
+        .await;
 
         // ── Sync phase 3: vector search + scoring + merge (borrows &index) ──
         let merged = super::search::hybrid_search_merge(
@@ -653,6 +617,15 @@ impl MemoryBackend for MemoryBackendImpl {
         };
         let error_class = select_search_error_class(fts_error_class, merged.is_vector_degraded);
         let mut results = merged.results;
+        if personal_memory {
+            let rules = match self.storage.recall_rules() {
+                Ok(rules) => rules,
+                Err(super::embedding::MemoryPolicyError::Disabled) => return Ok(Vec::new()),
+                Err(error) => return Err(error.into()),
+            };
+            results.retain(|r| rules.permits_candidate(std::path::Path::new(&r.path), &r.snippet));
+        }
+
         if matches!(
             query_embedding,
             super::search::QueryEmbedding::EmbeddingFallback
@@ -663,6 +636,18 @@ impl MemoryBackend for MemoryBackendImpl {
             super::mmr::mmr_rerank(&mut results, &relevance, &mmr_fallback_config);
             results.truncate(max_results);
         } else if let Some(reranker) = reranker.filter(|_| results.len() > 1) {
+            let reranker = if personal_memory {
+                reranker.with_request_permit(
+                    self.storage.request_permit_for_paths(
+                        results
+                            .iter()
+                            .map(|r| std::path::PathBuf::from(&r.path))
+                            .collect(),
+                    ),
+                )
+            } else {
+                reranker
+            };
             match tokio::time::timeout(
                 super::RERANK_TIMEOUT,
                 reranker.rerank(query, &results, max_results),
@@ -714,8 +699,8 @@ impl MemoryBackend for MemoryBackendImpl {
                 .is_some_and(|name| name == crate::records::RECORD_DOCUMENT)
             {
                 self.storage
-                    .read_file(path, None, None)
-                    .is_ok_and(|text| text.contains(r.snippet.trim()))
+                    .recall_rules()
+                    .is_ok_and(|rules| rules.permits_candidate(path, &r.snippet))
             } else {
                 crate::records::permitted(&self.storage, &r.snippet).unwrap_or(false)
             }
@@ -876,6 +861,7 @@ mod factory_tests {
 
     fn make_params_fts_only(session_id: &str) -> MemoryBackendParams {
         MemoryBackendParams {
+            embedding_maintenance: Default::default(),
             session_id: session_id.to_owned(),
             embed_config: None,
             embed_base_url: String::new(),
@@ -1523,6 +1509,7 @@ mod factory_tests {
         });
 
         let params = MemoryBackendParams {
+            embedding_maintenance: Default::default(),
             session_id: "s1".into(),
             embed_config: Some(MemoryEmbeddingConfig {
                 model: Some("test-embed-model".into()),

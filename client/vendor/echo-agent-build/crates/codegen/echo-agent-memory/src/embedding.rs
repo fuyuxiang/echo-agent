@@ -8,7 +8,26 @@
 
 use async_trait::async_trait;
 
-pub type MemoryRequestPermit = std::sync::Arc<dyn Fn(&[&str]) -> bool + Send + Sync>;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MemoryPolicyError {
+    Disabled,
+    ContentVetoed,
+    LedgerUnavailable(String),
+}
+
+impl std::fmt::Display for MemoryPolicyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Disabled => f.write_str("memory is disabled"),
+            Self::ContentVetoed => f.write_str("memory content excluded by privacy policy"),
+            Self::LedgerUnavailable(error) => write!(f, "memory ledger unavailable: {error}"),
+        }
+    }
+}
+impl std::error::Error for MemoryPolicyError {}
+
+pub type MemoryRequestPermit =
+    std::sync::Arc<dyn Fn(&[&str]) -> Result<(), MemoryPolicyError> + Send + Sync>;
 
 /// Maximum retry attempts for transient API errors (429, 5xx).
 const MAX_RETRIES: usize = 3;
@@ -27,6 +46,16 @@ pub trait EmbeddingProvider: Send + Sync {
         &self,
         texts: &[&str],
     ) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error>>;
+
+    /// Bind candidate provenance to every send/retry, including auth replay.
+    async fn embed_batch_with_policy(
+        &self,
+        texts: &[&str],
+        permit: MemoryRequestPermit,
+    ) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error>> {
+        permit(texts)?;
+        self.embed_batch(texts).await
+    }
 
     /// The model name used for embeddings.
     fn model_name(&self) -> &str;
@@ -67,6 +96,7 @@ pub(crate) fn validate_embedding_batch(
 }
 
 /// API-based embedding provider using an OpenAI-compatible embeddings endpoint.
+#[derive(Clone)]
 pub struct ApiEmbeddingProvider {
     api_base: String,
     model: String,
@@ -168,6 +198,22 @@ impl echo_agent_auth::HttpAuth for NoopHttpAuth {
 
 #[async_trait]
 impl EmbeddingProvider for ApiEmbeddingProvider {
+    async fn embed_batch_with_policy(
+        &self,
+        texts: &[&str],
+        permit: MemoryRequestPermit,
+    ) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error>> {
+        let previous = self.request_permit.clone();
+        let provider = self
+            .clone()
+            .with_request_permit(std::sync::Arc::new(move |texts| {
+                if let Some(previous) = &previous {
+                    previous(texts)?;
+                }
+                permit(texts)
+            }));
+        provider.embed_batch(texts).await
+    }
     #[tracing::instrument(name = "memory.embed_batch", skip_all, fields(batch_size = texts.len()))]
     async fn embed_batch(
         &self,
@@ -198,12 +244,8 @@ impl EmbeddingProvider for ApiEmbeddingProvider {
                     tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
                 }
 
-                if self
-                    .request_permit
-                    .as_ref()
-                    .is_some_and(|permit| !permit(batch))
-                {
-                    return Err("Memory changed or was disabled before embedding".into());
+                if let Some(permit) = &self.request_permit {
+                    permit(batch)?;
                 }
                 let request = echo_agent_http::shared_client()
                     .post(self.endpoint_url())
@@ -226,7 +268,7 @@ impl EmbeddingProvider for ApiEmbeddingProvider {
                         echo_agent_auth::retry_middleware::RequestPermit(std::sync::Arc::new(
                             move || {
                                 let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
-                                permit(&refs)
+                                permit(&refs).is_ok()
                             },
                         )),
                     )
@@ -428,7 +470,13 @@ mod tests {
                     write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
                 }
             });
-            let permit: MemoryRequestPermit = Arc::new(move |_| allowed.load(Ordering::Acquire));
+            let permit: MemoryRequestPermit = Arc::new(move |_| {
+                if allowed.load(Ordering::Acquire) {
+                    Ok(())
+                } else {
+                    Err(MemoryPolicyError::Disabled)
+                }
+            });
             let error = if mode == "rerank-retry" {
                 let config = echo_agent_config_types::MemoryRerankerConfig {
                     enabled: true,
@@ -474,10 +522,7 @@ mod tests {
             };
             stopped.store(true, Ordering::Release);
             server.join().unwrap();
-            assert!(
-                error.contains("Memory changed or was disabled"),
-                "{mode}: {error}"
-            );
+            assert!(error.contains("memory is disabled"), "{mode}: {error}");
             assert_eq!(received.load(Ordering::Acquire), 1, "{mode}");
         }
     }

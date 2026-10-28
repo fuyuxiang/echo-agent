@@ -130,6 +130,7 @@ async fn create_test_actor(
             cancel: Default::default(),
         },
         memory: crate::session::memory_state::SessionMemory {
+            jobs: Default::default(),
             flush_config: crate::config::MemoryFlushConfig::default(),
             is_flushing: std::sync::atomic::AtomicBool::new(false),
             last_flush_compaction: std::sync::atomic::AtomicU64::new(0),
@@ -420,6 +421,7 @@ async fn test_response_header_context_window_downgrade_rejected() {
 #[test]
 fn initial_injection_backend_params_use_override_min_score() {
     let params = crate::session::memory::MemoryBackendParams {
+        embedding_maintenance: Default::default(),
         session_id: "test-session".to_owned(),
         embed_config: None,
         embed_base_url: "http://localhost".to_owned(),
@@ -449,6 +451,7 @@ fn initial_injection_backend_params_use_override_min_score() {
 #[test]
 fn initial_injection_backend_params_preserve_default_zero_min_score() {
     let params = crate::session::memory::MemoryBackendParams {
+        embedding_maintenance: Default::default(),
         session_id: "test-session".to_owned(),
         embed_config: None,
         embed_base_url: "http://localhost".to_owned(),
@@ -596,6 +599,7 @@ async fn create_test_actor_with_memory(
             cancel: Default::default(),
         },
         memory: crate::session::memory_state::SessionMemory {
+            jobs: Default::default(),
             flush_config: memory_config
                 .as_ref()
                 .map_or_else(Default::default, |mc| mc.flush.clone()),
@@ -1403,6 +1407,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                     cancel: Default::default(),
                 },
                 memory: crate::session::memory_state::SessionMemory {
+                    jobs: Default::default(),
                     flush_config: crate::config::MemoryFlushConfig::default(),
                     is_flushing: std::sync::atomic::AtomicBool::new(false),
                     last_flush_compaction: std::sync::atomic::AtomicU64::new(0),

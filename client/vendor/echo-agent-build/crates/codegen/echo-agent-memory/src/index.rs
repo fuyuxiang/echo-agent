@@ -15,7 +15,7 @@ use std::path::Path;
 use std::sync::Once;
 
 use echo_agent_sqlite_journal::JournalMode;
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 use super::chunker::{chunk_hash, chunk_markdown};
 use super::schema;
@@ -79,11 +79,19 @@ pub struct ReindexResult {
     pub removed: usize,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct EmbeddingCandidate {
+    pub id: String,
+    pub path: String,
+    pub text: String,
+    pub hash: String,
+    pub chunk_config: MemoryIndexConfig,
+}
+
 /// SQLite-backed memory index.
 pub struct MemoryIndex {
     db: rusqlite::Connection,
-    #[expect(dead_code, reason = "used by later PRs for reindex_all / file reads")]
-    storage: MemoryStorage,
+    pub(crate) storage: MemoryStorage,
     chunk_config: MemoryIndexConfig,
     /// Whether sqlite-vec loaded successfully (FTS always available).
     vec_available: bool,
@@ -664,17 +672,31 @@ impl MemoryIndex {
 
     /// Return chunks that don't have embeddings yet.
     pub fn chunks_without_embeddings(&self) -> Result<Vec<(String, String)>, rusqlite::Error> {
+        Ok(self
+            .embedding_candidates()?
+            .into_iter()
+            .map(|c| (c.id, c.text))
+            .collect())
+    }
+
+    pub(crate) fn embedding_candidates(&self) -> Result<Vec<EmbeddingCandidate>, rusqlite::Error> {
         if !self.vec_available {
             return Ok(vec![]);
         }
         let mut stmt = self.db.prepare(
-            "SELECT c.id, c.text FROM chunks c \
+            "SELECT c.id, c.path, c.text, c.hash FROM chunks c \
              LEFT JOIN chunks_vec_rowids v ON v.id = c.id \
-             WHERE v.id IS NULL",
+             WHERE v.id IS NULL ORDER BY c.rowid",
         )?;
         let results = stmt
             .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                Ok(EmbeddingCandidate {
+                    id: row.get(0)?,
+                    path: row.get(1)?,
+                    text: row.get(2)?,
+                    hash: row.get(3)?,
+                    chunk_config: self.chunk_config.clone(),
+                })
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(results)
@@ -686,8 +708,31 @@ impl MemoryIndex {
         chunk_id: &str,
         embedding: &[f32],
     ) -> Result<(), rusqlite::Error> {
+        self.upsert_embedding_inner(chunk_id, embedding, None)
+            .map(|_| ())
+    }
+
+    pub(crate) fn upsert_current_embedding(
+        &self,
+        candidate: &EmbeddingCandidate,
+        embedding: &[f32],
+        fingerprint: &str,
+    ) -> Result<bool, rusqlite::Error> {
+        self.upsert_embedding_inner(
+            &candidate.id,
+            embedding,
+            Some((&candidate.hash, fingerprint)),
+        )
+    }
+
+    fn upsert_embedding_inner(
+        &self,
+        chunk_id: &str,
+        embedding: &[f32],
+        expected: Option<(&str, &str)>,
+    ) -> Result<bool, rusqlite::Error> {
         if !self.vec_available {
-            return Ok(());
+            return Ok(false);
         }
         if embedding.len() != self.embedding_dimensions
             || embedding.iter().any(|value| !value.is_finite())
@@ -702,6 +747,25 @@ impl MemoryIndex {
         // Replace within one transaction so a repeated indexing pass updates
         // the vector, and an insert failure cannot remove the old embedding.
         let tx = self.db.unchecked_transaction()?;
+        if let Some((hash, fingerprint)) = expected {
+            let current: Option<String> = tx
+                .query_row(
+                    "SELECT hash FROM chunks WHERE id = ?1",
+                    params![chunk_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let space: Option<String> = tx
+                .query_row(
+                    schema::GET_META_SQL,
+                    params!["embedding_fingerprint"],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if current.as_deref() != Some(hash) || space.as_deref() != Some(fingerprint) {
+                return Ok(false);
+            }
+        }
         tx.execute(
             "DELETE FROM chunks_vec WHERE chunk_id = ?1",
             params![chunk_id],
@@ -711,7 +775,7 @@ impl MemoryIndex {
             params![chunk_id, embedding_bytes],
         )?;
         tx.commit()?;
-        Ok(())
+        Ok(true)
     }
 
     /// KNN vector search. Returns (chunk_id, distance) pairs.
@@ -1082,12 +1146,13 @@ mod tests {
 
         let matches = idx.search_fts("简洁说明", 10).unwrap();
         assert_eq!(matches.len(), 2);
-        assert!(idx
-            .get_chunk(&matches[0].chunk_id)
-            .unwrap()
-            .unwrap()
-            .text
-            .contains("简洁说明"));
+        assert!(
+            idx.get_chunk(&matches[0].chunk_id)
+                .unwrap()
+                .unwrap()
+                .text
+                .contains("简洁说明")
+        );
         assert_eq!(
             idx.search_fts("简洁说明", 1).unwrap()[0].chunk_id,
             matches[0].chunk_id
@@ -1096,10 +1161,11 @@ mod tests {
             .search_fts_by_sources("简洁说明", 10, &["workspace"])
             .unwrap();
         assert_eq!(scoped.len(), 2);
-        assert!(idx
-            .search_fts_by_sources("简洁说明", 10, &["global"])
-            .unwrap()
-            .is_empty());
+        assert!(
+            idx.search_fts_by_sources("简洁说明", 10, &["global"])
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
