@@ -5,8 +5,6 @@
 ## [Unreleased]
 
 ### Added
-- Cohesivity 作为仓库中的可选技能提供，位于 `optional-skills/cohesivity/`，不随包分发、不默认加载；用户主动导入仅安装说明文件，固定版本的第三方初始化及云端变更需另行明确授权。
-- 设置向导新增 Cheaper Inference 聚合服务预设，支持专属 `CHEAPER_INFERENCE_API_KEY`；从环境读取的密钥仅保存变量引用，不复制进配置文件。
 - 网关增加持久化回合状态账本，附着式 CLI 可用 `/status [event_id]` 查询 `running` / `waiting_approval` / `waiting_clarification` / `completed` / `incomplete` / `failed` / `interrupted` 等权威状态；断线重连优先用该账本恢复回复与终态
 - TUI `/save` 正式支持 `--format md|txt|json`；JSON 导出保留本地完整回合、隐藏工具和状态事件，递归脱敏凭据字段与命令行密钥参数
 - Gateway HTTP/WS 与 Webhook 支持有界的 `Idempotency-Key` / `X-Idempotency-Key` 去重；同一作用域与请求内容的重试复用原事件和响应，不同内容复用同一 key 返回冲突。键约束、作用域、有效期与 fail-closed 行为见《Gateway API 参考》的「幂等重试」一节
@@ -25,8 +23,6 @@
 - 修复日志实时刷新的排队任务覆盖新搜索、筛选或历史分页结果，以及关闭实时后仍执行排队刷新的问题；慢请求期间合并日志事件并在完成后补刷，手动刷新合并排队任务，重新开启实时主动获取最新日志。历史页明确提示实时刷新已暂停，请求或搜索防抖期间禁用刷新与翻页并显示忙碌状态。
 - **安全**：升级 Dashboard 的 Vite、Vitest 及存在安全告警的间接依赖，移除旧版 Vitest 的 tinypool；安全约束统一由 pnpm 10/11 均支持的配置维护，CI 增加构建与测试依赖审计，修复版本约束变更也会触发源码部署的 Dashboard 重建。
 - 修复日志页打开后快速翻页会被初始搜索定时器送回首页的问题；搜索词在防抖结束时与分页一起更新，避免先请求一次旧查询再刷新结果。
-- **安全**：OpenAI 兼容的第三方端点不再隐式继承官方 `OPENAI_API_KEY`；显式 `api_key_env` 缺失时拒绝回退到其他密钥。设置向导统一模型列表、验证与运行时的品牌凭据来源，切换服务商或自定义端点时不复用旧端点密钥。本地免密端点、显式密钥和凭证池继续可用；原先依赖第三方端点隐式读取 `OPENAI_API_KEY` 的配置需明确添加 `api_key_env: OPENAI_API_KEY`。
-- **安全**：命令守卫现在识别 `$IFS` 及常见参数展开构造的字段分隔符，阻断原先可绕过的根目录删除与块设备写入；同时区分 `IFS_SUFFIX` 等其他变量和 `${IFS+word}` 的实际替换内容，避免把非分隔符误判为危险命令。
 - 修复首次配置向导与 schema 默认值背离：原始 YAML 没有 `skills` 块时，向导错误地将默认开启的技能系统取消勾选并持久化为 `skills.enabled: false`
 - 公网 Gateway 向导现在同时配置 `allowed_hosts` 与 Dashboard `allowed_origins`，并规范化 Origin 的大小写、默认端口和末尾斜杠；修复部分浏览器/WebView 只读页可用，但 WebSocket 与通道开关持续返回 `cross-site request forbidden` 的配置陷阱
 - 修复 inline CLI 动画通过 `patch_stdout` 反复撤下并重绘输入区、导致底部状态栏随 spinner 闪烁；交互动画现由 prompt-toolkit 统一差量渲染，中等宽度的 inline/TUI 状态栏同时恢复显示记忆数
@@ -50,9 +46,10 @@
 - Dashboard WebSocket/异步查询测试不再产生 React `act()` 时序告警；文档站的公网 Gateway 安全片段已真正嵌入部署页，SQLite 恢复链接改用稳定锚点并可在 strict 模式构建
 - 修复“逐项执行上述优化”类指代请求可被旧记忆/旧清单劫持的问题：指代检索和独立 planner 现以紧邻对话为权威上下文，长期记忆仅作可能过期的背景；后台 consolidation 不再把一次性任务进度/完成状态提取为持久事实，已有的模型推断型任务状态也不再进入 Agent 快照、检索或记忆工具
 - 修复 LLM `finish_reason=length` 仍被当作干净完成的语义错误：有部分正文时仍会展示，但回合与计划标记为 `incomplete` / 可恢复，且不再触发反思重跑覆盖现场
-- **安全**：网关配对校验（默认 `POST /api/v1/pair/verify`，无令牌鉴权）的失败记录原本按调用方提供的 `platform:user_id` 无界增长，可能耗尽网关内存。现校验输入类型和长度、用固定长度摘要存储身份、最多跟踪 10,000 个身份，并在后续失败请求中回收过期记录或淘汰最久未更新的记录。同一身份达到失败阈值时接口返回 `429` 和 `Retry-After`，便于客户端提示等待时间；容量淘汰可能使个别锁定提前结束，网关入口仍需独立的网络限流
+- 网关配对校验保留输入类型与长度校验、身份摘要存储以及 `429` / `Retry-After` 重试反馈。
 
 ### Removed
+- 移除历史 PR #10、#11、#15、#16、#19、#20、#21、#22 引入且仍保留的改动：Atlas Cloud / Cheaper Inference 预设、Serply 搜索、Cohesivity 可选技能、微信输入状态、CI 覆盖率运行参数、异常调试日志、配对失败记录容量与回收、IFS 命令展开识别及模型端点凭据隔离。同步清理相关测试与文档，保留后续独立提交的配对输入校验、身份摘要及重试反馈；PR #23、#24 已先行回退。
 - **破坏性**：移除不再使用的桌面客户端专用网关扩展，包括聊天附件上传与 WebSocket 附件、WebSocket 技能管理帧、远程关停 API、进程 ready 标准输出信号，以及仅供该客户端消费的结构化空文本进度事件。通用 HTTP/WS 消息入口、内置 Dashboard、附着式 CLI/TUI、IM 媒体处理和本地文档解析保持不变
 - `desktop` 不再是 `gateway.known_platforms` 的内置平台，`channels.stream_optimistic_channels` 默认仅保留能够原地重绘的 `gateway:cli`
 

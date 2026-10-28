@@ -132,11 +132,7 @@ models:
       apiKeyEnv: MY_HOST_INJECTED_KEY
 ```
 
-`apiKey`（显式配置）优先；配置 `apiKeyEnv` 后，该变量是唯一的环境密钥来源，变量缺失或为空时会在创建模型客户端前报错，不再回退到其他供应商的密钥。凭证池仍使用显式配置的池内密钥。
-
-自动发现 `OPENAI_API_KEY` 仅适用于 `api.openai.com` 的 HTTPS 官方源（443 端口），也会检查 SDK 的 `OPENAI_BASE_URL` 覆盖。兼容协议的第三方端点必须明确设置 `api_key`、`api_key_env` 或凭证池。已有网关若确实将它自己的密钥放在 `OPENAI_API_KEY` 中，需显式配置 `api_key_env: OPENAI_API_KEY`，将该来源绑定到该端点。本地免密服务继续可用，且不会收到官方密钥。
-
-设置向导在拉取模型列表和验证时使用所选品牌的变量；Cheaper Inference 使用 `CHEAPER_INFERENCE_API_KEY`，并保存 `apiKeyEnv: CHEAPER_INFERENCE_API_KEY`，不会把环境变量中的密钥复制进 YAML。手动输入或保留的显式密钥仍然优先。
+解析优先级为 `apiKey`（显式配置）> `apiKeyEnv` > 上表的约定变量名。三者都没有值时，行为与此前一致：按供应商决定是报缺失密钥还是允许无密钥访问。
 
 !!! warning "配置文件不支持 ${VAR} 替换"
     不要在配置文件中写 `api_key: "${ANTHROPIC_API_KEY}"` —— 配置加载器不做变量替换，这串字符会被原样当作 API Key。要么依赖上表的自动发现，要么用上面的 `api_key_env`，要么直接写入受权限保护的配置文件（`chmod 600`）。

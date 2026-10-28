@@ -54,11 +54,7 @@ models:
       api_key_env: MY_HOST_INJECTED_KEY
 ```
 
-An explicit `api_key` takes precedence. When `api_key_env` is configured, that variable is the exclusive source: an unset or empty variable fails before creating a model client, rather than falling back to another provider's key. Credential pools continue to use their explicitly configured keys. YAML does not interpolate environment placeholders in strings; use `api_key_env` instead of placing a placeholder in `api_key`.
-
-Implicit `OPENAI_API_KEY` discovery is limited to the official HTTPS origin `api.openai.com` on port 443, including when the SDK's `OPENAI_BASE_URL` override is present. For a compatible third-party endpoint, explicitly set `api_key`, `api_key_env`, or a credential pool. Existing gateways that intentionally use a key stored in `OPENAI_API_KEY` must set `api_key_env: OPENAI_API_KEY` to bind it to that endpoint. Keyless local servers remain supported without receiving the official key.
-
-The setup wizard uses the selected brand's variables for model listing and verification. For Cheaper Inference it uses `CHEAPER_INFERENCE_API_KEY` and saves `apiKeyEnv: CHEAPER_INFERENCE_API_KEY`, without copying that variable's secret into YAML. An entered or retained explicit key still takes precedence.
+An explicit `api_key` takes precedence over `api_key_env`, which takes precedence over provider-specific discovery. YAML does not interpolate environment placeholders in strings; use `api_key_env` instead of placing a placeholder in `api_key`.
 
 ## Direct runtime variables
 

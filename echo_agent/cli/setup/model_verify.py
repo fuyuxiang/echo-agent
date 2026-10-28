@@ -193,11 +193,9 @@ def _classify_error_detail(content: str) -> str:
     return "error"
 
 
-def verify_model(
-    dialect: str, api_key: str, api_base: str, model: str, *, api_key_env: str = "",
-) -> VerifyResult:
+def verify_model(dialect: str, api_key: str, api_base: str, model: str) -> VerifyResult:
     try:
-        cfg = ProviderConfig(name=dialect, api_key=api_key, api_key_env=api_key_env, api_base=api_base,
+        cfg = ProviderConfig(name=dialect, api_key=api_key, api_base=api_base,
                              models=[model], timeout_seconds=int(DEFAULT_TIMEOUT))
         provider = create_provider(cfg, default_model=model)
     except _UNREACHABLE as e:

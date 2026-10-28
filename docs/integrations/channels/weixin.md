@@ -24,7 +24,6 @@ channels:
       - "friend_wxid_2"
     dm_policy: "allow"          # allow | deny | allowlist
     data_dir: "./data/weixin"
-    typing_indicator: true
 ```
 
 | 字段 | 必填 | 默认值 | 说明 |
@@ -36,7 +35,6 @@ channels:
 | `allow_from` | 否 | `[]`（全部允许） | 白名单 wxid 列表 |
 | `dm_policy` | 否 | `allow` | 私聊策略 |
 | `data_dir` | 否 | `./data/weixin` | 本地数据存储路径 |
-| `typing_indicator` | 否 | `true` | 是否发送输入状态 |
 
 ## 凭证获取
 
@@ -80,7 +78,7 @@ channels:
 | 表情回应 | ❌ | 微信不支持 |
 | 群聊 | ❌ | 当前未实现 |
 | 实时消息 | ✅ | 长轮询 |
-| 输入状态 | ✅ | typing indicator |
+| 输入状态 | ❌ | 当前未实现 |
 
 ## 技术细节
 
@@ -96,22 +94,6 @@ CDN 下载 → AES-128-ECB 解密 → 原始文件
 ### 语音消息
 
 语音消息使用 SILK 音频编码格式，这是微信原生的音频格式。发送语音时需将音频转换为 SILK 格式。
-
-### 输入状态指示器
-
-- 微信输入气泡有效期：5 秒
-- 刷新间隔：3 秒（确保气泡不中断）
-- 最大持续时间：600 秒
-- Ticket TTL：500 秒
-
-```text
-[开始生成回复]
-  ├── 发送 typing 状态
-  ├── 等待 3s
-  ├── 刷新 typing 状态
-  ├── ...（循环直到回复完成或超时）
-  └── [发送回复消息]
-```
 
 ### 会话过期检测
 

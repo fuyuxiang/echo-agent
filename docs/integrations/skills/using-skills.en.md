@@ -52,24 +52,6 @@ YAML in briefing, monitoring or market-alert instructions may be an Agent/operat
 
 Dashboard Skills exposes content, files, dependency state, toggles and declared dependency installation. External import and mutation use admin authorization and admission. See [evolution and evaluation](../../concepts/evolution-evaluation.en.md) for candidates, review, promotion and rollback. Plugins register tools; skills compose existing tools, with different trust and lifecycle rules.
 
-## Cohesivity (optional skill)
-
-Cohesivity lives in the repository's `optional-skills/cohesivity/`, outside the 35 built-in skills. It is excluded from Python wheels/sdists and the default skill directory. Normal installation, startup, and generic app/database/deployment requests do not load it. A user must explicitly choose Cohesivity and import the directory from a reviewed repository revision.
-
-With a source checkout available, explicitly requesting local installation uses these `skill_install` parameters (not runtime YAML):
-
-```json
-{
-  "source": "local",
-  "location": "/absolute/path/to/echo-agent/optional-skills/cohesivity",
-  "run_install": false
-}
-```
-
-This imports instructions through the existing scan/admission path. It does not execute npm, contact Cohesivity, install a global skill, or create a tenant. Obtain a reviewed revision first if source is not available locally; do not import the whole repository root as a skill.
-
-Backend bootstrap needs separate authorization. The skill pins `@cohesivity/init@0.9.4` and requires disclosure of third-party execution, global `~/.agents/skills` writes, project-guidance edits, a machine identifier, and the tenant's 72-hour expiry before execution. Declining these effects stops initialization. Deployment, paid operations, claiming, MCP configuration, and feedback each require the appropriate explicit authorization. Installing the skill does not authorize the upstream installer.
-
 - [Skill catalog](catalog.en.md)
 - [Skill authoring](../../development/skill-authoring.en.md)
 - [Tools and permissions](../../guides/tools-permissions.en.md)

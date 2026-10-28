@@ -219,8 +219,9 @@ def _allow_lazy_installs() -> bool:
         skills_cfg = getattr(cfg, "skills", None)
         if skills_cfg and hasattr(skills_cfg, "allow_lazy_installs"):
             return bool(skills_cfg.allow_lazy_installs)
-    except Exception as e:
-        logger.debug("Could not read skills.allow_lazy_installs from config, defaulting to allowed: %s", e)
+    except Exception:
+        # Unavailable configuration keeps the established default install policy.
+        pass
     return True
 
 
@@ -405,8 +406,9 @@ def install_authorized(specs: tuple[str, ...], *, source: str) -> dict[str, obje
         import importlib.metadata as _md
         if hasattr(_md, "_cache_clear"):
             _md._cache_clear()  # type: ignore[attr-defined]
-    except Exception as e:
-        logger.debug("Failed to clear importlib.metadata cache after install: %s", e)
+    except Exception:
+        # Cache invalidation is optional; dependency verification still follows.
+        pass
 
     still_missing = [s for s in to_install if not _is_satisfied(s)]
     if still_missing:
@@ -521,8 +523,9 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
         import importlib.metadata as _md
         if hasattr(_md, "_cache_clear"):
             _md._cache_clear()  # type: ignore[attr-defined]
-    except Exception as e:
-        logger.debug("Failed to clear importlib.metadata cache after install: %s", e)
+    except Exception:
+        # Cache invalidation is optional; dependency verification still follows.
+        pass
 
     # Verify installation succeeded
     still_missing = feature_missing(feature)

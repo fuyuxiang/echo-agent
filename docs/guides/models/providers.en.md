@@ -82,23 +82,6 @@ models:
 
 Third-party services that implement the OpenAI API protocol can be configured using the `openai` provider type with a custom `api_base`:
 
-Third-party endpoints no longer implicitly inherit the official `OPENAI_API_KEY`; configure a key or its source explicitly. See [environment variables](../../reference/environment-variables.en.md#provider-credentials).
-
-### Cheaper Inference
-
-Select Cheaper Inference under Aggregators in the setup wizard, or configure it manually:
-
-```yaml
-models:
-  default_model: gpt-5.4-mini
-  providers:
-    - name: openai
-      api_base: https://api.cheaperinference.com/v1
-      api_key_env: CHEAPER_INFERENCE_API_KEY
-```
-
-Use a key issued by this provider. The selected provider and its upstreams process model requests; `openai` identifies the protocol rather than the destination company.
-
 ### DeepSeek
 
 ```yaml

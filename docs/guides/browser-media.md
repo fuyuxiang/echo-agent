@@ -122,13 +122,12 @@ tools:
 | Tavily | API Key | AI 优化搜索 |
 | SerpAPI | API Key | Google 搜索结果 |
 | SearXNG | 无需 Key | 自建实例，需配置 `api_base` |
-| Serply | API Key | 通用搜索 API |
 
 ```yaml
 tools:
   web:
     enabled: true
-    search_provider: "brave"   # brave | tavily | serpapi | searxng | serply
+    search_provider: "brave"   # brave | tavily | serpapi | searxng
     search_api_key: "BSA-xxx"
 ```
 

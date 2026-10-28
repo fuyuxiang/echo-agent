@@ -402,8 +402,9 @@ class SQLiteBackend(StorageBackend):
                         deferred_cancellation = await _settle_cleanup(old_db.close())
                         if deferred_cancellation is not None:
                             raise deferred_cancellation
-                    except Exception as e:
-                        logger.debug("Failed to close stale SQLite connection: {}", e)
+                    except Exception:
+                        # Discarding the old connection must not prevent reconnecting.
+                        pass
                 await self._connect()
             return self._db  # type: ignore[return-value]
 
@@ -501,8 +502,9 @@ class SQLiteBackend(StorageBackend):
                 if db:
                     try:
                         deferred_cancellation = await _settle_cleanup(db.close())
-                    except Exception as e:
-                        logger.debug("Failed to close SQLite connection on shutdown: {}", e)
+                    except Exception:
+                        # Shutdown continues after a best-effort connection close.
+                        pass
                     else:
                         if deferred_cancellation is not None:
                             raise deferred_cancellation

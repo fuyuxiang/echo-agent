@@ -22,10 +22,7 @@ Behavior varies by environment:
 
 from __future__ import annotations
 
-import logging
 import sys
-
-logger = logging.getLogger(__name__)
 
 
 def _is_interactive() -> bool:
@@ -45,8 +42,9 @@ def _channel_friendly_exit(feature: str, detail: str) -> None:
     install_cmd = ""
     try:
         install_cmd = feature_install_command(feature) or ""
-    except Exception as e:
-        logger.debug("Could not resolve install command for feature %r: %s", feature, e)
+    except Exception:
+        # Missing install guidance must not suppress the dependency error below.
+        pass
 
     msg_parts = [
         f"This feature ({feature}) requires additional packages that are not yet installed.",

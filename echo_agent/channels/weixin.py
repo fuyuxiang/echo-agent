@@ -48,8 +48,6 @@ _EP_SEND_MESSAGE = "ilink/bot/sendmessage"
 _EP_GET_UPLOAD_URL = "ilink/bot/getuploadurl"
 _EP_GET_BOT_QR = "ilink/bot/get_bot_qrcode"
 _EP_GET_QR_STATUS = "ilink/bot/get_qrcode_status"
-_EP_GET_CONFIG = "ilink/bot/getconfig"
-_EP_SEND_TYPING = "ilink/bot/sendtyping"
 
 _LONG_POLL_TIMEOUT_MS = 35_000
 _API_TIMEOUT_MS = 15_000
@@ -60,22 +58,6 @@ _SESSION_EXPIRED_ERRCODE = -14
 _DEDUP_TTL = 300
 _MAX_MESSAGE_LENGTH = 4000
 _LIVENESS_TIMEOUT = 30 * 60  # 30 分钟无消息视为静默失效
-
-# 输入状态下发（ilink/bot/sendtyping）
-_TYPING_START = 1               # status=1：显示“对方正在输入”
-_TYPING_STOP = 2               # status=2：取消输入状态
-_TYPING_REFRESH_INTERVAL = 3    # 秒，处理期间周期性补发以防输入状态过期
-                                # （微信输入气泡约 5 秒过期，取 3 秒留余量，
-                                # 避免慢网络下单次 sendtyping 延迟露出气泡空窗）
-# 孤儿保护兜底：正常停止由 ChannelManager 在最终回复落地时调 stop_typing 完成，
-# 心跳每个 beat 又会 send_typing 复活刷新循环；这个上限只在“stop_typing 因故
-# 永不触发”（如最终回复事件丢失）时兜底，避免“正在输入”无限期刷下去。设得
-# 远高于心跳 interval，循环到期后由 _on_typing_done 清槽、下个 beat 自动复活。
-_TYPING_MAX_DURATION = 600      # 秒
-_TYPING_TICKET_TTL = 500        # 秒，typing_ticket 缓存有效期。iLink 服务端实际
-                                # 寿命约 600 秒，过期后 sendtyping 会被静默拒绝
-                                # （连 status=2 停止也发不出去，导致气泡卡死），
-                                # 故取 500 秒在过期前主动经 getconfig 重拉。
 
 _ITEM_TEXT = 1
 _ITEM_IMAGE = 2
@@ -291,53 +273,6 @@ async def _send_message(
     )
 
 
-async def _get_config(
-    session: aiohttp.ClientSession,
-    *,
-    base_url: str,
-    token: str,
-    user_id: str,
-    context_token: str | None = None,
-) -> dict[str, Any]:
-    """Fetch bot runtime config, including the typing_ticket used by sendtyping.
-
-    iLink binds the typing_ticket to the peer conversation, so getconfig must
-    carry the peer's ``ilink_user_id`` (and the latest ``context_token`` when
-    known); an empty body yields a response without a usable ticket.
-    """
-    payload: dict[str, Any] = {"ilink_user_id": user_id}
-    if context_token:
-        payload["context_token"] = context_token
-    return await _api_post(
-        session,
-        base_url=base_url,
-        endpoint=_EP_GET_CONFIG,
-        payload=payload,
-        token=token,
-        timeout_ms=_API_TIMEOUT_MS,
-    )
-
-
-async def _send_typing(
-    session: aiohttp.ClientSession,
-    *,
-    base_url: str,
-    token: str,
-    to: str,
-    status: int,
-    typing_ticket: str,
-) -> dict[str, Any]:
-    """Send a typing indicator (status=1 start, status=2 cancel) to *to*."""
-    return await _api_post(
-        session,
-        base_url=base_url,
-        endpoint=_EP_SEND_TYPING,
-        payload={"ilink_user_id": to, "status": status, "typing_ticket": typing_ticket},
-        token=token,
-        timeout_ms=_API_TIMEOUT_MS,
-    )
-
-
 def _cdn_upload_url(cdn_base_url: str, upload_param: str, filekey: str) -> str:
     from urllib.parse import quote
 
@@ -545,14 +480,6 @@ class WeixinChannel(BaseChannel):
         self._poll_task: asyncio.Task | None = None
         # Strong refs for per-message tasks (see asyncio.create_task docs).
         self._msg_tasks: set[asyncio.Task] = set()
-        # Typing indicator state.
-        self._typing_enabled = config.typing_indicator
-        # Per-chat typing_ticket cache: chat_id -> (ticket, fetched_at_monotonic).
-        # iLink binds the ticket to the peer conversation, so a global single
-        # ticket would cross wires between concurrent chats.
-        self._typing_tickets: dict[str, tuple[str, float]] = {}
-        # One refreshing typing-loop task per chat being processed.
-        self._typing_tasks: dict[str, asyncio.Task] = {}
 
     def _spawn_msg_task(self, coro: Any) -> asyncio.Task:
         task = asyncio.create_task(coro)
@@ -594,13 +521,6 @@ class WeixinChannel(BaseChannel):
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             self._msg_tasks.clear()
-        # Cancel typing loops before sessions close so their status=2 send can run.
-        if self._typing_tasks:
-            typing_tasks = list(self._typing_tasks.values())
-            for task in typing_tasks:
-                task.cancel()
-            await asyncio.gather(*typing_tasks, return_exceptions=True)
-            self._typing_tasks.clear()
         if self._poll_session and not self._poll_session.closed:
             await self._poll_session.close()
         self._poll_session = None
@@ -691,108 +611,6 @@ class WeixinChannel(BaseChannel):
     @staticmethod
     def _split_text(text: str) -> list[str]:
         return split_message(text, _MAX_MESSAGE_LENGTH, preserve_whitespace=True)
-
-    # ── Typing indicator ───────────────────────────────────────────────────────
-
-    async def _ensure_typing_ticket(self, chat_id: str) -> str | None:
-        """Return a cached typing_ticket for *chat_id*, fetching via getconfig if needed."""
-        if not self._send_session or not self._token:
-            return None
-        now = time.monotonic()
-        cached = self._typing_tickets.get(chat_id)
-        if cached and now - cached[1] < _TYPING_TICKET_TTL:
-            return cached[0]
-        context_token = self._token_store.get(self._account_id, chat_id)
-        try:
-            resp = await _get_config(
-                self._send_session,
-                base_url=self._base_url,
-                token=self._token,
-                user_id=chat_id,
-                context_token=context_token,
-            )
-        except Exception as exc:
-            logger.debug("weixin: getconfig for typing_ticket failed: {}", exc)
-            return None
-        ticket = str(resp.get("typing_ticket") or (resp.get("config") or {}).get("typing_ticket") or "")
-        if not ticket:
-            logger.debug("weixin: getconfig returned no typing_ticket: {}", resp)
-            return None
-        self._typing_tickets[chat_id] = (ticket, now)
-        return ticket
-
-    async def _do_send_typing(self, chat_id: str, status: int) -> None:
-        ticket = await self._ensure_typing_ticket(chat_id)
-        if not ticket or not self._send_session:
-            return
-        try:
-            await _send_typing(
-                self._send_session,
-                base_url=self._base_url,
-                token=self._token,
-                to=chat_id,
-                status=status,
-                typing_ticket=ticket,
-            )
-        except Exception as exc:
-            logger.debug("weixin: sendtyping status={} to {} failed: {}", status, chat_id[:8] if chat_id else "?", exc)
-
-    async def _typing_loop(self, chat_id: str) -> None:
-        """Keep 'typing' shown for *chat_id* until cancelled or the max window elapses.
-
-        The indicator is re-sent periodically because the input state can expire
-        before a slow agent reply is ready; on exit (cancel or timeout) it sends
-        status=2 so the indicator never gets stuck when no reply is produced.
-        """
-        deadline = time.monotonic() + _TYPING_MAX_DURATION
-        try:
-            while time.monotonic() < deadline:
-                await self._do_send_typing(chat_id, _TYPING_START)
-                await asyncio.sleep(_TYPING_REFRESH_INTERVAL)
-        except asyncio.CancelledError:
-            # Cancellation is the protocol for leaving the refresh loop; finally
-            # still sends the explicit typing-stop frame under a shield.
-            pass
-        finally:
-            # Shield the stop send: this runs during cancellation, and a *second*
-            # cancel (e.g. stop_typing followed by channel stop()) would otherwise
-            # abort the await and leave "typing" stuck on the peer's screen.
-            await asyncio.shield(
-                asyncio.ensure_future(self._do_send_typing(chat_id, _TYPING_STOP))
-            )
-
-    async def send_typing(self, chat_id: str, metadata: dict[str, Any] | None = None) -> None:
-        """Start (or keep) the typing indicator for *chat_id*.
-
-        Implements the BaseChannel primitive driven by ChannelManager: it is
-        called on inbound and on every heartbeat beat. Idempotent per chat — a
-        beat arriving while a refresh loop is already running is a no-op, and a
-        beat after the loop self-terminated (orphan-cap) revives it.
-        """
-        if not self._typing_enabled or not chat_id:
-            return
-        existing = self._typing_tasks.get(chat_id)
-        if existing and not existing.done():
-            return  # already showing typing for this chat
-        task = asyncio.create_task(self._typing_loop(chat_id))
-        self._typing_tasks[chat_id] = task
-        task.add_done_callback(self._on_typing_done)
-
-    async def stop_typing(self, chat_id: str) -> None:
-        """Stop the typing indicator for *chat_id* (sends status=2 via the loop's finally)."""
-        if not self._typing_enabled or not chat_id:
-            return
-        task = self._typing_tasks.pop(chat_id, None)
-        if task and not task.done():
-            task.cancel()  # _typing_loop's finally sends status=2
-
-    def _on_typing_done(self, task: asyncio.Task) -> None:
-        for cid, t in list(self._typing_tasks.items()):
-            if t is task:
-                self._typing_tasks.pop(cid, None)
-                break
-        if not task.cancelled() and task.exception():
-            logger.debug("weixin typing task failed: {}", task.exception())
 
     # ── Send file / image ──────────────────────────────────────────────────────
 
@@ -1147,8 +965,6 @@ class WeixinChannel(BaseChannel):
         if not text and not media:
             return True
 
-        # Typing indicator is driven by ChannelManager (send_typing on inbound +
-        # every heartbeat beat, stop_typing on the final reply), not started here.
         inbound = await self._handle_message(
             sender_id=sender_id,
             chat_id=effective_chat_id,

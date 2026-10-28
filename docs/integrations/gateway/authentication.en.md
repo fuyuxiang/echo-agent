@@ -144,7 +144,7 @@ During lockout → 429 without checking the pairing code
 After the window → Attempts are accepted again
 ```
 
-The gateway tracks at most 10,000 identities and reclaims stale records after the lockout window. At capacity, it evicts the least recently updated identity, so an individual lockout may end early under heavy load. This bound protects memory; it does not replace network rate limiting or access controls in front of the gateway.
+Failure records are retained in memory by identity without a global entry limit or periodic reclamation of other identities. Public deployments should enforce network rate limiting or access controls in front of the gateway.
 
 ## Admin Users
 

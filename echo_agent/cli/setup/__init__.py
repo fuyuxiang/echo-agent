@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable
@@ -200,44 +199,24 @@ def setup_model(config: dict) -> None:
         # so a bare domain silently requests /chat/completions and lands on the
         # gateway index. Show the expected shape before that can happen.
         ui.note(t("model.api_base_hint"), "info")
-        api_base = ui.text(
-            t("model.api_base"), default=existing.get("apiBase", existing.get("api_base", "")) or api_base,
-        )
+        api_base = ui.text(t("model.api_base"), default=existing.get("apiBase", "") or api_base)
 
-    existing_base = existing.get("apiBase", existing.get("api_base", "")) or ""
-    # A saved key belongs to the endpoint it was entered for. In particular,
-    # changing a custom endpoint must never silently reuse its old credentials.
-    same_provider = (
-        _detect_catalog_id(existing) == entry_id
-        and (existing_base or (entry.api_base if not entry.needs_api_base else "")).rstrip("/")
-        == api_base.rstrip("/")
-    )
     api_key = ""
-    api_key_env = ""
     if entry.dialect != "bedrock":
         api_key = ui.password(f"{t_provider_label(entry)} {t('model.api_key')}")
-        if not api_key and same_provider:
-            api_key = existing.get("apiKey", existing.get("api_key", "")) or ""
-            if not api_key:
-                api_key_env = existing.get("apiKeyEnv", existing.get("api_key_env", "")) or ""
-        if not api_key and not api_key_env and entry.api_key_env_vars:
-            api_key_env = next(
-                (name for name in entry.api_key_env_vars if os.environ.get(name, "").strip()),
-                entry.api_key_env_vars[0],
-            )
-
-    listing_key = api_key or (os.environ.get(api_key_env, "").strip() if api_key_env else "")
+        if not api_key and existing.get("apiKey") and _detect_catalog_id(existing) == entry_id:
+            api_key = existing.get("apiKey", "")
 
     models = []
     model_windows: dict[str, int] = {}
-    if entry.models_endpoint and (not api_key_env or listing_key):
+    if entry.models_endpoint:
         with ui.spinner(t("model.fetching")):
-            models = list_models(entry, listing_key, api_base)
+            models = list_models(entry, api_key, api_base)
             # Capture per-model context windows from the same listing so the
             # runtime gauge/compression track the real window. Best-effort:
             # providers that omit it (e.g. OpenAI native) yield {} and the
             # built-in registry takes over.
-            model_windows = list_model_windows(entry, listing_key, api_base)
+            model_windows = list_model_windows(entry, api_key, api_base)
     if not models:
         models = list(entry.fallback_models)
 
@@ -252,16 +231,12 @@ def setup_model(config: dict) -> None:
 
     if default_model and entry.dialect != "bedrock":
         with ui.spinner(t("model.verifying")):
-            result = verify_model(entry.dialect, api_key, api_base, default_model, api_key_env=api_key_env)
-        default_model, api_key, api_key_env = _handle_verify(
-            result, entry, api_key, api_base, default_model, api_key_env,
-        )
+            result = verify_model(entry.dialect, api_key, api_base, default_model)
+        default_model, api_key = _handle_verify(result, entry, api_key, api_base, default_model)
 
     provider_entry: dict[str, Any] = {"name": entry.dialect}
     if api_key:
         provider_entry["apiKey"] = api_key
-    elif api_key_env:
-        provider_entry["apiKeyEnv"] = api_key_env
     if api_base:
         provider_entry["apiBase"] = api_base
     if entry.fallback_models and entry.dialect not in ("openai",):
@@ -298,22 +273,20 @@ def t_provider_label(entry) -> str:
 
 def _detect_catalog_id(existing: dict) -> str:
     name = (existing.get("name") or "").lower()
-    base = (existing.get("apiBase", existing.get("api_base", "")) or "").rstrip("/")
+    base = existing.get("apiBase") or ""
     for e in provider_catalog.CATALOG:
-        if e.dialect == name and (not e.api_base or e.api_base.rstrip("/") == base):
+        if e.dialect == name and (not e.api_base or e.api_base == base):
             return e.id
-    if name == "openai" and base:
-        return "custom"
     return "openai"
 
 
-def _handle_verify(result: "VerifyResult", entry, api_key, api_base, model, api_key_env=""):
+def _handle_verify(result: "VerifyResult", entry, api_key, api_base, model):
     if result.status == "ok":
         ui.note(t("model.verify_ok", model=model), "success")
-        return model, api_key, api_key_env
+        return model, api_key
     if result.status == "unreachable":
         ui.note(t("model.verify_unreachable"), "warning")
-        return model, api_key, api_key_env
+        return model, api_key
     # error: offer retry-key / change-model / skip
     ui.note(t("model.verify_error", detail=result.detail), "error")
     # The endpoint replied with something that was not a completion. Re-entering
@@ -327,18 +300,17 @@ def _handle_verify(result: "VerifyResult", entry, api_key, api_base, model, api_
         ("skip", t("model.verify_skip"), ""),
     ], default="retry")
     if action == "skip":
-        return model, api_key, api_key_env
+        return model, api_key
     if action == "retry":
         new_key = ui.password(f"{t_provider_label(entry)} {t('model.api_key')}")
-        new_env = "" if new_key else api_key_env
         with ui.spinner(t("model.verifying")):
-            res2 = verify_model(entry.dialect, new_key, api_base, model, api_key_env=new_env)
-        return _handle_verify(res2, entry, new_key, api_base, model, new_env)
+            res2 = verify_model(entry.dialect, new_key, api_base, model)
+        return _handle_verify(res2, entry, new_key, api_base, model)
     # change model
     new_model = ui.text(t("model.model_name"))
     with ui.spinner(t("model.verifying")):
-        res2 = verify_model(entry.dialect, api_key, api_base, new_model, api_key_env=api_key_env)
-    return _handle_verify(res2, entry, api_key, api_base, new_model, api_key_env)
+        res2 = verify_model(entry.dialect, api_key, api_base, new_model)
+    return _handle_verify(res2, entry, api_key, api_base, new_model)
 
 
 # ── Section 3: Permissions & Approval ────────────────────────────────────────
@@ -570,7 +542,7 @@ def setup_tools(config: dict) -> None:
     if "web" in chosen:
         web = _ensure_dict(tools, "web")
         web["enabled"] = True
-        provider_choices = ["brave", "tavily", "serpapi", "searxng", "serply"]
+        provider_choices = ["brave", "tavily", "serpapi", "searxng"]
         cur_prov = web.get("search_provider") or web.get("searchProvider") or "brave"
         prov_idx = _choice(t("tools.web_provider"), provider_choices,
                            default=provider_choices.index(cur_prov) if cur_prov in provider_choices else 0)

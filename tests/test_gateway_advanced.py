@@ -516,41 +516,6 @@ class TestGatewayAuthPairingLockout:
             auth.verify_pairing("telegram", "user1", "WRONGCODE2")
         assert auth.pairing_retry_after("telegram", "user1") == 0
 
-    def test_failure_table_is_bounded_under_distinct_user_ids(self, tmp_path: Path):
-        # /pair/verify is unauthenticated and the lockout key is derived from
-        # caller-supplied platform/user_id, so one entry per request used to be
-        # added forever (remote pre-auth memory exhaustion).
-        from echo_agent.config.schema import GatewayAuthConfig
-        from echo_agent.gateway.auth import GatewayAuth
-
-        auth = GatewayAuth(
-            GatewayAuthConfig(mode="pairing", pairing_ttl_seconds=60),
-            tmp_path,
-            max_tracked_failures=25,
-        )
-        for i in range(200):
-            auth.verify_pairing("telegram", f"attacker-{i}", "WRONGCODE1")
-        assert len(auth._verify_failures) <= 25
-
-    def test_stale_failure_entries_are_reclaimed(self, tmp_path: Path, monkeypatch):
-        from echo_agent.config.schema import GatewayAuthConfig
-        from echo_agent.gateway.auth import GatewayAuth
-
-        now = 1_000.0
-        monkeypatch.setattr("echo_agent.gateway.auth.time.time", lambda: now)
-        auth = GatewayAuth(
-            GatewayAuthConfig(mode="pairing", pairing_ttl_seconds=60),
-            tmp_path,
-            max_tracked_failures=10,
-        )
-        for i in range(10):
-            auth.verify_pairing("telegram", f"user-{i}", "WRONGCODE1")
-        assert len(auth._verify_failures) == 10
-
-        now += 301.0  # past the 300 s lockout window
-        auth.verify_pairing("telegram", "fresh", "WRONGCODE1")
-        assert len(auth._verify_failures) == 1
-
     def test_oversized_identity_cannot_fill_failure_table(self, tmp_path: Path):
         auth = self._make_auth(tmp_path)
         oversized = "x" * 65_536
@@ -580,17 +545,4 @@ class TestGatewayAuthPairingLockout:
         assert auth.pairing_retry_after("telegram", "user1") == 180
 
         now += 180
-        assert auth.pairing_retry_after("telegram", "user1") == 0
-
-    def test_capacity_eviction_may_end_an_active_lockout(self, tmp_path: Path):
-        from echo_agent.config.schema import GatewayAuthConfig
-        from echo_agent.gateway.auth import GatewayAuth
-
-        auth = GatewayAuth(GatewayAuthConfig(mode="pairing"), tmp_path, max_tracked_failures=2)
-        for _ in range(5):
-            auth.verify_pairing("telegram", "user1", "WRONGCODE1")
-        assert auth.pairing_retry_after("telegram", "user1") > 0
-
-        auth.verify_pairing("telegram", "other1", "WRONGCODE1")
-        auth.verify_pairing("telegram", "other2", "WRONGCODE1")
         assert auth.pairing_retry_after("telegram", "user1") == 0

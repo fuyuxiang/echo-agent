@@ -82,23 +82,6 @@ models:
 
 对于兼容 OpenAI API 协议的第三方服务，使用 `openai` 类型并设置自定义 `api_base`：
 
-第三方端点不再隐式复用官方 `OPENAI_API_KEY`，需显式设置密钥或密钥来源。环境变量规则参见[环境变量](../../reference/environment-variables.md#指定密钥来源变量)。
-
-### Cheaper Inference
-
-设置向导在「聚合路由」中提供 Cheaper Inference，也可手动配置：
-
-```yaml
-models:
-  default_model: gpt-5.4-mini
-  providers:
-    - name: openai
-      api_base: https://api.cheaperinference.com/v1
-      api_key_env: CHEAPER_INFERENCE_API_KEY
-```
-
-使用该服务商签发的密钥。所选服务商及其上游会处理模型请求；`openai` 表示协议类型，不表示请求发送给 OpenAI 官方。
-
 ### DeepSeek
 
 ```yaml

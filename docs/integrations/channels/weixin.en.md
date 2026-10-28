@@ -24,7 +24,6 @@ channels:
       - "friend_wxid_2"
     dm_policy: "allow"          # allow | deny | allowlist
     data_dir: "./data/weixin"
-    typing_indicator: true
 ```
 
 | Field | Required | Default | Description |
@@ -36,7 +35,6 @@ channels:
 | `allow_from` | No | `[]` (allow all) | Allowlist of wxids |
 | `dm_policy` | No | `allow` | Direct message policy |
 | `data_dir` | No | `./data/weixin` | Local data storage path |
-| `typing_indicator` | No | `true` | Whether to send typing status |
 
 ## Credential Setup
 
@@ -80,7 +78,7 @@ Polling interval is controlled server-side; the client maintains a long connecti
 | Reactions | No | WeChat does not support |
 | Group chat | No | Not implemented |
 | Realtime messages | Yes | Long-polling |
-| Typing indicator | Yes | With refresh loop |
+| Typing indicator | No | Not implemented |
 
 ## Technical Details
 
@@ -96,22 +94,6 @@ CDN download → AES-128-ECB decrypt → Original file
 ### Voice Messages
 
 Voice messages use SILK audio encoding, the native audio format for WeChat. Audio must be converted to SILK format before sending.
-
-### Typing Indicator Behavior
-
-- WeChat typing bubble expiry: 5 seconds
-- Refresh interval: 3 seconds (ensures bubble continuity)
-- Maximum duration: 600 seconds
-- Ticket TTL: 500 seconds
-
-```text
-[Start generating reply]
-  ├── Send typing status
-  ├── Wait 3s
-  ├── Refresh typing status
-  ├── ... (loop until reply ready or timeout)
-  └── [Send reply message]
-```
 
 ### Session Expiry Detection
 

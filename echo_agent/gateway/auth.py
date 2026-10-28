@@ -8,7 +8,6 @@ import hmac
 import math
 import secrets
 import time
-from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -41,7 +40,7 @@ class GatewayAuth:
 
     def __init__(
         self, config: GatewayAuthConfig, data_dir: Path,
-        *, bound_host: str | None = None, max_tracked_failures: int = 10_000,
+        *, bound_host: str | None = None,
     ):
         self._mode = config.mode
         self._allowed = set(config.allowed_users)
@@ -74,13 +73,7 @@ class GatewayAuth:
 
         self._approved: dict[str, set[str]] = {}
         self._pending_codes: dict[str, dict[str, Any]] = {}
-        # Keep both the entry count and each key's size bounded. Raw user IDs
-        # are caller-supplied on an unauthenticated endpoint and may be large.
-        # The oldest record is evicted when the table reaches capacity.
-        self._verify_failures: OrderedDict[str, list[float]] = OrderedDict()
-        self._max_tracked_failures = max(1, int(max_tracked_failures))
-        # Next time the O(size) stale sweep may run; see _record_verify_failure.
-        self._next_failure_sweep = 0.0
+        self._verify_failures: dict[str, list[float]] = {}
         self._lockout_seconds = 300
         self._max_failures = 5
         self._load_approved()
@@ -428,7 +421,7 @@ class GatewayAuth:
     @staticmethod
     def _failure_key(platform: str, user_id: str) -> str:
         # Preserve the existing platform:user identity while storing a fixed
-        # size key. A raw user ID could otherwise fill memory despite the cap.
+        # size key rather than retaining caller-supplied user IDs.
         return hashlib.sha256(f"{platform}:{user_id}".encode("utf-8")).hexdigest()
 
     def pairing_retry_after(self, platform: str, user_id: str) -> int:
@@ -452,32 +445,9 @@ class GatewayAuth:
         return max(1, math.ceil(self._lockout_seconds - (now - recent[0])))
 
     def _record_verify_failure(self, lockout_key: str) -> None:
-        now = time.time()
-        self._verify_failures.setdefault(lockout_key, []).append(now)
-        self._verify_failures.move_to_end(lockout_key)
-        # Sweeping the whole table is O(size); this runs on an unauthenticated
-        # path, so it must not happen per request. Once per lockout window is
-        # enough to reclaim entries that can no longer lock anyone out, and
-        # overflow is handled below with an O(1) oldest-first eviction.
-        if now >= self._next_failure_sweep:
-            self._sweep_verify_failures(now)
-        while len(self._verify_failures) > self._max_tracked_failures:
-            self._verify_failures.popitem(last=False)
-
-    def _sweep_verify_failures(self, now: float) -> None:
-        """Drop lockout records whose failures have all left the window.
-
-        Such a record can never produce a lockout again (``_is_locked_out``
-        only counts failures inside the window), so dropping it loses no
-        protection.
-        """
-        self._next_failure_sweep = now + self._lockout_seconds
-        stale = [
-            key for key, failures in self._verify_failures.items()
-            if not failures or now - failures[-1] >= self._lockout_seconds
-        ]
-        for key in stale:
-            del self._verify_failures[key]
+        if lockout_key not in self._verify_failures:
+            self._verify_failures[lockout_key] = []
+        self._verify_failures[lockout_key].append(time.time())
 
     def _load_approved(self) -> None:
         for path in self._data_dir.glob("*_approved.json"):

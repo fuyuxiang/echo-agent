@@ -383,14 +383,6 @@ class WeixinChannelConfig(_Base):
             "desc_en": "Local data directory for the Weixin channel",
         },
     )
-    typing_indicator: bool = Field(
-        default=True,
-        json_schema_extra={
-            "status": "effective", "ref": "channels/weixin.py",
-            "desc_zh": "处理消息期间是否向对方下发“对方正在输入”状态",
-            "desc_en": "Send a typing indicator to the user while a message is being processed",
-        },
-    )
 
 
 class QQBotChannelConfig(_Base):
@@ -1278,12 +1270,12 @@ class WebToolConfig(_Base):
             "desc_en": "Search service API key",
         },
     )
-    search_provider: Literal["brave", "tavily", "serpapi", "searxng", "serply"] = Field(
+    search_provider: Literal["brave", "tavily", "serpapi", "searxng"] = Field(
         default="brave",
         json_schema_extra={
             "status": "effective", "ref": "agent/tools/__init__.py:58",
-            "desc_zh": "网络搜索服务提供商 (serply 使用 Serply SERP API: https://serply.io, 文档 https://serply.io/docs)",
-            "desc_en": "Web search service provider (serply uses the Serply SERP API: https://serply.io, docs https://serply.io/docs)",
+            "desc_zh": "网络搜索服务提供商",
+            "desc_en": "Web search service provider",
         },
     )
     search_api_base: str = Field(

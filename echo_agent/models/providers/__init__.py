@@ -6,7 +6,6 @@ import asyncio
 import os
 import time
 from typing import Any, Awaitable
-from urllib.parse import urlsplit
 
 from loguru import logger
 
@@ -58,10 +57,9 @@ def _env_api_key(provider_name: str) -> str:
 def _configured_api_key(config: ProviderConfig, provider_name: str) -> str:
     """Resolve a key without mutating or persisting the provider config.
 
-    Explicit config remains highest priority. A named environment variable is
-    an exclusive credential source: its absence must not select another key.
-    Conventional OpenAI credentials are only discovered for the official HTTPS
-    origin; custom endpoints must explicitly bind their own credential source.
+    Explicit config remains highest priority for compatibility. api_key_env is
+    the secure host-injection path; conventional provider env names remain the
+    final fallback.
     """
     if config.api_key:
         return config.api_key
@@ -69,21 +67,6 @@ def _configured_api_key(config: ProviderConfig, provider_name: str) -> str:
         value = os.environ.get(config.api_key_env, "").strip()
         if value:
             return value
-        raise ValueError(f"API key environment variable '{config.api_key_env}' is not set")
-    if provider_name == "openai":
-        base = config.api_base or os.environ.get("OPENAI_BASE_URL", "")
-        if base:
-            try:
-                parsed = urlsplit(base)
-                official = (
-                    parsed.scheme == "https" and parsed.hostname == "api.openai.com"
-                    and parsed.port in (None, 443)
-                    and parsed.username is None and parsed.password is None
-                )
-            except ValueError:
-                official = False
-            if not official:
-                return ""
     return _env_api_key(provider_name)
 
 
@@ -123,7 +106,7 @@ def validate_provider_config(config: ProviderConfig, *, default_model: str = "")
         # boto3/AnthropicBedrock can still resolve instance/task role credentials at call time.
         return
 
-    if config.credential_pool or _configured_api_key(config, provider_name):
+    if _configured_api_key(config, provider_name) or config.credential_pool:
         return
 
     if _allows_keyless_openai_compatible(provider_name, config):

@@ -12,8 +12,6 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from loguru import logger
-
 
 def _home() -> str:
     return os.path.realpath(os.path.expanduser("~"))
@@ -174,8 +172,9 @@ def _is_temp_path(resolved: str) -> bool:
             candidates.add(real_tmp)
             if real_tmp.startswith("/private/var/folders"):
                 candidates.add("/private/var/folders")
-        except Exception as e:
-            logger.debug("Failed to resolve system temp dir for path policy: {}", e)
+        except Exception:
+            # Static temporary-directory prefixes remain available when discovery fails.
+            pass
         _TEMP_PREFIXES = tuple(p + os.sep for p in candidates) + tuple(candidates)
     return any(resolved.startswith(p) for p in _TEMP_PREFIXES)
 

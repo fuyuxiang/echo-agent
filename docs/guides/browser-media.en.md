@@ -122,13 +122,12 @@ Executes queries via search engine APIs and returns structured results.
 | Tavily | API Key | AI-optimized search |
 | SerpAPI | API Key | Google search results |
 | SearXNG | No key needed | Self-hosted, requires `api_base` |
-| Serply | API Key | General search API |
 
 ```yaml
 tools:
   web:
     enabled: true
-    search_provider: "brave"   # brave | tavily | serpapi | searxng | serply
+    search_provider: "brave"   # brave | tavily | serpapi | searxng
     search_api_key: "BSA-xxx"
 ```
 

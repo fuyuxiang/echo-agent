@@ -52,24 +52,6 @@ Describe the actual script arguments, output files and failure handling here.
 
 Dashboard Skills 可查看正文/文件/依赖，启停或安装已声明依赖；外部导入和写入使用 admin 权限与技能准入流程。候选、审批、晋升和回滚参见[进化与评估](../../concepts/evolution-evaluation.md)。Python 插件注册新工具，技能组合已有工具，两者的信任和生命周期不同。
 
-## Cohesivity（可选技能）
-
-Cohesivity 位于仓库的 `optional-skills/cohesivity/`，不属于 35 个内置技能，不随 Python wheel/sdist 分发，也不在默认技能目录中。默认安装、启动和普通的应用/数据库/部署请求不会加载它。需要使用时，用户必须主动选择 Cohesivity，并从已审查的仓库版本导入该目录。
-
-在已有源码检出的环境中，明确要求 Agent 安装该本地技能时，`skill_install` 参数如下（不是运行时 YAML 配置）：
-
-```json
-{
-  "source": "local",
-  "location": "/absolute/path/to/echo-agent/optional-skills/cohesivity",
-  "run_install": false
-}
-```
-
-这一步只导入说明文件，走现有技能扫描与准入流程；不会执行 npm、访问 Cohesivity、安装全局技能或创建租户。若源码不在本机，先取得审查过的提交，不要把整个仓库根目录作为技能导入源。
-
-实际开通后端需单独授权。技能固定使用 `@cohesivity/init@0.9.4`，执行前必须说明第三方代码执行、全局 `~/.agents/skills` 写入、项目指令文件修改、机器标识及 72 小时租户过期；不接受这些影响即可停止初始化。部署、付费、认领、MCP 配置和反馈发送也需相应的明确授权。上游安装器的行为属于第三方边界，不因技能被安装而自动获准。
-
 - [技能目录](catalog.md)
 - [编写技能](../../development/skill-authoring.md)
 - [工具与权限](../../guides/tools-permissions.md)

@@ -1621,16 +1621,19 @@ class InferenceStage:
                                  "name": tool_call.name, "content": err_text})
                 try:
                     session.add_message("tool", err_text, tool_call_id=tool_call.id, name=tool_call.name)
-                except Exception as e:
-                    logger.debug("Failed to record interrupted-tool message for {}: {}", tool_call.name, e)
+                except Exception:
+                    # Session bookkeeping must not mask the interrupted tool error.
+                    pass
                 try:
                     self._tracer.end_span(tool_span, error="interrupted")
-                except Exception as e:
-                    logger.debug("Failed to end span for interrupted tool {}: {}", tool_call.name, e)
+                except Exception:
+                    # Tracing teardown is best-effort during tool interruption.
+                    pass
                 try:
                     self._circuit_breaker.record_failure(tool_call.name)
-                except Exception as e:
-                    logger.debug("Failed to record circuit-breaker failure for {}: {}", tool_call.name, e)
+                except Exception:
+                    # Failure accounting must not replace the interrupted tool error.
+                    pass
                 counters.total_tool_calls += 1
                 if d.plan_step_index is not None and ctx.execution_plan is not None:
                     ctx.execution_plan.mark_step_failed(d.plan_step_index, err_text)

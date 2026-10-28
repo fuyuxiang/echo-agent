@@ -32,30 +32,7 @@ def test_expected_domestic_providers_present():
 
 def test_expected_local_and_aggregator_present():
     ids = {e.id for e in p.CATALOG}
-    assert {
-        "ollama", "lmstudio", "openrouter", "siliconflow", "atlascloud",
-        "cheaperinference", "custom", "bedrock",
-    } <= ids
-
-
-def test_atlascloud_uses_openai_compatible_endpoint():
-    entry = p.find("atlascloud")
-
-    assert entry.dialect == "openai"
-    assert entry.api_base == "https://api.atlascloud.ai/v1"
-    assert entry.models_endpoint == "https://api.atlascloud.ai/v1/models"
-    assert entry.api_key_env_vars == ("ATLASCLOUD_API_KEY",)
-    assert entry.fallback_models == ["qwen/qwen3.8-max"]
-
-
-def test_cheaperinference_uses_openai_compatible_endpoint():
-    entry = p.find("cheaperinference")
-
-    assert entry.dialect == "openai"
-    assert entry.api_base == "https://api.cheaperinference.com/v1"
-    assert entry.models_endpoint == "https://api.cheaperinference.com/v1/models"
-    assert entry.api_key_env_vars == ("CHEAPER_INFERENCE_API_KEY",)
-    assert entry.fallback_models == ["gpt-5.4-mini"]
+    assert {"ollama", "lmstudio", "openrouter", "siliconflow", "custom", "bedrock"} <= ids
 
 
 def test_grouped_preserves_all_entries_and_order():
