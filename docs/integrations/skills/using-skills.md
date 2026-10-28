@@ -73,3 +73,17 @@ Cohesivity 位于仓库的 `optional-skills/cohesivity/`，不属于 35 个内�
 - [技能目录](catalog.md)
 - [编写技能](../../development/skill-authoring.md)
 - [工具与权限](../../guides/tools-permissions.md)
+
+## deed.page（可选技能）
+
+deed.page 位于仓库的 `optional-skills/deed-page/`，不属于 35 个内置技能，与 Cohesivity 一样不随包分发，也不被默认加载。普通的"做个网页""分享一下"请求不会选中它；用户必须明确要求用 deed.page 发布，并从已审查的仓库版本导入该目录：
+
+```json
+{
+  "source": "local",
+  "location": "/absolute/path/to/echo-agent/optional-skills/deed-page",
+  "run_install": false
+}
+```
+
+导入只安装说明文件：没有安装依赖，不上传任何内容，也不创建令牌。每次发布都需单独授权：Agent 需说明要上传的文件、页面将公开可见以及过期时间（默认七天，用户要求时才永久保留）。首次发布返回的所有者令牌保存在 `~/.config/deed-page/token`（权限 `0600`），命令输出中会被遮蔽。删除页面、升级付费、自定义域名、Webhook 和公开画廊展示均需各自的明确授权。

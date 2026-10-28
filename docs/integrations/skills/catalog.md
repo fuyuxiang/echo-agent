@@ -4,6 +4,8 @@ Echo Agent 提供 35 个内置技能，分布在 10 个类别中。本文列出�
 
 另有用户主动安装的可选技能 `cohesivity`，存放于仓库 `optional-skills/cohesivity/`，不计入内置数量，也不被默认加载或打包。参见[安装与授权说明](using-skills.md)。
 
+可选技能 `deed-page`（`optional-skills/deed-page/`）同样只能由用户主动安装，不计入内置数量，也不被默认加载或打包。参见[deed.page（可选技能）](using-skills.md)。
+
 ## 概览
 
 | 类别 | 技能数量 | 说明 |

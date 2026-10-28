@@ -4,6 +4,8 @@ Echo Agent provides 35 built-in skills across 10 categories. This document lists
 
 The optional `cohesivity` skill lives in the repository's `optional-skills/cohesivity/`. It requires explicit user installation, is excluded from built-in counts and distributions, and is not loaded by default. See [installation and authorization](using-skills.en.md).
 
+The optional `deed-page` skill (`optional-skills/deed-page/`) is handled the same way: explicit installation only, not counted or packaged, not loaded by default. See [deed.page (optional skill)](using-skills.en.md).
+
 ## Overview
 
 | Category | Count | Description |

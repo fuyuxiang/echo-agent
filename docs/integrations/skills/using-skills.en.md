@@ -73,3 +73,17 @@ Backend bootstrap needs separate authorization. The skill pins `@cohesivity/init
 - [Skill catalog](catalog.en.md)
 - [Skill authoring](../../development/skill-authoring.en.md)
 - [Tools and permissions](../../guides/tools-permissions.en.md)
+
+## deed.page (optional skill)
+
+deed.page lives in the repository's `optional-skills/deed-page/`, outside the 35 built-in skills, and like Cohesivity it is excluded from distributions and not loaded by default. A generic request to make or share a page does not select it; the user must explicitly ask to publish with deed.page and import the directory from a reviewed repository revision:
+
+```json
+{
+  "source": "local",
+  "location": "/absolute/path/to/echo-agent/optional-skills/deed-page",
+  "run_install": false
+}
+```
+
+Importing installs instructions only. It has no install specs, uploads nothing and creates no token. Each publish needs separate authorization: the agent states which files will be uploaded, that the page is public, and the expiry (seven days unless the user asks for a permanent page). The owner token returned by the first publish is kept in `~/.config/deed-page/token` (mode `0600`) and is masked in command output. Deleting a page, upgrades, custom domains, webhooks and gallery listings each need their own explicit approval.
