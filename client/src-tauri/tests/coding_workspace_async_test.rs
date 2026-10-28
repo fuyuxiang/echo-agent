@@ -1,31 +1,9 @@
 //! Guards the async contract of the coding workspace commands: a long scan must
 //! not block the tokio runtime, and the retired command names must be gone.
 
-use std::time::Duration;
-
-/// A blocking scan on a worker thread would starve this concurrent timer. With
-/// the scan moved onto the blocking pool the timer keeps its own schedule.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn blocking_scan_does_not_starve_the_runtime() {
-    let scan = tokio::task::spawn_blocking(|| {
-        // Simulate the synchronous directory walk the real command performs.
-        std::thread::sleep(Duration::from_millis(400));
-        12_000usize
-    });
-
-    let mut ticks = 0u32;
-    let ticker = async {
-        for _ in 0..8 {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            ticks += 1;
-        }
-    };
-    let (scanned, ()) = tokio::join!(async { scan.await.unwrap() }, ticker);
-
-    assert_eq!(scanned, 12_000);
-    // All timer ticks fired while the scan was still running.
-    assert_eq!(ticks, 8);
-}
+// The real current-thread scan responsiveness regression lives beside the
+// production command in coding_workspace::tests. This integration target keeps
+// the independently useful retired-command and direct-IO structural guards.
 
 /// The verification engine must be the only place that spawns a command for a
 /// coding task. The legacy `coding_run_command` / `coding_cancel_command` entry

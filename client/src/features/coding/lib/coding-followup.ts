@@ -43,7 +43,7 @@ export function codingQueueOwner(key: string): { root: string; taskId: string; s
   } catch { return null; }
 }
 
-/** Settle before the transcript can discard an empty successful assistant turn. */
+/** Legacy identity fallback requires the transcript before an empty turn is discarded. */
 export function settleCodingQueueTurn(completion: PromptComplete): void {
   const sessionId = completion.sessionId;
   if (!sessionId) return;

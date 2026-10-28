@@ -87,6 +87,16 @@ export default defineConfig({
   },
   test: {
     maxWorkers: 2,
+    coverage: {
+      provider: "v8",
+      reportOnFailure: true,
+      // Include unimported production modules too; experiments stay in the
+      // denominator and are reported separately in the audit.
+      include: ["src/**/*.{ts,tsx}"],
+      exclude: ["src/**/*.d.ts", "src/**/*.{test,spec}.{ts,tsx}", "src/test-setup.ts"],
+      reporter: ["text-summary", "json-summary", "json", "html"],
+      reportsDirectory: process.env.AUDIT_COVERAGE_DIR || "coverage",
+    },
     projects: [
       {
         extends: true,

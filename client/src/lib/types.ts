@@ -63,7 +63,7 @@ export type ToolCallContent =
 
 // ---------- tool call status ----------
 
-export type ToolCallStatus = "in_progress" | "completed" | "failed";
+export type ToolCallStatus = "pending" | "in_progress" | "completed" | "failed";
 
 // Known EchoAgent tool kinds (from echo-agent-tools). The wire format allows unknown
 // kinds too — render them generically.
@@ -82,32 +82,45 @@ export type ToolKind =
 
 // ---------- session updates (the agent -> client stream) ----------
 
+/** ACP content is one block per chunk; rendered tool content is normalized separately. */
+export type AcpContentBlock = (TextContent | ImageToolContent
+  | { type: "audio"; data: string; mimeType: string }
+  | { type: "resource_link"; uri: string; name: string; mimeType?: string }
+  | { type: "resource"; resource: { uri: string; mimeType?: string; text?: string; blob?: string } }
+) & { _meta?: Record<string, unknown> };
+
 export interface AgentMessageChunk {
-  type: "agent_message_chunk";
-  content: TextContent[];
+  sessionUpdate: "agent_message_chunk";
+  content: AcpContentBlock;
 }
 
 export interface AgentThoughtChunk {
-  type: "agent_thought_chunk";
-  content: ThoughtContent[];
+  sessionUpdate: "agent_thought_chunk";
+  content: AcpContentBlock;
 }
+
+export type AcpToolCallContent =
+  | { type: "content"; content: AcpContentBlock }
+  | { type: "diff"; path: string; oldText?: string | null; newText: string }
+  | { type: "terminal"; terminalId: string };
 
 export interface ToolCallUpdate {
-  type: "tool_call";
+  sessionUpdate: "tool_call";
   toolCallId: string;
   title: string;
-  kind: ToolKind;
-  status: ToolCallStatus;
+  /** ACP omits the default `other` kind and `pending` status. */
+  kind?: ToolKind;
+  status?: ToolCallStatus;
   /** Raw input the tool was invoked with, when the agent sends it inline. */
   rawInput?: unknown;
-  content: ToolCallContent[];
+  rawOutput?: unknown;
+  content?: AcpToolCallContent[];
+  locations?: Array<{ path: string; line?: number | null }>;
 }
 
-export interface ToolCallDeltaUpdate {
-  type: "tool_call_update";
+export interface ToolCallDeltaUpdate extends Partial<Omit<ToolCallUpdate, "sessionUpdate" | "toolCallId">> {
+  sessionUpdate: "tool_call_update";
   toolCallId: string;
-  /** Partial field updates (e.g. streamed raw_input). */
-  update: Record<string, unknown>;
 }
 
 /** ACP flattens Plan.entries; retain the older nested-plan transport too. */
@@ -137,7 +150,8 @@ export type PlanEntryPriority = "high" | "medium" | "low";
 export type PlanEntryStatus = "pending" | "in_progress" | "completed";
 
 export interface UsageUpdate {
-  type: "usage_update";
+  sessionUpdate?: "usage_update";
+  type?: "usage_update";
   usage: {
     promptTokens?: number;
     completionTokens?: number;
@@ -145,11 +159,36 @@ export interface UsageUpdate {
   };
 }
 
-/** Catch-all for echo.agent extension session-update types not modeled above. */
+/** Historical `type` transport retained explicitly for stored/legacy inputs. */
 export interface ExtensionSessionUpdate {
   type: string;
   [key: string]: unknown;
 }
+
+export interface SessionUpdateMetadata {
+  sessionId?: string;
+  __sessionId?: string;
+  _meta?: Record<string, unknown>;
+}
+
+/** The current ACP subset consumed by the desktop. No catch-all tag may hide malformed known messages. */
+export type AcpSessionUpdate = (
+  | AgentMessageChunk
+  | AgentThoughtChunk
+  | { sessionUpdate: "user_message_chunk"; content: AcpContentBlock }
+  | ToolCallUpdate
+  | ToolCallDeltaUpdate
+  | { sessionUpdate: "plan"; entries: PlanEntry[] }
+  | { sessionUpdate: "current_mode_update"; currentModeId: string }
+  | { sessionUpdate: "available_commands_update"; availableCommands: unknown[] }
+) & SessionUpdateMetadata;
+
+/** Host-owned extensions are distinct from the closed ACP wire subset. */
+export type HostSessionUpdate = (
+  | { sessionUpdate: "plan_approval_request"; requestId: string; toolCallId: string; planContent?: string }
+  | { sessionUpdate: "plan_approval_resolved"; requestId: string }
+  | ({ sessionUpdate: "turn_completed" | "session_summary_generated" | "subagent_spawned" | "subagent_progress" | "subagent_finished" } & Record<string, unknown>)
+) & SessionUpdateMetadata;
 
 // ---------- context usage (echo.agent/session/info + echo.agent/session/usage) ----------
 
@@ -240,14 +279,13 @@ export interface TurnUsageEvent {
   eventId?: string;
 }
 
-export type SessionUpdate =
-  | AgentMessageChunk
-  | AgentThoughtChunk
-  | ToolCallUpdate
-  | ToolCallDeltaUpdate
+export type SessionUpdate = (
+  | AcpSessionUpdate
+  | HostSessionUpdate
   | PlanUpdate
   | UsageUpdate
-  | ExtensionSessionUpdate;
+  | ExtensionSessionUpdate
+) & SessionUpdateMetadata;
 
 // ---------- permissions ----------
 

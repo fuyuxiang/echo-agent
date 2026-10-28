@@ -2482,6 +2482,60 @@ async fn execute_automation_run(
     }
 }
 
+/// A Runtime session already exists when desktop metadata is committed. Every
+/// failed commit must revoke its launch-only authority and stop the session,
+/// even when no durable run record yet knows the newly allocated session id.
+#[derive(Debug)]
+struct CreatedAutomationSessionFailure {
+    error: String,
+    permission_reset_error: Option<String>,
+}
+
+async fn commit_created_automation_session(
+    tx: &echo_agent_acp::AcpAgentTx,
+    session_id: &str,
+    full_access: bool,
+    target_mode: &str,
+    bind_workspace: impl FnOnce() -> Result<(), String>,
+    record_run: impl FnOnce() -> Result<(), String>,
+    quarantine: impl FnOnce(&str),
+) -> Result<(), CreatedAutomationSessionFailure> {
+    let Err(error) = bind_workspace().and_then(|()| record_run()) else {
+        return Ok(());
+    };
+    let mut permission_reset_error = None;
+    if full_access {
+        for _ in 0..2 {
+            match crate::permission_config::sync_runtime_session_permission_mode(
+                tx,
+                session_id,
+                target_mode,
+            )
+            .await
+            {
+                Ok(()) => {
+                    permission_reset_error = None;
+                    break;
+                }
+                Err(error) => permission_reset_error = Some(error),
+            }
+        }
+    }
+    // Preserve fail-closed ordering: quarantine immediately after failed reset,
+    // before waiting for an unresponsive actor's cancellation acknowledgement.
+    if let Some(error) = &permission_reset_error {
+        quarantine(error);
+    }
+    let error = match crate::agent_runtime::cancel(tx, session_id, "stop", None).await {
+        Ok(()) => error,
+        Err(cancel_error) => format!("{error}；停止未完成的自动化会话失败：{cancel_error}"),
+    };
+    Err(CreatedAutomationSessionFailure {
+        error,
+        permission_reset_error,
+    })
+}
+
 /// Open a fresh EchoAgent session and send the automation prompt.
 /// Returns the new session id on success.
 async fn run_automation_once(
@@ -2521,38 +2575,34 @@ async fn run_automation_once(
     )
     .await
     .map_err(|e| e.to_string())?;
-    state.record_session_workspace(&session_id, cwd)?;
     let prompt_id = uuid::Uuid::now_v7().to_string();
-    if let Err(error) = record_run_session(record_id, &session_id, &prompt_id) {
-        if full_access {
-            let target_mode = crate::permission_config::permission_mode_for_session();
-            let mut reset = Ok(());
-            for _ in 0..2 {
-                reset = crate::permission_config::sync_runtime_session_permission_mode(
-                    tx,
-                    &session_id,
-                    &target_mode,
-                )
-                .await;
-                if reset.is_ok() {
-                    break;
-                }
-            }
-            if let Err(reset_error) = reset {
-                let reason = format!(
-                    "自动化会话创建失败后无法恢复权限（{reset_error}）；为避免残留全权限会话，Agent 已安全停止，请重新启动"
+    let target_mode = crate::permission_config::permission_mode_for_session();
+    if let Err(failure) = commit_created_automation_session(
+        tx,
+        &session_id,
+        full_access,
+        &target_mode,
+        || state.record_session_workspace(&session_id, cwd),
+        || record_run_session(record_id, &session_id, &prompt_id),
+        |reset_error| {
+            let reason = format!(
+                "自动化会话创建失败后无法恢复权限（{reset_error}）；为避免残留全权限会话，Agent 已安全停止，请重新启动"
+            );
+            if state.mark_runtime_dead_if_current(tx, &reason) {
+                let _ = app.emit(
+                    "agent://agent-died",
+                    serde_json::json!({ "reason": reason }),
                 );
-                if state.mark_runtime_dead_if_current(tx, &reason) {
-                    let _ = app.emit(
-                        "agent://agent-died",
-                        serde_json::json!({ "reason": reason }),
-                    );
-                }
             }
+        },
+    )
+    .await
+    {
+        if let Some(reset_error) = failure.permission_reset_error {
+            tracing::error!(session_id, error = %reset_error, "automation commit cleanup quarantined Runtime");
         }
-        let _ = crate::agent_runtime::cancel(tx, &session_id, "stop", None).await;
         state.forget_session_workspace(&session_id);
-        return Err(error);
+        return Err(failure.error);
     }
     emit_run_update(
         app,
@@ -4107,6 +4157,227 @@ mod tests {
             require_automation_cwd(&filesystem, &trusted_task, &forged).unwrap(),
             trusted.canonicalize().unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn failed_created_automation_binding_revokes_permissions_before_cancel() {
+        let (client, mut agent) = echo_agent_acp::acp_channels();
+        let task = tokio::spawn(async move {
+            commit_created_automation_session(
+                &client.tx,
+                "new-unrecorded-full-access-session",
+                true,
+                "ask",
+                || Err("injected workspace metadata write failure".into()),
+                || Ok(()),
+                |_| panic!("acknowledged permission reset must not quarantine"),
+            )
+            .await
+        });
+        let echo_agent_acp::AcpAgentMessage::ExtNotification(reset) = agent
+            .rx
+            .recv()
+            .await
+            .expect("workspace binding failure must revoke launch permissions")
+        else {
+            panic!("failed workspace binding must first revoke launch authority");
+        };
+        assert_eq!(
+            reset.request.method.as_ref(),
+            "echo.agent/yolo_mode_changed"
+        );
+        let params: serde_json::Value = serde_json::from_str(reset.request.params.get()).unwrap();
+        assert_eq!(
+            params["sessionIds"],
+            serde_json::json!(["new-unrecorded-full-access-session"])
+        );
+        assert_eq!(params["permission_mode"], "ask");
+        assert_eq!(params["yolo_mode"], false);
+        assert_eq!(params["auto_mode"], false);
+        assert!(
+            !task.is_finished(),
+            "cleanup must wait for Runtime reset ACK"
+        );
+        reset.response_tx.send(Ok(())).unwrap();
+        let echo_agent_acp::AcpAgentMessage::Cancel(cancel) = agent
+            .rx
+            .recv()
+            .await
+            .expect("unrecorded Runtime session must be cancelled")
+        else {
+            panic!("unrecorded Runtime session must be cancelled after reset");
+        };
+        assert_eq!(
+            cancel.request.session_id.0.as_ref(),
+            "new-unrecorded-full-access-session"
+        );
+        assert!(
+            !task.is_finished(),
+            "cleanup must wait for actor cancellation ACK"
+        );
+        cancel.response_tx.send(Ok(())).unwrap();
+        let failure = task.await.unwrap().unwrap_err();
+        assert_eq!(failure.error, "injected workspace metadata write failure");
+        assert!(failure.permission_reset_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn created_automation_commit_preserves_success_and_rolls_back_run_record_failure() {
+        let (client, mut agent) = echo_agent_acp::acp_channels();
+        let committed = std::cell::RefCell::new(Vec::new());
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            commit_created_automation_session(
+                &client.tx,
+                "healthy-session",
+                true,
+                "ask",
+                || {
+                    committed.borrow_mut().push("workspace");
+                    Ok(())
+                },
+                || {
+                    committed.borrow_mut().push("run");
+                    Ok(())
+                },
+                |_| panic!("successful commit must not quarantine"),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(*committed.borrow(), vec!["workspace", "run"]);
+        assert!(
+            agent.rx.try_recv().is_err(),
+            "successful commits must not revoke or cancel the session"
+        );
+
+        let task = tokio::spawn(async move {
+            commit_created_automation_session(
+                &client.tx,
+                "record-failure",
+                false,
+                "ask",
+                || Ok(()),
+                || Err("run record write failed".into()),
+                |_| panic!("default-mode failure must not quarantine"),
+            )
+            .await
+        });
+        let echo_agent_acp::AcpAgentMessage::Cancel(cancel) = agent.rx.recv().await.unwrap() else {
+            panic!("run record failure must retain its existing cancellation behavior");
+        };
+        assert_eq!(cancel.request.session_id.0.as_ref(), "record-failure");
+        cancel.response_tx.send(Ok(())).unwrap();
+        assert_eq!(
+            task.await.unwrap().unwrap_err().error,
+            "run record write failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_created_session_reports_cancellation_failure_without_hiding_commit_error() {
+        let (client, mut agent) = echo_agent_acp::acp_channels();
+        let task = tokio::spawn(async move {
+            commit_created_automation_session(
+                &client.tx,
+                "cancel-failure",
+                false,
+                "ask",
+                || Err("workspace write failed".into()),
+                || Ok(()),
+                |_| panic!("default-mode failure must not quarantine"),
+            )
+            .await
+        });
+        let echo_agent_acp::AcpAgentMessage::Cancel(cancel) = agent.rx.recv().await.unwrap() else {
+            panic!("failed binding must attempt cancellation");
+        };
+        cancel
+            .response_tx
+            .send(Err(
+                agent_client_protocol::Error::internal_error().data("cancel rejected")
+            ))
+            .unwrap();
+        let failure = task.await.unwrap().unwrap_err();
+        assert!(failure.error.contains("workspace write failed"));
+        assert!(failure.error.contains("cancel rejected"));
+    }
+
+    #[tokio::test]
+    async fn failed_created_default_automation_binding_still_cancels_session() {
+        let (client, mut agent) = echo_agent_acp::acp_channels();
+        let task = tokio::spawn(async move {
+            commit_created_automation_session(
+                &client.tx,
+                "unrecorded-default-session",
+                false,
+                "ask",
+                || Err("injected workspace binding failure".into()),
+                || Ok(()),
+                |_| panic!("default-mode failure must not quarantine"),
+            )
+            .await
+        });
+        let echo_agent_acp::AcpAgentMessage::Cancel(cancel) = agent.rx.recv().await.unwrap() else {
+            panic!("ordinary unrecorded session must be cancelled without permission mutation");
+        };
+        assert_eq!(
+            cancel.request.session_id.0.as_ref(),
+            "unrecorded-default-session"
+        );
+        cancel.response_tx.send(Ok(())).unwrap();
+        let failure = task.await.unwrap().unwrap_err();
+        assert_eq!(failure.error, "injected workspace binding failure");
+        assert!(failure.permission_reset_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn failed_created_session_reset_still_cancels_and_requires_quarantine() {
+        let (client, mut agent) = echo_agent_acp::acp_channels();
+        let quarantined = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let quarantine_in_task = quarantined.clone();
+        let task = tokio::spawn(async move {
+            commit_created_automation_session(
+                &client.tx,
+                "unrecorded-session",
+                true,
+                "ask",
+                || Err("injected metadata write failure".into()),
+                || Ok(()),
+                move |error| {
+                    assert!(error.contains("injected permission reset failure"));
+                    quarantine_in_task.store(true, std::sync::atomic::Ordering::SeqCst);
+                },
+            )
+            .await
+        });
+        for _ in 0..2 {
+            let echo_agent_acp::AcpAgentMessage::ExtNotification(reset) =
+                agent.rx.recv().await.unwrap()
+            else {
+                panic!("permission reset must be retried");
+            };
+            reset
+                .response_tx
+                .send(Err(agent_client_protocol::Error::internal_error()
+                    .data("injected permission reset failure")))
+                .unwrap();
+        }
+        let echo_agent_acp::AcpAgentMessage::Cancel(cancel) = agent.rx.recv().await.unwrap() else {
+            panic!("reset failure must not skip cancellation");
+        };
+        assert!(
+            quarantined.load(std::sync::atomic::Ordering::SeqCst),
+            "quarantine must happen before waiting for cancel ACK"
+        );
+        cancel.response_tx.send(Ok(())).unwrap();
+        let failure = task.await.unwrap().unwrap_err();
+        assert!(failure
+            .permission_reset_error
+            .unwrap()
+            .contains("injected permission reset failure"));
+        assert_eq!(failure.error, "injected metadata write failure");
     }
 
     // --- blank_to_none ---

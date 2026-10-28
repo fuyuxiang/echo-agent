@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { useSessionStore } from "../session-store";
 import { collectSessionArtifacts } from "@/lib/session-artifacts";
+import type { AcpContentBlock, AcpSessionUpdate, PromptComplete } from "@/lib/types";
 
 /**
  * Per-session transcript store. The whole point of this refactor is that
@@ -32,18 +33,16 @@ const resetStore = () => {
   });
 };
 
-// Wire-shaped payloads; cast loosely — we only care about runtime routing here.
+// Current wire payloads remain checked against the real ACP subset.
 const chunk = (text: string, sid: string) =>
   ({
     sessionUpdate: "agent_message_chunk",
-    content: { text },
+    content: { type: "text", text },
     __sessionId: sid,
-  }) as unknown as Parameters<
-    ReturnType<typeof useSessionStore.getState>["applyUpdate"]
-  >[0];
+  }) satisfies AcpSessionUpdate;
 
 const userChunk = (
-  content: Record<string, unknown>,
+  content: AcpContentBlock,
   sid: string,
   promptIndex = 0,
 ) =>
@@ -52,17 +51,15 @@ const userChunk = (
     content,
     _meta: { promptIndex },
     __sessionId: sid,
-  }) as unknown as Parameters<
-    ReturnType<typeof useSessionStore.getState>["applyUpdate"]
-  >[0];
+  }) satisfies AcpSessionUpdate;
 
 const complete = (sid: string, totalTokens = 0) =>
   ({
     sessionId: sid,
+    promptId: "",
+    stopReason: "end_turn",
     usage: { totalTokens },
-  }) as unknown as Parameters<
-    ReturnType<typeof useSessionStore.getState>["markComplete"]
-  >[0];
+  }) satisfies PromptComplete;
 
 const textOf = (idx: number) => {
   const m = useSessionStore.getState().messages[idx];
@@ -78,6 +75,102 @@ const userMessageTextForTest = (m: ReturnType<typeof useSessionStore.getState>["
 
 describe("session-store transcripts", () => {
   beforeEach(resetStore);
+
+  it.each([false, true])("持久化完成记录阻止迟到文本重开轮次，兼容历史重放：%s", isReplay => {
+    const store = useSessionStore.getState();
+    store.setSession("A");
+    store.startStreaming("A", "durable-prompt");
+    store.applyUpdate({ ...chunk("完整回复", "A"), _meta: { promptId: "durable-prompt" } });
+    store.applyUpdate({ __sessionId: "A", sessionUpdate: "turn_completed", prompt_id: "durable-prompt", stop_reason: "end_turn", _meta: { isReplay } });
+    expect(store.applyUpdate({ ...chunk("迟到文本", "A"), _meta: { promptId: "durable-prompt" } })).toBe(false);
+    expect(useSessionStore.getState().streaming).toBe(false);
+    expect(textOf(0)).toBe("完整回复");
+  });
+
+  it.each(["agent_message_chunk", "agent_thought_chunk", "tool_call"] as const)("原生 %s 绑定轮次身份，迟到旧轮不能混入", sessionUpdate => {
+    const store = useSessionStore.getState();
+    store.setSession("A");
+    if (sessionUpdate === "tool_call") {
+      store.applyUpdate({ __sessionId: "A", sessionUpdate, toolCallId: "native-tool", title: "读取文件", _meta: { promptId: "native-prompt" } });
+    } else {
+      store.applyUpdate({ __sessionId: "A", sessionUpdate, content: { type: "text", text: "原生输出" }, _meta: { promptId: "native-prompt" } });
+    }
+    expect(useSessionStore.getState().messages).toMatchObject([{ promptId: "native-prompt", complete: false }]);
+    expect(store.applyUpdate({ ...chunk("旧轮文本", "A"), _meta: { promptId: "old-prompt" } })).toBe(false);
+    expect(useSessionStore.getState().messages).toHaveLength(1);
+  });
+
+  it("迟到的轮次身份补充到已有助手消息，不拆分回复", () => {
+    const store = useSessionStore.getState();
+    store.setSession("A");
+    store.applyUpdate(chunk("第一段", "A"));
+    store.applyUpdate({ ...chunk("第二段", "A"), _meta: { promptId: "native-prompt" } });
+    expect(useSessionStore.getState().messages).toMatchObject([{ promptId: "native-prompt", parts: [{ kind: "text", text: "第一段第二段" }] }]);
+    expect(useSessionStore.getState().messages).toHaveLength(1);
+  });
+
+  it("旧轮持久化完成不能撤销已申请的立即发送", () => {
+    const store = useSessionStore.getState();
+    store.setSession("A");
+    store.startStreaming("A", "old-prompt");
+    store.requestSendNow("replacement-prompt", "A");
+    store.applyUpdate({ __sessionId: "A", sessionUpdate: "turn_completed", prompt_id: "old-prompt", stop_reason: "end_turn" });
+    expect(useSessionStore.getState().transcripts.A.pendingSendNowPromptId).toBe("replacement-prompt");
+  });
+
+  it("旧格式完成通知用已有轮次身份阻止迟到文本", () => {
+    const store = useSessionStore.getState();
+    store.setSession("A");
+    store.startStreaming("A", "known-prompt");
+    store.applyUpdate({ ...chunk("正常回复", "A"), _meta: { promptId: "known-prompt" } });
+    store.markComplete(complete("A"));
+    expect(store.applyUpdate({ ...chunk("迟到文本", "A"), _meta: { promptId: "known-prompt" } })).toBe(false);
+    expect(useSessionStore.getState().streaming).toBe(false);
+  });
+
+  it("不同轮次复用工具 ID 时迟到结果只更新对应历史卡片", () => {
+    const store = useSessionStore.getState();
+    store.setSession("A");
+    const tool = (promptId: string) => store.applyUpdate({ __sessionId: "A", sessionUpdate: "tool_call", toolCallId: "reused", title: "读取文件", _meta: { promptId } });
+    tool("old");
+    store.markComplete({ sessionId: "A", promptId: "old", stopReason: "end_turn" });
+    tool("current");
+    store.applyUpdate({ __sessionId: "A", sessionUpdate: "tool_call_update", toolCallId: "reused", status: "completed", _meta: { promptId: "old" } });
+    const messages = useSessionStore.getState().messages;
+    expect(messages[0].parts[0]).toMatchObject({ kind: "tool_call", toolCall: { status: "completed" } });
+    expect(messages[1]).toMatchObject({ promptId: "current", complete: false, parts: [{ kind: "tool_call", toolCall: { status: "in_progress" } }] });
+    expect(store.applyUpdate({ __sessionId: "A", sessionUpdate: "tool_call_update", toolCallId: "missing", status: "completed", _meta: { promptId: "current" } })).toBe(false);
+  });
+
+  it("本地已确认关闭的计划审批也不能被迟到快照复活", () => {
+    const store = useSessionStore.getState();
+    store.setSession("A");
+    const request = { sessionId: "A", requestId: "closed-plan", toolCallId: "plan-tool" };
+    store.requestPlanApproval(request);
+    store.dismissPlanApproval(request.requestId, "A");
+    store.requestPlanApproval(request);
+    store.applyUpdate({ ...request, __sessionId: "A", sessionUpdate: "plan_approval_request" });
+    expect(useSessionStore.getState().planApproval).toBeNull();
+    store.requestPlanApproval({ ...request, requestId: "new-plan" });
+    expect(useSessionStore.getState().planApproval?.requestId).toBe("new-plan");
+  });
+
+  it("已完成轮次的迟到文本既不能重开流，也不能混入下一轮", () => {
+    const store = useSessionStore.getState();
+    store.setSession("A");
+    store.startStreaming("A", "old");
+    store.applyUpdate({ ...chunk("首轮结果", "A"), _meta: { promptId: "old" } });
+    store.markComplete({ sessionId: "A", promptId: "old", stopReason: "end_turn" });
+    store.applyUpdate({ ...chunk("迟到片段", "A"), _meta: { promptId: "old" } });
+    expect(useSessionStore.getState().streaming).toBe(false);
+    store.startStreaming("A", "current");
+    store.applyUpdate({ ...chunk("当前结果", "A"), _meta: { promptId: "current" } });
+    store.applyUpdate({ ...chunk("迟到片段", "A"), _meta: { promptId: "old" } });
+    expect(useSessionStore.getState().messages.flatMap(m => m.parts).filter(p => p.kind === "text")).toEqual([
+      { kind: "text", text: "首轮结果" }, { kind: "text", text: "当前结果" },
+    ]);
+    expect(useSessionStore.getState().streaming).toBe(true);
+  });
   it.each(["FileContent", "PdfPageImages"])("保留原生 %s 资料读取进度并在任务切换后继续展示", (variant) => {
     const store = useSessionStore.getState(); store.setSession("A");
     store.applyUpdate({ sessionUpdate: "tool_call", toolCallId: "read-1", title: "Read 比赛.xlsx", kind: "read", status: "in_progress", __sessionId: "A" } as never);

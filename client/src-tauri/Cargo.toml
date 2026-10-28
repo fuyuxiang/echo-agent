@@ -159,6 +159,8 @@ windows-sys = { version = "0.61.2", features = [
 x11rb = { version = "0.13.2", features = ["xtest"] }
 
 [dev-dependencies]
+# Exposes Tauri MockRuntime for native command tests without opening a WebView.
+tauri = { version = "2", features = ["test"] }
 async-trait = "0.1"
 echo-agent-memory = { path = "../vendor/echo-agent-build/crates/codegen/echo-agent-memory", features = ["test-support"] }
 

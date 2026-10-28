@@ -26,7 +26,6 @@ import { OrganizationMemoryPanel } from "../../src/components/OrganizationMemory
 import { useSubagentStore } from "../../src/stores/subagent-store";
 import { usePermissionStore } from "../../src/stores/permission-store";
 import { ChatView } from "../../src/components/ChatView";
-import { SecondarySidebar } from "../../src/components/SecondarySidebar";
 import { Sidebar } from "../../src/components/Sidebar";
 import { AutomationEditPage } from "../../src/components/automation/AutomationEditPage";
 import { AutomationPanel } from "../../src/components/AutomationPanel";
@@ -542,7 +541,6 @@ function Fixture() {
   const surface = query.get("surface") ?? "memory";
   const aliases: Record<string, string> = { "技能管理": "技能", "连接器管理": "连接器", "插件管理": "插件" };
   const [label, setLabel] = useState(aliases[query.get("label") ?? ""] ?? query.get("label") ?? "专家·技能·连接器");
-  const [createExpertRequested, setCreateExpertRequested] = useState(false);
   const [expertPageOpen, setExpertPageOpen] = useState(false);
   const [recoverySent, setRecoverySent] = useState("");
   const [cwd, setCwd] = useState("/review/EchoAgent");
@@ -626,15 +624,16 @@ function Fixture() {
       <main className="app__main">{content}</main>
     </div></div>;
   }
-  if (surface === "expert-entry") return <>
-    {expertPageOpen ? (
+  if (surface === "expert-entry") return <div className="app"><div className="app__body">
+    <Sidebar activeNav={expertPageOpen ? label : "新建任务"} onNewSession={() => {}} onSelect={() => {}}
+      onNavigate={next => { setLabel(next); setExpertPageOpen(true); }} onOpenSettings={() => {}} onOpenSearch={() => {}} />
+    <main className="app__main">{expertPageOpen ? (
       <div style={{ height: "100%" }}>
         <button type="button" onClick={() => setExpertPageOpen(false)}>返回对话</button>
-        <PlaceholderPage label={label} onNavigate={setLabel} createExpertRequested={createExpertRequested} onCreateExpertRequestHandled={() => setCreateExpertRequested(false)} />
+        <PlaceholderPage label={label} onNavigate={setLabel} />
       </div>
-    ) : <div style={{ padding: 48, fontSize: 32, fontWeight: 700 }}>今天想完成什么？</div>}
-    <SecondarySidebar onCreateExpert={() => { setLabel("专家·技能·连接器"); setCreateExpertRequested(true); setExpertPageOpen(true); }} />
-  </>;
+    ) : <div style={{ padding: 48, fontSize: 32, fontWeight: 700 }}>今天想完成什么？</div>}</main>
+  </div></div>;
   if (surface === "conversation" || surface === "queue") return <div className="app" style={{ display: "flex", flexDirection: "row", height: "100%" }}>
     <aside style={{ width: "min(250px, 22vw)", flex: "none", borderRight: "1px solid var(--echo-border-default)", background: "var(--echo-bg-secondary)", padding: "24px 16px", boxSizing: "border-box" }}>EchoAgent</aside>
     <main className="app__main"><ChatView onSend={text => {

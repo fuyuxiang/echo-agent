@@ -80,6 +80,7 @@ import { useSessionStore } from "@/stores/session-store";
 import { useProjectsStore } from "@/stores/projects-store";
 import { usePermissionStore } from "@/stores/permission-store";
 import { useQuestionStore } from "@/stores/question-store";
+import { useMessageQueueStore } from "@/stores/message-queue-store";
 
 let handlers: Parameters<typeof client.subscribeAgentEvents>[0];
 const auth = { ready: true, runtimeReady: true, synchronized: true, providers: ["model-a", "model-b"], runtimeModels: ["model-a", "model-b"], defaultModelId: "model-b" };
@@ -101,6 +102,7 @@ beforeEach(() => {
   useSessionStore.setState(useSessionStore.getInitialState());
   usePermissionStore.getState().clearAll();
   useQuestionStore.getState().clearAll();
+  useMessageQueueStore.setState({ queues: {} });
   recorder.current.mockReturnValue({ meeting: null, active: false, pendingSave: false });
   useProjectsStore.setState({
     ...useProjectsStore.getInitialState(),
@@ -117,6 +119,176 @@ beforeEach(() => {
 });
 
 describe("自动化会话模型同步", () => {
+  it.each(["durable-first", "public-first"])("双完成事件只推进一次队列且不干扰下一轮：%s", async order => {
+    await start();
+    created("model-a");
+    act(() => {
+      const queue = useMessageQueueStore.getState();
+      queue.enqueue("auto-1", "首轮");
+      queue.claimNext("auto-1", "first-prompt");
+      queue.enqueue("auto-1", "下一轮");
+      useSessionStore.getState().startStreaming("auto-1", "first-prompt");
+      const durable = () => handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "turn_completed", prompt_id: "first-prompt", stop_reason: "end_turn" });
+      const complete = () => handlers.onComplete?.({ sessionId: "auto-1", promptId: "first-prompt", stopReason: "end_turn" });
+      if (order === "durable-first") { durable(); complete(); } else { complete(); durable(); }
+      complete(); durable();
+    });
+    expect(client.agentSend).toHaveBeenCalledTimes(1);
+    const next = useMessageQueueStore.getState().getQueue("auto-1");
+    expect(next).toMatchObject([{ text: "下一轮", status: "sending" }]);
+    const transcript = useSessionStore.getState().transcripts["auto-1"];
+    expect(transcript.messages.find(message => message.id === transcript.streamingMessageId))
+      .toMatchObject({ promptId: next[0].promptId, complete: false });
+    expect(useSessionsStore.getState().independent.find(session => session.sessionId === "auto-1")?.status).toBe("working");
+  });
+
+  it("原生新轮等待审批时旧工具结果只更新历史工具卡", async () => {
+    await start();
+    created("model-a");
+    act(() => {
+      handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "tool_call", toolCallId: "old-tool", title: "读取旧文件", _meta: { promptId: "old-prompt" } });
+      handlers.onComplete?.({ sessionId: "auto-1", promptId: "old-prompt", stopReason: "end_turn" });
+      handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "tool_call", toolCallId: "new-tool", title: "执行方案", _meta: { promptId: "new-prompt" } });
+      handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "plan_approval_request", requestId: "new-plan", toolCallId: "new-tool" });
+      handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "tool_call_update", toolCallId: "old-tool", status: "completed", _meta: { promptId: "old-prompt" } });
+    });
+    const transcript = useSessionStore.getState().transcripts["auto-1"];
+    expect(transcript.planApprovals).toHaveLength(1);
+    expect(transcript.messages.flatMap(message => message.parts)).toContainEqual(expect.objectContaining({
+      kind: "tool_call", toolCall: expect.objectContaining({ toolCallId: "old-tool", status: "completed" }),
+    }));
+    expect(useSessionsStore.getState().independent.find(session => session.sessionId === "auto-1")?.status).toBe("awaiting_approval");
+  });
+
+  it.each(["approval", "permission", "question"])("本轮工具进度不会掩盖仍待处理的 %s，关闭后才恢复运行", async interaction => {
+    await start();
+    created("model-a");
+    const expectedStatus = interaction === "approval" ? "awaiting_approval" : interaction === "permission" ? "awaiting_permission" : "awaiting_answer";
+    const progress = () => handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "tool_call_update", toolCallId: "current-tool", status: "in_progress", _meta: { promptId: "current-prompt" } });
+    act(() => {
+      handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "tool_call", toolCallId: "current-tool", title: "本轮工具", _meta: { promptId: "current-prompt" } });
+      if (interaction === "approval") handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "plan_approval_request", requestId: "pending", toolCallId: "current-tool" });
+      else if (interaction === "permission") handlers.onPermission?.({ sessionId: "auto-1", requestId: "pending", toolCallId: "current-tool", toolKind: "read", title: "需要授权", options: [] });
+      else handlers.onQuestion?.({ sessionId: "auto-1", requestId: "pending", toolCallId: "current-tool", title: "需要回答", mode: "default", questions: [] });
+      progress();
+    });
+    expect(useSessionsStore.getState().independent.find(session => session.sessionId === "auto-1")?.status).toBe(expectedStatus);
+    act(() => {
+      if (interaction === "approval") handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "plan_approval_resolved", requestId: "pending" });
+      else if (interaction === "permission") handlers.onPermissionClosed?.({ sessionId: "auto-1", requestId: "pending" });
+      else handlers.onQuestionClosed?.({ sessionId: "auto-1", requestId: "pending" });
+      progress();
+    });
+    expect(useSessionsStore.getState().independent.find(session => session.sessionId === "auto-1")?.status).toBe("working");
+  });
+
+  it("并行交互逐一关闭时始终呈现仍需用户处理的状态", async () => {
+    await start();
+    created("model-a");
+    const status = () => useSessionsStore.getState().independent.find(session => session.sessionId === "auto-1")?.status;
+    act(() => {
+      handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "plan_approval_request", requestId: "plan", toolCallId: "plan-tool" });
+      handlers.onPermission?.({ sessionId: "auto-1", requestId: "permission", toolCallId: "permission-tool", toolKind: "read", title: "需要授权", options: [] });
+      handlers.onQuestion?.({ sessionId: "auto-1", requestId: "question", toolCallId: "question-tool", title: "需要回答", mode: "default", questions: [] });
+    });
+    expect(status()).toBe("awaiting_answer");
+    act(() => handlers.onQuestionClosed?.({ sessionId: "auto-1", requestId: "question" }));
+    expect(status()).toBe("awaiting_permission");
+    act(() => handlers.onPermissionClosed?.({ sessionId: "auto-1", requestId: "permission" }));
+    expect(status()).toBe("awaiting_approval");
+    act(() => handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "plan_approval_resolved", requestId: "plan" }));
+    expect(status()).toBe("working");
+  });
+
+  it("迟到的无身份立即发送完成不能消费新轮正在发送的队列项", async () => {
+    await start();
+    created("model-a");
+    act(() => {
+      const store = useSessionStore.getState();
+      store.setSession("auto-1");
+      useMessageQueueStore.getState().enqueue("auto-1", "正在发送的新轮");
+      useMessageQueueStore.getState().claimNext("auto-1", "current-prompt");
+      store.startStreaming("auto-1", "current-prompt");
+      handlers.onComplete?.({ sessionId: "auto-1", promptId: "", stopReason: "cancelled", cancelTrigger: "send_now" });
+    });
+    expect(useMessageQueueStore.getState().getQueue("auto-1")).toMatchObject([
+      { status: "sending", promptId: "current-prompt" },
+    ]);
+    const transcript = useSessionStore.getState().transcripts["auto-1"];
+    expect(transcript.messages.find(message => message.id === transcript.streamingMessageId))
+      .toMatchObject({ promptId: "current-prompt", complete: false });
+    expect(useSessionsStore.getState().independent.find(session => session.sessionId === "auto-1")?.status).toBe("working");
+    expect(client.agentSend).not.toHaveBeenCalled();
+  });
+
+  it("迟到的具名完成仍结算自己的队列项并保留替代轮", async () => {
+    await start();
+    created("model-a");
+    act(() => {
+      const queue = useMessageQueueStore.getState();
+      queue.enqueue("auto-1", "旧轮");
+      queue.claimNext("auto-1", "old-prompt");
+      queue.enqueue("auto-1", "替代轮");
+      queue.claimNext("auto-1", "current-prompt");
+      useSessionStore.getState().setSession("auto-1");
+      useSessionStore.getState().startStreaming("auto-1", "current-prompt");
+      handlers.onComplete?.({ sessionId: "auto-1", promptId: "old-prompt", stopReason: "end_turn" });
+    });
+    expect(useMessageQueueStore.getState().getQueue("auto-1")).toMatchObject([
+      { status: "sending", promptId: "current-prompt" },
+    ]);
+    expect(useSessionsStore.getState().independent.find(session => session.sessionId === "auto-1")?.status).toBe("working");
+    expect(client.agentSend).not.toHaveBeenCalled();
+  });
+
+  it.each(["end_turn", "cancelled", "error"])("旧轮迟到的 %s 不覆盖新轮状态或推进队列", async stopReason => {
+    await start();
+    created("model-a");
+    const store = useSessionStore.getState();
+    act(() => {
+      store.setSession("auto-1");
+      store.startStreaming("auto-1", "old-prompt");
+      store.markComplete({ sessionId: "auto-1", promptId: "old-prompt", stopReason: "end_turn" });
+      store.startStreaming("auto-1", "current-prompt");
+      useSessionsStore.getState().upsert({ sessionId: "auto-1", status: "working" });
+      useMessageQueueStore.getState().enqueue("auto-1", "尚未授权续发的下一条");
+      handlers.onComplete?.({ sessionId: "auto-1", promptId: "old-prompt", stopReason });
+    });
+    expect(useSessionsStore.getState().independent.find(s => s.sessionId === "auto-1")?.status).toBe("working");
+    const transcript = useSessionStore.getState().transcripts["auto-1"];
+    const current = transcript.messages.find(message => message.promptId === "current-prompt");
+    expect(current).toMatchObject({ complete: false });
+    expect(transcript.streamingMessageId).toBe(current?.id);
+    expect(useMessageQueueStore.getState().getQueue("auto-1")).toMatchObject([{ status: "queued" }]);
+    expect(client.agentSend).not.toHaveBeenCalled();
+  });
+
+  it("空回复的重复完成信号不能再次推进队列", async () => {
+    await start();
+    created("model-a");
+    const store = useSessionStore.getState();
+    act(() => {
+      store.setSession("auto-1");
+      store.startStreaming("auto-1", "empty-prompt");
+      handlers.onComplete?.({ sessionId: "auto-1", promptId: "empty-prompt", stopReason: "end_turn" });
+      useMessageQueueStore.getState().enqueue("auto-1", "留待用户操作");
+      handlers.onComplete?.({ sessionId: "auto-1", promptId: "empty-prompt", stopReason: "end_turn" });
+    });
+    expect(client.agentSend).not.toHaveBeenCalled();
+    expect(useMessageQueueStore.getState().getQueue("auto-1")).toMatchObject([{ status: "queued" }]);
+  });
+
+  it("已关闭审批的迟到请求不恢复 App 等待状态", async () => {
+    await start();
+    created("model-a");
+    act(() => {
+      handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "plan_approval_resolved", requestId: "closed-plan" });
+      handlers.onUpdate?.({ __sessionId: "auto-1", sessionUpdate: "plan_approval_request", requestId: "closed-plan", toolCallId: "plan-tool" });
+    });
+    expect(useSessionStore.getState().transcripts["auto-1"].planApprovals).toEqual([]);
+    expect(useSessionsStore.getState().independent.find(s => s.sessionId === "auto-1")?.status).toBe("working");
+  });
+
   it("原生验收就绪通知不依赖可被后台窗口暂停的动画帧", async () => {
     vi.stubGlobal("__TAURI_INTERNALS__", {});
     vi.stubGlobal("requestAnimationFrame", vi.fn(() => 1));

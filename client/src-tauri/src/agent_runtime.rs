@@ -1128,9 +1128,10 @@ mod tests {
     //! exercises the full `AgentBuilder::build` path — including the client
     //! side MCP merge (team_mcp.rs) — so an echo-agent-build upgrade that breaks
     //! toolset assembly or the MCP handshake fails here rather than at first
-    //! chat in the GUI. Marked `#[ignore]`: it spawns a real agent thread
-    //! against the user's `~/.echo-agent` config (~10s). Run with
-    //! `cargo test --lib -- --ignored spawn_smoke`.
+    //! chat in the GUI. Marked `#[ignore]` because it starts a real Runtime
+    //! and local MCP service. Run `pnpm test:runtime-smoke`: that entry owns a
+    //! fresh data home, empty legacy/compatibility homes and synthetic model
+    //! config, cleans inherited credentials, and never sends a model prompt.
     use super::*;
 
     #[test]
@@ -1492,6 +1493,11 @@ mod tests {
         assert!(
             crate::paths::redirected_data_home().is_some(),
             "Set ECHO_AGENT_HOME to an isolated directory before running this smoke test"
+        );
+        assert_eq!(
+            std::env::var("ECHO_AGENT_REVIEW_ISOLATED").as_deref(),
+            Ok("1"),
+            "Use pnpm test:runtime-smoke to prevent discovery of real HOME configuration"
         );
         let workspace = tempfile::tempdir().expect("isolated smoke workspace");
         let cwd = workspace.path().to_path_buf();

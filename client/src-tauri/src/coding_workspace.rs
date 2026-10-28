@@ -2432,7 +2432,7 @@ struct WorkspaceScan {
 /// must never run on a tokio worker thread — `coding_analyze_workspace` hands it
 /// to the blocking pool. Progress is emitted as it goes so a large repository
 /// shows movement instead of appearing frozen.
-fn scan_workspace_blocking(app: &AppHandle, root: &Path) -> WorkspaceScan {
+fn scan_workspace_blocking<R: tauri::Runtime>(app: &AppHandle<R>, root: &Path) -> WorkspaceScan {
     let mut stack = vec![(root.to_path_buf(), 0usize)];
     let mut file_count = 0usize;
     let mut truncated = false;
@@ -2579,8 +2579,8 @@ fn scan_workspace_blocking(app: &AppHandle, root: &Path) -> WorkspaceScan {
 }
 
 #[tauri::command]
-pub async fn coding_analyze_workspace(
-    app: AppHandle,
+pub async fn coding_analyze_workspace<R: tauri::Runtime>(
+    app: AppHandle<R>,
     access: State<'_, FilesystemAccess>,
     root: String,
 ) -> Result<CodingWorkspaceAnalysis, String> {
@@ -2802,6 +2802,70 @@ pub fn high_risk_command_reason(command: &str, workspace_root: &Path) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The production command must keep the current-thread executor responsive
+    /// while its real directory walk is active. Its existing progress event is
+    /// a controlled synchronization point: a Rust event listener waits for a
+    /// concurrent Tokio task, with an independent blocking timeout to ensure a
+    /// regression fails rather than hanging the suite.
+    #[tokio::test(flavor = "current_thread")]
+    async fn analyze_workspace_real_scan_does_not_block_the_runtime() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tauri::{Listener, Manager};
+
+        let workspace = tempfile::tempdir().unwrap();
+        for index in 0..=PROGRESS_EVERY_FILES {
+            std::fs::write(
+                workspace.path().join(format!("source-{index}.rs")),
+                "fn marker() {}\n",
+            )
+            .unwrap();
+        }
+        let filesystem = FilesystemAccess::default();
+        let root = filesystem
+            .authorize_workspace(&workspace.path().to_string_lossy())
+            .unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(filesystem)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let (entered, observed) = tokio::sync::oneshot::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let responsive = Arc::new(AtomicBool::new(false));
+        let responsive_in_scan = responsive.clone();
+        app.once("coding://analysis-progress", move |_| {
+            let _ = entered.send(());
+            responsive_in_scan.store(
+                released.recv_timeout(Duration::from_secs(2)).is_ok(),
+                Ordering::SeqCst,
+            );
+        });
+        let concurrent = async move {
+            observed
+                .await
+                .expect("real production scan must emit progress");
+            tokio::task::yield_now().await;
+            let _ = release.send(());
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(15), async {
+            tokio::join!(
+                coding_analyze_workspace(
+                    app.handle().clone(),
+                    app.state::<FilesystemAccess>(),
+                    root.to_string_lossy().into_owned(),
+                ),
+                concurrent,
+            )
+        })
+        .await
+        .expect("analysis command must complete within the fixture deadline");
+        let analysis = result.unwrap();
+        assert_eq!(analysis.file_count, PROGRESS_EVERY_FILES + 1);
+        assert_eq!(analysis.languages[0].language, "Rust");
+        assert_eq!(analysis.languages[0].files, PROGRESS_EVERY_FILES + 1);
+        assert!(responsive.load(Ordering::SeqCst),
+            "current-thread Tokio task could not run while the production directory walk was active");
+    }
 
     #[test]
     fn verification_approval_is_bound_and_one_shot() {

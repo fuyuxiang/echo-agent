@@ -78,7 +78,7 @@ export interface ToolCallView {
   title: string;
   kind: string;
   status: "in_progress" | "completed" | "failed";
-  content: ToolCallUpdate["content"];
+  content: ToolCallContent[];
   rawInput?: unknown;
   /** Native Office receipt derived from the Runtime's trusted MCP rawOutput. */
   officeReceipt?: DocumentExportReceipt;
@@ -135,6 +135,12 @@ export interface SessionTranscript {
   agentMode?: AgentMode;
   /** Ordered, replayable approvals owned by this session. */
   planApprovals: PlanApprovalRequest[];
+  /** Bounded tombstones fence delayed live events and pending snapshots. */
+  closedPlanApprovalRequestIds?: string[];
+  /** Completion identity survives removal of an empty assistant placeholder. */
+  completedPromptIds?: string[];
+  /** Public completion effects (queue/status) run once, even after durable completion. */
+  handledPromptCompletionIds?: string[];
   suppressReplay: boolean;
   /** Prompt ids whose pause/stop was explicitly resumed. Late duplicate
    * terminal events for these turns must not re-arm the control state. */
@@ -182,7 +188,8 @@ interface SessionState {
   requestSendNow: (promptId: string, sessionId?: string) => void;
   /** Roll back a replacement request rejected before Runtime accepted it. */
   rejectSendNow: (promptId: string, sessionId?: string) => void;
-  markComplete: (p: PromptComplete) => void;
+  /** Finalize metadata; return whether this is a new completion of the current turn. */
+  markComplete: (p: PromptComplete) => boolean;
   /** Arm a pause/stop barrier before sending the native cancel notification. */
   requestControl: (
     sessionId: string,
@@ -237,7 +244,8 @@ interface SessionState {
   /** Apply a streamed session/update from the backend. The update is routed
    *  to the transcript it belongs to (`__sessionId`, falling back to the
    *  focused session) so background sessions keep accumulating. */
-  applyUpdate: (u: SessionUpdate & { __sessionId?: string }) => void;
+  /** Return true only when the routed transcript accepted a state change. */
+  applyUpdate: (u: SessionUpdate & { __sessionId?: string }) => boolean;
   /** Bulk-replace the focused session's messages (history load fallback). */
   setMessages: (msgs: ChatMessage[]) => void;
   /** Replace a plan; only explicit local revisions need submission. */
@@ -263,6 +271,9 @@ const EMPTY_TRANSCRIPT: SessionTranscript = {
   planMode: false,
   agentMode: "default",
   planApprovals: [],
+  closedPlanApprovalRequestIds: [],
+  completedPromptIds: [],
+  handledPromptCompletionIds: [],
   suppressReplay: false,
   dismissedControlPromptIds: [],
 };
@@ -441,15 +452,20 @@ function ensureStreamingAssistant(
   promptId?: string,
   replayed = false,
 ): { messages: ChatMessage[]; id: string } {
-  // Reuse the existing streaming assistant message if it's still incomplete
-  // and its last part isn't a terminal tool_call.
+  // Native turns can supply their prompt identity after the first chunk.
+  // Bind it to the existing bubble instead of splitting one reply in two.
   if (streamingMessageId) {
     const idx = messages.findIndex((m) => m.id === streamingMessageId);
     if (
       idx !== -1
       && !messages[idx].complete
-      && (!promptId || messages[idx].promptId === promptId)
+      && (!promptId || !messages[idx].promptId || messages[idx].promptId === promptId)
     ) {
+      if (promptId && !messages[idx].promptId) {
+        const identified = [...messages];
+        identified[idx] = { ...messages[idx], promptId };
+        return { messages: identified, id: streamingMessageId };
+      }
       return { messages, id: streamingMessageId };
     }
   }
@@ -510,10 +526,23 @@ interface CompletionMetadata {
   completedAt?: number;
 }
 
+function rememberRecentId(ids: string[] = [], id?: string): string[] {
+  return !id || ids.includes(id) ? ids : [...ids, id].slice(-256);
+}
+
 function completeStreamingAssistant(
   transcript: SessionTranscript,
   completion: CompletionMetadata = {},
 ): SessionTranscript {
+  // Both the durable and public completion rails must fence delayed chunks.
+  // Public queue/status effects have a separate once-only ledger because the
+  // durable event may arrive first without dispatching those effects.
+  if (completion.promptId) {
+    transcript = {
+      ...transcript,
+      completedPromptIds: rememberRecentId(transcript.completedPromptIds, completion.promptId),
+    };
+  }
   const completedAt = completion.completedAt ?? Date.now();
   const preserveEmptyTerminal = Boolean(
     completion.stopReason
@@ -614,6 +643,13 @@ function completeStreamingAssistant(
   }
 
   const targetId = transcript.messages[targetIndex].id;
+  const targetPromptId = transcript.messages[targetIndex].promptId;
+  if (!completion.promptId && targetPromptId) {
+    transcript = {
+      ...transcript,
+      completedPromptIds: rememberRecentId(transcript.completedPromptIds, targetPromptId),
+    };
+  }
   const completedMessage: ChatMessage = {
     ...transcript.messages[targetIndex],
     complete: true,
@@ -1090,7 +1126,11 @@ export const useSessionStore = create<SessionState>((set, get) => {
       const isDismissedControl = !!p.promptId
         && !!targetTranscript?.dismissedControlPromptIds.includes(p.promptId);
       const targetsOlderTurn = !!p.promptId && !!activePromptId && p.promptId !== activePromptId;
-      const preserveCurrentControl = isDismissedControl || targetsOlderTurn;
+      const alreadyHandled = !!p.promptId && !!targetTranscript?.handledPromptCompletionIds?.includes(p.promptId);
+      const unscopedReplacementCompletion = !p.promptId && p.cancelTrigger === "send_now"
+        && !!activePromptId && !targetTranscript?.pendingSendNowPromptId;
+      const preserveCurrentControl = isDismissedControl || targetsOlderTurn || alreadyHandled
+        || unscopedReplacementCompletion;
       const terminalAction = preserveCurrentControl
         ? undefined
         : p.cancelTrigger === "pause" || p.cancelTrigger === "stop"
@@ -1136,9 +1176,11 @@ export const useSessionStore = create<SessionState>((set, get) => {
           pendingSendNowPromptId: preservePendingSendNow
             ? completed.pendingSendNowPromptId
             : null,
-          usage: { ...t.usage, ...p.usage },
+          usage: preserveCurrentControl ? t.usage : { ...t.usage, ...p.usage },
+          handledPromptCompletionIds: rememberRecentId(t.handledPromptCompletionIds, p.promptId),
         };
       });
+      return !preserveCurrentControl;
     },
 
     failAllStreaming: (reason = "error", agentResult) =>
@@ -1341,7 +1383,8 @@ export const useSessionStore = create<SessionState>((set, get) => {
       // Route into the transcript this update belongs to. No attribution and
       // no focused session → nowhere to put it, drop (don't pollute).
       const target = foreignSid ?? get().sessionId;
-      if (!target) return;
+      if (!target) return false;
+      const previousTranscript = get().transcripts[target];
 
       // ACP's SessionUpdate uses `sessionUpdate` as the tag field (not `type`).
       // Some updates may use `type` (older path); accept both.
@@ -1408,6 +1451,11 @@ export const useSessionStore = create<SessionState>((set, get) => {
           return { ...tr, messages };
         }
         if (tr.suppressReplay && REPLAY_SUPPRESSED.has(t)) return tr;
+        const activePromptId = tr.pendingSendNowPromptId
+          ?? tr.messages.find(message => message.id === tr.streamingMessageId)?.promptId;
+        if (!isReplay && updatePromptId && CONTROL_SUPPRESSED.has(t) && t !== "tool_call_update"
+          && (tr.completedPromptIds?.includes(updatePromptId)
+            || activePromptId && activePromptId !== updatePromptId)) return tr;
         if (
           !isReplay
           && updatePromptId
@@ -1463,7 +1511,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
             const { messages, id } = ensureStreamingAssistant(
               tr.messages,
               tr.streamingMessageId,
-              tr.pendingSendNowPromptId ?? undefined,
+              tr.pendingSendNowPromptId ?? updatePromptId,
               isReplay,
             );
             const idx = messages.findIndex((m) => m.id === id);
@@ -1481,7 +1529,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
             const { messages, id } = ensureStreamingAssistant(
               tr.messages,
               tr.streamingMessageId,
-              tr.pendingSendNowPromptId ?? undefined,
+              tr.pendingSendNowPromptId ?? updatePromptId,
               isReplay,
             );
             const idx = messages.findIndex((m) => m.id === id);
@@ -1498,7 +1546,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
             const { messages, id } = ensureStreamingAssistant(
               tr.messages,
               tr.streamingMessageId,
-              tr.pendingSendNowPromptId ?? undefined,
+              tr.pendingSendNowPromptId ?? updatePromptId,
               isReplay,
             );
             const idx = messages.findIndex((m) => m.id === id);
@@ -1576,12 +1624,15 @@ export const useSessionStore = create<SessionState>((set, get) => {
             }
             // Patch the matching tool card across the transcript (not only the
             // streaming message — a late update may target an older turn).
+            let patched = false;
             const messages = tr.messages.map((m) => {
+              if (updatePromptId && m.promptId && updatePromptId !== m.promptId) return m;
               const has = m.parts.some(
                 (p) =>
                   p.kind === "tool_call" && p.toolCall.toolCallId === tcId
               );
               if (!has) return m;
+              patched = true;
               const parts = m.parts.map((p) => {
                 if (p.kind !== "tool_call") return p;
                 if (p.toolCall.toolCallId !== tcId) return p;
@@ -1594,7 +1645,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
               });
               return { ...m, parts };
             });
-            return { ...tr, messages };
+            return patched ? { ...tr, messages } : tr;
           }
           case "usage_update": {
             const uu = u as unknown as UsageUpdate;
@@ -1630,6 +1681,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
             // payload field must not override the authoritative event route.
             const request = { ...(u as unknown as PlanApprovalRequest), sessionId: target };
             const existing = tr.planApprovals ?? [];
+            if (tr.closedPlanApprovalRequestIds?.includes(request.requestId)) return tr;
             if (existing.some((item) => item.requestId === request.requestId)) return tr;
             return { ...tr, planApprovals: [...existing, request], planRevisionDirty: false };
           }
@@ -1641,6 +1693,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
               planApprovals: (tr.planApprovals ?? []).filter(
                 (item) => item.requestId !== requestId,
               ),
+              closedPlanApprovalRequestIds: rememberRecentId(tr.closedPlanApprovalRequestIds, requestId),
             };
           }
           case "turn_completed":
@@ -1652,8 +1705,10 @@ export const useSessionStore = create<SessionState>((set, get) => {
               const completedAt = typeof meta.agentTimestampMs === "number"
                 ? meta.agentTimestampMs
                 : undefined;
+              const promptId = boundedString(raw.prompt_id ?? raw.promptId ?? updatePromptId, 4_096);
+              const targetsOlderTurn = !!promptId && !!activePromptId && promptId !== activePromptId;
               const completed = completeStreamingAssistant(tr, {
-                promptId: boundedString(raw.prompt_id ?? raw.promptId, 4_096),
+                promptId,
                 stopReason: boundedString(raw.stop_reason ?? raw.stopReason, 128),
                 cancelTrigger: boundedString(meta.cancelTrigger, 128),
                 cancellationCategory: boundedString(meta.cancellationCategory, 128),
@@ -1663,8 +1718,8 @@ export const useSessionStore = create<SessionState>((set, get) => {
               return {
                 ...completed,
                 pendingSendNowPromptId:
-                  (raw.stop_reason ?? raw.stopReason) === "cancelled"
-                  && meta.cancelTrigger === "send_now"
+                  targetsOlderTurn || ((raw.stop_reason ?? raw.stopReason) === "cancelled"
+                  && meta.cancelTrigger === "send_now")
                     ? completed.pendingSendNowPromptId
                     : null,
               };
@@ -1673,6 +1728,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
             return tr;
         }
       });
+      return get().transcripts[target] !== previousTranscript;
     },
 
     setMessages: (msgs) => {
@@ -1725,6 +1781,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
     requestPlanApproval: (request) => {
       applyToTranscript(request.sessionId, (transcript) => {
         const pending = transcript.planApprovals ?? [];
+        if (transcript.closedPlanApprovalRequestIds?.includes(request.requestId)) return transcript;
         if (pending.some((item) => item.requestId === request.requestId)) return transcript;
         return { ...transcript, planApprovals: [...pending, request], planRevisionDirty: false };
       });
@@ -1738,6 +1795,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
         planApprovals: (transcript.planApprovals ?? []).filter(
           (item) => item.requestId !== requestId,
         ),
+        closedPlanApprovalRequestIds: rememberRecentId(transcript.closedPlanApprovalRequestIds, requestId),
       }));
     },
   };

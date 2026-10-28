@@ -16,6 +16,12 @@ identifiers, and user-facing terminology use the EchoAgent namespace. The
 protocol migration helper lives in `scripts/rename-runtime-namespace.*`.
 Modified files are maintained as part of EchoAgent.
 
+Local build correction (2026-10-28): `echo-agent-proto-build` resolves the actual
+executable selected from PATH before emitting Cargo file watches, and tracks
+PATH/PROTOC environment changes. This prevents a missing relative `protoc` watch
+from rebuilding the Runtime on every Cargo invocation. Locator regressions run
+with `cargo test --locked --manifest-path vendor/echo-agent-build/Cargo.toml -p echo-agent-proto-build --lib`.
+
 When importing a newer source revision, use a temporary checkout, compare it
 with the maintained source and integrate required compatibility changes there,
 run the complete namespace migration, then replace only the tracked source snapshot

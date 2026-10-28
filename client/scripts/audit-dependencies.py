@@ -80,7 +80,8 @@ def npm_audits(output):
 
 
 def rust_audit(output):
-    manifests = ["scripts/desktop-native-check/Cargo.lock", "src-tauri/Cargo.lock", "vendor/echo-agent-build/Cargo.lock",
+    manifests = ["scripts/desktop-native-check/Cargo.lock", "scripts/stability-check/Cargo.lock",
+                 "src-tauri/Cargo.lock", "vendor/echo-agent-build/Cargo.lock",
                  "vendor/echo-agent-build/crates/codegen/echo-agent-markdown/fuzz/Cargo.lock",
                  "vendor/nucleo/Cargo.lock"]
     packages, identities = {}, {}

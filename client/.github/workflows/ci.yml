@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        os: [macos-15-intel, macos-15, windows-latest]
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
@@ -33,6 +33,9 @@ jobs:
         with:
           workspaces: scripts/stability-check -> target
       - run: pnpm install --frozen-lockfile
+      - name: Validate native review guards without launching desktop tasks
+        if: runner.os == 'macOS'
+        run: pnpm test:native-guards
       - run: pnpm test:stability
       - run: pnpm test:stability:native
         env:
@@ -200,6 +203,10 @@ jobs:
         run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --lib -- -D warnings
       - name: Run isolated Rust unit and integration tests
         run: node scripts/test-rust-desktop.mjs
+      - name: Verify the vendored protoc locator
+        run: cargo test --locked --manifest-path vendor/echo-agent-build/Cargo.toml -p echo-agent-proto-build --lib
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target
       - name: Verify authentication with the patched cryptography backend
         run: |
           mkdir -p "$ECHO_AGENT_HOME" "$GROK_HOME"
@@ -220,14 +227,31 @@ jobs:
           cargo test --manifest-path vendor/lru-0.16/Cargo.toml --test security
 
   automation-macos:
-    name: Automation / macOS Intel + Apple Silicon
-    runs-on: macos-latest
+    name: Native Runtime / macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 90
+    # Keep full assertions while fitting both hosted macOS architectures.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15-intel
+            arch: x64
+          - os: macos-15
+            arch: arm64
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v7
         with:
-          targets: x86_64-apple-darwin,aarch64-apple-darwin
+          node-version: '22'
+      - name: Verify native runner architecture
+        run: node -e "require('node:assert/strict').equal(process.arch, process.env.EXPECTED_RUNTIME_ARCH)"
+        env:
+          EXPECTED_RUNTIME_ARCH: ${{ matrix.arch }}
+      - uses: dtolnay/rust-toolchain@stable
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
@@ -236,18 +260,29 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
-      - run: cargo check --locked --manifest-path src-tauri/Cargo.toml --lib --target x86_64-apple-darwin
-      - run: cargo check --locked --manifest-path src-tauri/Cargo.toml --lib --target aarch64-apple-darwin
-      - run: >-
-          cargo test --locked --manifest-path src-tauri/Cargo.toml
-          --lib automation:: -j 2
+      - name: Verify the macOS protoc locator
+        run: cargo test --locked --manifest-path vendor/echo-agent-build/Cargo.toml -p echo-agent-proto-build --lib
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target
+      - name: Run all isolated native unit and integration tests
+        run: node scripts/test-rust-desktop.mjs
+      - name: Verify isolated Runtime, MCP and resident skill reload without a model call
+        run: node scripts/test-runtime-smoke.mjs
 
   automation-windows:
-    name: Automation / Windows
+    name: Native Runtime / Windows x64
     runs-on: windows-latest
     timeout-minutes: 90
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Verify native runner architecture
+        run: node -e "require('node:assert/strict').equal(process.arch, 'x64')"
       - uses: dtolnay/rust-toolchain@stable
       - name: Install protoc
         uses: arduino/setup-protoc@v3
@@ -257,10 +292,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
-      - run: cargo check --locked --manifest-path src-tauri/Cargo.toml --lib
-      - run: >-
-          cargo test --locked --manifest-path src-tauri/Cargo.toml
-          --lib automation:: -j 2
+      - name: Verify the Windows protoc locator
+        run: cargo test --locked --manifest-path vendor/echo-agent-build/Cargo.toml -p echo-agent-proto-build --lib
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target
+      - name: Run all isolated native unit and integration tests
+        run: node scripts/test-rust-desktop.mjs
+      - name: Verify isolated Runtime, MCP and resident skill reload without a model call
+        run: node scripts/test-runtime-smoke.mjs
 
   windows-search-bundle:
     name: Windows built-in tool reliability

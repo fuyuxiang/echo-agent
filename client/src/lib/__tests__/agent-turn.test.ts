@@ -104,11 +104,8 @@ describe("beginAgentTurn", () => {
     store.setSession("browser-session");
     const send = vi.fn(() => new Promise<void>(() => {})) as AgentTurnSender;
     expect(beginAgentTurn({ sessionId: "browser-session", promptText: "读取网页", displayText: "读取网页", promptId: "first-browser" }, send)).toBe(true);
-    // ACP uses sessionUpdate and a single content block; the legacy TS union
-    // still describes type and an array, as in the store's other wire tests.
-    const wire = (update: Record<string, unknown>) => store.applyUpdate(update as unknown as Parameters<typeof store.applyUpdate>[0]);
-    wire({ __sessionId: "browser-session", sessionUpdate: "tool_call", toolCallId: "browser-read", title: "browser_snapshot", kind: "read", status: "in_progress" });
-    wire({ __sessionId: "browser-session", sessionUpdate: "agent_message_chunk", content: { type: "text", text: "网页读取完成" } });
+    store.applyUpdate({ __sessionId: "browser-session", sessionUpdate: "tool_call", toolCallId: "browser-read", title: "browser_snapshot", kind: "read", status: "in_progress" });
+    store.applyUpdate({ __sessionId: "browser-session", sessionUpdate: "agent_message_chunk", content: { type: "text", text: "网页读取完成" } });
     store.markComplete({ sessionId: "browser-session", promptId: "first-browser", stopReason: "end_turn" });
     const result = useSessionStore.getState();
     expect(result.agentMode).toBe(mode);

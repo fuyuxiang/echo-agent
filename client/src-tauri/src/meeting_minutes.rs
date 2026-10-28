@@ -405,7 +405,8 @@ fn finalize_interrupted_recording(
     host_failed: bool,
 ) -> Result<(), String> {
     record.recorded_samples = crate::recording_recovery::recover_pcm_wav(
-        Path::new(&record.audio_path), MAX_RECORDING_SAMPLES,
+        Path::new(&record.audio_path),
+        MAX_RECORDING_SAMPLES,
     )?;
     record.duration_seconds = record.recorded_samples as f64 / SAMPLE_RATE as f64;
     if record.recorded_samples > 0 {

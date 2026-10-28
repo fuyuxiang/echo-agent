@@ -674,17 +674,42 @@ function Shell() {
           authReadyRef.current = result.auth.ready;
         }
 
+        const pendingInteractionStatus = (sessionId: string) => {
+          const pending = [
+            ["awaiting_permission", !!permissionStore.getState().queues[sessionId]?.length],
+            ["awaiting_answer", hasPendingQuestionForSession(sessionId)],
+            ["awaiting_approval", !!sessionStore.getState().transcripts[sessionId]?.planApprovals.length],
+          ] as const;
+          const current = findSessionSummary(sessionId)?.status;
+          // Keep the currently presented interaction until it closes, then
+          // surface another required action before reporting running again.
+          return pending.find(([status, waiting]) => waiting && status === current)?.[0]
+            ?? pending.find(([, waiting]) => waiting)?.[0];
+        };
         const stopListening = await subscribeAgentEvents({
           onUpdate: (u) => {
             const updateType = (u as { sessionUpdate?: string; type?: string }).sessionUpdate
               ?? (u as { type?: string }).type;
             const updateSessionId = (u as { __sessionId?: string }).__sessionId;
             if (updateSessionId && sessionsStore.getState().deletedSessionIds.includes(updateSessionId)) return;
+            const applied = sessionStore.getState().applyUpdate(u);
+            const updatedTranscript = updateSessionId ? sessionStore.getState().transcripts[updateSessionId] : undefined;
+            const activePromptId = updatedTranscript?.pendingSendNowPromptId
+              ?? updatedTranscript?.messages.find(message => message.id === updatedTranscript.streamingMessageId)?.promptId;
+            const updatePromptId = typeof u._meta?.promptId === "string" ? u._meta.promptId : undefined;
+            // Historical tool results may still enrich their own cards. That
+            // does not give them authority to resume the current task's UI.
+            const currentPromptUpdate = !updatePromptId || (
+              !updatedTranscript?.completedPromptIds?.includes(updatePromptId)
+              && (!activePromptId || updatePromptId === activePromptId)
+            );
+            const pendingStatus = updateSessionId ? pendingInteractionStatus(updateSessionId) : undefined;
             const currentStatus = updateSessionId
               ? findSessionSummary(updateSessionId)?.status
               : undefined;
             if (
               updateSessionId
+              && applied && currentPromptUpdate && !updatedTranscript?.control && !pendingStatus
               && ["agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update"].includes(updateType ?? "")
               && (currentStatus === "pending" || isWaitingForUser(currentStatus))
             ) {
@@ -697,10 +722,20 @@ function Shell() {
               updateSessionId
               && updateType === "plan_approval_request"
               && !sessionStore.getState().transcripts[updateSessionId]?.control
+              && sessionStore.getState().transcripts[updateSessionId]?.planApprovals.some(
+                request => request.requestId === (u as { requestId?: string }).requestId,
+              )
             ) {
               sessionsStore.getState().upsert({
                 sessionId: updateSessionId,
                 status: "awaiting_approval",
+                updatedAt: new Date().toISOString(),
+              });
+            } else if (updateSessionId && updateType === "plan_approval_resolved"
+              && currentStatus === "awaiting_approval" && !updatedTranscript?.control) {
+              sessionsStore.getState().upsert({
+                sessionId: updateSessionId,
+                status: pendingStatus ?? "working",
                 updatedAt: new Date().toISOString(),
               });
             }
@@ -709,7 +744,6 @@ function Shell() {
             }
             // Background memory processing is visible in Memory's health view.
             // Buttons and desktop /flush /dream commands await their own result.
-            sessionStore.getState().applyUpdate(u);
           },
           onPermission: (p) => {
             if (sessionsStore.getState().deletedSessionIds.includes(p.sessionId)) return;
@@ -735,7 +769,7 @@ function Shell() {
             ) {
               sessionsStore.getState().upsert({
                 sessionId,
-                status: "working",
+                status: pendingInteractionStatus(sessionId) ?? "working",
                 updatedAt: new Date().toISOString(),
               });
             }
@@ -773,20 +807,32 @@ function Shell() {
             );
             const summary = findSessionSummary(p.sessionId);
             const queuePolicy = queueTerminalPolicy(p.stopReason, p.cancellationCategory);
-            settleCodingQueueTurn(p);
-            // prompt_complete is the authoritative terminal signal and arrives
-            // before PromptRequest resolves. Settle the in-flight queue row now
-            // so it cannot remain visually stuck while post-turn work finishes.
-            useMessageQueueStore.getState().settleSending(
-              p.sessionId,
-              queuePolicy.settlement,
-              p.promptId || undefined,
-            );
+            // Retain the legacy coding identity before completion can discard
+            // an empty assistant placeholder.
+            const before = sessionStore.getState().transcripts[p.sessionId];
+            const codingPromptId = p.promptId || before?.messages.find(
+              message => message.id === before.streamingMessageId,
+            )?.promptId;
             // Completion is routed by session id in the transcript store. This
             // also finalizes a background conversation after the user switches
             // away; side-channel sessions are not added to the sidebar because
             // they have no SessionSummary entry.
-            sessionStore.getState().markComplete(p);
+            const completedCurrentTurn = sessionStore.getState().markComplete(p);
+            const currentTranscript = sessionStore.getState().transcripts[p.sessionId];
+            // A scoped old event may settle its own row. An unscoped event
+            // rejected by the transcript must never consume a replacement row.
+            if (p.promptId || completedCurrentTurn) {
+              settleCodingQueueTurn({ ...p, promptId: codingPromptId ?? "" });
+              useMessageQueueStore.getState().settleSending(
+                p.sessionId,
+                queuePolicy.settlement,
+                p.promptId || undefined,
+              );
+            }
+            // An old/duplicate terminal event may enrich its own message, but
+            // cannot settle the replacement turn's UI or dispatch more work.
+            if (!completedCurrentTurn || currentTranscript?.streamingMessageId
+              || currentTranscript?.pendingSendNowPromptId) return;
             if (summary) {
               sessionsStore.getState().upsert({
                 sessionId: p.sessionId,
@@ -806,7 +852,7 @@ function Shell() {
             if (
               !summary
               || !queuePolicy.autoAdvance
-              || hasPendingQuestionForSession(p.sessionId)
+              || pendingInteractionStatus(p.sessionId)
             ) return;
             // Refresh the composer context-usage pill after each turn.
             // Internal/external notifications are dispatched by the Rust bridge
@@ -1004,7 +1050,7 @@ function Shell() {
             ) {
               sessionsStore.getState().upsert({
                 sessionId,
-                status: "working",
+                status: pendingInteractionStatus(sessionId) ?? "working",
                 updatedAt: new Date().toISOString(),
               });
             }

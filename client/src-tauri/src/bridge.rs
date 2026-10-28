@@ -2989,6 +2989,69 @@ mod tests {
         assert_eq!(value["sessionUpdate"], "turn_completed");
     }
 
+    /// This fixture is also consumed through the real TypeScript subscription,
+    /// transcript store and message UI. Validate it with the actual ACP serde
+    /// producer and our production Tauri envelope, rather than two mock schemas.
+    #[test]
+    fn acp_fixture_matches_real_producer_and_tauri_envelope() {
+        let text = |value: &str| acp::ContentBlock::Text(acp::TextContent::new(value));
+        let updates = vec![
+            acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(text("完成中文分析"))),
+            acp::SessionUpdate::AgentThoughtChunk(acp::ContentChunk::new(text("核对计划"))),
+            acp::SessionUpdate::ToolCall(
+                acp::ToolCall::new("wire-tool", "读取 文件 说明.md")
+                    .raw_input(serde_json::json!({"path":"/工作区/文件 说明.md"})),
+            ),
+            acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
+                "wire-tool",
+                acp::ToolCallUpdateFields::new()
+                    .status(acp::ToolCallStatus::Completed)
+                    .raw_output(Value::Null)
+                    .content(vec![
+                        text("读取结果").into(),
+                        acp::Diff::new("文件 说明.md", "新文件正文").into(),
+                    ]),
+            )),
+            acp::SessionUpdate::Plan(acp::Plan::new(vec![acp::PlanEntry::new(
+                "核验中文文件",
+                acp::PlanEntryPriority::High,
+                acp::PlanEntryStatus::Completed,
+            )])),
+        ];
+        let emitted = updates
+            .iter()
+            .map(|update| {
+                serde_json::to_value(UpdateEvent {
+                    session_id: Some("wire-session".into()),
+                    meta: Some(serde_json::json!({"promptId":"wire-prompt","isReplay":false})),
+                    update: serialize_session_update(update),
+                })
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../src/lib/__tests__/fixtures/acp-wire.json"
+        ))
+        .unwrap();
+        assert_eq!(serde_json::json!(emitted), fixture["updates"]);
+        for (name, raw) in [
+            (
+                "complete",
+                serde_json::json!({"session_id":"wire-session","prompt_id":"wire-prompt","stop_reason":"end_turn"}),
+            ),
+            (
+                "failure",
+                serde_json::json!({"session_id":"wire-session","prompt_id":"failed-prompt","stop_reason":"cancelled",
+                "_meta":{"cancelTrigger":"hook","cancellationCategory":"HookDenied","agentResult":"策略拒绝"}}),
+            ),
+        ] {
+            assert_eq!(
+                serde_json::to_value(parse_complete_event(&raw)).unwrap(),
+                fixture[name]
+            );
+        }
+    }
+
     #[test]
     fn replay_update_merges_inner_prompt_metadata_without_duplicate_keys() {
         for kind in [

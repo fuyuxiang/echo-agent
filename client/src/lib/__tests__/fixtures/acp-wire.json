@@ -1,0 +1,95 @@
+{
+  "updates": [
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "完成中文分析"
+      },
+      "sessionId": "wire-session",
+      "_meta": {
+        "promptId": "wire-prompt",
+        "isReplay": false
+      }
+    },
+    {
+      "sessionUpdate": "agent_thought_chunk",
+      "content": {
+        "type": "text",
+        "text": "核对计划"
+      },
+      "sessionId": "wire-session",
+      "_meta": {
+        "promptId": "wire-prompt",
+        "isReplay": false
+      }
+    },
+    {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "wire-tool",
+      "title": "读取 文件 说明.md",
+      "rawInput": {
+        "path": "/工作区/文件 说明.md"
+      },
+      "sessionId": "wire-session",
+      "_meta": {
+        "promptId": "wire-prompt",
+        "isReplay": false
+      }
+    },
+    {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "wire-tool",
+      "status": "completed",
+      "rawOutput": null,
+      "content": [
+        {
+          "type": "content",
+          "content": {
+            "type": "text",
+            "text": "读取结果"
+          }
+        },
+        {
+          "type": "diff",
+          "path": "文件 说明.md",
+          "oldText": null,
+          "newText": "新文件正文"
+        }
+      ],
+      "sessionId": "wire-session",
+      "_meta": {
+        "promptId": "wire-prompt",
+        "isReplay": false
+      }
+    },
+    {
+      "sessionUpdate": "plan",
+      "entries": [
+        {
+          "content": "核验中文文件",
+          "priority": "high",
+          "status": "completed"
+        }
+      ],
+      "sessionId": "wire-session",
+      "_meta": {
+        "promptId": "wire-prompt",
+        "isReplay": false
+      }
+    }
+  ],
+  "complete": {
+    "sessionId": "wire-session",
+    "promptId": "wire-prompt",
+    "stopReason": "end_turn"
+  },
+  "failure": {
+    "sessionId": "wire-session",
+    "promptId": "failed-prompt",
+    "stopReason": "cancelled",
+    "cancelTrigger": "hook",
+    "cancellationCategory": "HookDenied",
+    "agentResult": "策略拒绝"
+  }
+}

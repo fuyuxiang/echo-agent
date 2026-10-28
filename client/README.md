@@ -136,7 +136,8 @@ EchoAgent 使用 React 18 构建界面，Tauri 2 与 Rust 负责桌面能力、�
 | 命令 | 用途 |
 | --- | --- |
 | `pnpm tauri dev` | 启动完整桌面应用，并自动准备 Theia 与 Office Worker。 |
-| `pnpm test` | 运行前端 Vitest 测试。 |
+| `pnpm test` | 运行前端和 `scripts/**/*.test.mjs` 两个 Vitest 项目。 |
+| `pnpm test:coverage` | 执行全部 ui project 测试，采集前端生产 TS/TSX 的 V8 覆盖率，包含未导入模块；scripts project 仍由 `pnpm test` 执行。报告位于 `coverage/`。 |
 | `pnpm test:scripts` | 验证浏览器快照标签、测试签名范围、IDE 状态与进程回收、日志脱敏、原生验收条件，以及桌面任务证据、分页、计时和工具入参；CI 自动运行。 |
 | `pnpm test:ide` | 构建 Theia 后验证固定 VSIX 完整性和 SCM 命令完成、失败传播。 |
 | `pnpm test:security` | 安装 Theia 依赖后验证压缩包路径保护、SCANOSS 报告输出、兼容补丁和运行时版本门槛。 |
@@ -149,9 +150,12 @@ EchoAgent 使用 React 18 构建界面，Tauri 2 与 Rust 负责桌面能力、�
 | `pnpm test:production-startup` | 构建后用静态服务和隔离浏览器检查真实生产资源启动、脚本错误及资源加载；日常 CI 自动运行并保留截图、报告。 |
 | `pnpm office:test` | 验证内置文档生成器。 |
 | `pnpm test:rust` | 在新临时数据目录运行全部 Rust 单元与集成测试；macOS 先对本仓库的测试程序作本地 ad hoc 签名，避免大型未签名测试程序的子进程启动延迟。 |
+| `pnpm test:runtime-smoke` | 显式运行两个 ignored 的真实 Runtime/MCP/Skills 验收；使用全新隔离数据和合成模型配置，不发送模型请求。 |
 | `cargo fmt --manifest-path src-tauri/Cargo.toml --check` | 检查 Rust 格式。 |
 | `cargo clippy --locked --manifest-path src-tauri/Cargo.toml --lib -- -D warnings` | 运行 Rust 静态检查。 |
 | `pnpm dist:mac` / `pnpm dist:win` | 在对应平台构建发行安装包；正式发行需平台签名。 |
+
+CI 的原生 Runtime 验收分别运行在 Windows x64、macOS Intel（`macos-15-intel`）和 macOS Apple Silicon（`macos-15`）。每个平台执行隔离的全部 Rust 单元与集成测试，以及不调用模型的 Runtime/MCP/常驻技能刷新验收；macOS 测试程序使用本地 ad hoc 签名。恢复稳定性测试同样覆盖这三个客户端。原生作业会校验宿主架构，避免以交叉编译检查替代实际运行。
 
 CI 的 Rust 格式检查独立运行，格式错误不会阻止静态检查与功能测试提供结果。提交前可运行 `cargo fmt --manifest-path src-tauri/Cargo.toml` 修正格式，再执行上表中的格式检查、Clippy 和 `pnpm test:rust`。
 

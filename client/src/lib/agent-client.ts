@@ -2196,7 +2196,7 @@ export async function subscribeAgentEvents(handlers: {
           ...request,
           sessionUpdate: "plan_approval_request",
           __sessionId: request.sessionId,
-        } as unknown as SessionUpdate & { __sessionId?: string });
+        });
       }
     });
   } catch (error) {
