@@ -9,6 +9,8 @@ Release targets are Windows x86_64, macOS Apple Silicon, and macOS Intel. Linux 
 3. The `desktop-validation` workflow runs these release scripts on all three native runners. It installs or mounts the package and checks the WebView, native IPC, and bundled Theia IDE startup. Confirm all three jobs pass before releasing.
 4. On the controlled macOS release machine, run `scripts/prepare-update-artifacts.sh` with the Windows installer and both DMGs. It checks embedded versions, architectures, platform signatures, and all three updater signatures. Do not use `--unsigned` or `--allow-unsigned-platform` for a release.
 
+Run `pnpm test:windows-packaging` on Windows for a quick regression check without compiling an installer. CI checks native warnings, failure exit codes, version output, and checkout paths containing brackets in both Windows PowerShell 5.1 and PowerShell 7. The build script stops on failure and restores the caller's working directory; native warnings with a zero exit code allow it to continue.
+
 ## Update server upgrade
 
 Install the current `deploy/update-server/publish-update.py` and `deploy/update-server/nginx-location.conf` on the update server using `deploy/update-server/install.sh`. The installer copies existing single-target manifests into an initial generation. Nginx then reads the manifests through `stable/current`. Verify all existing update URLs still return their previous manifests before publishing a new version.

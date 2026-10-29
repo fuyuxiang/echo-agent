@@ -188,8 +188,7 @@ function usage() {
   );
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (isMain) {
+if (import.meta.main) {
   try {
     const [command, argument, ...extra] = process.argv.slice(2);
     if (extra.length > 0) {

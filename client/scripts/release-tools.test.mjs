@@ -2,6 +2,8 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { checkVersions, setVersion, validateVersion } from "./release-version.mjs";
@@ -16,6 +18,18 @@ function temporaryDirectory() {
   return directory;
 }
 
+function versionProject() {
+  const root = fs.realpathSync(temporaryDirectory());
+  fs.mkdirSync(path.join(root, "src-tauri"));
+  fs.mkdirSync(path.join(root, "scripts"));
+  fs.copyFileSync(fileURLToPath(new URL("./release-version.mjs", import.meta.url)), path.join(root, "scripts", "release-version.mjs"));
+  fs.writeFileSync(path.join(root, "package.json"), '{\n  "version": "0.1.0"\n}\n');
+  fs.writeFileSync(path.join(root, "src-tauri", "tauri.conf.json"), '{\n  "version": "0.1.0"\n}\n');
+  fs.writeFileSync(path.join(root, "src-tauri", "Cargo.toml"), '[package]\nname = "echoagent"\nversion = "0.1.0"\n\n[dependencies]\n');
+  fs.writeFileSync(path.join(root, "src-tauri", "Cargo.lock"), 'version = 4\n\n[[package]]\nname = "echoagent"\nversion = "0.1.0"\n');
+  return root;
+}
+
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true });
@@ -24,21 +38,7 @@ afterEach(() => {
 
 describe("release version synchronization", () => {
   it("updates and checks every version source", () => {
-    const root = temporaryDirectory();
-    fs.mkdirSync(path.join(root, "src-tauri"));
-    fs.writeFileSync(path.join(root, "package.json"), '{\n  "version": "0.1.0"\n}\n');
-    fs.writeFileSync(
-      path.join(root, "src-tauri", "tauri.conf.json"),
-      '{\n  "version": "0.1.0"\n}\n',
-    );
-    fs.writeFileSync(
-      path.join(root, "src-tauri", "Cargo.toml"),
-      '[package]\nname = "echoagent"\nversion = "0.1.0"\n\n[dependencies]\n',
-    );
-    fs.writeFileSync(
-      path.join(root, "src-tauri", "Cargo.lock"),
-      'version = 4\n\n[[package]]\nname = "echoagent"\nversion = "0.1.0"\n',
-    );
+    const root = versionProject();
 
     expect(setVersion("1.2.3-rc.1+build.7", root)).toBe("1.2.3-rc.1+build.7");
     expect(checkVersions(undefined, root)).toBe("1.2.3-rc.1+build.7");
@@ -47,6 +47,48 @@ describe("release version synchronization", () => {
 
   it("rejects invalid SemVer", () => {
     expect(() => validateVersion("01.2.3")).toThrow(/SemVer/);
+  });
+
+  it.each(["direct", "directory link"])("executes the CLI through a %s checkout", (kind) => {
+    const root = versionProject();
+    let checkout = root;
+    if (kind === "directory link") {
+      checkout = path.join(temporaryDirectory(), "Repo[1] with spaces");
+      fs.symlinkSync(root, checkout, process.platform === "win32" ? "junction" : "dir");
+    }
+    const script = path.join(checkout, "scripts", "release-version.mjs");
+    const run = (...args) => spawnSync(process.execPath, [script, ...args], {
+      cwd: os.tmpdir(), encoding: "utf8", timeout: 10_000,
+    });
+    const initial = run("check");
+    expect(initial.status, initial.stderr).toBe(0);
+    expect(initial.stdout).toBe("0.1.0\n");
+
+    const changed = run("set", "1.2.3-rc.1+build.7");
+    expect(changed.status, changed.stderr).toBe(0);
+    expect(changed.stdout).toBe("1.2.3-rc.1+build.7\n");
+    expect(checkVersions(undefined, root)).toBe("1.2.3-rc.1+build.7");
+    const invalid = run("validate", "01.2.3");
+    expect(invalid.status).toBe(1);
+    expect(invalid.stdout).toBe("");
+    expect(invalid.stderr).toMatch(/SemVer/);
+
+    fs.writeFileSync(path.join(root, "package.json"), '{"version":"1.2.4"}');
+    const mismatch = run("check");
+    expect(mismatch.status).toBe(1);
+    expect(mismatch.stdout).toBe("");
+    expect(mismatch.stderr).toMatch(/版本不一致/);
+  });
+
+  it("does not run the CLI when imported", () => {
+    const root = versionProject();
+    const moduleUrl = pathToFileURL(path.join(root, "scripts", "release-version.mjs")).href;
+    const imported = spawnSync(process.execPath, ["--input-type=module", "-e", `await import(${JSON.stringify(moduleUrl)}); console.log('imported')`], {
+      encoding: "utf8", timeout: 10_000,
+    });
+    expect(imported.status, imported.stderr).toBe(0);
+    expect(imported.stdout).toBe("imported\n");
+    expect(imported.stderr).toBe("");
   });
 });
 

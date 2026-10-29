@@ -301,6 +301,23 @@ jobs:
       - name: Verify isolated Runtime, MCP and resident skill reload without a model call
         run: node scripts/test-runtime-smoke.mjs
 
+  windows-packaging-guards:
+    name: Windows packaging / ${{ matrix.shell }}
+    runs-on: windows-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [powershell, pwsh]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Verify native warnings, failure handling and literal checkout paths
+        shell: ${{ matrix.shell }}
+        run: ./scripts/test-windows-packaging.ps1
+
   windows-search-bundle:
     name: Windows built-in tool reliability
     runs-on: windows-latest

@@ -9,6 +9,8 @@
 3. `desktop-validation` 工作流会在三个原生 runner 上调用同一套发行构建脚本，安装或挂载安装包，并验证 WebView、原生 IPC 和包内 Theia IDE 启动。正式发布前检查对应版本的三个作业均通过。
 4. 在受控 macOS 发行机运行 `scripts/prepare-update-artifacts.sh`，传入一个 Windows 安装包和两个 DMG。脚本核对文件名与包内版本、架构、平台签名，然后生成并验证三个 updater 签名。正式发布不要使用 `--unsigned` 或 `--allow-unsigned-platform`。
 
+Windows 打包脚本的快速回归检查为 `pnpm test:windows-packaging`，无需编译安装包。CI 在 Windows PowerShell 5.1 和 PowerShell 7 下分别检查原生命令警告、失败退出码、版本输出与含方括号的项目路径。脚本在构建失败时停止，并恢复调用前的工作目录；原生命令仅输出警告且退出码为零时继续。
+
 ## 更新服务升级
 
 更新服务须安装本仓库当前版本的 `deploy/update-server/publish-update.py` 和 `deploy/update-server/nginx-location.conf`。按 `deploy/update-server/install.sh` 的要求上传两个文件并执行安装脚本。安装脚本保留旧的单平台清单，并将其复制到初始清单目录；Nginx 随后通过 `stable/current` 读取清单。升级完成后，应核对三个现有更新 URL 与升级前结果一致，再发布新版本。
