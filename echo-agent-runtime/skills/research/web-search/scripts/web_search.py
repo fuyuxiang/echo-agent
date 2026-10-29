@@ -1,34 +1,12 @@
 #!/usr/bin/env python3
-"""Web search via DuckDuckGo. No API key needed."""
+"""Web search via 360 Search, Bing RSS and DDGS. No API key needed."""
 
 import argparse
 import json
-from echo_agent.dependencies.skill_require import require  # noqa: E402
-
-def search_text(query: str, max_results: int = 5, region: str = "wt-wt"):
-    require("skill.web-search")
-    from duckduckgo_search import DDGS
-
-    results = DDGS().text(query, max_results=max_results, region=region)
-    return results
-
-
-def search_news(query: str, max_results: int = 5):
-    require("skill.web-search")
-    from duckduckgo_search import DDGS
-
-    return DDGS().news(query, max_results=max_results)
-
-
-def search_images(query: str, max_results: int = 5):
-    require("skill.web-search")
-    from duckduckgo_search import DDGS
-
-    return DDGS().images(query, max_results=max_results)
-
+from echo_agent.skills.web_search import search_text, search_news, search_images
 
 def main():
-    parser = argparse.ArgumentParser(description="Web search via DuckDuckGo")
+    parser = argparse.ArgumentParser(description="Web search via DDGS")
     parser.add_argument("query", help="Search query")
     parser.add_argument("--max", type=int, default=5, help="Max results")
     parser.add_argument("--type", choices=["text", "news", "images"], default="text")

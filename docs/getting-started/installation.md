@@ -103,7 +103,7 @@
 | `tui` | 终端 UI | textual |
 | `tokenizers` | Token 计数 | tiktoken |
 | `otel` | OpenTelemetry 追踪 | opentelemetry-* |
-| `skills` | 内置技能依赖 | duckduckgo_search, trafilatura 等 |
+| `skills` | 内置技能依赖 | ddgs, trafilatura 等 |
 | `all` | 包内预列的常用可选依赖集合 | 具体列表以 `pyproject.toml` 为准，不自动包含每个独立 extra |
 
 ---

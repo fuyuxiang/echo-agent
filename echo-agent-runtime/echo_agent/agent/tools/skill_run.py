@@ -2,7 +2,7 @@
 
 Skills are documented in SKILL.md as a fixed bundle of file operations, but
 their **scripts** are runnable Python that depends on optional packages
-(duckduckgo_search, trafilatura, …). Without a single chokepoint they were
+(ddgs, trafilatura, …). Without a single chokepoint they were
 executed via the shell tool, which:
 
 * resolved ``python3`` against the shell's PATH — not the venv the agent

@@ -22,7 +22,7 @@ from echo_agent.dependencies import lazy_deps as ld
     [
         "openpyxl",
         "openpyxl>=3.1",
-        "duckduckgo_search>=7.0",
+        "ddgs>=9.16.1,<10",
         "google-genai>=2.32,<3",
         "uvicorn[standard]>=0.30",
         "pkg>=1.0,<2.0",

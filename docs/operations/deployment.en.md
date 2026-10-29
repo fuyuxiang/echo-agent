@@ -94,3 +94,48 @@ The authenticated `/playground` discovers custom HTTP/WS paths from `/meta`. Das
 For persistent output use artifact_create/append/finalize/deliver and their IDs/validation results. HTTP/WS without attachment transport can receive numbered text chunks; synchronous HTTP returns tool deliveries in `reply.tool_deliveries` and the final answer in `reply.text`. Business completion, artifact persistence, send acceptance, and remote acknowledgement remain distinct facts.
 
 Send SIGTERM and verify shutdown before switching to systemd. Give the service its own protected model environment: a service does not inherit an SSH shell's environment. Duplicate Runtime/port conflicts exit nonzero; service-control failures propagate instead of reporting success. The current acceptance host was macOS; Linux wheel-process CI is wired, but no local Linux host/Docker daemon was available. The existing Docker sample is not a newly built or qualified container artifact. See the [review evidence](../reviews/server-review-and-remediation.md).
+
+## Validate skill execution and web access
+
+`deploy/echo-agent.yaml.example` uses `security.profile: daemon`, `tools.profile: coding`,
+and explicit `also_allow: [web_fetch, skill_run]`. Coding alone excludes web and execution tools.
+These additions retain execution and dependency-install approval and do not enable a general shell.
+A nonempty `tools.allow` is exclusive: add required names there; `also_allow` cannot extend it.
+Explicit `deny` takes priority. `tools.web.enabled` controls construction, and
+`execution.network_policy: deny` still blocks native web tools.
+
+Run `echo-agent status --json` for the policy reasons for `skill_run`, `web_fetch`, and `web_search`.
+Native search still requires a Brave/Tavily/SerpAPI key or a SearXNG base URL; this change does not add
+a native keyless provider. Approved web-search and deep-research scripts share text search through
+360 (Chinese first), Bing RSS, then DDGS. News and images use DDGS only. External endpoints can time out,
+challenge clients, or change markup; verify original links and article content before using results.
+
+An empty user `data/skills` does not mean bundled skills are absent. Read the actual Linked files using
+`skill_view(name="web-search", file_path="scripts/web_search.py")` and execute using `skill_run`.
+Paths are relative to the skill root, which can be outside the workspace. Viewing a skill never installs
+packages. Current registered tools and structured results take precedence over old conversation or memory
+claims about the environment; do not clear user memory to correct a diagnosis.
+
+### Upgrade model caches
+
+Both Embedder and Reranker expand `~` once at initialization and pin relative paths to the initial cwd.
+An empty path retains library defaults. Under systemd, home expansion follows the service user;
+prefer an absolute writable cache path. Upgrades do not move or delete existing models automatically.
+
+For a cache under a literal `~/.echo-agent/models/fastembed` directory inside the workspace, stop the
+specific instance, record the old path, and back up its configuration. Set the correct absolute path.
+Only if the destination is absent, move the whole cache there, preserving its contents and permissions.
+If it already exists, stop and compare manually; never overwrite it or redownload the entire model.
+Restart and check model-loading logs. To roll back, stop the instance, move the directory back to the
+recorded location, and restore the configuration backup. The server described in the handoff already
+completed migration and needs no further move.
+
+### Package acceptance
+
+Build with the full Dashboard. CI validates editable base, direct wheel `[skills]`, and sdist-rebuilt
+wheel `[all]` installs outside the checkout. Each uses an empty user skill directory, reads the three
+bundled skills, executes `print(6 * 7)`, and checks policy restrictions. Run
+`scripts/validate-installed-skills.py` with the installed Python and `-I`.
+`scripts/validate-server-process.py` also drives Gateway tools through a local controlled model,
+saving results, model tool records, and SQLite quick_check evidence. Deterministic tests need no public
+network or production credentials.

@@ -1,7 +1,0 @@
-{
-  "tested": "real interactive setup model section with clean configuration",
-  "model": "claude-opus-5-5",
-  "verification": "passed",
-  "key_source": "environment (not printed or stored)",
-  "gateway_guidance": "setup gateway offered because gateway is disabled in clean section-only setup"
-}

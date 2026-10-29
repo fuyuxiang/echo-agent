@@ -150,3 +150,42 @@ curl --fail-with-body http://127.0.0.1:58123/api/v1/message \
 前台通过 SIGTERM 正常关闭后，再按[后台服务](background-service.md)安装用户级 systemd 服务。服务进程的环境变量与SSH shell不同，应给服务用户配置受保护的环境文件或服务环境；配置文件继续使用明确绝对路径。重复工作区 Runtime 或端口冲突退出非零。停止/启用失败不会再打印假成功。
 
 本次真实进程与浏览器验收是在macOS隔离环境进行；Linux包安装进程检查已接入CI，但没有可用Docker daemon/隔离Linux主机供本机实际执行。现有Docker示例保留为部署示例，不是本次新增或已构建通过的容器交付物。完整证据和边界见[服务端评审](../reviews/server-review-and-remediation.md)。
+
+## 技能执行与联网能力验收
+
+`deploy/echo-agent.yaml.example` 采用 `security.profile: daemon`、`tools.profile: coding`，
+并显式添加 `also_allow: [web_fetch, skill_run]`。`coding` 本身不包含联网或代码执行。
+这不会开放通用 shell，也不会跳过执行或依赖安装审批。若已有非空 `tools.allow`，
+它是独占列表，必须把所需工具加入该列表；`also_allow` 不能扩展它，显式 `deny` 仍优先。
+`tools.web.enabled` 控制网络工具构造，`execution.network_policy: deny` 仍阻断原生联网工具。
+
+用 `echo-agent status --json` 查看 `skill_run`、`web_fetch`、`web_search` 的策略原因。
+原生 `web_search` 仍需配置 Brave/Tavily/SerpAPI 的 key，或 SearXNG 的 base URL；
+本次没有增加原生免密钥 provider。获准执行的 web-search 与 deep-research 技能共用
+360（中文优先）→ Bing RSS → DDGS 的文字搜索实现。新闻、图片仅走 DDGS；外部搜索源可能
+超时、返回挑战页或失效，必须检查原始来源及正文，不能把非空结果当作相关性保证。
+
+用户 `data/skills` 为空不代表内置技能缺失。以 `skill_view` 返回的 Linked files 为准，
+用 `skill_view(name="web-search", file_path="scripts/web_search.py")` 读取，
+用 `skill_run` 执行；路径相对技能根目录，不是工作区。读取技能不会安装依赖。
+当前工具注册和结构化结果应优先于旧会话或长期记忆中的环境判断。不要通过清空用户记忆纠错。
+
+### 模型缓存升级
+
+Embedder 与 Reranker 在初始化时统一展开 `~`，相对路径固定到初始化时的工作目录，
+空字符串保留底层库默认值。systemd 中 `~` 指服务账号的 home，推荐配置该账号可写的绝对路径。
+升级不会自动迁移或删除已有模型。
+
+若旧缓存落在工作区的字面量 `~/.echo-agent/models/fastembed` 子目录，先停止**对应实例**，
+记录旧路径和配置备份，将配置改为正确的绝对路径。在目标不存在时才把旧缓存目录整体移动到目标，
+保留目录内容和权限；目标已存在时停止操作，人工核对，不能覆盖或重新下载整个模型。
+重启后检查模型加载日志。回滚时停止该实例，将目录移动回记录的旧路径并恢复配置备份。
+说明书中服务器已完成迁移，不要再次搬动。
+
+### 包验收
+
+构建保留完整 Dashboard。CI 在源码树外分别验证 editable 基础安装、直接 wheel 的 `[skills]`
+安装和 sdist 重建 wheel 的 `[all]` 安装；每个环境用空用户技能目录读取三个内置技能并执行
+`print(6 * 7)`，同时核对权限限制。`scripts/validate-installed-skills.py` 使用安装环境的 Python
+加 `-I` 运行；`scripts/validate-server-process.py` 另用本地受控模型检查 Gateway 工具调用链，
+保存结果、模型工具记录和 SQLite quick_check。确定性测试不依赖公网或生产密钥。

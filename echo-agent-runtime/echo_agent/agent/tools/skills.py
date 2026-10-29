@@ -168,6 +168,33 @@ class SkillViewTool(Tool):
         output = content
         if files:
             output += "\n\n---\nLinked files:\n" + "\n".join(f"  - {f}" for f in files)
+            output += (
+                "\n\nThese files exist in this skill's directory, not necessarily in the workspace. "
+                "Paths in SKILL.md and Linked files are relative to that directory. "
+                "Read them with skill_view(name=" + repr(name) + ", file_path=<linked path>); "
+                "a workspace file search cannot establish that a linked file is missing."
+            )
+            if any(f.startswith("scripts/") and f.endswith(".py") for f in files):
+                from echo_agent.security.tool_policy import tool_policy_decision
+
+                allowed, reason = (
+                    tool_policy_decision(self._config, "skill_run")
+                    if self._config is not None else (None, "")
+                )
+                if allowed is False:
+                    output += (
+                        "\nExecution unavailable under the current tool policy: skill_run is "
+                        + reason + ". This is a tool configuration restriction, "
+                        "not a missing script or execution backend."
+                    )
+                else:
+                    output += (
+                        "\nWhen skill_run is available, run Python helper scripts with "
+                        "skill_run(name=" + repr(name)
+                        + ", script=<linked script path>, args=[...]). "
+                        "It resolves the skill directory and uses the runtime's Python interpreter. "
+                        "Execution and dependency installation remain subject to the current approval policy."
+                    )
 
         try:
             dep_notice = await self._precheck_deps(name, content, ctx)

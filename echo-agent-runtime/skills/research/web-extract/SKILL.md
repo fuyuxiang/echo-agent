@@ -5,11 +5,17 @@ version: 1.0.0
 metadata:
   echo:
     tags: [Web, Extract, Scraping, Content, URL]
+    requires:
+      pip: ["trafilatura>=2.0"]
 ---
 
 # Web Extract
 
 Extract readable text/markdown from any URL. Uses trafilatura — the best Python content extraction library (handles news, blogs, docs reliably).
+
+Script paths are relative to this skill directory, which may be outside the workspace.
+Read helpers with `skill_view(name="web-extract", file_path="scripts/extract_url.py")`.
+Run them with `skill_run(name="web-extract", script="scripts/extract_url.py", args=["https://example.com/article"])`; execution and dependency installation follow the existing approval policy.
 
 ## Quick Usage
 

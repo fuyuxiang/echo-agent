@@ -456,3 +456,15 @@ execution:
 | `agent.read` | 代理列表 |
 | `agent.dispatch` | 代理路由 |
 | `mcp.call` | MCP 工具调用 |
+
+## 技能文件、执行与联网诊断
+
+技能目录可能在安装包内，工作区搜索不到并不表示文件缺失。`skill_view` 只读且只报告缺失依赖；
+`skill_run` 使用安装环境的 Python 和技能根目录，并保留执行及安装审批。
+`coding` 不含 `skill_run` 或 `web_fetch`；部署可按需用 `also_allow` 显式添加，非空 `allow`
+则是独占列表，`deny` 优先。daemon/public_gateway 的默认执行限制仍生效。
+网络启用开关、工具 profile、独占列表、网络 deny 与审批是不同的检查层。
+
+`echo-agent status --json` 区分工具被策略过滤、子系统关闭和搜索 key/base URL 未配置。
+脚本读取失败、依赖缺失、审批待决、请求超时及网页挑战应按实际结果分别处理，不能统一诊断为漏打包。
+详见[部署验收与缓存升级](../operations/deployment.md#技能执行与联网能力验收)。

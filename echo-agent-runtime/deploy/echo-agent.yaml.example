@@ -21,3 +21,7 @@ gateway:
 tools:
   profile: coding
   restrict_to_workspace: true
+  # coding excludes execution and web tools; opt in to these two only.
+  # skill_run still requires execution/dependency approval. Shell stays blocked.
+  # An exclusive tools.allow list must include these names itself; deny wins.
+  also_allow: [web_fetch, skill_run]

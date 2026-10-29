@@ -23,3 +23,12 @@ def bundled_skills_dir() -> Path | None:
         if candidate.exists():
             return candidate
     return None
+
+
+def normalize_cache_dir(cache_dir: str) -> str:
+    """Pin a configured cache to one absolute path; empty keeps library defaults.
+
+    Relative paths are anchored at initialization, even if cwd changes later.
+    Home expansion follows the current process/service user's home directory.
+    """
+    return str(Path(cache_dir).expanduser().resolve()) if cache_dir else ""

@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import sqlite3
 import sys
 import tempfile
 import time
@@ -34,6 +35,16 @@ async def main(output: Path) -> None:
     assert builtin is not None, 'installed Runtime has no bundled skills'
     skills = SkillStore(user_dir=output / 'skill-check', builtin_dir=builtin).list_all()
     assert any(skill.name == 'calendar' for skill in skills), 'bundled calendar skill cannot be loaded'
+    store = SkillStore(user_dir=output / 'skill-check', builtin_dir=builtin)
+    from echo_agent.agent.tools.skills import SkillViewTool
+    for name, script in [('web-search', 'scripts/web_search.py'),
+                         ('web-extract', 'scripts/extract_url.py'),
+                         ('code-runner', 'scripts/safe_exec.py')]:
+        for relative in ('SKILL.md', script):
+            assert store.read_file(name, relative), f'missing installed skill resource: {name}/{relative}'
+        viewed = await SkillViewTool(store).execute({'name': name, 'file_path': script})
+        assert viewed.success, viewed.error
+    assert not list(store.user_dir.iterdir()), 'bundled reads populated the user skill directory'
 
     # These executables would fail and leave evidence if Runtime tried to
     # compile frontend/desktop sources on the server.
@@ -50,6 +61,15 @@ async def main(output: Path) -> None:
         model_requests.append(body)
         messages = body['messages']
         last = messages[-1]
+        if last.get('role') == 'user' and last.get('content', '').startswith('You are a security reviewer'):
+            # Exercise the existing smart approval protocol for this exact
+            # harmless script, without disabling approval in the test config.
+            assert 'Tool: skill_run' in last['content']
+            assert 'scripts/safe_exec.py' in last['content'] and 'print(6 * 7)' in last['content']
+            return web.json_response({'id': 'local-approval', 'object': 'chat.completion', 'created': 1,
+                'model': 'smoke-model', 'choices': [{'index': 0,
+                    'message': {'role': 'assistant', 'content': 'APPROVE'}, 'finish_reason': 'stop'}],
+                'usage': {'prompt_tokens': 10, 'completion_tokens': 1, 'total_tokens': 11}})
         if last.get('role') != 'tool':
             call = ('write_file', {'path': 'review-result.txt', 'content': 'installed-runtime-ok'})
         elif last.get('name') == 'write_file':
@@ -65,6 +85,19 @@ async def main(output: Path) -> None:
             artifact_id = json.loads(created['content'])['artifact_id']
             call = ('artifact_finalize' if last['name'] == 'artifact_append' else 'artifact_deliver',
                     {'artifact_id': artifact_id})
+        elif last.get('name') == 'artifact_deliver':
+            call = ('skill_view', {'name': 'web-search'})
+        elif last.get('name') == 'skill_view':
+            if 'Linked files:' in last['content']:
+                assert 'scripts/web_search.py' in last['content']
+                call = ('skill_view', {'name': 'web-search', 'file_path': 'scripts/web_search.py'})
+            else:
+                assert 'def main' in last['content']
+                call = ('skill_run', {'name': 'code-runner', 'script': 'scripts/safe_exec.py',
+                                      'args': ['print(6 * 7)']})
+        elif last.get('name') == 'skill_run':
+            assert last['content'].strip() == '42', last
+            call = None
         else:
             call = None
         message = {'role': 'assistant', 'content': None if call else 'installed-runtime-ok'}
@@ -113,13 +146,17 @@ async def main(output: Path) -> None:
                 'gateway': {'host': '127.0.0.1', 'port': 0, 'api_prefix': prefix, 'ws_path': ws_path,
                             'auth': {'admin_tokens': ['local-test-admin'], 'api_tokens': ['local-test-api']}},
                 'models': {'default_model': 'smoke-model', 'providers': ([{
-                    'name': 'openai', 'api_base': f'http://127.0.0.1:{provider_port}/v1',
+                    # A local compatible provider avoids downloading optional
+                    # OpenAI tokenizer data when the [all] extra is installed.
+                    'name': 'smoke-compatible', 'api_base': f'http://127.0.0.1:{provider_port}/v1',
                     'api_key': 'local-test-key', 'models': ['smoke-model'], 'max_retries': 0}] if configured else [])},
-                'checkpoint': {'enabled': False}, 'memory': {'enabled': False}, 'knowledge': {'enabled': False}, 'skills': {'enabled': False},
+                'checkpoint': {'enabled': False}, 'memory': {'enabled': False}, 'knowledge': {'enabled': False},
+                'skills': {'enabled': True, 'allow_lazy_installs': False},
                 'planning': {'enabled': False}, 'multi_agent': {'enabled': False},
                 'scheduler': {'enabled': False}, 'agent': {'heartbeat': {'enabled': False}},
                 'tools': {'allow': ['read_file', 'write_file', 'artifact_create', 'artifact_append',
-                                    'artifact_finalize', 'artifact_deliver'], 'restrict_to_workspace': True},
+                                    'artifact_finalize', 'artifact_deliver', 'skill_view', 'skill_run'],
+                          'restrict_to_workspace': True},
                 'observability': {'otel_enabled': False},
             }
             config.write_text(yaml.safe_dump(settings))
@@ -220,6 +257,13 @@ async def main(output: Path) -> None:
                         cwd=output, env=environment, stdin=asyncio.subprocess.DEVNULL, stdout=logfile, stderr=logfile)
                     assert await asyncio.wait_for(conflict.wait(), 15) != 0
                     await stop(proc)
+                    with sqlite3.connect(workspace / 'data/echo_agent.db') as db:
+                        assert db.execute('PRAGMA quick_check').fetchone()[0] == 'ok'
+                        persisted = [message for (raw,) in db.execute('SELECT data FROM sessions')
+                                     for message in json.loads(raw).get('messages', [])
+                                     if message.get('role') == 'tool' and message.get('name') == 'skill_run']
+                        assert persisted and all(m['content'].strip() == '42' for m in persisted)
+                        (workspace / 'persisted-skill-results.json').write_text(json.dumps(persisted, indent=2))
                     count = len(model_requests)
                     proc, base = await start()
                     async with client.post(base + prefix + '/message', headers=headers, json=body) as response:
@@ -228,11 +272,16 @@ async def main(output: Path) -> None:
                     assert len(model_requests) == count, 'restart replayed already completed side effects'
                     checks.append({'prefix': prefix, 'checks': ['auth', 'HTTP SDK/tools/files/artifact delivery', 'idempotency',
                         'interactive WS', 'Dashboard WS', 'duplicate Runtime', 'port conflict', 'SIGTERM',
-                        'restart durable result'], 'workspace': str(workspace)})
+                        'restart durable result', 'bundled skill read and model-called skill_run=42',
+                        'SQLite quick_check'], 'workspace': str(workspace)})
             finally:
                 await stop(proc)
                 logfile.close()
         assert not toolchain_calls.exists(), 'installed Runtime invoked a frontend/desktop toolchain'
+        tool_evidence = [m for req in model_requests for m in req['messages']
+                         if m.get('role') == 'tool' and m.get('name') == 'skill_run']
+        assert tool_evidence and all(m['content'].strip() == '42' for m in tool_evidence)
+        (output / 'model-tool-evidence.json').write_text(json.dumps(model_requests, indent=2))
         (output / 'process-results.json').write_text(json.dumps({'python': sys.executable,
             'platform': sys.platform, 'package_origin': find_spec('echo_agent').origin, 'model': 'local controlled OpenAI-compatible endpoint',
             'real_external_model': False, 'bundled_skills': len(skills), 'frontend_toolchain_invoked': False,

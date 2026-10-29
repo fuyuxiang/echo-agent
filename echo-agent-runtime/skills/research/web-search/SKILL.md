@@ -1,26 +1,34 @@
 ---
 name: web-search
-description: "Free web search via DuckDuckGo — text, news, images. No API key needed. Self-hosted SearXNG as alternative."
+description: "Free web search via 360 Search, Bing RSS and DDGS — text, news, images. No API key needed. Self-hosted SearXNG as alternative."
 version: 1.0.0
 metadata:
   echo:
-    tags: [Search, Web, DuckDuckGo, SearXNG, Research]
+    tags: [Search, Web, DDGS, SearXNG, Research]
+    requires:
+      pip: ["ddgs>=9.16.1,<10", "lxml>=4.9.4"]
 ---
 
 # Web Search
 
-Free web search without API keys. Two options: DuckDuckGo (zero config) or SearXNG (self-hosted).
+Free web search without API keys. Two options: DDGS metasearch (zero config) or SearXNG (self-hosted).
 
-## DuckDuckGo (Primary)
+For Chinese queries, the helper first uses 360 Search and returns source links
+and snippets. Other text queries use Bing RSS. It falls back to DDGS if these
+sources fail. News and
+images use DDGS. If script execution requires approval, basic text search can
+also use `web_fetch` with `https://cn.bing.com/search?q=<URL-encoded query>&format=rss`.
+
+## DDGS library (direct use)
 
 ### Python library (recommended)
 
 ```bash
-pip install duckduckgo_search
+pip install "ddgs>=9.16.1,<10"
 ```
 
 ```python
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 # Text search
 results = DDGS().text("query here", max_results=5)
@@ -38,7 +46,7 @@ images = DDGS().images("cat meme", max_results=3)
 
 ```bash
 python3 -c "
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 for r in DDGS().text('$QUERY', max_results=5):
     print(f\"{r['title']}\n  {r['href']}\n  {r['body'][:100]}\n\")
 "
@@ -51,6 +59,8 @@ python3 scripts/web_search.py "your query" --max 5
 python3 scripts/web_search.py "AI news" --type news
 python3 scripts/web_search.py "cat" --type images
 ```
+
+Run the helper from the agent with `skill_run(name="web-search", script="scripts/web_search.py", args=["your query", "--max", "5", "--json"])`. Script paths are relative to this skill directory.
 
 ## SearXNG (Self-hosted alternative)
 

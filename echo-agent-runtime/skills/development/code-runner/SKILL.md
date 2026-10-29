@@ -11,6 +11,10 @@ metadata:
 
 Python code execution with resource limits and import restrictions; this is not an isolation boundary.
 
+Script paths are relative to this skill directory, which may be outside the workspace.
+Read helpers with `skill_view(name="code-runner", file_path="scripts/safe_exec.py")`.
+Run them with `skill_run(name="code-runner", script="scripts/safe_exec.py", args=["print(6 * 7)"])`; execution and dependency installation follow the existing approval policy.
+
 ## Usage
 
 ```bash

@@ -1,2 +1,0 @@
-{"websocket_handshake":{"origin":"http://127.0.0.1:58231","host":"127.0.0.1:58231"}}
-{"result":"passed","api_prefix":"/api/v1","interactive_ws_path":"/ws","http_status":"completed","checks":["authenticated fallback HTTP","authenticated fallback WS","config save","runtime remains unchanged","refresh retains pending state"],"screenshots":"/private/tmp/echo-acceptance-20261021/original-ui-verified"}

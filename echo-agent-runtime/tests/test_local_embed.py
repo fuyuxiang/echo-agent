@@ -1,6 +1,7 @@
 """LocalEmbedder 惰性加载、model_id、降级行为测试（不真实下载模型）。"""
 import asyncio
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -227,11 +228,12 @@ async def test_cache_dir_passed_to_fastembed():
     fake_model.embed.return_value = iter([np.array([0.1], dtype=np.float32)])
     fake_cls = MagicMock(return_value=fake_model)
     fake_mod = MagicMock(TextEmbedding=fake_cls)
-    with patch.dict(sys.modules, {"echo_agent._vendor.fastembed": fake_mod}):
+    with patch.dict(sys.modules, {"echo_agent._vendor.fastembed": fake_mod}), \
+            patch.object(LocalEmbedder, "_fetch_release_package", return_value=False):
         e = LocalEmbedder("BAAI/bge-small-zh-v1.5", cache_dir="/tmp/echo-models")
         await e.embed("text")
         _, kwargs = fake_cls.call_args
-        assert kwargs.get("cache_dir") == "/tmp/echo-models"
+        assert kwargs.get("cache_dir") == str(Path("/tmp/echo-models").resolve())
 
 
 @pytest.mark.asyncio

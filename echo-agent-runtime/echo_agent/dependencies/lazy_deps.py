@@ -100,9 +100,9 @@ def _get_install_executor() -> ThreadPoolExecutor:
 
 SKILL_DEPS: dict[str, tuple[str, ...]] = {
     # ─── Research skills ───────────────────────────────────────────────────
-    "skill.web-search": ("duckduckgo_search>=7.0",),
+    "skill.web-search": ("ddgs>=9.16.1,<10", "lxml>=4.9.4"),
     "skill.web-extract": ("trafilatura>=2.0",),
-    "skill.deep-research": ("duckduckgo_search>=7.0", "trafilatura>=2.0"),
+    "skill.deep-research": ("ddgs>=9.16.1,<10", "lxml>=4.9.4", "trafilatura>=2.0"),
     "skill.rss-watcher": ("feedparser>=6.0",),
 
     # ─── Productivity skills ──────────────────────────────────────────────

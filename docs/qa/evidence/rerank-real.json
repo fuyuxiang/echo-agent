@@ -1,9 +1,0 @@
-{
-  "model": "BAAI/bge-reranker-base",
-  "scores": [
-    8.911181449890137,
-    -10.192886352539062
-  ],
-  "status": "passed",
-  "inference": "actual local ONNX model, not mocked"
-}

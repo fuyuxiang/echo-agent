@@ -1,7 +1,0 @@
-preflight: 网关端口 127.0.0.1:50591 已被占用，可能本机已有一个常驻 echo-agent 在运行。若要接入它请用 `echo-agent cli`；若要另起实例请用 `--port` 指定其它端口。
-actual reusable bind: passed
-Traceback (most recent call last):
-  File "/private/tmp/echo-acceptance-20261021/repro-timewait.py", line 7, in <module>
-    assert _gateway_port_in_use('127.0.0.1',port) is None
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-AssertionError

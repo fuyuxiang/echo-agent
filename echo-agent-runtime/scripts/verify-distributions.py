@@ -30,6 +30,16 @@ def verify(root: Path) -> None:
         "web/src/main.tsx", "web/vite.config.ts", "scripts/install.sh", "scripts/build.sh",
         "deploy/echo-agent.yaml.example", "deploy/Dockerfile", "data/eval/baseline.yaml",
     }
+    skill_files = {
+        "skills/productivity/calendar/scripts/calendar_client.py",
+        "skills/research/web-search/SKILL.md",
+        "skills/research/web-search/scripts/web_search.py",
+        "skills/research/web-extract/SKILL.md",
+        "skills/research/web-extract/scripts/extract_url.py",
+        "skills/development/code-runner/SKILL.md",
+        "skills/development/code-runner/scripts/safe_exec.py",
+        "skills/research/deep-research/scripts/research_report.py",
+    }
     for artifact in artifacts:
         wheel = artifact.suffix == ".whl"
         runtime_archive = artifact.name.startswith("echo-agent-runtime-")
@@ -40,8 +50,8 @@ def verify(root: Path) -> None:
             with tarfile.open(artifact) as archive:
                 names = {name.split("/", 1)[-1] for name in archive.getnames()}
         dashboard = "web/dist/" if runtime_archive else "echo_agent/_bundled/dashboard/"
-        skill = "skills/productivity/calendar/scripts/calendar_client.py"
-        required = common | {dashboard + "index.html", "echo_agent/_bundled/" + skill if wheel else skill}
+        required = common | {dashboard + "index.html", "echo_agent/skills/web_search.py"}
+        required |= {"echo_agent/_bundled/" + skill if wheel else skill for skill in skill_files}
         if not wheel:
             required |= source_files
         forbidden = {"node_modules", ".git", ".venv", "venv", "__pycache__", ".env", "client", "docs"}

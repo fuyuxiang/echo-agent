@@ -29,6 +29,8 @@ import sys
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
+
+from echo_agent.runtime_paths import normalize_cache_dir
 from typing import Any
 
 from loguru import logger
@@ -99,7 +101,7 @@ class LocalEmbedder:
         # and runtime resolve the SAME location, so a preloaded model is an
         # offline cache hit at runtime. Empty leaves fastembed's default
         # (FASTEMBED_CACHE_PATH env or a volatile tempdir) untouched.
-        self._cache_dir = cache_dir
+        self._cache_dir = normalize_cache_dir(cache_dir)
         # Bounded backoff retry: a failed load (network blip, dead mirror) is
         # retried up to _max_load_attempts times, waiting _retry_backoff before
         # re-arming, instead of disabling the embedder for the whole process.

@@ -262,6 +262,9 @@ jobs:
         working-directory: ../echo-agent-runtime-isolated/web
         run: pnpm build
 
+      - name: Build a direct wheel
+        run: python -m pip install build && python -m build --wheel --outdir direct-dist
+
       - name: Build sdist and wheel from the sdist
         id: build_distributions
         run: |
@@ -269,6 +272,25 @@ jobs:
           bash scripts/build.sh --prebuilt-dashboard
           # upload-artifact rejects '..' segments, so expose the absolute path.
           printf 'dist-directory=%s/dist\n' "$PWD" >> "$GITHUB_OUTPUT"
+
+      - name: Validate editable base, direct wheel skills, and sdist wheel all installs
+        run: |
+          RUNTIME_SOURCE="$PWD"
+          for install_mode in base skills all; do
+            INSTALL_VENV="${RUNNER_TEMP}/echo-agent-${install_mode}"
+            python -m venv "$INSTALL_VENV"
+            case "$install_mode" in
+              base) "$INSTALL_VENV/bin/python" -m pip install -e "$RUNTIME_SOURCE" ;;
+              skills) for package in "$RUNTIME_SOURCE"/direct-dist/*.whl; do
+                "$INSTALL_VENV/bin/python" -m pip install "${package}[skills]"; done ;;
+              all) for package in "$RUNTIME_SOURCE"/dist/*.whl; do
+                "$INSTALL_VENV/bin/python" -m pip install "${package}[all]"; done ;;
+            esac
+            "$INSTALL_VENV/bin/python" -m pip check
+            (cd "$RUNNER_TEMP" && env -u PYTHONPATH "$INSTALL_VENV/bin/python" -I \
+              "$RUNTIME_SOURCE/scripts/validate-installed-skills.py" --extra "$install_mode" \
+              --output "$RUNNER_TEMP/echo-installed-${install_mode}.json")
+          done
 
       - name: Install wheel and run smoke checks
         run: |
@@ -291,6 +313,12 @@ jobs:
               raise SystemExit(f"installed wheel is missing Dashboard: {dashboard}")
           for resource in (
               "_bundled/skills/productivity/calendar/scripts/calendar_client.py",
+              "_bundled/skills/research/web-search/SKILL.md",
+              "_bundled/skills/research/web-search/scripts/web_search.py",
+              "_bundled/skills/research/web-extract/SKILL.md",
+              "_bundled/skills/research/web-extract/scripts/extract_url.py",
+              "_bundled/skills/development/code-runner/SKILL.md",
+              "_bundled/skills/development/code-runner/scripts/safe_exec.py",
               "config/default.yaml",
               "gateway/static/index.html",
           ):

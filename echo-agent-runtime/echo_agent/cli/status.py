@@ -32,6 +32,7 @@ _CHANNEL_NAMES = [
 _DIAGNOSTIC_TOOLS = (
     "write_file", "exec", "artifact_create", "artifact_append",
     "artifact_validate", "artifact_finalize", "artifact_deliver", "send_file",
+    "skill_view", "skill_run", "web_fetch", "web_search",
 )
 
 
@@ -39,7 +40,7 @@ def _capability_report(config: Any, *, entrypoint: str) -> dict[str, Any]:
     """Explain policy outcomes without constructing side-effectful tool objects."""
     from echo_agent.security.tool_policy import tool_policy_decision
 
-    if not all(hasattr(config, name) for name in ("security", "tools", "execution", "artifacts")):
+    if not all(hasattr(config, name) for name in ("security", "tools", "execution", "artifacts", "skills")):
         return {
             "entrypoint": entrypoint,
             "security_profile": "unknown",
@@ -54,6 +55,22 @@ def _capability_report(config: Any, *, entrypoint: str) -> dict[str, Any]:
             allowed, reason = False, "disabled by tools.exec.enabled=false"
         if name.startswith("artifact_") and not config.artifacts.enabled:
             allowed, reason = False, "disabled by artifacts.enabled=false"
+        if name in {"skill_view", "skill_run"} and not config.skills.enabled:
+            allowed, reason = False, "disabled by skills.enabled=false"
+        if name in {"web_fetch", "web_search"} and not config.tools.web.enabled:
+            allowed, reason = False, "disabled by tools.web.enabled=false"
+        if name == "web_search" and allowed:
+            from echo_agent.agent.tools.web import WebSearchTool
+
+            ready, detail = WebSearchTool(
+                api_key=config.tools.web.search_api_key,
+                provider=config.tools.web.search_provider,
+                api_base=config.tools.web.search_api_base,
+            ).readiness_detail()
+            if not ready:
+                allowed, reason = False, detail
+        if name == "skill_run" and allowed:
+            reason += "; execution and dependency installation remain subject to approval"
         items.append({"name": name, "available": allowed, "reason": reason})
     return {
         "entrypoint": entrypoint,

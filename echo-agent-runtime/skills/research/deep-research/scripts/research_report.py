@@ -2,7 +2,7 @@
 """Deep research: multi-step search → extract → synthesize with citations."""
 
 import argparse
-from echo_agent.dependencies.skill_require import require  # noqa: E402
+from echo_agent.skills.web_search import search_text
 from datetime import date
 
 try:
@@ -12,14 +12,10 @@ except ImportError:
 
 
 def search_multi(question: str, max_queries: int = 5, results_per: int = 3):
-    require("skill.web-search")
-    from duckduckgo_search import DDGS
-
-    ddgs = DDGS()
     all_results = []
     queries = [question, f"{question} 2026", f"{question} best practices"]
     for q in queries[:max_queries]:
-        results = ddgs.text(q, max_results=results_per)
+        results = search_text(q, max_results=results_per)
         all_results.extend(results)
     seen = set()
     unique = []

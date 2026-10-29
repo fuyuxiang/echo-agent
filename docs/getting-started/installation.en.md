@@ -102,7 +102,7 @@
 | `tui` | Terminal UI | textual |
 | `tokenizers` | Token counting | tiktoken |
 | `otel` | OpenTelemetry tracing | opentelemetry-* |
-| `skills` | Built-in skill deps | duckduckgo_search, trafilatura, etc. |
+| `skills` | Built-in skill deps | ddgs, trafilatura, etc. |
 | `all` | Explicitly listed common optional packages | See `pyproject.toml`; it does not automatically include every separate extra |
 
 ---

@@ -456,3 +456,17 @@ Complete capability list:
 | `agent.read` | Agent listing |
 | `agent.dispatch` | Agent routing |
 | `mcp.call` | MCP tool invocation |
+
+## Diagnose skill files, execution and web access
+
+Skills can reside inside the installed package; workspace searches cannot prove they are missing.
+`skill_view` is read-only and only reports missing dependencies. `skill_run` pins the installed Python
+and skill cwd while retaining execution and installation approval. Coding excludes both `skill_run`
+and `web_fetch`; opt in with `also_allow` if needed. Nonempty `allow` is exclusive and `deny` wins.
+Default daemon/public_gateway execution restrictions remain in place. Web enablement, tool profile,
+exclusive lists, network deny and execution approval are separate checks.
+
+`echo-agent status --json` distinguishes policy filtering, disabled subsystems, and missing search
+key/base URL. Handle missing files, missing dependencies, pending approval, timeouts, and challenge
+pages according to actual results rather than diagnosing all of them as missing package resources.
+See [deployment acceptance and cache upgrades](../operations/deployment.en.md#validate-skill-execution-and-web-access).

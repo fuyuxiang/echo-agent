@@ -5,6 +5,8 @@ version: 1.0.0
 metadata:
   echo:
     tags: [Research, Deep, Analysis, Synthesis, Citations]
+    requires:
+      pip: ["ddgs>=9.16.1,<10", "lxml>=4.9.4", "trafilatura>=2.0"]
 ---
 
 # Deep Research

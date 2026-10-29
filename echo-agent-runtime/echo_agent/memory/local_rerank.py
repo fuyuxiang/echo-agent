@@ -26,6 +26,8 @@ import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
+
+from echo_agent.runtime_paths import normalize_cache_dir
 from typing import Any, Callable
 
 from loguru import logger
@@ -145,7 +147,7 @@ class LocalReranker:
         self._closed = False
         self._load_timeout = load_timeout_seconds
         self._hf_endpoint = hf_endpoint
-        self._cache_dir = cache_dir
+        self._cache_dir = normalize_cache_dir(cache_dir)
         self._max_load_attempts = max(1, int(max_load_attempts))
         self._retry_backoff = max(0.0, float(retry_backoff_seconds))
         self._load_attempts = 0
