@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="164" height="44" viewBox="0 0 164 44" role="img" aria-labelledby="title">
+  <title id="title">Desktop</title>
+  <defs>
+    <linearGradient id="fill" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#122d43"/>
+      <stop offset="1" stop-color="#102237"/>
+    </linearGradient>
+  </defs>
+  <rect x=".5" y=".5" width="163" height="43" rx="10" fill="url(#fill)" stroke="#419baf"/>
+  <g fill="none" stroke="#79e7d7" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="20" y="13" width="21" height="14" rx="2"/>
+    <path d="M30.5 27v5m-6 0h12M134 22h10m-4-4 4 4-4 4"/>
+  </g>
+  <text x="53" y="27.5" fill="#e1fff8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif" font-size="15" font-weight="600">Desktop</text>
+</svg>

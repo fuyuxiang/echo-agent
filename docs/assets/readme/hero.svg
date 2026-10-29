@@ -1,0 +1,133 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="340" viewBox="0 0 1200 340" role="img" aria-labelledby="title description">
+  <title id="title">Echo Agent</title>
+  <desc id="description">An open-source Agent Runtime and desktop Agent. Cognitive memory, self-evolving skills, and an embeddable runtime, represented by a luminous E and connected orbital nodes.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#080f24"/>
+      <stop offset=".55" stop-color="#0b1733"/>
+      <stop offset="1" stop-color="#071b2b"/>
+    </linearGradient>
+    <radialGradient id="blue-halo">
+      <stop stop-color="#175eff" stop-opacity=".32"/>
+      <stop offset="1" stop-color="#175eff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="cyan-halo">
+      <stop stop-color="#00e8d7" stop-opacity=".22"/>
+      <stop offset="1" stop-color="#00e8d7" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="wordmark" x1="0" y1="0" x2="1" y2=".25">
+      <stop stop-color="#6ca5ff"/>
+      <stop offset=".6" stop-color="#60d6ff"/>
+      <stop offset="1" stop-color="#63f5db"/>
+    </linearGradient>
+    <linearGradient id="ribbon" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#f1fbff"/>
+      <stop offset=".25" stop-color="#b3efff"/>
+      <stop offset=".6" stop-color="#5b9aff"/>
+      <stop offset="1" stop-color="#4df5d2"/>
+    </linearGradient>
+    <linearGradient id="orbit" x1="0" y1="1" x2="1" y2="0">
+      <stop stop-color="#345cff" stop-opacity=".15"/>
+      <stop offset=".45" stop-color="#4ea5ff"/>
+      <stop offset=".7" stop-color="#56ffe1"/>
+      <stop offset="1" stop-color="#83bfff" stop-opacity=".25"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="0">
+      <stop stop-color="#609aff" stop-opacity=".1"/>
+      <stop offset=".5" stop-color="#7aaeff" stop-opacity=".5"/>
+      <stop offset="1" stop-color="#63f5db" stop-opacity=".2"/>
+    </linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#6d9ee8" stroke-opacity=".06"/>
+    </pattern>
+    <filter id="glow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="5"/>
+    </filter>
+    <filter id="soft-glow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="15"/>
+    </filter>
+    <clipPath id="frame"><rect width="1200" height="340" rx="24"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#frame)">
+    <rect width="1200" height="340" fill="url(#background)"/>
+    <ellipse cx="275" cy="365" rx="540" ry="280" fill="url(#blue-halo)"/>
+    <ellipse cx="985" cy="158" rx="330" ry="260" fill="url(#cyan-halo)"/>
+    <rect width="1200" height="340" fill="url(#grid)"/>
+    <g fill="none" stroke="#719fe3" stroke-opacity=".1">
+      <circle cx="959" cy="170" r="214"/>
+      <circle cx="959" cy="170" r="278"/>
+      <path d="M688 0V340M752 0V340" stroke-dasharray="2 10"/>
+    </g>
+
+    <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif">
+      <g transform="translate(52 43)">
+        <rect y="-10" width="7" height="7" rx="2" fill="#69f3d6"/>
+        <text x="18" fill="#a9c0dd" font-size="13" font-weight="600" letter-spacing="2.5">OPEN SOURCE / RUNTIME + DESKTOP</text>
+      </g>
+      <text x="48" y="151" fill="#f4f8ff" font-size="88" font-weight="750" letter-spacing="-4">Echo <tspan fill="url(#wordmark)">Agent</tspan></text>
+      <text x="54" y="192" fill="#b7cae5" font-size="21" font-weight="500" letter-spacing="2.6">REMEMBER. EVOLVE. EMBED.</text>
+
+      <g transform="translate(52 227)">
+        <rect width="193" height="44" rx="11" fill="#112744" stroke="#2a4c72"/>
+        <g transform="translate(17 13)" fill="none" stroke="#79b7ff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 2C4-2-1 4 2 8c-4 3-1 9 3 8 0 4 5 5 6 1V4c2-5 8-3 8 1 4 0 5 6 2 8 2 4-3 8-6 5"/>
+          <path d="M4 6l5 3-3 4m9-8-1 5 4 3"/>
+        </g>
+        <text x="48" y="28" fill="#d9e8ff" font-size="17" font-weight="500">Cognitive Memory</text>
+      </g>
+      <g transform="translate(257 227)">
+        <rect width="203" height="44" rx="11" fill="#102a38" stroke="#27535b"/>
+        <g transform="translate(15 12)" fill="none" stroke="#62efd2" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 14a8 8 0 0 1 12-9l3 3m0-6v6h-6M19 13a8 8 0 0 1-12 6l-3-3m0 6v-6h6"/>
+        </g>
+        <text x="46" y="28" fill="#d7fff4" font-size="17" font-weight="500">Self-Evolving Skills</text>
+      </g>
+      <g transform="translate(472 227)">
+        <rect width="166" height="44" rx="11" fill="#192342" stroke="#384b77"/>
+        <g transform="translate(15 13)" fill="none" stroke="#b5bfff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m7 3-6 6 6 6m10-12 6 6-6 6M14 0l-4 18"/>
+        </g>
+        <text x="47" y="28" fill="#e4e7ff" font-size="17" font-weight="500">Embeddable</text>
+      </g>
+      <text x="54" y="311" fill="#7c99bd" font-size="12" font-weight="500" letter-spacing="2">CONTEXT → EXPERIENCE → REUSABLE SKILLS</text>
+    </g>
+
+    <g transform="translate(955 169)">
+      <circle r="119" fill="#61b8ff" fill-opacity=".05"/>
+      <circle r="105" fill="none" stroke="#6ad9f8" stroke-opacity=".18" stroke-dasharray="2 12"/>
+      <g fill="none" stroke="url(#orbit)">
+        <ellipse rx="190" ry="72" transform="rotate(-24)" stroke-width="6" opacity=".5" filter="url(#glow)"/>
+        <ellipse rx="190" ry="72" transform="rotate(-24)" stroke-width="1.7"/>
+        <ellipse rx="145" ry="67" transform="rotate(56)" stroke-width="1" opacity=".55"/>
+        <ellipse rx="134" ry="104" transform="rotate(20)" stroke-width=".8" opacity=".3"/>
+      </g>
+      <g stroke="#7cb9ff" stroke-width="1" stroke-opacity=".23" fill="none">
+        <path d="M-137 105-101 22-121-74-22-129 96-103 153-37 134 78 50 128-44 111Z"/>
+        <path d="M-101 22-44 111 134 78 96-103-121-74M-22-129 153-37 50 128"/>
+      </g>
+      <path d="M55-80H-12C-64-80-80-50-80-12V12C-80 52-56 80-12 80H55L33 43H-9C-28 43-38 34-41 18H28L49-16H-40C-37-35-27-43-8-43H33Z" fill="#5ca5ff" opacity=".48" filter="url(#soft-glow)"/>
+      <path d="M55-80H-12C-64-80-80-50-80-12V12C-80 52-56 80-12 80H55L33 43H-9C-28 43-38 34-41 18H28L49-16H-40C-37-35-27-43-8-43H33Z" fill="url(#ribbon)" stroke="#d1f9ff" stroke-opacity=".65"/>
+      <path d="M-65 15C-68-49-36-63 24-61M-37 61H25" fill="none" stroke="#f0fcff" stroke-opacity=".45" stroke-width="1.2"/>
+      <g fill="#97c8ff">
+        <circle cx="-121" cy="-74" r="3"/>
+        <circle cx="-101" cy="22" r="3"/>
+        <circle cx="96" cy="-103" r="3.5"/>
+        <circle cx="50" cy="128" r="3"/>
+        <circle cx="-44" cy="111" r="2.5"/>
+      </g>
+      <g fill="#72ffe0">
+        <circle cx="153" cy="-37" r="11" opacity=".5" filter="url(#glow)"/>
+        <circle cx="153" cy="-37" r="5"/>
+        <circle cx="-22" cy="-129" r="3.5"/>
+        <circle cx="134" cy="78" r="4"/>
+        <circle cx="-137" cy="105" r="3"/>
+      </g>
+      <g stroke="#b3edff" stroke-linecap="round" opacity=".7">
+        <path d="M-169-104v10m-5-5h10M157 109v8m-4-4h8"/>
+      </g>
+    </g>
+    <path d="M52 339.5H1148" stroke="url(#edge)"/>
+  </g>
+  <rect x=".5" y=".5" width="1199" height="339" rx="23.5" fill="none" stroke="#6d9ee8" stroke-opacity=".2"/>
+</svg>

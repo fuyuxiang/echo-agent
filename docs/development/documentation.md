@@ -45,6 +45,19 @@ mkdocs serve
 
 ## 自动生成的文件
 
+### README 架构图
+
+项目 README 与架构概览共用 `docs/assets/readme/` 下的中英文 SVG。图表由代码维护，修改拓扑或文案后在仓库根目录执行：
+
+```bash
+python3 scripts/generate-readme-diagrams.py
+python3 scripts/generate-readme-diagrams.py --check
+```
+
+生成器文件头记录了代码依据。需对照实现核对模块、连线方向、进程边界与可选功能，渲染两种语言并检查文字和箭头；`--check` 只检查产物一致性。首屏品牌图与按钮单独维护；架构图应保持为可编辑矢量，产品界面截图应来自真实应用并注明适用版本。
+
+### 配置参考
+
 以下文件不要手动修改（由 CI 重新生成）：
 
 - `docs/reference/configuration.md` / `.en.md`

@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="850" viewBox="0 0 1200 850" role="img" aria-labelledby="title description">
+  <title id="title">记忆延续上下文，进化沉淀技能</title>
+  <desc id="description">Runtime 记忆链路：Working 提供当前上下文；Episodic 和 Semantic 保存摘要与事实，经作用域和有效性筛选后混合召回，与当前上下文一起送入 ContextStage。Archival、已取代或未解决冲突的条目不参与正常召回。进化链路：任务轨迹和反思生成候选，经校验、风险检查和隔离 A/B 评估决定晋升、待审核或拒绝；已晋升技能可手动回滚。</desc>
+  <defs>
+    <marker id="blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0 8 4 0 8Z" fill="#2563eb" />
+    </marker>
+    <marker id="teal" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0 8 4 0 8Z" fill="#087f82" />
+    </marker>
+    <marker id="muted" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0 8 4 0 8Z" fill="#526780" />
+    </marker>
+  </defs>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif">
+    <rect x="1" y="1" width="1198" height="848" rx="20" fill="#f7faff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="36" y="32" width="5" height="55" rx="2" fill="#2563eb" stroke="none" stroke-width="1.2" />
+    <text x="56" y="57" fill="#142b49" font-size="30" font-weight="700" text-anchor="start">记忆延续上下文，进化沉淀技能</text>
+    <text x="56" y="87" fill="#526780" font-size="18" font-weight="400" text-anchor="start">两条链路共同服务后续任务；技能进化需显式启用，候选不直接写入正式技能库。</text>
+    <rect x="36" y="128" width="548" height="620" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="60" y="172" fill="#2563eb" font-size="25" font-weight="700" text-anchor="start">01  认知记忆</text>
+    <rect x="616" y="128" width="548" height="620" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="640" y="172" fill="#087f82" font-size="25" font-weight="700" text-anchor="start">02  技能自进化</text>
+    <rect x="76" y="206" width="468" height="72" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="77" y="220" width="3" height="44" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
+    <text x="96" y="236.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">当前任务与会话上下文</text>
+    <text x="96" y="262.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Working</text>
+    <rect x="76" y="318" width="468" height="86" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="77" y="332" width="3" height="58" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
+    <text x="96" y="355.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">会话摘要与长期事实</text>
+    <text x="96" y="381.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Episodic / Semantic</text>
+    <rect x="76" y="454" width="468" height="96" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="77" y="468" width="3" height="68" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
+    <text x="96" y="496.0" fill="#142b49" font-size="20" font-weight="650" text-anchor="start">作用域 / 有效性筛选与混合召回</text>
+    <text x="96" y="522.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">BM25 + optional Vector / RRF</text>
+    <path d="M310 404 L310 454" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <rect x="76" y="604" width="468" height="72" rx="12" fill="#edf4ff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="77" y="618" width="3" height="44" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
+    <text x="96" y="634.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">ContextStage</text>
+    <text x="96" y="660.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">当前上下文 + 快照 + 相关记忆</text>
+    <path d="M310 550 L310 604" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <path d="M76 242 L56 242 L56 640 L76 640" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" />
+    <text x="76" y="714" fill="#526780" font-size="17" font-weight="400" text-anchor="start">Archival / 已取代 / 未解决冲突 → 正常召回排除</text>
+    <rect x="640" y="206" width="500" height="72" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="641" y="220" width="3" height="44" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
+    <text x="660" y="236.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">任务轨迹与反思</text>
+    <text x="660" y="262.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Recorder / TrajectoryStore</text>
+    <rect x="640" y="318" width="500" height="86" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="641" y="332" width="3" height="58" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
+    <text x="660" y="355.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">生成技能候选</text>
+    <text x="660" y="381.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Evolver → SkillCandidate</text>
+    <path d="M890 278 L890 318" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" />
+    <rect x="640" y="454" width="500" height="96" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="641" y="468" width="3" height="68" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
+    <text x="660" y="496.0" fill="#142b49" font-size="20" font-weight="650" text-anchor="start">校验 / 风险检查 / 隔离 A/B 评估</text>
+    <text x="660" y="522.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Validation + PromotionGate</text>
+    <path d="M890 404 L890 454" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" />
+    <rect x="640" y="604" width="236" height="72" rx="12" fill="#edf9f7" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="641" y="618" width="3" height="44" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
+    <text x="660" y="634.0" fill="#142b49" font-size="19" font-weight="650" text-anchor="start">通过 → 晋升技能</text>
+    <text x="660" y="660.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">满足晋升策略时</text>
+    <rect x="902" y="604" width="238" height="72" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="903" y="618" width="3" height="44" rx="1" fill="#526780" stroke="none" stroke-width="1.2" />
+    <text x="922" y="634.0" fill="#142b49" font-size="19" font-weight="650" text-anchor="start">待审核 / 拒绝</text>
+    <text x="922" y="660.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">风险或配置决定</text>
+    <path d="M890 550 L890 578 L758 578 L758 604" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" />
+    <path d="M890 578 L1020 578 L1020 604" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" />
+    <text x="640" y="714" fill="#526780" font-size="17" font-weight="400" text-anchor="start">晋升后用于后续任务；支持手动回滚。</text>
+    <text x="600" y="797" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">记忆整合与进化在后台按配置运行；不代表模型权重训练或每次执行都自动提升。</text>
+  </g>
+</svg>

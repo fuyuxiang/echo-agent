@@ -1,15 +1,18 @@
 <div align="center">
 
-# Echo Agent
+<h1><img src="docs/assets/readme/hero.svg" alt="Echo Agent — 认知记忆、技能自进化、可嵌入的 Runtime 与桌面 Agent" width="100%" /></h1>
 
-**开源 Agent Runtime 与桌面 Agent**
+**让 Agent 记住上下文，把经验转化为技能。**
 
-| 🧠 Echo Agent Runtime | 🖥️ EchoAgent Desktop |
-| :---: | :---: |
-| **可自托管、可嵌入的 Agent 运行时** | **本地优先的桌面 Agent** |
-| 跨会话找回相关记忆，将执行经验沉淀为可复用技能 | 在真实工作区中编写代码、处理文档、操作浏览器与桌面 |
-| 终端交互 · Gateway 服务 · 应用嵌入 | 任务执行 · 过程查看 · 变更审阅 |
-| [安装与部署](echo-agent-runtime/README.md) · [记忆与进化](#长期记忆与技能自进化) | [安装与使用](client/README.md#快速开始) · [桌面端能力](client/README.md#主要能力) |
+可自托管、可嵌入的开源 Agent Runtime，以及本地优先的桌面 Agent。
+
+<p>
+  <a href="#快速开始"><img src="docs/assets/readme/runtime-button.svg" alt="Runtime 入门" width="164" height="44" /></a>
+  &nbsp;
+  <a href="client/README.md#快速开始"><img src="docs/assets/readme/desktop-button.svg" alt="Desktop 入门" width="164" height="44" /></a>
+</p>
+
+[记忆与进化](#长期记忆与技能自进化) · [架构](#架构与运行方式) · [文档](#文档) · [English](README.en.md)
 
 [![PyPI](https://img.shields.io/pypi/v/echo-agent)](https://pypi.org/project/echo-agent/)
 [![Python](https://img.shields.io/pypi/pyversions/echo-agent)](https://pypi.org/project/echo-agent/)
@@ -23,57 +26,49 @@
 [![桌面端累计下载](.github/badges/desktop-downloads.svg)](http://www.ojlab.com/)
 [![统计更新日期](.github/badges/stats-updated.svg)](http://www.ojlab.com/data/stats.json)
 
-[快速开始](#快速开始) · [运行方式](#运行方式) · [记忆与进化](#长期记忆与技能自进化) · [桌面端](#echoagent-desktop) · [扩展与集成](#扩展与集成) · [文档](#文档) · [English](README.en.md)
-
 </div>
+
+## 选择你的入口
+
+| 产品 | 适合什么场景 | 从哪里开始 |
+| --- | --- | --- |
+| **Echo Agent Runtime** | 构建拥有记忆、能积累经验的 Agent；在终端运行、部署服务，或集成到自己的应用 | [安装与部署](echo-agent-runtime/README.md) · [架构与运行方式](#架构与运行方式) |
+| **EchoAgent Desktop** | 在真实工作区中编写代码、处理文档、操作浏览器与电脑，并查看执行过程与变更 | [安装与使用](client/README.md#快速开始) · [桌面端能力](#echoagent-desktop) |
 
 ## 快速开始
 
 ### Agent Runtime
 
-环境要求：Python 3.11+，以及至少一个可用模型服务的 API Key。安装后通过配置向导添加模型，再启动交互式 Agent：
+需要 **Python 3.11+**，以及至少一个可用模型服务的 API Key。在终端执行：
 
 ```bash
-# 安装
 pip install "echo-agent[all]"
-
-# 配置模型
 echo-agent setup
-
-# 在终端启动 Agent
 echo-agent run
 ```
 
-中国大陆网络环境可指定 PyPI 镜像：`pip install "echo-agent[all]" -i https://mirrors.aliyun.com/pypi/simple/`。Windows 可在 PowerShell 中运行上述命令，平台依赖与限制见 [安装指南](https://fuyuxiang.github.io/echo-agent/getting-started/installation/)。
+`setup` 配置模型，`run` 启动完整 Runtime。中国大陆网络环境可在安装命令后添加 `-i https://mirrors.aliyun.com/pypi/simple/`。Windows PowerShell 可使用相同命令；依赖与平台限制见 [安装指南](https://fuyuxiang.github.io/echo-agent/getting-started/installation/)。
 
-<details>
-<summary>源码安装脚本（Linux / macOS / WSL2）</summary>
+### Gateway 与 Dashboard
 
-单独下载的安装脚本会获取 Runtime 的稀疏源码、创建独立环境、准备 Dashboard 并运行配置向导。建议先下载并查看脚本，再执行：
-
-```bash
-curl -fsSL -o install.sh https://raw.githubusercontent.com/fuyuxiang/echo-agent/master/scripts/install.sh
-less install.sh
-bash install.sh
-```
-
-可用 `bash install.sh --help` 查看选项。已有源码时进入 `echo-agent-runtime/` 执行 `bash scripts/install.sh --source .`，不会重新克隆。纯源码包含 Dashboard 的完整 `web/`，需要前端构建；正式 Runtime 压缩包内置前端产物，服务器无需 Node/pnpm。完整步骤见 [Runtime 安装说明](echo-agent-runtime/README.md)。
-
-</details>
-
-安装方式、依赖分组与卸载见 [安装指南](https://fuyuxiang.github.io/echo-agent/getting-started/installation/)；全部命令见 [CLI 参考](https://fuyuxiang.github.io/echo-agent/reference/cli/)，配置项见 [配置参考](https://fuyuxiang.github.io/echo-agent/reference/configuration/)。
-
-需要 Dashboard、API、消息通道或定时任务时，可在前台启动 Gateway：
+需要网页管理、API 或 CLI/TUI 接入时，先退出上面的 `run`，再启动 Gateway：
 
 ```bash
 echo-agent gateway
 ```
 
-Dashboard 默认地址为 `http://127.0.0.1:58123/`。
+打开 **<http://127.0.0.1:58123/>** 进入 Dashboard。在另一个终端连接同一 Runtime：
 
-### 常驻运行（后台服务）
+```bash
+echo-agent cli --tui
+```
 
-`echo-agent run` 和 `echo-agent gateway` 默认在前台运行。在 macOS 或使用 systemd 的 Linux 上，可将 Gateway 注册为用户级后台服务：
+消息通道、Webhook 和定时任务按配置启用。同一工作区通常只运行一个完整 Runtime；`cli` 连接已有 Gateway，不再启动执行引擎。详见 [运行方式](https://fuyuxiang.github.io/echo-agent/operations/runtime-modes/)与 [Dashboard 指南](https://fuyuxiang.github.io/echo-agent/guides/dashboard/)。
+
+<details>
+<summary>后台常驻与源码安装</summary>
+
+在 macOS 或使用 systemd 的 Linux 上，可注册 Gateway 用户级后台服务：
 
 ```bash
 echo-agent gateway install
@@ -81,11 +76,21 @@ echo-agent gateway status
 echo-agent gateway logs --follow
 ```
 
-Gateway 默认监听 `127.0.0.1:58123`；远程访问可使用 SSH 端口转发。Linux 用户退出登录后继续运行服务，需按系统策略启用 linger。详见 [后台常驻服务](https://fuyuxiang.github.io/echo-agent/operations/background-service/)与 [Gateway 认证](https://fuyuxiang.github.io/echo-agent/integrations/gateway/authentication/)。
+Linux 退出登录后继续运行的设置见 [后台服务指南](https://fuyuxiang.github.io/echo-agent/operations/background-service/)。Gateway 默认监听本机回环地址，远程接入可使用 SSH 端口转发；认证配置见 [Gateway 认证](https://fuyuxiang.github.io/echo-agent/integrations/gateway/authentication/)。
+
+从源码部署时，只需下载 `echo-agent-runtime/`，在该目录执行：
+
+```bash
+bash scripts/install.sh --source .
+```
+
+本地源码包含完整 Dashboard 工程，需要前端构建；正式 Runtime 发布压缩包内置前端产物，服务器无需 Node/pnpm。网络安装脚本会获取 Runtime 的稀疏源码。安装方式、依赖与升级步骤见 [Runtime 安装说明](echo-agent-runtime/README.md)。
+
+</details>
 
 ### EchoAgent Desktop
 
-桌面端从源码运行需要 Node.js 22 或 24、pnpm 10、Rust 1.92+ 和 `protoc`。macOS 用户在仓库根目录下执行：
+安装包、支持平台和源码环境要求见 [桌面端快速开始](client/README.md#快速开始)。已有本仓库源码的 macOS 用户可从仓库根目录启动：
 
 ```bash
 cd client
@@ -94,120 +99,124 @@ pnpm install --frozen-lockfile
 pnpm tauri dev
 ```
 
-Windows 的环境准备与启动命令见 [EchoAgent Desktop 中文文档](client/README.md)。`pnpm test` 运行前端测试，`pnpm build` 检查 TypeScript 并构建前端，`pnpm dist` 生成平台安装包；发布要求见 [发布流程](client/docs/release-workflow.md)与 [自动化平台说明](client/docs/automation-platform-support.md)。
-
-## 运行方式
-
-Echo Agent 提供终端交互、Gateway 服务和嵌入应用三种使用形态：
-
-<div align="center">
-  <img src="docs/assets/runtime-modes.png" alt="Echo Agent Runtime 的本地运行、Gateway 服务和嵌入应用三种形态" width="920" />
-</div>
-
-| 形态 | 使用入口 | 适用场景 |
-| --- | --- | --- |
-| **本地运行** | `echo-agent run` | 终端交互、开发调试、单机任务 |
-| **Gateway** | `echo-agent gateway` | 长期运行、消息通道、Dashboard、API 与自动化 |
-| **嵌入应用** | EchoAgent Desktop | 在宿主应用进程内运行 Agent |
+首次运行会准备内嵌 Runtime、Theia IDE 和 Office Worker。桌面端可以独立启动；模型可使用项目内置远端服务，也可自行配置连接。Windows 步骤见 [桌面端文档](client/README.md#快速开始)。
 
 ## 长期记忆与技能自进化
 
+**认知记忆延续上下文，技能自进化让执行经验得到复用。** 下图描述 Runtime 中的两条链路：
+
+<!-- Generated by scripts/generate-readme-diagrams.py; review the source mappings there when architecture changes. -->
+<p align="center"><img src="docs/assets/readme/memory-evolution.svg" width="100%" alt="Runtime 的认知记忆与技能进化：有效记忆经混合召回进入上下文；任务轨迹生成技能候选，经校验、风险检查和隔离评估进入晋升、待审核或拒绝分支" /></p>
+
 ### 认知记忆
 
-Agent 可跨会话找回相关的对话摘要、用户偏好和项目事实，减少重复交代背景。记忆按当前任务、会话摘要、长期事实和归档分层管理；混合检索负责召回，环境类记忆按时效衰减，冲突事实经检测后更新。详见 [记忆系统](https://fuyuxiang.github.io/echo-agent/concepts/memory-system/)。
+记住用户偏好与项目事实，跨会话找回相关上下文，减少重复交代背景。记忆按 **Working、Episodic、Semantic、Archival** 分层管理；BM25 与可选向量检索通过 RRF 融合召回。作用域、来源和有效性约束决定哪些内容可以进入本轮上下文，归档、已取代及未解决冲突的条目不参与正常召回。
+
+回复后的后台整合可提取摘要与事实、处理矛盾并执行衰减归档。实现与配置见 [记忆系统](https://fuyuxiang.github.io/echo-agent/concepts/memory-system/)。
 
 ### 技能自进化
 
-Echo Agent 可从任务执行轨迹中提炼可复用的 Skills。候选技能经过内容验证和基线评估：低风险且效果更好的候选可自动晋升，高风险候选进入人工审核；已晋升技能支持手动回滚。详见 [进化与评估](https://fuyuxiang.github.io/echo-agent/concepts/evolution-evaluation/)。
+从执行轨迹和反思中生成可复用的技能候选，按风险与配置进入审核或隔离评估。满足晋升策略的候选才应用到正式技能库；未通过的候选保留拒绝原因，已晋升的变更支持手动回滚。
 
-## 运行时能力
+进化引擎**默认关闭，需配置启用**；启用后可选择手动、轨迹阈值或定时触发。它更新的是技能内容与启用状态，具体流程见 [进化与评估](https://fuyuxiang.github.io/echo-agent/concepts/evolution-evaluation/)。
 
-Echo Agent Runtime 围绕以下能力组织 Agent 的执行与扩展：
+## 架构与运行方式
+
+**Echo Agent Runtime 是统一的运行时核心**，提供任务执行、上下文、认知记忆、模型接入、工具与技能等能力。终端和 Gateway 承载独立运行，`client/` 将 Runtime 嵌入桌面应用进程，再提供工作区、IDE 和自动化界面。各形态按宿主与配置启用具体能力。
+
+<p align="center"><img src="docs/assets/readme/architecture.svg" width="100%" alt="统一 Runtime 架构：终端本地运行、Gateway 在线服务与 Client 进程内嵌入，共同以 Echo Agent Runtime 为核心；核心负责执行、上下文、记忆、模型、工具、技能与权限，并依赖所配置的服务和当前实例状态" /></p>
+
+### Runtime 的三种运行形态
+
+| 方式 | 入口 | 执行引擎在哪里 |
+| --- | --- | --- |
+| **本地运行** | `echo-agent run` | 当前 Runtime 进程；Gateway 是否开放由配置决定 |
+| **Gateway 服务** | `echo-agent gateway` | 当前 Runtime 进程，对外开放 Dashboard、HTTP/WebSocket API |
+| **应用内嵌** | EchoAgent Desktop 或自建宿主应用 | 宿主进程内；Client 通过 ACP Channel 连接内嵌 Runtime |
+
+<details>
+<summary>展开 Runtime 内部执行链路</summary>
+
+<p align="center"><img src="docs/assets/readme/runtime-architecture.svg" width="100%" alt="Runtime 内部执行链路：通道经 ChannelManager、应用经可选 GatewayServer 接入 MessageBus；AgentLoop 使用上下文、推理和响应阶段，并调用会话、记忆、模型、工具、权限、Skills 与进化组件" /></p>
+
+`app.py` 装配模型、存储、Agent、通道、调度和可选 Gateway，并管理启动与停止顺序。`AgentLoop` 消费入站事件并发布出站事件；工具执行受准入策略和审批控制。具体模块与任务处理流程见 [架构概览](docs/concepts/architecture.md)。
+
+</details>
+
+### Runtime 能力
 
 | 能力 | 作用 |
 | --- | --- |
-| **Agent Loop** | 协调模型推理、工具调用和执行反馈，持续推进任务 |
-| **会话与上下文** | 管理任务状态，并为每轮执行组织所需上下文 |
-| **模型接入与路由** | 连接多个模型服务，配置路由与故障回退 |
-| **工具与 MCP** | 使用本地工具，并连接外部 MCP Server |
-| **Skills 与 Plugins** | 加载可复用技能，扩展 Runtime 行为 |
-| **权限策略** | 检查工具调用，确认敏感操作并记录执行过程 |
-| **自动化与消息通道** | 通过定时任务、Webhook 和消息入口触发 Agent |
-
-例如，你可以在终端分析项目，或让 Gateway 定时整理数据并将结果发送到飞书或 Telegram。组件职责见 [架构概览](https://fuyuxiang.github.io/echo-agent/concepts/architecture/)。
-
-## Gateway 与 Dashboard
-
-Gateway 将完整 Runtime 作为服务运行，对外提供 Dashboard、HTTP / WebSocket API、消息通道、Webhook 和定时任务。CLI / TUI 连接已经运行的 Gateway，使用其中的模型、记忆、工具和权限策略：
-
-```bash
-echo-agent cli
-echo-agent cli --tui
-```
-
-Dashboard 用于查看会话、记忆、技能、知识库、定时任务、消息通道和运行状态。使用方式见 [Dashboard 指南](https://fuyuxiang.github.io/echo-agent/guides/dashboard/)和 [消息通道文档](https://fuyuxiang.github.io/echo-agent/integrations/channels/)。
+| **Agent Loop 与任务** | 协调推理、工具调用、执行反馈、任务状态和规划 |
+| **模型接入与路由** | 连接模型服务，配置路由和故障回退 |
+| **记忆与知识** | 召回有效记忆，检索知识库，为任务组织上下文 |
+| **工具与 MCP** | 执行本地工具，连接外部工具服务 |
+| **Skills 与 Plugins** | 加载可复用技能，扩展运行行为 |
+| **自动化与消息通道** | 通过定时任务、Webhook 和配置的消息入口触发任务 |
+| **权限与可观测性** | 控制工具准入与审批，记录日志、轨迹、用量和执行状态 |
 
 ## EchoAgent Desktop
 
-**EchoAgent Desktop** 将 Echo Agent Runtime 集成到桌面工作台，让 Agent 在本地工作区中调用文件、浏览器和桌面能力完成任务，并呈现执行过程与变更。
-
-<div align="center">
-  <img src="client/docs/images/echoagent-home.png" alt="EchoAgent Desktop 工作台首页" width="920" />
-</div>
+**让 Agent 在你的工作区中完成任务。** 桌面端通过 React、Tauri 与进程内嵌入的 Echo Agent Runtime，在同一个工作台中呈现计划、工具活动、文件变更和交付物。
 
 | 场景 | 桌面端能力 |
 | --- | --- |
-| **代码开发** | 集成 Eclipse Theia IDE 与 Coding Agent，支持任务计划、代码修改、Diff 审阅、验证和交付 |
-| **浏览器与电脑操作** | Browser Use 使用任务隔离的浏览器环境；Computer Use 根据屏幕快照操作桌面，敏感操作逐项确认 |
-| **工作区与知识** | 管理项目文件、会话、知识库和任务产物，让 Agent 持续使用已有上下文 |
-| **模型与扩展** | 选择模型服务，并按需接入 MCP、Skills、Plugins、专家和子 Agent |
-| **远程继续任务** | 绑定微信后，可在桌面端运行期间继续会话、查看进展并处理权限请求 |
+| **代码开发** | Eclipse Theia IDE、Coding Agent、Diff 审阅、验证与交付 |
+| **浏览器与电脑操作** | 任务隔离的 Browser Use；由明确任务启动、支持暂停和继续的 Computer Use |
+| **文档与知识** | 项目文件、知识索引、记忆，以及 Word、PDF、Excel、PowerPoint 文档处理 |
+| **模型与协作** | 模型连接、MCP、Skills、Plugins、专家与专家团 |
+| **持续工作** | 项目与任务、定时自动化，以及可选微信远程会话 |
 
-桌面端可独立于 Gateway 启动。源码构建、平台要求和完整功能见 [EchoAgent Desktop 中文文档](client/README.md)。
+浏览器副作用操作与电脑任务采用不同的确认流程；Computer Use 在授权任务内连续执行，平台系统权限仍需授予。实现细节与实机验证范围见 [桌面端说明](client/README.md)、[架构与数据流](client/README.md#架构与数据流)和 [自动化平台说明](client/docs/automation-platform-support.md)。
 
 ## 扩展与集成
 
-将 Echo Agent 接入现有产品时，可选择两种集成方式：
+**把 Agent 能力接入自己的应用**，可选择连接服务或源码级嵌入：
 
-- **进程内嵌入**：宿主应用集成 Runtime，并负责界面、任务状态和本地能力。桌面端提供了可参考的 [应用架构](client/README.md#工作原理)与 [运行时桥接代码](client/src-tauri/src/agent_runtime.rs)。
-- **连接 Gateway**：让 Runtime 独立运行，通过 [HTTP / WebSocket API](https://fuyuxiang.github.io/echo-agent/reference/gateway-api/) 与应用通信。
-
-进程内嵌入目前以桌面端集成为参考，具体接口与兼容性以所选源码版本为准。
-
-Echo Agent Runtime 还提供以下扩展点：
+- **连接 Gateway 服务**：通过 [HTTP / WebSocket API](https://fuyuxiang.github.io/echo-agent/reference/gateway-api/) 提交任务并接收事件，由 Runtime 服务持有模型、记忆和执行状态。
+- **源码级嵌入 Runtime**：基于 [`bootstrap` / `AppRuntime`](echo-agent-runtime/echo_agent/app.py) 装配组件，由宿主管理启动、停止和工作区。当前以源码接口为准，集成方应固定版本并验证生命周期。
+- **参考桌面端宿主集成**：[`agent_runtime.rs`](client/src-tauri/src/agent_runtime.rs) 展示内嵌 **Echo Agent Runtime** 与类型化 ACP Channel 的连接方式，依赖定义见 [`Cargo.toml`](client/src-tauri/Cargo.toml)。
 
 | 扩展点 | 用途 | 文档 |
 | --- | --- | --- |
-| Tools | 增加原生执行能力 | [工具参考](https://fuyuxiang.github.io/echo-agent/reference/tools/) |
-| MCP | 连接外部工具服务 | [MCP 集成](https://fuyuxiang.github.io/echo-agent/integrations/mcp/) |
+| Tools / MCP | 增加执行能力，连接外部工具 | [工具参考](https://fuyuxiang.github.io/echo-agent/reference/tools/) · [MCP](https://fuyuxiang.github.io/echo-agent/integrations/mcp/) |
+| Skills / Plugins | 复用工作流，扩展 Runtime 行为 | [Skills](https://fuyuxiang.github.io/echo-agent/integrations/skills/using-skills/) · [Plugins](https://fuyuxiang.github.io/echo-agent/integrations/plugins/using-plugins/) |
+| Models / Channels | 接入模型服务和消息入口 | [模型接入](https://fuyuxiang.github.io/echo-agent/guides/models/) · [消息通道](https://fuyuxiang.github.io/echo-agent/integrations/channels/) |
 | A2A | 接收入站任务；当前 Agent 运行时不提供 A2A 出站委派入口 | [A2A 集成](https://fuyuxiang.github.io/echo-agent/integrations/a2a/) |
-| Skills 与 Plugins | 复用工作流、扩展运行行为 | [Skills](https://fuyuxiang.github.io/echo-agent/integrations/skills/using-skills/) · [Plugins](https://fuyuxiang.github.io/echo-agent/integrations/plugins/using-plugins/) |
-| Models | 接入模型服务 | [模型接入](https://fuyuxiang.github.io/echo-agent/guides/models/) |
-| Channels | 增加消息入口 | [消息通道](https://fuyuxiang.github.io/echo-agent/integrations/channels/) |
 
 ## 数据与安全
 
-Echo Agent 可部署在自有设备或服务器。会话、记忆和配置等状态保存在部署环境中；工具调用受权限策略约束，需要确认的操作会等待用户决策并记录执行过程。
+会话、记忆和配置等状态保存在部署环境中。使用远程模型、外部 MCP 或第三方消息通道时，交互所需的数据会发送给相应服务；桌面端启用浏览器或电脑操作后，提供给模型的内容可能包括网页信息和屏幕截图。
 
-使用远程模型、MCP Server 或第三方消息通道时，交互所需的数据会发送给相应服务。建议为同一工作区只运行一个完整 Runtime 实例；远程访问的配置与边界见 [安全模型](https://fuyuxiang.github.io/echo-agent/concepts/security-model/)和 [安全加固指南](https://fuyuxiang.github.io/echo-agent/operations/security-hardening/)。
+Runtime 的工具调用受权限策略与审批控制；桌面端另有工作区授权、权限模式和任务范围控制。具体数据位置、认证方式及操作边界见 [安全模型](https://fuyuxiang.github.io/echo-agent/concepts/security-model/)、[安全加固](https://fuyuxiang.github.io/echo-agent/operations/security-hardening/)与 [桌面端数据与权限](client/README.md#数据与权限边界)。
 
 ## 文档
 
-完整文档：[fuyuxiang.github.io/echo-agent](https://fuyuxiang.github.io/echo-agent/)
+完整文档：[中文文档站](https://fuyuxiang.github.io/echo-agent/) · [English documentation](https://fuyuxiang.github.io/echo-agent/en/)
 
 | 主题 | 入口 |
 | --- | --- |
-| 开始使用 | [安装指南](https://fuyuxiang.github.io/echo-agent/getting-started/installation/) · [快速上手](https://fuyuxiang.github.io/echo-agent/getting-started/quickstart/) |
-| 核心原理 | [架构概览](https://fuyuxiang.github.io/echo-agent/concepts/architecture/) · [Agent Loop](https://fuyuxiang.github.io/echo-agent/concepts/agent-loop/) · [记忆系统](https://fuyuxiang.github.io/echo-agent/concepts/memory-system/) · [进化与评估](https://fuyuxiang.github.io/echo-agent/concepts/evolution-evaluation/) |
-| 配置与运维 | [配置参考](https://fuyuxiang.github.io/echo-agent/reference/configuration/) · [运行方式](https://fuyuxiang.github.io/echo-agent/operations/runtime-modes/) · [安全加固](https://fuyuxiang.github.io/echo-agent/operations/security-hardening/) |
+| 安装与上手 | [Runtime 安装](echo-agent-runtime/README.md) · [安装指南](https://fuyuxiang.github.io/echo-agent/getting-started/installation/) · [快速上手](https://fuyuxiang.github.io/echo-agent/getting-started/quickstart/) |
+| 原理与架构 | [架构概览](docs/concepts/architecture.md) · [Agent Loop](https://fuyuxiang.github.io/echo-agent/concepts/agent-loop/) · [记忆系统](https://fuyuxiang.github.io/echo-agent/concepts/memory-system/) · [进化与评估](https://fuyuxiang.github.io/echo-agent/concepts/evolution-evaluation/) |
+| 配置与运维 | [配置参考](https://fuyuxiang.github.io/echo-agent/reference/configuration/) · [CLI](https://fuyuxiang.github.io/echo-agent/reference/cli/) · [后台服务](https://fuyuxiang.github.io/echo-agent/operations/background-service/) |
+| 桌面端 | [安装与使用](client/README.md) · [发行说明](client/docs/desktop-release.md) |
 | 版本与兼容性 | [更新记录](CHANGELOG.md) · [兼容性说明](https://fuyuxiang.github.io/echo-agent/reference/compatibility/) |
-| 桌面端 | [EchoAgent Desktop](client/README.md) |
 
 ## 开发与贡献
 
-[echo-agent-runtime/](echo-agent-runtime/README.md) 是可单独下载、构建和部署的服务端工程，包含 `echo_agent/`、Dashboard 源码 `web/`、内置 `skills/`、测试及部署模板；`client/` 是独立桌面端，`docs/` 是文档站。完整目录说明见 [代码地图](https://fuyuxiang.github.io/echo-agent/development/repository-map/)。
+```text
+echo-agent/
+├── echo-agent-runtime/   # 可独立下载和部署的 Runtime，包含 Dashboard 与技能
+├── client/               # 桌面工作台、内嵌 Runtime 与 Theia
+├── docs/                 # 文档站与图形资源
+├── scripts/              # 仓库维护、文档检查与图表生成
+└── .github/              # CI、发布与仓库自动化
+```
 
-在 macOS 或 Linux 上准备开发环境并运行检查：
+<details>
+<summary>Runtime 开发环境与检查</summary>
+
+在 macOS 或 Linux 上执行：
 
 ```bash
 git clone https://github.com/fuyuxiang/echo-agent.git
@@ -219,7 +228,11 @@ ruff check .
 pytest
 ```
 
-欢迎贡献 Bug 修复、Runtime 改进、工具、Skills、Plugins、消息通道和文档。提交约定见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+Dashboard 构建和独立包验证见 [Runtime 开发说明](echo-agent-runtime/README.md#构建与验证)。桌面端开发检查见 [Desktop 开发说明](client/README.md#开发)。
+
+</details>
+
+欢迎贡献 Runtime 改进、Bug 修复、工具、Skills、Plugins、消息通道和文档。提交约定见 [CONTRIBUTING.md](CONTRIBUTING.md)，目录职责见 [仓库地图](docs/development/repository-map.md)。README 的中英文架构图由 [`scripts/generate-readme-diagrams.py`](scripts/generate-readme-diagrams.py) 生成；修改相关实现时应一并核对并更新图文。
 
 ## 社区与支持
 

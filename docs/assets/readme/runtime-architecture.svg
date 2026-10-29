@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="870" viewBox="0 0 1200 870" role="img" aria-labelledby="title description">
+  <title id="title">Runtime：从入口到执行</title>
+  <desc id="description">消息通道和本地终端通过 ChannelManager 连接 MessageBus；Dashboard、CLI/TUI 和应用通过 HTTP/WebSocket 连接可选 Gateway，再进入 MessageBus。AgentLoop 消费入站事件并发布出站事件。循环使用 ContextStage、InferenceStage 与 ResponseStage，依赖会话、记忆、知识、模型、工具和审批模块。SQLite 与文件保存状态；执行轨迹在启用进化后进入 EvolutionEngine。</desc>
+  <defs>
+    <marker id="blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0 8 4 0 8Z" fill="#2563eb" />
+    </marker>
+    <marker id="teal" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0 8 4 0 8Z" fill="#087f82" />
+    </marker>
+    <marker id="muted" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0 0 8 4 0 8Z" fill="#526780" />
+    </marker>
+  </defs>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif">
+    <rect x="1" y="1" width="1198" height="868" rx="20" fill="#f7faff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="36" y="32" width="5" height="55" rx="2" fill="#2563eb" stroke="none" stroke-width="1.2" />
+    <text x="56" y="57" fill="#142b49" font-size="30" font-weight="700" text-anchor="start">Runtime：从入口到执行</text>
+    <text x="56" y="87" fill="#526780" font-size="18" font-weight="400" text-anchor="start">app.py 装配生命周期；Gateway 为可选服务入口，AgentLoop 负责执行任务。</text>
+    <rect x="36" y="128" width="500" height="76" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="37" y="142" width="3" height="48" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
+    <text x="56" y="160.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">终端 / 消息通道</text>
+    <text x="56" y="186.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">本地 CLI 通道 · IM · Webhook</text>
+    <rect x="664" y="128" width="500" height="76" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="665" y="142" width="3" height="48" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
+    <text x="684" y="160.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">Dashboard / CLI·TUI / 你的应用</text>
+    <text x="684" y="186.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">HTTP / WebSocket</text>
+    <rect x="36" y="248" width="500" height="76" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="37" y="262" width="3" height="48" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
+    <text x="56" y="280.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">ChannelManager</text>
+    <text x="56" y="306.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">echo_agent/channels/</text>
+    <rect x="664" y="248" width="500" height="76" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="665" y="262" width="3" height="48" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
+    <text x="684" y="280.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">GatewayServer</text>
+    <text x="684" y="306.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">可选 · aiohttp · 认证与管理 API</text>
+    <path d="M286 204 L286 248" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" marker-start="url(#blue)" />
+    <path d="M914 204 L914 248" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" marker-start="url(#teal)" />
+    <rect x="324" y="372" width="552" height="76" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="325" y="386" width="3" height="48" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
+    <text x="344" y="404.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">MessageBus</text>
+    <text x="344" y="430.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">InboundEvent / OutboundEvent</text>
+    <path d="M286 324 L286 350 L456 350 L456 372" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" marker-start="url(#blue)" />
+    <path d="M914 324 L914 350 L744 350 L744 372" fill="none" stroke="#087f82" stroke-width="2" stroke-linejoin="round" marker-end="url(#teal)" marker-start="url(#teal)" />
+    <rect x="240" y="494" width="720" height="90" rx="12" fill="#edf4ff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="241" y="508" width="3" height="62" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
+    <text x="260" y="533.0" fill="#142b49" font-size="21" font-weight="650" text-anchor="start">AgentLoop</text>
+    <text x="260" y="559.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">ContextStage → InferenceStage → ResponseStage</text>
+    <path d="M600 448 L600 494" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" marker-end="url(#blue)" marker-start="url(#blue)" />
+    <rect x="36" y="642" width="360" height="84" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="37" y="656" width="3" height="56" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
+    <text x="56" y="678.0" fill="#142b49" font-size="20" font-weight="650" text-anchor="start">上下文与状态</text>
+    <text x="56" y="704.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Sessions / Memory / Knowledge</text>
+    <path d="M600 584 L600 616 L216 616 L216 642" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" stroke-dasharray="6 5" />
+    <rect x="420" y="642" width="360" height="84" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="421" y="656" width="3" height="56" rx="1" fill="#2563eb" stroke="none" stroke-width="1.2" />
+    <text x="440" y="678.0" fill="#142b49" font-size="20" font-weight="650" text-anchor="start">模型与工具执行</text>
+    <text x="440" y="704.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Router / Tools / MCP / Approval</text>
+    <path d="M600 584 L600 616 L600 616 L600 642" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" stroke-dasharray="6 5" />
+    <rect x="804" y="642" width="360" height="84" rx="12" fill="#ffffff" stroke="#c8d8e9" stroke-width="1.2" />
+    <rect x="805" y="656" width="3" height="56" rx="1" fill="#087f82" stroke="none" stroke-width="1.2" />
+    <text x="824" y="678.0" fill="#142b49" font-size="20" font-weight="650" text-anchor="start">Skills 与进化</text>
+    <text x="824" y="704.0" fill="#526780" font-size="18" font-weight="400" text-anchor="start">Skills / Plugins / Evolution</text>
+    <path d="M600 584 L600 616 L984 616 L984 642" fill="none" stroke="#526780" stroke-width="2" stroke-linejoin="round" marker-end="url(#muted)" stroke-dasharray="6 5" />
+    <rect x="36" y="770" width="1128" height="58" rx="12" fill="#edf3f9" stroke="#c8d8e9" stroke-width="1.2" />
+    <text x="600" y="806" fill="#526780" font-size="18" font-weight="400" text-anchor="middle">持久化：SQLite + 工作区文件；自动化、工具集与进化均按配置启用。</text>
+  </g>
+</svg>

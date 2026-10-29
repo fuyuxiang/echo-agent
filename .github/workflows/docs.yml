@@ -10,6 +10,7 @@ on:
       - ".github/workflows/docs.yml"
       - "echo-agent-runtime/echo_agent/config/schema.py"
       - "echo-agent-runtime/echo_agent/config/docgen.py"
+      - "scripts/generate-readme-diagrams.py"
   pull_request:
     paths:
       - "docs/**"
@@ -18,6 +19,7 @@ on:
       - ".github/workflows/docs.yml"
       - "echo-agent-runtime/echo_agent/config/schema.py"
       - "echo-agent-runtime/echo_agent/config/docgen.py"
+      - "scripts/generate-readme-diagrams.py"
 
 permissions:
   contents: read
@@ -43,6 +45,9 @@ jobs:
 
       - name: Generate config reference
         run: python -m echo_agent.config.docgen --output-dir docs/reference --lang both
+
+      - name: Verify README diagrams
+        run: python scripts/generate-readme-diagrams.py --check
 
       - name: Build docs
         run: mkdocs build --strict

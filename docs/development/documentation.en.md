@@ -38,6 +38,19 @@ Visit `http://127.0.0.1:8000`.
 
 ## Auto-Generated Files
 
+### README Architecture Diagrams
+
+The project README and architecture overview share the bilingual SVGs in `docs/assets/readme/`. Maintain diagrams through their generator and run from the repository root after changing topology or labels:
+
+```bash
+python3 scripts/generate-readme-diagrams.py
+python3 scripts/generate-readme-diagrams.py --check
+```
+
+The generator header records implementation sources. Review modules, arrow direction, process boundaries, and optional features against the code, then render both languages and inspect labels and connectors. `--check` verifies artifact consistency only. Maintain the brand banner and buttons separately; keep architecture diagrams as editable vectors and use real application screenshots with their applicable version identified.
+
+### Configuration Reference
+
 Do NOT manually edit (CI regenerates):
 
 - `docs/reference/configuration.md` / `.en.md`
