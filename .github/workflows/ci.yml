@@ -263,9 +263,12 @@ jobs:
         run: pnpm build
 
       - name: Build sdist and wheel from the sdist
+        id: build_distributions
         run: |
           python -m pip install --upgrade pip build
           bash scripts/build.sh --prebuilt-dashboard
+          # upload-artifact rejects '..' segments, so expose the absolute path.
+          printf 'dist-directory=%s/dist\n' "$PWD" >> "$GITHUB_OUTPUT"
 
       - name: Install wheel and run smoke checks
         run: |
@@ -328,6 +331,6 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: echo-agent-dist
-          path: ../echo-agent-runtime-isolated/dist/*
+          path: ${{ steps.build_distributions.outputs.dist-directory }}/*
           if-no-files-found: error
           retention-days: 7
