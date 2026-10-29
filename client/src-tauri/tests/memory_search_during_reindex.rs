@@ -1,11 +1,11 @@
 use echo_agent_memory::{
-    EmbeddingMaintenance, MemoryBackendImpl, MemoryIndex, MemoryStorage,
     embedding::{ApiEmbeddingProvider, EmbeddingProvider},
+    EmbeddingMaintenance, MemoryBackendImpl, MemoryIndex, MemoryStorage,
 };
 use echo_agent_tools::types::memory_backend::MemoryBackend;
 use std::sync::{
-    Arc, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
+    Arc, Mutex,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -160,11 +160,9 @@ async fn failed_document_indexing_does_not_disable_healthy_query_vectors() {
     let fixture = Fixture::new(Default::default(), usize::MAX, false).await;
     let (_, _, backend, owner) = setup(root.path(), &fixture, 1);
     let found = backend.search("semantic paraphrase", 5, 0.0).await.unwrap();
-    assert!(
-        found
-            .iter()
-            .any(|hit| hit.snippet.contains("Established project knowledge"))
-    );
+    assert!(found
+        .iter()
+        .any(|hit| hit.snippet.contains("Established project knowledge")));
     until(|| fixture.document_requests() == 1).await;
     owner.shutdown().await;
 }

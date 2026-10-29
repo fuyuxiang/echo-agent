@@ -166,6 +166,7 @@ pub fn list_records(root: &Path, task_id: &str) -> Vec<VerificationRecord> {
 
 /// History is append-only. A new command run never erases another command's
 /// evidence, including older revisions that remain useful for diagnosis.
+#[cfg(test)]
 pub fn clear_records(_root: &Path, _task_id: &str) -> Result<(), String> {
     Ok(())
 }

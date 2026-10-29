@@ -23,24 +23,29 @@ const evidencePath = join(profile, "evidence.jsonl");
 console.log(`Native stability evidence: ${profile}`);
 const child = spawn(executable, [], { cwd: root, env: { ...process.env, ECHO_STABILITY_PROFILE: profile }, stdio: ["ignore", "ignore", "pipe"] });
 let stderr = "";
+let spawnError;
 child.stderr.on("data", data => { stderr = (stderr + data).slice(-8000); });
-child.on("error", error => { stderr += String(error); });
+child.on("error", error => { spawnError = error; stderr += String(error); });
+let exit;
+child.on("exit", (code, signal) => { exit = { code, signal }; });
 const evidence = () => existsSync(evidencePath) ? readFileSync(evidencePath,"utf8").trim().split("\n").filter(Boolean).flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } }) : [];
+const finishedNormally = rows => rows.some(row => row.value.complete && rows.some(exit => exit.pid === row.pid && exit.value.normalExitObserved));
 try {
   const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
+    if (spawnError) throw spawnError;
     const rows = evidence();
     const error = rows.find(row => row.value.error);
     assert.ok(!error, `Native recovery failed: ${JSON.stringify(error)}\n${stderr}`);
-    if (rows.some(row => row.value.complete) && rows.some(row => row.value.normalExitObserved)) break;
-    if (child.exitCode !== null && child.exitCode !== 73 && !rows.length) throw new Error(`Fixture exited ${child.exitCode}: ${stderr}`);
+    if (finishedNormally(rows)) break;
+    if (exit && exit.code !== 73) throw new Error(`Fixture exited unexpectedly: ${JSON.stringify(exit)}; evidence: ${JSON.stringify(rows)}\n${stderr}`);
     await new Promise(resolve => setTimeout(resolve, 200));
   }
   // A deliberate exit must not be mistaken for another crash and resurrected.
   await new Promise(resolve => setTimeout(resolve, 2000));
   const rows = evidence();
-  assert.ok(rows.some(row => row.value.complete), `Native recovery timed out: ${stderr}`);
-  assert.ok(rows.some(row => row.value.normalExitObserved), "Native event loop must complete intentional exit");
+  assert.ok(rows.some(row => row.value.complete), `Native recovery timed out; original host: ${JSON.stringify(exit)}; evidence: ${JSON.stringify(rows)}\n${stderr}`);
+  assert.ok(finishedNormally(rows), "The final native event loop must complete intentional exit");
   assert.equal(child.exitCode, 73, "The original host must actually fail during injection");
   const boots = rows.filter(row => row.value.document);
   const expected = process.platform === "win32" ? 6 : 5;
@@ -58,8 +63,10 @@ try {
   // renderer is dead; no process-name kills or production profiles are used.
   writeFileSync(join(profile,"stop"), "stop\n");
   await new Promise(resolve => setTimeout(resolve, 1500));
-  if (process.env.STABILITY_EVIDENCE_DIR && existsSync(evidencePath)) {
+  if (process.env.STABILITY_EVIDENCE_DIR) {
     mkdirSync(process.env.STABILITY_EVIDENCE_DIR, { recursive: true });
-    copyFileSync(evidencePath, join(process.env.STABILITY_EVIDENCE_DIR, "evidence.jsonl"));
+    if (existsSync(evidencePath)) copyFileSync(evidencePath, join(process.env.STABILITY_EVIDENCE_DIR, "evidence.jsonl"));
+    writeFileSync(join(process.env.STABILITY_EVIDENCE_DIR, "native-stderr.log"), stderr);
+    writeFileSync(join(process.env.STABILITY_EVIDENCE_DIR, "runner.json"), JSON.stringify({ platform: process.platform, arch: process.arch, node: process.version, exit, evidence: evidence() }, null, 2));
   }
 }

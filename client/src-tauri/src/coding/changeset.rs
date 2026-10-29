@@ -1259,7 +1259,7 @@ async fn sync_from_git_with_set(root: &Path, mut set: ChangeSet) -> Result<Chang
                 }
             };
         if baseline.existed == current_exists
-            && baseline_hash_matches(&baseline, current_hash.as_deref())
+            && baseline_hash_matches(baseline, current_hash.as_deref())
         {
             continue;
         }
@@ -2049,15 +2049,6 @@ pub async fn coding_changeset_revert_hunk_preview(
     .map_err(|error| error.to_string())?
 }
 
-pub fn mark_committed(
-    root: &Path,
-    task_id: &str,
-    hash: &str,
-    paths: &[String],
-) -> Result<ChangeSet, String> {
-    mark_committed_with_baselines(root, task_id, hash, paths, &BTreeMap::new())
-}
-
 pub fn mark_committed_with_baselines(
     root: &Path,
     task_id: &str,
@@ -2459,6 +2450,7 @@ pub async fn coding_checkpoint_preserve_buffer(
 /// Native-only receipt for a successful, version-checked editor operation.
 /// This survives a renderer/app interruption and never relies on a filename
 /// merely appearing in model text or a filesystem watcher.
+#[cfg(test)]
 pub fn checkpoint_note_applied(
     root: &Path,
     task_id: &str,

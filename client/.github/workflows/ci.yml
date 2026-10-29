@@ -26,7 +26,7 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '22.23.4'
           cache: 'pnpm'
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -56,7 +56,7 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '22.23.4'
           cache: 'pnpm'
       - run: npm install --global npm@11.21.1 --ignore-scripts --no-audit --no-fund
       - run: pnpm install --frozen-lockfile
@@ -76,7 +76,7 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '22.23.4'
           cache: 'pnpm'
       - run: node scripts/verify-vendored-runtime.mjs
       - run: node scripts/release-version.mjs check
@@ -92,7 +92,7 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '22.23.4'
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
@@ -107,7 +107,7 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '22.23.4'
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
@@ -141,7 +141,7 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '22.23.4'
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
       - name: Install isolated browser review tools
@@ -197,7 +197,7 @@ jobs:
           workspaces: src-tauri -> target
       - uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '22.23.4'
       - run: node scripts/verify-vendored-runtime.mjs
       - name: Check Rust warnings and lints
         run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --lib -- -D warnings
@@ -246,7 +246,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '22.23.4'
       - name: Verify native runner architecture
         run: node -e "require('node:assert/strict').equal(process.arch, process.env.EXPECTED_RUNTIME_ARCH)"
         env:
@@ -280,7 +280,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '22.23.4'
       - name: Verify native runner architecture
         run: node -e "require('node:assert/strict').equal(process.arch, 'x64')"
       - uses: dtolnay/rust-toolchain@stable
@@ -313,7 +313,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '22.23.4'
       - name: Verify native warnings, failure handling and literal checkout paths
         shell: ${{ matrix.shell }}
         run: ./scripts/test-windows-packaging.ps1
@@ -372,7 +372,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '22.23.4'
           cache: npm
           cache-dependency-path: vendor/theia-platform/package-lock.json
       - run: npm install --global npm@11.21.1 --ignore-scripts --no-audit --no-fund

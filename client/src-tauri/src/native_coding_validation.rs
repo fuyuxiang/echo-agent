@@ -3,6 +3,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static RUN_STARTED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "macos")]
 static WORKSPACE_FIXTURE_PREPARED: AtomicBool = AtomicBool::new(false);
 static POINTER_NONCE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 static POINTER_SENT: AtomicBool = AtomicBool::new(false);

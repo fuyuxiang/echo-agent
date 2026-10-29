@@ -330,7 +330,7 @@ fn export(
         .map_err(|e| e.to_string())?;
     zip.finish().map_err(|e| e.to_string())?;
     temporary.as_file().sync_all().map_err(|e| e.to_string())?;
-    temporary.persist(destination).map_err(|e| e.to_string())?;
+    crate::paths::replace_file_atomically(temporary.path(), destination)?;
     Ok(())
 }
 fn unpack(archive: &Path, staging: &Path) -> Result<Manifest, String> {
@@ -427,7 +427,7 @@ fn atomic_copy(source: &Path, target: &Path) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     temporary.as_file().sync_all().map_err(|e| e.to_string())?;
     crate::paths::harden_private_file(temporary.path())?;
-    temporary.persist(target).map_err(|e| e.to_string())?;
+    crate::paths::replace_file_atomically(temporary.path(), target)?;
     Ok(())
 }
 #[derive(Serialize, Deserialize)]
@@ -681,7 +681,7 @@ fn prepare_file(
         }
         output.as_file().sync_all().map_err(|e| e.to_string())?;
         crate::paths::harden_private_file(output.path())?;
-        output.persist(path).map_err(|e| e.to_string())?;
+        crate::paths::replace_file_atomically(output.path(), path)?;
         return Ok(());
     }
     if !name.ends_with(".json")
@@ -1094,7 +1094,7 @@ pub async fn backup_inspect(
                 return Err(error);
             }
         };
-        output.persist(&copy).map_err(|e| e.to_string())?;
+        crate::paths::replace_file_atomically(output.path(), &copy)?;
         Ok::<_, String>((
             Preview {
                 token,
@@ -1686,10 +1686,7 @@ mod recovery_tests {
         let target = tempfile::tempdir().unwrap();
         let ui = BTreeMap::from([(
             "echoagent.draft-attachments.v1".into(),
-            format!(
-                r#"{{"version":1,"data":{{"s":["{}/clipboard-images/item/image.png"]}}}}"#,
-                source.path().display()
-            ),
+            serde_json::json!({"version":1,"data":{"s":[source.path().join("clipboard-images/item/image.png")]}}).to_string(),
         )]);
         export(
             source.path(),
@@ -1720,8 +1717,12 @@ mod recovery_tests {
         let ui: BTreeMap<String, String> =
             serde_json::from_slice(&fs::read(target.path().join("restore-ui.json")).unwrap())
                 .unwrap();
-        assert!(ui["echoagent.draft-attachments.v1"]
-            .contains(&target.path().to_string_lossy().to_string()));
+        let attachments: serde_json::Value =
+            serde_json::from_str(&ui["echoagent.draft-attachments.v1"]).unwrap();
+        assert_eq!(
+            Path::new(attachments["data"]["s"][0].as_str().unwrap()),
+            target.path().join("clipboard-images/item/image.png")
+        );
         apply_pending_at(target.path(), target.path()).unwrap();
         assert!(target.path().join("restore-ui.json").exists());
     }

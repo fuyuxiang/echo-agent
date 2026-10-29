@@ -913,6 +913,7 @@ pub(crate) fn completion_from_prompt_response(
 /// ACP resolves this request after the complete model turn. Streamed updates
 /// arrive earlier on the client rx channel. Rate limiting belongs inside the
 /// runtime sampler because resubmitting a prompt persists another user turn.
+#[cfg(test)]
 pub async fn prompt_with_attachments(
     tx: &AcpAgentTx,
     session_id: &str,
@@ -936,6 +937,7 @@ pub async fn prompt_with_attachments(
     .await
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub async fn prompt_with_mode_and_attachments(
     tx: &AcpAgentTx,

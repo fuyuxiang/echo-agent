@@ -46,6 +46,9 @@ try {
     queue.push(...Object.keys(manifest.dependencies ?? {}), ...Object.keys(manifest.optionalDependencies ?? {}));
   }
   const lock = join(root, "scripts/theia-runtime-package-lock.json");
+  // Preserve the previously reviewed graph while resolving changed manifests
+  // and security workspaces. A fresh solve upgrades unrelated dependencies.
+  copyFileSync(lock, join(temporary, "package-lock.json"));
   const result = spawnSync(npm, ["install", "--package-lock-only", "--ignore-scripts", "--omit=dev", "--no-audit", "--no-fund"], {
     cwd: temporary,
     stdio: "inherit",

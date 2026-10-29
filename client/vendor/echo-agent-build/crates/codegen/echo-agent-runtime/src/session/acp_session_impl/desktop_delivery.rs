@@ -471,12 +471,10 @@ mod tests {
     fn corrupt_delivery_journal_is_reported_and_preserved() {
         let folder = tempfile::tempdir().unwrap();
         let path = folder.path().join("desktop-delivery.json");
-        assert!(
-            DesktopDelivery::load(folder.path())
-                .unwrap()
-                .paths
-                .is_empty()
-        );
+        assert!(DesktopDelivery::load(folder.path())
+            .unwrap()
+            .paths
+            .is_empty());
         std::fs::write(&path, b"broken").unwrap();
         assert!(DesktopDelivery::load(folder.path()).is_err());
         assert_eq!(std::fs::read(path).unwrap(), b"broken");
@@ -517,11 +515,9 @@ mod tests {
             1
         );
         tokio::fs::write(&a, b"PK\x03\x04header").await.unwrap();
-        assert!(
-            missing_outputs(std::slice::from_ref(&a), root.path())
-                .await
-                .is_empty()
-        );
+        assert!(missing_outputs(std::slice::from_ref(&a), root.path())
+            .await
+            .is_empty());
         tokio::fs::remove_file(&a).await.unwrap();
         tokio::fs::create_dir(&a).await.unwrap();
         assert_eq!(missing_outputs(&[a], root.path()).await.len(), 1);

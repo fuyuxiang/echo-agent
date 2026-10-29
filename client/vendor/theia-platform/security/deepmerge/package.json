@@ -1,0 +1,9 @@
+{
+  "name": "deepmerge",
+  "version": "4.3.1+echo.1",
+  "description": "deepmerge with an EchoAgent prototype poisoning security backport",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "license": "MIT",
+  "private": true
+}

@@ -7,9 +7,9 @@
   const invoke = window.__TAURI_INTERNALS__.invoke;
   const config = await invoke("fixture_config");
   EchoRendererHealth.startRendererHealth();
-  const draftKey = `${config.nonce}:draft`, stepKey = `${config.nonce}:step`;
+  const draftKey = `${config.nonce}:draft`;
   const expected = "恢复后保留草稿：中文、空格与附件说明";
-  const step = Number(localStorage.getItem(stepKey) || 0);
+  const step = config.step;
   if (step === 0) localStorage.setItem(draftKey, expected);
   const draft = localStorage.getItem(draftKey);
   if (draft !== expected) throw new Error("草稿未能跨界面/宿主重建保留");
@@ -21,11 +21,10 @@
     status = await invoke("desktop_recovery_status");
     if (status.phase === expectedPhase) break;
   }
-  if (status.phase !== expectedPhase) throw new Error(`界面状态不正确：预期 ${expectedPhase}，实际 ${status.phase}`);
+  if (status.phase !== expectedPhase) throw new Error(`步骤 ${step}（${config.steps[step - 1] || "boot"}）界面状态不正确：预期 ${expectedPhase}，实际 ${JSON.stringify(status)}`);
   await invoke("fixture_report", { value: { step, draft, document: crypto.randomUUID(), status } });
   if (step >= config.steps.length) { await invoke("fixture_finish"); return; }
   document.getElementById("status").textContent = `正在验证 ${config.steps[step]}，草稿已保存`;
-  localStorage.setItem(stepKey, String(step + 1));
   await new Promise(resolve => setTimeout(resolve, 500));
   await invoke("fixture_fail", { nonce: config.nonce, kind: config.steps[step] });
 })().catch(async error => {

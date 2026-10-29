@@ -1,12 +1,12 @@
 //! Exercise the production index and batch coordinator with isolated ledgers.
 use echo_agent_memory::{
-    MemoryIndex, MemoryStorage, embed_missing_chunks,
+    embed_missing_chunks,
     embedding::{EmbeddingProvider, MemoryPolicyError},
-    init_sqlite_vec, records,
+    init_sqlite_vec, records, MemoryIndex, MemoryStorage,
 };
 use std::sync::{
-    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
 };
 
 struct Provider {
@@ -335,13 +335,11 @@ async fn an_explicit_correction_can_extend_old_text_without_reviving_the_legacy_
     assert!(found.iter().all(|r| r.path != legacy.to_string_lossy()));
     // Current workspace facts cannot override an explicit global forgetting rule.
     records::forget_topic(&storage, "global", "English").unwrap();
-    assert!(
-        backend
-            .search("English Chinese", 5, 0.0)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert!(backend
+        .search("English Chinese", 5, 0.0)
+        .await
+        .unwrap()
+        .is_empty());
     let projection = std::fs::read_to_string(&path).unwrap();
     assert!(matches!(
         storage.request_permit_for_paths(vec![path])(&[&projection]),

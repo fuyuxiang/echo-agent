@@ -6,7 +6,7 @@ use echo_agent_runtime::session::memory::pending;
 #[test]
 fn long_turn_extraction_is_bounded_without_dropping_the_user_anchor_or_latest_outcome() {
     use echo_agent_runtime::session::helpers::memory_flush_window::{
-        MAX_FLUSH_BYTES, MAX_FLUSH_MESSAGES, select_flush_window,
+        select_flush_window, MAX_FLUSH_BYTES, MAX_FLUSH_MESSAGES,
     };
     let mut history = vec![ConversationItem::user("original user request")];
     for _ in 0..190 {

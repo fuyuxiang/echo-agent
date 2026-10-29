@@ -1645,14 +1645,33 @@ fn preflight_restore_batch(restore_tokens: &[String], targets: &[PathBuf]) -> Re
         not(target_os = "android")
     )
 ))]
+fn same_trash_path(left: &Path, right: &Path) -> bool {
+    // Shell recycle-bin paths omit the extended-length prefix returned by
+    // Rust canonicalize(). The destination may no longer exist, so compare
+    // normalized spellings without resolving it through the filesystem.
+    dunce::simplified(left) == dunce::simplified(right)
+}
+
+#[cfg(any(
+    target_os = "windows",
+    all(
+        unix,
+        not(target_os = "macos"),
+        not(target_os = "ios"),
+        not(target_os = "android")
+    )
+))]
 fn preflight_restore_batch(restore_tokens: &[String], targets: &[PathBuf]) -> Result<(), String> {
     let items =
         trash::os_limited::list().map_err(|error| format!("无法读取系统回收站：{error}"))?;
     for (restore_token, target) in restore_tokens.iter().zip(targets) {
-        if Path::new(restore_token) != target {
+        if !same_trash_path(Path::new(restore_token), target) {
             return Err("恢复标识与目标路径不匹配".into());
         }
-        if !items.iter().any(|item| item.original_path() == *target) {
+        if !items
+            .iter()
+            .any(|item| same_trash_path(&item.original_path(), target))
+        {
             return Err(format!("系统回收站中未找到对应条目：{}", target.display()));
         }
     }
@@ -1760,14 +1779,14 @@ fn restore_trash_item(restore_token: &str, target: &Path) -> Result<(), String> 
 ))]
 fn restore_trash_item(restore_token: &str, target: &Path) -> Result<(), String> {
     let expected = PathBuf::from(restore_token);
-    if expected != target {
+    if !same_trash_path(&expected, target) {
         return Err("恢复标识与目标路径不匹配".into());
     }
     let items =
         trash::os_limited::list().map_err(|error| format!("无法读取系统回收站：{error}"))?;
     let item = items
         .into_iter()
-        .filter(|item| item.original_path() == expected)
+        .filter(|item| same_trash_path(&item.original_path(), &expected))
         .max_by_key(|item| item.time_deleted)
         .ok_or_else(|| "系统回收站中未找到对应条目".to_string())?;
     trash::os_limited::restore_all([item]).map_err(|error| format!("从系统回收站恢复失败：{error}"))
@@ -3376,6 +3395,23 @@ mod tests {
                 assert!(Path::new(&result.source_path).exists());
             }
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn trash_paths_match_shell_and_extended_length_spellings_without_existing_targets() {
+        assert!(same_trash_path(
+            Path::new(r"\\?\C:\Users\runner\deleted.txt"),
+            Path::new(r"C:\Users\runner\deleted.txt")
+        ));
+        assert!(same_trash_path(
+            Path::new(r"\\?\UNC\server\share\deleted"),
+            Path::new(r"\\server\share\deleted")
+        ));
+        assert!(!same_trash_path(
+            Path::new(r"\\?\C:\workspace\a.txt"),
+            Path::new(r"C:\workspace\b.txt")
+        ));
     }
 
     #[test]

@@ -42,7 +42,7 @@ def request(url, payload=None):
 
 
 def npm_audits(output):
-    for name in ["braces", "sprintf-js"]:
+    for name in ["braces", "sprintf-js", "deepmerge"]:
         source = ROOT / "vendor/theia-platform/security" / name
         provenance = json.loads((source / "SOURCE.json").read_text())
         for file, expected in provenance["patchedSha256"].items():
@@ -50,7 +50,7 @@ def npm_audits(output):
                 raise RuntimeError(f"Security backport changed without review: {name}/{file}")
     for lock in [ROOT / "vendor/theia-platform/package-lock.json", ROOT / "scripts/theia-runtime-package-lock.json"]:
         packages = json.loads(lock.read_text())["packages"]
-        for name in ["braces", "sprintf-js"]:
+        for name in ["braces", "sprintf-js", "deepmerge"]:
             if packages.get(f"node_modules/{name}", {}).get("resolved") != f"security/{name}":
                 raise RuntimeError(f"Security workspace is not active: {lock}/{name}")
     jobs = [
@@ -73,6 +73,10 @@ def npm_audits(output):
             raise RuntimeError(f"{name}: incomplete vulnerability counts")
         findings = sum(counts.get(severity, 0) for severity in ["info", "low", "moderate", "high", "critical"])
         print(f"{name}: {findings} affected dependency/advisory entries", flush=True)
+        for package, vulnerability in data.get("vulnerabilities", {}).items():
+            for advisory in vulnerability.get("via", []):
+                if isinstance(advisory, dict):
+                    print(f"{name}: {package}: {advisory.get('title')}: {advisory.get('url')}", flush=True)
         return findings
 
     with ThreadPoolExecutor(max_workers=3) as executor:

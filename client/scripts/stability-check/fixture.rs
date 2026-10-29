@@ -13,6 +13,22 @@ struct Fixture {
     nonce: String,
     writer: Mutex<()>,
 }
+fn steps() -> &'static [&'static str] {
+    if cfg!(windows) {
+        &["rebuild", "renderer", "browser", "host", "restart"]
+    } else {
+        &["rebuild", "reload", "host", "restart"]
+    }
+}
+fn read_step(profile: &std::path::Path) -> Result<usize, String> {
+    match std::fs::read_to_string(profile.join("step")) {
+        Ok(value) => value
+            .parse()
+            .map_err(|e| format!("invalid fixture step: {e}")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(error) => Err(error.to_string()),
+    }
+}
 fn record(app: &tauri::AppHandle, value: Value) -> Result<(), String> {
     let state = app.state::<Fixture>();
     let _writer = state.writer.lock().map_err(|e| e.to_string())?;
@@ -30,8 +46,8 @@ fn record(app: &tauri::AppHandle, value: Value) -> Result<(), String> {
     file.sync_all().map_err(|e| e.to_string())
 }
 #[tauri::command]
-fn fixture_config(state: tauri::State<'_, Fixture>) -> Value {
-    json!({"nonce":state.nonce, "steps": if cfg!(windows) { vec!["rebuild", "renderer", "browser", "host", "restart"] } else { vec!["rebuild", "reload", "host", "restart"] }})
+fn fixture_config(state: tauri::State<'_, Fixture>) -> Result<Value, String> {
+    Ok(json!({"nonce":state.nonce, "steps":steps(), "step":read_step(&state.profile)?}))
 }
 #[tauri::command]
 fn fixture_report(app: tauri::AppHandle, value: Value) -> Result<(), String> {
@@ -64,10 +80,26 @@ async fn fixture_fail(
         return Err("wrong private fixture identity".into());
     }
     let status = webview_recovery::desktop_recovery_status(app.state());
+    // Test orchestration must survive an immediate host kill independently of
+    // the browser's asynchronous localStorage disk flush. The draft remains
+    // exclusively in localStorage so its recovery is still tested end to end.
+    let state = app.state::<Fixture>();
+    let step = read_step(&state.profile)?;
+    if steps().get(step).copied() != Some(kind.as_str()) {
+        return Err("unexpected fixture failure step".into());
+    }
+    let mut marker =
+        std::fs::File::create(state.profile.join("step")).map_err(|e| e.to_string())?;
+    write!(marker, "{}", step + 1).map_err(|e| e.to_string())?;
+    marker.sync_all().map_err(|e| e.to_string())?;
+    drop(state);
     record(&app, json!({"fault":kind}))?;
     match kind.as_str() {
         "host" => std::process::exit(73),
         "restart" => {
+            // Match production restart: the new host must survive closure of
+            // the current host's kill-on-close Windows Job.
+            process_supervisor::permit_application_relaunch().map_err(|e| e.to_string())?;
             host_watchdog::finish_exit();
             EXIT_IN_PROGRESS.store(true, Ordering::Release);
             app.restart();
@@ -147,6 +179,7 @@ pub fn run() {
     });
     let app = builder
         .setup(|app| {
+            record(app.handle(), json!({"nativeSetup":true})).map_err(std::io::Error::other)?;
             let handle = app.handle().clone();
             let profile = app.state::<Fixture>().profile.clone();
             tauri::async_runtime::spawn(async move {
@@ -167,6 +200,7 @@ pub fn run() {
                 .data_store_identifier(config.data_store_identifier.unwrap())
                 .build()?;
             webview_recovery::install(app.handle(), &window).map_err(std::io::Error::other)?;
+            record(app.handle(), json!({"windowInstalled":true})).map_err(std::io::Error::other)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

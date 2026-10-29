@@ -16,14 +16,14 @@ mod automations;
 mod backup;
 mod bridge;
 mod coding;
-mod coding_workspace;
-mod coding_document_bridge;
-mod coding_external_tools;
 mod coding_closed_documents;
 mod coding_completion;
-mod coding_plan;
+mod coding_document_bridge;
+mod coding_external_tools;
 mod coding_patch;
+mod coding_plan;
 mod coding_review_runtime;
+mod coding_workspace;
 mod commands;
 #[cfg(test)]
 #[path = "../../vendor/echo-agent-build/crates/codegen/echo-agent-runtime/src/session/acp_session_impl/desktop_delivery.rs"]

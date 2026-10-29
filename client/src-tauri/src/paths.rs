@@ -386,9 +386,25 @@ pub(crate) fn replace_file_atomically(staging: &Path, destination: &Path) -> Res
     use std::iter::once;
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        GetFileAttributesW, MoveFileExW, SetFileAttributesW, FILE_ATTRIBUTE_NORMAL,
+        FILE_ATTRIBUTE_TEMPORARY, INVALID_FILE_ATTRIBUTES, MOVEFILE_REPLACE_EXISTING,
+        MOVEFILE_WRITE_THROUGH,
     };
 
+    // Unlike std::fs, raw Win32 calls do not normalize mixed separators or
+    // add the extended-length prefix. Canonicalize the existing staging file
+    // and destination parent, without following/requiring the destination.
+    let staging = staging.canonicalize().map_err(|e| e.to_string())?;
+    let destination = destination
+        .parent()
+        .ok_or("atomic destination has no parent")?
+        .canonicalize()
+        .map_err(|e| e.to_string())?
+        .join(
+            destination
+                .file_name()
+                .ok_or("atomic destination has no name")?,
+        );
     let staging_wide = staging
         .as_os_str()
         .encode_wide()
@@ -399,6 +415,23 @@ pub(crate) fn replace_file_atomically(staging: &Path, destination: &Path) -> Res
         .encode_wide()
         .chain(once(0))
         .collect::<Vec<_>>();
+    // Preserve NamedTempFile::persist semantics: a published backup must no
+    // longer carry the temporary-file caching hint.
+    let attributes = unsafe { GetFileAttributesW(staging_wide.as_ptr()) };
+    if attributes == INVALID_FILE_ATTRIBUTES {
+        return Err(io::Error::last_os_error().to_string());
+    }
+    if attributes & FILE_ATTRIBUTE_TEMPORARY != 0 {
+        let attributes = attributes & !FILE_ATTRIBUTE_TEMPORARY;
+        let attributes = if attributes == 0 {
+            FILE_ATTRIBUTE_NORMAL
+        } else {
+            attributes
+        };
+        if unsafe { SetFileAttributesW(staging_wide.as_ptr(), attributes) } == 0 {
+            return Err(io::Error::last_os_error().to_string());
+        }
+    }
     // SAFETY: both buffers are NUL-terminated and remain alive for the call.
     let replaced = unsafe {
         MoveFileExW(
@@ -502,6 +535,7 @@ mod tests {
         reject_legacy_workbuddy_path, write_private_file,
     };
     use std::fs;
+    use std::io::Write;
     use std::path::Path;
 
     #[test]
@@ -733,6 +767,34 @@ mod tests {
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
         );
+    }
+
+    #[test]
+    fn private_writes_replace_files_under_long_paths_with_mixed_separators() {
+        let target = tempfile::tempdir().unwrap();
+        let path = target
+            .path()
+            .join("profile".repeat(20))
+            .join("nested".repeat(20))
+            .join("sessions/saved/summary.json");
+        assert!(path.as_os_str().len() > 260);
+        write_private_file(&path, b"old").unwrap();
+        write_private_file(&path, b"new").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new");
+        let mut staging = tempfile::NamedTempFile::new_in(path.parent().unwrap()).unwrap();
+        staging.write_all(b"backup").unwrap();
+        staging.as_file().sync_all().unwrap();
+        super::replace_file_atomically(staging.path(), &path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"backup");
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_TEMPORARY;
+            assert_eq!(
+                fs::metadata(&path).unwrap().file_attributes() & FILE_ATTRIBUTE_TEMPORARY,
+                0
+            );
+        }
     }
 
     #[test]

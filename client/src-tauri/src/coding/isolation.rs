@@ -344,7 +344,7 @@ fn ensure_no_cwd_process(root: &Path) -> Result<(), String> {
                 }
             }
         }
-        return Ok(());
+        Ok(())
     }
     #[cfg(target_os = "macos")]
     {
@@ -509,6 +509,7 @@ mod tests {
         git(dir.path(), &["init", "-q"]).unwrap();
         git(dir.path(), &["config", "user.name", "Echo Test"]).unwrap();
         git(dir.path(), &["config", "user.email", "echo@example.test"]).unwrap();
+        git(dir.path(), &["config", "core.autocrlf", "false"]).unwrap();
         std::fs::write(dir.path().join("a.txt"), "base a\n").unwrap();
         std::fs::write(dir.path().join("b.txt"), "base b\n").unwrap();
         git(dir.path(), &["add", "."]).unwrap();

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -11,6 +11,55 @@ import { assertSupportedNodeVersion, assertSupportedNpmVersion } from "./node-ru
 const require = createRequire(import.meta.url);
 const braces = require(resolve("vendor/theia-platform/security/braces"));
 const { sprintf } = require(resolve("vendor/theia-platform/security/sprintf-js"));
+const deepmerge = require(resolve("vendor/theia-platform/security/deepmerge"));
+
+test("deepmerge cannot poison results through either operand or null-prototype objects", () => {
+  const poison = JSON.parse('{"__proto__":{"poisoned":true},"constructor":{"prototype":{"poisoned":true}},"prototype":{"poisoned":true},"safe":{"value":1}}');
+  for (const input of [poison, Object.assign(Object.create(null), poison), { nested: poison }]) {
+    for (const result of [deepmerge(input, {}), deepmerge({}, input), deepmerge.all([input, {}])]) {
+      const object = result.nested ?? result;
+      assert.equal(Object.getPrototypeOf(object), Object.prototype);
+      assert.equal(object.poisoned, undefined);
+      for (const key of ["__proto__", "constructor", "prototype"]) assert.equal(Object.hasOwn(object, key), false);
+      assert.deepEqual(object.safe, { value: 1 });
+    }
+  }
+  assert.equal({}.poisoned, undefined);
+});
+
+test("deepmerge preserves config merging, arrays, symbols and custom merge hooks", () => {
+  const symbol = Symbol("config");
+  const target = { nested: { left: true }, values: [1], [symbol]: { first: 1 } };
+  const source = { nested: { right: true }, values: [2], [symbol]: { second: 2 } };
+  assert.deepEqual(deepmerge(target, source), { nested: { left: true, right: true }, values: [1, 2], [symbol]: { first: 1, second: 2 } });
+  assert.deepEqual(deepmerge(target, source, { arrayMerge: (_, value) => value }).values, [2]);
+  assert.deepEqual(deepmerge(target, source, { customMerge: key => key === "nested" ? () => ({ custom: true }) : undefined }).nested, { custom: true });
+  assert.deepEqual(target.nested, { left: true });
+  assert.equal(deepmerge({ toString: "config value" }, {}).toString, "config value");
+});
+
+test("npm ci installs the reviewed deepmerge workspace for a registry version requirement", () => {
+  const directory = mkdtempSync(join(tmpdir(), "echo-deepmerge-install-"));
+  try {
+    cpSync("vendor/theia-platform/security/deepmerge", join(directory, "security/deepmerge"), { recursive: true });
+    writeFileSync(join(directory, "package.json"), JSON.stringify({ private: true, workspaces: ["security/*"], dependencies: { deepmerge: "^4.3.1" } }));
+    const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+    for (const args of [["install", "--package-lock-only"], ["ci"]]) {
+      const result = spawnSync(npm, [...args, "--ignore-scripts", "--offline", "--no-audit", "--no-fund"], {
+        cwd: directory, encoding: "utf8", timeout: 20000, shell: process.platform === "win32",
+        env: { ...process.env, npm_config_cache: join(directory, "cache") },
+      });
+      assert.equal(result.status, 0, result.error?.message || result.stderr);
+    }
+    assert.equal(realpathSync(join(directory, "node_modules/deepmerge")), realpathSync(join(directory, "security/deepmerge")));
+    const installed = require(join(directory, "node_modules/deepmerge"));
+    assert.equal(installed(JSON.parse('{"__proto__":{"poisoned":true}}'), {}).poisoned, undefined);
+    for (const path of ["vendor/theia-platform/package-lock.json", "scripts/theia-runtime-package-lock.json"]) {
+      const lock = JSON.parse(readFileSync(path, "utf8"));
+      assert.deepEqual(lock.packages["node_modules/deepmerge"], { resolved: "security/deepmerge", link: true });
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
 
 test("dependency audit covers every tracked Rust lockfile, including the native harness", () => {
   const result = spawnSync("git", ["ls-files", "-z", "--", "*Cargo.lock"], { encoding: "utf8" });

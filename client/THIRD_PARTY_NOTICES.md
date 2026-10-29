@@ -120,6 +120,8 @@ directory records upstream versions, advisories and the local changes.
   parsing and AST traversal for deeply nested patterns.
 - `vendor/theia-platform/security/sprintf-js/`: sprintf-js 1.0.3, BSD-3-Clause,
   with bounded numeric precision and padding.
+- `vendor/theia-platform/security/deepmerge/`: deepmerge 4.3.1, MIT, with
+  reserved-key guards for both merge operands to prevent prototype poisoning.
 
 Rust patch entries and npm workspace links select these copies. The original
 license files are included alongside the sources; the JavaScript copies are

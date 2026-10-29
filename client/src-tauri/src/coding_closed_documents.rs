@@ -363,32 +363,20 @@ fn apply(root: &Path, operation: EditOperation) -> Result<ApplyResult, String> {
     let mut seen = HashSet::new();
     let mut consumed = 0usize;
     for target in &operation.files {
-        let prepared = (|| -> Result<Prepared, FileApplyResult> {
-            let path = target_path(root, &target.uri)
-                .map_err(|error| error_result(&target.uri, FileStatus::Rejected, error))?;
+        let prepared = (|| -> Result<Prepared, (FileStatus, String)> {
+            let path =
+                target_path(root, &target.uri).map_err(|error| (FileStatus::Rejected, error))?;
             if !seen.insert(path.clone()) {
-                return Err(error_result(
-                    &target.uri,
-                    FileStatus::Rejected,
-                    "同一操作重复包含文档",
-                ));
+                return Err((FileStatus::Rejected, "同一操作重复包含文档".into()));
             }
             let current = snapshot(root, &operation.workspace, &target.uri)
-                .map_err(|error| error_result(&target.uri, FileStatus::Rejected, error))?;
+                .map_err(|error| (FileStatus::Rejected, error))?;
             consumed = consumed.saturating_add(current.content.len());
             if consumed > MAX_PREFLIGHT_BYTES {
-                return Err(error_result(
-                    &target.uri,
-                    FileStatus::Rejected,
-                    "多文件预检超过大小预算",
-                ));
+                return Err((FileStatus::Rejected, "多文件预检超过大小预算".into()));
             }
             if current.hash != target.expected_hash {
-                return Err(error_result(
-                    &target.uri,
-                    FileStatus::Conflict,
-                    "文档内容已变化，未覆盖原内容",
-                ));
+                return Err((FileStatus::Conflict, "文档内容已变化，未覆盖原内容".into()));
             }
             if target.move_to.as_ref().is_some_and(|destination| {
                 target_path(root, destination)
@@ -396,25 +384,17 @@ fn apply(root: &Path, operation: EditOperation) -> Result<ApplyResult, String> {
                     .unwrap_or(true)
             }) || ((target.delete || target.move_to.is_some()) && !current.exists)
             {
-                return Err(error_result(
-                    &target.uri,
-                    FileStatus::Conflict,
-                    "移动目标已存在或源文件不存在",
-                ));
+                return Err((FileStatus::Conflict, "移动目标已存在或源文件不存在".into()));
             }
             if current.exists
                 && std::fs::metadata(&path)
                     .map(|metadata| metadata.permissions().readonly())
                     .unwrap_or(true)
             {
-                return Err(error_result(
-                    &target.uri,
-                    FileStatus::Rejected,
-                    "文档为只读，未应用修改",
-                ));
+                return Err((FileStatus::Rejected, "文档为只读，未应用修改".into()));
             }
             let text = edited_text(&current.content, &target.edits)
-                .map_err(|error| error_result(&target.uri, FileStatus::Rejected, error))?;
+                .map_err(|error| (FileStatus::Rejected, error))?;
             // An unmounted, saved document has no Monaco version. Its complete hash is authoritative.
             Ok(Prepared {
                 target: target.clone(),
@@ -425,7 +405,7 @@ fn apply(root: &Path, operation: EditOperation) -> Result<ApplyResult, String> {
         })();
         preflight.push(match prepared {
             Ok(prepared) => Preflight::Ready(prepared),
-            Err(error) => Preflight::Error(error),
+            Err((status, error)) => Preflight::Error(error_result(&target.uri, status, error)),
         });
     }
     let mut files = Vec::new();

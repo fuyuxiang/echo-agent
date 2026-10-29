@@ -131,12 +131,10 @@ mod memory_listing_privacy_tests {
             None,
         );
         assert_eq!(response["total"], 1);
-        assert!(
-            response["guidance"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("exact subject")
-        );
+        assert!(response["guidance"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("exact subject"));
     }
 
     #[test]
@@ -168,12 +166,10 @@ mod memory_listing_privacy_tests {
         );
         assert_eq!(response["total"], 0);
         assert_eq!(response["noReliableMemory"], true);
-        assert!(
-            response["guidance"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("Do not")
-        );
+        assert!(response["guidance"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Do not"));
         assert!(!response.to_string().contains("FORGOTTEN_CANARY"));
     }
 }

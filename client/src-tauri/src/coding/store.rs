@@ -279,6 +279,9 @@ pub fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> Result<(), String> 
     let line = serde_json::to_string(value).map_err(|error| format!("序列化失败：{error}"))?;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
+        // LockFileEx requires read or write access; append-only handles fail
+        // with ERROR_ACCESS_DENIED on Windows.
+        .read(true)
         .append(true)
         .open(path)
         .map_err(|error| format!("打开失败：{error}"))?;
@@ -383,6 +386,42 @@ mod tests {
         write_json(&path, &value).unwrap();
         assert_eq!(read_json::<Sample>(&path), Some(value));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn concurrent_jsonl_writers_preserve_every_complete_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        let writers = (0..6)
+            .map(|writer| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    for count in 0..40 {
+                        append_jsonl(
+                            &path,
+                            &Sample {
+                                id: format!("{writer}-{count}"),
+                                count,
+                            },
+                        )
+                        .unwrap();
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        let items: Vec<Sample> = read_jsonl(&path);
+        assert_eq!(items.len(), 240);
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| &item.id)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            240
+        );
     }
 
     #[test]

@@ -1650,7 +1650,7 @@ fn apply_builtin_model_config(config: &mut Value) -> Result<(), String> {
         !is_builtin_model(entry)
             || BUILTIN_CHAT_MODELS
                 .iter()
-                .any(|(slug, _, _)| id == &format!("{BUILTIN_MODEL_PREFIX}{slug}"))
+                .any(|(slug, _, _)| id == format!("{BUILTIN_MODEL_PREFIX}{slug}"))
     });
     for &(slug, context_window, max_output_tokens) in BUILTIN_CHAT_MODELS {
         let id = format!("{BUILTIN_MODEL_PREFIX}{slug}");
