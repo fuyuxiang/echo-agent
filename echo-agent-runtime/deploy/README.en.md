@@ -2,6 +2,27 @@
 
 These templates depend only on the `echo-agent-runtime/` source tree. See the [Runtime README](../README.en.md) for direct Python deployment. Use `echo-agent gateway install` for systemd/launchd service generation.
 
+## Source installations and scheduled jobs
+
+The deployment example explicitly enables the scheduler and allows `cronjob`,
+`web_fetch`, and `skill_run`. The `coding` profile includes `cronjob`; approval
+and per-job unattended authorization remain required for privileged work.
+Public gateway restrictions, explicit denies, and exclusive allowlists still apply.
+After creation, verify the job ID, next run, authorization, and final delivery state.
+
+Run `echo-agent setup doctor --json` as the service user and check
+`df -h /actual/workspace`. On Linux, compare the disk and partition sizes with
+`lsblk`: expanding a cloud disk does not automatically expand its partition and
+filesystem. Root-reserved blocks are not available to an ordinary service user.
+Doctor warns below 512 MiB available; below 64 MiB it fails and `/api/v1/ready`
+reports not ready.
+
+Checkpoints filter runtime paths, their own store, and oversized files before
+writing Git blobs, and skip snapshots when free space is insufficient. Weixin
+state writes replace files atomically, preserving the previous complete state
+on write failure. Text/media sends accept server `message_id` receipts while
+still rejecting explicit error codes.
+
 ## Container
 
 From this directory:

@@ -18,7 +18,7 @@ The four tiers are cumulative — each one contains every tool from the tier bef
 |---------|-------|--------------|
 | `minimal` | 19 | Read-only Q&A; no file writes, no media generation |
 | `messaging` | 23 | Adds memory and media generation on top of `minimal` |
-| `coding` | 29 | Adds file writes and orchestration on top of `messaging` |
+| `coding` | 30 | Adds file writes, orchestration and scheduling on top of `messaging` |
 | `full` | all | Allowlist is `*`, permitting every tool (default) |
 
 For the exact tool list per tier, see the profile table in the [built-in tool reference](tools.md).

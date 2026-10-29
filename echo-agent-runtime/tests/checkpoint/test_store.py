@@ -349,3 +349,137 @@ async def test_cancelled_git_is_reaped(tmp_path: Path, monkeypatch):
 
     assert spawned, "测试自身失效:未真正拉起子进程"
     assert spawned[0].returncode is not None, "取消后子进程必须已被回收"
+
+
+@pytest.mark.asyncio
+async def test_excluded_contents_never_enter_object_database(tmp_path):
+    """Unstaging after add still leaks blobs; inspect objects, not just trees."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    store = ShadowGitStore(ws / "checkpoints/store", exclude=("data/", "*.db-wal"))
+    await store.ensure_initialized()
+    (ws / "keep.txt").write_text("keep")
+    (ws / "data").mkdir()
+    files = [ws / "data/live.db", ws / "session.db-wal", ws / "large.bin",
+             store._store / "objects/pack/tmp_pack_abandoned"]
+    for index, path in enumerate(files):
+        # Excluded paths must be below the size limit so this test cannot pass
+        # solely because the independent oversized-file filter worked.
+        size = 2 * 1024 * 1024 if path.name == "large.bin" else 2048
+        path.write_bytes(bytes([index + 1]) * size)
+    # hash-object without -w computes the expected id without storing a blob.
+    hashes = []
+    for path in files:
+        _, digest, _ = await store._run_git(["hash-object", str(path)])
+        hashes.append(digest.strip())
+    sha = await store.take_snapshot(ws, "filtered before hashing", max_file_size_mb=1)
+    assert sha
+    for digest in hashes:
+        rc, _, _ = await store._run_git(["cat-file", "-e", digest], check=False)
+        assert rc != 0, "Excluded content was written into the object database"
+    _, names, _ = await store._run_git(["ls-tree", "-rz", "--name-only", sha])
+    assert names.split("\0") == ["keep.txt", ""]
+
+
+@pytest.mark.asyncio
+async def test_snapshot_preserves_literal_names_ignores_and_removals(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    store = ShadowGitStore(tmp_path / "store")
+    await store.ensure_initialized()
+    tracked = ws / "tracked.txt"
+    tracked.write_text("first")
+    deleted = ws / "deleted.txt"
+    deleted.write_text("delete me")
+    await store.take_snapshot(ws, "first")
+    (ws / ".gitignore").write_text("*.txt\n")
+    tracked.write_text("second")
+    deleted.unlink()
+    (ws / "ignored.txt").write_text("must stay untracked")
+    name = "报告[1]\n-v2.md"
+    (ws / name).write_text("literal pathspec")
+    sha = await store.take_snapshot(ws, "second")
+    _, names, _ = await store._run_git(["ls-tree", "-rz", "--name-only", sha])
+    assert set(names.split("\0")) == {".gitignore", "tracked.txt", name, ""}
+    _, content, _ = await store._run_git(["show", f"{sha}:tracked.txt"])
+    assert content == "second"
+    assert not list((store._store / "indexes").glob("paths-*"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("available", [0, 64 * 1024**2 + len("must not be hashed") - 1])
+async def test_checkpoint_low_space_skips_before_hashing(tmp_path, monkeypatch, available):
+    from echo_agent.checkpoint import store as module
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "keep.txt").write_text("must not be hashed")
+    store = ShadowGitStore(tmp_path / "store")
+    await store.ensure_initialized()
+    monkeypatch.setattr(module, "filesystem_free_bytes", lambda _: available)
+    _, digest, _ = await store._run_git(["hash-object", str(ws / "keep.txt")])
+    with pytest.raises(OSError, match="Not enough free space"):
+        await store.take_snapshot(ws, "low space")
+    assert await store.list_snapshots(ws) == []
+    rc, _, _ = await store._run_git(["cat-file", "-e", digest.strip()], check=False)
+    assert rc != 0
+
+
+@pytest.mark.asyncio
+async def test_repeated_snapshots_do_not_capture_the_store(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    store = ShadowGitStore(ws / "checkpoints/store")
+    await store.ensure_initialized()
+    for index in range(4):
+        (ws / "work.txt").write_text(str(index))
+        sha = await store.take_snapshot(ws, f"snapshot {index}")
+        _, names, _ = await store._run_git(["ls-tree", "-rz", "--name-only", sha])
+        assert names.split("\0") == ["work.txt", ""]
+    assert await store.total_size_mb() < 1
+
+
+@pytest.mark.asyncio
+async def test_snapshot_stores_symlink_without_reading_oversized_target(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target = tmp_path / "external.bin"
+    target.write_bytes(b"external content" * (128 * 1024))
+    (ws / "link.bin").symlink_to(target)
+    store = ShadowGitStore(tmp_path / "store")
+    await store.ensure_initialized()
+    _, digest, _ = await store._run_git(["hash-object", str(target)])
+    sha = await store.take_snapshot(ws, "symlink", max_file_size_mb=1)
+    _, tree, _ = await store._run_git(["ls-tree", sha])
+    assert tree.startswith("120000 blob ")
+    _, content, _ = await store._run_git(["show", f"{sha}:link.bin"])
+    assert content == str(target)
+    rc, _, _ = await store._run_git(["cat-file", "-e", digest.strip()], check=False)
+    assert rc != 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_snapshot_cleans_path_file_when_staging_fails(tmp_path, monkeypatch, cancelled):
+    import asyncio
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "keep.txt").write_text("keep")
+    store = ShadowGitStore(tmp_path / "store")
+    await store.ensure_initialized()
+    original = store._run_git
+
+    async def fail_add(args, *positional, **kwargs):
+        if args[0] == "add":
+            assert list((store._store / "indexes").glob("paths-*"))
+            if cancelled:
+                raise asyncio.CancelledError()
+            raise RuntimeError("staging failed")
+        return await original(args, *positional, **kwargs)
+
+    monkeypatch.setattr(store, "_run_git", fail_add)
+    with pytest.raises(asyncio.CancelledError if cancelled else RuntimeError):
+        await store.take_snapshot(ws, "interrupted staging")
+    assert not list((store._store / "indexes").glob("paths-*"))
+    assert await store.list_snapshots(ws) == []

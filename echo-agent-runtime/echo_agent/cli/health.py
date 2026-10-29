@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from echo_agent.cli.i18n import get_locale
+from echo_agent.storage.health import LOW_FREE_BYTES, MIN_FREE_BYTES, filesystem_free_bytes
 
 OK = "ok"
 WARN = "warn"
@@ -52,6 +53,8 @@ _STRINGS: dict[str, dict[str, str]] = {
         "storage_name": "数据库/存储",
         "storage_ok": "数据目录可写：{path}",
         "storage_fail": "数据目录不存在或不可写：{path}",
+        "storage_low": "数据分区可用空间仅 {free_mib:.1f} MiB：{path}；请清理或扩容分区和文件系统（云盘总容量不等于可用容量）",
+        "storage_probe_fail": "无法检查数据分区可用空间：{path}",
         "workspace_name": "工作区",
         "workspace_ok": "工作区可读写：{path}",
         "workspace_missing": "工作区尚未创建（首次运行时自动创建）：{path}",
@@ -79,6 +82,8 @@ _STRINGS: dict[str, dict[str, str]] = {
         "storage_name": "database/storage",
         "storage_ok": "data directory writable: {path}",
         "storage_fail": "data directory missing or not writable: {path}",
+        "storage_low": "only {free_mib:.1f} MiB available on the data filesystem: {path}; free space or expand the partition and filesystem (cloud disk capacity is separate)",
+        "storage_probe_fail": "cannot inspect free space on the data filesystem: {path}",
         "workspace_name": "workspace",
         "workspace_ok": "workspace readable/writable: {path}",
         "workspace_missing": "workspace not created yet (auto-created on first run): {path}",
@@ -235,11 +240,20 @@ def check_storage(config: dict) -> dict:
     ws = _resolve_workspace(config)
     db_rel = _get(_sub(config, "storage"), "database_path", "databasePath",
                   default="data/echo_agent.db")
-    db_path = Path(str(db_rel))
+    db_path = Path(str(db_rel)).expanduser()
     if not db_path.is_absolute():
         db_path = ws / db_path
-    db_dir = db_path.parent
+    db_dir = db_path.resolve().parent
     if _dir_writable(db_dir):
+        try:
+            available = filesystem_free_bytes(db_dir)
+        except OSError:
+            return {"name": t("doctor.storage_name"), "status": FAIL,
+                    "detail": t("doctor.storage_probe_fail", path=str(db_dir))}
+        if available < LOW_FREE_BYTES:
+            return {"name": t("doctor.storage_name"),
+                    "status": FAIL if available < MIN_FREE_BYTES else WARN,
+                    "detail": t("doctor.storage_low", path=str(db_dir), free_mib=available / 1024**2)}
         return {"name": t("doctor.storage_name"), "status": OK,
                 "detail": t("doctor.storage_ok", path=str(db_dir))}
     return {"name": t("doctor.storage_name"), "status": FAIL,

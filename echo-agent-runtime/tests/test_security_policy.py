@@ -41,6 +41,34 @@ def test_daemon_profile_requires_explicit_high_risk_tool_allow() -> None:
     )
 
 
+def test_default_coding_exposes_cronjob_without_granting_unattended_permissions(tmp_path):
+    from echo_agent.agent.tools.cronjob import CronjobTool
+
+    for profile in ("personal_cli", "daemon"):
+        config = load_config(tmp_path / "fresh-install.yaml", overrides={"tools": {"profile": "coding"}})
+        config.security.profile = profile
+        assert config.tools.profile == "coding"
+        assert is_tool_allowed(config, CronjobTool(None))
+        assert "cronjob" in config.permissions.approval.require_approval
+    public = Config(security={"profile": "public_gateway"})
+    assert not is_tool_allowed(public, CronjobTool(None))
+    denied = Config(tools={"deny": ["cronjob"]})
+    assert not is_tool_allowed(denied, CronjobTool(None))
+
+
+def test_deploy_example_provides_scheduler_and_research_tools():
+    from pathlib import Path
+
+    example = Path(__file__).parents[1] / "deploy/echo-agent.yaml.example"
+    config = load_config(example)
+    assert config.scheduler.enabled
+    assert config.tools.profile == "coding"
+    assert config.security.profile == "daemon"
+    for name in ("cronjob", "web_fetch", "skill_run"):
+        assert is_tool_allowed(config, name)
+    assert "cronjob" in config.permissions.approval.require_approval
+
+
 def test_public_gateway_blocks_write_tools_unless_explicitly_allowed() -> None:
     cfg = Config(security={"profile": "public_gateway"}, tools=ToolsConfig(profile="coding"))
 

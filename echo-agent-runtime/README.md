@@ -8,6 +8,8 @@
 
 需要 Python 3.11+；构建 Dashboard 还需要 Node.js 22/24 和 pnpm（版本锁定在 `web/package.json`）。模型服务及部分技能所需的外部依赖按使用场景配置。
 
+文件写入检查点功能需要 Git 2.25+，使用 NUL 分隔的路径列表在暂存前排除运行数据和超大文件；部署时用 `git --version` 核对版本。
+
 已下载整个仓库时先进入 `echo-agent-runtime/`；只下载了本目录时直接在其中执行：
 
 ```bash

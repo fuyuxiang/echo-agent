@@ -204,6 +204,22 @@ def _require_ok(response: dict[str, Any], *, what: str) -> str:
     return _api_error(response)
 
 
+def _server_message_id(response: dict[str, Any]) -> str:
+    """Read the uint64 server receipt, including message-id-only responses."""
+    raw = response.get("message_id")
+    if isinstance(raw, bool) or not isinstance(raw, (str, int)):
+        return ""
+    if isinstance(raw, int) and not 0 < raw < 2**64:
+        return ""
+    value = str(raw).strip()
+    # Bound the conversion as well as the value: arbitrarily long decimal
+    # strings can raise ValueError under Python's integer conversion limit.
+    digits = value.lstrip("0")
+    if not digits.isascii() or not digits.isdecimal() or len(digits) > 20:
+        return ""
+    return value if 0 < int(digits) < 2**64 else ""
+
+
 async def _api_post(
     session: aiohttp.ClientSession,
     *,
@@ -394,7 +410,7 @@ class _ContextTokenStore:
         payload = {k[len(prefix):]: v for k, v in self._cache.items() if k.startswith(prefix)}
         try:
             path = self._path(account_id)
-            path.write_text(json.dumps(payload, ensure_ascii=False))
+            _atomic_write_json(path, payload)
         except Exception as exc:
             logger.warning("weixin: failed to persist context tokens: {}", exc)
 
@@ -447,10 +463,23 @@ def _load_sync_buf(data_dir: Path, account_id: str) -> str:
         return ""
 
 
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    """Replace state only after a complete write; ENOSPC must keep old tokens."""
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
 def _save_sync_buf(data_dir: Path, account_id: str, sync_buf: str) -> None:
     path = data_dir / f"{account_id}.sync.json"
     try:
-        path.write_text(json.dumps({"sync_buf": sync_buf}))
+        _atomic_write_json(path, {"sync_buf": sync_buf})
     except Exception as exc:
         logger.warning("weixin: failed to save sync_buf: {}", exc)
 
@@ -597,7 +626,7 @@ class WeixinChannel(BaseChannel):
                 context_token=context_token,
             )
             failure = _require_ok(resp, what="sendmessage")
-            if not isinstance(resp, dict) or not any(key in resp for key in ("ret", "errcode")):
+            if not isinstance(resp, dict) or not (any(key in resp for key in ("ret", "errcode")) or _server_message_id(resp)):
                 return SendResult(success=False, error=failure or "Weixin acknowledgement missing", delivery_unknown=True)
             if failure:
                 logger.warning("weixin send error: {}", failure)
@@ -606,7 +635,7 @@ class WeixinChannel(BaseChannel):
             error = self.safe_delivery_error(exc)
             logger.error("weixin send failed to {}: {}", chat_id[:8] if chat_id else "?", error)
             return SendResult(success=False, error=error, delivery_unknown=True)
-        return SendResult(success=True)
+        return SendResult(success=True, message_id=_server_message_id(resp))
 
     @staticmethod
     def _split_text(text: str) -> list[str]:
@@ -775,14 +804,14 @@ class WeixinChannel(BaseChannel):
         except Exception as exc:
             return SendResult(success=False, error=self.safe_delivery_error(exc), delivery_unknown=True)
         failure = _require_ok(resp, what="sendmessage")
-        if not isinstance(resp, dict) or not any(key in resp for key in ("ret", "errcode")):
+        if not isinstance(resp, dict) or not (any(key in resp for key in ("ret", "errcode")) or _server_message_id(resp)):
             return SendResult(success=False, error=failure or "Weixin acknowledgement missing", delivery_unknown=True)
         if failure:
             logger.warning("weixin media send error: {}", failure)
             return SendResult(success=False, error=f"sendmessage {failure}")
-        # client_id 是本地生成的 uuid,不是服务端回执。留作事件关联用,但不要
-        # 拿它当"平台确认送达"的凭据:服务端 message_id 目前不在响应里解析。
-        return SendResult(success=True, message_id=str(msg["client_id"]))
+        # Prefer the server receipt; code-only responses keep the local id
+        # solely for event correlation.
+        return SendResult(success=True, message_id=_server_message_id(resp) or str(msg["client_id"]))
 
     async def send_voice(
         self, chat_id: str, audio_source: str, metadata: dict[str, Any] | None = None,

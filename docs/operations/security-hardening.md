@@ -148,7 +148,7 @@ security:
 |------|--------|----------|
 | `minimal` | 19 | 只读问答 |
 | `messaging` | 23 | + 记忆与媒体生成 |
-| `coding` | 29 | + 文件写入与编排 |
+| `coding` | 30 | + 文件写入、编排与定时任务 |
 | `full` | 全部 | 白名单为 `*`，放通所有工具（默认） |
 
 ```yaml
@@ -158,6 +158,8 @@ tools:
 
 !!! danger "默认档位是 full"
     `full` 放通全部工具，包括 `exec`、`execute_code`、`process`、`skill_install`、`skill_manage`、`cronjob`、`skill_run` 等执行/持久权限工具。生产环境应显式降到 `coding` 或更低，并配合 `security.profile` 收紧。
+
+`coding` 包含 `cronjob`，仍受审批和逐任务无人值守授权约束；如需完全禁用定时工具，可配置 `tools.deny: [cronjob]`。
 
 两个字段是独立生效的：`tools.profile` 决定白名单，`security.profile` 在白名单之上追加拒绝。完整判定顺序见[安全档位矩阵](../reference/security-profile-matrix.md)。
 

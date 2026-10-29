@@ -41,6 +41,8 @@ Keep the default loopback binding or use SSH forwarding. External exposure needs
 
 Use the [security profile matrix](../reference/security-profile-matrix.en.md) for the exact allow/deny sets. `daemon` and `public_gateway` deny skill script execution and MCP calls by default as well as process execution. Explicitly allowing a tool does not remove its execution-time path, guard or approval checks. `auto_deny` wins over prior approvals, trusted channels and `mode: off`.
 
+The `coding` profile includes `cronjob`, with approval and per-job unattended authorization still enforced. Set `tools.deny: [cronjob]` to disable the scheduling tool entirely.
+
 Unattended runs must converge without relying on a desktop. Authorize only the intended Cron content/target; DANGEROUS operations cannot self-authorize. Keep a supported server CLI attach available for approval and clarification. Smart Approval rejects unavailable, truncated or filtered judgments.
 
 Shell pattern checks and the copied-workdir `sandbox` backend are not OS isolation. Python plugins are trusted in-process code. A deployment requiring OS boundaries must enforce them in its selected container/remote execution environment. Network policy filters tool capabilities; it is not a firewall for arbitrary shell/SDK traffic.

@@ -21,7 +21,10 @@ gateway:
 tools:
   profile: coding
   restrict_to_workspace: true
-  # coding excludes execution and web tools; opt in to these two only.
+  # coding includes cronjob (approval still required). Enable the scheduler and
+  # opt in to the web/skill tools used by unattended research jobs.
   # skill_run still requires execution/dependency approval. Shell stays blocked.
   # An exclusive tools.allow list must include these names itself; deny wins.
-  also_allow: [web_fetch, skill_run]
+  also_allow: [web_fetch, skill_run, cronjob]
+scheduler:
+  enabled: true

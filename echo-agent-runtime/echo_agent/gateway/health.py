@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -69,6 +70,21 @@ class GatewayHealthProvider:
                          "reason": "configure a real model provider and restart the runtime"},
             "required_dependencies": {"ok": agent is not None, "reason": "agent runtime is unavailable"},
         }
+        # A connected SQLite handle can survive ENOSPC while all writes fail.
+        # Keep this public endpoint free of database paths and credentials.
+        database_path = getattr(storage, "_db_path", None)
+        if checks["storage"]["ok"] and isinstance(database_path, (str, Path)):
+            from echo_agent.storage.health import MIN_FREE_BYTES, filesystem_free_bytes
+
+            try:
+                space_ok = filesystem_free_bytes(Path(database_path).expanduser().resolve().parent) >= MIN_FREE_BYTES
+            except OSError:
+                space_ok = False
+            if not space_ok:
+                checks["storage"] = {
+                    "ok": False,
+                    "reason": "insufficient available storage; free disk space or expand the filesystem",
+                }
         guard = getattr(agent, "_assert_runtime_healthy", None)
         if callable(guard):
             try:

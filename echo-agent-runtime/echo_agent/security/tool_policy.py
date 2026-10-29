@@ -48,6 +48,9 @@ MESSAGING_TOOLS = MINIMAL_TOOLS | frozenset({
 })
 
 CODING_TOOLS = MESSAGING_TOOLS | frozenset({
+    # Scheduling is a normal coding/daemon capability. The approval gate and
+    # per-job unattended grant still control execution; public gateways deny it.
+    "cronjob",
     "edit_file",
     "knowledge_index",
     "patch",

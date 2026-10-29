@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import fnmatch
 import hashlib
 import os
+import stat
+import tempfile
 from pathlib import Path
 
 from echo_agent.agent.proc_lifecycle import communicate_owned, spawn_exec
+from echo_agent.storage.health import MIN_FREE_BYTES, filesystem_free_bytes
 
 # Upper bound for a single git invocation. Snapshot commands are local and
 # normally finish in well under a second, but git can block indefinitely on an
@@ -99,7 +103,7 @@ class ShadowGitStore:
         env.setdefault("GIT_COMMITTER_EMAIL", "checkpoint@echo-agent.local")
         env.update(extra_env or {})
         proc = await spawn_exec(
-            "git", *args, env=env,
+            "git", "-c", "gc.auto=0", "-c", "maintenance.auto=false", *args, env=env,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         out, err = await self._communicate(proc, " ".join(args))
@@ -137,27 +141,57 @@ class ShadowGitStore:
             await self._run_git(["read-tree", ref], workspace=ws)
         else:
             await self._run_git(["read-tree", "--empty"], workspace=ws)
-        # Stage everything, then unstage oversize blobs.
-        await self._run_git(["add", "-A"], workspace=ws)
-        limit = max_file_size_mb * 1024 * 1024
-        # -z emits raw NUL-separated names; without it git C-quotes non-ASCII
-        # names (e.g. Chinese), so ws / name would be a bogus quoted path.
-        _, staged, _ = await self._run_git(
-            ["diff", "--cached", "--name-only", "-z"], workspace=ws, check=False
+        # Enumerate names without reading file contents. Filtering AFTER add is
+        # too late: Git has already stored the blobs and may have recursively
+        # packed this very checkpoint repository, even if we later unstage it.
+        pathspecs = ["."]
+        try:
+            own_dir = self._store.relative_to(ws).as_posix()
+        except ValueError:
+            own_dir = None
+        for prefix in [".git", own_dir, *self._exclude]:
+            if prefix and not any(char in prefix for char in "*?["):
+                pathspecs.append(f":(top,exclude,literal){prefix.rstrip('/')}")
+        _, candidates, _ = await self._run_git(
+            ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", *pathspecs],
+            workspace=ws,
         )
-        for name in [n for n in staged.split("\x00") if n.strip()]:
-            # Never capture runtime paths (live SQLite DBs, the shadow store's
-            # own dir): a filesystem-level snapshot of a file being written is a
-            # torn read, and snapshotting the checkpoint repo is recursive.
-            if self._excluded(name):
-                await self._run_git(["rm", "--cached", "--", name], workspace=ws, check=False)
+        limit = max_file_size_mb * 1024 * 1024
+        paths: list[str] = []
+        input_size = 0
+        for name in dict.fromkeys(candidates.split("\x00")):
+            if not name:
                 continue
-            fp = ws / name
+            if self._excluded(name) or (own_dir and (name == own_dir or name.startswith(own_dir + "/"))):
+                continue
             try:
-                if fp.is_file() and fp.stat().st_size > limit:
-                    await self._run_git(["rm", "--cached", "--", name], workspace=ws, check=False)
+                info = (ws / name).lstat()
             except OSError:
-                continue
+                continue  # Deleted tracked paths are absent from the new tree.
+            if stat.S_ISLNK(info.st_mode) or (stat.S_ISREG(info.st_mode) and info.st_size <= limit):
+                paths.append(name)
+                input_size += info.st_size
+        # Leave room for the actual tool write and the runtime's SQLite/WAL.
+        # disk_usage.free uses f_bavail, so root-reserved blocks do not make an
+        # unprivileged daemon appear to have space it cannot use.
+        if filesystem_free_bytes(self._store) < input_size + MIN_FREE_BYTES:
+            raise OSError(errno.ENOSPC, "Not enough free space for a checkpoint; free disk space or expand the filesystem")
+        # Rebuild the index from eligible paths, including removals. -f keeps
+        # previously tracked files that later became ignored; untracked ignored
+        # files were already excluded by ls-files. NUL + literal pathspecs keep
+        # newlines, Unicode and names like "[draft].txt" unambiguous.
+        await self._run_git(["read-tree", "--empty"], workspace=ws)
+        if paths:
+            descriptor, path_file = tempfile.mkstemp(prefix="paths-", dir=self._store / "indexes")
+            try:
+                with os.fdopen(descriptor, "wb") as handle:
+                    handle.write("\x00".join(paths).encode() + b"\x00")
+                await self._run_git(
+                    ["add", "-f", f"--pathspec-from-file={path_file}", "--pathspec-file-nul"],
+                    workspace=ws, extra_env={"GIT_LITERAL_PATHSPECS": "1"},
+                )
+            finally:
+                Path(path_file).unlink(missing_ok=True)
         # Write the staged tree, then compare it against the parent commit's tree.
         _, tree, _ = await self._run_git(["write-tree"], workspace=ws)
         tree = tree.strip()
@@ -338,4 +372,6 @@ class ShadowGitStore:
         return total / (1024 * 1024)
 
     async def gc(self) -> None:
-        await self._run_git(["gc", "--auto", "--quiet"], check=False)
+        # Called because the manager observed a size limit, not merely a high
+        # loose-object count. --auto can silently skip the requested cleanup.
+        await self._run_git(["gc", "--quiet"], check=False)

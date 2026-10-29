@@ -52,7 +52,7 @@ The table below shows which `tools.profile` tiers expose each tool. `full` permi
 | `workflow` | `workflow.py` | ❌ | ❌ | ✅ | `workflow.write` |
 | `write_file` | `filesystem.py` | ❌ | ❌ | ✅ | `fs.write` |
 | `browser` | `browser.py` | ❌ | ❌ | ❌ | unclassified |
-| `cronjob` | `cronjob.py` | ❌ | ❌ | ❌ | `scheduler.write` |
+| `cronjob` | `cronjob.py` | ❌ | ❌ | ✅ | `scheduler.write` |
 | `delegate_task` | `delegate.py` | ❌ | ❌ | ❌ | unclassified |
 | `exec` | `shell.py` | ❌ | ❌ | ❌ | `process.exec` |
 | `execute_code` | `code_exec.py` | ❌ | ❌ | ❌ | `code.exec` `process.exec` |

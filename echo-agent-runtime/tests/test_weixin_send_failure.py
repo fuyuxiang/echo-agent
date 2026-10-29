@@ -130,6 +130,38 @@ def _api_post_returning(monkeypatch):
 
 class TestSendTextFailureDetection:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("message_id", [7521619109779113736, "7521619109779113736", 2**64 - 1, str(2**64 - 1)])
+    async def test_message_id_only_is_a_server_receipt(self, tmp_path, _api_post_returning, message_id):
+        ch = _make_weixin(tmp_path)
+        _api_post_returning({"message_id": message_id})
+        result = await ch._send_text_chunk("user@im", "hi")
+        assert result.success
+        assert not result.delivery_unknown
+        assert result.message_id == str(message_id)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("message_id", [
+        0, -1, True, "", "not-an-id", None, 1.5, "1.0", "１２３", 2**64, str(2**64),
+        pytest.param("9" * 5000, id="oversized-decimal"),
+    ])
+    async def test_invalid_receipt_remains_unknown(self, tmp_path, _api_post_returning, message_id):
+        ch = _make_weixin(tmp_path)
+        _api_post_returning({"message_id": message_id})
+        result = await ch._send_text_chunk("user@im", "hi")
+        assert not result.success
+        assert result.delivery_unknown
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("field", ["ret", "errcode"])
+    async def test_explicit_error_overrides_message_id(self, tmp_path, _api_post_returning, field):
+        ch = _make_weixin(tmp_path)
+        _api_post_returning({"message_id": "123", field: -14})
+        result = await ch._send_text_chunk("user@im", "hi")
+        assert not result.success
+        assert not result.delivery_unknown
+        assert "session expired" in result.error
+
+    @pytest.mark.asyncio
     async def test_ret_only_session_expiry_is_not_reported_as_success(
         self, tmp_path, _api_post_returning
     ):
@@ -194,6 +226,38 @@ class TestSendTextFailureDetection:
 # ── 3. 媒体发送(事故里实际走的路径) ─────────────────────────────────────────
 
 class TestSendFileFailureDetection:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("message_id", [7521619109779113736, "7521619109779113736", 2**64 - 1, str(2**64 - 1)])
+    async def test_media_message_id_only_is_a_server_receipt(self, tmp_path, _media_env, message_id):
+        ch = _make_weixin(tmp_path)
+        _media_env(send_response={"message_id": message_id})
+        result = await ch._send_file("user@im", str(self._audio(tmp_path)))
+        assert result.success
+        assert result.message_id == str(message_id)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("message_id", [
+        0, -1, True, "", None, 1.5, "１２３", 2**64, str(2**64),
+        pytest.param("9" * 5000, id="oversized-decimal"),
+    ])
+    async def test_invalid_media_receipt_remains_unknown(self, tmp_path, _media_env, message_id):
+        ch = _make_weixin(tmp_path)
+        _media_env(send_response={"message_id": message_id})
+        result = await ch._send_file("user@im", str(self._audio(tmp_path)))
+        assert not result.success
+        assert result.delivery_unknown
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("field", ["ret", "errcode"])
+    @pytest.mark.parametrize("code", [-14, 42])
+    async def test_explicit_media_error_overrides_message_id(self, tmp_path, _media_env, field, code):
+        ch = _make_weixin(tmp_path)
+        _media_env(send_response={"message_id": "123", field: code})
+        result = await ch._send_file("user@im", str(self._audio(tmp_path)))
+        assert not result.success
+        assert not result.delivery_unknown
+        assert str(code) in result.error
+
     @pytest.fixture
     def _media_env(self, monkeypatch):
         """打通 getuploadurl → CDN 上传,让 sendmessage 的响应成为唯一变量。"""

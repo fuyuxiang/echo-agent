@@ -52,7 +52,7 @@ Echo Agent 内置 41 个工具。本页的工具名、参数、能力标签均�
 | `workflow` | `workflow.py` | ❌ | ❌ | ✅ | `workflow.write` |
 | `write_file` | `filesystem.py` | ❌ | ❌ | ✅ | `fs.write` |
 | `browser` | `browser.py` | ❌ | ❌ | ❌ | 未分类 |
-| `cronjob` | `cronjob.py` | ❌ | ❌ | ❌ | `scheduler.write` |
+| `cronjob` | `cronjob.py` | ❌ | ❌ | ✅ | `scheduler.write` |
 | `delegate_task` | `delegate.py` | ❌ | ❌ | ❌ | 未分类 |
 | `exec` | `shell.py` | ❌ | ❌ | ❌ | `process.exec` |
 | `execute_code` | `code_exec.py` | ❌ | ❌ | ❌ | `code.exec` `process.exec` |

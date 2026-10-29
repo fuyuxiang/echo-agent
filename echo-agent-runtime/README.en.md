@@ -8,6 +8,8 @@ A standalone Python Agent Runtime containing the CLI, Gateway, Dashboard, bundle
 
 Requires Python 3.11+. Building the Dashboard also requires Node.js 22/24 and pnpm, pinned in `web/package.json`. Configure a model service and any external tools required by your selected skills.
 
+File-write checkpoints require Git 2.25+ for NUL-delimited path lists that exclude runtime data and oversized files before staging. Check the deployed version with `git --version`.
+
 Enter `echo-agent-runtime/` if you downloaded the whole repository. If you downloaded only this directory, run these commands directly inside it:
 
 ```bash
