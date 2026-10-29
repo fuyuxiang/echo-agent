@@ -734,6 +734,99 @@ fn agent_sessions_root() -> PathBuf {
     crate::paths::echo_agent_home_dir().join("sessions")
 }
 
+/// Run only before constructing Runtime actors. Live summaries are owned by
+/// their actors and must never be rewritten behind Runtime's back.
+pub(crate) fn migrate_builtin_models_before_runtime() -> Result<usize, String> {
+    migrate_builtin_models_from_root(&agent_sessions_root())
+}
+
+/// Files restored or made readable after startup must not reach Runtime's
+/// unrelated-provider fallback. A restart safely migrates them before loading.
+pub(crate) fn require_migrated_model(session_id: &str, cwd: &Path) -> Result<(), String> {
+    require_migrated_model_from_root(&agent_sessions_root(), session_id, cwd)
+}
+
+fn require_migrated_model_from_root(
+    root: &Path,
+    session_id: &str,
+    cwd: &Path,
+) -> Result<(), String> {
+    if list_sessions_from_root(root, &cwd.to_string_lossy(), true)
+        .iter()
+        .any(|summary| {
+            summary.session_id == session_id
+                && summary
+                    .current_model_id
+                    .as_deref()
+                    .is_some_and(crate::providers::is_legacy_builtin_model_id)
+        })
+    {
+        return Err(
+            "此任务的旧模型配置尚未完成升级，请重启 EchoAgent 后重新打开；已有对话和文件会保留。"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+fn migrate_builtin_models_from_root(root: &Path) -> Result<usize, String> {
+    let directories = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(format!("读取旧任务模型配置失败：{error}")),
+    };
+    let mut migrated = 0;
+    for directory in directories {
+        let directory = directory.map_err(|error| error.to_string())?;
+        if !directory.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        for entry in std::fs::read_dir(directory.path()).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            let path = entry.path().join("summary.json");
+            if !std::fs::symlink_metadata(&path)
+                .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+            {
+                continue;
+            }
+            let bytes = match crate::shell_fs::read_regular_file_bounded(&path, MAX_SUMMARY_BYTES) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    // Discovery already excludes these records. One unrelated
+                    // unreadable/oversized history must not disable all chat.
+                    tracing::warn!(path = %path.display(), %error, "skip unreadable history during model migration");
+                    continue;
+                }
+            };
+            let Ok(summary) = serde_json::from_slice::<SummaryFile>(&bytes) else {
+                continue;
+            };
+            if authoritative_session_id(&entry.path(), &summary).is_none() {
+                continue;
+            }
+            if !summary
+                .current_model_id
+                .as_deref()
+                .is_some_and(crate::providers::is_legacy_builtin_model_id)
+            {
+                continue;
+            }
+            // Preserve fields owned by newer Runtime versions, including all
+            // history, timestamps, usage, and workspace identity.
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+            crate::providers::migrate_builtin_model_reference(&mut value["current_model_id"]);
+            let updated = serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?;
+            crate::paths::write_private_file(&path, &updated)?;
+            migrated += 1;
+        }
+    }
+    Ok(migrated)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -743,6 +836,128 @@ mod tests {
         recover_title_from_updates, summary_cwd, to_session_summary, workspace_dir_matches_request,
         SessionSummary, SummaryFile, MAX_SUMMARY_BYTES, MAX_TITLE_CHARS,
     };
+
+    #[test]
+    fn startup_migrates_saved_models_without_rewriting_history_or_unknown_fields() {
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join("sessions");
+        let workspace = root.join("workspace");
+        let models = [
+            "echoagent-ojlab/chat-xc",
+            "echoagent-ojlab/chat-glm",
+            "echoagent-ojlab/chat-qwen",
+            "mine/chat-qwen",
+            "echoagent-ojlab/Echo Grove",
+        ];
+        for (index, model) in models.iter().enumerate() {
+            let id = format!("saved-{index}");
+            let directory = workspace.join(&id);
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(
+                directory.join("summary.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "info":{"id":id,"cwd":"/saved"}, "current_model_id":model,
+                    "generated_title":"旧 chat-qwen 对话", "future":{"unchanged":true}
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            std::fs::write(
+                directory.join("updates.jsonl"),
+                b"historical model: chat-qwen\n",
+            )
+            .unwrap();
+        }
+        assert_eq!(super::migrate_builtin_models_from_root(&root).unwrap(), 3);
+        for (index, model) in models.iter().enumerate() {
+            let directory = workspace.join(format!("saved-{index}"));
+            let value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(directory.join("summary.json")).unwrap())
+                    .unwrap();
+            assert_eq!(
+                value["current_model_id"].as_str(),
+                Some(if index < 3 {
+                    crate::providers::BUILTIN_DEFAULT_MODEL_ID
+                } else {
+                    model
+                })
+            );
+            assert_eq!(value["future"]["unchanged"], true);
+            assert_eq!(value["generated_title"], "旧 chat-qwen 对话");
+            assert_eq!(
+                std::fs::read(directory.join("updates.jsonl")).unwrap(),
+                b"historical model: chat-qwen\n"
+            );
+        }
+        assert_eq!(super::migrate_builtin_models_from_root(&root).unwrap(), 0);
+    }
+
+    #[test]
+    fn late_imported_legacy_task_is_blocked_until_startup_migration() {
+        let home = tempfile::tempdir().unwrap();
+        let cwd = home.path().canonicalize().unwrap();
+        let root = home.path().join("sessions");
+        let directory = root
+            .join(
+                echo_agent_runtime::util::echo_agent_home::encode_cwd_dirname(
+                    &cwd.to_string_lossy(),
+                ),
+            )
+            .join("old-task");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("summary.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "info":{"id":"old-task", "cwd":cwd},"current_model_id":"echoagent-ojlab/chat-xc"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            super::require_migrated_model_from_root(&root, "old-task", &cwd)
+                .unwrap_err()
+                .contains("重启")
+        );
+        assert!(super::require_migrated_model_from_root(&root, "unrelated-task", &cwd).is_ok());
+        assert_eq!(super::migrate_builtin_models_from_root(&root).unwrap(), 1);
+        assert!(super::require_migrated_model_from_root(&root, "old-task", &cwd).is_ok());
+    }
+
+    #[test]
+    fn an_unrelated_oversized_history_does_not_prevent_startup_migration() {
+        let home = tempfile::tempdir().unwrap();
+        let directory = home.path().join("workspace/too-large");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("summary.json"),
+            vec![b' '; MAX_SUMMARY_BYTES as usize + 1],
+        )
+        .unwrap();
+        assert_eq!(
+            super::migrate_builtin_models_from_root(home.path()).unwrap(),
+            0
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn startup_migration_does_not_follow_linked_summaries_or_directories() {
+        let home = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let contents = br#"{"current_model_id":"echoagent-ojlab/chat-qwen"}"#;
+        let path = outside.path().join("summary.json");
+        std::fs::write(&path, contents).unwrap();
+        let directory = home.path().join("workspace/task");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::os::unix::fs::symlink(&path, directory.join("summary.json")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), home.path().join("workspace/linked-task"))
+            .unwrap();
+        assert_eq!(
+            super::migrate_builtin_models_from_root(home.path()).unwrap(),
+            0
+        );
+        assert_eq!(std::fs::read(path).unwrap(), contents);
+    }
 
     fn summary(json: &str) -> SummaryFile {
         serde_json::from_str(json).expect("valid summary fixture")

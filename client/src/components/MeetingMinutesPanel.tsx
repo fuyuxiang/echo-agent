@@ -1,3 +1,4 @@
+import { modelChoiceLabel } from "@/lib/model-presentation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CircleStop,
@@ -512,7 +513,7 @@ export function MeetingMinutesPanel({
           <span>会议模型</span>
           <select aria-label="会议模型" value={selectedModel?.id ?? ""} onChange={(event) => setChosenModelId(event.target.value)} disabled={recorder.active || busy !== null}>
             {meetingModels.length === 0 && <option value="">请先配置 MiniMax 模型</option>}
-            {meetingModels.map((model) => <option key={model.id} value={model.id}>{model.label || model.id}</option>)}
+            {meetingModels.map((model) => <option key={model.id} value={model.id}>{modelChoiceLabel(model, meetingModels)}</option>)}
           </select>
         </label>
         <label>
@@ -606,12 +607,12 @@ export function MeetingMinutesPanel({
                   <span>本次处理模型</span>
                   <select aria-label="本次处理模型" value={selectedModel?.id ?? ""} onChange={(event) => setChosenModelId(event.target.value)} disabled={busy !== null || (NATIVE_JOB_STATUSES.includes(selected.status) && selectedJobActive !== false)}>
                     {meetingModels.length === 0 && <option value="">请先配置 MiniMax 模型</option>}
-                    {meetingModels.map((model) => <option key={model.id} value={model.id}>{model.label || model.id}</option>)}
+                    {meetingModels.map((model) => <option key={model.id} value={model.id}>{modelChoiceLabel(model, meetingModels)}</option>)}
                   </select>
                 </label>
                 <small className={`meeting-panel__privacy${selectedModel?.insecureHttp ? " is-insecure" : ""}`}>
                   {selected.modelId && !meetingModels.some((model) => model.id === selected.modelId && model.providerId === selected.providerId) && "原会议连接已不可用，请确认本次处理模型。"}
-                  {selectedModel ? ` 转写及纪要将使用「${selectedModel.label || selectedModel.id}」，开始处理后保存此选择。` : "请配置模型后重试，已保存的录音和转写仍可导出。"}
+                  {selectedModel ? ` 转写及纪要将使用「${modelChoiceLabel(selectedModel, meetingModels)}」，开始处理后保存此选择。` : "请配置模型后重试，已保存的录音和转写仍可导出。"}
                   {selectedModel?.insecureHttp && " 此连接使用 HTTP，录音和 API Key 将通过明文网络传输。"}
                   {connection.state === "unavailable" && ` ${connection.error}${selected.transcript.length ? "；已有转写仍可用于生成纪要。" : ""}`}
                 </small>

@@ -7,6 +7,7 @@
  * payloads are the types in ./types.ts.
  */
 import { invoke } from "@tauri-apps/api/core";
+import { modelDisplayName } from "./model-presentation";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AgentDefaults,
@@ -757,6 +758,7 @@ export interface ModelOptionRow {
   remoteModelId?: string;
   providerKind: ProviderKind;
   providerId: string;
+  providerLabel?: string;
   source?: ProviderSource;
   insecureHttp?: boolean;
 }
@@ -791,23 +793,15 @@ export function filterModelsByRuntimeCatalog(
 
 /** Flatten a ProviderListModel into per-model rows (id + label + provider). */
 export function flattenModels(list: ProviderListModel): ModelOptionRow[] {
-  const labels = new Map<string, number>();
-  for (const model of list.models) {
-    const label = model.name || model.remoteModelId || model.modelId;
-    labels.set(label, (labels.get(label) ?? 0) + 1);
-  }
   return list.models.map((m) => {
     const provider = list.providers.find((p) => p.id === m.providerId);
-    const baseLabel = m.name || m.remoteModelId || m.modelId;
-    const sourceLabel = provider?.source === "organization"
-      ? "组织"
-      : provider?.label || provider?.providerKind || m.providerId;
     return {
       id: m.modelId,
-      label: (labels.get(baseLabel) ?? 0) > 1 ? `${baseLabel} · ${sourceLabel}` : baseLabel,
+      label: modelDisplayName({ id: m.modelId, label: m.name, remoteModelId: m.remoteModelId }),
       remoteModelId: m.remoteModelId ?? m.modelId,
       providerKind: (provider?.providerKind ?? "custom") as ProviderKind,
       providerId: m.providerId,
+      providerLabel: provider?.label || m.providerId,
       source: provider?.source,
       insecureHttp: provider?.baseUrl?.toLowerCase().startsWith("http://") ?? false,
     };

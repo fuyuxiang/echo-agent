@@ -1,3 +1,4 @@
+import { findModelDisplayName } from "@/lib/model-presentation";
 import { SessionNavigation } from "./components/SessionHeader";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -833,6 +834,9 @@ function Shell() {
             // cannot settle the replacement turn's UI or dispatch more work.
             if (!completedCurrentTurn || currentTranscript?.streamingMessageId
               || currentTranscript?.pendingSendNowPromptId) return;
+            if (!queuePolicy.autoAdvance || requestedAction) {
+              useMessageQueueStore.getState().pauseQueued(p.sessionId);
+            }
             if (summary) {
               sessionsStore.getState().upsert({
                 sessionId: p.sessionId,
@@ -851,6 +855,7 @@ function Shell() {
             // must never make a paused conversation start the next prompt.
             if (
               !summary
+              || requestedAction
               || !queuePolicy.autoAdvance
               || pendingInteractionStatus(p.sessionId)
             ) return;
@@ -908,8 +913,12 @@ function Shell() {
                     stopReason: "error",
                     agentResult: detail,
                   });
+                  const current = sessionStore.getState().transcripts[p.sessionId];
+                  if (!current?.streamingMessageId && !current?.pendingSendNowPromptId) {
+                    useMessageQueueStore.getState().pauseQueued(p.sessionId);
+                  }
                   if (sessionStore.getState().sessionId === p.sessionId) {
-                    sessionStore.getState().setError(detail);
+                    sessionStore.getState().setError(detail, { sessionId: p.sessionId, promptId: queuedPromptId });
                   }
                   sessionsStore.getState().upsert({ sessionId: p.sessionId, status: "failed" });
                 });
@@ -1108,22 +1117,26 @@ function Shell() {
             // "rate_limit"/"error". Surface a friendly message instead of
             // silently marking the turn complete.
             console.warn('[EchoAgent] Turn ended abnormally:', e);
+            const transcript = sessionStore.getState().transcripts[e.sessionId];
+            const active = transcript?.messages.find(message => message.id === transcript.streamingMessageId);
+            const latest = [...(transcript?.messages ?? [])].reverse().find(message => message.role === "assistant");
+            const currentPromptId = transcript?.pendingSendNowPromptId ?? active?.promptId ?? latest?.promptId;
+            if (e.promptId && currentPromptId && e.promptId !== currentPromptId) return;
             if (findSessionSummary(e.sessionId)) {
               sessionsStore.getState().upsert({ sessionId: e.sessionId, status: "failed" });
             }
             // Only surface for the focused session — background sessions
             // finalizing after a switch shouldn't hijack the error banner.
             const currentSessionId = sessionStore.getState().sessionId;
-            if (currentSessionId && e.sessionId && e.sessionId !== currentSessionId) {
+            if (e.sessionId !== currentSessionId) {
               return;
             }
-            const msg =
-              e.kind === "rate_limit"
-                ? "⚠️ API 速率限制已触发（执行工具期间）。请等待 1-2 分钟后重试，或缩短对话上下文（新建会话）。"
-                : e.detail
-                  ? friendlyError(e.detail)
-                  : "⚠️ 本轮执行出错，请重试。";
-            sessionStore.getState().setError(msg);
+            const msg = e.detail
+              ? friendlyError(e.detail)
+              : e.kind === "rate_limit"
+                ? "模型请求受限，请检查服务的调用频率或可用额度后再试。"
+                : "本轮执行出错，已有内容已保留。";
+            sessionStore.getState().setError(msg, e.promptId ? { sessionId: e.sessionId, promptId: e.promptId } : undefined);
             reportEvent("turn_error", "error", { sessionId: e.sessionId, kind: e.kind });
           },
         });
@@ -1227,7 +1240,7 @@ function Shell() {
       ? "请先在「设置 → 模型」配置模型"
       : !activeSessionModelId
         ? currentEntry?.currentModelId
-          ? `此会话使用的模型「${currentEntry.currentModelId}」当前不可用，请在右下角选择模型`
+          ? `此会话使用的模型「${findModelDisplayName(models, currentEntry.currentModelId)}」当前不可用，请在右下角选择模型`
           : "未能获取此会话的模型信息，请重新打开任务，或在右下角选择模型"
         : runtimeSetupHint;
 
@@ -1333,7 +1346,7 @@ function Shell() {
       return undefined;
     }
     if (isConfiguredModelId(models, requestedModelId)) return requestedModelId;
-    showToast(`所选模型“${requestedModelId}”已被删除或停用，请重新选择`, 5000);
+    showToast(`所选模型“${findModelDisplayName(models, requestedModelId)}”已被删除或停用，请重新选择`, 5000);
     return undefined;
   };
   const navigateNow = (label: string) => {
@@ -1831,8 +1844,11 @@ function Shell() {
         // retry path. Once admitted, duplicating it would repeat side effects.
         useMessageQueueStore.getState().enqueue(sessionId, sendText, sendAttachments);
       }
-      if (latest.sessionId === sessionId) latest.setError(detail);
+      if (latest.sessionId === sessionId) latest.setError(detail, { sessionId, promptId });
       const stillWorking = useSessionStore.getState().transcripts[sessionId];
+      if (!stillWorking?.streamingMessageId && !stillWorking?.pendingSendNowPromptId) {
+        useMessageQueueStore.getState().pauseQueued(sessionId);
+      }
       sessionsStore.getState().upsert({
         sessionId,
         status:
@@ -1878,6 +1894,7 @@ function Shell() {
       // acknowledgement; both paths are idempotent and represent real stopped
       // work, so the UI can settle immediately without a speculative timer.
       sessionStore.getState().confirmControl(sessionId, action);
+      useMessageQueueStore.getState().pauseQueued(sessionId);
       sessionsStore.getState().upsert({
         sessionId,
         status: action === "pause" ? "paused" : "stopped",
@@ -3126,9 +3143,8 @@ function Shell() {
                   cancelling={cancellingSessionId === currentSessionId}
                   apiReady={chatReady}
                   setupHint={chatSetupHint}
-                  onOpenSettings={!sessionLoading && !modelSwitching && (!init.auth.ready || models.length === 0)
-                    ? () => openSettings("model")
-                    : undefined}
+                  onOpenSettings={() => openSettings("model")}
+                  onOpenSecuritySettings={() => openSettings("security")}
                   modelId={activeSessionModelId}
                   modelLoading={sessionLoading || modelSwitching}
                   models={models}

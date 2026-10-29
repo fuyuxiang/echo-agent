@@ -40,7 +40,15 @@ const ORGANIZATION_PROVIDER_ID: &str = "echoagent-organization";
 const ORGANIZATION_MODEL_PREFIX: &str = "organization/";
 pub(crate) const BUILTIN_PROVIDER_ID: &str = "echoagent-ojlab";
 pub(crate) const BUILTIN_MODEL_PREFIX: &str = "echoagent-ojlab/";
-pub(crate) const BUILTIN_DEFAULT_MODEL_ID: &str = "echoagent-ojlab/chat-xc";
+pub(crate) const BUILTIN_DEFAULT_MODEL_ID: &str = "echoagent-ojlab/Echo Reed";
+// Exact server-side chat model IDs. Retrieval models must never enter this catalog.
+const BUILTIN_CHAT_MODELS: &[(&str, i64, i64)] = &[
+    ("Echo Cedar", 131_072, 8_192),
+    ("Echo Willow", 32_768, 8_192),
+    ("Echo Grove", 262_144, 8_192),
+    ("Echo Brook", 131_072, 8_192),
+    ("Echo Reed", 262_144, 65_536),
+];
 const MANAGED_BY_KEY: &str = "echoagent_managed_by";
 const MANAGED_BY_ORGANIZATION: &str = "organization";
 const MANAGED_BY_BUILTIN: &str = "builtin";
@@ -1407,6 +1415,74 @@ fn is_builtin_model(value: &Value) -> bool {
             == Some(BUILTIN_PROVIDER_ID)
 }
 
+const LEGACY_BUILTIN_MODEL_IDS: &[&str] = &[
+    "echoagent-ojlab/chat-xc",
+    "echoagent-ojlab/chat-glm",
+    "echoagent-ojlab/chat-qwen",
+];
+
+pub(crate) fn is_legacy_builtin_model_id(id: &str) -> bool {
+    LEGACY_BUILTIN_MODEL_IDS.contains(&id)
+}
+
+pub(crate) fn migrate_builtin_model_reference(value: &mut serde_json::Value) -> bool {
+    if value.as_str().is_some_and(is_legacy_builtin_model_id) {
+        *value = serde_json::Value::String(BUILTIN_DEFAULT_MODEL_ID.into());
+        true
+    } else {
+        false
+    }
+}
+
+fn migrate_builtin_model_preferences(selection: &mut Map<String, Value>) {
+    // Empty/missing default means Auto. Never persist a fallback as a user choice.
+    // Bootstrap reads this value again from disk. Normalize whitespace to the
+    // empty string it recognizes as Auto instead of an explicit unknown model.
+    if let Some(Value::String(default)) = selection.get_mut("default") {
+        if default.trim().is_empty() {
+            default.clear();
+        }
+    }
+    for key in [
+        "default",
+        "web_search",
+        "session_summary",
+        "image_description",
+        "prompt_suggestion",
+    ] {
+        if selection
+            .get(key)
+            .and_then(Value::as_str)
+            .is_some_and(is_legacy_builtin_model_id)
+        {
+            selection.insert(key.into(), Value::String(BUILTIN_DEFAULT_MODEL_ID.into()));
+        }
+    }
+    // Preserve every original filter, including personal matches and invalid
+    // patterns (Runtime reports those). Add only the retired models' successor.
+    for key in ["allowed_models", "hidden_models", "disabled_models"] {
+        let Some(patterns) = selection.get_mut(key).and_then(Value::as_array_mut) else {
+            continue;
+        };
+        let covers_retired = patterns.iter().filter_map(Value::as_str).any(|pattern| {
+            globset::Glob::new(pattern).is_ok_and(|glob| {
+                let matcher = glob.compile_matcher();
+                LEGACY_BUILTIN_MODEL_IDS.iter().any(|id| {
+                    matcher.is_match(id)
+                        || matcher.is_match(id.strip_prefix(BUILTIN_MODEL_PREFIX).unwrap())
+                })
+            })
+        });
+        if covers_retired
+            && !patterns
+                .iter()
+                .any(|value| value.as_str() == Some(BUILTIN_DEFAULT_MODEL_ID))
+        {
+            patterns.push(Value::String(BUILTIN_DEFAULT_MODEL_ID.into()));
+        }
+    }
+}
+
 fn apply_builtin_model_config(config: &mut Value) -> Result<(), String> {
     let mut provider = Map::new();
     provider.insert(
@@ -1433,11 +1509,15 @@ fn apply_builtin_model_config(config: &mut Value) -> Result<(), String> {
     providers.insert(BUILTIN_PROVIDER_ID.into(), Value::Table(provider));
 
     let models = ensure_table(config, "model")?;
-    for (slug, context_window, max_output_tokens) in [
-        ("chat-xc", 262_144, 8_192),
-        ("chat-glm", 131_072, 8_192),
-        ("chat-qwen", 262_144, 65_536),
-    ] {
+    // Reconcile the managed catalog rather than accumulating retired models.
+    // Personal and organization entries are outside this provider's ownership.
+    models.retain(|id, entry| {
+        !is_builtin_model(entry)
+            || BUILTIN_CHAT_MODELS
+                .iter()
+                .any(|(slug, _, _)| id == &format!("{BUILTIN_MODEL_PREFIX}{slug}"))
+    });
+    for &(slug, context_window, max_output_tokens) in BUILTIN_CHAT_MODELS {
         let id = format!("{BUILTIN_MODEL_PREFIX}{slug}");
         if models
             .get(&id)
@@ -1458,10 +1538,15 @@ fn apply_builtin_model_config(config: &mut Value) -> Result<(), String> {
             "max_completion_tokens".into(),
             Value::Integer(max_output_tokens),
         );
-        // The default 85% compaction threshold exceeds chat-qwen's 75%
-        // maximum-input share of its context window.
-        if slug == "chat-qwen" {
-            entry.insert("auto_compact_threshold_percent".into(), Value::Integer(70));
+        // Leave room for the response. Willow and Reed accept input up to 75%
+        // of their context, so the Runtime's default 85% compaction is too late.
+        let compact_percent =
+            (100 * (context_window - max_output_tokens) / context_window - 5).min(85);
+        if compact_percent < 85 {
+            entry.insert(
+                "auto_compact_threshold_percent".into(),
+                Value::Integer(compact_percent),
+            );
         }
         entry.insert(
             MANAGED_BY_KEY.into(),
@@ -1469,6 +1554,8 @@ fn apply_builtin_model_config(config: &mut Value) -> Result<(), String> {
         );
         models.insert(id, Value::Table(entry));
     }
+    let selection = ensure_table(config, "models")?;
+    migrate_builtin_model_preferences(selection);
     Ok(())
 }
 
@@ -2512,6 +2599,13 @@ async fn fetch_models(
     let json: serde_json::Value =
         serde_json::from_slice(&body).map_err(|e| format!("解析响应失败（非 JSON）：{e}"))?;
 
+    parse_fetched_models(&json, is_ojlab_base_url(&base))
+}
+
+fn parse_fetched_models(
+    json: &serde_json::Value,
+    builtin_service: bool,
+) -> Result<Vec<FetchedModel>, String> {
     let data = json
         .get("data")
         .and_then(|d| d.as_array())
@@ -2524,9 +2618,7 @@ async fn fetch_models(
             if id.is_empty() || id.len() > 512 || id.chars().any(char::is_control) {
                 return None;
             }
-            if is_ojlab_base_url(&base)
-                && !matches!(id.as_str(), "chat-xc" | "chat-glm" | "chat-qwen")
-            {
+            if builtin_service && !BUILTIN_CHAT_MODELS.iter().any(|(slug, _, _)| *slug == id) {
                 return None;
             }
             let owned_by = item
@@ -2549,6 +2641,67 @@ async fn fetch_models(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_and_model_filters_keep_their_semantics_after_catalog_migration() {
+        for preferred in [None, Some(""), Some("  "), Some("mine")] {
+            let mut config: Value = r#"
+[model.mine]
+model_provider = "mine"
+model = "chat-qwen"
+[models]
+allowed_models = ["mine"]
+"#
+            .parse()
+            .unwrap();
+            if let Some(preferred) = preferred {
+                config["models"]
+                    .as_table_mut()
+                    .unwrap()
+                    .insert("default".into(), Value::String(preferred.into()));
+            }
+            apply_builtin_model_config(&mut config).unwrap();
+            assert_eq!(
+                config["models"].get("default").and_then(Value::as_str),
+                preferred.map(|value| if value.trim().is_empty() { "" } else { value })
+            );
+            assert_eq!(
+                config["models"]["allowed_models"].as_array().unwrap(),
+                &vec![Value::String("mine".into())]
+            );
+        }
+        let mut config: Value = r#"
+[models]
+default = "echoagent-ojlab/chat-qwen"
+session_summary = "echoagent-ojlab/chat-glm"
+web_search = "mine/chat-qwen"
+allowed_models = ["echoagent-ojlab/chat-*", "mine/*"]
+hidden_models = ["chat-gl[m]"]
+disabled_models = ["echoagent-ojlab/chat-xc"]
+"#
+        .parse()
+        .unwrap();
+        apply_builtin_model_config(&mut config).unwrap();
+        for key in ["default", "session_summary"] {
+            assert_eq!(
+                config["models"][key].as_str(),
+                Some(BUILTIN_DEFAULT_MODEL_ID)
+            );
+        }
+        assert_eq!(
+            config["models"]["web_search"].as_str(),
+            Some("mine/chat-qwen")
+        );
+        for key in ["allowed_models", "hidden_models", "disabled_models"] {
+            assert!(config["models"][key]
+                .as_array()
+                .unwrap()
+                .contains(&Value::String(BUILTIN_DEFAULT_MODEL_ID.into())));
+        }
+        let first = config.clone();
+        apply_builtin_model_config(&mut config).unwrap();
+        assert_eq!(config, first);
+    }
 
     #[test]
     fn builtin_catalog_is_idempotent_and_preserves_personal_and_organization_models() {
@@ -2575,21 +2728,31 @@ model = "team"
         assert!(config["model"]["organization/team"].is_table());
         assert_eq!(
             config["model"][BUILTIN_DEFAULT_MODEL_ID]["model"].as_str(),
-            Some("chat-xc")
+            Some("Echo Reed")
         );
+        assert_eq!(
+            config["models"].get("default"),
+            None,
+            "Auto must stay unset when no explicit default was saved"
+        );
+        assert_eq!(config["model"].as_table().unwrap().len(), 7);
         for (slug, context_window, max_input_tokens, max_output_tokens) in [
-            ("chat-xc", 262_144, 253_952, 8_192),
-            ("chat-glm", 131_072, 122_880, 8_192),
-            ("chat-qwen", 262_144, 196_608, 65_536),
+            ("Echo Cedar", 131_072, 122_880, 8_192),
+            ("Echo Willow", 32_768, 24_576, 8_192),
+            ("Echo Grove", 262_144, 253_952, 8_192),
+            ("Echo Brook", 131_072, 122_880, 8_192),
+            ("Echo Reed", 262_144, 196_608, 65_536),
         ] {
             let entry = &config["model"][format!("{BUILTIN_MODEL_PREFIX}{slug}").as_str()];
+            assert_eq!(entry["model"].as_str(), Some(slug));
+            assert_eq!(entry["name"].as_str(), Some(slug));
             assert_eq!(entry["context_window"].as_integer(), Some(context_window));
             assert_eq!(
                 entry["max_completion_tokens"].as_integer(),
                 Some(max_output_tokens)
             );
             assert_eq!(context_window - max_output_tokens, max_input_tokens);
-            if slug == "chat-qwen" {
+            if matches!(slug, "Echo Willow" | "Echo Reed") {
                 assert_eq!(
                     entry["auto_compact_threshold_percent"].as_integer(),
                     Some(70)
@@ -2604,6 +2767,93 @@ model = "team"
         assert!(resolved_provider_api_key(provider).is_none());
         assert!(validate_personal_provider_target(&config, BUILTIN_PROVIDER_ID).is_err());
         assert!(validate_personal_model_target(&config, BUILTIN_DEFAULT_MODEL_ID).is_err());
+    }
+
+    #[test]
+    fn builtin_catalog_replaces_retired_models_and_migrates_only_builtin_defaults() {
+        for preferred in [
+            "",
+            "echoagent-ojlab/chat-xc",
+            "echoagent-ojlab/chat-glm",
+            "echoagent-ojlab/chat-qwen",
+            "mine",
+            "organization/team",
+            "echoagent-ojlab/Echo Grove",
+        ] {
+            let mut config: Value = r#"
+[model."echoagent-ojlab/chat-xc"]
+model_provider = "echoagent-ojlab"
+model = "chat-xc"
+[model."echoagent-ojlab/chat-glm"]
+echoagent_managed_by = "builtin"
+model = "chat-glm"
+[model."echoagent-ojlab/chat-qwen"]
+model_provider = "echoagent-ojlab"
+model = "chat-qwen"
+[model."echoagent-ojlab/embed-pro"]
+model_provider = "echoagent-ojlab"
+model = "embed-pro"
+[model.mine]
+model_provider = "mine"
+model = "chat-xc"
+[models]
+default = ""
+"#
+            .parse()
+            .unwrap();
+            config["models"]["default"] = Value::String(preferred.into());
+            let personal = config["model"]["mine"].clone();
+            apply_builtin_model_config(&mut config).unwrap();
+            assert_eq!(config["model"].as_table().unwrap().len(), 6);
+            assert_eq!(config["model"]["mine"], personal);
+            for retired in [
+                "chat-xc",
+                "chat-glm",
+                "chat-qwen",
+                "embed-pro",
+                "rerank-pro",
+            ] {
+                assert!(config["model"]
+                    .get(format!("{BUILTIN_MODEL_PREFIX}{retired}"))
+                    .is_none());
+            }
+            let expected = if is_legacy_builtin_model_id(preferred) {
+                BUILTIN_DEFAULT_MODEL_ID
+            } else {
+                preferred
+            };
+            assert_eq!(config["models"]["default"].as_str(), Some(expected));
+            let first = config.clone();
+            apply_builtin_model_config(&mut config).unwrap();
+            assert_eq!(config, first);
+        }
+    }
+
+    #[test]
+    fn builtin_model_discovery_excludes_retrieval_and_retired_models() {
+        let response = serde_json::json!({ "data": [
+            {"id": "Echo Cedar"}, {"id": "Echo Willow"}, {"id": "Echo Grove"},
+            {"id": "Echo Brook"}, {"id": "Echo Reed"}, {"id": "embed-pro"},
+            {"id": "rerank-pro"}, {"id": "chat-xc"}, {"id": "chat-glm"},
+            {"id": "chat-qwen"}, {"id": "Echo Unknown"}, {"id": ""},
+        ] });
+        let builtin = parse_fetched_models(&response, true).unwrap();
+        assert_eq!(
+            builtin
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "Echo Cedar",
+                "Echo Willow",
+                "Echo Grove",
+                "Echo Brook",
+                "Echo Reed"
+            ]
+        );
+        // A personal service keeps its own catalog; this restriction is specific
+        // to the known built-in endpoint.
+        assert_eq!(parse_fetched_models(&response, false).unwrap().len(), 11);
     }
 
     #[test]

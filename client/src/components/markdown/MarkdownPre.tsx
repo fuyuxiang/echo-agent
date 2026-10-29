@@ -75,7 +75,7 @@ const FULL_LATEX_DOC = [
   /\\bibliography\b/,
 ];
 
-function isFullLatexDocument(latex: string) {
+export function isFullLatexDocument(latex: string) {
   return FULL_LATEX_DOC.some((p) => p.test(latex));
 }
 

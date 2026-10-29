@@ -403,9 +403,19 @@ fn read_from(path: &std::path::Path) -> Result<Vec<Value>, String> {
     if raw.len() > MAX_BYTES {
         return Err("项目数据文件超过 8 MB 安全上限".into());
     }
-    let projects: Vec<Value> =
+    let mut projects: Vec<Value> =
         serde_json::from_slice(&raw).map_err(|error| format!("解析项目数据失败：{error}"))?;
     validate(&projects)?;
+    for project in &mut projects {
+        if project
+            .get("defaultModelId")
+            .and_then(Value::as_str)
+            .is_some_and(crate::providers::is_legacy_builtin_model_id)
+        {
+            project["defaultModelId"] =
+                Value::String(crate::providers::BUILTIN_DEFAULT_MODEL_ID.into());
+        }
+    }
     Ok(projects)
 }
 
@@ -714,6 +724,20 @@ mod tests {
             json!({"id": "p1", "name": "B"}),
         ];
         assert!(validate(&projects).unwrap_err().contains("重复"));
+    }
+
+    #[test]
+    fn retired_builtin_project_defaults_use_reed_without_changing_personal_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("projects.json");
+        let mut projects = vec![
+            json!({"id":"old", "name":"旧项目", "defaultModelId":"echoagent-ojlab/chat-xc"}),
+            json!({"id":"personal", "name":"个人模型", "defaultModelId":"mine/chat-xc"}),
+            json!({"id":"current", "name":"当前模型", "defaultModelId":"echoagent-ojlab/Echo Grove"}),
+        ];
+        write_to(&path, &projects).unwrap();
+        projects[0]["defaultModelId"] = json!(crate::providers::BUILTIN_DEFAULT_MODEL_ID);
+        assert_eq!(read_from(&path).unwrap(), projects);
     }
 
     #[test]

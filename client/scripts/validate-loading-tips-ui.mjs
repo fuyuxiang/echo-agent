@@ -125,7 +125,8 @@ try {
     useSessionStore.getState().requestControl("review-conversation","pause");
   });
   await page.locator(".msg__loading").waitFor({state:"hidden"});
-  await page.locator(".session-header__status").filter({hasText:"正在暂停"}).waitFor();
+  await page.getByText("正在暂停任务…",{exact:true}).waitFor();
+  assert.equal(await page.locator(".session-header [role=status]").count(), 0);
   assert.deepEqual(errors,[]);
   writeFileSync(join(output,"evidence.json"),JSON.stringify({layouts:evidence,errors},null,2));
   console.log(JSON.stringify({ok:true,output,layouts:evidence.length,checks:["3s delay","12s nonrepeating rotation","input focus","session switching","first output dismissal","permission/pause/error priority","reduced motion"],errors},null,2));

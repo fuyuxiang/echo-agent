@@ -1,5 +1,6 @@
 /* Task approval uses the same restrained surfaces as the session composer. */
 .permission-picker { position: relative; }
+.permission-picker__trigger-icon { flex: none; }
 .permission-picker__popover {
   position: fixed; z-index: var(--echo-layer-popover); display: flex; flex-direction: column;
   width: max-content; min-width: min(224px, calc(100vw - 24px)); max-width: min(320px, calc(100vw - 24px)); padding: 6px; gap: 2px;
@@ -23,6 +24,8 @@
 .permission-picker__mode-label { font-size: .8125rem; line-height: 1.4; font-weight: 500; }
 .permission-picker__mode-desc { font-size: .6875rem; line-height: 1.45; color: var(--echo-text-weak); overflow-wrap: anywhere; }
 .permission-picker__mode-check { position: absolute; top: 12px; right: 10px; width: 14px; height: 14px; color: var(--echo-text-medium); }
+.permission-picker__trigger[data-mode-id="always-approve"] .permission-picker__trigger-icon,
+.permission-picker__trigger[data-mode-id="always-approve"] .permission-picker__label,
 .permission-picker__mode[data-mode-id="always-approve"] .permission-picker__mode-label,
 .permission-picker__mode[data-mode-id="always-approve"] .permission-picker__mode-icon { color: var(--echo-color-text-warning-default); }
 .permission-picker__scope { padding: 6px 10px 4px; border-top: 1px solid var(--echo-border-default); color: var(--echo-text-weak); font-size: .625rem; line-height: 1.4; }
@@ -73,9 +76,12 @@
 .permission-options button:hover { background: var(--echo-bg-hover); }
 .permission-options button small { display: block; margin-top: 3px; color: var(--echo-text-weak); font-size: .625rem; line-height: 1.4; }
 .permission-options button.permission-options__elevated { color: var(--echo-color-text-warning-default); }
-.session-header__status--approval { display: inline-flex; align-items: center; flex: none; padding: 3px 8px; border-radius: 999px; background: var(--echo-brand-soft); color: var(--echo-color-text-brand-default); font-weight: 500; line-height: 1.4; -webkit-app-region: no-drag; }
-.session-header__identity:has(.session-header__status--approval) .main-topbar__title-area { min-width: 0; }
 .sidebar__approval-status { display: inline-flex; align-items: center; flex: none; padding: 2px 5px; border-radius: 5px; background: var(--echo-brand-soft); color: var(--echo-color-text-brand-default); font-size: .625rem; line-height: 1.4; white-space: nowrap; }
 @media (max-height: 640px) {
   .perm-inline { max-height: 42vh; padding: 10px 12px; }
 }
+
+.perm-inline__rows { display:grid; gap:6px; margin:10px 0 0; font-size:.6875rem; line-height:1.5; }
+.perm-inline__rows > div { display:grid; grid-template-columns:64px minmax(0,1fr); gap:8px; }
+.perm-inline__rows dt { color:var(--echo-text-weak); }
+.perm-inline__rows dd { min-width:0; margin:0; color:var(--echo-text-medium); white-space:pre-wrap; overflow-wrap:anywhere; }

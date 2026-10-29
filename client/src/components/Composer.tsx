@@ -3,9 +3,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { draftAttachments, saveDraftAttachments } from "@/lib/draft-attachments";
 import { draftRevision, useDraftRevision } from "@/lib/draft-lifecycle";
 import { useStorageHealth } from "@/lib/durable-ui-state";
-import { ArrowUp, Square, Pause, MoreHorizontal, Globe2, Mic, Monitor, X, type LucideIcon } from "lucide-react";
+import { ArrowUp, Square, Globe2, Mic, Monitor, X, type LucideIcon } from "lucide-react";
 import { ChevronDownIcon } from "@/foundation/components/Icon/icons";
-import { ActionMenu } from "./ActionMenu";
 import { ModelSelector, type ModelOption } from "./ModelSelector";
 import { ThumbImg } from "./experts-panel/shared/ThumbImg";
 import { ContextUsagePill } from "./ContextUsagePill";
@@ -111,9 +110,7 @@ export function Composer({
   filePaths,
   workspaceSymbols,
   onSend,
-  onSendNow,
   onCancel,
-  onPause,
   onControl,
   placeholder,
   apiReady = true,
@@ -162,7 +159,7 @@ export function Composer({
   slashCommandsEnabled = true,
   commandRefreshKey,
   onClientSlashCommand,
-  /** 流式时额外提供「加入待发送队列」，不会替代立即发送。 */
+  /** While a turn is active, submissions go to the durable follow-up queue. */
   onEnqueue,
   /** Name of the expert currently bound to this session (shown as badge in footer). */
   activeExpertName,
@@ -198,9 +195,7 @@ export function Composer({
   mentionMembers?: { id: string; name: string; role?: string }[];
   onMentionMember?: (memberId: string) => void;
   onSend: (text: string, attachments?: string[]) => boolean | void | Promise<boolean | void>;
-  onSendNow?: (text: string, attachments?: string[]) => boolean | void | Promise<boolean | void>;
   onCancel: () => boolean | void | Promise<boolean | void>;
-  onPause?: () => boolean | void | Promise<boolean | void>;
   /** Exact local pause/stop commands are handled without sending them to AI. */
   onControl?: (
     action: SessionControlAction,
@@ -281,7 +276,7 @@ export function Composer({
     invocation: SlashCommandInvocation,
   ) => boolean | void | Promise<boolean | void>;
   /** 流式时额外提供「加入待发送队列」。 */
-  onEnqueue?: (text: string, attachments?: string[]) => void;
+  onEnqueue?: (text: string, attachments?: string[]) => boolean | void | Promise<boolean | void>;
   /** Name of the expert currently bound to this session (shown as badge in footer). */
   activeExpertName?: string;
   /** Local avatar path for the expert badge. */
@@ -315,8 +310,8 @@ export function Composer({
   const isCurrentDraftEpoch = (epoch: number) => mountedRef.current && scopeEpochRef.current === epoch;
   const [text, setText] = useState("");
   const textRef = useRef("");
-  const [pausing, setPausing] = useState(false);
-  const pausePendingRef = useRef<number | null>(null);
+  const [stopping, setStopping] = useState(false);
+  const stopPendingRef = useRef<number | null>(null);
   const [attachments, setAttachments] = useState<string[]>([]);
   const [automationSupport, setAutomationSupport] = useState<AutomationCapabilities | null>(null);
   const automationModeAvailable = Boolean(onAutomationModeChange);
@@ -593,8 +588,8 @@ export function Composer({
       draftRef.current = "";
       localRevisionRef.current += 1;
       setSending(false);
-      pausePendingRef.current = null;
-      setPausing(false);
+      stopPendingRef.current = null;
+      setStopping(false);
     }
     draftScopeRef.current = scope;
     if (scope !== undefined && textRef.current !== (draft ?? "")) {
@@ -924,23 +919,19 @@ export function Composer({
   const [sending, setSending] = useState(false);
   const [workspacePicking, setWorkspacePicking] = useState(false);
   const workspacePickingRef = useRef(false);
-  const pause = async () => {
-    if (!onPause || pausePendingRef.current !== null || cancelling || disabled || sendNowPending || workspacePickingRef.current) return;
+  const stop = async () => {
+    if (stopPendingRef.current !== null || cancelling || disabled || sendNowPending || workspacePickingRef.current || submissionLock.current === scopeEpochRef.current) return;
     const epoch = scopeEpochRef.current;
-    pausePendingRef.current = epoch;
-    setPausing(true);
+    stopPendingRef.current = epoch;
+    setStopping(true);
     try {
-      await onPause();
+      await onCancel();
     } catch (error) {
-      if (isCurrentDraftEpoch(epoch)) onToast?.(`暂停失败：${String(error).replace(/^Error:\s*/, "")}`);
+      if (isCurrentDraftEpoch(epoch)) onToast?.(`停止失败：${String(error).replace(/^Error:\s*/, "")}`);
     } finally {
-      if (pausePendingRef.current === epoch) {
-        pausePendingRef.current = null;
-        setPausing(false);
-      }
-      if (isCurrentDraftEpoch(epoch) && !document.querySelector('[aria-modal="true"], [role="menu"]')
-        && (document.activeElement === document.body || document.activeElement?.getAttribute("aria-label") === "发送选项")) {
-        ref.current?.focus({preventScroll:true});
+      if (stopPendingRef.current === epoch) {
+        stopPendingRef.current = null;
+        if (isCurrentDraftEpoch(epoch)) setStopping(false);
       }
     }
   };
@@ -976,7 +967,7 @@ export function Composer({
   };
 
   const dispatchControlIntent = async (submittedText: string): Promise<boolean> => {
-    if (submissionLock.current === scopeEpochRef.current || awaitingQuestion || disabled || sendDisabled || pausePendingRef.current !== null || workspacePickingRef.current) return false;
+    if (submissionLock.current === scopeEpochRef.current || awaitingQuestion || disabled || sendDisabled || cancelling || stopPendingRef.current !== null || workspacePickingRef.current) return false;
     if (attachmentsRef.current.length > 0 || !onControl) return false;
     const action = parseSessionControlIntent(submittedText);
     if (!action) return false;
@@ -1002,7 +993,7 @@ export function Composer({
     const t = textRef.current.trim();
     // A scene tag is contextual metadata, not a user prompt. Require actual
     // text or at least one attachment for every submission path.
-    if ((!t && attachmentsRef.current.length === 0) || sending || disabled || sendDisabled || pausePendingRef.current !== null || workspacePickingRef.current || awaitingQuestion || submissionLock.current === scopeEpochRef.current) return;
+    if ((!t && attachmentsRef.current.length === 0) || sending || disabled || sendDisabled || cancelling || stopPendingRef.current !== null || workspacePickingRef.current || awaitingQuestion || submissionLock.current === scopeEpochRef.current) return;
     if (t && attachmentsRef.current.length === 0 && onControl && parseSessionControlIntent(t)) {
       await dispatchControlIntent(t);
       return;
@@ -1066,28 +1057,22 @@ export function Composer({
     finishAcceptedSubmission(body, submission);
   };
 
-  /** Atomically replace the active turn; no manual stop round-trip required. */
-  const sendNow = async () => {
+  /** Preserve the draft until durable queue admission succeeds. */
+  const enqueue = async () => {
     const t = textRef.current.trim();
-    if ((!t && attachmentsRef.current.length === 0) || sending || disabled || sendDisabled || pausePendingRef.current !== null || workspacePickingRef.current || awaitingQuestion || submissionLock.current === scopeEpochRef.current) return;
+    if ((!t && attachmentsRef.current.length === 0) || sending || disabled || sendDisabled || cancelling || stopPendingRef.current !== null || workspacePickingRef.current || awaitingQuestion || submissionLock.current === scopeEpochRef.current) return;
     if (t && attachmentsRef.current.length === 0 && onControl && parseSessionControlIntent(t)) {
       await dispatchControlIntent(t);
       return;
     }
     if (
       !streaming
-      || !onSendNow
+      || !onEnqueue
       || sendNowPending
       || awaitingQuestion
       || disabled
       || !apiReady
     ) return;
-
-    const invocation = parseSlashInvocation(t);
-    if (slashCommandsEnabled && invocation && isClientSlashCommand(invocation.name)) {
-      onToast?.(`当前任务执行中，无法使用 /${invocation.name}`);
-      return;
-    }
 
     let body = t;
     if (sceneTag) body = body ? `【${sceneTag.label}】${body}` : `【${sceneTag.label}】`;
@@ -1097,7 +1082,7 @@ export function Composer({
     const submission = captureSubmission();
     const pendingOwnedAttachments = beginAttachmentSubmission(submittedAttachments);
     try {
-      const result = onSendNow(body || "请分析附件。", submittedAttachments);
+      const result = onEnqueue(body || "请分析附件。", submittedAttachments);
       const accepted = result && typeof (result as PromiseLike<boolean | void>).then === "function"
         ? await result
         : result;
@@ -1108,38 +1093,11 @@ export function Composer({
       finishAcceptedSubmission(body, submission);
     } catch (error) {
       rejectAttachmentSubmission(pendingOwnedAttachments, submission.scope);
-      onToast?.(`中断并发送失败：${String(error).replace(/^Error:\s*/, "")}`);
+      if (isCurrentDraftEpoch(submission.scopeEpoch)) onToast?.(`加入待发送队列失败：${String(error).replace(/^Error:\s*/, "")}`);
     } finally {
       if (submissionLock.current === submission.scopeEpoch) submissionLock.current = null;
       if (isCurrentDraftEpoch(submission.scopeEpoch)) setSending(false);
     }
-  };
-
-  /** 流式时入队(对齐 EchoAgent message-queue):文本或附件任一非空即可入队。 */
-  const enqueue = () => {
-    const t = textRef.current.trim();
-    if ((!t && attachmentsRef.current.length === 0) || !onEnqueue || awaitingQuestion || disabled || sendDisabled || pausePendingRef.current !== null || workspacePickingRef.current || sending || sendNowPending || !apiReady || submissionLock.current === scopeEpochRef.current) return;
-    if (attachmentsRef.current.length === 0 && parseSessionControlIntent(t) && onControl) {
-      void dispatchControlIntent(t);
-      return;
-    }
-    let body = t;
-    if (sceneTag) body = body ? `【${sceneTag.label}】${body}` : `【${sceneTag.label}】`;
-    const submittedAttachments = [...attachmentsRef.current];
-    const pendingOwnedAttachments = beginAttachmentSubmission(submittedAttachments);
-    try {
-      submissionLock.current = scopeEpochRef.current;
-      onEnqueue?.(body || "请分析附件。", submittedAttachments);
-    } catch (error) {
-      rejectAttachmentSubmission(pendingOwnedAttachments);
-      submissionLock.current = null;
-      onToast?.(`加入待发送队列失败：${String(error).replace(/^Error:\s*/, "")}`);
-      return;
-    }
-    updateText("");
-    updateAttachments([]);
-    submissionLock.current = null;
-    onClearSceneTag?.();
   };
 
   const pickFiles = async () => {
@@ -1188,6 +1146,19 @@ export function Composer({
     !apiReady && !onOpenSettings && "echo-composer--waiting",
     showMeta && "echo-composer--home",
   ].filter(Boolean).join(" ");
+  const hasDraft = Boolean(text.trim() || attachments.length);
+  const stopAction = streaming && !hasDraft;
+  const stopBusy = cancelling || stopping;
+  const controlIntent = attachments.length === 0 && onControl && parseSessionControlIntent(text);
+  const primaryLabel = stopAction ? stopBusy ? "正在停止生成" : "停止生成" : streaming ? "加入待发送队列" : "发送";
+  const primaryDisabled = stopAction
+    ? Boolean(disabled || workspacePicking || sendNowPending || sending || stopBusy)
+    : Boolean(disabled || sendDisabled || workspacePicking || !apiReady || sending || stopBusy || awaitingQuestion || sendNowPending || !hasDraft || streaming && !onEnqueue && !controlIntent);
+  const primaryTitle = stopAction ? "停止当前执行，保留会话记录"
+    : !apiReady ? setupHint
+    : controlIntent ? `${controlIntent === "pause" ? "暂停" : "停止"}当前执行`
+    : streaming ? "加入队列，当前任务完成后发送（Enter）"
+    : sending ? "正在发送" : "发送消息";
 
   return (
     <div
@@ -1395,7 +1366,7 @@ export function Composer({
             }
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
-              if (streaming) { if (onEnqueue) enqueue(); else if (onSendNow) void sendNow(); }
+              if (streaming) void enqueue();
               else void send();
               return;
             }
@@ -1588,50 +1559,21 @@ export function Composer({
           >
             <Mic size={16} />
           </button>
-          {streaming ? (
-            <div className="composer-submit-group">
-              {(text.trim() || attachments.length > 0) && <>
-                <button type="button" className="echo-composer__send echo-composer__send--enqueue"
-                  onClick={e => {e.stopPropagation(); if (onEnqueue) enqueue(); else void sendNow();}}
-                  disabled={disabled || sendDisabled || pausing || awaitingQuestion || !apiReady || sending || sendNowPending || !onEnqueue && !onSendNow}
-                  aria-label={onEnqueue ? "加入待发送队列" : "中断并发送"}
-                  title={onEnqueue ? "当前一轮正常结束后自动发送（Enter）" : "中断当前轮次并发送新要求"}>
-                  <ArrowUp size={17} /><span>{sendNowPending ? "切换中" : onEnqueue ? "排队" : "中断并发送"}</span>
-                </button>
-              </>}
-              {(onPause || (text.trim() || attachments.length > 0) && onSendNow && onEnqueue) && <ActionMenu label="发送选项" menuLabel="任务与发送选项" trigger={<MoreHorizontal size={17} />}>
-                {({close}) => <>
-                  {onPause && <button type="button" role="menuitem" className="topbar-actions__item"
-                    disabled={pausing || cancelling || disabled || sendNowPending || workspacePicking}
-                    title="暂停任务，保留上下文和未发送内容" onClick={() => {close(true); void pause();}}>
-                    <Pause size={14} />{pausing ? "正在暂停…" : "暂停任务"}
-                  </button>}
-                  {(text.trim() || attachments.length > 0) && onSendNow && onEnqueue && <button type="button" role="menuitem" className="topbar-actions__item" disabled={disabled || sendDisabled || awaitingQuestion || !apiReady || sending || sendNowPending || pausing}
-                    onClick={() => {close(true); void sendNow();}}>中断当前轮次并发送</button>}
-                </>}
-              </ActionMenu>}
-              <button type="button" className="echo-composer__send echo-composer__send--stop" onClick={e => {e.stopPropagation(); if (!cancelling) void onCancel();}}
-                disabled={cancelling || pausing || disabled || workspacePickingRef.current || sendNowPending} aria-label={cancelling ? "正在停止生成" : "停止生成"} title="停止当前轮次，保留会话记录"><Square size={14} fill="currentColor" /></button>
-            </div>
-          ) : (
-            <button
-              className={
-                "echo-composer__send" +
-                (text.trim() === "" && attachments.length === 0
-                  ? " echo-composer__send--empty"
-                  : "")
-              }
-              onClick={(e) => {
-                e.stopPropagation();
-                send();
-              }}
-              disabled={disabled || sendDisabled || workspacePicking || !apiReady || sending || (text.trim() === "" && attachments.length === 0)}
-              aria-label="发送"
-              title={!apiReady ? setupHint : sending ? "正在发送" : "发送消息"}
-            >
-              <ArrowUp size={18} />
-            </button>
-          )}
+          <button type="button"
+            className={"echo-composer__send" + (stopAction ? " echo-composer__send--stop" : streaming ? " echo-composer__send--queue" : !hasDraft ? " echo-composer__send--empty" : "")}
+            onClick={event => {
+              event.stopPropagation();
+              // A double-click must not enqueue and then stop the active turn
+              // when this same button switches back to its empty-draft action.
+              if (event.detail > 1) return;
+              if (stopAction) void stop();
+              else if (streaming) void enqueue();
+              else void send();
+            }}
+            disabled={primaryDisabled} aria-label={primaryLabel} aria-busy={sending || stopBusy || sendNowPending}
+            title={primaryTitle}>
+            {stopAction ? <Square size={14} fill="currentColor" /> : <ArrowUp size={18} />}
+          </button>
           </div>
         </div>
       </section>

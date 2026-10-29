@@ -173,6 +173,7 @@ interface SessionState {
   control?: SessionControl;
 
   error: string | null;
+  runtimeErrorContext: { sessionId: string; promptId: string } | null;
   /** Plan mode on/off — mirror of the focused session's authoritative mode. */
   planMode: boolean;
   /** Full authoritative Runtime mode for the focused session. */
@@ -207,7 +208,7 @@ interface SessionState {
   restoreControl: (sessionId: string, control: SessionControl) => void;
   /** Finalize every in-flight transcript after a process-wide agent failure. */
   failAllStreaming: (reason?: string, agentResult?: string) => void;
-  setError: (e: string | null) => void;
+  setError: (e: string | null, runtimeContext?: { sessionId: string; promptId: string }) => void;
   /** Stop a session's stream locally (cancel button): keep any text already
    *  streamed, mark the in-flight message complete, and clear its streaming
    *  flag. Defaults to the focused session. Does NOT talk to the backend. */
@@ -915,7 +916,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
     planRevisionDirty: false,
     planApproval: null,
     control: undefined,
-    error: null,
+    error: null, runtimeErrorContext: null,
     planMode: false,
     agentMode: "default",
 
@@ -956,7 +957,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
           sessionId: id,
           transcripts,
           ...mirrorOf(focused),
-          error: null,
+          error: null, runtimeErrorContext: null,
         };
       }),
 
@@ -966,7 +967,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
         // Keep transcripts (so a stray background stream can still land and a
         // later refocus restores it); just clear the focused mirror.
         ...mirrorOf(undefined),
-        error: null,
+        error: null, runtimeErrorContext: null,
       })),
 
     startStreaming: (sessionId, promptId) => {
@@ -996,7 +997,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
         };
       });
       // Local error banner doesn't belong to the transcript; clear it globally.
-      set({ error: null });
+      set({ error: null, runtimeErrorContext: null });
     },
 
     requestSendNow: (promptId, sessionId) => {
@@ -1006,7 +1007,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
         ...t,
         pendingSendNowPromptId: promptId,
       }));
-      set({ error: null });
+      set({ error: null, runtimeErrorContext: null });
     },
 
     rejectSendNow: (promptId, sessionId) => {
@@ -1029,7 +1030,7 @@ export const useSessionStore = create<SessionState>((set, get) => {
           requestedAt: Date.now(),
         },
       }));
-      set({ error: null });
+      set({ error: null, runtimeErrorContext: null });
     },
 
     confirmControl: (sessionId, action) => {
@@ -1218,13 +1219,13 @@ export const useSessionStore = create<SessionState>((set, get) => {
     // markComplete/failAllStreaming/stopStreaming for an actual turn boundary;
     // otherwise a failed cancel request or an early turn-error notification
     // would incorrectly kill a stream that is still owned by the agent.
-    setError: (error) => set({ error }),
+    setError: (error, runtimeContext) => set({ error, runtimeErrorContext: error ? runtimeContext ?? null : null }),
 
     stopStreaming: (sessionId) => {
       // Cancel button: keep whatever already streamed, just close the turn.
       const sid = sessionId ?? get().sessionId;
       if (!sid) {
-        set({ error: null });
+        set({ error: null, runtimeErrorContext: null });
         return;
       }
       applyToTranscript(sid, (t) => {

@@ -211,7 +211,7 @@ window.__echoNativeCoreReview = async function ({ home, nonce } = {}) {
     assert(context.coreRequested === true && context.evaluations === 1 && Number.isInteger(context.pid) && context.pid > 0
       && context.home === home && context.phase === scope.phase && scope.schema === 1 && scope.home === home
       && scope.nonce === nonce && scope.cwd === `${home}/workspaces/default`
-      && ['first-launch', 'restart'].includes(scope.phase) && ['echoagent-ojlab/chat-qwen', 'echoagent-review/claude-opus-5-5'].includes(scope.modelId), 'Native Core manifest/context mismatch');
+      && ['first-launch', 'restart'].includes(scope.phase) && ['echoagent-ojlab/Echo Reed', 'echoagent-review/claude-opus-5-5'].includes(scope.modelId), 'Native Core manifest/context mismatch');
     assert(Array.isArray(scope.officeFixtures) && scope.officeFixtures.length === 3
       && scope.officeFixtures.every((item, i) => item.format === ['xlsx', 'epub', 'ods'][i]
         && item.path === `${scope.cwd}/办公读取/中文 ${item.format}.${item.format}`
@@ -286,7 +286,7 @@ window.__echoNativeCoreReview = async function ({ home, nonce } = {}) {
       const choose = async (modelId = scope.modelId) => {
         (await wait(() => { const p = document.querySelector('.echo-composer .model-selector__trigger'); return visible(p) && !p.disabled ? p : null; }, 'production model chooser')).click();
         (await wait(() => [...document.querySelectorAll('.model-selector__item')].find((item) => visible(item)
-          && item.querySelector('.model-selector__item-id')?.textContent === modelId), 'actual model option')).click();
+          && item.dataset.modelId === modelId), 'actual model option')).click();
       };
       await choose();
       const e = report.expected, m = e.markers;

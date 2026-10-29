@@ -75,7 +75,7 @@ window.__echoNativePlanReview = async ({ invoke, home, cwd, phase, expected, ret
       'Model selector was replaced during navigation; refusing a detached trigger');
     picker.click();
     const option = await waitFor(() => [...document.querySelectorAll('.model-selector__item')]
-      .find((item) => visible(item) && item.querySelector('.model-selector__item-id')?.textContent === modelId), 'Actual model option');
+      .find((item) => visible(item) && item.dataset.modelId === modelId), 'Actual model option');
     const label = option.querySelector('.model-selector__item-label')?.textContent;
     option.click();
     await waitFor(() => {
@@ -298,8 +298,8 @@ window.__echoNativePlanReview = async ({ invoke, home, cwd, phase, expected, ret
     activeCheck = required[required.length - 1];
     assert(originalSession && originalSession !== sessionId, 'Missing independent owning session to return to');
     await selectSession(originalSession);
-    await chooseModel('echoagent-ojlab/chat-qwen');
-    record(activeCheck, { sessionId: originalSession, selectedInUi: true, modelId: 'echoagent-ojlab/chat-qwen' });
+    await chooseModel('echoagent-ojlab/Echo Reed');
+    record(activeCheck, { sessionId: originalSession, selectedInUi: true, modelId: 'echoagent-ojlab/Echo Reed' });
   } catch (error) {
     const message = errorText(error);
     report.errors.push({ check: activeCheck, error: message });

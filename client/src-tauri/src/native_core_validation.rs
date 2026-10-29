@@ -42,7 +42,7 @@ fn validate_manifest(value: &Manifest, home: &Path, phase: &str) -> Result<(), S
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
         || !matches!(
             value.model_id.as_str(),
-            "echoagent-ojlab/chat-qwen" | crate::native_review_model::PRIVATE_MODEL_ID
+            "echoagent-ojlab/Echo Reed" | crate::native_review_model::PRIVATE_MODEL_ID
         )
         || value.office_fixtures.len() != 3
         || (phase == "restart")
@@ -191,7 +191,7 @@ mod tests {
             cwd,
             nonce,
             phase: "first-launch".into(),
-            model_id: "echoagent-ojlab/chat-qwen".into(),
+            model_id: "echoagent-ojlab/Echo Reed".into(),
             office_fixtures,
             expected: None,
         }

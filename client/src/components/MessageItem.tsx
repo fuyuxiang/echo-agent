@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useId, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useId, useRef, useState, useMemo, type ReactNode } from "react";
 import {
   Check,
   Pencil,
@@ -35,6 +35,7 @@ import { exportOfficeDocument, type OfficeFormat } from "@/lib/document-export";
 import type { SessionArtifact } from "@/lib/session-artifacts";
 import { registerDocumentArtifact } from "@/lib/artifact-catalog";
 import { isExecutionSettled, partitionAssistantParts } from "@/lib/execution-process";
+import { executionContinuationPrompt, getExecutionNotice } from "@/lib/execution-notice";
 import {
   messageRetryKind,
   messageRetryLabel,
@@ -108,7 +109,13 @@ export const MessageItem = memo(function MessageItem({
   onToast,
   findQuery,
   authorName,
-  autoExpandProcess = true,
+  autoExpandProcess = false,
+  runtimeError,
+  suppressStoppedNotice = false,
+  onContinueExecution,
+  onOpenModelSettings,
+  onOpenSecuritySettings,
+  turnFeedback,
 }: {
   message: ChatMessage;
   authorName?: string;
@@ -118,6 +125,12 @@ export const MessageItem = memo(function MessageItem({
   /** Suppress model-wait copy while a decision, cancellation or error takes priority. */
   waitingForModel?: boolean;
   autoExpandProcess?: boolean;
+  runtimeError?: string;
+  suppressStoppedNotice?: boolean;
+  onContinueExecution?: (prompt: string) => boolean | void | Promise<boolean | void>;
+  onOpenModelSettings?: () => void;
+  onOpenSecuritySettings?: () => void;
+  turnFeedback?: ReactNode;
   markdownConfig?: MarkdownConfig;
   /** Workspace used to resolve relative attachment paths. */
   cwd?: string;
@@ -152,6 +165,31 @@ export const MessageItem = memo(function MessageItem({
   };
   const [exportedArtifact, setExportedArtifact] = useState<SessionArtifact | null>(null);
   const [exporting, setExporting] = useState<OfficeFormat | null>(null);
+  const [processReveal, setProcessReveal] = useState(0);
+  const [continuingExecution, setContinuingExecution] = useState(false);
+  const continueGuard = useRef(false);
+  const [continueError, setContinueError] = useState<string | null>(null);
+  const outcome = useMemo(() => getExecutionNotice(message, streaming, runtimeError), [message, streaming, runtimeError]);
+  const notice = outcome?.kind === "stopped" && suppressStoppedNotice ? null : outcome;
+  const hasToolWork = message.parts.some((part) => part.kind === "tool_call");
+  const continueAction = Boolean(notice && notice.kind !== "environment" && !notice.modelSettings && onContinueExecution && hasToolWork);
+  const retryAction = Boolean(notice && notice.kind !== "environment" && !notice.modelSettings && !hasToolWork && onRetry);
+  const continueExecution = async () => {
+    if (!notice || !onContinueExecution || continueGuard.current || retryDisabled) return;
+    continueGuard.current = true;
+    setContinuingExecution(true);
+    setContinueError(null);
+    try {
+      if (await onContinueExecution(executionContinuationPrompt(notice)) === false) {
+        setContinueError("暂时无法继续，请检查当前任务状态后重试。");
+      }
+    } catch {
+      setContinueError("暂时无法继续，已有内容已保留，请稍后重试。");
+    } finally {
+      continueGuard.current = false;
+      setContinuingExecution(false);
+    }
+  };
   const knowledgeTrace = useKnowledgeStore((state) => (
     sessionId && message.promptId
       ? state.turnTraces[sessionId]?.[message.promptId]
@@ -383,7 +421,7 @@ export const MessageItem = memo(function MessageItem({
             <LoadingRow key={`${sessionId}:${message.id}`} startedAt={message.startedAt} />
           )}
           {assistantGroups
-            && (assistantGroups.processParts.length > 0 || hasTerminalProcessStatus || hasKnowledgeTrace)
+            && (assistantGroups.processParts.length > 0 || hasTerminalProcessStatus || hasKnowledgeTrace || notice)
             && (
               <ExecutionProcess
                 sessionId={sessionId}
@@ -397,10 +435,11 @@ export const MessageItem = memo(function MessageItem({
                 stopReason={message.stopReason}
                 cancelTrigger={message.cancelTrigger}
                 cancellationCategory={message.cancellationCategory}
-                agentResult={message.agentResult}
+                agentResult={[...new Set([message.agentResult, runtimeError].filter(Boolean))].join("\n") || undefined}
                 hasFinalAnswer={hasFinalAnswer}
                 markdownConfig={markdownConfig}
                 onOpenTool={onOpenTool}
+                revealRequest={processReveal}
                 knowledgeTrace={knowledgeTrace}
                 onOpenKnowledgePath={(path) => {
                   void openLocalPath(path, cwd).catch((error) => {
@@ -426,8 +465,24 @@ export const MessageItem = memo(function MessageItem({
             (assistantGroups?.responseParts.length ?? 0) > 0 && (
               <span className="msg__caret">▋</span>
             )}
+          {notice && <div className={`execution-notice execution-notice--${notice.tone}`} role={notice.tone === "neutral" ? "status" : "alert"}>
+            <div className="execution-notice__copy"><strong>{notice.title}</strong><p>{notice.description}</p></div>
+            <div className="execution-notice__actions">
+              <button type="button" onClick={() => {
+                if (notice.tools[0] && onOpenTool) onOpenTool(notice.tools[0]);
+                else setProcessReveal((value) => value + 1);
+              }}>{notice.tools.length ? "查看相关操作" : "查看原因"}</button>
+              {notice.modelSettings && onOpenModelSettings && <button type="button" onClick={onOpenModelSettings}>模型设置</button>}
+              {notice.securitySettings && onOpenSecuritySettings && <button type="button" onClick={onOpenSecuritySettings}>打开权限设置</button>}
+              {continueAction && <button type="button" onClick={() => void continueExecution()} disabled={continuingExecution || retrying || retryDisabled} aria-busy={continuingExecution}
+                title={retryDisabledReason ?? "先核对已有结果，再继续未完成的工作"}>{continuingExecution ? "正在继续…" : "检查并继续"}</button>}
+              {retryAction && <button type="button" onClick={() => onRetry?.(retryKind)} disabled={retrying || retryDisabled} aria-busy={retrying} title={retryDisabledReason}>{retryLabel}</button>}
+            </div>
+            {continueError && <p className="execution-notice__action-error">{continueError}</p>}
+          </div>}
+          {turnFeedback}
         </div>
-        {message.complete && (hasAnswerText || onRetry) && (
+        {message.complete && (hasAnswerText || onRetry && !notice?.modelSettings && notice?.kind !== "environment") && (
           <div className={"msg__actions msg__actions--footer" + (latest ? " msg__actions--latest" : "") + (speaking || exporting || retrying ? " msg__actions--active" : "")}
             role="group" aria-label="回复操作">
             {hasAnswerText && <button type="button" className="msg__action-btn" data-chat-copy="true"
@@ -436,7 +491,7 @@ export const MessageItem = memo(function MessageItem({
             </button>}
             {hasAnswerText && <button type="button" className="msg__action-btn" onClick={toggleSpeak} aria-label={speaking ? "停止朗读" : "朗读回复"}
               data-tip={speaking ? "停止朗读" : "朗读回复"} aria-pressed={speaking}>{speaking ? <Square size={14} /> : <Volume2 size={14} />}</button>}
-            {onRetry && <button type="button" className="msg__action-btn" onClick={() => onRetry(retryKind)}
+            {onRetry && !continueAction && !retryAction && !notice?.modelSettings && notice?.kind !== "environment" && <button type="button" className="msg__action-btn" onClick={() => onRetry(retryKind)}
               aria-label={retryLabel} data-tip={retryDisabledReason ?? messageRetryTitle(retryKind)} title={retryDisabledReason ?? messageRetryTitle(retryKind)} disabled={retrying || retryDisabled} aria-busy={retrying}>
               <RefreshCw size={14} className={retrying ? "msg__action-spin" : undefined} />
               {(retryKind === "retry" || !hasAnswerText || message.stopReason && message.stopReason !== "end_turn" || retrying) && retryLabel}

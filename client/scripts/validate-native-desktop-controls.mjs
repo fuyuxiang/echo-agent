@@ -36,7 +36,7 @@ document.querySelector('#copy').onclick=()=>{document.querySelector('#result').t
 document.querySelector('#file').onchange=async e=>{const f=e.target.files[0];received=f?await f.text():'';document.querySelector('#received').textContent=f?f.name+'\\n'+received:'';verify();};
 </script>`,{mode:0o600});
 writeFileSync(join(home,'config.toml'),'[marketplace]\nofficial_marketplace_auto_installed = true\ndisabled_sources = []\n[claude_compat]\nimported = true\n',{mode:0o600});
-let requestedModelId='echoagent-ojlab/chat-qwen';
+let requestedModelId='echoagent-ojlab/Echo Reed';
 const resource=process.env.ECHO_DESKTOP_REVIEW_CONTROLS_MODEL_RESOURCE;
 if(resource){
   const file=lstatSync(resource),parent=lstatSync(dirname(resource));

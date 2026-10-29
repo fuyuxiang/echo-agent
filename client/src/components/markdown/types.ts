@@ -22,6 +22,8 @@ export type PathClickHandler = {
 };
 
 export type MarkdownConfig = {
+  /** Render portable reading content without app-only controls or effects. */
+  staticRendering?: boolean;
   /** Workspace cwd for relative path resolution (Phase 3). */
   cwd?: string;
   requestId?: string;

@@ -448,7 +448,7 @@ pub async fn desktop_validation_ready(
                 return Err("Desktop control review workspace escaped home".into());
             }
             let model_id = std::env::var("ECHO_DESKTOP_REVIEW_CONTROLS_MODEL_ID")
-                .unwrap_or_else(|_| "echoagent-ojlab/chat-qwen".into());
+                .unwrap_or_else(|_| "echoagent-ojlab/Echo Reed".into());
             let smoke = std::env::var("ECHO_DESKTOP_REVIEW_CONTROLS_SMOKE").as_deref() == Ok("1");
             let cross_app =
                 std::env::var("ECHO_DESKTOP_REVIEW_CONTROLS_CROSS_APP").as_deref() == Ok("1");

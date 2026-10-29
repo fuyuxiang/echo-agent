@@ -25,8 +25,8 @@ describe("buildSharePayload", () => {
     expect(p.bytes).toBeGreaterThan(0);
   });
 
-  it("html 格式自包含", () => {
-    const p = buildSharePayload(messages, "html", "测试");
+  it("html 格式自包含", async () => {
+    const p = await buildSharePayload(messages, "html", "测试");
     expect(p.filename).toBe("测试.html");
     expect(p.mime).toContain("text/html");
     expect(p.content).toContain("<!DOCTYPE html>");
@@ -77,16 +77,16 @@ describe("buildSharePayload", () => {
 });
 
 describe("buildShareHtml", () => {
-  it("转义 HTML 特殊字符", () => {
-    const html = buildShareHtml(
-      [{ id: "x", role: "user", complete: true, parts: [{ kind: "text", text: "<script>x</script>" }] }],
+  it("与客户端一致过滤原始 HTML，保留正常正文", async () => {
+    const html = await buildShareHtml(
+      [{ id: "x", role: "user", complete: true, parts: [{ kind: "text", text: "<script>x</script>\n\n正常正文" }] }],
       "t",
     );
-    expect(html).toContain("&lt;script&gt;");
+    expect(html).toContain("正常正文");
     expect(html).not.toContain("<script>");
   });
-  it("含标题与 viewport", () => {
-    const html = buildShareHtml(messages, "标题");
+  it("含标题与 viewport", async () => {
+    const html = await buildShareHtml(messages, "标题");
     expect(html).toContain("<title>标题</title>");
     expect(html).toContain("viewport");
   });

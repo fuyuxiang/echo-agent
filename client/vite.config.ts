@@ -48,6 +48,9 @@ export default defineConfig({
   // (no server origin), so always emit relative paths.
   base: "./",
   clearScreen: false,
+  // HTML export loads on demand; prebundle its browser renderer before the
+  // first export so discovering it cannot reload an active development page.
+  optimizeDeps: { include: ["react-dom/server"] },
   server: {
     host: HOST,
     port: PORT,
@@ -118,7 +121,7 @@ export default defineConfig({
       },
     ],
     globals: true,
-    // 不让 CSS import 在测试里报错(我们没装 jsdom CSS 处理)。
-    css: false,
+    // Ordinary styles stay stubbed; portable HTML must test the real CSS text.
+    css: { include: [/\.css\?raw$/] },
   },
 });

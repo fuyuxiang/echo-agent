@@ -8,15 +8,18 @@ import { useKnowledgeStore } from "@/stores/knowledge-store";
 
 describe("assistant execution process", () => {
   it("执行过程收起后仍显示最新资料的读取覆盖", () => {
-    render(<ThemeProvider><ExecutionProcess active={false} parts={[{ kind: "tool_call", toolCall: {
+    render(<ThemeProvider><ExecutionProcess autoExpand active={false} parts={[{ kind: "tool_call", toolCall: {
       toolCallId: "document", kind: "read_file", title: "Read 比赛.xlsx", status: "completed", content: [],
       documentProgress: { source: "比赛.xlsx", revision: "a".repeat(64), readRecords: 12, totalRecords: 100, checkpointCount: 2, complete: false },
     } }]} /></ThemeProvider>);
-    expect(screen.getByRole("button", { name: /比赛.xlsx · 已读取 12\/100 段内容/ })).toHaveAttribute("aria-expanded", "false");
+    const header = screen.getByRole("button", { name: /查看过程/ });
+    expect(header).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(header);
+    expect(screen.getByText(/比赛.xlsx · 已读取 12\/100 段内容/)).toBeVisible();
   });
   const renderMessage = (onOpenTool?: (tool: ToolCallView) => void) => render(
     <ThemeProvider>
-      <MessageItem
+      <MessageItem autoExpandProcess
         message={message}
         streaming={false}
         onOpenTool={onOpenTool}
@@ -52,7 +55,7 @@ describe("assistant execution process", () => {
 
     expect(screen.queryByText("我先检查代码。")).toBeNull();
     expect(screen.getByText("最终修复结果")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /已完成执行过程/ })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: /查看过程/ })).toHaveAttribute(
       "aria-expanded",
       "false",
     );
@@ -62,7 +65,7 @@ describe("assistant execution process", () => {
   it("没有最终答复的历史工具过程也默认收起", () => {
     render(
       <ThemeProvider>
-        <MessageItem
+        <MessageItem autoExpandProcess
           message={{
             id: "tool-only-history",
             role: "assistant",
@@ -74,7 +77,7 @@ describe("assistant execution process", () => {
       </ThemeProvider>,
     );
 
-    expect(screen.getByRole("button", { name: /已完成执行过程/ }))
+    expect(screen.getByRole("button", { name: /查看过程/ }))
       .toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByRole("button", { name: /edit_file/i })).toBeNull();
   });
@@ -87,15 +90,15 @@ describe("assistant execution process", () => {
       parts: [message.parts[2]],
     };
     const { rerender } = render(
-      <ThemeProvider><MessageItem message={liveMessage} streaming /></ThemeProvider>,
+      <ThemeProvider><MessageItem autoExpandProcess message={liveMessage} streaming /></ThemeProvider>,
     );
     expect(screen.getByRole("button", { name: /正在分析任务/ }))
       .toHaveAttribute("aria-expanded", "true");
 
     rerender(
-      <ThemeProvider><MessageItem message={{ ...liveMessage, complete: true }} streaming={false} /></ThemeProvider>,
+      <ThemeProvider><MessageItem autoExpandProcess message={{ ...liveMessage, complete: true }} streaming={false} /></ThemeProvider>,
     );
-    await waitFor(() => expect(screen.getByRole("button", { name: /已完成执行过程/ }))
+    await waitFor(() => expect(screen.getByRole("button", { name: /查看过程/ }))
       .toHaveAttribute("aria-expanded", "false"));
   });
 
@@ -109,7 +112,7 @@ describe("assistant execution process", () => {
     const otherMessage: ChatMessage = { ...liveMessage, id: "manual-process-b" };
     const view = (sessionId: string, item: ChatMessage) => (
       <ThemeProvider>
-        <MessageItem key={`${sessionId}:${item.id}`} sessionId={sessionId} message={item} streaming />
+        <MessageItem autoExpandProcess key={`${sessionId}:${item.id}`} sessionId={sessionId} message={item} streaming />
       </ThemeProvider>
     );
     const { rerender } = render(view("task-a", liveMessage));
@@ -142,25 +145,25 @@ describe("assistant execution process", () => {
     const other: ChatMessage = { ...historical, id: "manual-history-b" };
     const view = (sessionId: string, item: ChatMessage) => (
       <ThemeProvider>
-        <MessageItem key={`${sessionId}:${item.id}`} sessionId={sessionId} message={item} streaming={false} />
+        <MessageItem autoExpandProcess key={`${sessionId}:${item.id}`} sessionId={sessionId} message={item} streaming={false} />
       </ThemeProvider>
     );
     const { rerender } = render(view("history-a", historical));
-    const process = screen.getByRole("button", { name: /已完成执行过程/ });
+    const process = screen.getByRole("button", { name: /查看过程/ });
     expect(process).toHaveAttribute("aria-expanded", "false");
     fireEvent.click(process);
     rerender(view("history-b", other));
-    expect(screen.getByRole("button", { name: /已完成执行过程/ }))
+    expect(screen.getByRole("button", { name: /查看过程/ }))
       .toHaveAttribute("aria-expanded", "false");
     rerender(view("history-a", historical));
-    expect(screen.getByRole("button", { name: /已完成执行过程/ }))
+    expect(screen.getByRole("button", { name: /查看过程/ }))
       .toHaveAttribute("aria-expanded", "true");
   });
 
   it("将模型混在同一文本块的思考折叠，只直接显示答案", () => {
     render(
       <ThemeProvider>
-        <MessageItem
+        <MessageItem autoExpandProcess
           message={{
             id: "assistant-tagged-thinking",
             role: "assistant",
@@ -178,7 +181,7 @@ describe("assistant execution process", () => {
 
     expect(screen.getByText("超时通常表示某一层的等待预算用完了。")).toBeInTheDocument();
     expect(screen.queryByText("The user asks about a timeout.")).toBeNull();
-    const process = screen.getByRole("button", { name: /已完成思考/ });
+    const process = screen.getByRole("button", { name: /查看过程/ });
     expect(process).toHaveAttribute("aria-expanded", "false");
 
     fireEvent.click(process);
@@ -191,7 +194,7 @@ describe("assistant execution process", () => {
     const onOpenTool = vi.fn();
     renderMessage(onOpenTool);
 
-    fireEvent.click(screen.getByRole("button", { name: /已完成执行过程/ }));
+    fireEvent.click(screen.getByRole("button", { name: /查看过程/ }));
     fireEvent.click(screen.getByRole("button", { name: /edit_file/i }));
     expect(onOpenTool).toHaveBeenCalledWith(
       expect.objectContaining({ toolCallId: "tool-1" }),
@@ -212,7 +215,7 @@ describe("assistant execution process", () => {
     };
     const { rerender } = render(
       <ThemeProvider>
-        <MessageItem message={liveMessage} streaming />
+        <MessageItem autoExpandProcess message={liveMessage} streaming />
       </ThemeProvider>,
     );
     expect(screen.getByRole("button", { name: /正在分析任务/ }))
@@ -221,7 +224,7 @@ describe("assistant execution process", () => {
 
     rerender(
       <ThemeProvider>
-        <MessageItem
+        <MessageItem autoExpandProcess
           message={{
             ...liveMessage,
             parts: [
@@ -257,17 +260,18 @@ describe("assistant execution process", () => {
       ],
     };
     const { container, rerender } = render(
-      <ThemeProvider><MessageItem message={liveMessage} streaming /></ThemeProvider>,
+      <ThemeProvider><MessageItem autoExpandProcess message={liveMessage} streaming /></ThemeProvider>,
     );
     expect(container.querySelector(".execution-process--running")).toBeInTheDocument();
     const header = container.querySelector(".execution-process__header");
     expect(header).toHaveAttribute("aria-expanded", "true");
-    expect(header).toHaveTextContent("0/2 项");
+    expect(header).not.toHaveTextContent("0/2 项");
+    expect(screen.getByText("0/2 项")).toBeVisible();
     expect(header).not.toHaveTextContent("已完成");
     expect(screen.getByText("深度思考").closest("details")).toHaveAttribute("open");
 
     fireEvent.click(header!);
-    rerender(<ThemeProvider><MessageItem message={{ ...liveMessage, parts: [
+    rerender(<ThemeProvider><MessageItem autoExpandProcess message={{ ...liveMessage, parts: [
       ...liveMessage.parts, { kind: "thought", text: "并行检查仍在继续。" },
     ] }} streaming /></ThemeProvider>);
     expect(container.querySelector(".execution-process__header")).toHaveAttribute("aria-expanded", "false");
@@ -285,11 +289,11 @@ describe("assistant execution process", () => {
       ],
     };
     const { container, rerender } = render(
-      <ThemeProvider><MessageItem message={preface} streaming /></ThemeProvider>,
+      <ThemeProvider><MessageItem autoExpandProcess message={preface} streaming /></ThemeProvider>,
     );
     expect(screen.getByRole("button", { name: /正在分析任务/ })).toHaveAttribute("aria-expanded", "true");
     expect(container.querySelector(".execution-process--running")).toBeInTheDocument();
-    rerender(<ThemeProvider><MessageItem message={{ ...preface, parts: [
+    rerender(<ThemeProvider><MessageItem autoExpandProcess message={{ ...preface, parts: [
       ...preface.parts, { kind: "text", text: "这是工具完成后的最终答复。" },
     ] }} streaming /></ThemeProvider>);
     expect(screen.getByText("这是工具完成后的最终答复。")).toBeInTheDocument();
@@ -306,12 +310,12 @@ describe("assistant execution process", () => {
         { kind: "thought", text: "当前仍在分析。" },
       ],
     };
-    const { container, rerender } = render(<ThemeProvider><MessageItem message={liveMessage} streaming /></ThemeProvider>);
+    const { container, rerender } = render(<ThemeProvider><MessageItem autoExpandProcess message={liveMessage} streaming /></ThemeProvider>);
     const header = screen.getByRole("button", { name: /正在分析任务/ });
     expect(header).toHaveAttribute("aria-expanded", "true");
     expect(container.querySelector(".execution-process--running")).toBeInTheDocument();
     fireEvent.click(header);
-    rerender(<ThemeProvider><MessageItem message={{ ...liveMessage, parts: [
+    rerender(<ThemeProvider><MessageItem autoExpandProcess message={{ ...liveMessage, parts: [
       ...liveMessage.parts, { kind: "text", text: "现在开始最终答复。" },
     ] }} streaming /></ThemeProvider>);
     expect(screen.getByRole("button", { name: /正在生成回复/ })).toHaveAttribute("aria-expanded", "false");
@@ -322,13 +326,13 @@ describe("assistant execution process", () => {
       toolCallId: "unfinished-tool-defense", kind: "read_file", title: "Read report.md",
       status: "in_progress", content: [],
     } }];
-    const { container, rerender } = render(<ThemeProvider><ExecutionProcess parts={parts} active hasFinalAnswer /></ThemeProvider>);
+    const { container, rerender } = render(<ThemeProvider><ExecutionProcess autoExpand parts={parts} active hasFinalAnswer /></ThemeProvider>);
     expect(container.querySelector(".execution-process--running")).toBeInTheDocument();
     expect(container.querySelector(".execution-process__header")).toHaveAttribute("aria-expanded", "true");
     expect(container.querySelector(".execution-process__header")).not.toHaveTextContent("已完成");
-    rerender(<ThemeProvider><ExecutionProcess parts={parts} active={false} hasFinalAnswer stopReason="end_turn" /></ThemeProvider>);
+    rerender(<ThemeProvider><ExecutionProcess autoExpand parts={parts} active={false} hasFinalAnswer stopReason="end_turn" /></ThemeProvider>);
     expect(container.querySelector(".execution-process--attention")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /执行结果待确认/ })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: /查看过程/ })).toHaveAttribute("aria-expanded", "false");
   });
 
   it("用户手动展开后不被后续答案输出抢夺控制权", async () => {
@@ -340,7 +344,7 @@ describe("assistant execution process", () => {
     };
     const { rerender } = render(
       <ThemeProvider>
-        <MessageItem message={liveMessage} streaming />
+        <MessageItem autoExpandProcess message={liveMessage} streaming />
       </ThemeProvider>,
     );
     const process = screen.getByRole("button", { name: /正在分析任务/ });
@@ -350,7 +354,7 @@ describe("assistant execution process", () => {
 
     rerender(
       <ThemeProvider>
-        <MessageItem
+        <MessageItem autoExpandProcess
           message={{
             ...liveMessage,
             parts: [
@@ -370,7 +374,7 @@ describe("assistant execution process", () => {
   it("没有回复文本的失败保留异常提示和可展开的终止原因，不提供空复制", () => {
     render(
       <ThemeProvider>
-        <MessageItem
+        <MessageItem autoExpandProcess
           message={{
             id: "failed-empty",
             role: "assistant",
@@ -384,19 +388,19 @@ describe("assistant execution process", () => {
       </ThemeProvider>,
     );
 
-    expect(screen.getByRole("button", { name: /执行未正常完成/ })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: /查看过程/ })).toHaveAttribute(
       "aria-expanded",
       "false",
     );
     expect(screen.queryByRole("button", { name: "复制纯文本" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: /执行未正常完成/ }));
-    expect(screen.getByRole("alert")).toHaveTextContent("provider disconnected");
+    fireEvent.click(screen.getByRole("button", { name: /查看过程/ }));
+    expect(screen.getByText("provider disconnected")).toBeVisible();
   });
 
   it("已有答案的失败过程保持紧凑，异常状态和详情仍可查看", () => {
     render(
       <ThemeProvider>
-        <MessageItem
+        <MessageItem autoExpandProcess
           message={{
             ...message,
             id: "failed-with-answer",
@@ -409,12 +413,12 @@ describe("assistant execution process", () => {
     );
 
     expect(screen.getByText("最终修复结果")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /执行未正常完成/ })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: /查看过程/ })).toHaveAttribute(
       "aria-expanded",
       "false",
     );
-    fireEvent.click(screen.getByRole("button", { name: /执行未正常完成/ }));
-    expect(screen.getByRole("alert")).toHaveTextContent("upstream timeout");
+    fireEvent.click(screen.getByRole("button", { name: /查看过程/ }));
+    expect(screen.getByText("upstream timeout")).toBeVisible();
   });
 
   it("已恢复的中间失败不显示顶层告警，展开仍可查看原始失败和成功重试", () => {
@@ -424,10 +428,10 @@ describe("assistant execution process", () => {
       {kind:"tool_call",toolCall:{toolCallId:"weather-retry",toolName:"weather",kind:"web_fetch",title:"查询天气",rawInput:{city:"北京"},status:"completed",content:[{type:"text",text:"天气查询结果"}],startedAt:2_000}},
       {kind:"text",text:"这是天气结果"},
     ];
-    const { container } = render(<ThemeProvider><MessageItem message={{id:"recovered-weather",role:"assistant",complete:true,stopReason:"end_turn",parts}} streaming={false} onOpenTool={onOpenTool} /></ThemeProvider>);
+    const { container } = render(<ThemeProvider><MessageItem autoExpandProcess message={{id:"recovered-weather",role:"assistant",complete:true,stopReason:"end_turn",parts}} streaming={false} onOpenTool={onOpenTool} /></ThemeProvider>);
     expect(container.querySelector(".execution-process--recovered")).toBeInTheDocument();
     expect(container.querySelector(".execution-process__outcome-detail")).toBeNull();
-    const header = screen.getByRole("button",{name:/执行过程\s*2 项操作/});
+    const header = screen.getByRole("button",{name:/查看过程/});
     expect(header).toHaveAttribute("aria-expanded","false");
     fireEvent.click(header);
     expect(screen.getByText(/1 次中间失败已由后续同一操作的重试恢复/)).toBeVisible();
@@ -436,22 +440,25 @@ describe("assistant execution process", () => {
     expect(screen.getByRole("button",{name:/web_fetch .*完成/})).toBeVisible();
   });
 
-  it("混合未恢复失败显示黄色部分完成并明确数量，成功正文不覆盖它", () => {
-    const { container } = render(<ThemeProvider><MessageItem message={{...message,id:"partial-result",stopReason:"end_turn",parts:[
+  it("未恢复的文件失败在回复附近提示影响，计数只在详情展示", () => {
+    const { container } = render(<ThemeProvider><MessageItem autoExpandProcess message={{...message,id:"partial-result",stopReason:"end_turn",parts:[
       ...message.parts,{kind:"tool_call",toolCall:{toolCallId:"export-failed",kind:"write_file",title:"生成报告",status:"failed",content:[]}},
       {kind:"text",text:"所有工作都已完成"},
     ]}} streaming={false} /></ThemeProvider>);
     expect(container.querySelector(".execution-process--partial")).toBeInTheDocument();
     expect(container.querySelector(".execution-process--failed")).toBeNull();
-    expect(screen.getByRole("button",{name:/部分操作未完成/})).toHaveAttribute("aria-expanded","false");
+    expect(screen.getByRole("button",{name:/查看过程/})).toHaveAttribute("aria-expanded","false");
+    expect(screen.queryByText(/1 项失败操作尚未确认恢复/)).toBeNull();
+    expect(screen.getByRole("alert")).toHaveTextContent("文件操作未成功");
+    fireEvent.click(screen.getByRole("button",{name:/查看过程/}));
     expect(screen.getByText(/1 项失败操作尚未确认恢复/)).toBeVisible();
     expect(screen.getByText("所有工作都已完成")).toBeVisible();
   });
 
   it("历史回放仅关闭气泡而没有完成事件时，不因正文和成功工具记录显示完成", () => {
-    const { container } = render(<ThemeProvider><MessageItem message={{...message,id:"unconfirmed-replay",replayed:true}} streaming={false} /></ThemeProvider>);
+    const { container } = render(<ThemeProvider><MessageItem autoExpandProcess message={{...message,id:"unconfirmed-replay",replayed:true}} streaming={false} /></ThemeProvider>);
     expect(container.querySelector(".execution-process--attention")).toBeInTheDocument();
-    expect(screen.getByRole("button",{name:/执行状态待确认/})).toBeVisible();
+    expect(screen.getByRole("button",{name:/查看过程/})).toBeVisible();
     expect(screen.getByText("最终修复结果")).toBeVisible();
   });
 
@@ -482,7 +489,7 @@ describe("assistant execution process", () => {
 
     render(
       <ThemeProvider>
-        <MessageItem
+        <MessageItem autoExpandProcess
           message={{
             id: "assistant-kb",
             role: "assistant",
@@ -496,7 +503,7 @@ describe("assistant execution process", () => {
       </ThemeProvider>,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /知识检索完成/ }));
+    fireEvent.click(screen.getByRole("button", { name: /查看过程/ }));
     expect(screen.getByText("已向模型提供 1 个相关片段")).toBeInTheDocument();
     expect(screen.getByText("本地笔记 · 第 8–10 行")).toBeInTheDocument();
     expect(screen.getByText("住宿标准为每晚 500 元。")).toBeInTheDocument();

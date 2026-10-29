@@ -415,6 +415,15 @@ function MarkdownInner({
         const content = node?.data?.content as string | undefined;
         const meta = node?.data?.meta as string | undefined;
 
+        if (config?.staticRendering) {
+          return <div className="md-code-wrapper" data-export-language={language || undefined}>
+            <div className="md-code-container">
+              {language && <div className="md-code-header"><span className="md-code-lang">{language}</span></div>}
+              <pre className="md-code-pre">{preChildren}</pre>
+            </div>
+          </div>;
+        }
+
         if (language === "mermaid") {
           return (
             <MarkdownPreMermaid
@@ -519,6 +528,9 @@ function MarkdownInner({
       }: React.AnchorHTMLAttributes<HTMLAnchorElement> & {
         children?: ReactNode;
       }) => {
+        if (config?.staticRendering && !/^(?:https?:|mailto:|#)/i.test(href ?? "")) {
+          return <span>{aChildren}</span>;
+        }
         const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
           if (config?.onLinkClick) {
             if (
@@ -551,9 +563,9 @@ function MarkdownInner({
         src,
         alt,
         ...imgProps
-      }: React.ImgHTMLAttributes<HTMLImageElement>) => (
-        <MarkdownImage src={src} alt={alt} config={config} {...imgProps} />
-      ),
+      }: React.ImgHTMLAttributes<HTMLImageElement>) => config?.staticRendering && isSafeInlineRasterUrl(src) ? (
+        <img {...imgProps} src={src} alt={alt ?? ""} />
+      ) : <MarkdownImage src={src} alt={alt} config={config} {...imgProps} />,
     }),
     [config, complete, theme],
   );

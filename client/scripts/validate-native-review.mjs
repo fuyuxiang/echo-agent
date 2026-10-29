@@ -215,7 +215,7 @@ for (const phase of ["first-launch", "restart"]) {
     if (projectExpectation && sessionExpectation) {
       const projects = JSON.parse(readFileSync(join(home, "echoagent-projects.json"), "utf8"));
       const project = Array.isArray(projects) && projects.find((item) => item.id === projectExpectation.id);
-      if (!project || project.name !== projectExpectation.name || project.defaultModelId !== "echoagent-ojlab/chat-qwen"
+      if (!project || project.name !== projectExpectation.name || project.defaultModelId !== "echoagent-ojlab/Echo Reed"
         || !project.conversations?.some((item) => item.sessionId === sessionExpectation)) {
         throw new Error(`${phase}: actual saved project or session binding differs from UI evidence`);
       }
@@ -286,7 +286,7 @@ for (const phase of ["first-launch", "restart"]) {
       const resumed = evidenceFor('native-restart-task');
       if (!resumed || resumed.sessionId !== firstReport.sessionId || resumed.cwd !== firstReport.workspace
         || resumed.status !== 'completed' || resumed.newUserMessageVisible !== true
-        || !resumed.modelLabel?.includes('chat-qwen') || !resumed.answer?.includes('验收成功')) {
+        || !resumed.modelLabel?.includes('Echo Reed') || !resumed.answer?.includes('验收成功')) {
         throw new Error(`${phase}: restored session did not execute a successful new native task`);
       }
     }

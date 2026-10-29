@@ -1,3 +1,4 @@
+import { modelDisplayName, modelSourceLabel } from "@/lib/model-presentation";
 /**
  * 关于 EchoAgent 对话框 - 显示版本、运行时和模型配置状态。
  *
@@ -98,7 +99,7 @@ export function AboutDialog({ open, onClose, init, onCheckForUpdates }: AboutDia
             <dd>
               {isUpstreamBrandedModelId(init?.defaultModelId)
                 ? "未指定"
-                : init?.defaultModelId ?? "未指定"}
+                : modelDisplayName(init?.defaultModelId, "未指定")}
             </dd>
           </div>
           <div className="about-dialog__row">
@@ -126,7 +127,7 @@ export function AboutDialog({ open, onClose, init, onCheckForUpdates }: AboutDia
           {providers.length > 0 && (
             <div className="about-dialog__row">
               <dt>已配置模型</dt>
-              <dd>{providers.join(", ")}</dd>
+              <dd>{providers.map((id) => `${modelDisplayName(id)} · ${modelSourceLabel(id)}`).join(", ")}</dd>
             </div>
           )}
           <div className="about-dialog__row">

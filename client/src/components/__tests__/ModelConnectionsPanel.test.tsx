@@ -193,7 +193,8 @@ describe("ModelConnectionsPanel", () => {
   });
 
   it("内置模型无需密钥且显示实际默认模型", async () => {
-    mocks.agentAuthStatus.mockResolvedValue({ ready: true, defaultModelId: "echoagent-ojlab/chat-xc" });
+    mocks.agentsDefaultsGet.mockResolvedValue({ ...defaults, defaultModel: "echoagent-ojlab/Echo Reed" });
+    mocks.agentAuthStatus.mockResolvedValue({ ready: true, defaultModelId: "echoagent-ojlab/Echo Reed" });
     mocks.providersList.mockResolvedValue({
       providers: [{
         id: "echoagent-ojlab",
@@ -206,20 +207,36 @@ describe("ModelConnectionsPanel", () => {
         apiBackend: "chat_completions",
       }],
       models: [
-        { modelId: "echoagent-ojlab/chat-xc", remoteModelId: "chat-xc", providerId: "echoagent-ojlab", name: "chat-xc", contextWindow: 262144, maxOutputTokens: 8192, managed: true },
-        { modelId: "echoagent-ojlab/chat-glm", remoteModelId: "chat-glm", providerId: "echoagent-ojlab", name: "chat-glm", contextWindow: 131072, maxOutputTokens: 8192, managed: true },
-        { modelId: "echoagent-ojlab/chat-qwen", remoteModelId: "chat-qwen", providerId: "echoagent-ojlab", name: "chat-qwen", contextWindow: 262144, maxOutputTokens: 65536, managed: true },
+        { modelId: "echoagent-ojlab/Echo Cedar", remoteModelId: "Echo Cedar", providerId: "echoagent-ojlab", name: "Echo Cedar", contextWindow: 131072, maxOutputTokens: 8192, managed: true },
+        { modelId: "echoagent-ojlab/Echo Willow", remoteModelId: "Echo Willow", providerId: "echoagent-ojlab", name: "Echo Willow", contextWindow: 32768, maxOutputTokens: 8192, managed: true },
+        { modelId: "echoagent-ojlab/Echo Grove", remoteModelId: "Echo Grove", providerId: "echoagent-ojlab", name: "Echo Grove", contextWindow: 262144, maxOutputTokens: 8192, managed: true },
+        { modelId: "echoagent-ojlab/Echo Brook", remoteModelId: "Echo Brook", providerId: "echoagent-ojlab", name: "Echo Brook", contextWindow: 131072, maxOutputTokens: 8192, managed: true },
+        { modelId: "echoagent-ojlab/Echo Reed", remoteModelId: "Echo Reed", providerId: "echoagent-ojlab", name: "Echo Reed", contextWindow: 262144, maxOutputTokens: 65536, managed: true },
       ],
     });
     render(<ModelConnectionsPanel />);
     expect(await screen.findByText("此服务无需 API Key")).toBeInTheDocument();
     expect(screen.queryByText(/此连接使用 HTTP 明文传输/)).not.toBeInTheDocument();
     expect(screen.getByText("内置只读")).toBeInTheDocument();
-    expect(screen.getByText("当前自动使用")).toBeInTheDocument();
+    expect(screen.getByText("已设默认 · 当前使用")).toBeInTheDocument();
     expect(screen.getAllByText("上下文 262,144 · 最大输出 8,192 tokens")).toHaveLength(1);
-    expect(screen.getByText("上下文 131,072 · 最大输出 8,192 tokens")).toBeInTheDocument();
+    expect(screen.getAllByText("上下文 131,072 · 最大输出 8,192 tokens")).toHaveLength(2);
+    expect(screen.getByText("上下文 32,768 · 最大输出 8,192 tokens")).toBeInTheDocument();
     expect(screen.getByText("上下文 262,144 · 最大输出 65,536 tokens")).toBeInTheDocument();
+    expect(screen.getByText("可用模型").parentElement).toHaveTextContent("5 个");
+    for (const name of ["Echo Cedar", "Echo Willow", "Echo Grove", "Echo Brook", "Echo Reed"]) {
+      expect(screen.getByText(name, { selector: "strong" })).toBeInTheDocument();
+    }
+    expect(screen.getByText("已设默认 · 当前使用").closest("li")).toHaveTextContent("Echo Reed");
+    expect(screen.queryByText(/embed-pro|rerank-pro|chat-glm|chat-qwen|chat-xc/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "编辑连接" })).not.toBeInTheDocument();
+    mocks.providersTestModelConnection.mockResolvedValue(undefined);
+    fireEvent.click(screen.getByRole("button", { name: "测试模型" }));
+    await waitFor(() => expect(mocks.providersTestModelConnection).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "echoagent-ojlab", apiKey: undefined }),
+      "Echo Reed",
+    ));
+    expect(await screen.findByText("模型「Echo Reed」调用成功。")).toBeInTheDocument();
   });
 
   it("标题和无纵向溢出的连接列表可继续滚动详情，移动布局交由原生滚动", async () => {
@@ -294,8 +311,8 @@ describe("ModelConnectionsPanel", () => {
     expect(screen.queryByText("当前自动使用")).not.toBeInTheDocument();
   });
 
-  it("已设默认模型不在目录中时解释自动回退", async () => {
-    mocks.agentsDefaultsGet.mockResolvedValue({ ...defaults, defaultModel: "missing-model" });
+  it.each(["missing-model", "echoagent-ojlab/missing-model", "organization/missing-model"])("已设默认模型 %s 不在目录中时隐藏前缀并解释自动回退", async (defaultModel) => {
+    mocks.agentsDefaultsGet.mockResolvedValue({ ...defaults, defaultModel });
     mocks.agentAuthStatus.mockResolvedValue({ ready: true, defaultModelId: "model-a" });
     mocks.providersList.mockResolvedValue({
       providers: [{ id: "custom", providerKind: "custom", source: "personal", baseUrl: "https://example.com/v1" }],
@@ -303,6 +320,7 @@ describe("ModelConnectionsPanel", () => {
     });
     render(<ModelConnectionsPanel />);
     expect(await screen.findByText(/已设默认模型「missing-model」不在当前模型目录中/)).toBeInTheDocument();
+    expect(screen.getByText(/已设默认模型「missing-model」不在当前模型目录中/)).not.toHaveTextContent(/echoagent-ojlab\/|organization\//);
     expect(screen.getByText("当前自动使用")).toBeInTheDocument();
   });
 

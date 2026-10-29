@@ -16,8 +16,6 @@ export interface SessionWorkspaceSummary {
   subagentCount: number;
   runningSubagents: number;
   teamCount: number;
-  status?: string;
-  attention?: boolean;
 }
 export interface SessionNavigationProps {
   sidebarCollapsed?: boolean;
@@ -58,10 +56,8 @@ export function SessionHeader({ sessionId, title, onRename, actions, summary, ac
     <div className="session-header__navigation"><SessionNavigation {...navigation} />{leading}</div>
     <div className="session-header__identity" data-tauri-drag-region>
       {onRename ? <TopbarTitle key={sessionId} title={title} onRename={onRename} /> : <span className="main-topbar__title" title={title}>{title}</span>}
-      {summary.status === "等待审批" && <span className="session-header__status session-header__status--approval" role="status">等待审批</span>}
     </div>
     <div className="session-header__actions">
-      {summary.status && summary.status !== "等待审批" && <span className={"session-header__status" + (summary.attention ? " session-header__status--attention" : "")} role="status">{summary.status}</span>}
       {summary.hasPlan && <button type="button" className="session-header__context"
         aria-label={summary.planTotal ? `查看执行计划，已完成 ${summary.planCompleted}/${summary.planTotal} 步` : "查看执行计划"}
         aria-expanded={activeView === "plan"} aria-controls="session-workspace" onClick={() => onView("plan")}>

@@ -1,3 +1,4 @@
+import { findModelDisplayName } from "@/lib/model-presentation";
 /**
  * 自动化面板 — 1:1 复刻 EchoAgent automation-panel/index.tsx。
  *
@@ -141,7 +142,7 @@ function automationModelError(
   }
   return models.some((model) => model.id === draft.modelId)
     ? null
-    : `已选模型“${draft.modelId}”当前不可用，请重新选择模型。`;
+    : `已选模型“${findModelDisplayName(models, draft.modelId)}”当前不可用，请重新选择模型。`;
 }
 
 function RecordStatusIcon({ item }: { item: AutomationRunRecord }) {

@@ -3,8 +3,10 @@ import { waitFor } from "@testing-library/react";
 import { beginAgentTurn, type AgentTurnSender } from "../agent-turn";
 import { useSessionStore } from "@/stores/session-store";
 import { useSessionsStore } from "@/stores/sessions-store";
+import { useMessageQueueStore } from "@/stores/message-queue-store";
 
 function resetStores() {
+  useMessageQueueStore.setState({queues:{}});
   useSessionStore.setState({
     sessionId: null,
     transcripts: {},
@@ -82,6 +84,7 @@ describe("beginAgentTurn", () => {
       attachments: ["/tmp/方案.docx"],
     }, send);
 
+    useMessageQueueStore.getState().enqueue("s1", "保留的下一步", ["/tmp/补充.docx"]);
     await waitFor(() => expect(useSessionStore.getState().streaming).toBe(false));
     const state = useSessionStore.getState();
     expect(state.messages).toHaveLength(2);
@@ -94,6 +97,9 @@ describe("beginAgentTurn", () => {
     });
     expect(state.error).toContain("附件读取失败");
     expect(useSessionsStore.getState().independent[0].status).toBe("failed");
+    expect(useMessageQueueStore.getState().getQueue("s1")).toMatchObject([
+      {text:"保留的下一步",attachments:["/tmp/补充.docx"],status:"paused"},
+    ]);
   });
 
   it.each(["browser_use", "computer_use", "plan"] as const)("%s 新会话模式先返回时仍显示首轮工具和真实回复", (mode) => {

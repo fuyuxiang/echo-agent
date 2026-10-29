@@ -146,6 +146,8 @@ pub fn spawn_agent_runtime(_cwd: PathBuf) -> Result<AgentHandle> {
     // 这里不再需要注册 —— new_session 会把 MCP server 传给 EchoAgent，EchoAgent 以
     // client 身份连接（工具名 echoagent__create_team 等）。对 EchoAgent 零补丁。
 
+    crate::sessions::migrate_builtin_models_before_runtime()
+        .map_err(|error| anyhow!("migrate saved task models: {error}"))?;
     crate::providers::ensure_builtin_model_config()
         .map_err(|error| anyhow!("install built-in model catalog: {error}"))?;
 
@@ -183,9 +185,22 @@ pub fn spawn_agent_runtime(_cwd: PathBuf) -> Result<AgentHandle> {
     // Keep the backend available while disabled so settings can take effect
     // in existing sessions. Each memory operation checks the live policy.
     let memory_enabled = true;
-    // Empty remote settings: local defaults only. Must be set both here (runtime
+    // Local settings only. Must be set both here (runtime
     // resolution) and on `cfg.remote_settings` before bootstrap (see below).
-    let local_remote_settings = echo_agent_runtime::util::config::RemoteSettings::default();
+    let mut local_remote_settings = echo_agent_runtime::util::config::RemoteSettings::default();
+    // A hint has lower precedence than an explicit preference and Runtime can
+    // ignore it when model filters exclude it. Never write Auto to disk.
+    let configured = cfg.config_models.keys().cloned().collect::<Vec<_>>();
+    local_remote_settings.default_model =
+        crate::commands::effective_configured_model_id(&configured, &configured, None);
+    if cfg
+        .models
+        .default
+        .as_deref()
+        .is_some_and(|id| id.trim().is_empty())
+    {
+        cfg.models.default = None;
+    }
     cfg.resolve_runtime_fields(&RuntimeResolutionContext {
         raw_config: &raw,
         remote_settings: Some(&local_remote_settings),
@@ -565,6 +580,7 @@ async fn load_session_with_servers(
     permission_mode: &str,
     servers: Vec<acp::McpServer>,
 ) -> Result<Option<String>> {
+    crate::sessions::require_migrated_model(session_id, cwd).map_err(|error| anyhow!(error))?;
     let req = acp::LoadSessionRequest::new(
         acp::SessionId::new(session_id.to_string()),
         cwd.to_path_buf(),
@@ -639,6 +655,7 @@ pub(crate) async fn group_session(
         ));
     }
     if let Some(sid) = existing {
+        crate::sessions::require_migrated_model(sid, cwd).map_err(|error| anyhow!(error))?;
         let req =
             acp::LoadSessionRequest::new(acp::SessionId::new(sid.to_string()), cwd.to_path_buf())
                 .mcp_servers(servers)
@@ -1517,16 +1534,24 @@ mod tests {
                 let mut bytes = [0u8; 4096];
                 loop {
                     let n = socket.read(&mut bytes).await.unwrap();
-                    if n == 0 { break; }
+                    if n == 0 {
+                        break;
+                    }
                     request.extend_from_slice(&bytes[..n]);
                     assert!(request.len() < 1024 * 1024);
                     if let Some(end) = request.windows(4).position(|v| v == b"\r\n\r\n") {
                         let headers = String::from_utf8_lossy(&request[..end]);
-                        let length = headers.lines().find_map(|line| {
-                            let (key, value) = line.split_once(':')?;
-                            key.eq_ignore_ascii_case("content-length").then(|| value.trim().parse::<usize>().unwrap())
-                        }).unwrap_or(0);
-                        if request.len() >= end + 4 + length { break; }
+                        let length = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (key, value) = line.split_once(':')?;
+                                key.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap_or(0);
+                        if request.len() >= end + 4 + length {
+                            break;
+                        }
                     }
                 }
                 if String::from_utf8_lossy(&request).contains("Now write the memory summary") {
@@ -1637,6 +1662,24 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore = "requires an explicit isolated ECHO_AGENT_HOME and local MCP port (~10s)"]
     async fn spawn_smoke_spawn_initialize_new_session() {
+        fn receive_notifications(mut rx: AcpClientRx) -> tokio::task::JoinHandle<()> {
+            tokio::spawn(async move {
+                while let Some(message) = rx.recv().await {
+                    match message {
+                        echo_agent_acp::AcpClientMessage::SessionNotification(args) => {
+                            let _ = args.response_tx.send(Ok(()));
+                        }
+                        echo_agent_acp::AcpClientMessage::ExtNotification(args) => {
+                            let _ = args.response_tx.send(Ok(()));
+                        }
+                        // This acceptance never performs inference or requests
+                        // client-side tools. Dropping an unexpected request also
+                        // closes its response instead of hanging the test.
+                        unexpected => panic!("unexpected no-model client request: {unexpected:?}"),
+                    }
+                }
+            })
+        }
         assert!(
             crate::paths::redirected_data_home().is_some(),
             "Set ECHO_AGENT_HOME to an isolated directory before running this smoke test"
@@ -1666,6 +1709,9 @@ mod tests {
         .expect("spawn_agent_runtime timed out (60s)")
         .expect("spawn task join failed")
         .expect("spawn_agent_runtime failed");
+        // Real clients acknowledge replay notifications before LoadSession
+        // returns. The no-UI acceptance must provide the same receiver.
+        let receiver = receive_notifications(handle.rx);
 
         // 2. ACP initialize handshake: protocol version + auth methods.
         let init = tokio::time::timeout(std::time::Duration::from_secs(30), initialize(&handle.tx))
@@ -1673,6 +1719,35 @@ mod tests {
             .expect("initialize timed out (30s)")
             .expect("initialize failed");
         assert!(init.ok, "initialize reported not-ok");
+        let preferred = crate::permission_config::read_defaults().default_model;
+        let runtime_ids = model_ids(&handle.tx).await.expect("Runtime model catalog");
+        let (configured, _) = crate::providers::usable_model_ids();
+        assert_eq!(
+            init.default_model_id,
+            crate::commands::effective_configured_model_id(
+                &configured,
+                &runtime_ids,
+                (!preferred.trim().is_empty()).then_some(preferred.as_str())
+            ),
+            "Runtime uses the local Auto hint without persisting it as a preference"
+        );
+        // Check the effective Runtime catalog, including IDs containing spaces.
+        // A settings-only update can otherwise display models the actor rejects.
+        let mut builtin_ids = runtime_ids
+            .into_iter()
+            .filter(|id| id.starts_with(crate::providers::BUILTIN_MODEL_PREFIX))
+            .collect::<Vec<_>>();
+        builtin_ids.sort();
+        assert_eq!(
+            builtin_ids,
+            [
+                "echoagent-ojlab/Echo Brook",
+                "echoagent-ojlab/Echo Cedar",
+                "echoagent-ojlab/Echo Grove",
+                "echoagent-ojlab/Echo Reed",
+                "echoagent-ojlab/Echo Willow",
+            ]
+        );
         // 3. New session: runs AgentBuilder::build + merges the client-side
         //    MCP server entry (team tools live as echoagent__* now).
         let session_id = tokio::time::timeout(
@@ -1689,6 +1764,34 @@ mod tests {
         .expect("new_session timed out (60s)")
         .expect("new_session failed");
         assert!(!session_id.is_empty(), "empty session id");
+        for model_id in &builtin_ids {
+            set_session_model(&handle.tx, &session_id, model_id)
+                .await
+                .expect("switch to built-in chat model without inference");
+        }
+        set_session_model(
+            &handle.tx,
+            &session_id,
+            crate::providers::BUILTIN_DEFAULT_MODEL_ID,
+        )
+        .await
+        .expect("select Echo Reed");
+        assert_eq!(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                load_session(&handle.tx, &session_id, &cwd, "default"),
+            )
+            .await
+            .expect("reconnect replay timed out")
+            .unwrap()
+            .as_deref(),
+            Some(crate::providers::BUILTIN_DEFAULT_MODEL_ID),
+        );
+        if let Some(default_model) = init.default_model_id.as_deref() {
+            set_session_model(&handle.tx, &session_id, default_model)
+                .await
+                .expect("restore isolated test default");
+        }
 
         // 4. EchoAgent 的 MCP client 必须真的连上 team MCP server（initialize
         //    握手完成）。轮询最多 10s —— EchoAgent 异步启动 server 连接。
@@ -1751,7 +1854,63 @@ mod tests {
         // 6. Clean shutdown: cancel the agent thread and join it.
         handle.cancel.cancel();
         if let Some(thread) = handle.thread {
-            let _ = tokio::task::spawn_blocking(move || thread.join()).await;
+            tokio::task::spawn_blocking(move || thread.join())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        }
+        receiver.abort();
+        if let Err(error) = receiver.await {
+            assert!(error.is_cancelled(), "client receiver failed: {error}");
+        }
+
+        // Restore a genuine persisted actor from an old built-in selection.
+        // Do this only after shutdown, exactly as an application upgrade does.
+        let root = crate::paths::echo_agent_home_dir().join("sessions");
+        let summary_path = std::fs::read_dir(root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path().join(&session_id).join("summary.json"))
+            .find(|path| path.is_file())
+            .expect("persisted smoke summary");
+        let mut summary: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&summary_path).unwrap()).unwrap();
+        summary["current_model_id"] = serde_json::json!("echoagent-ojlab/chat-qwen");
+        crate::paths::write_private_file(&summary_path, &serde_json::to_vec(&summary).unwrap())
+            .unwrap();
+        let restored = tokio::task::spawn_blocking({
+            let cwd = cwd.clone();
+            move || spawn_agent_runtime(cwd)
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let receiver = receive_notifications(restored.rx);
+        initialize(&restored.tx).await.unwrap();
+        assert_eq!(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                load_session(&restored.tx, &session_id, &cwd, "default"),
+            )
+            .await
+            .expect("upgraded task replay timed out")
+            .unwrap()
+            .as_deref(),
+            Some(crate::providers::BUILTIN_DEFAULT_MODEL_ID),
+            "upgrade restores the selected built-in, never an unrelated provider"
+        );
+        restored.cancel.cancel();
+        if let Some(thread) = restored.thread {
+            tokio::task::spawn_blocking(move || thread.join())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        }
+        receiver.abort();
+        if let Err(error) = receiver.await {
+            assert!(error.is_cancelled(), "client receiver failed: {error}");
         }
     }
 }

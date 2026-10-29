@@ -13,6 +13,7 @@
  *  - agent-settings: 子代理、配置重载与诊断
  */
 import { useCallback, useEffect, useState } from "react";
+import { BrowserTaskSettings } from "./BrowserTaskSettings";
 import {
   Sun,
   Moon,
@@ -582,7 +583,7 @@ export function SecuritySettingsPanel() {
         {automationError && <p className="settings-msg settings-msg--warn" role="alert">{automationError}</p>}
         {automationFeedback && <p className="settings-hint" role="status">{automationFeedback}</p>}
         <div className="settings-info-callout">
-          启用后，相关网页或屏幕内容会作为任务上下文发送给当前模型。浏览器数据按任务隔离，可在任务状态条的“更多”中清除。
+          启用后，相关网页或屏幕内容会作为任务上下文发送给当前模型。浏览器数据按任务隔离，可在下方“浏览器数据与访问范围”中管理。
         </div>
         <div className="settings-group__footer">
           <button type="button" className="settings-btn" onClick={() => void loadAutomationSupport()} disabled={automationLoading}>
@@ -590,6 +591,9 @@ export function SecuritySettingsPanel() {
           </button>
         </div>
       </SettingsGroup>
+      <SettingsDisclosure title="浏览器数据与访问范围" description="选择任务，管理登录状态、缓存和本机与内网访问范围。">
+        <BrowserTaskSettings />
+      </SettingsDisclosure>
       <SettingsDisclosure title="自定义工具规则" description={feedback.startsWith("保存失败") ? feedback : rulesError ? "读取失败，请展开重试；原有规则不会被覆盖。" : loading ? "正在读取…" : `${rules.length} 条规则 · 按工具或命令细化授权`} defaultOpen={Boolean(rulesError) || feedback.startsWith("保存失败")}>
         <SettingsGroup
           title="工具权限规则"

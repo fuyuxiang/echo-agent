@@ -476,8 +476,8 @@ fn auth_status_with_runtime_reload(app: &tauri::AppHandle, state: &AppState) -> 
 }
 
 /// Resolve Auto to a live configured model. An explicit user preference wins;
-/// otherwise the organization model, a personal model, then chat-xc wins.
-fn effective_configured_model_id(
+/// otherwise the organization model, a personal model, then Echo Reed wins.
+pub(crate) fn effective_configured_model_id(
     configured: &[String],
     runtime: &[String],
     preferred: Option<&str>,
@@ -1856,7 +1856,8 @@ async fn stop_agent_runtime_with_grace(
     stop_agent_runtime_wait(
         state,
         deadline.saturating_duration_since(tokio::time::Instant::now()),
-    ).await
+    )
+    .await
 }
 
 async fn stop_agent_runtime_wait(
@@ -2791,8 +2792,8 @@ mod tests {
     #[test]
     fn automatic_model_resolution_prefers_explicit_then_organization_then_personal_then_builtin() {
         let configured = vec![
-            "echoagent-ojlab/chat-glm".into(),
-            "echoagent-ojlab/chat-xc".into(),
+            "echoagent-ojlab/Echo Cedar".into(),
+            "echoagent-ojlab/Echo Reed".into(),
             "my-model".into(),
             "organization/team-model".into(),
         ];
@@ -2810,7 +2811,7 @@ mod tests {
         );
         assert_eq!(
             effective_configured_model_id(&configured, &configured[..2], None).as_deref(),
-            Some("echoagent-ojlab/chat-xc")
+            Some("echoagent-ojlab/Echo Reed")
         );
     }
 

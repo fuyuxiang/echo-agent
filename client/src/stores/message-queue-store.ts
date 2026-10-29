@@ -54,6 +54,8 @@ interface QueueState {
   reorder: (sessionId: string, from: number, to: number) => boolean;
   /** 暂停 / 恢复。 */
   setStatus: (sessionId: string, id: string, status: EditableQueueItemStatus) => boolean;
+  /** Hold waiting follow-ups after the user stops or the active turn fails. */
+  pauseQueued: (sessionId: string) => void;
   /** Atomically reserve the first queued item so completion events cannot
    *  dispatch the same long-running request twice. */
   claimNext: (sessionId: string, promptId?: string) => QueueItem | null;
@@ -187,6 +189,12 @@ export const useMessageQueueStore = create<QueueState>((set, get) => ({
     });
     return claimed;
   },
+  pauseQueued: sessionId => set(state => {
+    const queue = queueOf(state.queues, sessionId);
+    if (!queue.some(item => item.status === "queued")) return state;
+    return { queues: { ...state.queues, [sessionId]: queue.map(item => item.status === "queued"
+      ? { ...item, status: "paused" as const } : item) } };
+  }),
   settleSending: (sessionId, settlement, promptId) => {
     let settled: QueueItem | null = null;
     set((s) => {

@@ -148,7 +148,7 @@ mod tests {
             url: format!("http://127.0.0.1:39817/review/{nonce}/"),
             nonce,
             phase: "first-launch".into(),
-            model_id: "echoagent-ojlab/chat-qwen".into(),
+            model_id: "echoagent-ojlab/Echo Reed".into(),
             expected: None,
         }
     }
@@ -177,7 +177,7 @@ mod tests {
         value.cwd = PathBuf::from("/outside");
         assert!(validate_manifest(&value, &home, "first-launch").is_err());
         let mut value = fixture();
-        value.model_id = "echoagent-ojlab/chat-xc".into();
+        value.model_id = "echoagent-ojlab/Echo Grove".into();
         assert!(validate_manifest(&value, &home, "first-launch").is_ok());
         let mut value = fixture();
         value.model_id = "other".into();

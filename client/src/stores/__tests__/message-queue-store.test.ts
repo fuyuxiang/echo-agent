@@ -120,6 +120,24 @@ describe("message-queue-store — 编辑/删除/重排", () => {
 describe("message-queue-store — 暂停/恢复", () => {
   beforeEach(resetStore);
 
+  it("停止只暂停该任务的待发送条目，保留顺序、附件和正在发送的身份", () => {
+    const s = useMessageQueueStore.getState();
+    const active = s.enqueue("s1", "当前执行");
+    s.claimById("s1", active, "active-prompt");
+    const waiting = s.enqueue("s1", "稍后处理", ["/tmp/方案.docx"]);
+    s.enqueue("s2", "其他任务");
+    s.pauseQueued("s1");
+    expect(s.getQueue("s1")).toMatchObject([
+      { id: active, status: "sending", promptId: "active-prompt" },
+      { id: waiting, status: "paused", attachments: ["/tmp/方案.docx"] },
+    ]);
+    expect(s.getQueue("s2")[0].status).toBe("queued");
+    s.settleSending("s1", "consume", "active-prompt");
+    expect(s.claimNext("s1", "unrelated-followup")).toBeNull();
+    s.setStatus("s1", waiting, "queued");
+    expect(s.claimById("s1", waiting, "manual-send")?.id).toBe(waiting);
+  });
+
   it("setStatus 切换 paused/queued", () => {
     const s = useMessageQueueStore.getState();
     const id = s.enqueue("s1", "a");

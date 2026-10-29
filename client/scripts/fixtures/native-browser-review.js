@@ -133,7 +133,7 @@ window.__echoNativeBrowserReview = async ({ home, nonce } = {}) => {
           assert(['发送本次验收文本', '下载中文验收文件'].includes(target), 'Unexpected click target'); accept = true;
         } else assert(desired === 'reject-delete' && approval.tool === 'browser_click' && target === '删除本次测试记录', 'Unexpected action denied');
       }
-      const card = document.querySelector('.automation-approval'), action = button(card, accept ? '允许本次' : '拒绝');
+      const card = document.querySelector('.perm-inline[data-approval-source="automation"]'), action = button(card, accept ? '允许一次' : '拒绝');
       if (!visible(card) || !action) continue;
       assert(card.textContent.includes(approval.title), 'Rendered safety card does not match native request');
       action.click(); handledApprovals.add(approval.requestId);
@@ -183,7 +183,7 @@ window.__echoNativeBrowserReview = async ({ home, nonce } = {}) => {
     scope = await call('desktop_review_browser_manifest'); const context = await call('desktop_review_context');
     assert(context.browserRequested === true && context.evaluations === 1 && context.home === home
       && scope.home === home && scope.nonce === nonce && scope.cwd === `${home}/workspaces/default`
-      && ['echoagent-ojlab/chat-qwen', 'echoagent-ojlab/chat-xc', 'echoagent-review/claude-opus-5-5'].includes(scope.modelId), 'Native browser scope mismatch');
+      && ['echoagent-ojlab/Echo Reed', 'echoagent-ojlab/Echo Grove', 'echoagent-review/claude-opus-5-5'].includes(scope.modelId), 'Native browser scope mismatch');
     Object.assign(report, { phase: scope.phase, home, nonce, nativeContext: context }); admitted = true;
     report.expected = scope.phase === 'restart' ? scope.expected : { schema: 1, home, nonce, cwd: scope.cwd, sessionId: null, url: scope.url, modelId: scope.modelId };
     await stage('browser-isolation', async () => {
@@ -213,7 +213,7 @@ window.__echoNativeBrowserReview = async ({ home, nonce } = {}) => {
         }, 'restored model selector');
         selector.click();
         const option = await wait(() => [...document.querySelectorAll('.model-selector__item')]
-          .find(el => visible(el) && el.querySelector('.model-selector__item-id')?.textContent === scope.modelId),
+          .find(el => visible(el) && el.dataset.modelId === scope.modelId),
         'exact restored model option');
         assert(option.getAttribute('aria-selected') === 'true', 'Restored model picker lost its actual model');
         // Exercise the real model-change callback for the same selected model.
@@ -238,7 +238,7 @@ window.__echoNativeBrowserReview = async ({ home, nonce } = {}) => {
       const selector = await wait(() => { const el = document.querySelector('.echo-composer .model-selector__trigger');
         return visible(el) && !el.disabled ? el : null; }, 'real Composer model selector'); selector.click();
       (await wait(() => [...document.querySelectorAll('.model-selector__item')].find(el => visible(el)
-        && el.querySelector('.model-selector__item-id')?.textContent === scope.modelId), 'exact Qwen option')).click();
+        && el.dataset.modelId === scope.modelId), 'exact Qwen option')).click();
       await stage('browser-mode-ui', async () => {
         (await wait(() => document.querySelector('.echo-composer button[aria-label="添加"]'), 'add menu')).click();
         (await wait(() => [...document.querySelectorAll('[role="menuitemradio"]')].find(el => visible(el)

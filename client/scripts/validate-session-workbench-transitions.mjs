@@ -111,19 +111,16 @@ export async function validateWorkbenchTransitions(page, base, output) {
   for (const width of [900, 1280]) for (const theme of ["light", "dark"]) for (const mode of ["browser", "computer"]) {
     await page.setViewportSize({ width, height: 720 });
     await page.goto(`${base}&state=${mode}-paused&theme=${theme}`);
-    const bar = page.locator(".task-execution-status");
-    await bar.getByRole("button", { name: "继续任务", exact: true }).waitFor();
+    const feedback = page.locator(".chatview__scroll .session-turn-feedback");
+    await feedback.getByRole("button", { name: "继续任务", exact: true }).waitFor();
+    assert.equal(await page.locator(".task-execution-status").count(), 0, "no mode-specific toolbar");
+    assert.equal(await page.locator(".chatview__footer .yield-banner").count(), 0, "task feedback belongs to the turn");
     assert.equal(await page.locator(".tasks-panel").count(), 0, "no floating background controls");
-    await bar.getByRole("button", { name: "继续任务", exact: true }).click({ trial: true });
-    if (mode === "browser") {
-      await bar.locator("summary").click();
-
-      await bar.getByRole("checkbox", { name: "允许访问本机与内网" }).click({ trial: true });
-      await bar.getByRole("button", { name: "清除浏览器数据", exact: true }).click({ trial: true });
-    }
-    await page.screenshot({ path: join(output, `automation-dock-${mode}-${width}-${theme}.png`) });
+    assert.equal(await page.getByText("浏览器数据与访问范围", {exact:true}).count(), 0);
+    await feedback.getByRole("button", { name: "继续任务", exact: true }).click({ trial: true });
+    await page.screenshot({ path: join(output, `unified-pause-${mode}-${width}-${theme}.png`) });
   }
-  console.log("Automation controls remain clickable in all 8 dock layouts.");
+  console.log("All 8 browser/computer layouts use ordinary turn feedback with no dedicated dock.");
 
   for (const width of [900, 1536]) for (const theme of ["light", "dark"]) {
     const url = new URL(base);
@@ -143,5 +140,5 @@ export async function validateWorkbenchTransitions(page, base, output) {
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
     await page.screenshot({ path: join(output, `coding-sidebar-${width}-${theme}.png`) });
   }
-  console.log("Workbench transitions passed: live history invalidation, rewind boundary, empty-session resources, fresh reading snapshots, 8 automation docks and 4 coding sidebar layouts.");
+  console.log("Workbench transitions passed: live history invalidation, rewind boundary, empty-session resources, fresh reading snapshots, 8 unified tool-mode layouts and 4 coding sidebar layouts.");
 }

@@ -32,7 +32,7 @@ import { SubagentPanel, mergePanelItems } from "./SubagentPanel";
 import { TeamStatusView } from "./TeamStatusView";
 import { SessionHeader, type SessionNavigationProps, type WorkspaceTarget } from "./SessionHeader";
 import { aggregateFileChanges } from "@/lib/file-changes";
-import { isExecutionSettled, summarizeExecutionProcess } from "@/lib/execution-process";
+import { getExecutionNotice } from "@/lib/execution-notice";
 import { deriveSubagents } from "@/lib/subagents";
 import { deriveTeams } from "@/lib/team-derive";
 import { selectPermissionForSession, usePermissionStore } from "@/stores/permission-store";
@@ -49,7 +49,8 @@ import type { SlashCommandInvocation } from "@/lib/slash-commands";
 import { useStickToBottom } from "./use-stick-to-bottom";
 import { isGlobalShortcutBlocked } from "@/lib/keyboard-scope";
 import { stripAttachmentTransportContext } from "@/lib/user-message";
-import { AutomationControls } from "./AutomationControls";
+import { AutomationApprovalCard } from "./AutomationControls";
+import { useSessionAutomation } from "@/lib/use-session-automation";
 import { type AutomationMode } from "@/lib/automation-client";
 import { useAppDialog } from "./AppDialog";
 import type {
@@ -110,6 +111,7 @@ export function ChatView({
   apiReady = true,
   setupHint,
   onOpenSettings,
+  onOpenSecuritySettings,
   cancelling = false,
   commandRefreshKey,
   onClientSlashCommand,
@@ -164,6 +166,7 @@ export function ChatView({
   apiReady?: boolean;
   setupHint?: string;
   onOpenSettings?: () => void;
+  onOpenSecuritySettings?: () => void;
   cancelling?: boolean;
   commandRefreshKey?: number;
   onClientSlashCommand?: (
@@ -187,6 +190,8 @@ export function ChatView({
   const planApproval = useSessionStore(s => s.planApproval);
   const planRevisionDirty = useSessionStore((s) => s.planRevisionDirty);
   const sessionId = useSessionStore((s) => s.sessionId);
+  const automation = useSessionAutomation(sessionId);
+  const runtimeErrorContext = useSessionStore(s => s.runtimeErrorContext);
   const workspaceRefreshSignal = useMemo(() => ({error, revision:taskRefreshSignal}), [error, taskRefreshSignal]);
   const workspace = useSessionWorkspace(sessionId, cwd, workspaceRefreshSignal, onReloadWorkspace, onToast);
   const hasVisiblePlan = Boolean(plan && (plan.entries.length > 0 || planRevisionDirty) || planApproval?.sessionId === sessionId && planApproval);
@@ -195,6 +200,7 @@ export function ChatView({
   const control = useSessionStore((s) => s.control);
   const awaitingQuestion = Boolean(useQuestionStore(selectQuestionForSession(sessionId)));
   const pendingPermission = usePermissionStore(selectPermissionForSession(sessionId));
+  const awaitingDecision = Boolean(pendingPermission || automation.approvals.length);
   // 会话内查找(对齐 EchoAgent chat-search)。
   const timeline = useMemo(() => buildTimeline(messages), [messages]);
   const [findOpen, setFindOpen] = useState(false);
@@ -297,13 +303,33 @@ export function ChatView({
   const continuing = !!sessionId && continuingSessions.has(sessionId);
   const activeSessionRef = useRef(sessionId);
   activeSessionRef.current = sessionId;
+  const cancelRequests = useRef(new Set<string>());
+  const [cancellingSessions, setCancellingSessions] = useState(new Set<string>());
+  const cancellationPending = cancelling || Boolean(sessionId && cancellingSessions.has(sessionId))
+    || control?.phase === "pausing" || control?.phase === "stopping";
+  const cancelTask = useCallback(async (action: SessionControlAction = "stop") => {
+    if (!sessionId || cancelling || cancelRequests.current.has(sessionId)
+      || control?.phase === "pausing" || control?.phase === "stopping") return false;
+    cancelRequests.current.add(sessionId);
+    setCancellingSessions(new Set(cancelRequests.current));
+    try {
+      return await onCancel(action);
+    } catch (cause) {
+      if (activeSessionRef.current === sessionId) onToast?.(`${action === "pause" ? "暂停" : "停止"}失败：${friendlyError(cause)}`);
+      return false;
+    } finally {
+      cancelRequests.current.delete(sessionId);
+      setCancellingSessions(new Set(cancelRequests.current));
+    }
+  }, [sessionId, cancelling, control?.phase, onCancel, onToast]);
   const continueTask = async () => {
-    if (!sessionId || !workspace.available || workspace.busy || continuingRef.current.has(sessionId) || automationMode !== "default" || !apiReady || modelLoading || awaitingQuestion || pendingPermission || awaitingPlan) return;
+    if (!sessionId || streaming || sendNowPending || replacingTurn || cancellationPending || !workspace.available || workspace.busy || continuingRef.current.has(sessionId) || !apiReady || modelLoading || awaitingQuestion || awaitingDecision || awaitingPlan) return;
+    if (automationMode === "computer_use" && automation.status && !automation.status.task?.scope) return;
     setHistoryAction(null);
     continuingRef.current.add(sessionId);
     setContinuingSessions(new Set(continuingRef.current));
     try {
-      if (pausedTurnNeedsOriginalPrompt(messages)) {
+      if (automationMode === "default" && pausedTurnNeedsOriginalPrompt(messages)) {
         await performRetry("retry");
         return;
       }
@@ -319,8 +345,8 @@ export function ChatView({
       onToast?.(control?.phase === "paused" ? "当前任务已暂停" : "当前任务没有正在运行的内容");
       return true;
     }
-    return onCancel(action);
-  }, [control?.phase, automationMode, onCancel, onToast, streaming]);
+    return cancelTask(action);
+  }, [control?.phase, automationMode, cancelTask, onToast, streaming]);
   // 按会话持久化的输入草稿:切到本会话时回填,每次输入回写 store。
   // 选 setDraft 的稳定引用做回调,避免 sessionId 变化时让 Composer 收到新函数。
   const setDraft = useSessionsStore((s) => s.setDraft);
@@ -358,7 +384,7 @@ export function ChatView({
   const [retryingSessions, setRetryingSessions] = useState(new Set<string>());
   const retryingSessionsRef = useRef(new Set<string>());
   const { requestConfirmation, dismiss: dismissRetry, dialog: retryDialog } = useAppDialog(sessionId);
-  const retryBlocked = historyDisabled || Boolean(pendingPermission || awaitingQuestion || planApproval?.sessionId === sessionId);
+  const retryBlocked = historyDisabled || Boolean(awaitingDecision || awaitingQuestion || planApproval?.sessionId === sessionId);
   const retryBlockedRef = useRef(retryBlocked);
   retryBlockedRef.current = retryBlocked;
   useEffect(() => { if (retryBlocked) dismissRetry(); }, [retryBlocked, dismissRetry]);
@@ -592,17 +618,12 @@ export function ChatView({
   const searchable = messages.some(m => m.parts.some(p => p.kind === "text" && p.text.trim()));
   const hasContent = messages.some(m => m.parts.length > 0 || m.attachments?.length);
   const awaitingPlan = planApproval?.sessionId === sessionId;
-  const terminalOutcome = useMemo(() => !streaming && terminalMessage?.complete
-    ? summarizeExecutionProcess(terminalMessage.parts,false,terminalMessage.stopReason,
-      terminalMessage.cancellationCategory,terminalMessage.cancelTrigger,{settled:isExecutionSettled(terminalMessage)})
-    : undefined,[streaming,terminalMessage]);
-  const failed = terminalOutcome?.state === "failed";
-  const incomplete = terminalOutcome?.state === "partial" || terminalOutcome?.state === "attention";
-  const status = pendingPermission ? "等待审批" : awaitingPlan ? "等待计划确认" : awaitingQuestion ? "等待回答"
-    : control?.phase === "pausing" ? "正在暂停" : control?.phase === "paused" ? "已暂停"
-    : control?.phase === "stopping" ? "正在停止" : control?.phase === "stopped" ? "已停止"
-    : error || failed ? "任务出错" : streaming ? "进行中"
-    : terminalOutcome?.state === "partial" ? "部分完成" : incomplete ? "待核实" : undefined;
+  // A terminal runtime error belongs beside its reply. Other errors (workspace,
+  // loading, cancellation, etc.) keep their existing dedicated banner.
+  const inlineRuntimeError = error && terminalMessage && terminalMessage === messages[messages.length - 1]
+    && runtimeErrorContext?.sessionId === sessionId
+    && runtimeErrorContext?.promptId === terminalMessage.promptId
+    && ["runtime", "environment"].includes(getExecutionNotice(terminalMessage, streaming, error)?.kind ?? "") ? error : undefined;
 
   const markdownConfig = useMemo(
     () =>
@@ -817,11 +838,34 @@ export function ChatView({
     setWorkspaceNavigationId(value => value + 1);
     transitionWorkspace(workspaceViewRef.current === view ? null : view);
   };
+  // Native pauses and chat cancellations share feedback beside their turn.
+  // Passive capability probes never create a mode-specific toolbar.
+  const nativePaused = !streaming && automationMode !== "default" && automation.status?.mode === automationMode
+    && automation.status.paused && (automationMode === "browser_use" || automation.status.task?.scope);
+  const controlPhase = control?.phase ?? (nativePaused ? automation.status?.task?.phase === "stopped" ? "stopped" : "paused" : undefined);
+  const continuationNeedsScope = automationMode === "computer_use" && automation.status && !automation.status.task?.scope;
+  const feedbackTarget = terminalMessage?.id;
+  const blockingNotice = terminalMessage && getExecutionNotice(terminalMessage, streaming, inlineRuntimeError);
+  const taskFeedback = controlPhase && !inlineRuntimeError && !error && (!blockingNotice || blockingNotice.kind === "stopped") ? (
+    <div className="yield-banner session-turn-feedback" role="status">
+      <span>
+        {controlPhase === "pausing" && "正在暂停任务…"}
+        {controlPhase === "paused" && (continuationNeedsScope ? "任务已暂停，可发送新消息说明接下来要做什么" : "任务已暂停，可继续执行")}
+        {controlPhase === "stopping" && "正在停止任务…"}
+        {controlPhase === "stopped" && stoppedTaskLabel(stoppedCategory)}
+      </span>
+      {controlPhase === "paused" && !continuationNeedsScope && <button type="button" className="btn btn--ghost" disabled={continuing || streaming || sendNowPending || replacingTurn || !workspace.available || workspace.busy || !apiReady || modelLoading || awaitingQuestion || awaitingDecision || awaitingPlan}
+        onClick={() => void continueTask()}><Play size={14} />{continuing ? "正在继续…" : "继续任务"}</button>}
+    </div>
+  ) : null;
   return (
     <>
     {sessionId && <SessionHeader key={sessionId} sessionId={sessionId} title={title || "新任务"}
       onRename={onRename} navigation={navigation ?? { onNewTask }} leading={headerLeading}
       actions={{ onToast,
+        onStop: streaming ? () => { void cancelTask("stop"); } : undefined,
+        stopping: cancellationPending,
+        stopDisabled: sendNowPending || replacingTurn,
         onRewind: hasContent ? () => setHistoryAction("rewind") : undefined,
         onFork: hasContent ? () => setHistoryAction("fork") : undefined,
       }} historyDisabled={historyDisabled || replacingTurn}
@@ -829,7 +873,7 @@ export function ChatView({
         hasPlan: hasVisiblePlan, planCompleted: plan?.entries.filter(e => e.status === "completed").length ?? 0,
         planTotal: plan?.entries.length ?? 0, subagentCount,
         runningSubagents: collaboration.filter(a => a.status === "running" || a.status === "in_progress").length,
-        teamCount: teams.length, status, attention: Boolean(pendingPermission || awaitingPlan || awaitingQuestion || error || failed || incomplete),
+        teamCount: teams.length,
       }} activeView={workspaceView} onView={openWorkspace} onCloseView={closeWorkspace}
       onToggleWorkspace={() => {
         const last = sessionId ? lastWorkspaceViews.get(sessionId) : undefined;
@@ -845,7 +889,7 @@ export function ChatView({
           <span>{traceLoadError}</span>
           <button type="button" onClick={() => { if (sessionId) void hydrateKnowledgeTraces(sessionId).then(() => useKnowledgeStore.getState().setTraceLoadError(sessionId)).catch(error => onToast?.(`恢复来源失败：${friendlyError(error)}`)); }}>重试恢复知识来源</button>
         </div>}
-        {error && error !== workspace.value?.message && (
+        {error && !inlineRuntimeError && error !== workspace.value?.message && (
           <div className="chatview__error-banner" role="alert">
             <span className="chatview__error-text" style={{ whiteSpace: "pre-wrap" }}>
               {formatAgentError(error) ?? error}
@@ -913,7 +957,7 @@ export function ChatView({
                     <MessageItem
                       message={m}
                       streaming={streaming && m.id === streamingMessageId}
-                      waitingForModel={!pendingPermission && !awaitingPlan && !awaitingQuestion && !control && !error}
+                      waitingForModel={!awaitingDecision && !awaitingPlan && !awaitingQuestion && !controlPhase && !error}
                       markdownConfig={markdownConfig}
                       cwd={cwd}
                       sessionId={sessionId ?? undefined}
@@ -923,13 +967,26 @@ export function ChatView({
                       findQuery={findOpen ? findQuery : undefined}
                       onEditResend={handleEditResend}
                       autoExpandProcess={false}
+                      runtimeError={isLastAssistant ? inlineRuntimeError : undefined}
+                      suppressStoppedNotice={isLastAssistant && Boolean(taskFeedback)}
+                      turnFeedback={m.id === feedbackTarget ? taskFeedback : undefined}
+                      onOpenModelSettings={onOpenSettings}
+                      onOpenSecuritySettings={onOpenSecuritySettings}
+                      onContinueExecution={isLastAssistant ? async (prompt) => {
+                        const live = useSessionStore.getState();
+                        if (!sessionId || live.sessionId !== sessionId || live.messages[live.messages.length - 1]?.id !== m.id || live.streaming || retryBlockedRef.current || modelLoading
+                          || !apiReady || !workspace.available || workspace.busy || replacingTurn || sendNowPending
+                          || live.control?.phase === "pausing" || live.control?.phase === "stopping"
+                          || awaitingDecision || awaitingQuestion || awaitingPlan) return false;
+                        return onSend(prompt, []);
+                      } : undefined}
                       compactIdentity={m.role === "assistant" && messages[idx - 1]?.role === "assistant"}
                       latest={isLastAssistant}
                       retrying={isLastAssistant && Boolean(sessionId && retryingSessions.has(sessionId))}
-                      retryDisabled={retryBlocked}
-                      retryDisabledReason={!workspace.available || workspace.busy ? "请先恢复本任务的工作目录，再重试回复" : undefined}
+                      retryDisabled={retryBlocked || !apiReady || modelLoading || replacingTurn || sendNowPending}
+                      retryDisabledReason={!workspace.available || workspace.busy ? "请先恢复本任务的工作目录，再重试回复" : !apiReady ? "请先配置可用模型" : modelLoading ? "正在同步模型，请稍候" : undefined}
                       onRetry={
-                        isLastAssistant && !streaming && m.complete
+                        isLastAssistant && !streaming && m.complete && !taskFeedback
                           ? handleRetry
                           : undefined
                       }
@@ -937,6 +994,11 @@ export function ChatView({
                   </div>
                 );
               })}
+              {!feedbackTarget && taskFeedback}
+              {automation.error && automationMode !== "default" && <div className="chatview__error-banner" role="alert">
+                <span>任务状态暂时无法同步：{automation.error}</span>
+                <button type="button" onClick={automation.reconnect}>重新连接</button>
+              </div>}
             </div>
           </div>
           {!following && messages.length > 0 && (
@@ -953,31 +1015,12 @@ export function ChatView({
           )}
         </div>
         <div className="chatview__footer">
-          <AutomationControls sessionId={sessionId} streaming={streaming} onToast={onToast}
-            continueDisabled={!workspace.available || workspace.busy || modelLoading}
-            onContinue={() => workspace.available && !workspace.busy ? onSend("继续") : false} onPause={() => onCancel("pause")} placement="toolbar" />
           <div className="session-task-controls"><TasksPanel sessionId={sessionId ?? undefined} refreshSignal={taskRefreshSignal} onToast={onToast} presentation="summary" onOpen={() => transitionWorkspace("subagents")} /></div>
           {/* Inline permission / question cards: session-scoped, never block sidebar. */}
-          <AutomationControls
-            sessionId={sessionId}
-            streaming={streaming}
-            onToast={onToast}
-            placement="approval"
-          />
+          {!pendingPermission && <AutomationApprovalCard automation={automation} onToast={onToast} />}
           <PermissionInlineCard sessionId={sessionId} />
           {awaitingPlan && <div className="yield-banner" role="status"><span>执行计划等待确认</span><button type="button" className="btn btn--ghost" onClick={() => { if (!planOpen) openWorkspace("plan"); }}>查看并确认计划</button></div>}
           <QuestionInlineCard sessionId={sessionId} />
-          {control && automationMode === "default" && (
-            <div className="yield-banner" role="status">
-              <span>
-                {control.phase === "pausing" && "正在暂停任务…"}
-                {control.phase === "paused" && "任务已暂停，可继续执行"}
-                {control.phase === "stopping" && "正在停止任务…"}
-                {control.phase === "stopped" && stoppedTaskLabel(stoppedCategory)}
-              </span>
-              {control.phase === "paused" && <button type="button" className="btn btn--primary" disabled={continuing || !workspace.available || workspace.busy || !apiReady || modelLoading || awaitingQuestion || Boolean(pendingPermission) || awaitingPlan} onClick={() => void continueTask()}><Play size={14} />{continuing ? "正在继续…" : "继续任务"}</button>}
-            </div>
-          )}
           {/* 消息队列(对齐 EchoAgent message-queue):流式时可继续排队 prompt。
               非流式时面板为空(QueuePanel 内部 queue.length===0 直接 return null)。 */}
           {sessionId && (
@@ -985,7 +1028,7 @@ export function ChatView({
               sessionId={sessionId}
               streaming={streaming}
               sendNowPending={sendNowPending}
-              awaitingQuestion={awaitingQuestion || Boolean(pendingPermission) || awaitingPlan || replacingTurn || control?.phase === "pausing" || control?.phase === "stopping"}
+              awaitingQuestion={awaitingQuestion || awaitingDecision || awaitingPlan || replacingTurn || cancellationPending}
               onSendNow={streaming ? onSendNow : onSend}
             />
           )}
@@ -997,20 +1040,25 @@ export function ChatView({
             setupHint={setupHint}
             onOpenSettings={onOpenSettings}
             onSend={onSend}
-            onSendNow={onSendNow}
             sendNowPending={sendNowPending}
-            awaitingQuestion={awaitingQuestion || Boolean(pendingPermission) || awaitingPlan}
+            awaitingQuestion={awaitingQuestion || awaitingDecision || awaitingPlan}
             onEnqueue={
               sessionId
                 ? (text, attachments) => {
+                    // The turn can finish between rendering the queue button
+                    // and clicking it. Send into the idle task instead of
+                    // stranding a row after its completion event has passed.
+                    const current = useSessionStore.getState();
+                    if (current.sessionId !== sessionId || cancelRequests.current.has(sessionId)
+                      || current.control || current.error) return false;
+                    if (!current.streaming) return onSend(text, attachments);
                     useMessageQueueStore.getState().enqueue(sessionId, text, attachments);
                   }
                 : undefined
             }
-            onCancel={() => onCancel("stop")}
-            onPause={() => onCancel("pause")}
+            onCancel={() => cancelTask("stop")}
             onControl={handleTextControl}
-            cancelling={cancelling}
+            cancelling={cancellationPending}
             modelId={modelId}
               modelLoading={modelLoading}
             models={models}

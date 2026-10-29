@@ -1,3 +1,4 @@
+import { modelDisplayName, modelSourceLabel } from "@/lib/model-presentation";
 import { SettingsDisclosure } from "./SettingsDisclosure";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Download, RefreshCw, Trash2 } from "lucide-react";
@@ -18,7 +19,7 @@ import {
   type QuotaConfig,
   type UsageRecord,
 } from "@/lib/usage-quota";
-import { sanitizeModelLabel, stripUpstreamBrandedIds } from "@/lib/model-branding";
+import { stripUpstreamBrandedIds } from "@/lib/model-branding";
 import { useAppDialog } from "./AppDialog";
 
 type Period = "daily" | "monthly";
@@ -73,10 +74,10 @@ function lastLocalDateKeys(days: number): string[] {
 function recordModels(record: UsageRecord): string {
   const ids = Object.keys(record.modelUsage ?? {});
   if (ids.length > 0) {
-    const labels = new Set(ids.map((id) => sanitizeModelLabel(id)));
+    const labels = new Set(ids.map((id) => `${modelDisplayName(id)} · ${modelSourceLabel(id)}`));
     return Array.from(labels).join(", ");
   }
-  return record.modelId ? sanitizeModelLabel(record.modelId) : "unknown";
+  return record.modelId ? `${modelDisplayName(record.modelId)} · ${modelSourceLabel(record.modelId)}` : "unknown";
 }
 
 export function UsageQuotaPanel() {
@@ -129,8 +130,7 @@ export function UsageQuotaPanel() {
   }, config), [config, records, trendKeys]);
   const trendMax = Math.max(1, ...trendKeys.map((date) => trendSummary.byDate[date]?.tokens ?? 0));
 
-  // 费率配置列表剔除带上游品牌词的 id:那些模型在 BYOK 环境下不可调用,为其配置费率
-  // 没有意义,而这里必须显示原始 id(它是费率表的键),无法像别处那样替换成中性文案。
+  // Display friendly names while keeping the original IDs as rate-table keys.
   const modelIds = useMemo(() => stripUpstreamBrandedIds(Array.from(new Set([
     ...Object.keys(summarizeUsage(records, undefined, config).byModel),
     ...Object.keys(config.rates ?? {}),
@@ -284,7 +284,7 @@ export function UsageQuotaPanel() {
             <div className="quota-panel__model-row quota-panel__model-row--head" role="row"><span>模型</span><span>输入</span><span>输出</span><span>缓存</span><span>调用</span><span>费用</span></div>
             {Object.entries(summary.byModel).sort((a, b) => b[1].tokens - a[1].tokens).map(([modelId, row]) => (
               <div key={modelId} className="quota-panel__model-row" role="row">
-                <span className="quota-panel__model-name" title={sanitizeModelLabel(modelId)}>{sanitizeModelLabel(modelId)}</span><span>{formatTokens(row.promptTokens)}</span><span>{formatTokens(row.completionTokens)}</span><span>{formatTokens(row.cachedReadTokens)}</span><span>{formatTokens(row.count)}</span><span>{row.cost > 0 ? `$${row.cost.toFixed(4)}` : "—"}</span>
+                <span className="quota-panel__model-name" title={`${modelDisplayName(modelId)} · ${modelSourceLabel(modelId)}`}><span>{modelDisplayName(modelId)}</span><small> · {modelSourceLabel(modelId)}</small></span><span>{formatTokens(row.promptTokens)}</span><span>{formatTokens(row.completionTokens)}</span><span>{formatTokens(row.cachedReadTokens)}</span><span>{formatTokens(row.count)}</span><span>{row.cost > 0 ? `$${row.cost.toFixed(4)}` : "—"}</span>
               </div>
             ))}
           </div>
@@ -311,9 +311,9 @@ export function UsageQuotaPanel() {
               <div className="quota-panel__rate-row quota-panel__rate-row--head"><span>模型</span><span>输入 $/M</span><span>输出 $/M</span></div>
               {modelIds.map((modelId) => (
                 <div className="quota-panel__rate-row" key={modelId}>
-                  <span title={modelId}>{modelId}</span>
-                  <input className="form-control" aria-label={`${modelId} 输入费率`} type="number" min="0" step="0.01" placeholder="未设置" value={rateDrafts[modelId]?.prompt ?? ""} onChange={(event) => setRateDrafts((current) => ({ ...current, [modelId]: { ...(current[modelId] ?? { completion: "" }), prompt: event.target.value } }))} />
-                  <input className="form-control" aria-label={`${modelId} 输出费率`} type="number" min="0" step="0.01" placeholder="未设置" value={rateDrafts[modelId]?.completion ?? ""} onChange={(event) => setRateDrafts((current) => ({ ...current, [modelId]: { ...(current[modelId] ?? { prompt: "" }), completion: event.target.value } }))} />
+                  <span title={modelDisplayName(modelId)}>{modelDisplayName(modelId)} · {modelSourceLabel(modelId)}</span>
+                  <input className="form-control" aria-label={`${modelDisplayName(modelId)} · ${modelSourceLabel(modelId)} 输入费率`} type="number" min="0" step="0.01" placeholder="未设置" value={rateDrafts[modelId]?.prompt ?? ""} onChange={(event) => setRateDrafts((current) => ({ ...current, [modelId]: { ...(current[modelId] ?? { completion: "" }), prompt: event.target.value } }))} />
+                  <input className="form-control" aria-label={`${modelDisplayName(modelId)} · ${modelSourceLabel(modelId)} 输出费率`} type="number" min="0" step="0.01" placeholder="未设置" value={rateDrafts[modelId]?.completion ?? ""} onChange={(event) => setRateDrafts((current) => ({ ...current, [modelId]: { ...(current[modelId] ?? { prompt: "" }), completion: event.target.value } }))} />
                 </div>
               ))}
             </div>

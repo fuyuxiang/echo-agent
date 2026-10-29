@@ -11,7 +11,7 @@ const primarySelector = [
   ".plan-panel__approve-btn", ".plan-panel__add-btn", ".plan-panel__row-edit-save",
   ".coding-primary-btn", ".pd-invite", ".pd-btn--primary", ".pd-pill--on",
   ".echo-composer__send", ".context-menu__rename-save", ".coding-agent__send", ".echo-theia-agent__send",
-  ".coding-agent__decision button.is-primary", ".automation-approval__approve",
+  ".coding-agent__decision button.is-primary", ".perm-inline__action--allow",
 ].join(",");
 
 export async function inspectButtonBackgrounds(page, theme) {

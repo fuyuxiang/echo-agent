@@ -137,7 +137,7 @@ window.__echoNativeAutomationReview = async ({ invoke, home, cwd, phase, expecte
       const automation = {
         id: '', name: `原生暂停单次验收 ${token}`,
         prompt: `原生定时验收 ${token}：请只回复“${reply}”。不要调用工具、读取文件、联系他人或修改任何数据。`,
-        cwds: isolation.cwd, status: 'PAUSED', modelId: 'echoagent-ojlab/chat-qwen',
+        cwds: isolation.cwd, status: 'PAUSED', modelId: 'echoagent-ojlab/Echo Reed',
         modelIsThinking: false, skills: [], connectorIds: [], permissionMode: 'default',
         scheduleType: 'once', schedule: { freq: 'DAILY', interval: 1,
           byday: ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'], bymonthday: [], bymonth: [],

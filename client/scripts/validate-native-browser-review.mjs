@@ -48,7 +48,7 @@ export function verifyBrowserReport(report, manifest, pid, startedAt) {
   return expected;
 }
 
-export async function runNativeBrowserReview(executable, modelId = 'echoagent-ojlab/chat-qwen') {
+export async function runNativeBrowserReview(executable, modelId = 'echoagent-ojlab/Echo Reed') {
   modelId = reviewModelId(modelId);
   assert(isReviewModelId(modelId), 'Only explicitly authorized model resources are permitted');
   assert.equal(process.platform, 'darwin'); executable = realpathSync(resolve(executable));
@@ -144,7 +144,7 @@ export async function runNativeBrowserReview(executable, modelId = 'echoagent-oj
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   assert([3, 4].includes(process.argv.length));
-  assert(process.argv[3] === undefined || process.argv[3] === '--model=chat-xc');
-  const result = await runNativeBrowserReview(process.argv[2], process.argv[3] ? 'echoagent-ojlab/chat-xc' : undefined);
+  assert(process.argv[3] === undefined || process.argv[3] === '--model=echo-grove');
+  const result = await runNativeBrowserReview(process.argv[2], process.argv[3] ? 'echoagent-ojlab/Echo Grove' : undefined);
   if (!result.passed) process.exitCode = 1;
 }

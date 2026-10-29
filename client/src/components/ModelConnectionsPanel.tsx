@@ -1,3 +1,4 @@
+import { modelDisplayName } from "@/lib/model-presentation";
 import { SettingsDisclosure } from "./SettingsDisclosure";
 import { useCallback, useEffect, useMemo, useRef, useState, type WheelEvent } from "react";
 import {
@@ -188,6 +189,10 @@ function modelRemoteId(model: ModelEntry): string {
   return model.remoteModelId || model.modelId;
 }
 
+function modelName(model: ModelEntry): string {
+  return modelDisplayName({ id: model.modelId, label: model.name, remoteModelId: model.remoteModelId });
+}
+
 function modelLimitsText(model: ModelEntry, provider: ModelProviderEntry): string | null {
   const contextWindow = model.contextWindow ?? provider.contextWindow;
   const maxOutput = model.maxOutputTokens;
@@ -350,7 +355,7 @@ export function ModelConnectionsPanel({ onModelsChanged }: ModelConnectionsPanel
 
   const handleDeleteModel = (model: ModelEntry) => {
     if (model.managed) return;
-    const label = model.name || modelRemoteId(model);
+    const label = modelName(model);
     requestConfirmation({
       title: `删除模型“${label}”？`,
       description: "该模型将从当前连接中移除，且不再可用于新对话。",
@@ -368,7 +373,7 @@ export function ModelConnectionsPanel({ onModelsChanged }: ModelConnectionsPanel
     try {
       const current = defaults ?? await agentsDefaultsGet();
       await agentsDefaultsSave({ ...current, defaultModel: model.modelId });
-      await finishMutation(`已将「${model.name || modelRemoteId(model)}」设为默认模型。`);
+      await finishMutation(`已将「${modelName(model)}」设为默认模型。`);
     } catch (error) {
       setMessage({ kind: "err", text: `设置默认模型失败：${String(error)}` });
     }
@@ -391,7 +396,10 @@ export function ModelConnectionsPanel({ onModelsChanged }: ModelConnectionsPanel
   };
 
   const handleTestSaved = async (provider: ModelProviderEntry) => {
-    const model = catalog.models.find((entry) => entry.providerId === provider.id);
+    const providerModels = catalog.models.filter((entry) => entry.providerId === provider.id);
+    const model = providerModels.find((entry) => entry.modelId === effectiveDefaultModelId)
+      ?? providerModels.find((entry) => entry.modelId === savedDefaultModelId)
+      ?? providerModels[0];
     if (!model) {
       setMessage({ kind: "warn", text: "请先为该连接添加一个 Model ID，再测试实际模型调用。" });
       return;
@@ -533,7 +541,7 @@ export function ModelConnectionsPanel({ onModelsChanged }: ModelConnectionsPanel
               )}
               {savedDefaultMissing && (
                 <div className="model-connections__message model-connections__message--warn">
-                  已设默认模型「{savedDefaultModelId}」不在当前模型目录中；请重新选择。{effectiveDefaultModelId ? `当前自动使用「${effectiveDefaultModelId}」。` : ""}
+                  已设默认模型「{modelDisplayName(savedDefaultModelId)}」不在当前模型目录中；请重新选择。{effectiveDefaultModelId ? `当前自动使用「${modelDisplayName(effectiveDefaultModelId)}」。` : ""}
                 </div>
               )}
 
@@ -558,8 +566,8 @@ export function ModelConnectionsPanel({ onModelsChanged }: ModelConnectionsPanel
                     return (
                       <li key={model.modelId}>
                         <div className="model-connections__model-copy">
-                          <strong>{model.name || modelRemoteId(model)}</strong>
-                          <span>远端模型 ID：{modelRemoteId(model)}</span>
+                          <strong>{modelName(model)}</strong>
+                          <span>远端模型 ID：{model.remoteModelId || modelDisplayName(model.modelId)}</span>
                           {limits && <span className="model-connections__model-limits">{limits}</span>}
                         </div>
                         <div className="model-connections__model-actions">

@@ -1,3 +1,4 @@
+import { findModelChoiceLabel, findModelDisplayName } from "@/lib/model-presentation";
 import { useSessionsStore } from "@/stores/sessions-store";
 import { useKnowledgeStore } from "@/stores/knowledge-store";
 /**
@@ -359,7 +360,7 @@ export function ProjectDetailView({
                 models.length === 0
                   ? "请先在「设置 → 模型」配置模型"
                   : !projectModelId && live.defaultModelId
-                    ? `原项目模型「${live.defaultModelId}」已不可用，请重新选择`
+                    ? `原项目模型「${findModelDisplayName(models, live.defaultModelId)}」已不可用，请重新选择`
                     : undefined
               }
               onOpenSettings={onOpenModelSettings}
@@ -384,7 +385,7 @@ export function ProjectDetailView({
               <div className="pd-composer-warning" role="alert">
                 <span>
                   {sendError
-                    ?? `原项目模型「${live.defaultModelId}」已不可用，请重新选择。`}
+                    ?? `原项目模型「${findModelDisplayName(models, live.defaultModelId)}」已不可用，请重新选择。`}
                 </span>
                 {models.length === 0 && onOpenModelSettings && (
                   <button type="button" onClick={onOpenModelSettings}>
@@ -406,7 +407,7 @@ export function ProjectDetailView({
           <details className="project-default-preferences">
             <summary>项目默认偏好<span>指令、模型与能力</span></summary>
             <p>这些偏好会提供给新任务。资料仍需为每次任务单独选择。</p>
-            {CONFIG_CARDS.map(c => <button type="button" key={c.key} className="project-default-preference" aria-label={`配置项目默认${c.title}`} onClick={() => setDrawer(c.key)} title={c.desc}><span>{c.title}</span><span>{c.key === "model" ? models.find(model => model.id === projectModelId)?.label ?? "待选择" : c.key === "instruction" ? live.instructions?.trim() ? "已配置" : "未配置" : c.key === "experts" ? `${live.experts.length} 个` : c.key === "skills" ? `${live.skills.length} 个` : c.key === "connectors" ? `${live.connectors.length} 个` : "管理"}</span><span aria-hidden="true">›</span></button>)}
+            {CONFIG_CARDS.map(c => <button type="button" key={c.key} className="project-default-preference" aria-label={`配置项目默认${c.title}`} onClick={() => setDrawer(c.key)} title={c.desc}><span>{c.title}</span><span>{c.key === "model" ? findModelChoiceLabel(models, projectModelId, "待选择") : c.key === "instruction" ? live.instructions?.trim() ? "已配置" : "未配置" : c.key === "experts" ? `${live.experts.length} 个` : c.key === "skills" ? `${live.skills.length} 个` : c.key === "connectors" ? `${live.connectors.length} 个` : "管理"}</span><span aria-hidden="true">›</span></button>)}
           </details>
         </aside>
       </div>
@@ -532,7 +533,7 @@ function ConfigDrawer({
               />
               {unavailableModelId && (
                 <p className="proj-model-setting__warning" role="alert">
-                  原模型“{unavailableModelId}”已被删除或停用，请重新选择。
+                  原模型“{findModelDisplayName(models, unavailableModelId)}”已被删除或停用，请重新选择。
                 </p>
               )}
               {models.length === 0 && (

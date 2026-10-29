@@ -5,7 +5,7 @@ import { runInNewContext } from 'node:vm';
 import { BROWSER_CHECKS, verifyBrowserReport } from './validate-native-browser-review.mjs';
 const now = Date.now(), home = '/private/tmp/echo-native-review-browser-synthetic', nonce = 'a'.repeat(32);
 const manifest = { home, cwd: home + '/workspaces/default', nonce, phase: 'first-launch',
-  url: `http://127.0.0.1:34567/review/${nonce}/`, modelId: 'echoagent-ojlab/chat-qwen' };
+  url: `http://127.0.0.1:34567/review/${nonce}/`, modelId: 'echoagent-ojlab/Echo Reed' };
 const base = { version: 1, kind: 'native-browser', passed: true, nativeVerified: false, fakeIPC: false,
   home, nonce, phase: manifest.phase, errors: [], finishedAt: new Date().toISOString(),
   nativeContext: { home, pid: 123, browserRequested: true, evaluations: 1 },
@@ -25,7 +25,7 @@ for (const [name, mutate] of [
   ['failure', value => value.checks[0].result = 'failed'], ['error', value => value.errors.push('real failure')],
   ['no-download', value => value.expected.download.passed = false], ['wrong-download-session', value => value.expected.download.sessionId = 'another'],
   ['delete-approved', value => value.approvals.at(-1).approved = true], ['no-network-confirmation', value => value.approvals.shift()],
-  ['wrong-bound-model', value => value.expected.modelId = 'echoagent-ojlab/chat-xc'],
+  ['wrong-bound-model', value => value.expected.modelId = 'echoagent-ojlab/Echo Grove'],
 ]) {
   const value = structuredClone(base); mutate(value);
   assert.throws(() => verifyBrowserReport(value, manifest, 123, now), undefined, `Accepted ${name}`); count++;

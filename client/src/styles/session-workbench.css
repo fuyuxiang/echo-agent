@@ -25,8 +25,6 @@
 }
 .session-header__workspace:hover, .session-header__context:hover, .share-menu__trigger:hover { background: var(--echo-bg-hover); color: var(--echo-text-strong); }
 .session-header__context[aria-expanded=true] { color: var(--echo-color-text-brand-default); background: var(--echo-brand-soft); }
-.session-header__status { color: var(--echo-text-medium); font-size: 0.75rem; white-space: nowrap; padding: 0 6px; }
-.session-header__status--attention { color: var(--echo-color-text-warning-default); font-weight: 600; }
 .session-header button:focus-visible, .session-header__workspace:focus-visible, .topbar-actions__item:focus-visible, .share-menu__trigger:focus-visible {
   outline: 2px solid var(--echo-brand); outline-offset: 2px;
 }
@@ -38,7 +36,7 @@
 .topbar-actions__item svg { flex: none; }
 .workbench-dialog-overlay { position: fixed; inset: 0; z-index: var(--echo-layer-dialog); display: grid; place-items: center; padding: 24px; background: var(--echo-bg-overlay); }
 .workbench-dialog__header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; color: var(--echo-text-strong); }
-.share-menu__popover--dialog { position: static; width: 360px; max-width: 100%; max-height: calc(100vh - 48px); overflow-y: auto; }
+.share-menu__popover--dialog { position: static; width: min(360px, calc(100vw - 48px)); max-width: 100%; max-height: calc(100vh - 48px); overflow-y: auto; }
 .workbench-dialog-overlay .rewind-bar__dropdown { position: static; width: 520px; max-width: 100%; max-height: calc(100vh - 48px); padding: 16px; }
 .rewind-bar__header > .main-topbar__btn { margin-left: auto; }
 .session-history-actions { position: absolute; }
@@ -56,7 +54,6 @@
 }
 @container session-header (max-width: 560px) {
   .session-header__workspace > span { display: none; }
-  .session-header__status { font-size: .6875rem; padding: 0 2px; }
   .session-header__identity { gap: 8px; }
 }
 @container session-header (max-width: 420px) {
@@ -82,8 +79,6 @@
 .composer-primary-tools .model-selector { min-width:0; flex:1 1 auto; }
 .composer-primary-tools .model-selector__trigger { max-width:100%; min-width:0; }
 .composer-primary-tools .model-selector__label { max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.composer-submit-group { display:flex; align-items:center; gap:4px; flex:none; }
-.composer-submit-group .echo-composer__send--enqueue { width:auto; padding-inline:10px; display:flex; gap:4px; }
 .knowledge-picker__trigger.is-empty > span, .knowledge-picker__trigger.is-empty > svg:last-child { display:none; }
 .knowledge-picker__trigger.is-empty { padding-inline:6px; }
 .echo-composer__disclaimer { justify-content:center; font-size:.6875rem; }
@@ -96,7 +91,6 @@
   .chatview .echo-composer__footer { flex-wrap:wrap; }
   .composer-primary-tools { flex:1 1 100%; max-width:100%; justify-content:flex-end; }
   .composer-primary-tools .model-selector__label { max-width:70px; }
-  .composer-submit-group .echo-composer__send--enqueue span { display:none; }
 }
 
 .echo-theia-agent__queue { flex:none; max-height:25vh; overflow:auto; padding:0 12px; }
@@ -180,3 +174,11 @@
 .workspace-picker__hint { padding: 0 12px 8px; max-width: 300px; font-size: 0.6875rem; color: var(--echo-text-medium); line-height: 1.5; }
 .file-preview__bar { flex-wrap: wrap; }
 .file-preview__bar .file-preview__path { flex: 1 1 100%; }
+
+/* Paused/stopped feedback is part of the turn for every tool mode. */
+.chatview .session-turn-feedback { margin:12px 0 0; padding:6px 0; border:0; border-radius:0; background:transparent; color:var(--text-secondary); font-size:.8125rem; flex-wrap:wrap; }
+.chatview .session-turn-feedback > span { min-width:0; overflow-wrap:anywhere; }
+.chatview .session-turn-feedback .btn { flex-shrink:0; min-height:32px; }
+.browser-task-settings { min-width:0; }
+.browser-task-settings .settings-select { max-width:min(340px,60%); min-width:0; text-overflow:ellipsis; }
+@media(max-width:600px) { .browser-task-settings .settings-row { flex-wrap:wrap; } .browser-task-settings .settings-select { max-width:100%; } }

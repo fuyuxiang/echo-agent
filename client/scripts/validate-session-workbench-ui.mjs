@@ -107,6 +107,7 @@ try {
     if (state === "collaboration") { await openView("运行与协作"); await page.getByText("核对交付文档",{exact:true}).waitFor(); }
     if (state === "permission") {
       await page.getByRole("button",{name:"允许一次",exact:true}).waitFor();
+      assert.equal(await page.locator(".session-header [role=status]").count(), 0);
       assert.equal(await page.locator(".tasks-panel").count(), 0, "background details must not cover decisions");
       await page.getByRole("button", {name:/后台任务/}).waitFor();
       const allow = page.getByRole("button",{name:"允许一次",exact:true});
@@ -115,6 +116,8 @@ try {
     }
     if (state === "running") {
       await page.getByRole("button",{name:"停止生成",exact:true}).waitFor();
+      assert.equal(await page.locator(".session-header [role=status]").count(),0,"routine activity stays with the message and composer");
+      await page.locator(".msg__loading-main").waitFor();
       assert.equal(await page.getByRole("group",{name:"当前轮次执行控制",exact:true}).count(),0);
       assert.equal(await page.getByText("正在执行，可继续补充要求",{exact:true}).count(),0);
       assert.equal(await page.getByRole("button",{name:"暂停",exact:true}).count(),0);
@@ -132,16 +135,15 @@ try {
     if (width < 720) await page.getByRole("button",{name:"收起侧边栏",exact:true}).click();
     const stop = page.getByRole("button",{name:"停止生成",exact:true});
     assert.equal(await stop.count(),1,"only the composer should expose a stop button");
-    await page.getByRole("button",{name:"发送选项",exact:true}).click();
-    await page.getByRole("menuitem",{name:"暂停任务",exact:true}).click({trial:true});
-    await page.keyboard.press("Escape");
+    assert.equal(await page.getByRole("button",{name:"发送选项",exact:true}).count(),0);
     const input = page.locator(".echo-composer__input");
     await input.fill("请保留这条补充要求");
+    assert.equal(await stop.count(),0,"a draft changes the primary action to queue");
+    assert.equal(await page.locator(".echo-composer__send").count(),1);
     await page.getByRole("button",{name:"加入待发送队列",exact:true}).click({trial:true});
-    await page.getByRole("button",{name:"发送选项",exact:true}).click();
-    await page.getByRole("menuitem",{name:"中断当前轮次并发送",exact:true}).click({trial:true});
+    await page.getByRole("button",{name:"任务操作",exact:true}).click();
+    await page.getByRole("menuitem",{name:"停止当前执行",exact:true}).click({trial:true});
     await page.keyboard.press("Escape");
-    await stop.click({trial:true});
     const geometry = await page.locator(".echo-composer__footer").evaluate(element => {
       const r=element.getBoundingClientRect();
       return {overflow:document.documentElement.scrollWidth>innerWidth+1,
@@ -152,7 +154,8 @@ try {
     assert.equal(geometry.overflow,false,`draft overflow at ${width} ${theme}`);
     assert.equal(geometry.clipped,false,`composer controls clipped at ${width} ${theme}`);
     await page.screenshot({path:join(output,`running-draft-${width}-${theme}-${font}.png`)});
-    await stop.click();
+    await page.getByRole("button",{name:"任务操作",exact:true}).click();
+    await page.getByRole("menuitem",{name:"停止当前执行",exact:true}).click();
     await page.getByText("已停止（发送新消息可继续此任务）",{exact:true}).waitFor();
     assert.equal(await input.inputValue(),"请保留这条补充要求","stopping must preserve the draft");
     assert.equal(await page.evaluate(()=>window.workbenchCalls.some(c=>c.command==="review_send" || c.command==="review_send_now")),false);
@@ -160,14 +163,29 @@ try {
     await page.locator(".session-header").waitFor();
     await page.evaluate(font => { document.documentElement.style.fontSize=`${font}px`; },font);
     if (width < 720) await page.getByRole("button",{name:"收起侧边栏",exact:true}).click();
-    await input.fill("暂停后保留的补充要求");
-    await page.getByRole("button",{name:"发送选项",exact:true}).click();
-    await page.getByRole("menuitem",{name:"暂停任务",exact:true}).click();
-    await page.getByText("任务已暂停，可继续执行",{exact:true}).waitFor();
-    assert.equal(await input.inputValue(),"暂停后保留的补充要求","pausing must preserve the draft");
-    assert.ok(await input.evaluate(element => document.activeElement === element), "pausing must return focus to the draft");
-    assert.equal(await page.evaluate(()=>window.workbenchCalls.some(c=>c.command==="review_send" || c.command==="review_send_now")),false);
-    await page.screenshot({path:join(output,`paused-draft-${width}-${theme}-${font}.png`)});
+    await page.evaluate(async () => {
+      const {useMessageQueueStore}=await import("/src/stores/message-queue-store.ts");
+      useMessageQueueStore.getState().clear("review-conversation");
+    });
+    await input.fill("补充一份摘要");
+    await page.getByRole("button",{name:"加入待发送队列",exact:true}).dblclick();
+    await stop.waitFor();
+    const queue = page.getByRole("list",{name:"待发送队列"});
+    assert.equal(await queue.locator(".queue-row").count(),1,"double-click admits one row without stopping");
+    assert.equal(await page.evaluate(()=>window.workbenchCalls.filter(c=>c.command==="review_cancel" || c.command==="review_send_now").length),0);
+    assert.equal(await input.inputValue(),"");
+    await input.fill("优先检查数据");
+    await input.press("Enter");
+    assert.equal(await queue.locator(".queue-row").count(),2);
+    await queue.getByRole("button",{name:"中断当前回复并立即发送这条",exact:true}).nth(1).click();
+    await page.waitForFunction(()=>window.workbenchCalls.filter(c=>c.command==="review_send_now").length===1);
+    assert.deepEqual(await page.evaluate(()=>window.workbenchCalls.filter(c=>c.command==="review_send_now").map(c=>c.args.text)),["优先检查数据"]);
+    await page.screenshot({path:join(output,`queued-followups-${width}-${theme}-${font}.png`)});
+    await stop.click();
+    await page.getByText("队列已暂停，恢复条目后可发送",{exact:true}).waitFor();
+    assert.equal(await queue.locator(".queue-row").count(),2,"stopping preserves waiting follow-ups");
+    assert.equal(await queue.getByRole("button",{name:"恢复",exact:true}).count(),2);
+
   }
   // Narrow-window cases persist panel widths; verify default-layout transitions
   // in a fresh context so those preferences cannot contaminate the fixture.
@@ -178,5 +196,5 @@ try {
   finally { await transitionPage.close(); }
   assert.deepEqual(errors,[]);
   writeFileSync(join(output,"geometry.json"),JSON.stringify(evidence,null,2));
-  console.log(`Passed ${evidence.length} header layouts, navigation, native-export bridge, find/history, rewind cancellation, mutually exclusive workspaces, 8 task states and 12 running-draft control layouts.`);
+  console.log(`Passed ${evidence.length} header layouts, navigation, native-export bridge, find/history, rewind cancellation, mutually exclusive workspaces, 8 task states and 12 running-draft/queued-follow-up control layouts.`);
 } finally { await browser?.close(); await server.close(); }

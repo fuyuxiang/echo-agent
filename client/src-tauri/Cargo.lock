@@ -4124,6 +4124,7 @@ dependencies = [
  "fs2",
  "futures",
  "getrandom 0.3.4",
+ "globset",
  "hex",
  "hyper",
  "hyper-util",

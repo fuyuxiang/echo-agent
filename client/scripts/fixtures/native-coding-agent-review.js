@@ -6,7 +6,7 @@
   window.__echoNativeCodeAgentStarted = true;
   const invoke = window.__TAURI_INTERNALS__?.invoke;
   const filename = '原生模型代码验收.cjs';
-  const modelId = 'echoagent-ojlab/chat-qwen';
+  const modelId = 'echoagent-ojlab/Echo Reed';
   const markerKey = 'echoagent.native-code-agent-review.v1';
   const home = scope?.home;
   const cwd = `${home}/workspaces/default`;
@@ -76,7 +76,7 @@
       return visible(element) && !element.disabled ? element : null;
     }, 'UI: ready model trigger')).click();
     const option = await waitFor(() => [...document.querySelectorAll('.model-selector__item')]
-      .find((element) => visible(element) && element.querySelector('.model-selector__item-id')?.textContent === modelId), 'UI: exact Qwen model option');
+      .find((element) => visible(element) && element.dataset.modelId === modelId), 'UI: exact Qwen model option');
     const label = option.querySelector('.model-selector__item-label')?.textContent;
     assert(label, 'Selected Qwen model has no label');
     option.click();

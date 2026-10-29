@@ -15,7 +15,6 @@ import { Hand, ShieldCheck, ShieldAlert } from "lucide-react";
 import {
   ChevronDownIcon,
   CheckIcon,
-  ShieldCheckIcon,
 } from "@/foundation/components/Icon/icons";
 import { permissionModeGet, permissionModeSet } from "@/lib/agent-client";
 import type { PermissionMode } from "@/lib/agent-client";
@@ -277,7 +276,8 @@ export function PermissionPicker({
       <button
         ref={triggerRef}
         type="button"
-        className="echo-composer-meta__btn"
+        className="echo-composer-meta__btn permission-picker__trigger"
+        data-mode-id={current.id}
         onClick={() => {
           if (open) closePicker(false);
           else setOpen(true);
@@ -286,12 +286,12 @@ export function PermissionPicker({
           if (["ArrowDown", "ArrowUp"].includes(event.key)) { event.preventDefault(); setOpen(true); }
         }}
         aria-label={triggerLabel ?? current.label}
-        title={`权限模式 · ${modeDescription(current)}${syncWarning ? ` · ${syncWarning}` : ""}`}
+        title={`权限模式 · ${current.label} · ${modeDescription(current)}${syncWarning ? ` · ${syncWarning}` : ""}`}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={open ? popoverId : undefined}
       >
-        <ShieldCheckIcon size="sm" />
+        <current.icon className="permission-picker__trigger-icon" size={14} aria-hidden="true" />
         <span className="permission-picker__label">{triggerLabel ?? current.label}</span>
         <ChevronDownIcon size="sm" />
       </button>

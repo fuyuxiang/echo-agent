@@ -499,7 +499,7 @@ mod platform {
 
     pub fn capture(display_id: Option<&str>) -> Result<CapturedDisplay, String> {
         if !ScreenCaptureAccess.preflight() {
-            return Err("尚未授予屏幕录制权限，请在自动化面板中完成授权".into());
+            return Err("尚未授予屏幕录制权限，请在“设置 > 安全与权限”中完成授权".into());
         }
         let infos = displays()?;
         let selected = match display_id {

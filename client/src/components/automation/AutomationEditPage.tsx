@@ -1,3 +1,4 @@
+import { modelChoiceLabel, modelDisplayName, type PresentableModel } from "@/lib/model-presentation";
 /**
  * AutomationEditPage — 添加 / 编辑自动化任务（全页表单，截图 2 复刻）。
  *
@@ -61,10 +62,7 @@ import {
   type WeekdayCode,
 } from "./schedule-utils";
 
-export interface ModelOption {
-  id: string;
-  label: string;
-}
+export type ModelOption = PresentableModel;
 
 // ============================================================
 // 提示词工具条通用 chip 下拉
@@ -164,7 +162,7 @@ function ModelChip({
         <>
           <GlobeIcon size="sm" />
           <span className={`atm-prompt-chip-label${invalidSelection ? " atm-prompt-chip-label--invalid" : ""}`}>
-            {selected?.label ?? (invalidSelection ? `模型不可用：${value}` : `Auto${autoModel ? ` · ${autoModel.label}` : ""}`)}
+            {selected ? modelChoiceLabel(selected, models) : (invalidSelection ? `模型不可用：${modelDisplayName(value)}` : `Auto${autoModel ? ` · ${modelDisplayName(autoModel)}` : ""}`)}
           </span>
           <ChevronDownIcon size="sm" className="atm-prompt-chip-caret" />
         </>
@@ -174,11 +172,11 @@ function ModelChip({
         <span className="atm-chip-option-check">{!value && <CheckIcon size="sm" />}</span>
         <span className="atm-chip-option-copy">
           <span>Auto</span>
-          <small>{autoModel ? `每次运行使用当前默认模型：${autoModel.label}` : "当前没有可用的默认模型"}</small>
+          <small>{autoModel ? `每次运行使用当前默认模型：${modelChoiceLabel(autoModel, models)}` : "当前没有可用的默认模型"}</small>
         </span>
       </button>
       {invalidSelection && (
-        <div className="atm-chip-invalid">原模型“{value}”已移除或不可用，请重新选择。</div>
+        <div className="atm-chip-invalid">原模型“{modelDisplayName(value)}”已移除或不可用，请重新选择。</div>
       )}
       {models.map((m) => (
         <button
@@ -188,7 +186,7 @@ function ModelChip({
           onClick={() => onChange(m.id)}
         >
           <span className="atm-chip-option-check">{value === m.id && <CheckIcon size="sm" />}</span>
-          <span>{m.label}</span>
+          <span>{modelChoiceLabel(m, models)}</span>
         </button>
       ))}
     </ToolbarDropdown>

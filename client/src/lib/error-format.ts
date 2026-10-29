@@ -20,6 +20,12 @@ interface PromptUsage {
   modelUsage?: Record<string, unknown>;
 }
 
+/** Exhausted allowance is different from a per-minute rate limit. Neither
+ * implies a reset time unless the service explicitly supplies one. */
+export function isModelQuotaExhausted(message: string): boolean {
+  return /insufficient_quota|quota[^\n]{0,80}(?:exhausted|depleted)|额度[^。\n]{0,40}(?:耗尽|用尽|不足)/i.test(message);
+}
+
 interface AgentErrorData {
   message?: string;
   error_kind?: string;
@@ -170,6 +176,9 @@ function fmtDuration(ms?: number): string {
  */
 export function formatAgentError(raw: string): string | null {
   const lowerRaw = raw.toLowerCase();
+  if (isModelQuotaExhausted(raw)) {
+    return "模型可用额度已用尽，本轮暂时无法继续。已有内容已保留，请等待服务恢复或选择其他可用模型。";
+  }
   if (/context window exceeds limit|context_length_exceeded|context_window_exceeded|maximum context length|input token limit exceeded|prompt is too long|input is too long/.test(lowerRaw)) {
     return "⚠️ 本次内容超过模型的处理容量。请在当前任务中继续分批处理；已保存的资料和阶段记录可继续使用。";
   }
@@ -202,7 +211,7 @@ export function formatAgentError(raw: string): string | null {
       return "⚠️ 网络连接失败。请检查网络或代理设置，确认模型服务地址可访问。";
     }
     if (lower.includes("429") || lower.includes("rate limit")) {
-      return "⚠️ API 速率限制已触发。请等待 1-2 分钟后重试。";
+      return "模型请求受限，请检查服务的调用频率或可用额度后再试。";
     }
     return null;
   }
@@ -242,7 +251,7 @@ export function formatAgentError(raw: string): string | null {
     }
 
     lines.push("");
-    lines.push("建议: 等待 1-2 分钟后重试，或缩短对话上下文（新建会话）。");
+    lines.push("建议: 根据模型服务提供的限制和恢复时间重试；已有内容已保留。");
     if (usage && usage.inputTokens && usage.inputTokens > 100_000) {
       lines.push("提示: 当前上下文已达 " + fmtTokens(usage.inputTokens) + " tokens，考虑新建会话以减少上下文大小。");
     }

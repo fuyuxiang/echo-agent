@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useId, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, Check } from "lucide-react";
+import { modelChoiceLabel, modelDisplayName } from "@/lib/model-presentation";
 import {
   useAnchoredFloating,
   type FloatingAlignment,
@@ -9,7 +10,7 @@ import {
 } from "@/lib/use-anchored-floating";
 
 /**
- * Model picker dropdown for the Composer. Shows the current model id on a
+ * Model picker dropdown for the Composer. Shows the current model name on a
  * trigger button; clicking opens a small menu listing every available model.
  * Selecting one calls onModelChange.
  */
@@ -22,6 +23,7 @@ export interface ModelOption {
   providerKind?: string;
   /** Optional provider id this model belongs to. */
   providerId?: string;
+  providerLabel?: string;
   source?: "personal" | "organization" | "builtin" | "legacy";
   /** The selected connection sends credentials and content over plaintext HTTP. */
   insecureHttp?: boolean;
@@ -39,7 +41,7 @@ export function ModelSelector({
   menuWidth = "content",
   menuZIndex,
 }: {
-  /** Currently selected model id (displayed on the trigger). */
+  /** Internal model id. The trigger displays its friendly name. */
   modelId?: string;
   modelLoading?: boolean;
   disabled?: boolean;
@@ -61,6 +63,23 @@ export function ModelSelector({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLUListElement>(null);
   const optionRefs = useRef(new Map<string, HTMLButtonElement>());
+  const duplicateNames = useMemo(() => {
+    const seen = new Set<string>();
+    const duplicates = new Set<string>();
+    for (const model of models) {
+      const name = modelDisplayName(model);
+      if (seen.has(name)) duplicates.add(name);
+      seen.add(name);
+    }
+    return duplicates;
+  }, [models]);
+  // Keep everyday choices concise; only actual name collisions need context.
+  const choiceLabel = (model: ModelOption) => duplicateNames.has(modelDisplayName(model))
+    ? modelChoiceLabel(model, models) : modelDisplayName(model);
+  const connectionLabel = (model: ModelOption) => {
+    if (!duplicateNames.has(modelDisplayName(model))) return undefined;
+    return choiceLabel(model).slice(modelDisplayName(model).length + " · ".length);
+  };
   const { style: menuStyle, placement } = useAnchoredFloating(
     triggerRef,
     menuRef,
@@ -141,7 +160,7 @@ export function ModelSelector({
   const triggerLabel = modelLoading
     ? "正在同步模型…"
     : hasModels
-    ? current?.label || current?.id || "请选择模型"
+    ? current ? modelDisplayName(current) : "请选择模型"
     : "未配置模型";
 
   return (
@@ -156,7 +175,8 @@ export function ModelSelector({
         disabled={disabled || modelLoading || !hasModels}
         aria-busy={modelLoading}
         aria-label={ariaLabel ? `${ariaLabel}：${triggerLabel}` : undefined}
-        title={!hasModels ? "请先在设置中配置模型" : current && !modelLoading ? `${current.label || current.id}${current.label && current.label !== current.id ? ` · ${current.id}` : ""}` : triggerLabel}
+        aria-description={current && !modelLoading ? choiceLabel(current) : undefined}
+        title={!hasModels ? "请先在设置中配置模型" : current && !modelLoading ? choiceLabel(current) : triggerLabel}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listboxId : undefined}
@@ -200,14 +220,17 @@ export function ModelSelector({
                   close();
                 }}
                 role="option"
+                data-model-id={m.id}
+                aria-label={choiceLabel(m)}
+                title={choiceLabel(m)}
                 aria-selected={m.id === modelId}
                 ref={(element) => {
                   if (element) optionRefs.current.set(m.id, element);
                   else optionRefs.current.delete(m.id);
                 }}
               >
-                <span className="model-selector__item-label">{m.label || m.id}</span>
-                {m.label && m.label !== m.id && <span className="model-selector__item-id">{m.id}</span>}
+                <span className="model-selector__item-label">{modelDisplayName(m)}</span>
+                {connectionLabel(m) && <span className="model-selector__connection">{connectionLabel(m)}</span>}
                 {m.id === modelId && <Check size={14} className="model-selector__check" />}
               </button>
             </li>

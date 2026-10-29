@@ -29,13 +29,21 @@ export interface SharePayload {
   bytes: number;
 }
 
-/** 把会话构建成指定格式的分享载荷。 */
+export interface ShareExportOptions extends SessionExportOptions {
+  /** HTML follows the current client theme unless explicitly selected. */
+  theme?: "light" | "dark";
+}
+
+/** HTML rendering is asynchronous; plain formats stay synchronous for native share activation. */
+export function buildSharePayload(messages: ChatMessage[], format: "markdown" | "text", title?: string, options?: ShareExportOptions): SharePayload;
+export function buildSharePayload(messages: ChatMessage[], format: "html", title?: string, options?: ShareExportOptions): Promise<SharePayload>;
+export function buildSharePayload(messages: ChatMessage[], format: ShareFormat, title?: string, options?: ShareExportOptions): SharePayload | Promise<SharePayload>;
 export function buildSharePayload(
   messages: ChatMessage[],
   format: ShareFormat,
   title?: string,
-  options: SessionExportOptions = {},
-): SharePayload {
+  options: ShareExportOptions = {},
+): SharePayload | Promise<SharePayload> {
   const base = sanitizeFilename(title || "对话导出");
   if (format === "markdown") {
     const content = buildSessionMarkdown(messages, title, options);
@@ -47,13 +55,12 @@ export function buildSharePayload(
     };
   }
   if (format === "html") {
-    const content = buildShareHtml(messages, title, options);
-    return {
+    return buildShareHtml(messages, title, options).then(content => ({
       filename: `${base}.html`,
       mime: "text/html;charset=utf-8",
       content,
       bytes: byteLength(content),
-    };
+    }));
   }
   // text:剥离 markdown 标记的纯文本。
   const content = buildSessionMarkdown(messages, title, options).replace(/^[#>*_`-]+/gm, "").trim();
@@ -65,31 +72,16 @@ export function buildSharePayload(
   };
 }
 
-/** 构造自包含 HTML(内联 markdown 正文,可在浏览器直接打开)。 */
-export function buildShareHtml(
+/** Produce a complete offline reading page using the client's Markdown renderer. */
+export async function buildShareHtml(
   messages: ChatMessage[],
   title?: string,
-  options: SessionExportOptions = {},
-): string {
-  const md = buildSessionMarkdown(messages, title, options);
-  const escaped = htmlEscape(md);
-  return `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${htmlEscape(title || "对话导出")}</title>
-<style>
-body{font:14px/1.6 -apple-system,"Segoe UI",Roboto,sans-serif;max-width:760px;margin:24px auto;padding:0 16px;color:#222}
-pre{background:#f5f5f5;padding:8px;border-radius:6px;overflow:auto}
-code{font-family:ui-monospace,Consolas,monospace}
-blockquote{border-left:3px solid #ccc;margin:0;padding:2px 12px;color:#666}
-</style>
-</head>
-<body>
-<pre>${escaped}</pre>
-</body>
-</html>`;
+  options: ShareExportOptions = {},
+): Promise<string> {
+  const markdown = buildSessionMarkdown(messages, title, options);
+  const theme = options.theme ?? (globalThis.document?.documentElement.dataset.theme === "dark" ? "dark" : "light");
+  const { renderShareHtml } = await import("./export-html");
+  return renderShareHtml(markdown, title || "对话导出", theme);
 }
 
 /** 构造 mailto 分享链接(把正文塞进 body,URL 编码)。 */
@@ -202,12 +194,4 @@ export function triggerDownload(
 
 function byteLength(s: string): number {
   return new TextEncoder().encode(s).length;
-}
-
-function htmlEscape(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }

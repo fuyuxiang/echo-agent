@@ -59,6 +59,7 @@ vi.mock("../ChatView", () => ({ ChatView: (props: ComponentProps<typeof import("
     {!props.apiReady && <div role="status">{props.setupHint}</div>}
     <button disabled={!props.apiReady} onClick={() => props.onSend("继续解释")}>追问</button>
     <button onClick={() => props.onModelChange?.("model-b")}>切换模型</button>
+    <button onClick={() => void props.onCancel("stop")}>停止执行</button>
   </div>
 ) }));
 vi.mock("@/lib/agent-client", async (original) => ({
@@ -119,6 +120,63 @@ beforeEach(() => {
 });
 
 describe("自动化会话模型同步", () => {
+  it("运行时错误关联真实轮次，迟到的旧错误不能覆盖新执行", async () => {
+    await start();
+    created("model-a");
+    fireEvent.click(screen.getByText("打开自动化"));
+    await waitFor(() => expect(useSessionStore.getState().sessionId).toBe("auto-1"));
+    act(() => useSessionStore.getState().startStreaming("auto-1", "new-turn"));
+    act(() => handlers.onTurnError?.({sessionId:"auto-1",promptId:"old-turn",kind:"error",detail:"stale failure"}));
+    expect(useSessionStore.getState().error).toBeNull();
+    act(() => handlers.onTurnError?.({sessionId:"auto-1",promptId:"new-turn",kind:"error",detail:"current failure"}));
+    expect(useSessionStore.getState().runtimeErrorContext).toEqual({sessionId:"auto-1",promptId:"new-turn"});
+    act(() => useSessionStore.getState().setError("加载历史失败"));
+    expect(useSessionStore.getState().runtimeErrorContext).toBeNull();
+  });
+  it("模型额度错误保留实际原因，不猜测等待时间或丢失服务返回的说明", async () => {
+    await start();
+    created("model-a");
+    fireEvent.click(screen.getByText("打开自动化"));
+    await waitFor(() => expect(useSessionStore.getState().sessionId).toBe("auto-1"));
+    act(() => handlers.onTurnError?.({ sessionId: "auto-1", kind: "rate_limit", detail: "five-hour quota exhausted" }));
+    expect(useSessionStore.getState().error).toContain("额度已用尽");
+    expect(useSessionStore.getState().error).not.toMatch(/1-2|新建会话/);
+  });
+
+  it.each(["cancelled", "error", "stop-race"])("%s 后待发送消息保持暂停，后续正常对话也不会擅自续发", async scenario => {
+    await start();
+    created("model-a");
+    act(() => {
+      useSessionStore.getState().startStreaming("auto-1", "current-prompt");
+      useMessageQueueStore.getState().enqueue("auto-1", "等待用户恢复", ["/tmp/方案.docx"]);
+      if (scenario === "stop-race") useSessionStore.getState().requestControl("auto-1", "stop", "current-prompt");
+      handlers.onComplete?.({sessionId:"auto-1",promptId:"current-prompt",stopReason:scenario === "stop-race" ? "end_turn" : scenario});
+    });
+    expect(useMessageQueueStore.getState().getQueue("auto-1")).toMatchObject([
+      {text:"等待用户恢复",status:"paused",attachments:["/tmp/方案.docx"]},
+    ]);
+    act(() => {
+      useSessionStore.getState().startStreaming("auto-1", "later-prompt");
+      handlers.onComplete?.({sessionId:"auto-1",promptId:"later-prompt",stopReason:"end_turn"});
+    });
+    expect(client.agentSend).not.toHaveBeenCalled();
+    expect(useMessageQueueStore.getState().getQueue("auto-1")[0].status).toBe("paused");
+  });
+
+  it("停止确认先于完成事件到达时，也会暂停并保留待发送消息", async () => {
+    await start();
+    created("model-a");
+    fireEvent.click(screen.getByRole("button",{name:"打开自动化"}));
+    await screen.findByTestId("model");
+    act(() => {
+      useSessionStore.getState().startStreaming("auto-1", "current-prompt");
+      useMessageQueueStore.getState().enqueue("auto-1", "保留的下一条");
+    });
+    fireEvent.click(screen.getByRole("button",{name:"停止执行"}));
+    await waitFor(() => expect(useSessionStore.getState().transcripts["auto-1"].control?.phase).toBe("stopped"));
+    expect(useMessageQueueStore.getState().getQueue("auto-1")).toMatchObject([{text:"保留的下一条",status:"paused"}]);
+  });
+
   it.each(["durable-first", "public-first"])("双完成事件只推进一次队列且不干扰下一轮：%s", async order => {
     await start();
     created("model-a");

@@ -55,7 +55,7 @@ window.__echoDesktopTaskFlow = async ({home,cwd,modelId,crossApp=false}) => {
     });
     await listen('agent://complete',({payload})=>{if(!report.sessionId||payload.sessionId===report.sessionId){report.completions.push({...payload,at:new Date().toISOString()});void save();}});
     (await wait(()=>{const e=document.querySelector('.echo-composer .model-selector__trigger');return visible(e)&&!e.disabled?e:null;},'model chooser')).click();
-    (await wait(()=>[...document.querySelectorAll('.model-selector__item')].find(e=>visible(e)&&e.querySelector('.model-selector__item-id')?.textContent===modelId),'configured MiniMax model')).click();
+    (await wait(()=>[...document.querySelectorAll('.model-selector__item')].find(e=>visible(e)&&e.dataset.modelId===modelId),'configured MiniMax model')).click();
     // No + menu, computer mode toggle, approval click, or dedicated resume button.
     const prompt=`请在 TextEdit（系统文本编辑）中先执行一次“新建”文稿命令，创建一个独立的纯文本文稿；不要把打开应用自动出现的空文稿当成本次新建。正文必须精确等于这个 JSON 字符串解码后的内容：${JSON.stringify(expected)}。其中有真正换行，末尾也有一个换行，共 ${[...expected].length} 个 Unicode 字符。请通过真实桌面控件输入并读回核对，然后用系统保存面板保存到 ${file}，文件名为 task-flow-output.txt。只操作这份新文稿，不修改已有文稿；已有文稿即使正文相似也不能复用；如果已有保存或前往面板阻挡，可以取消面板但不关闭或改动已有文稿。禁止 Shell、脚本和文件写工具代替真实桌面输入与保存；允许通过只读结果核验确认落盘。流程中我可能说“停一下”和“继续保存”，请保留现场并在同一任务续做。完成前核对真实文档位置和文件内容，不能只凭窗口标题或工具派发成功报告完成。`;
     await submit(prompt);

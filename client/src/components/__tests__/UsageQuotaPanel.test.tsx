@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { act, render, screen, fireEvent } from "@testing-library/react";
 import { UsageQuotaPanel } from "../UsageQuotaPanel";
-import { recordUsage, clearUsage, saveQuotaConfig, todayKey, type UsageRecord } from "@/lib/usage-quota";
+import { recordUsage, clearUsage, loadQuotaConfig, saveQuotaConfig, todayKey, type UsageRecord } from "@/lib/usage-quota";
 
 describe("UsageQuotaPanel", () => {
   beforeEach(() => {
@@ -64,7 +64,7 @@ describe("UsageQuotaPanel", () => {
   it("按模型分组显示", () => {
     recordUsage([], { modelId: "gpt-4", promptTokens: 100, completionTokens: 50 });
     recordUsage([{
-      date: new Date().toISOString().slice(0, 10),
+      date: todayKey(),
       modelId: "gpt-4",
       promptTokens: 100,
       completionTokens: 50,
@@ -96,10 +96,24 @@ describe("UsageQuotaPanel", () => {
   it("可配置本地模型费率", () => {
     recordUsage([], { modelId: "gpt-4", promptTokens: 1000, completionTokens: 500 });
     render(<UsageQuotaPanel />);
-    fireEvent.change(screen.getByLabelText("gpt-4 输入费率"), { target: { value: "30" } });
-    fireEvent.change(screen.getByLabelText("gpt-4 输出费率"), { target: { value: "60" } });
+    fireEvent.change(screen.getByLabelText("gpt-4 · 个人 输入费率"), { target: { value: "30" } });
+    fireEvent.change(screen.getByLabelText("gpt-4 · 个人 输出费率"), { target: { value: "60" } });
     fireEvent.click(screen.getByText("保存费率"));
     expect(screen.getByText("本地估算费率已保存，历史记录已按新费率重新计算。")).toBeInTheDocument();
     expect(screen.getAllByText("$0.0600").length).toBeGreaterThan(0);
+  });
+
+  it("同名内置与组织模型显示来源，费率仍按完整 ID 分别保存", () => {
+    const records = recordUsage([], { modelId: "echoagent-ojlab/Echo Reed", promptTokens: 1000, completionTokens: 500 });
+    recordUsage(records, { modelId: "organization/Echo Reed", promptTokens: 200, completionTokens: 100 });
+    const { container } = render(<UsageQuotaPanel />);
+    expect(container.textContent).not.toMatch(/echoagent-ojlab\/|organization\//);
+    fireEvent.change(screen.getByLabelText("Echo Reed · 内置 输入费率"), { target: { value: "30" } });
+    fireEvent.change(screen.getByLabelText("Echo Reed · 组织 输入费率"), { target: { value: "60" } });
+    fireEvent.click(screen.getByText("保存费率"));
+    expect(loadQuotaConfig()?.rates).toMatchObject({
+      "echoagent-ojlab/Echo Reed": { prompt: 0.03 },
+      "organization/Echo Reed": { prompt: 0.06 },
+    });
   });
 });

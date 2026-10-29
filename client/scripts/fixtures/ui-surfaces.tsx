@@ -254,12 +254,24 @@ if (query.get("surface") === "workbench") {
   }
   if (["paused", "browser-paused", "computer-paused"].includes(state)) { chat.requestControl("review-conversation", "pause"); chat.confirmControl("review-conversation", "pause"); }
   if (state === "browser-paused" || state === "computer-paused") chat.setAgentMode(state === "browser-paused" ? "browser_use" : "computer_use", "review-conversation");
+  if (query.get("automationMode") === "browser_use" || query.get("automationMode") === "computer_use") chat.setAgentMode(query.get("automationMode") as "browser_use" | "computer_use", "review-conversation");
   if (state === "failed") chat.setError("隔离验收：本轮任务失败，可以重试。");
   if (state === "collaboration") useSubagentStore.getState().applyEvent({ sessionId: "review-conversation", subagentId: "review-child", childSessionId: "review-child", phase: "spawned", description: "核对交付文档", status: "running" });
 }
+const browserTaskOverrides = new Map<string, Record<string, unknown>>();
+let automationApprovalResolved = false;
 const workbenchCalls: unknown[] = [];
 Object.assign(window, { workbenchCalls });
 const callbacks = new Map();
+const reviewListeners = new Map<number, { event: string; handler: number }>();
+let reviewListenerId = 0;
+const emitReviewEvent = (event: string, payload: unknown) => {
+  for (const [id, listener] of reviewListeners) if (listener.event === event) callbacks.get(listener.handler)?.({event,id,payload});
+};
+let networkApproval: {sessionId: string; resolve: () => void; reject: (error: Error) => void} | null = null;
+const networkApprovalRequest = () => networkApproval ? {requestId:"review-network-approval",sessionId:networkApproval.sessionId,
+  tool:"automation_set_private_network",title:"允许访问本机和内网",description:"请确认当前任务确实需要访问本地服务和内网站点。",details:{allowed:true}} : null;
+
 const planReviewOutcomes: unknown[] = [];
 let trustResolved = false;
 let modelImportAttempts = 0;
@@ -369,14 +381,40 @@ Object.assign(window, {
         case "automation_capabilities": return { browser: { available: true, browserName: "Chrome" }, computer: { available: true, platform: "macos", screenCapture: true, inputControl: true } };
         case "automation_status": return {
           sessionId: args.sessionId,
-          mode: query.get("state") === "browser-paused" ? "browser_use" : query.get("state") === "computer-paused" ? "computer_use" : "default",
+          mode: query.get("automationMode") || (query.get("state") === "browser-paused" ? "browser_use" : query.get("state") === "computer-paused" ? "computer_use" : "default"),
           paused: ["browser-paused", "computer-paused"].includes(query.get("state") || ""),
           task: { phase: "paused", reason: null, scope: "隔离界面验收", authorized: true, generation: 1 },
           allowPrivateNetwork: false, browserRunning: false, browserHasData: true,
           browser: { available: true, browserName: "Chrome" },
           computer: { available: true, platform: "macos", screenCapture: true, inputControl: true },
+          ...browserTaskOverrides.get(args.sessionId),
         };
-        case "automation_pending_approvals": return [];
+        case "automation_pending_approvals": return networkApproval && networkApproval.sessionId === args.sessionId ? [networkApprovalRequest()] : query.get("automationApproval") === "1" && !automationApprovalResolved ? [{
+          requestId:"review-browser-approval",sessionId:args.sessionId,tool:"browser_click",title:"是否允许发送这条消息？",description:"请核对收件人及消息内容。",details:{url:"https://example.com/send?token=hidden-token",application:"示例应用",name:"发送"},
+        }] : [];
+        case "automation_resolve_approval": {
+          if (args.requestId === "review-network-approval" && networkApproval) {
+            const pending = networkApproval; networkApproval = null;
+            emitReviewEvent("automation://approval-closed", {requestId:args.requestId,sessionId:pending.sessionId});
+            if (args.approved) pending.resolve(); else pending.reject(new Error("未获批准，访问范围未改变"));
+          } else automationApprovalResolved = true;
+          return true;
+        }
+        case "automation_set_private_network":
+        case "automation_clear_browser_data": {
+          if (command === "automation_set_private_network" && args.allowed && query.get("networkApproval") === "1") {
+            await new Promise<void>((resolve,reject) => {
+              networkApproval = {sessionId:args.sessionId,resolve,reject};
+              emitReviewEvent("automation://approval", networkApprovalRequest());
+            });
+          }
+          const previous = browserTaskOverrides.get(args.sessionId) ?? {};
+          const next = { ...previous, ...(command === "automation_set_private_network" ? { allowPrivateNetwork: args.allowed }
+            : { browserHasData:false, browserRunning:false, paused:true }) };
+          browserTaskOverrides.set(args.sessionId, next);
+          return { sessionId:args.sessionId,mode:"browser_use",paused:false,allowPrivateNetwork:false,browserHasData:true,browserRunning:false,
+            browser:{available:true},computer:{available:true,platform:"macos",screenCapture:true,inputControl:true},...next };
+        }
         case "storage_providers_list": return providers;
         case "storage_provider_upsert": providers = [args.config]; return;
         case "storage_list": return args.id === "review-dav" ? [{ path: "/readme.md", name: "readme.md", isDir: false, size: 256 }] : [];
@@ -444,8 +482,10 @@ Object.assign(window, {
         case "org_list_memories": case "org_list_skills": case "org_skill_submissions_mine": case "org_memory_promotions_mine": return [];
         case "org_document_submissions_mine_page": return { items: [], total: 0, page: 1, size: 20 };
         case "org_fetch_document": return { docId: args.docId, text: "Sheet: 模型设计\n列(2): 指标 | 口径\n第1行: 指标=活跃用户, 口径=当日登录人数", chunks: [{ seq: 0, text: "Sheet: 模型设计\n列(2): 指标 | 口径\n第1行: 指标=活跃用户, 口径=当日登录人数" }] };
-        case "plugin:event|listen": return callbacks.size;
-        case "plugin:event|unlisten": return;
+        case "plugin:event|listen": {
+          const id = ++reviewListenerId; reviewListeners.set(id,{event:args.event,handler:args.handler}); return id;
+        }
+        case "plugin:event|unlisten": reviewListeners.delete(args.eventId); return;
         case "meeting_list": return [];
         case "meeting_capture_status": return null;
         case "meeting_capture_support": return { systemAudio: true, detail: "首次使用需允许系统音频录制" };
@@ -472,13 +512,15 @@ function ConversationLayoutFixture() {
           (window as any).workbenchCalls.push({command:"review_send",args:{sessionId,text,attachments}});
           if (sessionId) useSessionStore.getState().resumeSession(sessionId);
           return true;
-        }} onSendNow={async (text, attachments) => {
-          (window as any).workbenchCalls.push({command:"review_send_now",args:{sessionId,text,attachments}});
+        }} onSendNow={async (text, attachments, queueItemId) => {
+          (window as any).workbenchCalls.push({command:"review_send_now",args:{sessionId,text,attachments,queueItemId}});
           return query.get("rejectSend") !== "1";
         }} onCancel={action => {
           if (!sessionId) return false;
-          useSessionStore.getState().requestControl(sessionId, action ?? "pause");
-          useSessionStore.getState().confirmControl(sessionId, action ?? "pause");
+          (window as any).workbenchCalls.push({command:"review_cancel",args:{sessionId,action}});
+          useSessionStore.getState().requestControl(sessionId, action ?? "stop");
+          useSessionStore.getState().confirmControl(sessionId, action ?? "stop");
+          useMessageQueueStore.getState().pauseQueued(sessionId);
           return true;
         }}
           navigation={{ sidebarCollapsed: layout.collapsed, onToggleSidebar: () => layout.setCollapsed(!layout.collapsed), onNewTask: () => { (window as any).workbenchNewTask = true; } }}

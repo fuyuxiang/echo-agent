@@ -123,6 +123,23 @@ describe("TopbarActions", () => {
     expect(screen.queryByRole("button", {name:"任务操作"})).toBeNull();
   });
 
+  it("运行中的空会话也可停止，停止请求等待期间不可重复操作", () => {
+    useSessionStore.getState().setMessages([]);
+    const onStop = vi.fn();
+    const view = render(<TopbarActions sessionId="session-1" title="运行中" onStop={onStop} />);
+    fireEvent.click(screen.getByRole("button", {name:"任务操作"}));
+    fireEvent.click(screen.getByRole("menuitem", {name:"停止当前执行"}));
+    expect(onStop).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("menu")).toBeNull();
+    view.rerender(<TopbarActions sessionId="session-1" title="运行中" onStop={onStop} stopping />);
+    fireEvent.click(screen.getByRole("button", {name:"任务操作"}));
+    fireEvent.click(screen.getByRole("menuitem", {name:"正在停止…"}));
+    expect(onStop).toHaveBeenCalledOnce();
+    view.rerender(<TopbarActions sessionId="session-2" title="空闲" />);
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(screen.queryByRole("button", {name:"任务操作"})).toBeNull();
+  });
+
   it("支持方向键、Home/End 和 Escape，关闭后恢复触发按钮焦点", async () => {
     render(<TopbarActions sessionId="session-1" title="测试会话" />);
     const trigger = screen.getByRole("button", { name: "任务操作" });

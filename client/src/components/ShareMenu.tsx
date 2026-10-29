@@ -16,7 +16,6 @@ import {
 } from "@/lib/share";
 import type { ChatMessage } from "@/stores/session-store";
 import { useModalFocus } from "@/lib/use-modal-focus";
-import { buildSessionMarkdown, sanitizeFilename } from "@/lib/export-markdown";
 import { openExternalUrl, exportTextFile } from "@/lib/agent-client";
 
 interface ShareMenuProps {
@@ -24,6 +23,8 @@ interface ShareMenuProps {
   onClose?: () => void;
   returnFocus?: HTMLElement | null;
   saveMarkdown?: boolean;
+  /** Use the native file picker consistently for all exported formats. */
+  saveToFile?: boolean;
   messages: ChatMessage[];
   title?: string;
   /** 宿主回调(打开系统邮件客户端)。依赖注入便于测试;缺省用 window.open。 */
@@ -31,12 +32,22 @@ interface ShareMenuProps {
   onDone?: (msg: string) => void;
 }
 
-export function ShareMenu({ messages, title, openUrl, onDone, controlledOpen, onClose, returnFocus, saveMarkdown }: ShareMenuProps) {
+export function ShareMenu({ messages, title, openUrl, onDone, controlledOpen, onClose, returnFocus, saveMarkdown, saveToFile }: ShareMenuProps) {
   const [localOpen, setLocalOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const open = controlledOpen ?? localOpen;
+  const openRef = useRef(open);
+  openRef.current = open;
+  const operationRef = useRef(0);
+  const busyRef = useRef(false);
   const setOpen = (next: boolean | ((prev: boolean) => boolean)) => {
     const value = typeof next === "function" ? next(open) : next;
+    openRef.current = value;
+    if (!value) {
+      operationRef.current++;
+      busyRef.current = false;
+      setBusy(false);
+    }
     if (controlledOpen === undefined) setLocalOpen(value);
     if (!value) onClose?.();
   };
@@ -47,6 +58,14 @@ export function ShareMenu({ messages, title, openUrl, onDone, controlledOpen, on
   const popoverRef = useRef<HTMLDivElement>(null);
   const popoverId = useId();
   const [position, setPosition] = useState({ top: 0, left: 0 });
+  useEffect(() => () => { operationRef.current++; }, []);
+  useEffect(() => {
+    if (!open) {
+      operationRef.current++;
+      busyRef.current = false;
+      setBusy(false);
+    }
+  }, [open]);
 
   useLayoutEffect(() => {
     if (!open || controlledOpen !== undefined) return;
@@ -95,22 +114,31 @@ export function ShareMenu({ messages, title, openUrl, onDone, controlledOpen, on
   }, [open]);
 
   const exportAs = async (format: ShareFormat) => {
-    if (busy) return;
-    if (format === "markdown" && saveMarkdown) {
-      setBusy(true);
-      try {
-        const path = await exportTextFile(sanitizeFilename(title || "对话导出") + ".md", buildSessionMarkdown(messages, title, { includeProcess }), "md");
-        if (path) { onDone?.(`已导出到 ${path}`); setOpen(false); }
-      } catch (error) { onDone?.(`导出失败：${String(error).replace(/^Error:\s*/, "")}`); }
-      finally { setBusy(false); }
-      return;
-    }
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    const operation = ++operationRef.current;
+    const isCurrent = () => operation === operationRef.current && openRef.current;
     try {
-      const payload = buildSharePayload(messages, format, title, { includeProcess });
-      triggerDownload(payload);
-      setOpen(false);
-      onDone?.(`已导出 ${payload.filename}`);
-    } catch (error) { onDone?.(`导出失败：${String(error).replace(/^Error:\s*/, "")}`); }
+      const payload = await buildSharePayload(messages, format, title, { includeProcess });
+      if (!isCurrent()) return;
+      if (saveToFile ?? saveMarkdown) {
+        const extension = { markdown: "md", html: "html", text: "txt" }[format];
+        const path = await exportTextFile(payload.filename, payload.content, extension);
+        if (isCurrent() && path) { onDone?.(`已导出到 ${path}`); setOpen(false); }
+      } else {
+        triggerDownload(payload);
+        setOpen(false);
+        onDone?.(`已导出 ${payload.filename}`);
+      }
+    } catch (error) {
+      if (isCurrent()) onDone?.(`导出失败：${String(error).replace(/^Error:\s*/, "")}`);
+    } finally {
+      if (operation === operationRef.current) {
+        busyRef.current = false;
+        setBusy(false);
+      }
+    }
   };
 
   const shareMail = () => {
@@ -179,6 +207,7 @@ export function ShareMenu({ messages, title, openUrl, onDone, controlledOpen, on
           <label className="share-menu__option">
             <input
               type="checkbox"
+              disabled={busy}
               checked={includeProcess}
               onChange={(event) => setIncludeProcess(event.target.checked)}
             />
@@ -188,26 +217,27 @@ export function ShareMenu({ messages, title, openUrl, onDone, controlledOpen, on
             </span>
           </label>
           <div className="share-menu__divider" />
-          <button type="button" className="share-menu__item" onClick={() => void copyMarkdown()}>
+          <button type="button" className="share-menu__item" disabled={busy} onClick={() => void copyMarkdown()}>
             复制 Markdown
           </button>
           {typeof navigator !== "undefined" && typeof navigator.share === "function" && (
-            <button type="button" className="share-menu__item" onClick={() => void shareSystem()}>
+            <button type="button" className="share-menu__item" disabled={busy} onClick={() => void shareSystem()}>
               系统分享…
             </button>
           )}
           <div className="share-menu__divider" />
-          <button type="button" className="share-menu__item" disabled={busy} onClick={() => void exportAs("markdown")}>
-            {busy ? "正在保存…" : "导出 Markdown"}
+          <button type="button" className="share-menu__item" aria-label="导出 Markdown" aria-describedby={`${popoverId}-markdown`} disabled={busy} onClick={() => void exportAs("markdown")}>
+            <span>导出 Markdown</span><small id={`${popoverId}-markdown`}>保留 Markdown 源码，便于编辑</small>
           </button>
-          <button type="button" className="share-menu__item" disabled={busy} onClick={() => void exportAs("html")}>
-            导出 HTML
+          <button type="button" className="share-menu__item" aria-label="导出 HTML" aria-describedby={`${popoverId}-html`} disabled={busy} onClick={() => void exportAs("html")}>
+            <span>导出 HTML</span><small id={`${popoverId}-html`}>打开即可阅读排版，包含表格、代码和公式</small>
           </button>
           <button type="button" className="share-menu__item" disabled={busy} onClick={() => void exportAs("text")}>
             导出纯文本
           </button>
           <div className="share-menu__divider" />
-          <button type="button" className="share-menu__item" onClick={shareMail}>
+          {busy && <div className="share-menu__note" role="status">正在准备导出文件…</div>}
+          <button type="button" className="share-menu__item" disabled={busy} onClick={shareMail}>
             通过邮件分享
           </button>
         </div>

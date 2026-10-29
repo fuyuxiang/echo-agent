@@ -1,4 +1,49 @@
 use super::*;
+
+#[test]
+fn retired_models_migrate_in_groups_previews_and_templates_without_losing_context() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("groups.sqlite");
+    let store = Store::open(&path).unwrap();
+    let mut g = group();
+    g.members[0].model_id = "echoagent-ojlab/chat-qwen".into();
+    g.members[0].session_id = Some("historical-session".into());
+    g.members[1].model_id = "mine/chat-qwen".into();
+    store.create(&g).unwrap();
+    let template = management::TeamTemplate {
+        id: "template".into(),
+        name: "旧团队".into(),
+        description: "chat-qwen 作为普通文字保留".into(),
+        source: "常用团队".into(),
+        coordinator_name: None,
+        coordinator_role: None,
+        default_model_id: Some("echoagent-ojlab/chat-glm".into()),
+        members: vec![management::TemplateMember {
+            name: "专家".into(),
+            role: "核对资料".into(),
+            model_id: Some("echoagent-ojlab/chat-xc".into()),
+        }],
+    };
+    store.save_template(&template).unwrap();
+    let migrated = Store::open(&path).unwrap();
+    g.members[0].model_id = crate::providers::BUILTIN_DEFAULT_MODEL_ID.into();
+    assert_eq!(migrated.get(&g.id).unwrap(), g);
+    assert_eq!(
+        migrated.list().unwrap()[0].members[0].model_id,
+        crate::providers::BUILTIN_DEFAULT_MODEL_ID
+    );
+    let templates = migrated.templates().unwrap();
+    assert_eq!(
+        templates[0].default_model_id.as_deref(),
+        Some(crate::providers::BUILTIN_DEFAULT_MODEL_ID)
+    );
+    assert_eq!(
+        templates[0].members[0].model_id.as_deref(),
+        Some(crate::providers::BUILTIN_DEFAULT_MODEL_ID)
+    );
+    assert_eq!(templates[0].description, template.description);
+    assert_eq!(Store::open(&path).unwrap().get(&g.id).unwrap(), g);
+}
 pub(super) fn group() -> Group {
     let members = ["协调员", "分析师", "代码专家"]
         .map(|name| Member {

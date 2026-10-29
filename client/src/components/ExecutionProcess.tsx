@@ -33,6 +33,7 @@ interface ExecutionProcessProps {
   onOpenTool?: (tool: ToolCallView) => void;
   knowledgeTrace?: KnowledgeTurnTrace;
   onOpenKnowledgePath?: (path: string) => void;
+  revealRequest?: number;
 }
 
 type ReasoningPart = Extract<MessagePart, { kind: "text" | "thought" }>;
@@ -128,7 +129,7 @@ export function ExecutionProcess({
   parts,
   active,
   settled,
-  autoExpand = true,
+  autoExpand = false,
   startedAt,
   completedAt,
   stopReason,
@@ -140,9 +141,11 @@ export function ExecutionProcess({
   onOpenTool,
   knowledgeTrace,
   onOpenKnowledgePath,
+  revealRequest = 0,
 }: ExecutionProcessProps) {
   const { theme } = useTheme();
   const bodyId = useId();
+  const headerRef = useRef<HTMLButtonElement>(null);
   const summary = useMemo(
     () => summarizeExecutionProcess(
       parts,
@@ -163,8 +166,8 @@ export function ExecutionProcess({
   const finalAnswerStarted = hasFinalAnswer
     && !hasUnfinishedTools
     && knowledgeTrace?.personal?.state !== "searching";
-  // Show work while it is happening. Completed turns stay compact, including
-  // tool-only and failed turns; their status remains visible in the header.
+  // Completed turns keep a neutral disclosure. Diagnostics remain opt-in;
+  // actionable result notices are rendered beside the answer.
   const shouldOpenAutomatically = autoExpand && active && !finalAnswerStarted;
   const savedChoice = getExecutionDisclosureChoice(sessionId, messageId);
   const [open, setOpen] = useState(savedChoice ?? shouldOpenAutomatically);
@@ -173,8 +176,17 @@ export function ExecutionProcess({
   const previousAutomaticOpen = useRef(shouldOpenAutomatically);
   const userToggled = useRef(savedChoice !== undefined);
 
+  useEffect(() => {
+    if (!revealRequest) return;
+    userToggled.current = true;
+    setOpen(true);
+    rememberExecutionDisclosureChoice(sessionId, messageId, true);
+    headerRef.current?.focus({ preventScroll: true });
+    headerRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [revealRequest, sessionId, messageId]);
+
   useLayoutEffect(() => {
-    if (!startedAt || !active) return;
+    if (startedAt == null || !active) return;
     const update = () => setNow(Date.now());
     update();
     const timer = window.setInterval(update, 1_000);
@@ -203,7 +215,7 @@ export function ExecutionProcess({
   }, [active, messageId, sessionId, shouldOpenAutomatically]);
 
   const processRows = useMemo(() => groupProcessRows(parts), [parts]);
-  const duration = startedAt
+  const duration = startedAt != null && (active || completedAt != null)
     ? formatProcessDuration(Math.max(0, (completedAt ?? now) - startedAt))
     : null;
   const meta: string[] = [];
@@ -215,32 +227,30 @@ export function ExecutionProcess({
     meta.push(`${summary.thoughtCount} 段思考过程`);
   }
   if (summary.changedFiles.length > 0) meta.push(`${summary.changedFiles.length} 个文件`);
-  if (duration) meta.push(duration);
   const documentSummary = documentProgressSummary(parts.flatMap(part =>
     part.kind === "tool_call" && part.toolCall.documentProgress ? [part.toolCall.documentProgress] : []));
   if (documentSummary) meta.unshift(documentSummary);
   if (knowledgeTrace?.personal?.state === "used") {
     meta.unshift(`${knowledgeTrace.personal.resultCount} 个知识片段`);
   }
-  const knowledgeOnly = parts.length === 0 && Boolean(knowledgeTrace);
-  const title = active && knowledgeTrace?.personal?.state === "searching"
+  const title = !active ? "查看过程" : knowledgeTrace?.personal?.state === "searching"
     ? "正在检索个人知识库"
     : active && finalAnswerStarted
       ? "正在生成回复"
-    : knowledgeOnly && summary.state === "complete"
-      ? "知识检索完成"
       : summary.title;
   const recovered = summary.state === "complete" && summary.recoveredTools.length > 0;
   const recoveredById = new Map(summary.recoveredTools.map(recovery => [recovery.failedToolCallId,recovery.successfulToolCallId]));
 
   return (
-    <section className={`execution-process execution-process--${summary.state}${recovered ? " execution-process--recovered" : ""}${documentSummary ? " execution-process--documents" : ""}`}>
+    <section className={`execution-process execution-process--${summary.state}${recovered ? " execution-process--recovered" : ""}`}>
       <button
+        ref={headerRef}
         type="button"
         className="execution-process__header"
+        aria-label={[title, duration].filter(Boolean).join(" · ")}
         aria-expanded={open}
         aria-controls={bodyId}
-        aria-describedby={summary.description ? `${bodyId}-summary` : undefined}
+        aria-describedby={open && summary.description ? `${bodyId}-summary` : undefined}
         onClick={() => {
           userToggled.current = true;
           const next = !open;
@@ -253,8 +263,8 @@ export function ExecutionProcess({
           <span className="execution-process__title" role="status" aria-live="polite">
             {title}
           </span>
-          {meta.length > 0 && (
-            <span className="execution-process__meta">{meta.join(" · ")}</span>
+          {duration && (
+            <span className="execution-process__meta">· {duration}</span>
           )}
         </span>
         <span
@@ -265,15 +275,16 @@ export function ExecutionProcess({
         </span>
       </button>
 
-      {summary.description && <p id={`${bodyId}-summary`} className="execution-process__outcome-detail">{summary.description}</p>}
-
       {open && (
         <div className="execution-process__body" id={bodyId}>
+          {meta.length > 0 && <p className="execution-process__hint">{meta.join(" · ")}</p>}
+          {!active && <p className="execution-process__diagnostic-title">{summary.title}</p>}
+          {summary.description && <p id={`${bodyId}-summary`} className="execution-process__outcome-detail">{summary.description}</p>}
           {summary.recoveredTools.length > 0 && <p className="execution-process__recovery-detail">
             {summary.recoveredTools.length} 次中间失败已由后续同一操作的重试恢复，原始记录保留如下。
           </p>}
           {!active && agentResult && (
-            <p className="execution-process__terminal-detail" role={summary.state === "failed" ? "alert" : undefined}>
+            <p className="execution-process__terminal-detail">
               {agentResult}
             </p>
           )}

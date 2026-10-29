@@ -1,3 +1,4 @@
+import { findModelChoiceLabel, modelChoiceLabel, modelDisplayName } from "@/lib/model-presentation";
 /**
  * 项目详情页四个 tab 面板 — 对齐目标截图，数据来自本地 store。
  *
@@ -28,8 +29,7 @@ function availableModelId(
 
 function modelLabel(models: readonly ModelOption[], modelId?: string): string {
   if (!modelId) return "未选择模型";
-  const model = models.find((option) => option.id === modelId);
-  return model?.label || model?.id || modelId;
+  return findModelChoiceLabel(models, modelId);
 }
 
 function ProjectModelSelect({
@@ -54,7 +54,7 @@ function ProjectModelSelect({
       aria-label={label}
       value={modelId ?? ""}
       disabled={disabled || models.length === 0}
-      title={modelId ? `${modelLabel(models, modelId)} (${modelId})` : unavailable ? `原模型 ${configuredModelId} 已不可用` : "执行前请选择模型"}
+      title={modelId ? modelChoiceLabel(models.find((model) => model.id === modelId) ?? { id: modelId }, models) : unavailable ? `原模型 ${modelDisplayName(configuredModelId)} 已不可用` : "执行前请选择模型"}
       onChange={(event) => {
         if (event.target.value) onChange(event.target.value);
       }}
@@ -63,7 +63,7 @@ function ProjectModelSelect({
         {models.length === 0 ? "暂无可用模型" : unavailable ? "原模型不可用，请重选" : "请选择模型"}
       </option>
       {models.map((model) => (
-        <option key={model.id} value={model.id}>{model.label || model.id}</option>
+        <option key={model.id} value={model.id}>{modelChoiceLabel(model, models)}</option>
       ))}
     </select>
   );

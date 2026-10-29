@@ -64,7 +64,10 @@ export function QueuePanel({
     <div className="queue-panel" role="list" aria-label="待发送队列">
       <div className="queue-panel__head">
         <span>待发送队列({queue.length})</span>
-        <span className="queue-panel__hint">{hint ?? "当前一轮正常结束后，自动发送下一条未暂停的消息"}</span>
+        <span className="queue-panel__hint">{hint ?? (queue.every(item => item.status === "paused")
+          ? "队列已暂停，恢复条目后可发送"
+          : streaming ? "当前任务完成后按顺序发送；立即发送会中断当前执行，已有结果保留"
+          : "选择一条消息发送，其他未暂停的消息将按顺序接续")}</span>
       </div>
       {dialog}
       {saveError?.sessionId === sessionId && <p role="alert" className="queue-panel__error">{saveError.message}</p>}

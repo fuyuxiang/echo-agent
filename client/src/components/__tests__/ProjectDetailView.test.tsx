@@ -158,7 +158,7 @@ describe("ProjectDetailView 项目 composer 接入首页 Composer", () => {
 
   it("模型列表为空 + defaultModelId 不可用时显示外置 alert + 前往设置模型按钮", () => {
     useProjectsStore.setState({
-      projects: [{ ...structuredClone(baseProject), defaultModelId: "removed-model" }],
+      projects: [{ ...structuredClone(baseProject), defaultModelId: "organization/removed-model" }],
     });
     const onOpenModelSettings = vi.fn();
     render(
@@ -172,6 +172,7 @@ describe("ProjectDetailView 项目 composer 接入首页 Composer", () => {
       />,
     );
     const alerts = screen.getAllByRole("alert");
+    expect(alerts.map((node) => node.textContent).join(" ")).not.toContain("organization/");
     expect(
       alerts.some((node) => node.textContent?.includes("原项目模型")),
     ).toBe(true);

@@ -52,6 +52,7 @@ tempfile = "3"
 regex = "1"
 # Phase 2 cross-file symbol index: walk the workspace honouring .gitignore.
 ignore = "0.4"
+globset = "0.4"
 walkdir = "2"
 # Task checkpoints must also work outside Git repositories.  Use an in-process
 # line diff so local-folder change tracking does not quietly depend on a Git

@@ -14,7 +14,7 @@ void (async () => {
   const cancelRecoveryText = "停止后恢复验收：请只回复中文“验收成功”。不要读取文件或调用工具。";
   const agentOfficeTitle = '原生Agent办公验收';
   const agentOfficeText = '请调用 office_create 办公工具，生成Word（docx），标题必须是“原生Agent办公验收”，正文必须包含原句“今天确认任务状态，明天完成复核。”。请只用办公工具，不要使用终端、浏览器或其他工具。工具成功后回复“验收成功”和文件保存路径。并在回复末尾原样输出公式 $x^{2}+1$，以及以下Mermaid代码块：\n```mermaid\nflowchart LR\n A[任务] --> B[完成]\n```';
-  const targetModelId = "echoagent-ojlab/chat-qwen";
+  const targetModelId = "echoagent-ojlab/Echo Reed";
   const expectedTitle = "原生验收保留会话";
   const artifactName = "中文成果/原生验收 文件.txt";
   const artifactContent = "EchoAgent 原生文件验收\n中文、空格路径与重启读回。\n";
@@ -60,7 +60,7 @@ void (async () => {
     });
     picker.click();
     const option = await waitFor(() => [...document.querySelectorAll('.model-selector__item')]
-      .find((item) => item.querySelector('.model-selector__item-id')?.textContent === modelId));
+      .find((item) => item.dataset.modelId === modelId));
     const label = option.querySelector('.model-selector__item-label')?.textContent;
     option.click();
     await waitFor(() => {
@@ -126,7 +126,7 @@ void (async () => {
           const input = document.querySelector('.echo-composer textarea');
           const picker = document.querySelector('.echo-composer .model-selector__trigger');
           return input && !input.disabled && picker && !picker.disabled
-            && picker.textContent?.includes('chat-qwen');
+            && picker.textContent?.includes('Echo Reed');
         }, 60000);
         await send(restartText);
         await waitFor(() => [...document.querySelectorAll('.msg--user')].some((item) => item.textContent?.includes(restartText)));

@@ -1,6 +1,7 @@
 import type { ChatMessage } from "@/stores/session-store";
 import type { QuestionHistoryItem } from "@/components/QuestionHistoryPopover";
-import { isExecutionSettled, partitionAssistantParts, summarizeExecutionProcess } from "./execution-process";
+import { partitionAssistantParts, summarizeExecutionProcess } from "./execution-process";
+import { getExecutionNotice } from "./execution-notice";
 
 export interface ConversationTurn extends QuestionHistoryItem {
   answer: string;
@@ -19,8 +20,9 @@ export function buildConversationTurns(messages: ChatMessage[], questions: Quest
       if (current) turns.push(current);
     } else if (message.role === "assistant" && current) {
       const groups = partitionAssistantParts(message.parts);
-      current.status = summarizeExecutionProcess(groups.processParts, !message.complete,
-        message.stopReason, message.cancellationCategory, message.cancelTrigger, {settled:isExecutionSettled(message)}).title;
+      current.status = message.complete
+        ? getExecutionNotice(message)?.title ?? (groups.responseParts.some(part => part.text.trim()) ? "已回复" : "本轮已结束")
+        : summarizeExecutionProcess(groups.processParts, true).title;
       if (message.complete) {
         const answer = groups.responseParts.map(part => part.text).join(" ")
           .replace(/!\[[^\]]*\]\([^)]*\)/g, "[图片]")

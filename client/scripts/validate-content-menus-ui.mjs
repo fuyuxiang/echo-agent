@@ -41,7 +41,7 @@ try {
     const models = page.getByRole("listbox", { name: "示例模型" });
     const modelBox = await geometry(models);
     assert.ok(fits(modelBox, width) && modelBox.width <= 320, "long model names must not widen a menu to the window");
-    const labelFits = await models.locator(".model-selector__item-label, .model-selector__item-id").evaluateAll(elements => elements.every(element => element.scrollWidth <= element.clientWidth + 1));
+    const labelFits = await models.locator(".model-selector__item-label, .model-selector__connection").evaluateAll(elements => elements.every(element => element.scrollWidth <= element.clientWidth + 1));
     assert.ok(labelFits, "long model labels must wrap without being clipped");
     await models.screenshot({ path: join(output, `models-${width}-${theme}-${font}.png`) });
     await models.getByRole("option", { name: /常用模型/ }).click();

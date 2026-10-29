@@ -1153,7 +1153,7 @@ async fn validate_navigation_url(raw: &str, allow_private_network: bool) -> Resu
         resolve_allowed_destination(host, port, false)
             .await
             .map_err(|_| {
-                "默认禁止访问本机或内网地址；请由用户在自动化面板中显式授权内网访问".to_string()
+                "默认禁止访问本机或内网地址；请由用户在“设置 > 安全与权限 > 浏览器数据与访问范围”中为当前任务显式授权".to_string()
             })?;
     }
     Ok(url)

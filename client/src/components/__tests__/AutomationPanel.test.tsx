@@ -454,7 +454,7 @@ describe("AutomationPanel（截图 1/3 空态）", () => {
     fireEvent.click(await screen.findByText("+ 添加自动化"));
 
     fireEvent.click(await screen.findByRole("button", { name: /Auto.*MiniMax-M3/ }));
-    fireEvent.click(screen.getByRole("button", { name: "MiniMax-M3" }));
+    fireEvent.click(screen.getByRole("button", { name: "MiniMax-M3 · 个人" }));
     expect(screen.getByRole("button", { name: /MiniMax-M3/ })).toBeInTheDocument();
 
     fireEvent.change(document.querySelector(".atm-modal-input") as HTMLInputElement, { target: { value: "每日报告" } });

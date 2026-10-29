@@ -8,7 +8,7 @@ pub(crate) const PRIVATE_MODEL_ID: &str = "echoagent-review/claude-opus-5-5";
 pub(crate) fn allowed_model(id: &str) -> bool {
     matches!(
         id,
-        "echoagent-ojlab/chat-qwen" | "echoagent-ojlab/chat-xc" | PRIVATE_MODEL_ID
+        "echoagent-ojlab/Echo Reed" | "echoagent-ojlab/Echo Grove" | PRIVATE_MODEL_ID
     )
 }
 
@@ -22,11 +22,11 @@ pub(crate) struct ReviewConnection {
 }
 
 pub(crate) fn connection(home: &Path, id: &str) -> Result<ReviewConnection, String> {
-    if id == "echoagent-ojlab/chat-qwen" {
+    if id == "echoagent-ojlab/Echo Reed" {
         return Ok(ReviewConnection {
             base_url: crate::agent_runtime::OJLAB_BASE_URL.into(),
             api_key: None,
-            model: "chat-qwen".into(),
+            model: "Echo Reed".into(),
         });
     }
     if id != PRIVATE_MODEL_ID {

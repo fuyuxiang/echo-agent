@@ -1358,125 +1358,6 @@ button,
   color: #c53b3b;
 }
 
-.automation-approval {
-  display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) auto;
-  gap: 10px;
-  margin-bottom: 8px;
-  padding: 12px;
-  border: 1px solid color-mix(in srgb, #e59825 50%, var(--ui-line));
-  border-radius: 12px;
-  background: color-mix(in srgb, #e59825 8%, var(--ui-surface));
-  box-shadow: var(--echo-shadow-sm);
-}
-
-.automation-approval__icon {
-  display: grid;
-  width: 26px;
-  height: 26px;
-  place-items: center;
-  border-radius: 50%;
-  background: #e59825;
-  color: white;
-  font-weight: 800;
-}
-
-.automation-approval__body {
-  min-width: 0;
-}
-
-.automation-approval__body strong,
-.automation-approval__body p {
-  display: block;
-  margin: 0;
-}
-
-.automation-approval__body p {
-  margin-top: 3px;
-  color: var(--echo-text-medium);
-  font-size: 0.75rem;
-  line-height: 1.5;
-}
-
-.automation-approval__body details {
-  margin-top: 6px;
-  color: var(--echo-text-weak);
-  font-size: 0.6875rem;
-}
-
-.automation-approval__details {
-  display: grid;
-  gap: 4px;
-  margin: 7px 0 0;
-  font-size: 0.6875rem;
-}
-
-.automation-approval__details > div {
-  display: grid;
-  grid-template-columns: 64px minmax(0, 1fr);
-  gap: 8px;
-}
-
-.automation-approval__details dt {
-  color: var(--echo-text-weak);
-}
-
-.automation-approval__details dd {
-  overflow: hidden;
-  margin: 0;
-  color: var(--echo-text-medium);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.automation-approval__body pre {
-  max-height: 120px;
-  overflow: auto;
-  margin: 6px 0 0;
-  padding: 7px;
-  border-radius: 6px;
-  background: var(--echo-bg-tertiary);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.automation-approval__body small {
-  display: block;
-  margin-top: 5px;
-  color: var(--echo-text-weak);
-}
-
-.automation-approval__actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-}
-
-.automation-approval__actions button {
-  height: 30px;
-  padding: 0 10px;
-  border: 1px solid var(--ui-line);
-  border-radius: 7px;
-  background: var(--ui-surface);
-  color: var(--echo-text-medium);
-  font: inherit;
-  cursor: pointer;
-}
-
-.automation-approval__actions .automation-approval__approve {
-  border-color: transparent;
-  background: var(--echo-button-primary-bg);
-  color: var(--echo-button-primary-fg);
-}
-.automation-approval__actions .automation-approval__approve:hover:not(:disabled) { background: var(--echo-button-primary-bg-hover); }
-.automation-approval__actions .automation-approval__approve:active:not(:disabled) { background: var(--echo-button-primary-bg-active); }
-
-.automation-approval__actions button:disabled {
-  cursor: default;
-  opacity: 0.55;
-}
-
 /* Narrow chat columns can wrap the footer. Keep the setup message in flow
  * so it never covers those controls, while preserving any existing draft. */
 .chatview .echo-composer__setup-hint {
@@ -2607,14 +2488,6 @@ button,
     display: none;
   }
 
-  .automation-approval {
-    grid-template-columns: 28px minmax(0, 1fr);
-  }
-
-  .automation-approval__actions {
-    grid-column: 2;
-    justify-content: flex-end;
-  }
 
 }
 
@@ -4707,11 +4580,3 @@ a.help-card:hover {
   .notify-panel__row-actions { flex: 1 1 100%; }
   .notify-panel__add { grid-template-columns: minmax(0, 1fr); }
 }
-
-/* Task progress is a status, not a separate desktop control surface. */
-.task-execution-status { display:flex; flex-wrap:wrap; align-items:center; gap:8px; color:var(--text-secondary); font-size:12px; min-width:0; }
-.task-execution-status:empty { display:none; }
-.task-execution-status button { padding:4px 8px; border:1px solid var(--border-color); border-radius:6px; background:transparent; color:inherit; cursor:pointer; }
-
-.task-execution-status > span { min-width:0; overflow-wrap:anywhere; }
-.task-execution-status > button { flex-shrink:0; }

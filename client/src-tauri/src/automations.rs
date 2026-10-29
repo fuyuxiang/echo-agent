@@ -494,14 +494,30 @@ fn read_store() -> Result<AutomationStore, String> {
         Some(content) => content,
         None => return Ok(AutomationStore::default()),
     };
-    if let Ok(store) = serde_json::from_str::<AutomationStore>(&content) {
+    if let Ok(mut store) = serde_json::from_str::<AutomationStore>(&content) {
+        migrate_builtin_models(&mut store);
         return Ok(store);
     }
     // Legacy fallback: reshape each automation object, then parse.
     let mut value = serde_json::from_str::<serde_json::Value>(&content)
         .map_err(|error| format!("parse {}: {error}", path.display()))?;
     migrate_legacy_json(&mut value);
-    serde_json::from_value(value).map_err(|error| format!("migrate {}: {error}", path.display()))
+    let mut store = serde_json::from_value(value)
+        .map_err(|error| format!("migrate {}: {error}", path.display()))?;
+    migrate_builtin_models(&mut store);
+    Ok(store)
+}
+
+fn migrate_builtin_models(store: &mut AutomationStore) {
+    for automation in &mut store.automations {
+        if automation
+            .model_id
+            .as_deref()
+            .is_some_and(crate::providers::is_legacy_builtin_model_id)
+        {
+            automation.model_id = Some(crate::providers::BUILTIN_DEFAULT_MODEL_ID.into());
+        }
+    }
 }
 
 /// Convert legacy v1 automation objects to the current model, in place.
@@ -4588,6 +4604,43 @@ mod tests {
         ] {
             assert!(require_automated_skill_capability(Some(&report(state)), "demo").is_err());
         }
+    }
+
+    #[test]
+    fn retired_builtin_automation_models_use_reed_without_changing_other_choices() {
+        let selections = [
+            None,
+            Some("echoagent-ojlab/chat-xc"),
+            Some("echoagent-ojlab/chat-glm"),
+            Some("echoagent-ojlab/chat-qwen"),
+            Some("mine/chat-qwen"),
+            Some("echoagent-ojlab/Echo Grove"),
+        ];
+        let mut store = AutomationStore {
+            automations: selections
+                .iter()
+                .map(|model| Automation {
+                    model_id: model.map(str::to_string),
+                    ..test_automation()
+                })
+                .collect(),
+        };
+        migrate_builtin_models(&mut store);
+        assert_eq!(
+            store
+                .automations
+                .iter()
+                .map(|item| item.model_id.as_deref())
+                .collect::<Vec<_>>(),
+            vec![
+                None,
+                Some("echoagent-ojlab/Echo Reed"),
+                Some("echoagent-ojlab/Echo Reed"),
+                Some("echoagent-ojlab/Echo Reed"),
+                Some("mine/chat-qwen"),
+                Some("echoagent-ojlab/Echo Grove"),
+            ],
+        );
     }
 
     fn test_automation() -> Automation {

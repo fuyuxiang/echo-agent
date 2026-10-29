@@ -1,3 +1,4 @@
+import { modelChoiceLabel } from "@/lib/model-presentation";
 /**
  * 项目面板 — 对齐 EchoAgent 项目列表页 + 新建项目弹窗。
  *
@@ -675,7 +676,7 @@ function CreateProjectDialog({
                 onChange={(event) => setModelId(event.target.value || undefined)}
               >
                 {models.map((model) => (
-                  <option key={model.id} value={model.id}>{model.label || model.id}</option>
+                  <option key={model.id} value={model.id}>{modelChoiceLabel(model, models)}</option>
                 ))}
               </select>
             ) : (

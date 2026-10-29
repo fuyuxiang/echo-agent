@@ -3,14 +3,28 @@ import { describe, expect, it, vi } from "vitest";
 import { ModelSelector } from "../ModelSelector";
 
 describe("ModelSelector", () => {
-  it("菜单将显示名与实际标识分层呈现，没有别名时不重复同一名称", () => {
+  it("同一连接的同名别名可从菜单、提示和无障碍名称区分，并选择正确路由", () => {
+    const change = vi.fn();
+    render(<ModelSelector modelId="gateway/fast" models={[
+      {id:"gateway/fast",label:"通用模型",remoteModelId:"fast",providerId:"gateway",providerLabel:"我的网关"},
+      {id:"gateway/strong",label:"通用模型",remoteModelId:"strong",providerId:"gateway",providerLabel:"我的网关"},
+    ]} onModelChange={change} />);
+    const trigger = screen.getByRole("button", {name:"通用模型"});
+    expect(trigger).toHaveAttribute("title", "通用模型 · 个人 · 我的网关 · fast");
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole("option", {name:"通用模型 · 个人 · 我的网关 · strong"}));
+    expect(change).toHaveBeenCalledExactlyOnceWith("gateway/strong");
+  });
+  it("菜单默认只显示模型名称，不展示来源徽标或内部目录 ID", () => {
     render(<ModelSelector modelId="plain-model" models={[
       { id: "plain-model", label: "plain-model" },
       { id: "provider/model-id", label: "常用模型" },
     ]} onModelChange={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "plain-model" }));
-    expect(screen.getByRole("option", { name: "plain-model" }).querySelector(".model-selector__item-id")).toBeNull();
-    expect(screen.getByRole("option", { name: /常用模型/ }).querySelector(".model-selector__item-id")).toHaveTextContent("provider/model-id");
+    expect(screen.getByRole("option", { name: "plain-model" })).not.toHaveTextContent("个人");
+    expect(document.querySelector(".model-selector__source")).toBeNull();
+    expect(document.querySelector(".model-selector__connection")).toBeNull();
+    expect(screen.getByRole("option", { name: /常用模型/ })).not.toHaveTextContent("provider/model-id");
   });
   it("长名称省略显示时仍能通过提示和菜单确认完整模型，切换保留真实 id", () => {
     const models = [
@@ -20,11 +34,51 @@ describe("ModelSelector", () => {
     const change = vi.fn();
     render(<ModelSelector models={models} modelId={models[0].id} onModelChange={change} ariaLabel="开发任务模型" />);
     const trigger = screen.getByRole("button", { name: `开发任务模型：${models[0].label}` });
-    expect(trigger).toHaveAttribute("title", `${models[0].label} · ${models[0].id}`);
+    expect(trigger).toHaveAttribute("title", models[0].label);
     fireEvent.click(trigger);
     expect(screen.getByRole("option", { name: new RegExp(models[0].label) })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("option", { name: /另一个模型/ }));
     expect(change).toHaveBeenCalledWith("another/actual-model");
+  });
+
+  it("内置、组织和个人同名模型可区分，选择回传原始 ID", () => {
+    const models = [
+      { id: "echoagent-ojlab/Echo Reed", source: "builtin" as const },
+      { id: "organization/Echo Reed", source: "organization" as const, providerLabel: "研发团队" },
+      { id: "custom-2/Echo Reed", remoteModelId: "Echo Reed", source: "personal" as const, providerLabel: "我的网关" },
+      { id: "custom-3/Echo Reed", remoteModelId: "Echo Reed", source: "personal" as const, providerLabel: "备用网关" },
+    ];
+    const change = vi.fn();
+    render(<ModelSelector models={models} modelId={models[0].id} onModelChange={change} />);
+    const trigger = screen.getByRole("button", { name: "Echo Reed" });
+    expect(trigger.title).toBe("Echo Reed · 内置");
+    expect(trigger.textContent).toBe("Echo Reed");
+    for (const [index, name] of ["Echo Reed · 内置", "Echo Reed · 组织 · 研发团队", "Echo Reed · 个人 · 我的网关", "Echo Reed · 个人 · 备用网关"].entries()) {
+      fireEvent.click(trigger);
+      const menu = screen.getByRole("listbox");
+      expect(menu.querySelector(".model-selector__source")).toBeNull();
+      expect(menu.textContent).not.toMatch(/echoagent-ojlab\/|organization\/|custom-[23]\//);
+      fireEvent.click(screen.getByRole("option", { name }));
+      expect(change).toHaveBeenLastCalledWith(models[index].id);
+    }
+  });
+
+  it("不同名的内置、组织和个人模型只显示名称，切换后触发器也没有来源或连接副标题", () => {
+    const models = [
+      {id:"echoagent-ojlab/Echo Reed",source:"builtin" as const},
+      {id:"organization/MiniMax-M3.1-Flash",remoteModelId:"MiniMax-M3.1-Flash",source:"organization" as const,providerLabel:"组织提供"},
+      {id:"personal/gpt",label:"我的常用模型",source:"personal" as const,providerLabel:"个人网关"},
+    ];
+    const onModelChange=vi.fn();
+    const view=render(<ModelSelector models={models} modelId={models[0].id} onModelChange={onModelChange}/>);
+    const trigger=screen.getByRole("button",{name:"Echo Reed"});
+    expect(trigger.title).toBe("Echo Reed");fireEvent.click(trigger);
+    const menu=screen.getByRole("listbox");expect(menu.textContent).not.toMatch(/内置|组织|个人|网关/);
+    fireEvent.click(screen.getByRole("option",{name:"MiniMax-M3.1-Flash"}));
+    expect(onModelChange).toHaveBeenCalledWith(models[1].id);
+    view.rerender(<ModelSelector models={models} modelId={models[1].id} onModelChange={onModelChange}/>);
+    expect(screen.getByRole("button",{name:"MiniMax-M3.1-Flash"})).toHaveAttribute("title","MiniMax-M3.1-Flash");
+    expect(view.container.textContent).toBe("MiniMax-M3.1-Flash");
   });
 
   it("菜单通过 body portal 渲染并在上方空间不足时向下翻转", () => {

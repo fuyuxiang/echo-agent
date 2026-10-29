@@ -10,7 +10,7 @@ import { CORE_CHECKS, coreReviewProjectName, validateCoreManifest, verifyNativeC
 const home = '/private/tmp/echo-native-review-core-synthetic', nonce = 'a'.repeat(32), cwd = `${home}/workspaces/default`;
 const fixtures = ['xlsx', 'epub', 'ods'].map((format) => ({ format, path: `${cwd}/办公读取/中文 ${format}.${format}`,
   marker: `CORE-${format.toUpperCase()}-${nonce}`, ...(format === 'epub' ? { excludedMarker: `CORE-NAV-EXCLUDED-${nonce}` } : {}) }));
-const expected = { version: 1, home, cwd, nonce, modelId: 'echoagent-ojlab/chat-qwen', officeFixtures: fixtures,
+const expected = { version: 1, home, cwd, nonce, modelId: 'echoagent-ojlab/Echo Reed', officeFixtures: fixtures,
   sessionId: 'synthetic-parent', forkedSessionId: 'synthetic-fork', projectForkedSessionId: 'synthetic-project-fork', deletedSessionId: 'synthetic-deleted',
   ownedSessionIds: ['synthetic-parent', 'synthetic-fork', 'synthetic-project-fork', 'synthetic-deleted'], title: `隔离核心会话-${nonce}`,
   project: { id: 'synthetic-project', name: coreReviewProjectName(nonce), cwd: `${home}/workspaces/project`, initialPlans: '[]', initialTasks: '[]' },

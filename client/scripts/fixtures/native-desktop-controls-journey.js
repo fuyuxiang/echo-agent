@@ -9,7 +9,7 @@ window.__echoDesktopControlsActiveBudget = (limitMs, initialNow) => {
     return {activeMs,limitMs,waitingForUser,expired:activeMs>=limitMs};
   };
 };
-window.__echoDesktopControlsJourney = async ({home,cwd,modelId='echoagent-ojlab/chat-qwen',smoke=false}) => {
+window.__echoDesktopControlsJourney = async ({home,cwd,modelId='echoagent-ojlab/Echo Reed',smoke=false}) => {
   if(window.__echoDesktopControlsJourneyStarted)return;
   window.__echoDesktopControlsJourneyStarted=true;
   const invoke=(command,args={})=>window.__TAURI_INTERNALS__.invoke(command,args);
@@ -60,7 +60,7 @@ window.__echoDesktopControlsJourney = async ({home,cwd,modelId='echoagent-ojlab/
       await wait(()=>document.querySelector(selector)?.getAttribute('aria-current')==='page','existing task selected');
     }
     (await wait(()=>{const e=document.querySelector('.echo-composer .model-selector__trigger');return visible(e)&&!e.disabled?e:null;},'model chooser')).click();
-    (await wait(()=>[...document.querySelectorAll('.model-selector__item')].find(e=>visible(e)&&e.querySelector('.model-selector__item-id')?.textContent===modelId),'exact configured model')).click();
+    (await wait(()=>[...document.querySelectorAll('.model-selector__item')].find(e=>visible(e)&&e.dataset.modelId===modelId),'exact configured model')).click();
     if(!existing.length){
     (await wait(()=>document.querySelector('.echo-composer button[aria-label="添加"]'),'add menu')).click();
     (await wait(()=>[...document.querySelectorAll('[role="menuitemradio"]')].find(e=>visible(e)&&e.querySelector('.iam-item__label')?.textContent==='操作电脑'&&e.getAttribute('aria-disabled')!=='true'),'Computer Use entry')).click();
@@ -96,7 +96,7 @@ ${editorText}--- 合成文本结束 ---
         const pending=await invoke('agent_list_pending_interactions',{sessionId:report.sessionId});
         report.runtimePermissions=(pending.permissions||[]).map(p=>({requestId:p.requestId,title:p.title,
           toolCallId:p.toolCallId,visible:visible(document.getElementById(`permission-${p.requestId}`))}));
-        report.desktopApprovalVisible=visible(document.querySelector('.automation-approval'));
+        report.desktopApprovalVisible=visible(document.querySelector('.perm-inline[data-approval-source="automation"]'));
         report.status=await invoke('automation_status',{sessionId:report.sessionId});
         report.awaitingUserResume=report.restoredExistingSession&&report.status.paused;
         const waiting=!!report.completion||report.status.paused||!!report.pendingApproval||report.desktopApprovalVisible||

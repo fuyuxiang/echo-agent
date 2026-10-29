@@ -977,6 +977,7 @@ pub struct TurnUsageEvent {
 #[serde(rename_all = "camelCase")]
 pub struct TurnErrorEvent {
     pub session_id: String,
+    pub prompt_id: String,
     /// "rate_limit" | "error" (mirrors EchoAgent's `stop_reason_for_turn_error`).
     pub kind: String,
     /// Server-provided detail string (null for rate_limit — EchoAgent deliberately
@@ -1956,6 +1957,7 @@ pub(crate) fn handle_prompt_complete(app: &AppHandle, complete: CompleteEvent) {
             "agent://turn-error",
             TurnErrorEvent {
                 session_id: session_id.clone(),
+                prompt_id: complete.prompt_id.clone(),
                 kind: stop_reason.clone(),
                 detail,
             },

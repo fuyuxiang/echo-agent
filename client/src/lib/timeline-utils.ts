@@ -1,3 +1,4 @@
+import { modelDisplayName } from "./model-presentation";
 /**
  * 消息时间线分组纯函数 —— 对齐 EchoAgent `echo-chat-ui/message-timeline`
  * (grouped messages / model-switch dividers / continue-cards / date separators)。
@@ -47,7 +48,7 @@ export function buildTimeline(messages: TimelineMessage[]): TimelineNode[] {
       if (!isUpstreamBrandedModelId(m.modelId)) {
         nodes.push({
           kind: "model-divider",
-          label: `已切换到 ${m.modelId}`,
+          label: `已切换到 ${modelDisplayName(m.modelId)}`,
           key: `model-${m.modelId}-${i}`,
         });
       }

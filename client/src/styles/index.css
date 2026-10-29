@@ -2,6 +2,7 @@
  * math/editor styles retain their own scope and lifecycle. */
 @import "./global.css";
 @import "./app.css";
+@import "./markdown-content.css";
 @import "./automation-echo.css";
 @import "./coding-workbench.css";
 @import "../features/groups/groups.css";

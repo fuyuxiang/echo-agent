@@ -17,7 +17,8 @@ describe("formatAgentError", () => {
     expect(result).toContain("15 次");
     expect(result).toContain("4 轮");
     expect(result).toContain("glm-5");
-    expect(result).toContain("等待");
+    expect(result).toContain("恢复时间");
+    expect(result).not.toContain("1-2 分钟");
   });
 
   it("parses 429 RPM rate limit", () => {
@@ -148,5 +149,21 @@ describe("friendlyError", () => {
     const err = new Error("connection timeout");
     const result = friendlyError(err);
     expect(result).toContain("网络连接失败");
+  });
+});
+
+describe("quota and rate limit guidance", () => {
+  it.each([
+    "HTTP 429 quota_error: five-hour quota exhausted",
+    JSON.stringify({ code: -32003, message: "Rate limited", data: { message: "429 insufficient_quota" } }),
+  ])("额度耗尽保留真实原因，不猜测恢复时间", raw => {
+    const message = formatAgentError(raw);
+    expect(message).toContain("额度已用尽");
+    expect(message).not.toMatch(/1-2|新建会话/);
+  });
+  it("普通限流不推断为额度耗尽，也不指定未经确认的等待时长", () => {
+    const message = formatAgentError("HTTP 429 rate limit exceeded");
+    expect(message).toContain("请求受限");
+    expect(message).not.toMatch(/额度已用尽|1-2/);
   });
 });
