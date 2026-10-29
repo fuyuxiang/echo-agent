@@ -2,9 +2,14 @@
 
 # Echo Agent
 
-**拥有长期记忆、可自进化、可嵌入的开源 Agent Runtime**
+**开源 Agent Runtime 与桌面 Agent**
 
-Echo Agent 为持续工作的 AI 助理与应用提供可自托管的运行时。认知记忆帮助 Agent 跨会话找回相关信息，技能自进化从执行经验中提炼并评估可复用技能，权限策略约束工具调用。它可以在终端运行、通过 Gateway 提供服务，也可以嵌入应用；EchoAgent Desktop 将 Agent 能力带入本地工作台。
+| 🧠 Echo Agent Runtime | 🖥️ EchoAgent Desktop |
+| :---: | :---: |
+| **可自托管、可嵌入的 Agent 运行时** | **本地优先的桌面 Agent** |
+| 跨会话找回相关记忆，将执行经验沉淀为可复用技能 | 在真实工作区中编写代码、处理文档、操作浏览器与桌面 |
+| 终端交互 · Gateway 服务 · 应用嵌入 | 任务执行 · 过程查看 · 变更审阅 |
+| [安装与部署](echo-agent-runtime/README.md) · [记忆与进化](#长期记忆与技能自进化) | [安装与使用](client/README.md#快速开始) · [桌面端能力](client/README.md#主要能力) |
 
 [![PyPI](https://img.shields.io/pypi/v/echo-agent)](https://pypi.org/project/echo-agent/)
 [![Python](https://img.shields.io/pypi/pyversions/echo-agent)](https://pypi.org/project/echo-agent/)

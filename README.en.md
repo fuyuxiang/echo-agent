@@ -2,9 +2,14 @@
 
 # Echo Agent
 
-**An open-source Agent Runtime with long-term memory, self-evolving skills, and an embeddable design**
+**An open-source Agent Runtime and a desktop Agent**
 
-Echo Agent provides a self-hosted runtime for AI assistants and applications that work over time. Cognitive memory retrieves relevant information across sessions, skill evolution creates and evaluates reusable skills from execution experience, and permission policies govern tool calls. Run it in a terminal, operate it as a Gateway service, or embed it in an application; EchoAgent Desktop brings Agent capabilities into a local workbench.
+| 🧠 Echo Agent Runtime | 🖥️ EchoAgent Desktop |
+| :---: | :---: |
+| **A self-hosted, embeddable Agent runtime** | **A local-first desktop Agent** |
+| Retrieve relevant memories across sessions and turn execution experience into reusable skills | Write code, work with documents, and operate browsers and desktop apps in your workspace |
+| Terminal · Gateway service · Embedded use | Task execution · Progress tracking · Change review |
+| [Install & deploy](echo-agent-runtime/README.en.md) · [Memory & evolution](#long-term-memory-and-skill-evolution) | [Install & use](client/README.en.md#quick-start) · [Desktop capabilities](client/README.en.md#capabilities) |
 
 [![PyPI](https://img.shields.io/pypi/v/echo-agent)](https://pypi.org/project/echo-agent/)
 [![Python](https://img.shields.io/pypi/pyversions/echo-agent)](https://pypi.org/project/echo-agent/)
